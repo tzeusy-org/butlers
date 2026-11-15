@@ -26,6 +26,10 @@ from butlers.chronicler.adapters.owntracks_ssid import (
     parse_ssid_places,
 )
 from butlers.chronicler.models import Confidence, Layer, Precision, Privacy
+from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
+    ProjectionCoverage,
+)
 from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
@@ -253,13 +257,32 @@ async def test_unavailable_source_does_not_tombstone_mapping_replay_episodes() -
     tombstone.assert_not_awaited()
 
 
-@pytest.mark.parametrize("mapping_changed", [True, False])
-async def test_a_mapping_change_voids_the_held_presence_spans(mapping_changed: bool) -> None:
+@pytest.mark.parametrize(
+    ("mapping_changed", "stored_revision", "voided"),
+    [
+        (True, "current", True),
+        (False, "current", False),
+        (False, "other", True),  # only a grouping setting moved: no replay, still void
+        (False, None, True),  # spans stored before the revision was persisted
+    ],
+)
+async def test_a_revision_change_voids_the_held_presence_spans(
+    mapping_changed: bool, stored_revision: str | None, voided: bool
+) -> None:
     adapter = OwnTracksSsidPresenceAdapter(ssid_places={"Corp WiFi": "home"})
     current = adapter_module._mapping_digest(adapter.ssid_places)
-    prior_carryover = {"_mapping_digest": "previous-mapping" if mapping_changed else current}
-    ledger = MagicMock()
-    ledger.flush = AsyncMock()
+    prior_carryover: dict[str, object] = {
+        "_mapping_digest": "previous-mapping" if mapping_changed else current
+    }
+    if stored_revision is not None:
+        prior_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = (
+            adapter.coverage_revision
+            if stored_revision == "current"
+            else OwnTracksSsidPresenceAdapter(
+                ssid_places={"Corp WiFi": "home"}, max_gap_minutes=DEFAULT_MAX_GAP_MINUTES + 1
+            ).coverage_revision
+        )
+    saved = AsyncMock()
 
     with (
         patch(
@@ -268,19 +291,17 @@ async def test_a_mapping_change_voids_the_held_presence_spans(mapping_changed: b
         ),
         patch.object(adapter, "_fetch_points", new=AsyncMock(return_value=[])),
         patch.object(adapter, "_tombstone_stale_mapping_episodes", new=AsyncMock()),
-        patch("butlers.chronicler.adapters.owntracks_ssid.save_carryover", new=AsyncMock()),
-        patch(
-            "butlers.chronicler.adapters.owntracks_ssid.ProjectionCoverage",
-            return_value=ledger,
-        ),
+        patch("butlers.chronicler.adapters.owntracks_ssid.save_carryover", new=saved),
+        patch.object(ProjectionCoverage, "reset_prefix", autospec=True) as reset,
+        patch.object(ProjectionCoverage, "flush", new=AsyncMock()) as flush,
     ):
         await adapter.project(AsyncMock(), chronicler_pool=AsyncMock(), since=_NOW)
 
-    if mapping_changed:
-        ledger.reset_prefix.assert_called_once_with(adapter_module.PRESENCE_CARRY_PREFIX)
-    else:
-        ledger.reset_prefix.assert_not_called()
-    ledger.flush.assert_awaited_once()
+    resets = {call.args[1] for call in reset.call_args_list}
+    assert resets == ({adapter_module.PRESENCE_CARRY_PREFIX} if voided else set())
+    flush.assert_awaited_once()
+    carryover = saved.await_args.args[2]
+    assert carryover[COVERAGE_REVISION_CARRYOVER_KEY] == adapter.coverage_revision
 
 
 async def test_legacy_timestamp_checkpoint_replays_from_start() -> None:

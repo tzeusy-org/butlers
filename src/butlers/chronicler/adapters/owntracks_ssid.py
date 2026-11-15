@@ -35,9 +35,10 @@ is evaluated:
 - **Evaluated without output** for a fix with no SSID or an unmapped one, and for a singleton
   span that closed. That decision is relative to the owner's mapping, so every record carries
   the adapter's config revision (``coverage_revision``), which includes the mapping digest.
-- A mapping change makes every earlier record stale and triggers a replay from the start. The
-  replay voids the spans held under the old mapping (``reset_prefix``): a held fix it reads
-  again is decided afresh, and one it has not reached yet leaves the open table uncovered.
+- The carryover keeps the revision its spans were held under. Any revision change voids them
+  (``void_carries_from_other_revisions``): a held fix read again is decided afresh, and one not
+  read again leaves the open table uncovered. A mapping change also makes every earlier record
+  stale and triggers a replay from the start; a grouping-setting change alone does not replay.
 - A replay for a rebuilt cursor (same mapping) drops the carryover too. A stored carry it
   rebuilds with the same endpoint and start closes as usual; one it does not rebuild stays
   held, never covered. Malformed fixes get no coverage.
@@ -70,6 +71,7 @@ from butlers.chronicler.confidence import (
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
     SOURCE_UNAVAILABLE,
     ProjectionCoverage,
     config_revision,
@@ -102,6 +104,8 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 _VALID_PLACES = frozenset({"home", "work"})
 _MAPPING_DIGEST_KEY = "_mapping_digest"
 _SOURCE_CURSOR_KEY = "_source_cursor"
+# Carryover entries that are adapter state, not an endpoint's open span.
+_STATE_KEYS = frozenset({_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY, COVERAGE_REVISION_CARRYOVER_KEY})
 # Coverage carry key (see "Projection coverage" in the module docstring).
 PRESENCE_CARRY_PREFIX = "ssid:"
 
@@ -181,7 +185,7 @@ def group_ssid_points(
     new_carryover: dict[str, Any] = {
         endpoint: value
         for endpoint, value in prior_carryover.items()
-        if endpoint not in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY}
+        if endpoint not in _STATE_KEYS
     }
 
     for endpoint, endpoint_rows in by_endpoint.items():
@@ -347,7 +351,7 @@ def record_presence_coverage(
             coverage.hold(member, key)
 
     for endpoint, carry in prior_carryover.items():
-        if endpoint in {_MAPPING_DIGEST_KEY, _SOURCE_CURSOR_KEY} or endpoint not in present:
+        if endpoint in _STATE_KEYS or endpoint not in present:
             continue
         start = _carried_start(carry)
         if start is None:
@@ -546,6 +550,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         del since_id  # owntracks_points.id is UUID; watermark on ts only.
         result = AdapterResult(source_name=self.source_name)
         prior_carryover = await get_carryover(chronicler_conn, self.source_name)
+        # Read before a cursor rebuild drops the carryover: the stored carries keep their revision.
+        stored_revision = prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY)
         digest = _mapping_digest(self.ssid_places)
         previous_digest = prior_carryover.get(_MAPPING_DIGEST_KEY)
         mapping_changed = previous_digest is not None and previous_digest != digest
@@ -571,16 +577,23 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             config_revision=self.coverage_revision,
             evaluates_every_row=True,
         )
+        # Spans held under another revision are void: a mapping change replays their rows; a
+        # grouping-setting change alone leaves them uncovered for discovery.
+        coverage.void_carries_from_other_revisions(stored_revision, PRESENCE_CARRY_PREFIX)
         if mapping_changed:
             result.warnings.append("SSID place mapping changed; replaying source evidence")
             await self._tombstone_stale_mapping_episodes(chronicler_conn)
             prior_carryover = {}
-            # Spans held under the old mapping are void; the replay decides their rows again.
+            # Void even if the stored revision were somehow current: the mapping moved.
             coverage.reset_prefix(PRESENCE_CARRY_PREFIX)
 
         if not rows:
             await coverage.flush(chronicler_conn)
-            unchanged_carryover = {**prior_carryover, _MAPPING_DIGEST_KEY: digest}
+            unchanged_carryover = {
+                **prior_carryover,
+                _MAPPING_DIGEST_KEY: digest,
+                COVERAGE_REVISION_CARRYOVER_KEY: self.coverage_revision,
+            }
             await save_carryover(chronicler_conn, self.source_name, unchanged_carryover)
             result.watermark = effective_since
             return result
@@ -633,6 +646,7 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
         await coverage.flush(chronicler_conn)
 
         new_carryover[_MAPPING_DIGEST_KEY] = digest
+        new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
         last_row = rows[-1]
         new_carryover[_SOURCE_CURSOR_KEY] = {
             "watermark": last_row["ts"].isoformat(),

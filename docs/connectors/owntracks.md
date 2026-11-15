@@ -158,8 +158,11 @@ Groundwork for that gate is in place, and still deletes nothing:
     clustering only the homes). A record is current only when both match; records from before
     chronicler_034 read `legacy` and are never current. A changed setting or rewritten row needs a
     new record; nothing is updated or deleted.
-  - An SSID mapping change voids the spans held under the old mapping: the replay decides their
-    rows again, and a held row it does not reach is released without coverage.
+  - Each adapter saves its config revision in carryover beside its open carries. A run under a
+    different revision (or with none saved) voids those carries and the outputs their members
+    gained: a held row read again is decided afresh, and one not read again is released without
+    coverage, left for discovery. So an away trip open when the owner moves home never closes
+    into a current-revision record. An SSID mapping change also replays from the start.
   - Owner episode corrections do not invalidate coverage: they edit the output, not the
     decision about the raw row.
   - Each adapter run upserts one attempt row (`chronicler.location_projection_attempts`): the

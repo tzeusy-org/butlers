@@ -759,3 +759,88 @@ async def test_an_ssid_mapping_change_re_decides_rows_under_the_new_revision(
     attempt = await _attempt(chronicler_db, SSID_SOURCE_NAME)
     assert attempt["config_revision"] == changed.coverage_revision
     assert attempt["last_outcome"] == "succeeded"
+
+
+# -- a config revision change while a carry is open --------------------------------------------
+#
+# A member held under the old revision gained its outputs from a decision that revision made. A
+# later run under a new revision must not close that carry into a current-revision record; the
+# member is decided again only if the new revision reads it again. The changed setting
+# (``clock_skew_threshold_hours`` 5 instead of 4) is behaviour-neutral for these fixtures, so only
+# the revision differs between the runs.
+
+_NEUTRAL_CHANGE = {"clock_skew_threshold_hours": 5}
+
+
+def _no_old_revision_output(record: asyncpg.Record | None, old_episode: UUID) -> bool:
+    return record is None or old_episode not in record["output_episode_ids"]
+
+
+async def test_a_points_revision_change_voids_open_movement_carries(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    held = [await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m)) for m in (0, 5)]
+    await _run(chronicler_db)
+    assert set(held) <= set(await _open(chronicler_db))
+    old_episode = await _episode_starting(chronicler_db, _T0)
+    assert old_episode is not None
+
+    await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=120))  # closes the segment
+    changed = OwnTracksPointAdapter(**_NEUTRAL_CHANGE)
+    assert changed.coverage_revision != _REVISION
+    await _run(chronicler_db, **_NEUTRAL_CHANGE)
+
+    coverage = await _coverage(chronicler_db)
+    for raw_id in held:
+        assert _no_old_revision_output(coverage.get(raw_id), old_episode)
+    assert not set(held) & set(await _open(chronicler_db))
+
+
+async def test_a_place_revision_change_voids_open_stay_carries(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    stay = [await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m)) for m in (0, 10, 25)]
+    await _run_place(chronicler_db)
+    assert set(stay) <= set(await _open(chronicler_db, PLACE_SOURCE_NAME))
+    old_episode = await _episode_of(chronicler_db, PLACE_SOURCE_NAME, _T0)
+    assert old_episode is not None
+
+    for m in (30, 35):  # leaving the stay closes it under the new revision
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), lat=_FAR_LAT)
+    changed = OwnTracksPlaceClusterAdapter(**_NEUTRAL_CHANGE)
+    assert changed.coverage_revision != OwnTracksPlaceClusterAdapter().coverage_revision
+    result = await changed.run(pool=chronicler_db, chronicler_pool=chronicler_db)
+    assert result.error is None, result.error
+
+    coverage = await _coverage(chronicler_db, PLACE_SOURCE_NAME)
+    for raw_id in stay:
+        assert _no_old_revision_output(coverage.get(raw_id), old_episode)
+    assert not set(stay) & set(await _open(chronicler_db, PLACE_SOURCE_NAME))
+
+
+async def test_an_ssid_settings_change_voids_open_presence_carries(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    home = [
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), ssid="home-wifi")
+        for m in (0, 10)
+    ]
+    await _run_ssid(chronicler_db)
+    assert set(await _open(chronicler_db, SSID_SOURCE_NAME)) == set(home)
+    old_episode = await _episode_of(chronicler_db, SSID_SOURCE_NAME, _T0)
+    assert old_episode is not None
+
+    # Same mapping, so no replay: only the settings part of the revision moved.
+    await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=15), ssid="cafe-wifi")
+    changed = OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES, **_NEUTRAL_CHANGE)
+    assert (
+        changed.coverage_revision
+        != OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES).coverage_revision
+    )
+    result = await changed.run(pool=chronicler_db, chronicler_pool=chronicler_db)
+    assert result.error is None, result.error
+
+    coverage = await _coverage(chronicler_db, SSID_SOURCE_NAME)
+    for raw_id in home:
+        assert _no_old_revision_output(coverage.get(raw_id), old_episode)
+    assert not set(home) & set(await _open(chronicler_db, SSID_SOURCE_NAME))

@@ -77,7 +77,9 @@ Projection coverage (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``):
   an open carry (``chronicler.location_projection_open_members``). It reads the
   row's immutable ``retention_at`` (core_340) and its content digest, and copies
   both as read; records carry the adapter's config revision (``coverage_revision``:
-  movement gap, minimum points, clock-skew threshold, trail policy).
+  movement gap, minimum points, clock-skew threshold, trail policy). The carryover
+  keeps the revision its carries were held under; after a change those carries are
+  void, so their members are covered only if a later run reads them again.
 - A row is **held** (open, never covered) while it is the endpoint's trail
   bootstrap seed or a pending trail candidate (carry ``trail:<endpoint>``: the
   next run re-reads it and may still revise it), or while it belongs to the
@@ -149,6 +151,7 @@ from butlers.chronicler.models import (
     Privacy,
 )
 from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
     ProjectionCoverage,
     config_revision,
     raw_row_digest_sql,
@@ -421,6 +424,12 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 rejected_seeds=rejected_seeds,
             )
             coverage = ProjectionCoverage(self.source_name, config_revision=self.coverage_revision)
+            # A carry opened under other settings never closes into a current-revision record.
+            coverage.void_carries_from_other_revisions(
+                prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY),
+                MOVEMENT_CARRY_PREFIX,
+                TRAIL_CARRY_PREFIX,
+            )
             for normalized_row in valid_rows:
                 coverage.observe(normalized_row)
             # Trail consensus is recomputed in full: a bootstrap seed or pending candidate
@@ -491,6 +500,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
+            new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
             # Same connection and savepoint as the outputs and the cursor written below.
             async with owntracks_connection(chronicler_pool) as conn:
                 await coverage.flush(conn)

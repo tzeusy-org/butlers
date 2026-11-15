@@ -88,6 +88,9 @@ carry still holds. Every fix the run reads is evaluated, so a fix is either held
   thresholds, the trail policy and the owner's home places (they decide trip boundaries).
   Changing a home makes earlier records stale; the rows they cover count as uncovered until
   re-evaluated. A non-home place only relabels a stay, so it is not part of the revision.
+  The carryover keeps the revision its stays, trips and departures were held under; after a
+  change those carries are void (an away trip open when the owner moves home never closes into
+  a current-revision record), so their members are covered only if a later run reads them again.
 
 No LLM call — Tier-0 deterministic projection only (RFC 0014 §D5).
 """
@@ -135,6 +138,7 @@ from butlers.chronicler.confidence import (
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
     ProjectionCoverage,
     config_revision,
     raw_row_digest_sql,
@@ -1248,6 +1252,13 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 config_revision=self.coverage_revision,
                 evaluates_every_row=True,
             )
+            coverage.void_carries_from_other_revisions(
+                prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY),
+                STAY_CARRY_PREFIX,
+                DEPARTURE_CARRY_PREFIX,
+                TRIP_CARRY_PREFIX,
+                TRAIL_CARRY_PREFIX,
+            )
             for row in valid_rows:
                 coverage.observe(row)
             hold_trail(coverage, state)
@@ -1275,6 +1286,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
             new_carryover[AWAY_CARRYOVER_KEY] = away_carryover
+            new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark

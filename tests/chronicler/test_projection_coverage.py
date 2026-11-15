@@ -490,6 +490,44 @@ async def test_a_reset_carry_member_read_again_is_decided_without_its_old_output
     assert summary.discarded == 0
 
 
+@pytest.mark.parametrize(
+    ("stored", "voided"),
+    [
+        (REVISION, False),
+        (config_revision("owntracks.points", {"case": "changed"}), True),
+        (None, True),  # carries stored before the adapter persisted its revision
+        ("not-a-revision", True),
+    ],
+)
+async def test_carries_stored_under_another_revision_are_voided(
+    stored: str | None, voided: bool
+) -> None:
+    tables = _Tables()
+    key = f"{MOVEMENT_CARRY_PREFIX}owntracks:alice"
+    row, episode = _row(), uuid4()
+    first = _ledger()
+    first.observe(row)
+    first.record_event(row, uuid4())
+    first.hold(row["id"], key)
+    await first.flush(tables)
+
+    later = _ledger()
+    assert later.void_carries_from_other_revisions(stored, MOVEMENT_CARRY_PREFIX) is voided
+    later.close_carry(key, episode)
+    await later.flush(tables)
+
+    assert row["id"] not in tables.open
+    if voided:
+        assert tables.coverage == {}, "a carry decided under another revision credits nothing"
+    else:
+        assert tables.coverage[row["id"]]["output_episode_ids"] == [episode]
+
+
+def test_voiding_needs_at_least_one_carry_prefix() -> None:
+    with pytest.raises(ValueError):
+        _ledger().void_carries_from_other_revisions(None)
+
+
 async def test_a_released_prefix_does_not_void_outputs_like_a_reset() -> None:
     tables = _Tables()
     key = f"{TRAIL_CARRY_PREFIX}owntracks:alice"

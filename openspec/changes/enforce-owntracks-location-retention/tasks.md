@@ -16,7 +16,8 @@
   open carries; `owntracks.place_cluster` and `owntracks.ssid_presence` adopt the same ledger
   (`evaluated_no_output` for rows they deliberately emit nothing for); `chronicler_034` content
   digest and config revision (SSID mapping included) on each record, with revision-keyed
-  invalidation and SSID mapping-change voiding of held spans, a per-adapter attempt record, and
+  invalidation, voiding of every adapter's held carries when the revision saved beside them is
+  not the current one (an SSID mapping change also replays), a per-adapter attempt record, and
   a bounded anti-join count of settled uncovered rows. Owner episode corrections deliberately
   do not invalidate coverage. Remaining: re-projecting the rows discovery finds, and role
   readbacks for place and SSID.

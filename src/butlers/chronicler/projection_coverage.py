@@ -36,6 +36,9 @@ The ledger only accepts facts the adapter observed itself:
   has a prefix (the adapter recomputed that whole state this run); :meth:`reset_prefix`
   discards such carries and the outputs their members gained under the previous config
   revision (a member not read again this run leaves the table uncovered).
+  :meth:`void_carries_from_other_revisions` applies that reset whenever the revision an adapter
+  saved beside its carries is not the current one, so an open stay, trip or span that began
+  under old settings never closes into a current-revision record.
 
 A row can sit in several carries at once (a place stay inside an away-from-home trip), so an
 open member stores the set of its carry keys. :meth:`flush` then decides each row it knows (rows
@@ -89,6 +92,11 @@ DISPOSITION_EVALUATED_NO_OUTPUT = "evaluated_no_output"
 #: takes a new prefix; records under an older one never match the current digest.
 DIGEST_VERSION = "v1"
 _DIGEST_PATTERN = re.compile(r"^v1:[0-9a-f]{64}$")
+
+#: Carryover key under which an adapter saves the config revision its open carries were decided
+#: under, in the same transaction as the flush. See
+#: :meth:`ProjectionCoverage.void_carries_from_other_revisions`.
+COVERAGE_REVISION_CARRYOVER_KEY = "_coverage_revision"
 
 #: Discovery counts settled rows only: arrivals newer than this are the next run's normal work.
 DISCOVERY_SETTLE = timedelta(hours=1)
@@ -329,6 +337,22 @@ class ProjectionCoverage:
         """
         if prefix:
             self._reset_prefixes.add(prefix)
+
+    def void_carries_from_other_revisions(self, stored_revision: object, *prefixes: str) -> bool:
+        """Reset ``prefixes`` unless the stored carries were decided under this revision.
+
+        ``stored_revision`` is the revision the adapter saved beside its carries
+        (``COVERAGE_REVISION_CARRYOVER_KEY``) in the run that last flushed. A missing or malformed
+        value (carries saved before the revision was persisted) counts as another revision: an
+        unknown decision never closes into a current-revision record. Returns whether it voided.
+        """
+        if not prefixes:
+            raise ValueError("void_carries_from_other_revisions needs at least one carry prefix")
+        if stored_revision == self.config_revision:
+            return False
+        for prefix in prefixes:
+            self.reset_prefix(prefix)
+        return True
 
     # -- the decision -------------------------------------------------------------------------
 
@@ -587,6 +611,7 @@ async def discover_uncovered(
 __all__ = [
     "ATTEMPT_FAILED",
     "ATTEMPT_SUCCEEDED",
+    "COVERAGE_REVISION_CARRYOVER_KEY",
     "COVERED_ADAPTERS",
     "CoverageConnection",
     "DIGEST_VERSION",
