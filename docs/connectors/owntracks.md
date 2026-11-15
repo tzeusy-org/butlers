@@ -204,7 +204,9 @@ Groundwork for that gate is in place, and still deletes nothing:
     calls it projected. The batch continues. The run counts the dropped fixes in
     `rows_refused_forgotten`, never in `rows_projected` or `point_events`, and warns with the
     count only: no source, key, timestamp or coordinate (warnings persist with the job result).
-    SSID presence reads no coordinates and has no floor.
+    SSID presence applies the same floor after normalization, so a forgotten fix never joins a
+    network-presence span again. Its `project()` takes the SSID projection lock itself when
+    called outside `run()`, so it cannot interleave with a run or a grant preparation.
 - Raw expiry is prepared, still deleting nothing (bu-s11n0s.7 S4a):
   - chronicler_036 adds `chronicler.location_retention_grants` (one row per preparation run,
     its receipt: policy version, horizon, cutoff, every adapter's config revision, the count
@@ -217,8 +219,16 @@ Groundwork for that gate is in place, and still deletes nothing:
     content digest; a `legacy` or other-revision record does not count), no adapter holds it
     open, its `retention_at` is strictly older than `now() - days` and it arrived more than an
     hour ago. It holds the policy row and every OwnTracks projection lock for the run, oldest
-    rows first, at most 500 per run. No code calls it yet, and nothing reads a grant: the
-    connector-side delete and its receipt are the next slice.
+    rows first, at most 500 per run. Under those locks the caller's config revisions must equal
+    each adapter's last recorded run (`location_projection_attempts.config_revision`);
+    otherwise it raises `StaleRevisions` and writes nothing. No code calls it yet, and nothing
+    reads a grant: the connector-side delete and its receipt are the next slice.
+  - A grant row stays `prepared`. chronicler_037 adds `chronicler.location_retention_grant_states`,
+    where each later state is a new row: `ready` (holder copies read back; deletion may start),
+    `unknown` (a deletion's committed receipt could not be read; may repeat), `reconciled` and
+    `failed`. `ready`, `reconciled` and `failed` occur at most once per grant; no `ready` row
+    means the grant is withheld. Each row carries a count-only JSON receipt. The table is
+    append-only and the runtime role may only read and insert. Nothing writes it yet.
 
 ## Implementation Notes
 
