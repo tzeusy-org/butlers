@@ -507,8 +507,8 @@ own act: an owner-set privacy label may lift an adapter-set one.
    filters, adapter-set privacy.
 5. **Model-chosen labels.** Where a domain's filter reads them they may
    withhold further. They cannot reverse 1 to 4. In finance and health the
-   memory `sensitivity` is not a filter (OD17 and OD22): only credentials, the
-   allowlist and owner withholds apply there.
+   memory `sensitivity` label is not a filter (OD17 and OD22); the allowlist,
+   the lifecycle filter and owner withholds still apply there.
 
 Provenance and subject sit beside this order: provenance governs use after
 sharing, and subject only selects which predicates the allowlist names.
