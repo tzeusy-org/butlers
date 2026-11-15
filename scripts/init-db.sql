@@ -7926,7 +7926,8 @@ END IF;
             domain text PRIMARY KEY CHECK (domain IN (
                 'all','knowledge','travel','relationship','time','finance','health','proposals')),
             state text NOT NULL CHECK (state IN ('enabled','disabled')),
-            changed_at timestamptz NOT NULL DEFAULT now()
+            changed_at timestamptz NOT NULL DEFAULT now(),
+            changed_by text NOT NULL DEFAULT 'system'
         );
         EXECUTE format('ALTER TABLE mcp_surface.controls OWNER TO %I', migration_role);
     END IF;
@@ -7943,8 +7944,15 @@ END IF;
                        AND relkind='r' AND relowner=migration_oid) THEN
             RAISE EXCEPTION 'public MCP metadata relation % has an unsupported owner/shape', relation_name;
         END IF;
+        -- The actor of the last change (bu-y66o00.9). Private: it is not in the projection
+        -- manifest, so it never replicates. Added to the owner's own table only.
+        IF relation_name='controls' THEN
+            ALTER TABLE mcp_surface.controls
+                ADD COLUMN IF NOT EXISTS changed_by text NOT NULL DEFAULT 'system';
+        END IF;
         expected_columns := CASE relation_name WHEN 'controls' THEN
-            ARRAY['domain:text:true','state:text:true','changed_at:timestamp with time zone:true']
+            ARRAY['domain:text:true','state:text:true','changed_at:timestamp with time zone:true',
+                      'changed_by:text:true']
             ELSE ARRAY['digest:text:true'] END;
         SELECT array_agg(attname||':'||format_type(atttypid,atttypmod)||':'||attnotnull ORDER BY attnum)
           INTO actual_columns FROM pg_attribute WHERE attrelid=relation_oid
@@ -7997,13 +8005,13 @@ END IF;
         END IF;
         EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM PUBLIC',relation_name);
         EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM PUBLIC',
-            CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at' ELSE 'digest' END,
+            CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at,changed_by' ELSE 'digest' END,
             relation_name);
         FOR runtime_role IN SELECT rolname FROM pg_roles
             WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\' OR rolname='connector_writer' LOOP
             EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM %I',relation_name,runtime_role);
             EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM %I',
-                CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at' ELSE 'digest' END,
+                CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at,changed_by' ELSE 'digest' END,
                 relation_name,runtime_role);
         END LOOP;
     END LOOP;

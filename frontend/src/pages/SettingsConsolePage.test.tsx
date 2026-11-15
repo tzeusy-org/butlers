@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SettingsConsolePage from "@/pages/SettingsConsolePage";
@@ -50,6 +50,11 @@ function defaultApiFetchImpl(path: string) {
   }
   if (path === "/spend/forecast") {
     return Promise.resolve({ data: DEFAULT_FORECAST });
+  }
+  if (path === "/settings/public-mcp/summary") {
+    return Promise.resolve({
+      data: { disabled_domains: 0, total_domains: 7, all_disabled: false },
+    });
   }
   if (path === "/approvals/metrics") {
     return Promise.resolve({ data: { total_pending: 0 }, meta: {} });
@@ -281,5 +286,100 @@ describe("SettingsConsolePage", () => {
     collapse.focus();
     await user.keyboard(" ");
     expect(screen.queryByText("Provider 6 needs auth.")).toBeNull();
+  });
+});
+
+
+function LocationProbe() {
+  return <p data-testid="location">{useLocation().pathname}</p>;
+}
+
+// REQ-dashboard-settings-console-002, "Public MCP panel summary" and "Panel summary load failure".
+describe("SettingsConsolePage Public MCP panel", () => {
+  function renderWithProbe() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SettingsConsolePage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("sits after Secrets and summarizes the disabled domains and the all switch", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.resolve({
+            data: { disabled_domains: 2, total_domains: 7, all_disabled: true },
+          })
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText("2")).toBeTruthy();
+    expect(within(panel).getByText("of 7 domains disabled")).toBeTruthy();
+    expect(within(panel).getByText("All switch: disabled")).toBeTruthy();
+
+    const labels = screen
+      .getAllByRole("button")
+      .map((el) => el.getAttribute("aria-label"))
+      .filter((label): label is string => label?.startsWith("Go to ") ?? false);
+    expect(labels.indexOf("Go to Public MCP")).toBe(labels.indexOf("Go to Secrets") + 1);
+  });
+
+  it("navigates to /settings/public-mcp on click and on keyboard activation", async () => {
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    await user.click(panel);
+    expect(screen.getByTestId("location").textContent).toBe("/settings/public-mcp");
+  });
+
+  it("navigates from the keyboard", async () => {
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    panel.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("location").textContent).toBe("/settings/public-mcp");
+  });
+
+  it("fails alone: its summary error leaves the other panels rendering", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.reject(new Error("down"))
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText(/Failed to load\./)).toBeTruthy();
+    expect(within(panel).getByText("Retry →")).toBeTruthy();
+    expect(screen.getByLabelText("Go to Secrets")).toBeTruthy();
+    expect(await within(screen.getByLabelText("Go to Approvals")).findByText("0")).toBeTruthy();
+  });
+
+  it("does not let its Retry navigate", async () => {
+    let calls = 0;
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/settings/public-mcp/summary") {
+        calls += 1;
+        return calls <= 2
+          ? Promise.reject(new Error("down"))
+          : Promise.resolve({
+              data: { disabled_domains: 1, total_domains: 7, all_disabled: false },
+            });
+      }
+      return defaultApiFetchImpl(path);
+    });
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    await userEvent.setup().click(await within(panel).findByText("Retry →"));
+    expect(screen.getByTestId("location").textContent).toBe("/");
+    expect(await within(panel).findByText("of 7 domains disabled")).toBeTruthy();
   });
 });

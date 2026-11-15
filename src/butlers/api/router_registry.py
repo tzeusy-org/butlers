@@ -86,6 +86,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.owner_policy", "router"),
     ("butlers.api.routers.owner_modes", "router"),
     ("butlers.api.routers.settings_console", "router"),
+    ("butlers.api.routers.public_mcp_controls", "router"),
     ("butlers.api.routers.data_ops", "router"),
     ("butlers.api.routers.delegation", "router"),
     ("butlers.api.routers.entities", "router"),

@@ -938,6 +938,82 @@ def public_mcp_reconcile(database: str) -> None:
     click.echo("Primary projection reconciled" if changed else "Primary projection unchanged")
 
 
+def _set_public_mcp_control(domain: str, state: str, database: str) -> None:
+    """Write one kill switch on the primary as the migration principal and report it."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from butlers.db import db_params_from_env
+    from butlers.public_mcp_controls import (
+        ACTOR_CLI,
+        READ_ONE_SQL,
+        WRITE_SQL,
+        UnknownDomain,
+        check_domain,
+    )
+
+    try:
+        check_domain(domain)
+    except UnknownDomain:
+        raise click.ClickException(f"Unknown domain: {domain}") from None
+    engine = create_engine(
+        _migration_db_url(db_params_from_env(), db_name=database, schema=None),
+        connect_args={"connect_timeout": 10},
+    )
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(WRITE_SQL.format(domain=":domain", state=":state", actor=":actor")),
+                {"domain": domain, "state": state, "actor": ACTOR_CLI},
+            ).first()
+            changed = row is not None
+            if row is None:
+                row = conn.execute(
+                    text(READ_ONE_SQL.format(domain=":domain")), {"domain": domain}
+                ).first()
+    except SQLAlchemyError:
+        # Driver errors can include a URL, statement or bound data. Keep this surface closed.
+        raise click.ClickException("Public MCP switch change refused: database failed") from None
+    finally:
+        engine.dispose()
+    if changed:
+        click.echo(f"{domain}: {state} (set on the primary)")
+    else:
+        click.echo(f"{domain}: already {state} (unchanged)")
+    click.echo(
+        "The public server follows by replication within 15 minutes and the Relationship "
+        "proposal importer at its next pass. For immediate effect use the break-glass ConfigMap "
+        "butlers-public-mcp-switches (key disabled_domains) or scale the public server to zero."
+    )
+
+
+def _public_mcp_switch_command(state: str) -> None:
+    verb = "disable" if state == "disabled" else "enable"
+
+    @public_mcp.command(verb)
+    @click.argument("domain", type=click.Choice(_control_domains()))
+    @click.option("--database", default="butlers", show_default=True, help="Primary database name")
+    def _command(domain: str, database: str) -> None:
+        _set_public_mcp_control(domain, state, database)
+
+    _command.help = (
+        f"{verb.capitalize()} one Public MCP domain, or `all`, on the primary (RFC 0039 D16).\n\n"
+        "Run as the migration principal (the POSTGRES_* environment of `butlers db`, the same "
+        "login as `public-mcp reconcile` and the dashboard API). One step, no unlock. The change "
+        "replicates to the public server within 15 minutes."
+    )
+
+
+def _control_domains() -> list[str]:
+    from butlers.public_mcp_controls import CONTROL_DOMAINS
+
+    return list(CONTROL_DOMAINS)
+
+
+_public_mcp_switch_command("disabled")
+_public_mcp_switch_command("enabled")
+
+
 @public_mcp.command("owner-sql")
 def public_mcp_owner_sql() -> None:
     """Print the idempotent owner-step SQL file for the packaged manifest (RFC 0039 D3).

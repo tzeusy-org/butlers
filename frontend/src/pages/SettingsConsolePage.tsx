@@ -49,6 +49,7 @@ import {
   useRegisterCommands,
   type PaletteCommand,
 } from "@/lib/command-registry";
+import { usePublicMcpSummary } from "@/hooks/use-public-mcp-controls";
 import QaStafferCard from "@/components/settings/QaStafferCard";
 
 // Minimal types for per-panel summaries (pulled from their own endpoints)
@@ -574,6 +575,61 @@ function SecretsPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
   );
 }
 
+// Public MCP panel — independent summary fetch (REQ-dashboard-settings-console-002)
+function PublicMcpPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+  const { data, isLoading, isError, refetch } = usePublicMcpSummary();
+  const summary = data?.data;
+
+  return (
+    <PanelShell
+      title="Public MCP"
+      description="Kill switches for the internet-facing read surface."
+      href="/settings/public-mcp"
+      onNavigate={onNavigate}
+    >
+      {isLoading ? (
+        <Skeleton className="h-8 w-full" />
+      ) : isError || typeof summary?.disabled_domains !== "number" ? (
+        <p className="text-sm text-muted-foreground">
+          Failed to load.{" "}
+          <InlineActionLink
+            onClick={(e) => {
+              e.stopPropagation();
+              refetch();
+            }}
+          >
+            Retry →
+          </InlineActionLink>
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span
+            className={cn(
+              "text-[22px] font-medium tabular-nums leading-none",
+              summary.disabled_domains > 0 || summary.all_disabled
+                ? "text-[var(--amber-text)]"
+                : "text-foreground",
+            )}
+          >
+            {summary.disabled_domains}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            of {summary.total_domains} domains disabled
+          </span>
+          <span
+            className={cn(
+              "ml-auto text-xs",
+              summary.all_disabled ? "text-[var(--amber-text)]" : "text-muted-foreground",
+            )}
+          >
+            {summary.all_disabled ? "All switch: disabled" : "All switch: enabled"}
+          </span>
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -699,6 +755,9 @@ export default function SettingsConsolePage() {
 
         {/* Secrets — static panel (Google OAuth app credentials now live here) */}
         <SecretsPanel onNavigate={handleNavigate} />
+
+        {/* Public MCP — independent summary fetch, after Secrets */}
+        <PublicMcpPanel onNavigate={handleNavigate} />
 
         {/* Projections — static panel (navigates to sub-route) */}
         <ProjectionsPanel onNavigate={handleNavigate} />
