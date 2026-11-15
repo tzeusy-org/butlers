@@ -3692,7 +3692,7 @@ class TestProjectionEventHelpers:
         assert fetchrow_args[17] == "general"
         assert fetchrow_args[18] is None  # $18 source_session_id
         # Internal writes keep the provider typed fields at their defaults.
-        assert fetchrow_args[19:] == ("default", None)
+        assert fetchrow_args[19:] == ("default", None, None)
 
 
 class TestCalendarModuleExtraStatusFields:
