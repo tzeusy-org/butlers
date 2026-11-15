@@ -71,6 +71,9 @@ spec:
             {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
             - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
             {{- end }}
+            # Public MCP proposal importer (RFC 0039 D9/D13): the mcp_proposals_reader
+            # password, read from a file by the Relationship job, never an env var.
+            - {name: mcp-proposals-reader, mountPath: /etc/butlers/mcp-proposals-reader, readOnly: true}
       volumes:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
@@ -78,6 +81,14 @@ spec:
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
+        # Optional: without the Secret the importer skips intake and still reconciles.
+        - name: mcp-proposals-reader
+          secret:
+            secretName: postgres-mcp-proposals-reader-user
+            optional: true
+            defaultMode: 0400
+            items:
+              - {key: password, path: password}
         {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
         # Domain daemons present this to the control plane's named relays (one audience, pod-bound).
         - name: workload-token

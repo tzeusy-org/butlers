@@ -1290,6 +1290,23 @@ async def _run_relationship_geocode_owner_addresses_job(
     return await geocoding.run_owner_address_geocoding(pool)
 
 
+async def _run_relationship_public_mcp_proposal_import_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Import, validate, park and reconcile public MCP proposals (RFC 0039 D13; zero LLM).
+
+    Delegates to ``run_public_mcp_proposal_import`` in the Relationship roster module
+    ``butlers.tools.relationship.public_mcp_proposal_import``, resolved at call time so
+    tests can substitute it.
+    """
+    del job_args
+    import importlib
+
+    importer = importlib.import_module("butlers.tools.relationship.public_mcp_proposal_import")
+    return await importer.run_public_mcp_proposal_import(pool)
+
+
 async def _run_prepared_action_orphan_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2307,6 +2324,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "email_identity_enrichment": _run_relationship_email_identity_enrichment_job,
             "relationship_geocode_owner_addresses": (_run_relationship_geocode_owner_addresses_job),
             "commitment_candidate_scan": _run_relationship_commitment_candidate_scan_job,
+            "public_mcp_proposal_import": _run_relationship_public_mcp_proposal_import_job,
             # contact_info_reconciler retired (bu-e2ja9 / core_115): table dropped.
             **_retention_pruner_job_handlers("relationship"),
             "prepared_action_orphan_sweep": _run_prepared_action_orphan_sweep_job,

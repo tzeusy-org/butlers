@@ -135,6 +135,15 @@ cron = "17 * * * *"
 dispatch_mode = "job"
 job_name = "relationship_geocode_owner_addresses"
 
+# Public MCP proposal importer (RFC 0039 D13, bu-y66o00.8): copies the butlers_public
+# inbox to relationship.external_fact_proposals, validates, parks for owner approval
+# and reconciles outcomes. Deterministic, no session; reads mcp_surface.controls.
+[[butler.schedule]]
+name = "public_mcp_proposal_import"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "public_mcp_proposal_import"
+
 # contact-info-reconciler retired in migration bead 10 (bu-e2ja9 / core_115):
 # public.contact_info is dropped, so the dual-write reconciler has nothing to
 # sweep. Re-adding it would throw UndefinedTableError every 30 minutes.

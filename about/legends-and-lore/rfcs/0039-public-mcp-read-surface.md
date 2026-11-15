@@ -1841,7 +1841,10 @@ state lives on the primary, in `relationship.external_fact_proposals`
    100 inbox rows as `mcp_proposals_reader`, inserts each into
    `relationship.external_fact_proposals` with `ON CONFLICT DO NOTHING`, and
    then deletes the inbox rows it recorded; copy-then-delete is idempotent
-   across crashes. Each row is then checked in order: schema and allowlist
+   across crashes. A row is validated only once its receipt time is at least
+   30 seconds before the pass, so a row that commits out of receipt-time order
+   is still seen before any later row under the same key is decided; a younger
+   row stays `imported` for a later pass. Each row is then checked in order: schema and allowlist
    again (the pod is not trusted); entities exist and are neither merged nor
    deleted, and the subject is not the owner (`invalid`); the note and evidence URL pass the
    DLP secret-shape scan (`invalid`); no identical active fact exists

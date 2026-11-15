@@ -103,3 +103,30 @@ def test_the_check_goes_red_on_a_mount_in_the_wrong_workload(name, secret, expec
 
 def test_only_the_importer_may_mount_the_proposals_reader_password() -> None:
     assert violations([_workload("butlers-up", "postgres-mcp-proposals-reader-user")]) == []
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_butlers_up_mounts_the_reader_password_as_an_optional_file(env: str) -> None:
+    """RFC 0039 D9/D13: the importer's password is a read-only optional file, never env."""
+    (deployment,) = [
+        d
+        for d in _render(env, "bws")
+        if d.get("kind") == "Deployment" and d["metadata"]["name"] == IMPORTER_WORKLOAD
+    ]
+    pod = deployment["spec"]["template"]["spec"]
+    (volume,) = [v for v in pod["volumes"] if v["name"] == "mcp-proposals-reader"]
+    assert volume["secret"] == {
+        "secretName": "postgres-mcp-proposals-reader-user",
+        "optional": True,
+        "defaultMode": 0o400,
+        "items": [{"key": "password", "path": "password"}],
+    }
+    (container,) = [c for c in pod["containers"] if c["name"] == IMPORTER_WORKLOAD]
+    (mount,) = [m for m in container["volumeMounts"] if m["name"] == "mcp-proposals-reader"]
+    assert mount == {
+        "name": "mcp-proposals-reader",
+        "mountPath": "/etc/butlers/mcp-proposals-reader",
+        "readOnly": True,
+    }
+    assert "postgres-mcp-proposals-reader-user" not in yaml.safe_dump(container.get("env", []))

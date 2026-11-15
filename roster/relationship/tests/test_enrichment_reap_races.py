@@ -86,6 +86,12 @@ _EXCUSED: set[tuple[str, str]] = {
     ("google_accounts", "entity_id"),
     ("steam_accounts", "entity_id"),
     ("credentials", "entity_id"),
+    # An outside AI client's fact proposal (rel_043). Excused, not checked: a proposal must not
+    # keep an orphaned placeholder alive. The importer parks only live, unmerged entities, and an
+    # approved replay re-checks both ids and fails closed (apply_failed) on a reaped one; see
+    # test_public_mcp_proposal_import.py::test_a_reaped_entity_fails_the_approved_replay_closed.
+    ("external_fact_proposals", "subject_entity_id"),
+    ("external_fact_proposals", "object_entity_id"),
     # The retired contacts table that this test database still carries.
     ("contacts", "entity_id"),
 }
