@@ -201,8 +201,10 @@ Groundwork for that gate is in place, and still deletes nothing:
     inert until raw expiry writes tombstones.
   - A forgotten fix is dropped before trail classification: it feeds no point event, episode
     or hold, and gets no projection-coverage record, so coverage never calls it projected. The
-    batch continues; the run's warnings count the dropped fixes and name each by a short
-    `sha256:` digest of its `source_ref`, never the source or its coordinates.
+    batch continues. The run counts the dropped fixes in `rows_refused_forgotten`, never in
+    `rows_projected` or `point_events`, and warns with the count only: no source, key or
+    coordinate. The place-cluster adapter has no floor yet; it lands with raw expiry (S4),
+    before any tombstone is written.
 
 ## Implementation Notes
 

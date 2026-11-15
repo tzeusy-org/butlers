@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -35,7 +36,6 @@ from butlers.chronicler.adapters.owntracks import (  # noqa: E402
     OwnTracksPointAdapter,
 )
 from butlers.chronicler.adapters.owntracks_trail import haversine_meters
-from butlers.chronicler.location_forgetting import source_ref_digest
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
 from butlers.chronicler.projection_coverage import FlushSummary, ProjectionCoverage
 from butlers.testing.fake_pool import AsyncCtx
@@ -1545,8 +1545,21 @@ async def test_a_forgotten_source_is_never_projected_again() -> None:
     for row in rows:
         row.update(retention_at=row["ts"], content_digest=digest_for(row["id"]))
     tables = _Tables()
+    seen: dict[str, list[Any]] = {"observe": [], "record_event": [], "hold": []}
 
     class _Ledger(ProjectionCoverage):
+        def observe(self, row: Mapping[str, Any]) -> bool:
+            seen["observe"].append(row["id"])
+            return super().observe(row)
+
+        def record_event(self, row: Mapping[str, Any], event_id: Any) -> None:
+            seen["record_event"].append(row["id"])
+            super().record_event(row, event_id)
+
+        def hold(self, raw_source_id: Any, carry_key: str) -> None:
+            seen["hold"].append(raw_source_id)
+            super().hold(raw_source_id, carry_key)
+
         async def flush(self, conn: Any) -> FlushSummary:
             return await super().flush(tables)
 
@@ -1560,19 +1573,21 @@ async def test_a_forgotten_source_is_never_projected_again() -> None:
         result, events, episodes, _ = await _project_capturing(rows)
 
     assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2", "later"]
-    # The run's counters count only what it wrote.
+    # The run's counters count only what it wrote; the refusal has its own counter.
     assert (result.rows_projected, result.point_events) == (3, 3)
+    assert result.rows_refused_forgotten == 1
     assert episodes[0].payload["point_count"] == 2
     assert episodes[0].payload["path_m"] == round(_walk_path([0, 2]), 1)
 
     # Fail-closed: the refused row is neither covered nor held, so nothing claims it projected,
     # while the rest of the batch is covered as usual.
     refused_id = rows[1]["id"]
+    assert all(refused_id not in ids for ids in seen.values())
+    assert seen["record_event"] == [rows[0]["id"], rows[2]["id"], rows[3]["id"]]
     assert refused_id not in tables.coverage and refused_id not in tables.open
     assert {tables.coverage[r["id"]]["disposition"] for r in (rows[0], rows[2])} == {"projected"}
     assert rows[3]["id"] in tables.open
 
-    # Observable without the source or its coordinates.
+    # Observable as a count only: no source, key or coordinate.
     (warning,) = [w for w in result.warnings if "forgotten" in w]
-    assert source_ref_digest(forgotten) in warning
-    assert "walk-1" not in warning and "1.2355" not in warning
+    assert warning == "OwnTracks forgotten sources not projected again: 1."

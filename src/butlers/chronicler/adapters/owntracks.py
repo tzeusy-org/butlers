@@ -143,7 +143,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
-from butlers.chronicler.location_forgetting import owntracks_point_forgotten, source_ref_digest
+from butlers.chronicler.location_forgetting import owntracks_point_forgotten
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -791,23 +791,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         Whatever re-delivers a tombstoned source (a replayed webhook, a reset cursor, a wider
         horizon), it gets no point event, joins no movement or trail decision, and is not
         observed for coverage, so it is never recorded as projected: it stays uncovered,
-        fail-closed. Each refusal is reported by a digest of its ``source_ref``, never its
-        coordinates; the rest of the batch projects as usual.
+        fail-closed. Refusals are counted in ``rows_refused_forgotten`` and reported as a count
+        only, never a source, key or coordinate; the rest of the batch projects as usual.
         """
         kept: list[dict[str, Any]] = []
-        refused: list[str] = []
+        refused = 0
         for row in rows:
             source_ref = f"{_EVIDENCE_TABLE}:{row['idempotency_key']}"
             if await owntracks_point_forgotten(chronicler_pool, source_ref):
-                refused.append(source_ref_digest(source_ref))
+                refused += 1
             else:
                 kept.append(row)
         if refused:
-            result.warnings.append(
-                f"OwnTracks forgotten sources not projected again: {len(refused)} "
-                f"({', '.join(refused)})."
-            )
-            logger.info("OwnTracks resurrection floor refused %d forgotten sources", len(refused))
+            result.rows_refused_forgotten += refused
+            result.warnings.append(f"OwnTracks forgotten sources not projected again: {refused}.")
+            logger.info("OwnTracks resurrection floor refused %d forgotten sources", refused)
         return kept
 
     async def _project_point_event(
