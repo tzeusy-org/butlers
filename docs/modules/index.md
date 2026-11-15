@@ -11,6 +11,7 @@
 - [Calendar](calendar.md) — Google Calendar integration, event management
 - [Contacts](contacts.md) — contact sync, identity resolution
 - [Approvals](approvals.md) — human-in-the-loop approval gates
+- [Google Drive](google-drive.md) — Drive files, owner-private native Docs and Sheets
 - [Email](email.md) — IMAP/SMTP email integration
 - [Telegram](telegram.md) — Telegram bot and user client integration
 - [Pipeline](pipeline.md) — message processing pipeline

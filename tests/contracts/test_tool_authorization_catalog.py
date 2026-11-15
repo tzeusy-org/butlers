@@ -146,7 +146,18 @@ async def _complete_core_catalog(name):
 
 
 async def _provider_catalogs():
+    from butlers.core import goal_lineage
     from tests.contracts.test_tool_presentation_inventory import _CONFIG_OVERRIDES
+
+    previous = goal_lineage.enforcement_enabled()
+    goal_lineage.set_enforcement(True)  # the dark native Drive tools register only then
+    try:
+        await _provider_catalogs_inner(_CONFIG_OVERRIDES)
+    finally:
+        goal_lineage.set_enforcement(previous)
+
+
+async def _provider_catalogs_inner(_CONFIG_OVERRIDES):
 
     registry = default_registry()
     errors = []

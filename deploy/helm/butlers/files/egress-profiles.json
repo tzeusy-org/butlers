@@ -226,6 +226,10 @@
           "port": 443
         },
         {
+          "host": "sheets.googleapis.com",
+          "port": 443
+        },
+        {
           "host": "people.googleapis.com",
           "port": 443
         },

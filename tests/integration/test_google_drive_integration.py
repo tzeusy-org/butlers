@@ -13,11 +13,13 @@ from parallel feature branches.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -34,6 +36,7 @@ google_drive_connector = pytest.importorskip(
 )
 
 from butlers.connectors.google_drive import DriveAccountSource  # noqa: E402
+from butlers.core.goal_lineage import lineage_scope  # noqa: E402
 from butlers.modules.google_drive import GoogleDriveConfig, GoogleDriveModule  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -711,3 +714,402 @@ class TestDriveButlerFolderHierarchy:
         )
         # Folder creation POST must have been called (at least root + sub + file).
         assert mock_client.post.call_count >= 2
+
+
+# ---------------------------------------------------------------------------
+# Native Docs and Sheets (owner-private tools, RFC 0038 switch on)
+# ---------------------------------------------------------------------------
+
+_OWNER = "owner@example.test"
+_FOLDER = "folder-private"
+_DOC_MIME = "application/vnd.google-apps.document"
+_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+_OWN_GRANT = {"type": "user", "role": "owner", "emailAddress": _OWNER}
+
+
+class _FakeGoogle:
+    """A recording Drive + Sheets fake behind ``httpx.MockTransport``."""
+
+    def __init__(self) -> None:
+        self.requests: list[httpx.Request] = []
+        self.files: dict[str, dict] = {
+            _FOLDER: {
+                "id": _FOLDER,
+                "mimeType": _FOLDER_MIME,
+                "ownedByMe": True,
+                "permissions": [_OWN_GRANT],
+            }
+        }
+        self.sheets: dict[str, dict[str, list]] = {}
+        self.import_formats = {"text/markdown": [_DOC_MIME], "text/plain": [_DOC_MIME]}
+        self.sheet_write_status = 200
+        self.sheet_write_body: dict = {}
+        self._n = 0
+
+    def add(self, file_id: str, mime: str, **meta) -> None:
+        self.files[file_id] = {
+            "id": file_id,
+            "mimeType": mime,
+            "ownedByMe": True,
+            "permissions": [_OWN_GRANT],
+            "version": "7",
+            **meta,
+        }
+
+    @property
+    def writes(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method != "GET" and "/tokeninfo" not in r.url.path]
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        path, method = request.url.path, request.method
+        query = dict(request.url.params.multi_items())
+        if path == "/drive/v3/about":
+            if "importFormats" in query.get("fields", ""):
+                return httpx.Response(200, json={"importFormats": self.import_formats})
+            return httpx.Response(200, json={"user": {"emailAddress": _OWNER}})
+        if path.startswith("/upload/drive/v3/files"):
+            self._n += 1
+            file_id = path.rsplit("/", 1)[-1] if path.count("/") > 4 else f"new-doc-{self._n}"
+            return httpx.Response(
+                200, json={"id": file_id, "name": "T", "webViewLink": f"https://docs/{file_id}"}
+            )
+        if path == "/drive/v3/files" and method == "POST":
+            self._n += 1
+            return httpx.Response(
+                200, json={"id": f"new-sheet-{self._n}", "name": "S", "webViewLink": "https://s"}
+            )
+        if path.startswith("/drive/v3/files/"):
+            file_id = path.rsplit("/", 1)[-1]
+            if method == "PATCH":
+                return httpx.Response(200, json={"id": file_id})
+            meta = self.files.get(file_id)
+            return httpx.Response(200, json=meta) if meta else httpx.Response(404, json={})
+        if path.startswith("/v4/spreadsheets/"):
+            return self._sheets(request, path, query)
+        return httpx.Response(500, json={"error": f"unrouted {method} {path}"})
+
+    def _sheets(self, request: httpx.Request, path: str, query: dict) -> httpx.Response:
+        rest = path.removeprefix("/v4/spreadsheets/")
+        file_id = rest.split("/", 1)[0]
+        if request.method != "GET" and self.sheet_write_status != 200:
+            return httpx.Response(self.sheet_write_status, json=self.sheet_write_body)
+        if rest.endswith("values:batchGet"):
+            tabs = self.sheets.get(file_id, {})
+            return httpx.Response(
+                200,
+                json={"valueRanges": [{"range": f"{t}!A1", "values": v} for t, v in tabs.items()]},
+            )
+        if "/" not in rest:
+            tabs = self.sheets.get(file_id, {"Sheet1": []})
+            return httpx.Response(
+                200, json={"sheets": [{"properties": {"title": t}} for t in tabs]}
+            )
+        return httpx.Response(
+            200, json={"updates": {"updatedRange": "Sheet1!A2:B2", "updatedRows": 1}}
+        )
+
+
+class _FakeReceiptPool:
+    def __init__(self) -> None:
+        self.rows: dict = {}
+        self.inserts = 0
+
+    def acquire(self):
+        pool = self
+
+        class _Conn:
+            async def fetchrow(self, sql, effect_id):
+                row = pool.rows.get(effect_id)
+                return {"receipt": row} if row is not None else None
+
+            async def execute(self, sql, effect_id, tool, file_id, receipt):
+                pool.inserts += 1
+                pool.rows.setdefault(effect_id, receipt)
+
+        class _CM:
+            async def __aenter__(self):
+                return _Conn()
+
+            async def __aexit__(self, *exc):
+                return None
+
+        return _CM()
+
+
+class _Token:
+    async def get_token(self, **kwargs) -> str:
+        return "tok"
+
+
+def _native_module(fake: _FakeGoogle, *, pool=None):
+    from butlers.modules.google_drive import _DriveHTTPClient
+
+    module = GoogleDriveModule()
+    module._butler_name = "home"
+    http = httpx.AsyncClient(transport=httpx.MockTransport(fake.handler))
+    module._http_client = http
+    module._client = _DriveHTTPClient(
+        http, _Token(), SimpleNamespace(client_id="c", client_secret="s", refresh_token="r")
+    )
+    module._db = SimpleNamespace(pool=pool) if pool is not None else None
+    return module
+
+
+def _lineage(*, exposed: bool, effect: uuid.UUID | None = None):
+    from butlers.core.goal_lineage import VerifiedLineage
+
+    return VerifiedLineage(
+        goal_id=uuid.uuid4(),
+        invocation_id=uuid.uuid4(),
+        depth=0,
+        origin="owner",
+        exposed=exposed,
+        capability="drive_create_doc",
+        args_digest="x",
+        call_id=uuid.uuid4(),
+        effect_id=effect,
+    )
+
+
+def _upload_text(request: httpx.Request) -> str:
+    return request.content.decode()
+
+
+def _sent_values(request: httpx.Request):
+    return json.loads(request.content)["values"]
+
+
+class TestNativeDocsAndSheets:
+    async def test_create_doc_sends_native_mime_and_sanitised_markdown(self) -> None:
+        fake = _FakeGoogle()
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_create_doc(
+                "Plan", "# Hi\n![x](https://evil.test/p.png)\n<b>bold</b>", folder_id=_FOLDER
+            )
+        assert result["status"] == "ok" and result["mime_type"] == _DOC_MIME
+        (upload,) = fake.writes
+        text = _upload_text(upload)
+        assert '"mimeType": "application/vnd.google-apps.document"' in text
+        assert '"butlers_created_by": "home"' in text
+        assert "Content-Type: text/markdown" in text
+        assert "![" not in text and "[x](https://evil.test/p.png)" in text
+        assert "\\<b>bold\\</b>" in text
+
+    async def test_markdown_falls_back_to_text_when_not_importable(self) -> None:
+        fake = _FakeGoogle()
+        fake.import_formats = {"text/plain": [_DOC_MIME]}
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_create_doc("T", "body", folder_id=_FOLDER)
+        assert result["format_degraded"] == "markdown_imported_as_text"
+        assert "Content-Type: text/plain" in _upload_text(fake.writes[0])
+
+    async def test_sheet_tools_send_raw_values(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            created = await module._drive_create_sheet(
+                "S", [['=IMPORTXML("http://x")', 1]], folder_id=_FOLDER
+            )
+            appended = await module._drive_append_sheet_rows("sheet-1", [["a", "b"]])
+            updated = await module._drive_update_sheet_range(
+                "sheet-1", "Sheet1!A1:B1", [["c", "d"]]
+            )
+        assert created["status"] == appended["status"] == updated["status"] == "ok"
+        value_writes = [r for r in fake.writes if "/values/" in r.url.path]
+        assert len(value_writes) == 3
+        assert all(r.url.params["valueInputOption"] == "RAW" for r in value_writes)
+        assert _sent_values(value_writes[0]) == [['=IMPORTXML("http://x")', 1]]
+        assert value_writes[2].method == "PUT"
+
+    async def test_read_sheet_returns_every_tab(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        fake.sheets["sheet-1"] = {"One": [["a"]], "Two": [["b", "c"]]}
+        module = _native_module(fake)
+        result = await module._drive_read_sheet("sheet-1")
+        assert result["status"] == "ok"
+        assert [t["values"] for t in result["tabs"]] == [[["a"]], [["b", "c"]]]
+
+    @pytest.mark.parametrize(
+        "tool", ["create_doc", "create_sheet", "append", "update_range", "update_doc"]
+    )
+    @pytest.mark.parametrize(
+        "shared",
+        [
+            {
+                "permissions": [
+                    _OWN_GRANT,
+                    {"type": "user", "role": "reader", "emailAddress": "b@x"},
+                ]
+            },
+            {
+                "permissions": [
+                    _OWN_GRANT,
+                    {"type": "group", "role": "writer", "emailAddress": "g@x"},
+                ]
+            },
+            {"permissions": [_OWN_GRANT, {"type": "domain", "role": "reader", "domain": "x.test"}]},
+            {"permissions": [_OWN_GRANT, {"type": "anyone", "role": "reader"}]},
+            {"ownedByMe": False},
+            {"driveId": "drive-1"},
+        ],
+    )
+    async def test_shared_target_is_refused_and_nothing_is_written(self, tool, shared) -> None:
+        fake = _FakeGoogle()
+        fake.files[_FOLDER].update(shared)
+        fake.add("doc-1", _DOC_MIME, appProperties={"butlers_created_by": "home"}, **shared)
+        fake.add("sheet-1", _SHEET_MIME, **shared)
+        module = _native_module(fake)
+        calls = {
+            "create_doc": lambda: module._drive_create_doc("T", "b", folder_id=_FOLDER),
+            "create_sheet": lambda: module._drive_create_sheet("T", [["a"]], folder_id=_FOLDER),
+            "append": lambda: module._drive_append_sheet_rows("sheet-1", [["a"]]),
+            "update_range": lambda: module._drive_update_sheet_range("sheet-1", "A1", [["a"]]),
+            "update_doc": lambda: module._drive_update_doc("doc-1", "b"),
+        }
+        with lineage_scope(_lineage(exposed=False)):
+            result = await calls[tool]()
+        assert result["status"] == "target_shared"
+        assert "@" not in json.dumps(result["reach"])
+        assert fake.writes == []
+
+    async def test_deleted_grants_do_not_count_as_shared(self) -> None:
+        fake = _FakeGoogle()
+        fake.files[_FOLDER]["permissions"].append(
+            {"type": "anyone", "role": "reader", "deleted": True}
+        )
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            assert (await module._drive_create_doc("T", "b", folder_id=_FOLDER))["status"] == "ok"
+
+    @pytest.mark.parametrize(
+        ("exposed", "keeps_link"),
+        [(True, False), (None, False), (False, True)],
+    )
+    async def test_urls_inert_under_exposed_or_missing_lineage(self, exposed, keeps_link) -> None:
+        fake = _FakeGoogle()
+        module = _native_module(fake)
+        body = "see [site](https://example.test/a) or https://example.test/b"
+        if exposed is None:
+            result = await module._drive_create_doc("T", body, folder_id=_FOLDER)
+        else:
+            with lineage_scope(_lineage(exposed=exposed)):
+                result = await module._drive_create_doc("T", body, folder_id=_FOLDER)
+        assert result["status"] == "ok"
+        text = _upload_text(fake.writes[0])
+        assert ("https://example.test/a" in text) is keeps_link
+        assert ("https://example.test/b" in text) is keeps_link
+        if not keeps_link:
+            assert "https[:]//example[.]test/b" in text
+
+    async def test_sheet_cells_defang_urls_when_exposed(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        module = _native_module(fake)
+        await module._drive_append_sheet_rows("sheet-1", [["https://example.test/x"]])
+        (write,) = [r for r in fake.writes if "/values/" in r.url.path]
+        assert _sent_values(write) == [["https[:]//example[.]test/x"]]
+
+    async def test_update_doc_refuses_a_doc_without_the_butlers_mark(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("doc-1", _DOC_MIME)
+        fake.add("doc-2", _DOC_MIME, appProperties={"butlers_created_by": "health"})
+        module = _native_module(fake)
+        for file_id in ("doc-1", "doc-2"):
+            result = await module._drive_update_doc(file_id, "new")
+            assert result == {"status": "not_created_by_butlers"}
+        assert fake.writes == []
+
+    async def test_update_doc_keeps_the_file_in_place(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("doc-1", _DOC_MIME, appProperties={"butlers_created_by": "home"})
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_update_doc("doc-1", "# new")
+        assert result["status"] == "ok" and result["file_id"] == "doc-1"
+        assert result["pre_write_version"] == "7"
+        (write,) = fake.writes
+        assert write.method == "PATCH" and write.url.path.endswith("/files/doc-1")
+        assert write.headers["content-type"] == "text/markdown"
+
+    async def test_wrong_type_and_missing_file(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        module = _native_module(fake)
+        assert (await module._drive_update_doc("sheet-1", "x"))["status"] == "wrong_type"
+        assert (await module._drive_append_sheet_rows("doc-x", [["a"]]))["status"] == "not_found"
+        fake.add("doc-1", _DOC_MIME)
+        assert (await module._drive_append_sheet_rows("doc-1", [["a"]]))["status"] == "wrong_type"
+
+    async def test_replay_returns_the_first_receipt_and_sends_nothing(self) -> None:
+        fake = _FakeGoogle()
+        pool = _FakeReceiptPool()
+        module = _native_module(fake, pool=pool)
+        effect = uuid.uuid4()
+        with lineage_scope(_lineage(exposed=False, effect=effect)):
+            first = await module._drive_create_doc("T", "b", folder_id=_FOLDER)
+            sent = len(fake.requests)
+            second = await module._drive_create_doc("T", "b", folder_id=_FOLDER)
+        assert first["status"] == "ok" and pool.inserts == 1
+        assert second["file_id"] == first["file_id"] and second["replayed"] is True
+        assert len(fake.requests) == sent
+
+    async def test_unreadable_receipt_store_refuses_a_keyed_write(self) -> None:
+        fake = _FakeGoogle()
+        module = _native_module(fake)  # no pool
+        with lineage_scope(_lineage(exposed=False, effect=uuid.uuid4())):
+            result = await module._drive_create_doc("T", "b", folder_id=_FOLDER)
+        assert result["status"] == "error" and fake.requests == []
+
+    async def test_failed_value_write_trashes_the_new_sheet(self) -> None:
+        fake = _FakeGoogle()
+        fake.sheet_write_status = 500
+        module = _native_module(fake)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_create_sheet("S", [["a"]], folder_id=_FOLDER)
+        assert result["status"] == "error" and result["trashed"] is True
+        trash = [r for r in fake.writes if r.method == "PATCH"]
+        assert len(trash) == 1 and json.loads(trash[0].content) == {"trashed": True}
+
+    async def test_sheets_api_disabled_names_the_api_and_is_not_retried(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        fake.sheet_write_status = 403
+        fake.sheet_write_body = {"error": {"errors": [{"reason": "accessNotConfigured"}]}}
+        module = _native_module(fake)
+        result = await module._drive_append_sheet_rows("sheet-1", [["a"]])
+        assert "Google Sheets API" in result["error"]
+        assert len([r for r in fake.writes if "/values/" in r.url.path]) == 1
+
+    async def test_oversize_content_is_refused_without_calling_google(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        module = _native_module(fake)
+        assert (await module._drive_create_doc("T", "x" * 1_000_001, folder_id=_FOLDER))[
+            "status"
+        ] == "too_large"
+        big = [[0] * 1000 for _ in range(51)]
+        assert (await module._drive_append_sheet_rows("sheet-1", big))["status"] == "too_large"
+        assert fake.requests == []
+
+    async def test_post_write_hook_is_the_single_seam(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("sheet-1", _SHEET_MIME)
+        module = _native_module(fake)
+        seen = []
+
+        async def hook(tool, file_id, detail):
+            seen.append((tool, file_id))
+
+        module.set_post_write_hook(hook)
+        await module._drive_append_sheet_rows("sheet-1", [["a"]])
+        await module._drive_update_sheet_range("sheet-1", "A1", [["a"]])
+        assert seen == [
+            ("drive_append_sheet_rows", "sheet-1"),
+            ("drive_update_sheet_range", "sheet-1"),
+        ]

@@ -53,6 +53,7 @@ external = [
   "api.telegram.org:443",
   "oauth2.googleapis.com:443",
   "www.googleapis.com:443",
+  "sheets.googleapis.com:443",
   "people.googleapis.com:443",
   "gmail.googleapis.com:443",
   "api.spotify.com:443",

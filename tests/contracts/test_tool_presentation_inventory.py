@@ -35,7 +35,22 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 async def _module_registration_union() -> dict[str, str]:
-    """Execute every discovered registrar through an actual FastMCP registry."""
+    """Execute every discovered registrar through an actual FastMCP registry.
+
+    The RFC 0038 switch is on: the dark native Drive tools register only then, and the checked-in
+    inventory declares them.
+    """
+    from butlers.core import goal_lineage
+
+    previous = goal_lineage.enforcement_enabled()
+    goal_lineage.set_enforcement(True)
+    try:
+        return await _module_registration_union_inner()
+    finally:
+        goal_lineage.set_enforcement(previous)
+
+
+async def _module_registration_union_inner() -> dict[str, str]:
     registry = default_registry()
     owners: dict[str, str] = {}
     for module_name in registry.available_modules:
