@@ -170,9 +170,9 @@ Groundwork for that gate is in place, and still deletes nothing:
     success. An unavailable source is a failed attempt (`source_unavailable`).
   - A successful run also counts settled raw rows (arrived more than 1 hour and at most 7 days
     ago) that lack current coverage and are not held open, capped at 1000. The count is
-    reported, not yet re-projected.
-  - Not yet: rows the count finds are not re-projected, role readbacks for place and SSID, and
-    no deletion uses coverage yet.
+    reported only: those rows are not re-projected. They have no current record, so raw expiry
+    will never delete them; a window-scoped rebuild that drains them is a later follow-up.
+  - No deletion uses coverage yet.
 
 ## Implementation Notes
 

@@ -844,3 +844,90 @@ async def test_an_ssid_settings_change_voids_open_presence_carries(
     for raw_id in home:
         assert _no_old_revision_output(coverage.get(raw_id), old_episode)
     assert not set(home) & set(await _open(chronicler_db, SSID_SOURCE_NAME))
+
+
+# -- committed readbacks under the runtime role (PR-D) ----------------------------------------
+
+
+async def _runtime_pool(db, coverage_url: str) -> asyncpg.Pool:
+    """A pool whose every connection acts as the production Chronicler runtime role."""
+
+    async def _as_runtime_role(conn: asyncpg.Connection) -> None:
+        await conn.execute("SET ROLE butler_chronicler_rw")
+
+    return await db.open(coverage_url, schema="chronicler", init=_as_runtime_role, max_size=5)
+
+
+async def test_place_coverage_commits_under_the_runtime_role(
+    db, coverage_url: str, chronicler_db: asyncpg.Pool
+) -> None:
+    runtime = await _runtime_pool(db, coverage_url)
+    stay = [await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m)) for m in (0, 10, 25)]
+    await _run_place(runtime)
+    # Read back through a different pool and role: only committed state is visible.
+    assert set(stay) <= set(await _open(chronicler_db, PLACE_SOURCE_NAME))
+
+    for m in (30, 35):
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), lat=_FAR_LAT)
+    await _run_place(runtime)
+
+    coverage = await _coverage(chronicler_db, PLACE_SOURCE_NAME)
+    revision = OwnTracksPlaceClusterAdapter().coverage_revision
+    for raw_id in stay:
+        assert coverage[raw_id]["disposition"] == "projected"
+        assert coverage[raw_id]["config_revision"] == revision
+        assert coverage[raw_id]["content_digest"] == await _stored_digest(chronicler_db, raw_id)
+    assert not set(stay) & set(await _open(chronicler_db, PLACE_SOURCE_NAME))
+    attempt = await _attempt(chronicler_db, PLACE_SOURCE_NAME)
+    assert attempt["last_outcome"] == "succeeded" and attempt["config_revision"] == revision
+    assert attempt["uncovered_checked_at"] is not None
+
+
+async def test_ssid_coverage_commits_under_the_runtime_role(
+    db, coverage_url: str, chronicler_db: asyncpg.Pool
+) -> None:
+    runtime = await _runtime_pool(db, coverage_url)
+    home = [
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), ssid="home-wifi")
+        for m in (0, 10)
+    ]
+    await _run_ssid(runtime)
+    assert set(await _open(chronicler_db, SSID_SOURCE_NAME)) == set(home)
+
+    unmapped = await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=15), ssid="cafe-wifi")
+    await _run_ssid(runtime)
+
+    coverage = await _coverage(chronicler_db, SSID_SOURCE_NAME)
+    revision = OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES).coverage_revision
+    for raw_id in home:
+        assert coverage[raw_id]["disposition"] == "projected"
+        assert coverage[raw_id]["config_revision"] == revision
+    assert coverage[unmapped]["disposition"] == "evaluated_no_output"
+    assert await _open(chronicler_db, SSID_SOURCE_NAME) == {}
+    attempt = await _attempt(chronicler_db, SSID_SOURCE_NAME)
+    assert attempt["last_outcome"] == "succeeded" and attempt["config_revision"] == revision
+
+
+async def test_a_failed_ssid_run_records_its_attempt_under_the_runtime_role(
+    db, coverage_url: str, chronicler_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import butlers.chronicler.adapters.owntracks_ssid as ssid
+
+    runtime = await _runtime_pool(db, coverage_url)
+    for m in (0, 10):
+        await _insert_point(chronicler_db, ts=_T0 + timedelta(minutes=m), ssid="home-wifi")
+
+    async def _fail(*_args, **_kwargs):
+        raise RuntimeError("checkpoint write failed")
+
+    monkeypatch.setattr(ssid, "save_carryover", _fail)
+    result = await OwnTracksSsidPresenceAdapter(ssid_places=_SSID_PLACES).run(
+        pool=runtime, chronicler_pool=runtime
+    )
+
+    assert result.error == "checkpoint write failed"
+    # The failure path writes after the rollback, on its own connection, as the runtime role.
+    attempt = await _attempt(chronicler_db, SSID_SOURCE_NAME)
+    assert attempt["last_outcome"] == "failed"
+    assert attempt["last_error_class"] == "RuntimeError"
+    assert await _coverage(chronicler_db, SSID_SOURCE_NAME) == {}
