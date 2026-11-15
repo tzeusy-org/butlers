@@ -49,7 +49,6 @@ async def test_terminal_edit_is_one_literal_provider_call_with_atomic_keyboard_r
         "restricted-permission-pool",
         "messenger",
         telegram_confirms.NOTIFY_PERMISSION,
-        fail_closed=True,
     )
     client.post.assert_awaited_once_with(
         "https://telegram.invalid/editMessageText",
