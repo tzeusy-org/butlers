@@ -206,8 +206,9 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   statuses, not meetings (`calendar_provenance.STATUS_EVENT_TYPES`, matched case-sensitively):
   - General's calendar context producer: a typed `focusTime` event is `focused` whatever its
     title; a working-location event never asserts `meeting`; an active out-of-office event
-    (timed or all-day, not butler-generated) clears `meeting` and `focused`, even over an
-    attended meeting. It writes no signal of its own, and no owner mode is entered.
+    (timed or all-day, not butler-generated) suppresses `focused` and asserts nothing itself.
+    An attended meeting overlapping it still holds `meeting`: the owner's own meeting is the
+    stronger signal (people take calls while away). No owner mode is entered.
   - The conflict radar (overlap, back-to-back, overloaded-day hours) skips both, so they add
     no day-load hours. A `focusTime` block is still busy time.
   - Relationship and email meeting prep, the meeting card and the connector's starting-soon

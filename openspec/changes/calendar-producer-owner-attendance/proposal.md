@@ -12,8 +12,9 @@ slices (persisted `event_type`/working location, out-of-office as calendar
 context, typed focus, working-location signal, and day-load/prep exclusions)
 remain open on that bead.
 
-Out-of-office is calendar context only (bu-u33sb7): it clears `meeting` and
-`focused`, adds no day-load hours, is never a prep or starting-soon candidate,
+Out-of-office is calendar context only (bu-u33sb7): it suppresses `focused`,
+never asserts `meeting` or `focused` itself (an attended overlapping meeting
+keeps `meeting`), adds no day-load hours, is never a prep or starting-soon candidate,
 and neither enters an owner mode nor writes the legacy `away` signal (which
 maps to `owner.place`). bu-u33sb7 limits automatic mode entry to asleep, in
 flight and house unattended; an out-of-office block can reach an owner mode

@@ -33,8 +33,10 @@ attendee metadata SHALL keep the event eligible. Both the projected
 Typed Google status events are calendar context, not meetings (bu-u33sb7):
 an `outOfOffice` or `workingLocation` event SHALL never be a meeting or focus
 candidate. An active confirmed out-of-office event, timed or all-day and not
-butler-generated, SHALL clear the producer's `meeting` and `focused` signals
-even when a meeting overlaps it. It SHALL NOT write the legacy `away` signal
+butler-generated, SHALL suppress `focused` and SHALL NOT itself assert
+`meeting` or `focused`. An attended meeting overlapping it SHALL keep
+`meeting`, since the owner's own meeting is the stronger signal; with no such
+meeting the producer clears both. It SHALL NOT write the legacy `away` signal
 (which maps to `owner.place`) and SHALL NOT enter an owner mode; mode entry
 from an out-of-office block is reserved to an owner-confirmed proposal. A
 typed `focusTime` event SHALL assert `focused` regardless of its title.
@@ -94,11 +96,18 @@ Scope: v1-mandatory
   `tentative` or `needsAction`, or its attendee metadata is absent or malformed
 - **THEN** the event remains an eligible meeting candidate
 
-#### Scenario: Out-of-office clears context without asserting away
+#### Scenario: Out-of-office asserts nothing and suppresses focus
 
-- **WHEN** an active confirmed out-of-office event overlaps an attended meeting
+- **WHEN** an active confirmed out-of-office event overlaps only a focus block,
+  a declined meeting, or nothing
 - **THEN** the producer clears `meeting` and `focused`
 - **AND** it writes no `away` signal and enters no owner mode
+
+#### Scenario: An attended meeting keeps meeting during out-of-office
+
+- **WHEN** an active confirmed out-of-office event overlaps an attended meeting
+- **THEN** the producer publishes `meeting` from that meeting, with its end as
+  the expiry, and clears `focused`
 
 #### Scenario: Status events are never meeting candidates
 

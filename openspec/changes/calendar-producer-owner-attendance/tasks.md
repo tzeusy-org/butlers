@@ -6,7 +6,7 @@
 
 ## 2. Event-type consumers (bu-s11n0s.4 S2)
 
-- [x] 2.1 Out-of-office clears meeting/focused as calendar context only, with no `away` write or mode entry (bu-u33sb7)
+- [x] 2.1 Out-of-office is calendar context only: it suppresses focused, an attended meeting keeps meeting, and there is no `away` write or mode entry (bu-u33sb7)
 - [x] 2.2 Typed focusTime asserts focused; status events are never meeting candidates
 - [x] 2.3 Status events add no day-load hours or conflicts and are excluded from prep and meeting-card selectors
 - [x] 2.4 The Google connector never scans status events as starting soon

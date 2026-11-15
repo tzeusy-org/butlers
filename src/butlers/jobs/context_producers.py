@@ -151,8 +151,9 @@ async def run_calendar_context_producer(
 
     The provider's event type (core_341) refines this. A typed ``focusTime`` event is
     ``focused`` whatever its title. A ``workingLocation`` event is a status, never a meeting.
-    An active ``outOfOffice`` event (timed or all-day, not butler-generated) clears both
-    signals even over an attended meeting; it writes no signal of its own.
+    An active ``outOfOffice`` event (timed or all-day, not butler-generated) suppresses
+    ``focused`` and asserts nothing itself; an attended meeting overlapping it still holds
+    ``meeting``.
     """
     del job_args
     rows = await pool.fetch(
@@ -166,43 +167,39 @@ async def run_calendar_context_producer(
         ORDER BY starts_at DESC
         """
     )
-    if any(
+    out_of_office = any(
         candidate.get("event_type") == OUT_OF_OFFICE
         and not is_explicit_butler_generated(candidate["metadata"])
         for candidate in rows
-    ):
-        await clear_context(pool, "general", ContextSignal.meeting.value)
-        await clear_context(pool, "general", ContextSignal.focused.value)
-        return {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
-
-    row = next(
-        (
-            candidate
-            for candidate in rows
-            if not is_status_event(candidate.get("event_type"))
-            and is_calendar_analysis_candidate(
-                metadata=candidate["metadata"],
-                all_day=candidate["all_day"],
-                starts_at=candidate["starts_at"],
-                ends_at=candidate["ends_at"],
-                timezone=candidate["timezone"],
-            )
-            and counts_toward_owner_load(candidate["metadata"])
-        ),
-        None,
     )
+    # (row, signal) for every attended meeting/focus candidate, latest start first.
+    candidates = [
+        (candidate, _calendar_candidate_signal(candidate))
+        for candidate in rows
+        if not is_status_event(candidate.get("event_type"))
+        and is_calendar_analysis_candidate(
+            metadata=candidate["metadata"],
+            all_day=candidate["all_day"],
+            starts_at=candidate["starts_at"],
+            ends_at=candidate["ends_at"],
+            timezone=candidate["timezone"],
+        )
+        and counts_toward_owner_load(candidate["metadata"])
+    ]
+    if out_of_office:
+        # Out of office suppresses focus, but an attended meeting is the owner's own,
+        # stronger signal (people take calls while away), so it keeps `meeting`.
+        candidates = [pair for pair in candidates if pair[1] is ContextSignal.meeting]
+    chosen = candidates[0] if candidates else None
+    marker = {"out_of_office": True} if out_of_office else {}
 
-    if row is None:
+    if chosen is None:
         # No live event — retract any stale meeting/focused assertion.
         await clear_context(pool, "general", ContextSignal.meeting.value)
         await clear_context(pool, "general", ContextSignal.focused.value)
-        return {"signal": None, "cleared": ["meeting", "focused"]}
+        return {"signal": None, "cleared": ["meeting", "focused"], **marker}
 
-    signal = (
-        ContextSignal.focused
-        if row.get("event_type") == FOCUS_TIME
-        else classify_calendar_signal(row["title"])
-    )
+    row, signal = chosen
     other = ContextSignal.focused if signal is ContextSignal.meeting else ContextSignal.meeting
 
     await set_calendar_context(pool, signal.value, expires_at=row["ends_at"])
@@ -212,7 +209,14 @@ async def run_calendar_context_producer(
         "signal": signal.value,
         "value": "focused" if signal is ContextSignal.focused else "busy",
         "cleared": [other.value],
+        **marker,
     }
+
+
+def _calendar_candidate_signal(row: Any) -> ContextSignal:
+    if row.get("event_type") == FOCUS_TIME:
+        return ContextSignal.focused
+    return classify_calendar_signal(row["title"])
 
 
 # ---------------------------------------------------------------------------

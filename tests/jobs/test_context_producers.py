@@ -400,25 +400,92 @@ async def test_a_working_location_event_is_never_a_meeting():
     assert result["signal"] == "meeting"
 
 
-@pytest.mark.parametrize("all_day", [False, True])
-async def test_an_active_out_of_office_clears_meeting_and_focused(all_day: bool):
-    ooo = _active_calendar_row(
+def _ooo_row(*, all_day: bool = False) -> dict[str, object]:
+    return _active_calendar_row(
         title="Vacation",
         starts_at=_NOW - timedelta(hours=2),
         ends_at=_NOW + timedelta(days=2),
         all_day=all_day,
         event_type="outOfOffice",
     )
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_an_active_out_of_office_alone_clears_meeting_and_focused(all_day: bool):
+    result, set_context, clear_context = await _run_calendar([_ooo_row(all_day=all_day)])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
+    assert {call.args[2] for call in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_an_attended_meeting_keeps_meeting_during_out_of_office(all_day: bool):
+    # People take calls while out of office: the meeting the owner attends is the
+    # stronger, owner-authored signal, so out-of-office does not clear it.
     attended = _active_calendar_row(
         title="Standup",
         starts_at=_NOW - timedelta(minutes=5),
         ends_at=_NOW + timedelta(minutes=10),
         metadata=_self_attendee("response_status", "accepted"),
     )
-    result, set_context, clear_context = await _run_calendar([ooo, attended])
+    result, set_context, clear_context = await _run_calendar([_ooo_row(all_day=all_day), attended])
+    assert result == {
+        "signal": "meeting",
+        "value": "busy",
+        "cleared": ["focused"],
+        "out_of_office": True,
+    }
+    assert set_context.await_args.args[1] == "meeting"
+    assert set_context.await_args.kwargs["expires_at"] == attended["ends_at"]
+    assert [call.args[2] for call in clear_context.await_args_list] == ["focused"]
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        {"title": "Writing", "event_type": "focusTime"},
+        {"title": "Focus: deep work"},
+    ],
+    ids=["typed-focus-time", "focus-title"],
+)
+async def test_out_of_office_suppresses_focused(blocker: dict[str, str]):
+    focus = _active_calendar_row(
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        **blocker,
+    )
+    result, set_context, _ = await _run_calendar([focus, _ooo_row()])
     assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
     set_context.assert_not_awaited()
-    assert {call.args[2] for call in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_out_of_office_keeps_a_meeting_overlapped_by_a_later_focus_block():
+    focus = _active_calendar_row(
+        title="Writing",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        event_type="focusTime",
+    )
+    meeting = _active_calendar_row(
+        title="Client call",
+        starts_at=_NOW - timedelta(minutes=20),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, set_context, _ = await _run_calendar([focus, meeting, _ooo_row()])
+    assert result["signal"] == "meeting"
+    assert set_context.await_args.kwargs["expires_at"] == meeting["ends_at"]
+
+
+async def test_out_of_office_does_not_keep_a_declined_meeting():
+    declined = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+        metadata=_self_attendee("response_status", "declined"),
+    )
+    result, set_context, _ = await _run_calendar([_ooo_row(), declined])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
 
 
 async def test_a_generated_out_of_office_does_not_clear_a_meeting():
