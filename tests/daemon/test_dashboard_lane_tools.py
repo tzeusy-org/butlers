@@ -981,6 +981,7 @@ async def test_system_question_reads_registered_concierge_and_publishes_cited_an
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",
@@ -1005,7 +1006,12 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
     monkeypatch.setattr(
         system,
         "check_permission",
-        AsyncMock(return_value=PermissionStatus(allowed=failure != "denied")),
+        AsyncMock(
+            return_value=PermissionStatus(
+                allowed=failure not in {"denied", "permission_unreadable"},
+                unavailable=failure == "permission_unreadable",
+            )
+        ),
     )
     _, tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path), patches, mock_route=route
@@ -1044,6 +1050,7 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",

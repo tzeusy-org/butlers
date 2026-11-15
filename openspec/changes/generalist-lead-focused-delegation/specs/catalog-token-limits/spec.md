@@ -98,11 +98,16 @@ Scope: v1-mandatory
 - **AND** the failure is logged as a warning with the exception details
 - **AND** the refusal is not reported as an allowed quota result
 
-#### Scenario: Fail-closed on quota check error outside goals
-- **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.) for model use outside goals, such as connector discretion screening
+#### Scenario: Fail-closed on quota check error
+- **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.) for any caller, including model use outside goals such as connector discretion screening
 - **THEN** the function returns `QuotaStatus(allowed=False, unavailable=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)`
 - **AND** the failure is logged at ERROR with the exception details
-- **AND** that call is refused with a reason beginning `Token quota unavailable`
+- **AND** the spawner and the model-call kernel record a `quota_skip` attempt whose reason begins `Token quota unavailable`, not an exhausted-window message, and continue their same-tier candidate loop; when every candidate is refused the existing hard block applies
+
+#### Scenario: Fail-closed on monthly ceiling check error
+- **WHEN** `check_monthly_ceiling()` fails reading the ceiling or pricing the ledger
+- **THEN** it returns `CeilingStatus(allowed=False, unavailable=True, mtd_usd=0.0, ceiling_usd=None)` and logs at ERROR
+- **AND** the dispatch is refused with the reason `Monthly spend ceiling unavailable: ...`, which does not begin with the reached-ceiling prefix and raises no fleet-halt, so the Spend page banner keeps meaning a real breach
 
 ### Requirement: Post-Spawn Ledger Recording
 The system SHALL record token usage to the ledger whenever an adapter reports token consumption, regardless of whether the invocation completed successfully or failed. Tokens are consumed by the upstream API provider on invocation — a failed invocation still costs tokens and MUST count against the quota. For goal invocations the goal runner SHALL record this usage, metered from the runtime's usage stream, with the invocation's lineage; engineering executors outside goals keep their session-keyed recording.
