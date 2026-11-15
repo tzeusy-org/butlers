@@ -143,9 +143,6 @@ from butlers.chronicler.models import (
     Precision,
     Privacy,
 )
-from butlers.chronicler.projection_coverage import (
-    PRIORITY_CARRY_PREFIX as MOVEMENT_CARRY_PREFIX,
-)
 from butlers.chronicler.projection_coverage import ProjectionCoverage
 from butlers.chronicler.storage import (
     get_owntracks_carryover as get_carryover,
@@ -191,6 +188,7 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 INGEST_CURSOR_CARRYOVER_KEY = "_ingest_cursor"
 
 # Coverage carry keys (see "Projection coverage" in the module docstring).
+MOVEMENT_CARRY_PREFIX = "movement:"
 TRAIL_CARRY_PREFIX = "trail:"
 
 # Rows whose ``recorded_at`` is newer than ``now()`` minus this many seconds are
