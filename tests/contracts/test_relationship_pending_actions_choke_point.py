@@ -167,7 +167,11 @@ def test_every_atomic_park_producer_supplies_origin() -> None:
                 name = called.id if isinstance(called, ast.Name) else None
                 if isinstance(called, ast.Attribute):
                     name = called.attr
-                if name not in {"park_pending_action", "park_prepared_action"}:
+                if name not in {
+                    "park_pending_action",
+                    "park_prepared_action",
+                    "park_external_proposal",
+                }:
                     continue
                 if py_file.name == "approvals_hooks.py" and isinstance(called, ast.Attribute):
                     continue

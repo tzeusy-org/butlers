@@ -104,6 +104,10 @@ from butlers.modules.approvals.delivery_lifecycle import (
     transition_pending_action,
 )
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    is_external_proposal_action,
+)
 from butlers.modules.approvals.goal_fence import GOAL_EFFECT_REQUIRES_BROKER, is_goal_effect
 from butlers.modules.approvals.lineage_facts import lineage_facts
 from butlers.modules.approvals.models import (
@@ -3894,6 +3898,10 @@ async def approve_owning_action(
 
     result: dict[str, Any]
     async with target_pool.acquire() as conn:
+        if create_rule and await is_external_proposal_action(conn, parsed_id):
+            # Refused before any step-up is consumed or status changes: an outside
+            # proposal never becomes a standing rule (REQ-module-approvals-010).
+            raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_RULE_REFUSAL)
         if create_rule:
             parameters = dict(
                 action_id=action_id,

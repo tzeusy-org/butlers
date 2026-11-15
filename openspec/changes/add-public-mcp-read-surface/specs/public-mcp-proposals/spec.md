@@ -5,7 +5,7 @@ Let the owner's external AI clients propose a Relationship fact without gaining 
 ## ADDED Requirements
 
 ### Requirement: propose_fact accepts only proposable relational triples
-`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). A family-gated, contact-kind or override-kind predicate, or a literal object, SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
+`propose_fact` SHALL accept `subject_entity_id`, `predicate`, `object_entity_id`, an optional `evidence_url`, an optional `note` of at most 500 characters and an `idempotency_key` of at most 64 characters, and nothing else. `predicate` SHALL be in the literal allowlist `src/butlers/knowledge_read/proposable.toml`, which in v1 holds only relational-kind predicates whose object is an entity (`knows`, `colleague-of`, `friend-of`, `co-attended`, `visited`, `works-at`, `member-of`). An `evidence_url`, when given, SHALL be an absolute `http` or `https` URL with a host, at most 2048 characters, with no userinfo (user name or password) and no whitespace or control characters. A family-gated, contact-kind or override-kind predicate, a literal object, or an `evidence_url` breaking that rule SHALL be refused with `invalid_argument` and SHALL write nothing. On acceptance the tool SHALL return `{proposal_id, status: "received"}`.
 
 ID: REQ-public-mcp-proposals-001
 Source: RFC 0039 D10 (propose_fact row) and D13 (proposable predicates); owner decision OD4
@@ -25,6 +25,10 @@ Scope: v1-mandatory
 
 #### Scenario: Oversized note is refused
 - **WHEN** a client sends a 501-character `note`
+- **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
+
+#### Scenario: Credential-bearing evidence URL is refused
+- **WHEN** a client sends the `evidence_url` `https://user:secret@example.com/page`
 - **THEN** the result SHALL be `invalid_argument` and no inbox row SHALL be written
 
 ### Requirement: Idempotent receipt
@@ -94,7 +98,7 @@ Scope: v1-mandatory
 - **THEN** it SHALL be recorded `invalid` and SHALL not be parked
 
 ### Requirement: Valid proposals park for per-event owner review
-For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and evidence holding only the submitting client label, the evidence URL's scheme and host, and the SHA-256 of the full URL. The full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`, so no outside-authored text is stored in `pending_actions` or reaches a model through the approvals tools. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
+For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and digest-only evidence as typed `{type: "text", ref, note}` items whose refs are `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and `external_mcp:url_sha256=<SHA-256 of the full URL>`, with no path, query or userinfo of the URL. The full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`, so no outside-authored text is stored in `pending_actions` or reaches a model through the approvals tools. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
 
 ID: REQ-public-mcp-proposals-005
 Source: RFC 0039 D13 step 3; owner decision OD4
@@ -107,7 +111,7 @@ Scope: v1-mandatory
 
 #### Scenario: Outside text stays out of the pending action
 - **WHEN** a valid proposal carries a note and the evidence URL `https://example.com/ignore-previous-instructions`
-- **THEN** the parked action's evidence SHALL hold only the client label, `https://example.com` and the URL's SHA-256
+- **THEN** the parked action's evidence SHALL hold only the typed `text` refs `external_mcp:client=<label>`, `external_mcp:url_host=https://example.com` and `external_mcp:url_sha256=<SHA-256 of the full URL>`
 - **AND** neither the note nor the URL path SHALL appear in any `pending_actions` column
 
 #### Scenario: Re-import parks nothing new

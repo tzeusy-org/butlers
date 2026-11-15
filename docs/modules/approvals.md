@@ -178,6 +178,57 @@ reason and appends an immutable `action_abandoned` event in the same transaction
 There is no MCP, Telegram callback, automatic, bulk, or scheduled abandonment
 path.
 
+## External MCP fact proposals
+
+An outside MCP client may propose a Relationship fact (RFC 0039 D13). The
+model-free Relationship importer parks it through
+`park.park_external_proposal(connection, *, proposal_id, action_id, tool_args,
+client_label, evidence_url, origin_butler, requested_at=None)`, normally via the
+Relationship helper `tools/external_fact_proposals.park_external_fact_proposal`,
+which also records the fact's third-party provenance. The entry point
+(REQ-module-approvals-010):
+
+- parks `relationship_assert_fact` outside the gate wrapper, so no standing rule
+  is consulted and `approval_rule_id` stays NULL;
+- uses the shared durable admission protocol. With admission enabled it records
+  one standalone `collapsed` presentation, like `park_prepared_action`, so no
+  approval-request push or digest entry is ever sent, and the action does not
+  count toward the burst window. `origin` stays NULL; the origin CHECK is
+  unchanged;
+- keys the action `external_mcp:<proposal_id>` and parks a proposal at most once,
+  whatever the earlier action's status;
+- runs inside the caller's transaction when given a connection;
+- stores only template `why`/`agent_summary` text and digest-only evidence. The
+  evidence items are typed `text` references whose `ref` is
+  `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and
+  `external_mcp:url_sha256=<hex>`. The full URL and the note stay in
+  `relationship.external_fact_proposals`. The typed `{type, ref, note}` shape is
+  required because the dashboard dossier model and the Relationship evidence
+  ledger accept nothing else;
+- refuses stored arguments that carry `src`, `content_authority`, `observed_at`
+  or other server-recorded provenance, and arguments without their own
+  `approval_action_id`;
+- expires unanswered after 14 days (expiry is denial).
+
+The action then appears on the approvals list like any other. Approval,
+rejection, edit, expiry and execution use the existing transitions and the
+shared executor, with three exemptions keyed on the `external_mcp:` prefix
+(`external_proposals.is_external_proposal_key`) on every approve surface: the
+dashboard route, the module `approve_action` tool, `operations.approve_action`
+and the Telegram callback.
+
+- **No autonomy history.** `autonomy_tracker.counts_toward_promotion` returns
+  false, so the approval records no `autonomy_approval_history` row.
+- **No promotion.** For the same reason it neither counts toward nor creates a
+  promotion suggestion.
+- **No rule.** `create_rule=true` is refused before any step-up is consumed or
+  the status changes, and the action stays `pending`. The dashboard route answers
+  409. `create_rule_from_action` refuses an external proposal in the same way.
+
+Nothing approves such an action except the owner's own decision. Standing rules
+apply only at gate time, and autonomy policy only feeds suggestions
+(REQ-public-mcp-proposals-008).
+
 ## Risk Tiers
 
 Tools and actions are classified into risk tiers: `low`, `medium`, `high`, `critical`. Higher tiers (`high`, `critical`) require narrower constraints (at least one `exact` or `pattern`) and bounded scope (`expires_at` or `max_uses`) for standing rules.

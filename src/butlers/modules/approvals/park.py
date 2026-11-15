@@ -7,9 +7,10 @@ action, while the enabled path atomically commits the action, immutable
 delivery-intent root, RFC 0021 burst admission, and initial presentation/cohort
 records. Legacy emission rows remain read-only in both paths.
 
-Prepared insight actions retain their explicitly non-notifying behavior. When
-admission is enabled they use the same durable protocol with one standalone
-``collapsed`` presentation, which is terminal and can never reach a provider.
+Prepared insight actions and external MCP fact proposals retain explicitly
+non-notifying behavior. When admission is enabled they use the same durable
+protocol with one standalone ``collapsed`` presentation, which is terminal and
+can never reach a provider.
 """
 
 from __future__ import annotations
@@ -19,12 +20,20 @@ import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from butlers.core.approvals_policy import (
     approval_push_deliver_at,
     get_approvals_policy_quiet_hours,
+)
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_TOOL,
+    EXTERNAL_PROPOSAL_TTL,
+    external_proposal_evidence,
+    external_proposal_key,
+    external_proposal_texts,
+    validate_external_tool_args,
 )
 from butlers.modules.approvals.notifications import ApprovalPushRuntime
 from butlers.modules.approvals.rollout import read_approval_delivery_rollout
@@ -490,8 +499,10 @@ async def _admit(connection: Any, request: ParkRequest) -> ParkAdmission:
     )
 
 
-async def _admit_prepared(connection: Any, request: ParkRequest) -> ParkAdmission:
-    """Atomically represent one digest-only action without scheduling delivery."""
+async def _admit_prepared(
+    connection: Any, request: ParkRequest, *, origin: str | None = "prepared"
+) -> ParkAdmission:
+    """Atomically represent one never-pushed action without scheduling delivery."""
     await connection.execute(
         "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
     )
@@ -505,7 +516,7 @@ async def _admit_prepared(connection: Any, request: ParkRequest) -> ParkAdmissio
 
     database_now = await connection.fetchval("SELECT clock_timestamp()")
     owning_schema = await connection.fetchval("SELECT current_schema()")
-    await _insert_pending_action(connection, request, origin="prepared")
+    await _insert_pending_action(connection, request, origin=origin)
     intent_id = uuid.uuid4()
     action_key = f"approval:{owning_schema}:{request.action_id}"
     await connection.execute(
@@ -634,10 +645,78 @@ async def park_prepared_action(
             return await _park_without_delivery(connection, request, origin="prepared")
 
 
+async def park_external_proposal(
+    connection: Any,
+    *,
+    proposal_id: uuid.UUID,
+    action_id: uuid.UUID,
+    tool_args: dict[str, Any],
+    client_label: str,
+    evidence_url: str | None,
+    origin_butler: str,
+    requested_at: datetime | None = None,
+) -> ParkAdmission:
+    """Park one external MCP fact proposal: never pushed, never rule-matched.
+
+    RFC 0039 D13 step 3, REQ-module-approvals-010. The deterministic importer
+    calls this outside the gate wrapper, so no standing rule is consulted and
+    no ``approval_rule_id`` can be set. The action uses the shared durable
+    admission protocol: one standalone ``collapsed`` presentation when
+    admission is enabled (as ``park_prepared_action``), and no delivery intent
+    that can reach a provider. ``origin`` stays NULL.
+
+    *connection* may be a pool or a connection already inside the caller's
+    transaction; the park then commits or rolls back with the caller's work
+    (the importer writes the Relationship context and proposal state with it).
+    A second park of the same proposal, in any action status, returns the
+    existing action as a duplicate and writes nothing.
+    """
+    validate_external_tool_args(action_id, tool_args)
+    deduplication_key = external_proposal_key(proposal_id)
+    agent_summary, why = external_proposal_texts(tool_args)
+    evidence = external_proposal_evidence(client_label, evidence_url)
+    now = requested_at if requested_at is not None else datetime.now(UTC)
+    request = ParkRequest(
+        action_id=action_id,
+        tool_name=EXTERNAL_PROPOSAL_TOOL,
+        tool_args=tool_args,
+        agent_summary=agent_summary,
+        requested_at=now,
+        expires_at=now + EXTERNAL_PROPOSAL_TTL,
+        why=why,
+        evidence=evidence,
+        origin_butler=origin_butler,
+        deduplication_key=deduplication_key,
+    )
+    _validate_request(request)
+    async with _connection(connection) as conn:
+        async with conn.transaction():
+            rollout = await read_approval_delivery_rollout(conn, lock=True)
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext('approval-delivery:' || current_schema()))"
+            )
+            # The active-status unique index does not cover executed or expired
+            # rows; one proposal id must never park a second action at all.
+            prior = await conn.fetchval(
+                "SELECT id FROM pending_actions WHERE deduplication_key = $1 "
+                "ORDER BY requested_at, id LIMIT 1",
+                deduplication_key,
+            )
+            if prior is not None:
+                existing = await _existing_admission(conn, action_id=prior, deduplication_key=None)
+                if existing is None:
+                    raise RuntimeError("external proposal duplicate vanished under its lock")
+                return existing
+            if rollout.admission_enabled:
+                return await _admit_prepared(conn, request, origin=None)
+            return await _park_without_delivery(conn, request)
+
+
 __all__ = [
     "AdmissionMode",
     "ParkAdmission",
     "ParkRequest",
+    "park_external_proposal",
     "park_pending_action",
     "park_prepared_action",
 ]

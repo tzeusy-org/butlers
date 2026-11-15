@@ -161,6 +161,10 @@ async def binding_http(app, monkeypatch):
                 self._audit_depth -= 1
 
         async def fetchrow(self, sql, *args):
+            if sql.startswith("SELECT deduplication_key FROM pending_actions"):
+                # The create_rule refusal probe for external MCP proposals
+                # (REQ-module-approvals-010); this ordinary action is not one.
+                return {"deduplication_key": None}
             assert "FOR UPDATE" in sql
             state["events"].append("lock")
             return deepcopy(state["row"])

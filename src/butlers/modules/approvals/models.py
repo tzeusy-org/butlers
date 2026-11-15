@@ -137,6 +137,10 @@ class PendingAction:
     goal_origin: str | None = None
     goal_exposure_cause: str | None = None
     goal_rule_possible: bool | None = None
+    # Producer-chosen semantic key. ``external_mcp:<proposal_id>`` marks an
+    # outside proposal, which the approve paths exempt from autonomy history,
+    # promotion and rule creation (REQ-module-approvals-010). Read-side only.
+    deduplication_key: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-safe dictionary."""
@@ -228,6 +232,7 @@ class PendingAction:
             goal_origin=_get("goal_origin"),
             goal_exposure_cause=_get("goal_exposure_cause"),
             goal_rule_possible=_get("goal_rule_possible"),
+            deduplication_key=_get("deduplication_key"),
         )
 
 
