@@ -73,6 +73,20 @@ def _readable(db_url: str, role: str) -> set[str]:
     return {name for name, granted in _select_grants(db_url, role).items() if granted}
 
 
+def _create_later_switchboard_table(db_url: str, name: str) -> None:
+    """Stand in for a Switchboard table a later migration adds, as the migration user.
+
+    The probe is the subject under test (does a table created after the grant inherit a
+    read?), not a hand-built copy of a real schema table.
+    """
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as connection:
+            connection.execute(text(f'CREATE TABLE switchboard."{name}" (id int)'))
+    finally:
+        engine.dispose()
+
+
 async def _exercise_calendar_prep_readers(db_url: str) -> None:
     """Exercise real LOCAL projections, jobs and state through the narrowed runtime roles."""
     jobs = {
@@ -305,13 +319,7 @@ def test_existing_wide_grants_are_narrowed_and_future_tables_are_not_readable(
         assert {"message_inbox", "butler_secrets"} <= before, role
 
     command.upgrade(core, "core@head")
-
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("CREATE TABLE switchboard.future_goal_ledger (id int)"))
-    finally:
-        engine.dispose()
+    _create_later_switchboard_table(db_url, "future_goal_ledger")
 
     for role in _ROLES:
         grants = _select_grants(db_url, role)
@@ -357,12 +365,7 @@ def test_downgrade_restores_the_previous_grants_and_upgrade_repeats_cleanly(
     command.downgrade(core, _CORE_BEFORE)
     # Roll back only this narrowing revision; earlier core revisions remain installed, and
     # the managed migration identity owns this DDL.
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
-    try:
-        with engine.connect() as connection:
-            connection.execute(text("CREATE TABLE switchboard.rollback_read_probe (id int)"))
-    finally:
-        engine.dispose()
+    _create_later_switchboard_table(db_url, "rollback_read_probe")
     for role in _ROLES:
         assert "butler_secrets" in _readable(db_url, role), role
         assert _select_grants(db_url, role)["rollback_read_probe"] is True, role
@@ -413,10 +416,10 @@ def test_rerunning_the_bootstrap_after_head_does_not_rewiden_relationship_reads(
 
     assert _readable(db_url, "butler_relationship_rw") == {"message_inbox"}
     assert _relationship_switchboard_default_acl(db_url) is False
-    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    _create_later_switchboard_table(db_url, "later_table")
+    engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
-            connection.execute(text("CREATE TABLE switchboard.later_table (id int)"))
             for role in _ROLES:
                 assert (
                     connection.execute(
