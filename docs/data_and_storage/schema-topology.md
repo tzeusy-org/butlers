@@ -218,8 +218,10 @@ psql -h localhost -U butlers -d butlers -c \
   `switchboard.butler_secrets` or any table added later. A new cross-schema read needs its own named
   grant, in the chain that owns the table. In the core chain, which runs once per schema and can
   overlap, only the owning schema's run may rewrite its tables' ACLs: `core_077`, `core_143` and
-  `core_339` act only when `current_schema()` is `switchboard`, because the same rewrite from
-  another schema's run deadlocks against the owner's open transaction.
+  `core_339`'s narrowing act only when `current_schema()` is `switchboard`, because the same
+  rewrite from another schema's run deadlocks against the owner's open transaction. Every core
+  run then ends `core_339` with a narrow repair (`USAGE` plus the `message_inbox` grant), because
+  `core_001` in a schema whose chain first runs later revokes all cross-schema access.
 - DND mutation authority is bootstrap-only: `scripts/init-db.sql` owns the superuser
   installer/finalizer, and `core_197` may only validate that interface or call its no-argument
   installer. `public.user_context` and its guard, audit and policies belong to

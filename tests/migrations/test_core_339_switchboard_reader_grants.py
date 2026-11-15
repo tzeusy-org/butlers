@@ -437,14 +437,62 @@ def test_rerunning_the_bootstrap_after_head_does_not_rewiden_relationship_reads(
         assert _select_grants(db_url, role)["later_table"] is False, role
 
 
-def test_only_the_switchboard_core_run_rewrites_switchboard_acls(postgres_container) -> None:
-    """Another schema's core run never rewrites Switchboard ACLs, in either direction.
+def _switchboard_acl_rows(db_url: str) -> dict[str, str]:
+    """xmin of every Switchboard pg_class row except message_inbox, plus its default ACL rows.
+
+    A changed xmin means a run rewrote that catalog row and so would wait on any open
+    transaction that also wrote it.
+    """
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT 'class:' || c.relname, c.xmin::text "
+                    "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE n.nspname = 'switchboard' AND c.relname <> 'message_inbox' "
+                    "UNION ALL "
+                    "SELECT 'default:' || d.oid::text, d.xmin::text "
+                    "FROM pg_default_acl d JOIN pg_namespace n ON n.oid = d.defaclnamespace "
+                    "WHERE n.nspname = 'switchboard'"
+                )
+            )
+            return dict(rows.tuples())
+    finally:
+        engine.dispose()
+
+
+def _switchboard_usage(db_url: str, role: str) -> bool:
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            return bool(
+                connection.execute(
+                    text(
+                        "SELECT has_schema_privilege(CAST(:role AS name), 'switchboard', 'USAGE')"
+                    ),
+                    {"role": role},
+                ).scalar_one()
+            )
+    finally:
+        engine.dispose()
+
+
+def test_other_schema_core_runs_leave_switchboard_acls_and_repair_the_inbox_read(
+    postgres_container,
+) -> None:
+    """Only the Switchboard core run rewrites Switchboard ACLs; every run keeps the inbox read.
 
     Overlapping per-schema core runs deadlock when one rewrites another schema's table ACLs
-    (core_311's advisory lock against the Switchboard run's open transaction), so core_077,
-    core_143 and core_339 act only in the Switchboard schema's own run.
+    after core_311's advisory lock (against the Switchboard run's open transaction), so
+    core_077, core_143 and core_339's narrowing act only in the Switchboard schema's own run.
+    A schema whose core chain first runs after Switchboard's starts with core_001, which revokes
+    the three roles' Switchboard access; core_339's ungated repair restores USAGE and the
+    message_inbox read, and nothing wider.
     """
     db_url = create_migration_db(postgres_container, migration_db_name())
+    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    command.upgrade(general, _CORE_BEFORE)
     core, chain = _configs(db_url)
     command.upgrade(core, _CORE_BEFORE)
     command.upgrade(chain, _SWITCHBOARD_BEFORE)
@@ -452,9 +500,10 @@ def test_only_the_switchboard_core_run_rewrites_switchboard_acls(postgres_contai
     for role in _ROLES:
         assert {"message_inbox", "butler_secrets"} <= wide[role], role
 
-    # A whole core chain for another schema, core_077 and core_143 included, changes nothing.
-    general = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    # Another schema's run through core_339 writes no Switchboard catalog row but the inbox's.
+    before = _switchboard_acl_rows(db_url)
     command.upgrade(general, "core@head")
+    assert _switchboard_acl_rows(db_url) == before
     assert {role: _readable(db_url, role) for role in _ROLES} == wide
     assert _relationship_switchboard_default_acl(db_url) is True
 
@@ -463,9 +512,11 @@ def test_only_the_switchboard_core_run_rewrites_switchboard_acls(postgres_contai
         assert _readable(db_url, role) == {"message_inbox"}, role
     assert _relationship_switchboard_default_acl(db_url) is False
 
-    # A schema whose core chain first runs afterwards cannot re-widen the read.
-    health = _build_alembic_config(db_url, chains=["core"], target_schema="health")
-    command.upgrade(health, "core@head")
+    # A schema whose core chain first runs afterwards (travel sorts after switchboard): core_001
+    # revokes, the repair restores exactly USAGE and the inbox read.
+    travel = _build_alembic_config(db_url, chains=["core"], target_schema="travel")
+    command.upgrade(travel, "core@head")
     for role in _ROLES:
+        assert _switchboard_usage(db_url, role) is True, role
         assert _readable(db_url, role) == {"message_inbox"}, role
     assert _relationship_switchboard_default_acl(db_url) is False

@@ -150,8 +150,9 @@ async def authority_pools(authority_db_url):
                         "messenger": "approval_delivery_handoffs",
                     }[peer]
                     if inbox_reader:
-                        # core_077/core_143 retain USAGE; core_339/sw_079 grant
-                        # only the inbox needed by deterministic follow-up jobs.
+                        # messenger's core_001 revokes Switchboard access after the
+                        # Switchboard run; core_339's repair restores USAGE and only
+                        # the inbox needed by deterministic follow-up jobs.
                         # This read is under the actual owning runtime role.
                         assert (
                             await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox")
