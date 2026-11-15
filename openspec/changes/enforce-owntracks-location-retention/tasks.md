@@ -12,8 +12,15 @@
   backfilled).
 - [ ] 2.2 Per-row projection coverage committed with projection output. Partial:
   `chronicler_032` coverage and open-carry tables plus `butlers.chronicler.projection_coverage`;
-  `owntracks.points` writes coverage in its projection savepoint. Remaining:
-  `owntracks.place_cluster` and `owntracks.ssid_presence` adopt the same ledger.
+  `owntracks.points` writes coverage in its projection savepoint; `chronicler_033` multi-key
+  open carries; `owntracks.place_cluster` and `owntracks.ssid_presence` adopt the same ledger
+  (`evaluated_no_output` for rows they deliberately emit nothing for); `chronicler_034` content
+  digest and config revision (SSID mapping included) on each record, with revision-keyed
+  invalidation, voiding of every adapter's held carries when the revision saved beside them is
+  not the current one (an SSID mapping change also replays), a per-adapter attempt record, and
+  a bounded anti-join count of settled uncovered rows. Owner episode corrections deliberately
+  do not invalidate coverage. Remaining: re-projecting the rows discovery finds, and role
+  readbacks for place and SSID.
 - [ ] 2.3 Prepared grant, then a connector-owned raw delete with a committed receipt. Lag and failure conditions.
 
 ## 3. Summaries and UI (later slices)

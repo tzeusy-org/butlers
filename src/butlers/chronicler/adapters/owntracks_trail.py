@@ -62,6 +62,13 @@ MIN_JUMP_METERS = 1000.0
 # glitches cannot flip the trail.
 REANCHOR_RUN = 3
 
+# The trail policy as projection-coverage config: changing it changes which fixes are rejected.
+TRAIL_POLICY_SETTINGS = {
+    "max_plausible_speed_kmh": MAX_PLAUSIBLE_SPEED_KMH,
+    "min_jump_meters": MIN_JUMP_METERS,
+    "reanchor_run": REANCHOR_RUN,
+}
+
 OUTLIER_PAYLOAD_KEY = "trail_outlier"
 OUTLIER_REASON_IMPLIED_SPEED = "implied_speed"
 TRAIL_ANCHORS_CARRYOVER_KEY = "_trail_anchors"

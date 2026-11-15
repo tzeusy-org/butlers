@@ -137,12 +137,42 @@ Groundwork for that gate is in place, and still deletes nothing:
   timestamp, or the server receipt time when the device timestamp is more than 4 hours after
   receipt. A trigger sets it on insert, whatever the writer sends, and refuses any later change
   to `ts`, `recorded_at` or `retention_at`.
-- `owntracks.points` records, in the same transaction as its outputs and cursor, which raw rows
-  it has finished projecting (`chronicler.location_projection_coverage`, chronicler_032) and which
-  are still held by an open carry: its open movement segment or a pending trail-consensus row
-  (`chronicler.location_projection_open_members`). A later expiry may delete a row only when it
-  has coverage from every adapter and no adapter holds it open. The place and SSID adapters do
-  not write coverage yet, so no raw row is fully covered.
+- All three OwnTracks adapters record, in the same transaction as their outputs and checkpoint,
+  which raw rows they have finished with (`chronicler.location_projection_coverage`,
+  chronicler_032) and which are still held by an open carry
+  (`chronicler.location_projection_open_members`; a row may sit in several carries, so each
+  open member stores a set of carry keys, chronicler_033). A later expiry may delete a row only
+  when it has coverage from every adapter and no adapter holds it open.
+  - `owntracks.points` covers a row with its point event (and movement episode); it holds the
+    open movement segment and pending trail-consensus rows.
+  - `owntracks.place_cluster` holds the open stay, its held departure fix, the open away trip
+    and its trail seed and pending rows. A closed stay or trip covers its members with the
+    episode; a fix it decided to emit nothing for (a stay or trip below the minimum, a rejected
+    fix) is recorded as `evaluated_no_output`.
+  - `owntracks.ssid_presence` holds the open presence span or singleton; an unmapped or missing
+    network, or a singleton that never grew, is `evaluated_no_output`.
+  - Each record names exactly what it decided (chronicler_034): the raw row's content digest
+    (`v1:` sha256 over its identity, timestamps, coordinates, accuracy, trigger, event and
+    payload, computed in SQL) and the adapter's config revision (`v1:` sha256 over the settings
+    that change its decisions; for SSID presence this includes the owner's mapping, for place
+    clustering only the homes). A record is current only when both match; records from before
+    chronicler_034 read `legacy` and are never current. A changed setting or rewritten row needs a
+    new record; nothing is updated or deleted.
+  - Each adapter saves its config revision in carryover beside its open carries. A run under a
+    different revision (or with none saved) voids those carries and the outputs their members
+    gained: a held row read again is decided afresh, and one not read again is released without
+    coverage, left for discovery. So an away trip open when the owner moves home never closes
+    into a current-revision record. An SSID mapping change also replays from the start.
+  - Owner episode corrections do not invalidate coverage: they edit the output, not the
+    decision about the raw row.
+  - Each adapter run upserts one attempt row (`chronicler.location_projection_attempts`): the
+    outcome, the exception class (never its message), consecutive failures, and the last
+    success. An unavailable source is a failed attempt (`source_unavailable`).
+  - A successful run also counts settled raw rows (arrived more than 1 hour and at most 7 days
+    ago) that lack current coverage and are not held open, capped at 1000. The count is
+    reported, not yet re-projected.
+  - Not yet: rows the count finds are not re-projected, role readbacks for place and SSID, and
+    no deletion uses coverage yet.
 
 ## Implementation Notes
 

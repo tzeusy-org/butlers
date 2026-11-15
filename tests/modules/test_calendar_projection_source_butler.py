@@ -52,8 +52,9 @@ class TestCalendarProjectionSourceButler:
         )
 
         sql_args = pool.fetchrow.await_args.args
-        # source_butler is the second-to-last positional argument (followed by source_session_id).
-        assert sql_args[-2] == "travel"
+        # source_butler is $17 (followed by source_session_id, event_type and the working
+        # location's type and label).
+        assert sql_args[17] == "travel"
 
     async def test_insert_reminder_uses_db_schema_when_module_butler_name_missing(self) -> None:
         source_id = uuid.uuid4()

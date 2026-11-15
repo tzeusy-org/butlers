@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .constants import BUTLER_GENERATED_PRIVATE_KEY, BUTLER_NAME_PRIVATE_KEY
 from .models import (
+    DEFAULT_EVENT_TYPE,
     AttendeeInfo,
     AttendeeResponseStatus,
     CalendarEvent,
@@ -17,6 +18,11 @@ from .models import (
     EventVisibility,
     _is_date_only,
 )
+
+EVENT_TYPE_MAX_LENGTH = 64
+WORKING_LOCATION_EVENT_TYPE = "workingLocation"
+WORKING_LOCATION_LABEL_MAX_LENGTH = 256
+HOME_OFFICE_LABEL = "home office"
 
 
 def _google_rfc3339(value: datetime) -> str:
@@ -214,6 +220,54 @@ def _parse_google_event_transparency(value: Any) -> str | None:
     return normalized if normalized in ("opaque", "transparent") else None
 
 
+def _parse_google_event_type(value: Any) -> str:
+    """Google resource ``eventType``, kept verbatim, or ``default`` when unusable.
+
+    Recognized types are case-sensitive and preserved exactly; a future type survives as
+    observed (bounded). A missing, non-string, blank, overlong or control-character value is
+    ``default``: no type is inferred.
+    """
+    if not isinstance(value, str):
+        return DEFAULT_EVENT_TYPE
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > EVENT_TYPE_MAX_LENGTH
+        or any(not character.isprintable() for character in normalized)
+    ):
+        return DEFAULT_EVENT_TYPE
+    return normalized
+
+
+def _clean_location_label(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = "".join(character for character in value if character.isprintable()).strip()
+    return cleaned[:WORKING_LOCATION_LABEL_MAX_LENGTH].strip() or None
+
+
+def _parse_google_working_location(event_type: str, value: Any) -> dict[str, str] | None:
+    """Normalize ``workingLocationProperties`` of a ``workingLocation`` event, else None.
+
+    Only the branch named by ``type`` counts, and only its own label: ``homeOffice`` (present)
+    is the fixed label ``home office``; ``officeLocation`` and ``customLocation`` need a
+    non-empty ``label``. Building, floor and desk ids, the summary, ``location`` and
+    geolocation are never substituted.
+    """
+    if event_type != WORKING_LOCATION_EVENT_TYPE or not isinstance(value, dict):
+        return None
+    location_type = value.get("type")
+    branch = value.get(location_type) if isinstance(location_type, str) else None
+    if not isinstance(branch, dict):
+        return None
+    if location_type == "homeOffice":
+        return {"type": "homeOffice", "label": HOME_OFFICE_LABEL}
+    if location_type in ("officeLocation", "customLocation"):
+        label = _clean_location_label(branch.get("label"))
+        return {"type": location_type, "label": label} if label is not None else None
+    return None
+
+
 def _extract_google_organizer(payload: Any) -> str | None:
     """Extract the organizer email from a Google Calendar event payload."""
     if not isinstance(payload, dict):
@@ -280,6 +334,10 @@ def _google_event_to_calendar_event(
     visibility = _parse_google_event_visibility(payload.get("visibility"))
     organizer = _extract_google_organizer(payload.get("organizer"))
     transparency = _parse_google_event_transparency(payload.get("transparency"))
+    event_type = _parse_google_event_type(payload.get("eventType"))
+    working_location = _parse_google_working_location(
+        event_type, payload.get("workingLocationProperties")
+    )
     etag = _normalize_optional_text(payload.get("etag"))
     created_at = _parse_google_rfc3339_optional(payload.get("created"))
     updated_at = _parse_google_rfc3339_optional(payload.get("updated"))
@@ -304,6 +362,8 @@ def _google_event_to_calendar_event(
         organizer=organizer,
         visibility=visibility,
         transparency=transparency,
+        event_type=event_type,
+        working_location=working_location,
         etag=etag,
         created_at=created_at,
         updated_at=updated_at,

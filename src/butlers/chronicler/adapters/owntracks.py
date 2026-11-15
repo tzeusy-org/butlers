@@ -75,7 +75,11 @@ Projection coverage (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``):
 - Each run records, in its projection savepoint, which raw rows it has finished
   with (``chronicler.location_projection_coverage``) and which are still held by
   an open carry (``chronicler.location_projection_open_members``). It reads the
-  row's immutable ``retention_at`` (core_340) and copies it as read.
+  row's immutable ``retention_at`` (core_340) and its content digest, and copies
+  both as read; records carry the adapter's config revision (``coverage_revision``:
+  movement gap, minimum points, clock-skew threshold, trail policy). The carryover
+  keeps the revision its carries were held under; after a change those carries are
+  void, so their members are covered only if a later run reads them again.
 - A row is **held** (open, never covered) while it is the endpoint's trail
   bootstrap seed or a pending trail candidate (carry ``trail:<endpoint>``: the
   next run re-reads it and may still revise it), or while it belongs to the
@@ -94,8 +98,10 @@ Projection coverage (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``):
   with no point event (tombstoned projection, or a missing projection that
   ``existing_only`` will not recreate), a row without ``retention_at``, or a
   row the settle window has not let the adapter read. Coverage is written once
-  (first terminal record wins); a later re-read that re-absorbs a covered row
-  into a carry lists it as open again without weakening the record.
+  per revision and digest (first terminal record wins); a later re-read that
+  re-absorbs a covered row into a carry lists it as open again without
+  weakening the record. Each run's attempt record holds the count of settled
+  rows still uncovered (``projection_coverage.discover_uncovered``).
 - An open segment is closed only by a later fix, never by elapsed time: a late
   offline fix can still extend it. The final segment before tracking stops
   therefore stays held.
@@ -122,6 +128,7 @@ from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.owntracks_trail import (
     OUTLIER_PAYLOAD_KEY,
     TRAIL_ANCHORS_CARRYOVER_KEY,
+    TRAIL_POLICY_SETTINGS,
     TRAIL_STATE_CARRYOVER_KEY,
     TrailOutlier,
     classify_trail,
@@ -144,9 +151,11 @@ from butlers.chronicler.models import (
     Privacy,
 )
 from butlers.chronicler.projection_coverage import (
-    PRIORITY_CARRY_PREFIX as MOVEMENT_CARRY_PREFIX,
+    COVERAGE_REVISION_CARRYOVER_KEY,
+    ProjectionCoverage,
+    config_revision,
+    raw_row_digest_sql,
 )
-from butlers.chronicler.projection_coverage import ProjectionCoverage
 from butlers.chronicler.storage import (
     get_owntracks_carryover as get_carryover,
 )
@@ -191,6 +200,7 @@ CLOCK_SKEW_THRESHOLD_HOURS = 4
 INGEST_CURSOR_CARRYOVER_KEY = "_ingest_cursor"
 
 # Coverage carry keys (see "Projection coverage" in the module docstring).
+MOVEMENT_CARRY_PREFIX = "movement:"
 TRAIL_CARRY_PREFIX = "trail:"
 
 # Rows whose ``recorded_at`` is newer than ``now()`` minus this many seconds are
@@ -258,6 +268,16 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 f"clock_skew_threshold_hours must be non-negative, got {clock_skew_threshold_hours}"
             )
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
+        # Everything that decides this adapter's outputs; a change makes coverage stale.
+        self.coverage_revision = config_revision(
+            SOURCE_NAME,
+            {
+                "movement_gap_minutes": movement_gap_minutes,
+                "min_movement_points": MIN_MOVEMENT_POINTS,
+                "clock_skew_threshold_hours": clock_skew_threshold_hours,
+                "trail": TRAIL_POLICY_SETTINGS,
+            },
+        )
 
     async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
         # Optional owner lookup keeps its original pool/error isolation.
@@ -274,7 +294,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             )
 
         return await run_owntracks_projection(
-            chronicler_pool, self.source_name, project, self._llm_probe
+            chronicler_pool,
+            self.source_name,
+            project,
+            self._llm_probe,
+            coverage_revision=self.coverage_revision,
         )
 
     async def project(
@@ -399,7 +423,13 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 changes=changes,
                 rejected_seeds=rejected_seeds,
             )
-            coverage = ProjectionCoverage(self.source_name)
+            coverage = ProjectionCoverage(self.source_name, config_revision=self.coverage_revision)
+            # A carry opened under other settings never closes into a current-revision record.
+            coverage.void_carries_from_other_revisions(
+                prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY),
+                MOVEMENT_CARRY_PREFIX,
+                TRAIL_CARRY_PREFIX,
+            )
             for normalized_row in valid_rows:
                 coverage.observe(normalized_row)
             # Trail consensus is recomputed in full: a bootstrap seed or pending candidate
@@ -470,6 +500,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
+            new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
             # Same connection and savepoint as the outputs and the cursor written below.
             async with owntracks_connection(chronicler_pool) as conn:
                 await coverage.flush(conn)
@@ -571,8 +602,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "endpoint_identity": endpoint_identity.strip(),
             "raw_payload": row["raw_payload"],
             "recorded_at": row["recorded_at"],
-            # The immutable retention clock (core_340), carried only into coverage.
+            # The immutable retention clock (core_340) and the row's content digest as read,
+            # carried only into coverage.
             "retention_at": row.get("retention_at"),
+            "content_digest": row.get("content_digest"),
         }
         return normalized, warnings
 
@@ -614,7 +647,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         """
         columns = (
             "id, idempotency_key, ts, lat, lon, accuracy, trigger, event, "
-            "endpoint_identity, raw_payload, recorded_at, retention_at"
+            "endpoint_identity, raw_payload, recorded_at, retention_at, "
+            f"{raw_row_digest_sql()} AS content_digest"
         )
         settled = "recorded_at <= now() - make_interval(secs => $1)"
         try:
