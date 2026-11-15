@@ -26,17 +26,18 @@ from butlers.capability_host import (
     default_tools,
 )
 from butlers.mcp_public.app import McpApp, MetricsApp
-from butlers.mcp_public.catalogue import STATIC_HANDLERS, catalogue, propose_fact_pending
+from butlers.mcp_public.catalogue import STATIC_HANDLERS, catalogue
+from butlers.mcp_public.proposals import propose_fact
 
 logger = logging.getLogger(__name__)
 BIND = "0.0.0.0"  # the pod's NetworkPolicies decide who reaches either port (D8)
 
 
 def served_tools() -> dict[str, Tool]:
-    """The host's readers plus ``propose_fact``, which refuses ``domain_disabled`` until .8."""
+    """The host's readers plus ``propose_fact``, the one tool with its own write transaction."""
     return {
         **default_tools(),
-        "propose_fact": Tool("propose_fact", "proposals", propose_fact_pending, dlp=False),
+        "propose_fact": Tool("propose_fact", "proposals", propose_fact, dlp=False, writes=True),
     }
 
 
