@@ -3,8 +3,8 @@
 Applies the real upgrade at chronicler_034 and checks, against Postgres: the runtime role may
 only read and append, both tables refuse UPDATE and DELETE, a tombstone names an OwnTracks
 source once and never without its receipt, the writer records a re-run without doubling its
-count, the projection's resurrection floor sees a tombstone, a re-run of the revision keeps
-the records and the guard, and the downgrade drops both tables.
+count, the projection's resurrection floor sees a tombstone, a re-run of the revision only
+reads the catalog, and the downgrade drops both tables and the guard.
 
 Issue: bu-s11n0s.7 (slice 3)
 """
@@ -53,6 +53,24 @@ _COUNTS = (
     "SELECT (SELECT count(*) FROM chronicler.location_forgetting_receipts), "
     "(SELECT count(*) FROM chronicler.location_evidence_tombstones)"
 )
+# Every catalog row the revision writes: tables (including their ACLs), constraints, triggers
+# and the guard function. A catalog-read-only re-run leaves each row's xmin unchanged.
+_CATALOG = """
+SELECT
+    (SELECT array_agg(relname || ':' || xmin::text ORDER BY relname) FROM pg_class
+     WHERE relnamespace = 'chronicler'::regnamespace
+       AND relname LIKE 'location_%' AND relname IN (
+           'location_forgetting_receipts', 'location_evidence_tombstones',
+           'location_evidence_tombstones_receipt_idx')),
+    (SELECT array_agg(conname || ':' || xmin::text ORDER BY conname) FROM pg_constraint
+     WHERE conrelid IN ('chronicler.location_forgetting_receipts'::regclass,
+                        'chronicler.location_evidence_tombstones'::regclass)),
+    (SELECT array_agg(tgname || ':' || xmin::text ORDER BY tgname) FROM pg_trigger
+     WHERE tgrelid IN ('chronicler.location_forgetting_receipts'::regclass,
+                       'chronicler.location_evidence_tombstones'::regclass)),
+    (SELECT xmin::text FROM pg_proc
+     WHERE oid = 'chronicler.location_forgetting_append_only()'::regprocedure)
+"""
 
 
 def _config(db_url: str):
@@ -163,15 +181,20 @@ def test_the_writer_and_floor_under_the_runtime_role(chronicler_035_db) -> None:
     assert asyncio.run(scenario()) == (1, 0, True, False)
 
 
-def test_a_rerun_keeps_the_records_and_the_downgrade_drops_both_tables(chronicler_035_db) -> None:
+def test_a_rerun_only_reads_the_catalog_and_the_downgrade_drops_everything(
+    chronicler_035_db,
+) -> None:
     db_url, engine = chronicler_035_db
     receipt = uuid4()
     with engine.begin() as conn:
         conn.execute(text(_INSERT_RECEIPT), {"id": receipt, "cutoff": _CUTOFF})
         conn.execute(text(_INSERT_TOMBSTONE), {"event": uuid4(), "ref": _REF, "receipt": receipt})
+    with engine.connect() as conn:
+        installed = tuple(conn.execute(text(_CATALOG)).one())
     command.stamp(_config(db_url), "chronicler_034")
     command.upgrade(_config(db_url), "chronicler@chronicler_035")
     with engine.connect() as conn:
+        assert tuple(conn.execute(text(_CATALOG)).one()) == installed, "re-run wrote the catalog"
         assert conn.execute(text(_COUNTS)).one() == (1, 1)
     with pytest.raises(DBAPIError, match="append-only"):
         with engine.begin() as conn:
@@ -183,4 +206,13 @@ def test_a_rerun_keeps_the_records_and_the_downgrade_drops_both_tables(chronicle
             assert (
                 conn.execute(text(f"SELECT to_regclass('chronicler.{table}')")).scalar_one() is None
             )
+        assert (
+            conn.execute(
+                text("SELECT to_regprocedure('chronicler.location_forgetting_append_only()')")
+            ).scalar_one()
+            is None
+        )
+    # And the revision installs cleanly again.
     command.upgrade(_config(db_url), "chronicler@chronicler_035")
+    with engine.connect() as conn:
+        assert conn.execute(text(_COUNTS)).one() == (0, 0)

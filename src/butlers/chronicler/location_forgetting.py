@@ -11,12 +11,13 @@ in the same transaction as the deletions and summary coarsening it records. Noth
 deletes.
 
 :func:`owntracks_point_forgotten` is the resurrection floor: the OwnTracks point projection
-asks it before writing a point event, so a replayed webhook, reset cursor or wider horizon
-never restores a forgotten point.
+asks it for each fix before classifying the trail and drops a forgotten one, so a replayed
+webhook, reset cursor or wider horizon never restores a forgotten point.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -31,6 +32,7 @@ __all__ = [
     "ForgottenPointEvent",
     "owntracks_point_forgotten",
     "record_forgetting",
+    "source_ref_digest",
 ]
 
 OWNTRACKS_SOURCE_REF_PREFIX = "connectors.owntracks_points:"
@@ -130,6 +132,11 @@ async def record_forgetting(
             episodes_coarsened,
         )
     return ForgettingReceipt(id=receipt_id, point_events_forgotten=added)
+
+
+def source_ref_digest(source_ref: str) -> str:
+    """A short, stable label for a source in logs and warnings: never the source itself."""
+    return "sha256:" + hashlib.sha256(source_ref.encode()).hexdigest()[:16]
 
 
 async def owntracks_point_forgotten(conn: Any, source_ref: str) -> bool:

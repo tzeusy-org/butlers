@@ -25,13 +25,14 @@ never restores a forgotten point.
 Both tables are append-only. A trigger refuses ``UPDATE`` and ``DELETE`` (an init-db replay
 re-grants schema-wide DML, so a grant alone would not hold). Grants follow chronicler_032:
 ``REVOKE ALL ... FROM PUBLIC`` and from ``butler_chronicler_rw``, then ``SELECT, INSERT`` to that
-role. Tables and the index are ``IF NOT EXISTS`` and the guard is ``CREATE OR REPLACE``; the
-triggers and grants are reapplied. So a re-run keeps every record and the guard.
+role. A re-run finds both tables and the guard in the catalog and changes nothing.
 
 Downgrade drops both tables. It cannot restore anything a later slice forgot.
 """
 
 from __future__ import annotations
+
+from sqlalchemy import text
 
 from alembic import op
 
@@ -47,6 +48,21 @@ _GUARD = "chronicler.location_forgetting_append_only()"
 
 
 def upgrade() -> None:
+    # The revision's DDL is one transaction, so both tables exist only together with their
+    # guard, triggers and grants: a re-run only reads the catalog.
+    installed = (
+        op.get_bind()
+        .execute(
+            text(
+                f"SELECT to_regclass('{_RECEIPTS}') IS NOT NULL "
+                f"AND to_regclass('{_TOMBSTONES}') IS NOT NULL "
+                "AND to_regprocedure('chronicler.location_forgetting_append_only()') IS NOT NULL"
+            )
+        )
+        .scalar()
+    )
+    if installed:
+        return
     op.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_RECEIPTS} (

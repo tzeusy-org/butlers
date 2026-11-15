@@ -20,6 +20,7 @@ import ast
 import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -34,7 +35,9 @@ from butlers.chronicler.adapters.owntracks import (  # noqa: E402
     OwnTracksPointAdapter,
 )
 from butlers.chronicler.adapters.owntracks_trail import haversine_meters
+from butlers.chronicler.location_forgetting import source_ref_digest
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.chronicler.projection_coverage import FlushSummary, ProjectionCoverage
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
 
@@ -1525,16 +1528,49 @@ async def test_merging_into_a_stored_episode_keeps_only_a_replayed_path() -> Non
 @pytest.mark.asyncio
 async def test_a_forgotten_source_is_never_projected_again() -> None:
     """A tombstoned raw source (replayed webhook, reset cursor, wider horizon) stays forgotten."""
+    from tests.chronicler.test_projection_coverage import _Tables, digest_for
+
     forgotten = "connectors.owntracks_points:walk-1"
 
     async def _forgotten(_conn: object, source_ref: str) -> bool:
         return source_ref == forgotten
 
-    with patch(
-        "butlers.chronicler.adapters.owntracks.owntracks_point_forgotten", side_effect=_forgotten
-    ):
-        _, events, episodes, _ = await _project_capturing(_walk_rows(range(3)))
+    rows = _walk_rows(range(3))
+    # A fix two hours on closes the first trip, so its rows are covered, not held open.
+    rows.append(
+        _location_row(
+            ts=_NOW + timedelta(hours=2), lat=_WALK[4][0], lon=_WALK[4][1], idempotency_key="later"
+        )
+    )
+    for row in rows:
+        row.update(retention_at=row["ts"], content_digest=digest_for(row["id"]))
+    tables = _Tables()
 
-    assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2"]
+    class _Ledger(ProjectionCoverage):
+        async def flush(self, conn: Any) -> FlushSummary:
+            return await super().flush(tables)
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks.owntracks_point_forgotten",
+            side_effect=_forgotten,
+        ),
+        patch("butlers.chronicler.adapters.owntracks.ProjectionCoverage", _Ledger),
+    ):
+        result, events, episodes, _ = await _project_capturing(rows)
+
+    assert [e.payload["idempotency_key"] for e in events] == ["walk-0", "walk-2", "later"]
     assert episodes[0].payload["point_count"] == 2
     assert episodes[0].payload["path_m"] == round(_walk_path([0, 2]), 1)
+
+    # Fail-closed: the refused row is neither covered nor held, so nothing claims it projected,
+    # while the rest of the batch is covered as usual.
+    refused_id = rows[1]["id"]
+    assert refused_id not in tables.coverage and refused_id not in tables.open
+    assert {tables.coverage[r["id"]]["disposition"] for r in (rows[0], rows[2])} == {"projected"}
+    assert rows[3]["id"] in tables.open
+
+    # Observable without the source or its coordinates.
+    (warning,) = [w for w in result.warnings if "forgotten" in w]
+    assert source_ref_digest(forgotten) in warning
+    assert "walk-1" not in warning and "1.2355" not in warning

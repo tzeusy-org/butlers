@@ -199,6 +199,10 @@ Groundwork for that gate is in place, and still deletes nothing:
   - The point projection never writes a point event for a tombstoned `source_ref`, so a
     replayed webhook, reset cursor or wider horizon cannot restore a forgotten point. It is
     inert until raw expiry writes tombstones.
+  - A forgotten fix is dropped before trail classification: it feeds no point event, episode
+    or hold, and gets no projection-coverage record, so coverage never calls it projected. The
+    batch continues; the run's warnings count the dropped fixes and name each by a short
+    `sha256:` digest of its `source_ref`, never the source or its coordinates.
 
 ## Implementation Notes
 
