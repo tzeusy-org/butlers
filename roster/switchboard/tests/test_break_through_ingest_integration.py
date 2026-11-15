@@ -37,7 +37,7 @@ def db_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def pool(db, db_url):
+async def runtime(db, db_url):
     """The Switchboard runtime role's pool, the one ingest runs on."""
     return await db.open(db_url, schema="switchboard")
 
@@ -47,13 +47,13 @@ async def admin(db_url, postgres_container):
     """The bootstrap login: the only one that can write the owner-only clause store."""
     name = urlparse(db_url).path.lstrip("/")
     url = migration_bootstrap_db_url(postgres_container, name)
-    pool = await asyncpg.create_pool(
+    owner = await asyncpg.create_pool(
         url.replace("postgresql+psycopg2", "postgresql"), min_size=1, max_size=2
     )
     try:
-        yield pool
+        yield owner
     finally:
-        await pool.close()
+        await owner.close()
 
 
 def _email(message_id: str, *, sender: str = "mum@example.test", body: str = "private body"):
@@ -90,18 +90,18 @@ def _payload(raw: Any) -> dict:
 
 
 async def test_ingest_records_one_hit_and_one_metadata_only_event(
-    pool: asyncpg.Pool, admin: asyncpg.Pool
+    runtime: asyncpg.Pool, admin: asyncpg.Pool
 ) -> None:
     clause = await _clause(admin)
 
-    result = await ingest_v1(pool, _email("<hit@example.test>"))
+    result = await ingest_v1(runtime, _email("<hit@example.test>"))
 
     assert result.status == "accepted"
-    rows = await pool.fetch(HITS)
+    rows = await runtime.fetch(HITS)
     assert [(r["clause_id"], r["source_request_id"], r["channel"]) for r in rows] == [
         (clause, result.request_id, "email")
     ]
-    events = [_payload(r["payload"]) for r in await pool.fetch(EVENTS)]
+    events = [_payload(r["payload"]) for r in await runtime.fetch(EVENTS)]
     assert len(events) == 1
     assert events[0]["clause_id"] == str(clause)
     assert events[0]["source_request_id"] == str(result.request_id)
@@ -111,15 +111,15 @@ async def test_ingest_records_one_hit_and_one_metadata_only_event(
 
 
 async def test_a_replayed_request_adds_no_second_hit_or_event(
-    pool: asyncpg.Pool, admin: asyncpg.Pool
+    runtime: asyncpg.Pool, admin: asyncpg.Pool
 ) -> None:
     await _clause(admin)
-    first = await ingest_v1(pool, _email("<replay@example.test>"))
+    first = await ingest_v1(runtime, _email("<replay@example.test>"))
 
     from butlers.core.break_through import observe_inbound
 
     again = await observe_inbound(
-        pool,
+        runtime,
         channel="email",
         sender_identity="mum@example.test",
         normalized_text=f"{SUBJECT}\nprivate body",
@@ -128,25 +128,25 @@ async def test_a_replayed_request_adds_no_second_hit_or_event(
     )
 
     assert again is None
-    assert await pool.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 1
-    assert len(await pool.fetch(EVENTS)) == 1
+    assert await runtime.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 1
+    assert len(await runtime.fetch(EVENTS)) == 1
 
 
-async def test_a_revoked_clause_records_nothing(pool: asyncpg.Pool, admin: asyncpg.Pool) -> None:
+async def test_a_revoked_clause_records_nothing(runtime: asyncpg.Pool, admin: asyncpg.Pool) -> None:
     clause = await _clause(admin)
     await admin.execute(
         "UPDATE public.break_through_clauses SET revoked_at = now() WHERE id=$1", clause
     )
 
-    result = await ingest_v1(pool, _email("<revoked@example.test>"))
+    result = await ingest_v1(runtime, _email("<revoked@example.test>"))
 
     assert result.status == "accepted"
-    assert await pool.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 0
-    assert await pool.fetch(EVENTS) == []
+    assert await runtime.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 0
+    assert await runtime.fetch(EVENTS) == []
 
 
 async def test_a_promoted_skip_rule_for_the_sender_does_not_hide_the_hit(
-    pool: asyncpg.Pool, admin: asyncpg.Pool
+    runtime: asyncpg.Pool, admin: asyncpg.Pool
 ) -> None:
     clause = await _clause(admin)
     await admin.execute(
@@ -155,29 +155,31 @@ async def test_a_promoted_skip_rule_for_the_sender_does_not_hide_the_hit(
         json.dumps({"domain": "example.test", "match": "exact"}),
     )
 
-    result = await ingest_v1(pool, _email("<skipped@example.test>"))
+    result = await ingest_v1(runtime, _email("<skipped@example.test>"))
 
     assert result.status == "accepted"
-    assert [r["clause_id"] for r in await pool.fetch(HITS)] == [clause]
-    assert len(await pool.fetch(EVENTS)) == 1
+    assert [r["clause_id"] for r in await runtime.fetch(HITS)] == [clause]
+    assert len(await runtime.fetch(EVENTS)) == 1
 
 
-async def test_a_dark_evaluator_never_fails_ingest(pool: asyncpg.Pool, admin: asyncpg.Pool) -> None:
+async def test_a_dark_evaluator_never_fails_ingest(
+    runtime: asyncpg.Pool, admin: asyncpg.Pool
+) -> None:
     """A deactivated interface is an unavailable evaluator: the message is still accepted."""
     await _clause(admin)
     await admin.execute("SELECT dashboard_attention.deactivate_interface()")
 
-    result = await ingest_v1(pool, _email("<dark@example.test>"))
+    result = await ingest_v1(runtime, _email("<dark@example.test>"))
 
     assert result.status == "accepted"
-    assert await pool.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 0
+    assert await runtime.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 0
 
 
 async def test_hits_are_append_only_for_the_runtime_role(
-    pool: asyncpg.Pool, admin: asyncpg.Pool
+    runtime: asyncpg.Pool, admin: asyncpg.Pool
 ) -> None:
     await _clause(admin)
-    await ingest_v1(pool, _email("<durable@example.test>"))
+    await ingest_v1(runtime, _email("<durable@example.test>"))
 
     for statement in (
         "UPDATE switchboard.break_through_hits SET channel = 'x'",
@@ -185,5 +187,5 @@ async def test_hits_are_append_only_for_the_runtime_role(
         "TRUNCATE switchboard.break_through_hits",
     ):
         with pytest.raises(asyncpg.PostgresError):
-            await pool.execute(statement)
-    assert await pool.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 1
+            await runtime.execute(statement)
+    assert await runtime.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 1
