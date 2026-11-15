@@ -22,13 +22,23 @@ from butlers.cli_auth.sandbox_platform import (
 
 #: A ``<name> <version>`` first line, as ``codex --version`` prints. Only the match is reported.
 _VERSION_SHAPE = re.compile(rb"\A[A-Za-z0-9_.-]{1,64} v?[0-9]+\.[0-9]+")
+#: The glibc loader's own refusal; only a library soname of this exact shape is reported.
+_MISSING_LIBRARY = re.compile(
+    rb"error while loading shared libraries: (lib[A-Za-z0-9_+-]{1,48}\.so(?:\.[0-9]{1,6}){0,3}): "
+)
+
+
+def _missing_library(output: bytes) -> str | None:
+    """The soname the dynamic loader could not open, when the output is that refusal."""
+    match = _MISSING_LIBRARY.search(output)
+    return match.group(1).decode("ascii") if match else None
 
 
 def completion_failure(terminated: bool, returncode: int | None, output: bytes) -> str | None:
     """Which completion condition failed, or None when all hold (bu-kiuh8v.42).
 
-    Reports booleans, the exit status and a byte count only: the payload's output never
-    leaves the sandbox through this message.
+    Reports booleans, the exit status, a byte count and, for the dynamic loader's refusal, the
+    soname it names: the payload's own output never leaves the sandbox through this message.
     """
     if terminated and returncode == 0 and output:
         return None
@@ -37,6 +47,7 @@ def completion_failure(terminated: bool, returncode: int | None, output: bytes) 
         "returncode": returncode if type(returncode) is int else None,
         "output_bytes": len(output),
         "version_shaped": bool(_VERSION_SHAPE.match(output)),
+        "missing_library": _missing_library(output),
     }
     return "exact-image sandbox probe did not complete: " + json.dumps(evidence, sort_keys=True)
 
