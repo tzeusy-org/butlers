@@ -27,6 +27,7 @@ from butlers.knowledge_read.manifest import (
     manifest_transition,
     qualified,
 )
+from butlers.knowledge_read.search_index import SEARCH_COLUMNS
 from butlers.migrations.public_mcp import reconcile_connection
 from butlers.migrations.public_mcp_owner import render_owner_program, subscriber_plan
 from butlers.testing.public_mcp import public_mcp_topology
@@ -274,6 +275,109 @@ def test_actual_full_copy_catalog_views_freshness_and_noop(copied):
             ).scalar_one()
             is False
         )
+
+
+_EPISODE_INDEXES = (
+    "SELECT c.relname, c.oid, pg_get_userbyid(c.relowner), pg_get_indexdef(c.oid) "
+    "FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+    "WHERE i.indrelid='chronicler.episodes_public'::regclass AND NOT i.indisprimary ORDER BY 1"
+)
+
+
+def test_search_indexes_are_owned_idempotent_rebuilt_and_the_only_admitted_extras(copied):
+    """bu-y66o00.53: the owner step owns exactly the declared search indexes and nothing else.
+
+    A rerun keeps their OIDs. A same-named index with another definition is rebuilt, and a
+    lost one is recreated. Any other index on a subscriber table is refused before mutation,
+    including a declared name on the wrong table or with the wrong access method.
+    """
+    topology, projection, manifest = copied
+    declared = SEARCH_COLUMNS["chronicler.episodes_public"]
+
+    def indexes():
+        with projection.connect() as conn:
+            return conn.execute(text(_EPISODE_INDEXES)).all()
+
+    def run_sql(*statements, role=None):
+        with projection.begin() as conn:
+            if role:
+                conn.exec_driver_sql(f"SET LOCAL ROLE {role}")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    first = indexes()
+    assert {row[0] for row in first} == {c.index for c in declared}
+    assert {row[2] for row in first} == {"mcp_projection_owner"}
+    for column in declared:
+        definition = next(row[3] for row in first if row[0] == column.index)
+        assert "USING gin" in definition
+        assert column.expression.split("(", 1)[0] in definition
+        if column.opclass:
+            assert column.opclass in definition
+
+    program = render_owner_program(manifest)
+    _run(topology, program)
+    assert indexes() == first, "a rerun must keep each index and create no duplicate"
+
+    vector = next(c for c in declared if c.name == "search_vector")
+    title = next(c for c in declared if c.name == "search_title")
+    applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+    try:
+        # Drift under a declared name is admitted by the guard, then rebuilt as declared.
+        run_sql(f"DROP INDEX chronicler.{vector.index}")
+        run_sql(
+            f"CREATE INDEX {vector.index} ON chronicler.episodes_public "
+            "USING gin (to_tsvector('simple'::regconfig, COALESCE(title, '')))",
+            role="mcp_projection_owner",
+        )
+        _run(topology, program)
+        rebuilt = indexes()
+        assert [r[0] for r in rebuilt] == [r[0] for r in first]
+        assert next(r[3] for r in rebuilt if r[0] == vector.index) == next(
+            r[3] for r in first if r[0] == vector.index
+        )
+        # A lost index (a resync or a rebuilt table) is recreated.
+        run_sql(f"DROP INDEX chronicler.{title.index}")
+        _run(topology, program)
+        assert [r[0] for r in indexes()] == [r[0] for r in first]
+
+        applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+        planted = (
+            ("CREATE INDEX mcp_planted ON chronicler.episodes_public (title)", "mcp_planted"),
+            (
+                f"CREATE INDEX {vector.index} ON travel.trips "
+                "USING gin (to_tsvector('english'::regconfig, COALESCE(name, '')))",
+                vector.index,
+            ),
+            (
+                "CREATE UNIQUE INDEX mcp_planted_unique ON chronicler.episodes_public (id, kind)",
+                "mcp_planted_unique",
+            ),
+        )
+        for statement, name in planted:
+            schema = "travel" if "travel." in statement else "chronicler"
+            run_sql(statement, role="mcp_projection_owner")
+            refused = _run(topology, program, success=False)
+            assert b"undeclared relation policy" in refused.output
+            assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == (
+                applied
+            )
+            run_sql(f"DROP INDEX {schema}.{name}")
+        # A declared name with another access method is refused too.
+        run_sql(f"DROP INDEX chronicler.{title.index}")
+        run_sql(
+            f"CREATE INDEX {title.index} ON chronicler.episodes_public (title)",
+            role="mcp_projection_owner",
+        )
+        refused = _run(topology, program, success=False)
+        assert b"undeclared relation policy" in refused.output
+        run_sql(f"DROP INDEX chronicler.{title.index}")
+    finally:
+        for name in ("mcp_planted", "mcp_planted_unique"):
+            run_sql(f"DROP INDEX IF EXISTS chronicler.{name}")
+        run_sql(f"DROP INDEX IF EXISTS travel.{vector.index}")
+        _run(topology, program)
+    assert [r[0] for r in indexes()] == [r[0] for r in first]
 
 
 def _states(kind):

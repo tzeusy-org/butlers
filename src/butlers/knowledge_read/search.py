@@ -4,7 +4,9 @@ The index is the union of the published ``knowledge``, ``relationship``, ``time`
 sources the manifest assigns to ``search``; finance, health and proposal records are never in
 it, so a broad search cannot sweep the ledger. Ranking is lexical: ``websearch_to_tsquery``
 over each fact's replicated ``search_vector`` (a subscriber-side ``tsvector`` elsewhere) plus
-trigram similarity on the title. No model runs.
+trigram similarity on the title. No model runs. A source with indexed search columns
+(``search_index``) is ranked on them, and a necessary-condition prefilter lets the planner use
+their GIN indexes; the exact match condition still applies to every source.
 
 An item's ``id`` is its ``butlers://`` uri, so ``fetch`` resolves exactly what ``search``
 returned; ``proposal:<uuid>`` fetches a proposal's state and nothing else.
@@ -33,20 +35,23 @@ from butlers.knowledge_read.core import (
     tables_for,
 )
 from butlers.knowledge_read.manifest import Table
+from butlers.knowledge_read.search_index import TITLE_CHARS
 
 SEARCH_LIMIT = 20
 FILTERED_LIMIT = 50
 QUERY_MAX = 256
-TITLE_MAX = 200
+TITLE_MAX = TITLE_CHARS
 SNIPPET_MAX = 240
 FETCH_TEXT_BYTES = 16 * 1024
 TRIGRAM_THRESHOLD = 0.3
 INDEX_DOMAINS = ("knowledge", "relationship", "time", "travel")
 _TS_CONFIG = "english"
-_TRIGRAM_MISSING = (
+# What the owner step has not installed yet: mcp_ext and its grants, or a view's search columns.
+_OWNER_STEP_PENDING = (
     asyncpg.UndefinedFunctionError,
     asyncpg.InvalidSchemaNameError,
     asyncpg.InsufficientPrivilegeError,
+    asyncpg.UndefinedColumnError,
 )
 
 
@@ -74,9 +79,11 @@ _SQL: dict[str, tuple[str, str, str]] = {
         "COALESCE(f->'aliases', '[]'::jsonb)) AS a)))",
         "NULL::timestamptz",
     ),
+    # The view's indexed search columns: left(COALESCE(title, kind), 200) and the vector of
+    # title, kind and category (search_index.SEARCH_COLUMNS).
     "chronicler.episodes_public": (
-        "COALESCE(f->>'title', f->>'kind')",
-        _vector("title", "kind", "category"),
+        "search_title",
+        "search_vector",
         "(f->>'started_at')::timestamptz",
     ),
     "travel.trips": (
@@ -106,6 +113,16 @@ _TEXT_FIELDS = {
     ),
     "travel.documents": ("type", "expiry_date"),
 }
+# Sources ranked on indexed view columns: the columns to read, and a prefilter every match
+# satisfies (the vector matches, or the title's similarity reaches the ``%`` threshold, which
+# _ranked pins to TRIGRAM_THRESHOLD) that the planner answers from the GIN indexes.
+_INDEXED = {
+    "chronicler.episodes_public": (
+        ", search_title, search_vector",
+        f"search_vector @@ websearch_to_tsquery('{_TS_CONFIG}', $1) "
+        "OR search_title OPERATOR(mcp_ext.%) $1",
+    ),
+}
 _FACT_TEXT = ("predicate", "subject", "valid_at", "validity")
 # Dashboard deep links by item kind: fixed paths, never an argument or a query (D10).
 _LINKS = {
@@ -129,6 +146,8 @@ class Source:
     title_sql: str
     vector_sql: str
     at_sql: str
+    columns: str = ""
+    prefilter: str = ""
 
     @property
     def is_fact(self) -> bool:
@@ -177,7 +196,8 @@ def index_sources() -> tuple[Source, ...]:
         _, view = published(table.source, "search")
         kind, prefix = record_uri(table, "")
         shape = _FACT_SQL if table.source.endswith(".facts") else _SQL[table.source]
-        result.append(Source(table, view, kind, prefix, *shape))
+        columns, prefilter = _INDEXED.get(table.source, ("", ""))
+        result.append(Source(table, view, kind, prefix, *shape, columns, prefilter))
     return tuple(result)
 
 
@@ -196,7 +216,8 @@ def _ranked_sql(sources: list[Source]) -> str:
                vector, mcp_ext.similarity(left(title, {TITLE_MAX}), $1) AS similarity
         FROM (SELECT source_id, f, {s.title_sql} AS title, {s.vector_sql} AS vector,
                      {s.at_sql} AS at
-              FROM (SELECT source_id, fields AS f FROM {s.view}) AS v) AS s"""
+              FROM (SELECT source_id, fields AS f{s.columns} FROM {s.view}
+                    {"WHERE " + s.prefilter if s.prefilter else ""}) AS v) AS s"""
         for i, s in enumerate(sources)
     )
     return f"""SELECT source, item_id, source_id, f, at,
@@ -204,6 +225,11 @@ def _ranked_sql(sources: list[Source]) -> str:
         FROM ({selects}) AS items,
              (SELECT websearch_to_tsquery('{_TS_CONFIG}', $1) AS q) AS q
         WHERE vector @@ q.q OR similarity >= {TRIGRAM_THRESHOLD}"""
+
+
+def _search_sql(sources: list[Source]) -> str:
+    """The best ``SEARCH_LIMIT`` matches; ``$1`` is the query."""
+    return _ranked_sql(sources) + f" ORDER BY score DESC, item_id LIMIT {SEARCH_LIMIT}"
 
 
 def _sources(context: ReadContext, domains: tuple[str, ...] | None = None) -> list[Source]:
@@ -217,9 +243,15 @@ def _sources(context: ReadContext, domains: tuple[str, ...] | None = None) -> li
 async def _ranked(conn: asyncpg.Connection, sql: str, *params: Any) -> list[asyncpg.Record]:
     async def read() -> list[asyncpg.Record]:
         try:
+            # The ``%`` prefilter keeps exactly the titles at or above this threshold.
+            await conn.fetchval(
+                "SELECT set_config('pg_trgm.similarity_threshold', $1, true)",
+                str(TRIGRAM_THRESHOLD),
+            )
             return await conn.fetch(sql, *params)
-        except _TRIGRAM_MISSING:
-            # The owner step installs and grants mcp_ext; until it has, ranking cannot run.
+        except _OWNER_STEP_PENDING:
+            # The owner step installs and grants mcp_ext and adds the search columns; until it
+            # has, ranking cannot run.
             raise ReadError("unavailable") from None
 
     return await in_snapshot(conn, read)
@@ -244,9 +276,7 @@ async def search(
     sources = _sources(context)
     if not sources:
         return {"results": []}
-    rows = await _ranked(
-        conn, _ranked_sql(sources) + f" ORDER BY score DESC, item_id LIMIT {SEARCH_LIMIT}", query
-    )
+    rows = await _ranked(conn, _search_sql(sources), query)
     results = []
     for row in rows:
         source = sources[row["source"]]

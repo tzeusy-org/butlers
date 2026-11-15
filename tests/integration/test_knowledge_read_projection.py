@@ -822,14 +822,19 @@ async def test_replicated_controls_and_reads_are_pure(projected, primary, reader
         with topology.engine.connect() as conn:
             assert conn.execute(text(counters_sql), {"id": fact}).one() == counters
 
-        # Of the trigram extension the reader may execute similarity(text, text) alone.
+        # Of the trigram extension the reader may execute similarity(text, text) and the
+        # function of the % operator, which search's trigram index scan rechecks, alone.
         assert await reader.fetchval("SELECT mcp_ext.similarity('abc', 'abd')") > 0
+        assert await reader.fetchval("SELECT 'abc' OPERATOR(mcp_ext.%) 'abd'") is not None
         grants = await reader.fetch(
             "SELECT p.oid::regprocedure::text AS name, has_function_privilege(p.oid, 'EXECUTE') "
             "AS allowed FROM pg_proc p WHERE p.pronamespace = 'mcp_ext'::regnamespace"
         )
         assert len(grants) > 20
-        assert {g["name"] for g in grants if g["allowed"]} == {"mcp_ext.similarity(text,text)"}
+        assert {g["name"] for g in grants if g["allowed"]} == {
+            "mcp_ext.similarity(text,text)",
+            "mcp_ext.similarity_op(text,text)",
+        }
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await reader.fetchval("SELECT mcp_ext.show_trgm('abc')")
 
@@ -878,7 +883,8 @@ async def test_owner_planted_trigram_extension_is_refused(projected):
                 "CREATE FUNCTION mcp_ext.planted(text) RETURNS text LANGUAGE sql AS 'SELECT $1'"
             )
         # An interrupted first step: no extension yet; the owner plants its own copy.
-        superuser("DROP EXTENSION pg_trgm")
+        # CASCADE drops the trigram search index too; the healing rerun recreates it.
+        superuser("DROP EXTENSION pg_trgm CASCADE")
         superuser("DROP SCHEMA mcp_ext")
         as_owner(
             "CREATE SCHEMA mcp_ext",
@@ -899,10 +905,14 @@ async def test_owner_planted_trigram_extension_is_refused(projected):
         refused = topology.execute(program)
         assert refused.exit_code != 0 and b"pg_trgm" in bytes(refused.output)
     finally:
-        superuser("DROP EXTENSION IF EXISTS pg_trgm")
+        superuser("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
         superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
         healed = topology.execute(program)
         assert healed.exit_code == 0, repr(healed.output)[-4000:]
+    # The cascade took the trigram search index with the extension; the healing run rebuilt it.
+    assert _scalar(
+        projection, "SELECT to_regclass('chronicler.episodes_public_mcp_search_title') IS NOT NULL"
+    )
 
 
 async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(projected):
@@ -927,7 +937,8 @@ async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(pro
 
     applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
     try:
-        superuser("DROP EXTENSION pg_trgm")
+        # CASCADE drops the trigram search index too; the healing rerun recreates it.
+        superuser("DROP EXTENSION pg_trgm CASCADE")
         superuser("DROP SCHEMA mcp_ext")
         as_owner(
             "CREATE SCHEMA mcp_ext",
@@ -953,7 +964,7 @@ async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(pro
         refused = topology.execute(program)
         assert refused.exit_code != 0 and b"database setting" in bytes(refused.output)
         superuser("ALTER DATABASE butlers_public RESET search_path")
-        superuser("DROP EXTENSION pg_trgm")
+        superuser("DROP EXTENSION pg_trgm CASCADE")
         superuser("DROP SCHEMA mcp_ext CASCADE")
         as_owner("CREATE FUNCTION public.shadow() RETURNS int LANGUAGE sql AS 'SELECT 1'")
         refused = topology.execute(program)
@@ -962,7 +973,7 @@ async def test_owner_shadowed_catalog_names_cannot_admit_a_planted_extension(pro
         superuser("ALTER DATABASE butlers_public RESET search_path")
         superuser("DROP VIEW IF EXISTS public.pg_roles")
         superuser("DROP FUNCTION IF EXISTS public.shadow()")
-        superuser("DROP EXTENSION IF EXISTS pg_trgm")
+        superuser("DROP EXTENSION IF EXISTS pg_trgm CASCADE")
         superuser("DROP SCHEMA IF EXISTS mcp_ext CASCADE")
         healed = topology.execute(program)
         assert healed.exit_code == 0, repr(healed.output)[-4000:]
@@ -1096,6 +1107,92 @@ async def test_search_and_fetch_keep_the_chatgpt_shape_and_never_reach_finance(
         await primary.execute("DELETE FROM finance.transactions WHERE id=$1", transaction)
         await primary.execute("DELETE FROM relationship.facts WHERE id=$1", long_fact)
         await primary.execute("DELETE FROM public.entities WHERE id=$1", uuid.UUID(person))
+        _barrier(projected)
+
+
+def _index_scans(plan) -> set[tuple[str, str]]:
+    """Every ``(node type, index name)`` in an ``EXPLAIN (FORMAT JSON)`` plan."""
+    found = set()
+    nodes = [plan[0]["Plan"]]
+    while nodes:
+        node = nodes.pop()
+        if "Index Name" in node:
+            found.add((node["Node Type"], node["Index Name"]))
+        nodes.extend(node.get("Plans", []))
+    return found
+
+
+async def test_search_reads_episodes_through_their_gin_indexes(projected, primary, reader):
+    """bu-y66o00.53: as ``mcp_public_ro``, through the view, ``search`` can use both indexes.
+
+    A handful of rows makes a sequential scan cheaper, so this case forbids one: the planner
+    then picks the indexes only if each view column inlines to its index expression and the
+    role may run the ``%`` operator. The view columns equal the per-row expressions every
+    other source still computes, so ranking is unchanged. No timing is asserted.
+    """
+    from butlers.chronicler.public_projection import sweep_public_projection
+    from butlers.knowledge_read.search import _search_sql, _sources
+    from butlers.knowledge_read.search_index import SEARCH_COLUMNS
+
+    day = datetime(2026, 4, 2, 7, 0, tzinfo=UTC)
+    adapter = bool(
+        await primary.fetchval(
+            "INSERT INTO chronicler.source_adapter_state(source_name,chronicler_compatibility) "
+            "VALUES ('google_health.measurements','supported') ON CONFLICT DO NOTHING "
+            "RETURNING true"
+        )
+    )
+    episodes = []
+    try:
+        for offset, title in enumerate(("Zorvatel dinner with Alex", None, "Kestrimond review")):
+            episodes.append(
+                await primary.fetchval(
+                    "INSERT INTO chronicler.episodes(source_name,source_ref,episode_type,"
+                    "start_at,end_at,title,privacy,layer,payload) VALUES "
+                    "('google_health.measurements',$1,'sleep_episode',$2,$3,$4,'normal',"
+                    "'activity','{}'::jsonb) RETURNING id",
+                    str(uuid.uuid4()),
+                    day + timedelta(hours=offset),
+                    day + timedelta(hours=offset, minutes=30),
+                    title,
+                )
+            )
+        await sweep_public_projection(primary)
+        _barrier(projected)
+        context = await _context(reader)
+
+        # The indexed columns equal the jsonb expressions they replace, NULL title included.
+        compared, differing = await reader.fetchrow(
+            "SELECT count(*), count(*) FILTER (WHERE "
+            "search_vector IS DISTINCT FROM to_tsvector('english', concat_ws(' ', "
+            "fields->>'title', fields->>'kind', fields->>'category')) OR "
+            "search_title IS DISTINCT FROM left(COALESCE(fields->>'title', fields->>'kind'), 200))"
+            " FROM mcp_read.chronicler__episodes_public"
+        )
+        assert compared >= 3 and differing == 0
+
+        sql = _search_sql(_sources(context))
+        async with reader.transaction(readonly=True):
+            await reader.execute("SET LOCAL enable_seqscan = off")
+            plan = json.loads(await reader.fetchval("EXPLAIN (FORMAT JSON) " + sql, "Zorvatel"))
+        names = {c.index for c in SEARCH_COLUMNS["chronicler.episodes_public"]}
+        assert {("Bitmap Index Scan", name) for name in names} <= _index_scans(plan)
+
+        # The vector arm and the trigram-only arm both still find their episode.
+        uri = f"butlers://time/episode/{episodes[0]}"
+        found = await search(reader, context, {"query": "Zorvatel dinner"})
+        assert uri in [r["id"] for r in found["results"]]
+        fuzzy = await search(reader, context, {"query": "Zorvatl dinnr wth Alx"})
+        assert uri in [r["id"] for r in fuzzy["results"]]
+    finally:
+        for episode in episodes:
+            await primary.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+        await sweep_public_projection(primary)
+        if adapter:
+            await primary.execute(
+                "DELETE FROM chronicler.source_adapter_state "
+                "WHERE source_name='google_health.measurements'"
+            )
         _barrier(projected)
 
 
