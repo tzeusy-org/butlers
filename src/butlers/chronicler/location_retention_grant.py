@@ -181,9 +181,6 @@ _COORDINATE_EPISODES = (
     "SELECT id, payload FROM episodes WHERE id = ANY($1::uuid[]) "
     "AND source_name = ANY($2::text[]) ORDER BY id"
 )
-_UPDATE_EPISODE = (
-    "UPDATE episodes SET payload = ($2::text)::jsonb, updated_at = now() WHERE id = $1"
-)
 _DELETE_POINT_EVENTS = "DELETE FROM point_events WHERE id = ANY($1::uuid[])"
 _CARRYOVER = (
     "SELECT carryover FROM projection_checkpoints WHERE source_name = $1 AND subsource = ''"
@@ -212,7 +209,11 @@ async def _coarsen_episodes(conn: Any, episode_ids: set[UUID]) -> int:
         payload = _as_object(row["payload"])
         coarse = coarsen_location_payload(payload)
         if coarse != payload:
-            await conn.execute(_UPDATE_EPISODE, row["id"], json.dumps(coarse, sort_keys=True))
+            await conn.execute(
+                "UPDATE episodes SET payload = ($2::text)::jsonb, updated_at = now() WHERE id = $1",
+                row["id"],
+                json.dumps(coarse, sort_keys=True),
+            )
             changed += 1
     return changed
 
