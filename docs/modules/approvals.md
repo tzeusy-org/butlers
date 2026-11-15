@@ -240,7 +240,8 @@ would show its plain Approve button. This follows the merge-review precedent
 `butlers.api.external_proposal_review.read_external_proposal_review`:
 
 - `subject` and `object` (`id`, `name`, `entity_type`, `status` of `live`,
-  `missing`, `merged` or `deleted`, read from `public.entities` now), `predicate`,
+  `missing`, `merged` or `deleted`, read from `public.entities` now; `deleted`
+  covers `deleted_at` and the forget `tombstone` marker), `predicate`,
   `client_label` (from the `external_mcp:client=` evidence ref), `proposal_id`;
 - `note` and `evidence_url`, read from `relationship.external_fact_proposals`
   (the row whose `proposal_id` is the key's and whose `pending_action_id` is the
@@ -250,8 +251,8 @@ would show its plain Approve button. This follows the merge-review precedent
 - `unresolvable_entity`, `approve_unavailable_reason` and `displayed_call`
   (`{tool_name, args_digest}`, the same digest as a card preview).
 
-For such an action `call_preview` is null and `proposed_action` has no
-`tool_args`. `displayed_call` is offered only when the review shows everything the
+For such an action `call_preview` is null, `proposed_action` has no
+`tool_args` and `referenced_entities` is empty (the review names the entities). `displayed_call` is offered only when the review shows everything the
 stored call carries: exactly the argument shape the importer parks (two entity
 UUIDs, a predicate, `object_kind = 'entity'`, `conf = 1.0`, the action's own
 `approval_action_id`, a null temporal packet), the proposal record backs this
@@ -261,8 +262,10 @@ client label is recorded, and both entities are live. Otherwise it is null and
 `unresolvable_entity`). Both approve routes re-read the review under the
 pending-row lock: they answer 409 with that reason, or 409 "changed since shown"
 when the submitted `displayed_call` differs, before any decision, audit or
-dispatch. Reject and Defer are unaffected. A connector-authenticated callback
-never approves an external proposal (no card ever showed it). If an entity is
+dispatch. An approve without a `displayed_call` (a connector callback: no card
+ever showed it) and an approve carrying `edits` are refused with their own 409
+details: the owner decides the call as reviewed, since an edit would execute
+arguments no review showed. Reject and Defer are unaffected. If an entity is
 tombstoned after approval, the approved replay still fails closed
 (`relationship_assert_fact` refuses it and the importer reports `apply_failed`).
 

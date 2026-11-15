@@ -24,6 +24,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 EXTERNAL_PROPOSAL_KEY_PREFIX = "external_mcp:"
+#: The evidence ``ref`` prefix that carries the proposing client's label.
+EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX = "external_mcp:client="
 EXTERNAL_PROPOSAL_TOOL = "relationship_assert_fact"
 EXTERNAL_PROPOSAL_TTL = timedelta(days=14)
 
@@ -51,7 +53,9 @@ EXTERNAL_PROPOSAL_RULE_REFUSAL = (
 # host name, or ``dcr:`` and 12 hex digits. No space, slash, ``@`` or other colon, so a raw cid
 # (a URL with a path) can never pass as a label.
 _CLIENT_LABEL_RE = re.compile(r"(?:dcr:[0-9a-f]{12}|[A-Za-z0-9][A-Za-z0-9._-]{0,63})")
-_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+#: A registry predicate name; the only predicate shape an external proposal stores.
+PREDICATE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_PREDICATE_RE = PREDICATE_NAME_RE
 
 
 def external_proposal_key(proposal_id: uuid.UUID) -> str:
@@ -124,7 +128,7 @@ def external_proposal_evidence(
     evidence: list[dict[str, str]] = [
         {
             "type": "text",
-            "ref": f"external_mcp:client={label}",
+            "ref": f"{EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX}{label}",
             "note": "Label of the external AI client that proposed this fact.",
         }
     ]
@@ -183,11 +187,13 @@ def validate_external_tool_args(action_id: uuid.UUID, tool_args: dict[str, Any])
 
 
 __all__ = [
+    "EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX",
     "EXTERNAL_PROPOSAL_FORBIDDEN_ARGS",
     "EXTERNAL_PROPOSAL_KEY_PREFIX",
     "EXTERNAL_PROPOSAL_RULE_REFUSAL",
     "EXTERNAL_PROPOSAL_TOOL",
     "EXTERNAL_PROPOSAL_TTL",
+    "PREDICATE_NAME_RE",
     "evidence_url_host",
     "external_proposal_evidence",
     "external_proposal_key",

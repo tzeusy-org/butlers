@@ -210,13 +210,17 @@ async def test_create_rule_is_refused(client, parked, rel_pool) -> None:
 
 
 # REQ-dashboard-approvals-904: "Unresolvable entity blocks approval but not rejection".
-@pytest.mark.parametrize("tombstone", ["merged_into", "deleted_at"])
+@pytest.mark.parametrize("tombstone", ["merged_into", "deleted_at", "tombstone"])
 async def test_tombstoned_subject_blocks_approve_and_reject_still_resolves(
     client, parked, rel_pool, tombstone
 ) -> None:
     _detail, before = await _review(client, parked.action_id)
     shown = before["displayed_call"]
-    value = str(parked.object) if tombstone == "merged_into" else "2026-11-02T00:00:00Z"
+    value = {
+        "merged_into": str(parked.object),
+        "deleted_at": "2026-11-02T00:00:00Z",
+        "tombstone": "true",
+    }[tombstone]
     await rel_pool.execute(
         "UPDATE public.entities SET metadata = COALESCE(metadata, '{}'::jsonb) "
         "|| jsonb_build_object($2::text, $3::text) WHERE id=$1",

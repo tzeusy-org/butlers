@@ -3572,7 +3572,12 @@ async def get_approval_detail(
                     )
             if row is not None:
                 target_contact = await _resolve_target_contact(db_mgr, pa)
-                referenced_entities = await _resolve_referenced_entities(db_mgr, pa.tool_args)
+                # The typed review already names an external proposal's entities.
+                referenced_entities = (
+                    []
+                    if external_review is not None
+                    else await _resolve_referenced_entities(db_mgr, pa.tool_args)
+                )
                 detail = _pending_action_to_detail(
                     pa,
                     butler_name,
@@ -3658,6 +3663,12 @@ async def approve_approval(
 
 # Shared with the Telegram connector, which matches it to answer the tap honestly.
 APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+EXTERNAL_PROPOSAL_REVIEW_REQUIRED = (
+    "An external proposal is approved only from its dashboard review; nothing was executed."
+)
+EXTERNAL_PROPOSAL_EDIT_REFUSAL = (
+    "An external proposal is decided as reviewed and cannot be edited; nothing was executed."
+)
 
 
 async def _require_presented_call_unchanged(
@@ -3813,14 +3824,20 @@ async def approve_owning_action(
         # An external MCP proposal is approvable only from its typed dashboard review,
         # re-read here under the row lock; a connector callback never decides one, since
         # no card ever showed it (REQ-dashboard-approvals-904).
+        # Its call is decided as reviewed: an edit would execute arguments no review
+        # showed, including provenance the importer refuses at park time.
         if is_external_proposal_row(action_row):
+            if edits:
+                raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_EDIT_REFUSAL)
             review = await read_external_proposal_review(conn, action_id=parsed_id, row=action_row)
             if review.displayed_call is None:
                 raise HTTPException(
                     status_code=409,
                     detail=review.approve_unavailable_reason or APPROVAL_CALL_CHANGED_DETAIL,
                 )
-            if displayed_call is None or displayed_call != review.displayed_call:
+            if displayed_call is None:
+                raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_REVIEW_REQUIRED)
+            if displayed_call != review.displayed_call:
                 raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
         elif require_displayed_call:
             preview = (

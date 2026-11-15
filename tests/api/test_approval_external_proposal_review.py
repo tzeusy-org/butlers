@@ -89,6 +89,7 @@ class _World:
                 "entity_type": "person",
                 "merged_into": None,
                 "deleted_at": None,
+                "tombstone": None,
             },
             self.object: {
                 "id": self.object,
@@ -96,6 +97,7 @@ class _World:
                 "entity_type": "organization",
                 "merged_into": None,
                 "deleted_at": None,
+                "tombstone": None,
             },
         }
         self.events: list[str] = []
@@ -320,6 +322,7 @@ async def test_create_rule_is_refused(http, world) -> None:
     [
         ("subject", {"merged_into": "00000000-0000-0000-0000-00000000000a"}, "merged"),
         ("subject", {"deleted_at": "2026-11-01T00:00:00Z"}, "deleted"),
+        ("subject", {"tombstone": "true"}, "deleted"),
         ("object", {"merged_into": "00000000-0000-0000-0000-00000000000b"}, "merged"),
         ("object", None, "missing"),
     ],
@@ -408,4 +411,47 @@ async def test_connector_callback_cannot_approve_an_external_proposal(
     with pytest.raises(routes.HTTPException) as refused:
         await run(conn)
     assert refused.value.status_code == 409
+    # Not "the call changed": it is only ever approvable from the dashboard review.
+    assert refused.value.detail == routes.EXTERNAL_PROPOSAL_REVIEW_REQUIRED
     assert "approve" not in world.events
+
+
+async def test_edits_are_refused_even_with_the_displayed_call(http, world) -> None:
+    """An edit would execute arguments no review showed (REQ-dashboard-approvals-904)."""
+    displayed = (await _detail(http, world))["external_proposal_review"]["displayed_call"]
+    stored = deepcopy(world.action["tool_args"])
+    async with httpx.AsyncClient(transport=http._transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/approvals/{world.action_id}/approve",
+            json={"displayed_call": displayed, "edits": {"subject": str(uuid4())}},
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"] == routes.EXTERNAL_PROPOSAL_EDIT_REFUSAL
+    assert world.action["tool_args"] == stored
+    assert "approve" not in world.events and "dispatch" not in world.events
+
+
+async def test_malformed_stored_args_fail_closed_in_the_reader(world) -> None:
+    """The approve path hands the reader the raw locked row; bad JSON is unapprovable."""
+    world.action["tool_args"] = "{not json"
+    review = await review_mod.read_external_proposal_review(
+        _Conn(world), action_id=world.action_id, row=world.action
+    )
+    assert review.displayed_call is None
+    assert review.approve_unavailable_reason
+
+
+async def test_dossier_does_not_resolve_entities_twice(http, world, monkeypatch) -> None:
+    async def fail(*_args):
+        raise AssertionError("the typed review already names the entities")
+
+    monkeypatch.setattr(routes, "_resolve_referenced_entities", fail)
+    assert (await _detail(http, world))["referenced_entities"] == []
+
+
+def test_temporal_keys_match_the_relationship_wire_keys() -> None:
+    """A new wire key must be shown or refused deliberately, not make every review fail."""
+    from butlers.roster_imports import roster_module
+
+    temporal = roster_module("relationship", "tools/fact_temporal")
+    assert review_mod.TEMPORAL_KEYS == frozenset(temporal.WIRE_KEYS)

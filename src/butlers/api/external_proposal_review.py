@@ -12,8 +12,8 @@ precedent in ``review-parked-entity-merge-approvals`` (REQ-dashboard-approvals-9
   ``displayed_call``, and only for an ``external_mcp:`` action.
 * The review shows the entities the stored call names (name, type, ID, current state),
   the predicate, the client label, the third-party authority statement, and the note and
-  full evidence URL read from ``relationship.external_fact_proposals`` as data. It never
-  returns the raw stored arguments.
+  full evidence URL read from ``relationship.external_fact_proposals`` as data. The
+  dossier that carries it returns no raw stored arguments.
 * The displayed call is offered only when the review shows *everything* the stored call
   carries: the exact argument shape the importer parks (two entity UUIDs, a predicate,
   ``object_kind='entity'``, ``conf=1.0``, the action's own ``approval_action_id`` and
@@ -28,7 +28,6 @@ row lock, so the check and the decision see the same stored call.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import UUID
@@ -41,8 +40,10 @@ from butlers.api.models.approval import (
     ExternalProposalReview,
 )
 from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX,
     EXTERNAL_PROPOSAL_KEY_PREFIX,
     EXTERNAL_PROPOSAL_TOOL,
+    PREDICATE_NAME_RE,
     validate_client_label,
 )
 from butlers.modules.approvals.previews import args_digest
@@ -53,9 +54,9 @@ THIRD_PARTY_AUTHORITY_STATEMENT = (
     "and it stays attributed to this outside source."
 )
 
-#: ``roster/relationship/tools/fact_temporal.WIRE_KEYS``: the parked temporal packet.
-#: An external proposal parks all six as null; any value is a call this review cannot show.
-_TEMPORAL_KEYS = frozenset(
+#: ``roster/relationship/tools/fact_temporal.WIRE_KEYS`` (a contract test keeps them equal):
+#: the parked temporal packet. A packet with any value is a call this review cannot show.
+TEMPORAL_KEYS = frozenset(
     {
         "effective_period_id",
         "effective_from",
@@ -66,8 +67,6 @@ _TEMPORAL_KEYS = frozenset(
     }
 )
 _SHOWN_KEYS = frozenset({"subject", "predicate", "object", "object_kind", "approval_action_id"})
-_PREDICATE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
-_CLIENT_REF_PREFIX = "external_mcp:client="
 
 _UNSHOWABLE = "This stored call carries more than this review can show, so it cannot be approved."
 _RECORD_UNAVAILABLE = "The external proposal record for this action is unavailable."
@@ -82,16 +81,22 @@ _ENTITY_STATE_TEXT = {
 }
 
 
+def _uuid(value: Any) -> UUID | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
 def proposal_id_from_key(deduplication_key: Any) -> UUID | None:
     """The proposal ID in an ``external_mcp:<uuid>`` key, or ``None``."""
     if not isinstance(deduplication_key, str):
         return None
     if not deduplication_key.startswith(EXTERNAL_PROPOSAL_KEY_PREFIX):
         return None
-    try:
-        return UUID(deduplication_key.removeprefix(EXTERNAL_PROPOSAL_KEY_PREFIX))
-    except ValueError:
-        return None
+    return _uuid(deduplication_key.removeprefix(EXTERNAL_PROPOSAL_KEY_PREFIX))
 
 
 def _client_label(evidence: Any) -> str | None:
@@ -104,25 +109,16 @@ def _client_label(evidence: Any) -> str | None:
     if not isinstance(evidence, Sequence):
         return None
     labels = {
-        item["ref"].removeprefix(_CLIENT_REF_PREFIX)
+        item["ref"].removeprefix(EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX)
         for item in evidence
         if isinstance(item, Mapping)
         and isinstance(item.get("ref"), str)
-        and item["ref"].startswith(_CLIENT_REF_PREFIX)
+        and item["ref"].startswith(EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX)
     }
     if len(labels) != 1:
         return None
     try:
         return validate_client_label(labels.pop())
-    except ValueError:
-        return None
-
-
-def _uuid(value: Any) -> UUID | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        return UUID(value)
     except ValueError:
         return None
 
@@ -133,9 +129,9 @@ def _shown_call(
     """``(subject, predicate, object)`` when the review shows the whole stored call."""
     if tool_name != EXTERNAL_PROPOSAL_TOOL:
         return None
-    if set(tool_args) - _SHOWN_KEYS - _TEMPORAL_KEYS - {"conf"}:
+    if set(tool_args) - _SHOWN_KEYS - TEMPORAL_KEYS - {"conf"}:
         return None
-    if any(tool_args.get(key) is not None for key in _TEMPORAL_KEYS):
+    if any(tool_args.get(key) is not None for key in TEMPORAL_KEYS):
         return None
     conf = tool_args.get("conf", 1.0)
     if isinstance(conf, bool) or conf != 1.0:
@@ -148,7 +144,7 @@ def _shown_call(
         or obj is None
         or tool_args.get("object_kind") != "entity"
         or not isinstance(predicate, str)
-        or not _PREDICATE_RE.fullmatch(predicate)
+        or not PREDICATE_NAME_RE.fullmatch(predicate)
         or tool_args.get("approval_action_id") != str(action_id)
     ):
         return None
@@ -160,7 +156,8 @@ def _entity(entity_id: UUID, row: Mapping[str, Any] | None) -> ExternalProposalE
         return ExternalProposalEntity(id=str(entity_id), status="missing")
     if row["merged_into"] is not None:
         status = "merged"
-    elif row["deleted_at"] is not None:
+    elif row["deleted_at"] is not None or row["tombstone"] == "true":
+        # Forget and delete mark an entity either way (entity_merge._is_forgotten).
         status = "deleted"
     else:
         status = "live"
@@ -202,7 +199,10 @@ async def read_external_proposal_review(
     """
     proposal_id = proposal_id_from_key(row.get("deduplication_key"))
     raw_args = row.get("tool_args")
-    tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    try:
+        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except json.JSONDecodeError:
+        tool_args = None
     if not isinstance(tool_args, Mapping):
         tool_args = {}
     review: dict[str, Any] = {
@@ -212,7 +212,7 @@ async def read_external_proposal_review(
     }
     shown = _shown_call(action_id, row.get("tool_name"), tool_args)
     predicate = tool_args.get("predicate")
-    if isinstance(predicate, str) and _PREDICATE_RE.fullmatch(predicate):
+    if isinstance(predicate, str) and PREDICATE_NAME_RE.fullmatch(predicate):
         review["predicate"] = predicate
 
     reasons: list[str] = []
@@ -247,7 +247,8 @@ async def read_external_proposal_review(
                 """
                 SELECT id, canonical_name, entity_type,
                        metadata->>'merged_into' AS merged_into,
-                       metadata->>'deleted_at' AS deleted_at
+                       metadata->>'deleted_at' AS deleted_at,
+                       metadata->>'tombstone' AS tombstone
                   FROM public.entities
                  WHERE id = ANY($1::uuid[])
                 """,
@@ -288,6 +289,7 @@ async def read_external_proposal_review(
 
 
 __all__ = [
+    "TEMPORAL_KEYS",
     "THIRD_PARTY_AUTHORITY_STATEMENT",
     "proposal_id_from_key",
     "read_external_proposal_review",
