@@ -167,6 +167,7 @@ async def test_route_to_butler_envelope_behavior(
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.real_gate_state
 async def test_route_to_butler_blocked_when_cross_butler_revoked(
     tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -196,6 +197,30 @@ async def test_route_to_butler_blocked_when_cross_butler_revoked(
     assert result["status"] == "error"
     assert "permission denied" in result.get("error", "").lower()
     assert result["butler"] == "health"
+    mock_route.assert_not_awaited()
+
+
+async def test_route_to_butler_refused_when_the_permission_store_is_unreadable(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable permission store refuses the dispatch; the route never runs [bu-svqpzo.3]."""
+    from butlers.core.permissions import PermissionStatus
+
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    _host, fn = await _route_to_butler(tool_host, tmp_path, monkeypatch, mock_route, db=True)
+    monkeypatch.setattr(
+        "butlers.core_tools._switchboard.check_permission",
+        AsyncMock(
+            return_value=PermissionStatus(
+                allowed=False, unavailable=True, reason="permission store unavailable"
+            )
+        ),
+    )
+
+    result = await fn(butler="health", prompt="test")
+
+    assert result["status"] == "error"
+    assert "permission" in result.get("error", "").lower()
     mock_route.assert_not_awaited()
 
 

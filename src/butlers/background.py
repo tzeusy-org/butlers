@@ -299,7 +299,10 @@ async def scheduler_loop(
         (``butler_registry``) used to gate scheduled dispatch on
         ``eligibility_state``.  Called lazily per tick so the pool is read after
         startup wiring completes.  When ``None`` (or the callable returns
-        ``None``), no eligibility gating is applied and all ticks dispatch.
+        ``None``), no eligibility gating is applied and all ticks dispatch: that is
+        how a butler that cannot read the registry or its own policy opts out of
+        gating. When a pool is supplied, a lookup failure gates the tick (fails
+        closed, ERROR log, ``next_run_at`` preserved) rather than dispatching.
         QA ignores it: ``tick()`` gates QA only on its own policy projection
         read through ``pool``, which is QA's runtime-role pool.
     default_timezone:

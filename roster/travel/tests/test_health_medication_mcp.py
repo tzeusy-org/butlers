@@ -92,6 +92,20 @@ async def test_consumer_denies_explicitly_revoked_permission_without_routing() -
     client.call_tool.assert_not_awaited()
 
 
+async def test_consumer_refuses_and_never_routes_when_the_permission_store_is_unreadable() -> None:
+    pool = AsyncMock()
+    pool.fetchrow.side_effect = RuntimeError("store down")
+    client = AsyncMock()
+
+    result = await _request(pool, client)
+
+    assert result["status"] == "error"
+    assert result["medications"] == []
+    assert result["error"]["code"] == "switchboard_unavailable"
+    assert result["error"]["retryable"] is True
+    client.call_tool.assert_not_awaited()
+
+
 async def test_consumer_reports_missing_switchboard_client_as_retryable() -> None:
     from butlers.tools.travel.health import request_health_medication_snapshot
 

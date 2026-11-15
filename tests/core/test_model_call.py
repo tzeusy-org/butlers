@@ -32,6 +32,7 @@ from butlers.core.model_call import (
 )
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
     CeilingStatus,
     Complexity,
     QuotaStatus,
@@ -52,6 +53,10 @@ _ALLOWED = QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, l
 _EXHAUSTED = QuotaStatus(allowed=False, usage_24h=10, limit_24h=5, usage_30d=0, limit_30d=None)
 _UNDER = CeilingStatus(allowed=True, mtd_usd=1.0, ceiling_usd=10.0)
 _OVER = CeilingStatus(allowed=False, mtd_usd=12.0, ceiling_usd=10.0)
+_CEILING_UNAVAILABLE = CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)
+_QUOTA_UNAVAILABLE = QuotaStatus(
+    allowed=False, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None, unavailable=True
+)
 
 
 class _Sink(AttemptSink):
@@ -372,22 +377,73 @@ async def test_quota_exhausted_tier_raises_failover_exhausted_without_invoking()
     assert attempt.seen == []
 
 
-async def test_gate_errors_fail_open_as_catalog_token_limits_requires() -> None:
-    """A database error inside either gate check lets the call proceed."""
+@pytest.mark.real_gate_state
+async def test_unreadable_gate_state_refuses_without_invoking_or_raising_a_fleet_halt() -> None:
+    """A database error inside the gate checks refuses the call (bu-svqpzo.3).
+
+    The real ``check_monthly_ceiling`` runs against a pool that cannot answer, so the call is
+    refused as ``ceiling unavailable``: no fleet-halt (the Spend banner means a real breach)
+    and the attempt is never invoked.
+    """
     pool = MagicMock()
     pool.fetchrow = AsyncMock(side_effect=OSError("connection refused"))
     pool.fetch = AsyncMock(side_effect=OSError("connection refused"))
     sink = _Sink()
+    attempt = _attempts()
     with (
         patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(return_value=(*A, "workhorse"))),
         patch(f"{_K}.apply_spend_routing_rules", AsyncMock(side_effect=OSError("down"))),
+        pytest.raises(SpendCeilingReached) as raised,
     ):
-        result = await call_model(
-            pool, _spec(), _attempts(AttemptOutcome("ok")), adapter_for=_adapter_for(), sink=sink
-        )
+        await call_model(pool, _spec(), attempt, adapter_for=_adapter_for(), sink=sink)
 
-    assert result.text == "ok"
-    assert sink.outcomes == ["success"]
+    assert str(raised.value) == CEILING_UNAVAILABLE_REASON
+    assert not str(raised.value).startswith(CEILING_DENIAL_REASON_PREFIX)
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert row["outcome"] == "quota_skip"
+    assert row["failure_reason"] == CEILING_UNAVAILABLE_REASON
+    assert row["produce_fleet_halt"] is False
+
+
+async def test_unavailable_ceiling_refuses_with_its_own_reason_and_no_fleet_halt() -> None:
+    sink = _Sink()
+    attempt = _attempts()
+    with _Catalog(ceilings=[_CEILING_UNAVAILABLE]), pytest.raises(SpendCeilingReached) as raised:
+        await _call(_spec(), attempt, sink)
+
+    assert str(raised.value) == CEILING_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        CEILING_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+async def test_unavailable_quota_is_skipped_and_never_reported_as_exhausted() -> None:
+    sink = _Sink()
+    attempt = _attempts()
+    with _Catalog(quotas=[_QUOTA_UNAVAILABLE]), pytest.raises(RuntimeError) as raised:
+        await _call(_spec(), attempt, sink)
+
+    assert str(raised.value).startswith("same_tier_failover_exhausted: tier=workhorse")
+    assert "Token quota unavailable" in str(raised.value)
+    assert "exhausted: " not in str(raised.value).split("last quota skip:")[-1]
+    assert attempt.seen == []
+    assert sink.outcomes == ["quota_skip"]
+    assert sink.events[0][1]["failure_reason"].startswith("Token quota unavailable")
+
+
+async def test_unavailable_quota_fails_over_to_the_next_same_tier_entry_once_it_reads() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog(fallbacks=[B], quotas=[_QUOTA_UNAVAILABLE, _ALLOWED]):
+        await _call(_spec(), attempt, sink)
+
+    assert [c.model_id for c in attempt.seen] == ["model-b"]
+    assert sink.outcomes == ["quota_skip", "success"]
 
 
 # --- failover and D14 -------------------------------------------------------------------

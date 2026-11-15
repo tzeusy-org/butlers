@@ -93,6 +93,7 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
     CandidateOutcome,
     Complexity,
     DispatchResolution,
@@ -106,7 +107,7 @@ from butlers.core.model_routing import (
     next_same_tier_candidate,
     resolve_model_with_effective_tier,
 )
-from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.permissions import SPAWN_PERMISSION, check_permission, denial_message
 from butlers.core.purpose_lane import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     PURPOSE_LANE_STANDARD,
@@ -2040,17 +2041,12 @@ class Spawner:
         # is an authorization decision, not a budget one). Mirrors the spend-ceiling /
         # token-quota denial path: a ``quota_skip`` dispatch-attempt row (so the denial
         # is observable in provenance) plus a failed SpawnerResult. check_permission
-        # fails open, so a DB error never wedges spawns.
+        # fails closed: an unreadable permission store refuses the spawn (bu-svqpzo.3).
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
             perm = await check_permission(self._pool, self._config.name, SPAWN_PERMISSION)
             if not perm.allowed:
-                perm_msg = (
-                    f"Permission denied: butler '{self._config.name}' is not granted "
-                    f"'{SPAWN_PERMISSION}'"
-                )
-                if perm.reason:
-                    perm_msg += f" (reason: {perm.reason})"
+                perm_msg = denial_message(perm, self._config.name, SPAWN_PERMISSION)
                 logger.warning(
                     "Spawn blocked by permissions matrix for butler=%s: %s",
                     self._config.name,
@@ -2098,11 +2094,17 @@ class Spawner:
                         f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
                     )
                 alias = model or str(catalog_entry_id)
-                quota_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
-                    windows_exceeded
-                )
+                if quota.unavailable:
+                    quota_msg = (
+                        f"Token quota unavailable for catalog entry '{alias}': "
+                        "the quota state could not be read"
+                    )
+                else:
+                    quota_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
+                        windows_exceeded
+                    )
                 logger.warning(
-                    "Quota exhausted for butler=%s catalog_entry_id=%s; "
+                    "Quota refused for butler=%s catalog_entry_id=%s; "
                     "seeking next same-tier candidate: %s",
                     self._config.name,
                     catalog_entry_id,
@@ -2188,8 +2190,8 @@ class Spawner:
         # a hard block regardless of which model resolved (switching models would not
         # bring spend back under budget).  Reuses the quota denial path: a
         # ``quota_skip`` dispatch-attempt row (so the denial is observable in
-        # provenance) plus a failed SpawnerResult.  Fails open inside
-        # check_monthly_ceiling, so a DB/pricing error never wedges spawns.
+        # provenance) plus a failed SpawnerResult.  check_monthly_ceiling fails closed: a
+        # DB/pricing error returns ``unavailable`` and refuses the dispatch.
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
             # Consume the concurrently-prefetched ceiling result (kicked off right
@@ -2204,10 +2206,17 @@ class Spawner:
                 else await check_monthly_ceiling(self._pool)
             )
             if not ceiling.allowed:
+                # An unreadable ceiling refuses with its own reason and no fleet-halt:
+                # the Spend banner keys on the reached-ceiling prefix and must keep
+                # meaning a real breach (bu-svqpzo.3).
                 ceiling_msg = (
-                    f"{CEILING_DENIAL_REASON_PREFIX}: "
-                    f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
-                    f"${ceiling.ceiling_usd:.2f}"
+                    CEILING_UNAVAILABLE_REASON
+                    if ceiling.unavailable
+                    else (
+                        f"{CEILING_DENIAL_REASON_PREFIX}: "
+                        f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+                        f"${ceiling.ceiling_usd:.2f}"
+                    )
                 )
                 logger.warning(
                     "Spawn blocked by monthly spend ceiling for butler=%s: %s",
@@ -2224,7 +2233,7 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
-                    produce_fleet_halt=True,
+                    produce_fleet_halt=not ceiling.unavailable,
                     resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(

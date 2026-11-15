@@ -1281,8 +1281,8 @@ async def test_receiver_scheduler_gate_uses_policy_when_legacy_heartbeat_expired
 
 @_asyncio_session
 async def test_receiver_scheduler_gate_policy_function_edges(monkeypatch):
-    """Missing policy holds; denial or another butler's pool fails open."""
-    from butlers.core.scheduler.claim import _butler_dispatch_gated
+    """Missing policy holds; an unreadable policy or another butler's pool fails closed."""
+    from butlers.core.scheduler.claim import ELIGIBILITY_UNAVAILABLE_REASON, _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
 
@@ -1294,12 +1294,66 @@ async def test_receiver_scheduler_gate_policy_function_edges(monkeypatch):
         return pool
 
     assert "administrative policy" in await _butler_dispatch_gated(raising("P0002"), "health")
-    assert await _butler_dispatch_gated(raising("42501"), "health") is None
-    assert await _butler_dispatch_gated(raising("42883"), "health") is None
+    unavailable = ELIGIBILITY_UNAVAILABLE_REASON
+    assert await _butler_dispatch_gated(raising("42501"), "health") == unavailable
+    assert await _butler_dispatch_gated(raising("42883"), "health") == unavailable
 
     foreign = AsyncMock()
     foreign.fetchrow.return_value = {"butler_name": "finance", "policy_state": "paused"}
-    assert await _butler_dispatch_gated(foreign, "health") is None
+    assert await _butler_dispatch_gated(foreign, "health") == unavailable
+
+
+@_asyncio_session
+async def test_legacy_scheduler_gate_fails_closed_when_the_registry_lookup_raises(
+    monkeypatch, caplog
+):
+    """A registry that cannot be read must not let a paused butler dispatch (bu-svqpzo.3)."""
+    from butlers.core.scheduler.claim import ELIGIBILITY_UNAVAILABLE_REASON, _butler_dispatch_gated
+
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("registry down"),
+    ):
+        with caplog.at_level("WARNING", logger="butlers.core.scheduler.claim"):
+            reason = await _butler_dispatch_gated(AsyncMock(), "health")
+    assert reason == ELIGIBILITY_UNAVAILABLE_REASON
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
+
+
+@_asyncio_session
+async def test_tick_skips_dispatch_and_keeps_due_time_when_the_registry_is_unreadable(
+    general_pool,
+):
+    """A lookup failure gates the tick like a pause: nothing dispatches, next_run_at stays due."""
+    from butlers.core.scheduler.crud import schedule_create
+    from butlers.core.scheduler.dispatch import tick
+
+    t1 = await schedule_create(general_pool, "unreadable-task", "*/1 * * * *", "must not run")
+    await general_pool.execute(
+        "UPDATE scheduled_tasks SET next_run_at = $2 WHERE id = $1", t1, _past()
+    )
+    broken = AsyncMock()
+    broken.fetchrow.side_effect = RuntimeError("registry down")
+    dispatch = _Dispatch()
+    with patch(
+        "butlers.tools.switchboard.registry.registry.resolve_routing_target",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("registry down"),
+    ):
+        count = await tick(general_pool, dispatch, butler_name="butlerA", eligibility_pool=broken)
+
+    assert count == 0 and dispatch.calls == []
+    row = await general_pool.fetchrow(
+        "SELECT next_run_at, last_run_at FROM scheduled_tasks WHERE id = $1", t1
+    )
+    assert row["next_run_at"] <= datetime.now(UTC) and row["last_run_at"] is None
+
+    # The first tick after the registry is readable runs the preserved work, once.
+    healthy = _FakeEligibilityPool(name="butlerA", eligibility_state="active")
+    assert await tick(general_pool, dispatch, butler_name="butlerA", eligibility_pool=healthy) == 1
+    assert len(dispatch.calls) == 1
 
 
 @_asyncio_session
@@ -1442,7 +1496,7 @@ async def test_non_qa_butler_reads_its_own_hold_through_its_runtime_role(
     general_policy_db_url, monkeypatch
 ):
     """sw_053: general's own role sees its own hold; a role-less pool is refused."""
-    from butlers.core.scheduler.claim import _butler_dispatch_gated
+    from butlers.core.scheduler.claim import ELIGIBILITY_UNAVAILABLE_REASON, _butler_dispatch_gated
 
     monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
 
@@ -1476,12 +1530,12 @@ async def test_non_qa_butler_reads_its_own_hold_through_its_runtime_role(
             reason = await _butler_dispatch_gated(general, "general")
             assert (reason is not None) is held, (state, reason)
 
-        # No runtime role: the function refuses and the gate fails open.
+        # No runtime role: the function refuses and the gate fails closed.
         await owner.execute(
             "UPDATE switchboard.butler_registry_control_plane "
             "SET policy_state = 'paused', policy_provenance = 'operator' WHERE name = 'general'"
         )
-        assert await _butler_dispatch_gated(owner, "general") is None
+        assert await _butler_dispatch_gated(owner, "general") == ELIGIBILITY_UNAVAILABLE_REASON
     finally:
         await general.close()
         await owner.close()

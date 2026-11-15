@@ -27,15 +27,13 @@ explicit row).  Therefore:
 
 Store availability
 ------------------
-Effect sites opt into ``fail_closed=True``: a missing pool, failed read or malformed
-row refuses before the effect with :class:`PermissionUnavailable`. A readable
-missing row still allows. Availability failures are logged without row contents
-or raw exception text.
-
-The default shared lookup temporarily retains legacy fail-open behavior for
-spawn, cross-butler routing and core notify admission. The staged correction
-bu-30sah4 protects effects first; dependent bu-svqpzo.3 replaces the temporary
-split with one fail-closed policy for every caller, including spawn.
+Every caller fails closed: a missing pool, a failed read or a malformed row refuses
+with ``PermissionStatus(allowed=False, unavailable=True)`` (or :class:`PermissionUnavailable`
+from :func:`require_permission`) and an ERROR log. A readable missing row still allows.
+Availability failures are logged without row contents or raw exception text. The
+original reason for failing open, that an unreadable store would wedge every spawn
+town-wide, no longer holds: with a pool the spawner already refuses when the model
+catalog cannot be read, so a database outage already stops spawns (bu-svqpzo.3).
 """
 
 from __future__ import annotations
@@ -95,14 +93,14 @@ class PermissionStatus:
     ----------
     allowed:
         ``True`` when the butler may perform the action (granted, or no explicit
-        row exists, or the lookup failed and we failed open).
+        row exists).
     explicit:
         ``True`` when a concrete ``public.permissions`` row drove the decision.
-        ``False`` for the default-allow path (no row) and the fail-open path.
+        ``False`` for the default-allow path (no row) and the unavailable path.
     reason:
         The audit reason recorded on the row, or a fixed availability reason.
     unavailable:
-        ``True`` when an opted-in effect check could not read valid permission state.
+        ``True`` when the check could not read valid permission state; ``allowed`` is then False.
     """
 
     allowed: bool
@@ -138,13 +136,11 @@ async def check_permission(
     pool: asyncpg.Pool | None,
     butler: str,
     permission: str,
-    *,
-    fail_closed: bool = False,
 ) -> PermissionStatus:
     """Return whether ``butler`` is granted ``permission`` per ``public.permissions``.
 
     Non-raising. See the module docstring for the opt-in-deny semantics and the
-    staged availability contract.
+    fail-closed availability contract.
 
     Parameters
     ----------
@@ -155,17 +151,14 @@ async def check_permission(
         Butler name (matrix row key).
     permission:
         Permission name (matrix column key, e.g. ``"spawn"`` or ``"email.send"``).
-    fail_closed:
-        Refuse unavailable state at effect sites. The temporary default for remaining
-        shared callers is removed by bu-svqpzo.3.
     """
     if pool is None:
-        return _store_unavailable(butler, permission, fail_closed, "MissingPool")
+        return _store_unavailable(butler, permission, "MissingPool")
 
     try:
         row = await pool.fetchrow(_PERMISSION_SELECT_SQL, butler, permission)
     except Exception as exc:
-        return _store_unavailable(butler, permission, fail_closed, type(exc).__name__)
+        return _store_unavailable(butler, permission, type(exc).__name__)
 
     if row is None:
         # No explicit grant/revoke is different from an unreadable store.
@@ -174,50 +167,49 @@ async def check_permission(
     try:
         granted = row["granted"]
         reason = row["reason"]
-        if fail_closed and (
-            not isinstance(granted, bool) or (reason is not None and not isinstance(reason, str))
-        ):
+        if not isinstance(granted, bool) or (reason is not None and not isinstance(reason, str)):
             raise ValueError("Invalid permission row")
     except Exception as exc:
-        if not fail_closed:
-            raise
-        return _store_unavailable(butler, permission, fail_closed, type(exc).__name__)
+        return _store_unavailable(butler, permission, type(exc).__name__)
     return PermissionStatus(allowed=bool(granted), explicit=True, reason=reason)
 
 
-def _store_unavailable(
-    butler: str, permission: str, fail_closed: bool, error_class: str
-) -> PermissionStatus:
+def _store_unavailable(butler: str, permission: str, error_class: str) -> PermissionStatus:
     # Exception messages and row contents can contain private data. Keep diagnostics fixed.
-    logger.log(
-        logging.ERROR if fail_closed else logging.WARNING,
-        "Permission store unavailable: butler=%s permission=%s error_class=%s fail_closed=%s",
+    logger.error(
+        "Permission store unavailable; refusing: butler=%s permission=%s error_class=%s",
         butler,
         permission,
         error_class,
-        fail_closed,
     )
-    return PermissionStatus(
-        allowed=not fail_closed,
-        reason="permission store unavailable" if fail_closed else None,
-        unavailable=fail_closed,
-    )
+    return PermissionStatus(allowed=False, reason="permission store unavailable", unavailable=True)
+
+
+def denial_message(status: PermissionStatus, butler: str, permission: str) -> str:
+    """The refusal text for a non-allowed ``status``, distinct for an unreadable store."""
+    if status.unavailable:
+        return (
+            f"Permission state unavailable: butler '{butler}' was refused '{permission}' "
+            "because the permission store could not be read; retry when it is readable"
+        )
+    message = f"Permission denied: butler '{butler}' is not granted '{permission}'"
+    if status.reason:
+        message += f" (reason: {status.reason})"
+    return message
 
 
 async def require_permission(
     pool: asyncpg.Pool | None,
     butler: str,
     permission: str,
-    *,
-    fail_closed: bool = False,
 ) -> None:
     """Raise :class:`PermissionDenied` when ``butler`` lacks ``permission``.
 
     Thin raising wrapper over :func:`check_permission` for call sites that prefer
-    exception control flow. Effects opt into unavailable-state refusal with
-    ``fail_closed=True``; a readable missing row always remains default-allow.
+    exception control flow. An unreadable store raises :class:`PermissionUnavailable`; a
+    readable missing row remains default-allow.
     """
-    status = await check_permission(pool, butler, permission, fail_closed=fail_closed)
+    status = await check_permission(pool, butler, permission)
     if status.unavailable:
         raise PermissionUnavailable(butler, permission)
     if not status.allowed:

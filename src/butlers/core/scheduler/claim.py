@@ -140,6 +140,9 @@ async def _qa_admission_refusal(pool: asyncpg.Pool) -> str | None:
     return f"QA local schedule policy {policy.value}"
 
 
+ELIGIBILITY_UNAVAILABLE_REASON = "eligibility unavailable: registry lookup failed"
+
+
 async def _butler_dispatch_gated(
     eligibility_pool: asyncpg.Pool | None,
     butler_name: str | None,
@@ -161,10 +164,11 @@ async def _butler_dispatch_gated(
     reads switchboard tables, so only the switchboard passes a pool then.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
-    context available), or a human-readable reason string when dispatch must be
-    skipped.  Registry/lookup failures fail OPEN (return ``None``) so a
-    transient registry hiccup never silently freezes a healthy butler's
-    schedule.
+    context available: the caller passed no eligibility pool), or a human-readable
+    reason string when dispatch must be skipped. A registry/lookup failure FAILS
+    CLOSED: the owner's pause cannot be read, so the tick skips its deadline and
+    cron dispatch, leaves ``next_run_at`` unchanged so the work runs on the first
+    tick after the registry is readable, and logs at ERROR (bu-svqpzo.3).
     """
     if eligibility_pool is None or not butler_name:
         return None
@@ -181,7 +185,7 @@ async def _butler_dispatch_gated(
             try:
                 row = await eligibility_pool.fetchrow(_BUTLER_POLICY_QUERY)
             except asyncpg.PostgresError as exc:
-                # anything but "no policy row" fails open
+                # anything but "no policy row" is an unreadable policy (fails closed)
                 if exc.sqlstate != "P0002":  # pyright: ignore[reportAttributeAccessIssue]
                     raise
                 row = None
@@ -198,14 +202,15 @@ async def _butler_dispatch_gated(
             allow_quarantined=False,
         )
     except Exception:
-        # Registry unreachable / schema missing — fail open so scheduling keeps
-        # working for healthy butlers; do not gate on infrastructure errors.
-        logger.warning(
-            "Scheduler eligibility check failed for butler %r; proceeding with dispatch",
+        # Registry unreachable / schema missing: the pause state cannot be read, so a
+        # paused butler must not run. Due work is preserved, not dropped.
+        logger.error(
+            "Scheduler eligibility check failed for butler %r; skipping dispatch until the "
+            "registry is readable",
             butler_name,
             exc_info=True,
         )
-        return None
+        return ELIGIBILITY_UNAVAILABLE_REASON
 
     if target is None:
         # error is the registry's own reason string (e.g. quarantined/stale).

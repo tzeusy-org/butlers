@@ -462,9 +462,7 @@ class TelegramModule(Module):
                 render_links_inert=render_links_inert,
                 server_built=server_built_reply_markup,
             )
-            await require_permission(
-                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-            )
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
             chunks = split_telegram_text(text, inert=render_links_inert)
             lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
             self._chat_locks[chat_id] = (lock, users + 1)
@@ -583,9 +581,7 @@ class TelegramModule(Module):
         message_ids: list[int] = []
         try:
             specs = validate_attachment_specs(attachments)
-            await require_permission(
-                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-            )
+            await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
             # origin_butler is the Messenger-verified notify.v1 sender; refs
             # outside its RFC 0016 key prefix (or the connector prefix) refuse.
             resolved = await resolve_attachments(
@@ -807,9 +803,7 @@ class TelegramModule(Module):
 
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
@@ -832,9 +826,7 @@ class TelegramModule(Module):
 
     async def _remove_inline_keyboard(self, chat_id: str, message_id: int) -> dict[str, Any]:
         """Remove a sent Telegram message's inline keyboard."""
-        await require_permission(
-            self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
-        )
+        await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
         return await remove_telegram_inline_keyboard(
             self._get_client(),
             self._base_url(),

@@ -29,6 +29,7 @@ import pytest
 from fastmcp import Client
 from fastmcp import FastMCP as RuntimeFastMCP
 
+from butlers.core.permissions import PermissionStatus
 from butlers.daemon import ButlerDaemon
 from butlers.testing.tool_host import host_tools
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
@@ -980,13 +981,13 @@ async def test_system_question_reads_registered_concierge_and_publishes_cited_an
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",
     ],
 )
 async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, monkeypatch, failure):
-    from types import SimpleNamespace
 
     from butlers.core_tools import _dashboard_system_answer as system
 
@@ -1005,7 +1006,12 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
     monkeypatch.setattr(
         system,
         "check_permission",
-        AsyncMock(return_value=SimpleNamespace(allowed=failure != "denied")),
+        AsyncMock(
+            return_value=PermissionStatus(
+                allowed=failure not in {"denied", "permission_unreadable"},
+                unavailable=failure == "permission_unreadable",
+            )
+        ),
     )
     _, tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path), patches, mock_route=route
@@ -1044,6 +1050,7 @@ async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, mo
         "unknown_tool",
         "bad_args",
         "denied",
+        "permission_unreadable",
         "missing_argument",
         "unknown_argument",
         "invalid_argument",
@@ -1551,7 +1558,6 @@ async def test_system_answer_pending_session_defers_repeated_publication(monkeyp
 async def test_system_read_uses_daemon_plugin_validator(
     tmp_path, monkeypatch, declarations_available
 ):
-    from types import SimpleNamespace
 
     from butlers.core_tools import _dashboard_system_answer as system
     from butlers.modules.dashboard_read import tools as provider
@@ -1567,7 +1573,7 @@ async def test_system_read_uses_daemon_plugin_validator(
     }
     route = AsyncMock(return_value={"result": evidence})
     monkeypatch.setattr(
-        system, "check_permission", AsyncMock(return_value=SimpleNamespace(allowed=True))
+        system, "check_permission", AsyncMock(return_value=PermissionStatus(allowed=True))
     )
     daemon, tools = await _start_switchboard_and_capture_tools(
         _make_switchboard_dir(tmp_path), patches, mock_route=route

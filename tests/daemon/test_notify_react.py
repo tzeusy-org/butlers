@@ -176,6 +176,7 @@ class TestNotifyReactIntent:
         assert nr["delivery"]["intent"] == "react"
 
     @_booted
+    @pytest.mark.real_gate_state
     async def test_notify_blocked_when_notify_permission_revoked(
         self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -207,6 +208,33 @@ class TestNotifyReactIntent:
 
         assert result["status"] == "error"
         assert "permission denied" in result["error"].lower()
+        client.call_tool.assert_not_called()
+
+    @_booted
+    async def test_notify_refused_when_the_permission_store_is_unreadable(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable permission store refuses notify() instead of delivering.
+
+        [bu-svqpzo.3]
+        """
+        from butlers.core.permissions import PermissionStatus
+
+        booted = await _fresh_butler(booted_daemon, tmp_path)
+        client = await _booted_with_switchboard(booted, monkeypatch)
+        monkeypatch.setattr(
+            "butlers.core_tools._notifications.check_permission",
+            AsyncMock(
+                return_value=PermissionStatus(
+                    allowed=False, unavailable=True, reason="permission store unavailable"
+                )
+            ),
+        )
+
+        result = await _notify(booted)(channel="telegram", message="hello", intent="send")
+
+        assert result["status"] == "error"
+        assert "permission" in result["error"].lower()
         client.call_tool.assert_not_called()
 
     @_booted

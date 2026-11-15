@@ -153,6 +153,7 @@ pythonpath = ["."]
 #   root logger and never shut down, so they cannot leak into later tests.
 addopts = "--import-mode=importlib -p tests.quarantine -p tests.log_isolation -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
+    "real_gate_state: Run the real permission, quota and ceiling gates; opts out of the readable-state autouse fixture (bu-svqpzo.3)",
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",
     "integration: Integration tests — require Docker (testcontainers)",
