@@ -53,7 +53,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -525,7 +525,8 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         # Takes the projection lock itself, so a call outside run() still serializes with
         # run() and retention preparation (within run() the lock is already held; re-entry).
-        async with owntracks_transaction(chronicler_pool, self.source_name) as conn:
+        async with owntracks_transaction(chronicler_pool, self.source_name) as proxy:
+            conn = cast(asyncpg.Connection, proxy)  # a pool proxy behaves as its Connection
             source = conn if pool is chronicler_pool else pool
             return await self._project_with_connection(
                 source,
