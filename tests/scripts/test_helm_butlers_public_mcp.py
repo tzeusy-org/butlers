@@ -125,9 +125,26 @@ def test_the_only_writable_path_is_a_tmp_emptydir(docs):
         assert "hostPath" not in doc_volume
 
 
+_IMAGE_PYTHON = ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py"]
+
+
+def test_the_server_starts_through_the_image_python_entrypoint(docs):
+    # The image puts no venv on PATH (Dockerfile has no ENV PATH), so a bare console-script
+    # name such as `butlers-public-mcp` cannot resolve: every role starts through the sealed
+    # entrypoint, which validates the venv and then runs its interpreter.
+    for dockerfile in ("Dockerfile", "Dockerfile.base"):
+        assert "ENV PATH" not in (_ROOT / dockerfile).read_text(), dockerfile
+    command = _container(docs)["command"]
+    assert command == [*_IMAGE_PYTHON, "python", "-m", "butlers.mcp_public.server"]
+    # The module run is the `butlers-public-mcp` console script's own target.
+    pyproject = (_ROOT / "pyproject.toml").read_text()
+    assert 'butlers-public-mcp = "butlers.mcp_public.server:main"' in pyproject
+    server = (_ROOT / "src/butlers/mcp_public/server.py").read_text()
+    assert 'if __name__ == "__main__":\n    main()' in server
+
+
 def test_command_image_and_ports(docs):
     container = _container(docs)
-    assert container["command"] == ["butlers-public-mcp"]
     assert container["image"] == "registry.invalid/butlers-app:t"
     ports = {p["name"]: p["containerPort"] for p in container["ports"]}
     assert ports == {"mcp": _MCP_PORT, "metrics": _METRICS_PORT}

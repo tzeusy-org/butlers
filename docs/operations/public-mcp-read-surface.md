@@ -391,11 +391,13 @@ runtime contract and values.
 3. *Site values.* The server requires `MCP_PUBLIC_AUDIENCE` (https URL of the public endpoint) and
    `MCP_PUBLIC_ALLOWED_SUBS` (comma-separated owner subjects). Neither is committed: export
    `BUTLERS_PUBLIC_MCP_AUDIENCE` and `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS` (optionally
-   `BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS`, `BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS`) for the deploy;
+   `BUTLERS_PUBLIC_MCP_CLIENT_DOMAINS`, `BUTLERS_PUBLIC_MCP_REGISTERED_CLIENTS`) for the deploy,
+   or keep them in the site env file (`/secrets/.dev.env`), which `scripts/site-env.sh` exports;
    the chart refuses to render without the first two.
-4. *Keyring.* After owner act 4, set `keyringJson` (a local values file or `--set-file`) to the
-   verifier keyring document (version, current, retiring). Empty until then: the server verifies
-   nothing and refuses every call.
+4. *Keyring.* After owner act 4, write the verifier keyring document (version, current,
+   retiring; public keys only) to a file and name it in `BUTLERS_PUBLIC_MCP_KEYRING_FILE` (env or
+   site env file); the deploy script renders it with `--set-file keyringJson=`. Without it every
+   upgrade resets the keyring to empty, and the server verifies nothing and refuses every call.
 5. *Deploy.* On dev, `make deploy-dev` upgrades the chart after a successful owner step, at the
    same tag, through `scripts/k8s/public-mcp-chart-deploy.sh`. **The hook is guarded:**
    `PUBLIC_MCP_CHART_dev := off` in `deploy/helm/butlers/makefile` until go-live. Flip it to `on`
@@ -413,7 +415,9 @@ per line, `#` comments. An empty or comment-only file disables nothing. A missin
 entry, invalid UTF-8 or an unreadable file disables everything (the chart always mounts it). The server re-reads it every 10 s.
 
 The process the chart runs (`butlers.mcp_public`, task 2.3) is the console script
-`butlers-public-mcp`, installed with the `butlers` package:
+`butlers-public-mcp`, installed with the `butlers` package. The image puts no venv on PATH, so the
+chart runs the script's target, `python -m butlers.mcp_public.server`, through the image's sealed
+`scripts/runtime_clis/python_entrypoint.py` (as every other role does):
 
 | Contract | Value |
 | --- | --- |
@@ -433,6 +437,16 @@ the `postgres-<env>` policy check (REQ-public-mcp-projection-014), the reachabil
 task 1.8 isolation test (`mcp_public_ro` reaches `butlers_public` only). Then the task 2.5 smoke
 from a test pod in `mcp`: `describe` answers, and every other tool either serves or refuses with
 one of the codes in [section 4](#4-fail-closed-states).
+
+*Dark smoke (before owner act 4).* `bws run -- scripts/k8s/public-mcp-smoke.sh dev`, with the hop
+bearer in `MCP_PUBLIC_HOP_BEARER`. It refuses unless the keyring is empty, installs a throwaway
+test key as the keyring (RFC 0039 P2 "with a test keyring"), restarts the server, runs the live
+checks, then from a labelled probe pod in `mcp`: the bearer and assertion refusals, `initialize`
+and `tools/list`, every tool but `propose_fact` (it writes an inbox row), the first call's
+canary-probe time and the `entity_lookup`/`search` p95. The no-reasoning witness lists the rows
+created in `butlers` during the window (sessions, route inbox, schedules, routing log, goals,
+message inbox, ingestion events) by source and fails on any mcp/public source. The empty keyring
+is restored on exit. Past act 4 the smoke goes through the gateway Worker (`bu-y66o00.7`).
 
 ### 3e. Alerts and monitors
 

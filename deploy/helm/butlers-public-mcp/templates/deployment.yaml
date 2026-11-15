@@ -29,7 +29,9 @@ spec:
         - name: server
           image: {{ .Values.image.repository }}:{{ required "image.tag is required (git SHA)" .Values.image.tag }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["butlers-public-mcp"]
+          # The image has no venv on PATH: start through the sealed entrypoint, which validates
+          # the venv and runs its interpreter (the butlers-public-mcp console script's target).
+          command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "-m", "butlers.mcp_public.server"]
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
