@@ -12,6 +12,10 @@ reads it. Ordinary, focus and unknown future event types SHALL count as before.
 Thresholds, workspace visibility and the API response shape SHALL NOT change,
 and no type SHALL be inferred from a title (bu-s11n0s.4 AC D, design E7).
 
+ID: REQ-calendar-conflict-overcommitment-radar-001
+Source: bu-s11n0s.4 AC D (declared status events), design E7; core_341 event_type
+Scope: v1-mandatory
+
 #### Scenario: Opaque out-of-office still conflicts but adds no day load
 
 - **WHEN** an opaque out-of-office block overlaps a meeting and ends just before
