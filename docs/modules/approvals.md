@@ -259,13 +259,21 @@ UUIDs, a predicate, `object_kind = 'entity'`, `conf = 1.0`, the action's own
 action with the same subject, predicate and object, it is still `parked`, the
 client label is recorded, and both entities are live. Otherwise it is null and
 `approve_unavailable_reason` says why (an unresolvable entity also sets
-`unresolvable_entity`). Both approve routes re-read the review under the
-pending-row lock: they answer 409 with that reason, or 409 "changed since shown"
-when the submitted `displayed_call` differs, before any decision, audit or
-dispatch. An approve without a `displayed_call` (a connector callback: no card
-ever showed it) and an approve carrying `edits` are refused with their own 409
-details: the owner decides the call as reviewed, since an edit would execute
-arguments no review showed. Reject and Defer are unaffected. If an entity is
+`unresolvable_entity`). The dashboard approve route (`POST
+/api/approvals/{id}/approve` and its `actions/` alias, both `approve_owning_action`)
+re-reads the review under the pending-row lock: it answers 409 with that reason,
+or 409 "changed since shown" when the submitted `displayed_call` differs, before
+any decision, audit or dispatch. An approve without a `displayed_call` (a
+connector callback: no card ever showed it) and an approve carrying `edits` are
+refused with their own 409 details: the owner decides the call as reviewed, since
+an edit would execute arguments no review showed; the owner rejects instead.
+Only after those checks does the route pass the owning write an
+`ExternalReviewBinding` (action id and the displayed `args_digest`).
+`operations.approve_action` refuses an `external_mcp:` action unless that binding
+names this action and the stored call's digest, and the approvals module's
+`approve_action` MCP tool refuses one outright, both before any status change
+(`EXTERNAL_PROPOSAL_REVIEW_ONLY`), so no model-driven path approves an outside
+proposal. Reject and Defer are unaffected. If an entity is
 tombstoned after approval, the approved replay still fails closed
 (`relationship_assert_fact` refuses it and the importer reports `apply_failed`).
 

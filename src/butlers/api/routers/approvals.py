@@ -108,6 +108,7 @@ from butlers.modules.approvals.delivery_lifecycle import (
 from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
 from butlers.modules.approvals.external_proposals import (
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    ExternalReviewBinding,
     is_external_proposal_action,
     is_external_proposal_key,
     is_external_proposal_row,
@@ -3807,6 +3808,7 @@ async def approve_owning_action(
 
     async def decide(conn: Any) -> dict[str, Any]:
         nonlocal action_row
+        external_binding: ExternalReviewBinding | None = None
         # The row lock makes the presented-digest check below atomic with the
         # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
@@ -3839,6 +3841,10 @@ async def approve_owning_action(
                 raise HTTPException(status_code=409, detail=EXTERNAL_PROPOSAL_REVIEW_REQUIRED)
             if displayed_call != review.displayed_call:
                 raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+            # The owning write refuses an external proposal without this binding.
+            external_binding = ExternalReviewBinding(
+                action_id=parsed_id, args_digest=review.displayed_call.args_digest
+            )
         elif require_displayed_call:
             preview = (
                 dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
@@ -3863,6 +3869,7 @@ async def approve_owning_action(
                     actor_id=actor_id,
                     promotion_eligible=promotion_eligible,
                     decision_memory_writer=None,
+                    external_review=external_binding,
                 )
                 if verb != "approve" or "error" in outcome:
                     raise _OwnerDeliveryDecisionRefused(outcome)
@@ -3923,6 +3930,7 @@ async def approve_owning_action(
             # A pool-backed writer uses a separate transaction. Defer it until
             # this approval, optional standing rule and audit have committed.
             decision_memory_writer=None,
+            external_review=external_binding,
         )
         if "error" in result and original_tool_args is not None:
             # A refused decision may still commit its legitimate expiry transition.

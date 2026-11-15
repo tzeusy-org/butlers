@@ -1900,8 +1900,12 @@ state lives on the primary, in `relationship.external_fact_proposals`
    a typed review, after the precedent in `review-parked-entity-merge-approvals`.
    It shows subject, predicate, object, the submitting client label and the
    evidence link as inert text, and never a raw tool-call preview. The owner
-   may edit the proposal (RFC 0021). The executed digest is then the edited
-   one. [Observed] The approve path records every manual approval in
+   decides the proposal as reviewed: an edit is refused without execution
+   and the owner rejects instead, so an edited triple never carries the
+   outside `src`. Only this dashboard decision approves: the approvals
+   module's model-driven `approve_action` tool and the shared approve
+   operation without the dashboard's binding to the displayed call refuse an
+   external proposal before any status change. [Observed] The approve path records every manual approval in
    autonomy history, calls the promotion check (threshold 5) and honours
    `create_rule` (`src/butlers/modules/approvals/operations.py:285-320`).
    For an action whose deduplication key starts with `external_mcp:`, the

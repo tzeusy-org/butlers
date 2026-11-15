@@ -12,6 +12,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -20,8 +21,12 @@ import pytest
 
 from butlers.api import external_proposal_review as review_mod
 from butlers.api.deps import get_db
+from butlers.api.models.approval import DisplayedApprovalCall
 from butlers.api.routers import approvals as routes
-from butlers.modules.approvals.external_proposals import EXTERNAL_PROPOSAL_RULE_REFUSAL
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    ExternalReviewBinding,
+)
 from butlers.modules.approvals.previews import args_digest
 
 pytestmark = pytest.mark.unit
@@ -166,6 +171,7 @@ def http(app, monkeypatch, world):
             yield conn
 
     pool = Pool()
+    world.pool = pool  # type: ignore[attr-defined]
 
     async def find(*_args):
         return "relationship", pool
@@ -279,6 +285,41 @@ async def test_approve_with_displayed_call_executes(http, world, legacy) -> None
     assert world.events[:2] == ["begin", "lock"]
     assert "approve" in world.events and "dispatch" in world.events
     assert world.approval_kwargs["create_rule"] is False  # type: ignore[attr-defined]
+    # The owning write receives the binding to exactly the reviewed call.
+    assert world.approval_kwargs["external_review"] == ExternalReviewBinding(  # type: ignore[attr-defined]
+        world.action_id, displayed["args_digest"]
+    )
+
+
+# A dashboard card token (owner-delivery rollout) decides through the same check and
+# hands the owning write the same binding.
+async def test_owner_delivery_token_approve_carries_the_review_binding(
+    http, world, monkeypatch
+) -> None:
+    displayed = (await _detail(http, world))["external_proposal_review"]["displayed_call"]
+
+    async def redeem(conn, _parsed_id, _stored, *, decide, **_kwargs):
+        world.events.append("redeem")
+        return await decide(conn, "approve")
+
+    monkeypatch.setattr(routes, "_redeem_owner_delivery", redeem)
+    world.events.clear()
+    await routes.approve_owning_action(
+        parsed_id=world.action_id,
+        actor_id="synthetic-owner",
+        edits=None,
+        action_butler="relationship",
+        target_pool=world.pool,  # type: ignore[attr-defined]
+        db_mgr=SimpleNamespace(),  # type: ignore[arg-type]
+        mcp_mgr=object(),  # type: ignore[arg-type]
+        displayed_call=DisplayedApprovalCall(**displayed),
+        require_displayed_call=True,
+        owner_delivery_token="synthetic-token",
+    )
+    assert "redeem" in world.events and "approve" in world.events
+    assert world.approval_kwargs["external_review"] == ExternalReviewBinding(  # type: ignore[attr-defined]
+        world.action_id, displayed["args_digest"]
+    )
 
 
 @pytest.mark.parametrize("legacy", [False, True])

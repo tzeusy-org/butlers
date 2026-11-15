@@ -24,10 +24,15 @@ from fastapi import HTTPException
 
 from butlers.api.routers.approvals import _delivery_truth, _pending_action_to_api
 from butlers.modules.approvals import operations
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_REVIEW_ONLY,
+    ExternalReviewBinding,
+)
 from butlers.modules.approvals.gate import match_standing_rule
 from butlers.modules.approvals.models import PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.park import park_external_proposal, park_pending_action
+from butlers.modules.approvals.previews import args_digest
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -283,9 +288,30 @@ async def _ordinary_pending(pool, tool_args: dict) -> uuid.UUID:
     return action_id
 
 
-async def _approve_via(path: str, pool, action_id: uuid.UUID, *, create_rule=False) -> dict:
+async def _dashboard_binding(pool, action_id: uuid.UUID) -> ExternalReviewBinding:
+    """The binding the dashboard route supplies after its displayed-call check.
+
+    This chain has no Relationship schema, so the typed review is not read here;
+    ``roster/relationship/tests/external_review_fixtures.py`` builds the same binding
+    from the real review reader.
+    """
+    stored = await pool.fetchval("SELECT tool_args FROM pending_actions WHERE id=$1", action_id)
+    return ExternalReviewBinding(action_id=action_id, args_digest=args_digest(stored))
+
+
+async def _approve_via(
+    path: str,
+    pool,
+    action_id: uuid.UUID,
+    *,
+    create_rule=False,
+    external_review: ExternalReviewBinding | None = None,
+) -> dict:
     if path == "operations":
-        return await operations.approve_action(pool, str(action_id), create_rule=create_rule)
+        return await operations.approve_action(
+            pool, str(action_id), create_rule=create_rule, external_review=external_review
+        )
+    assert external_review is None, "no model-driven path holds a dashboard binding"
     module = ApprovalsModule()
     await module.on_startup({}, pool)
     try:
@@ -305,6 +331,53 @@ async def _rule_from_action_via(path: str, pool, action_id: uuid.UUID) -> dict:
         await module.on_shutdown()
 
 
+# REQ-dashboard-approvals-904: only the passkey dashboard review approves an outside
+# proposal. The module MCP tool never does, and the shared operation refuses without the
+# dashboard route's binding to this exact call, all before any status change.
+@pytest.mark.parametrize(
+    ("path", "binding"),
+    [
+        ("mcp_module", None),
+        ("operations", None),
+        ("operations", "other_action"),
+        ("operations", "other_call"),
+    ],
+)
+async def test_external_proposal_approves_only_from_the_dashboard_review(
+    approvals_pool, path, binding
+) -> None:
+    admission = await _park(approvals_pool)
+    action_id = admission.action_id
+    bound = await _dashboard_binding(approvals_pool, action_id)
+    external_review = {
+        None: None,
+        "other_action": ExternalReviewBinding(uuid.uuid4(), bound.args_digest),
+        "other_call": ExternalReviewBinding(action_id, args_digest({"predicate": "knows"})),
+    }[binding]
+
+    result = await _approve_via(path, approvals_pool, action_id, external_review=external_review)
+
+    assert result == {"error": EXTERNAL_PROPOSAL_REVIEW_ONLY}
+    row = await approvals_pool.fetchrow(
+        "SELECT status, decided_by FROM pending_actions WHERE id=$1", action_id
+    )
+    assert dict(row) == {"status": "pending", "decided_by": None}
+    assert (
+        await approvals_pool.fetchval(
+            "SELECT count(*) FROM approval_events WHERE action_id=$1 AND event_type='action_approved'",
+            action_id,
+        )
+        == 0
+    )
+
+    # Positive controls: the same path approves an ordinary action, and the shared
+    # operation approves this proposal with the dashboard's binding to its call.
+    ordinary = await _ordinary_pending(approvals_pool, {"subject": str(uuid.uuid4())})
+    assert "error" not in await _approve_via(path, approvals_pool, ordinary)
+    approved = await _approve_via("operations", approvals_pool, action_id, external_review=bound)
+    assert "error" not in approved and approved["status"] == "approved"
+
+
 # REQ-module-approvals-010: "Approving outside proposals never suggests a rule".
 @pytest.mark.parametrize("path", ["operations", "mcp_module"])
 async def test_five_external_approvals_leave_no_history_and_no_suggestion(
@@ -318,7 +391,14 @@ async def test_five_external_approvals_leave_no_history_and_no_suggestion(
             action_id=action_id,
             tool_args=_args(action_id, subject=subject, obj=obj),
         )
-        result = await _approve_via(path, approvals_pool, admission.action_id)
+        # Only the dashboard's bound entry approves an outside proposal; the
+        # module path is exercised by the ordinary control below.
+        result = await _approve_via(
+            "operations",
+            approvals_pool,
+            admission.action_id,
+            external_review=await _dashboard_binding(approvals_pool, admission.action_id),
+        )
         assert "error" not in result and result["status"] == "approved"
     assert await approvals_pool.fetchval("SELECT count(*) FROM autonomy_approval_history") == 0
     assert await approvals_pool.fetchval("SELECT count(*) FROM autonomy_suggestions") == 0

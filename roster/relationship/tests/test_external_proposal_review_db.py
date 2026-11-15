@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 import pytest
 
+from butlers.api import external_proposal_review as review_mod
 from butlers.api.deps import get_db
 from butlers.api.routers import approvals as routes
 from butlers.modules.approvals.external_proposals import EXTERNAL_PROPOSAL_RULE_REFUSAL
@@ -250,3 +251,42 @@ async def test_tombstoned_subject_blocks_approve_and_reject_still_resolves(
         )
     assert rejected.status_code == 200, rejected.text
     assert await _status(rel_pool, parked.action_id) == "rejected"
+
+
+# REQ-dashboard-approvals-904: only the action the importer parked for a proposal earns a
+# displayed call. A proposal record naming a different action leaves this one unreviewable.
+async def test_proposal_naming_another_action_offers_no_displayed_call(
+    client, parked, rel_pool
+) -> None:
+    _detail, before = await _review(client, parked.action_id)
+    shown = before["displayed_call"]
+    other_proposal = uuid.uuid4()
+    async with rel_pool.acquire() as conn:
+        other = await external.park_external_fact_proposal(
+            conn,
+            proposal_id=other_proposal,
+            subject=parked.subject,
+            predicate="works-at",
+            object_entity_id=parked.object,
+            client_label="synthetic-client",
+            evidence_url=None,
+            received_at=_RECEIVED_AT,
+        )
+    await rel_pool.execute(
+        "UPDATE relationship.external_fact_proposals SET pending_action_id=$2 WHERE proposal_id=$1",
+        parked.proposal_id,
+        other.action_id,
+    )
+
+    _detail, review = await _review(client, parked.action_id)
+    assert review["displayed_call"] is None
+    assert review["approve_unavailable_reason"] == review_mod._RECORD_UNAVAILABLE
+    assert review["note"] is None and review["evidence_url"] is None
+
+    async with synthetic_owner(rel_pool):
+        refused = await client.post(
+            f"/api/approvals/{parked.action_id}/approve", json={"displayed_call": shown}
+        )
+    assert refused.status_code == 409
+    assert await _status(rel_pool, parked.action_id) == "pending"
+    assert client.dispatched == []
