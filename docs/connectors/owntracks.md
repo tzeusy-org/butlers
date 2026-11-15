@@ -131,6 +131,19 @@ until deletion is gated on per-row projection coverage (bu-s11n0s.7). Until
 then, raw fixes are still retained indefinitely. `OWNTRACKS_RETENTION_DAYS`
 governs only the `public.ingestion_events` audit rows.
 
+Groundwork for that gate is in place, and still deletes nothing:
+
+- Each raw fix carries an immutable retention clock, `retention_at` (core_340): the device
+  timestamp, or the server receipt time when the device timestamp is more than 4 hours after
+  receipt. A trigger sets it on insert, whatever the writer sends, and refuses any later change
+  to `ts`, `recorded_at` or `retention_at`.
+- `owntracks.points` records, in the same transaction as its outputs and cursor, which raw rows
+  it has finished projecting (`chronicler.location_projection_coverage`, chronicler_032) and which
+  are still held by an open carry: its open movement segment or a pending trail-consensus row
+  (`chronicler.location_projection_open_members`). A later expiry may delete a row only when it
+  has coverage from every adapter and no adapter holds it open. The place and SSID adapters do
+  not write coverage yet, so no raw row is fully covered.
+
 ## Implementation Notes
 
 - The Chronicler `owntracks.points` adapter tracks ingestion progress by arrival order, not
