@@ -93,13 +93,11 @@ async def test_consumer_denies_explicitly_revoked_permission_without_routing() -
 
 
 async def test_consumer_refuses_and_never_routes_when_the_permission_store_is_unreadable() -> None:
-    from butlers.tools.travel.health import request_health_medication_snapshot
-
     pool = AsyncMock()
     pool.fetchrow.side_effect = RuntimeError("store down")
     client = AsyncMock()
 
-    result = await request_health_medication_snapshot(pool, client)
+    result = await _request(pool, client)
 
     assert result["status"] == "error"
     assert result["medications"] == []
