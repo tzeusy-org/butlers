@@ -30,8 +30,17 @@ decline, an owner `tentative` or `needsAction` answer, and absent or malformed
 attendee metadata SHALL keep the event eligible. Both the projected
 `response_status` and the raw provider `responseStatus` spellings SHALL count.
 
+Typed Google status events are calendar context, not meetings (bu-u33sb7):
+an `outOfOffice` or `workingLocation` event SHALL never be a meeting or focus
+candidate. An active confirmed out-of-office event, timed or all-day and not
+butler-generated, SHALL clear the producer's `meeting` and `focused` signals
+even when a meeting overlaps it. It SHALL NOT write the legacy `away` signal
+(which maps to `owner.place`) and SHALL NOT enter an owner mode; mode entry
+from an out-of-office block is reserved to an owner-confirmed proposal. A
+typed `focusTime` event SHALL assert `focused` regardless of its title.
+
 ID: REQ-context-bus-017
-Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance outcome
+Source: RFC 0009 §Signal Producers (calendar → meeting/focused); bu-s11n0s.4 attendance and event-type outcomes; bu-u33sb7
 Scope: v1-mandatory
 
 #### Scenario: Butler-generated event does not assert context
@@ -84,3 +93,19 @@ Scope: v1-mandatory
 - **WHEN** an active event's guest declined, or the owner's answer is
   `tentative` or `needsAction`, or its attendee metadata is absent or malformed
 - **THEN** the event remains an eligible meeting candidate
+
+#### Scenario: Out-of-office clears context without asserting away
+
+- **WHEN** an active confirmed out-of-office event overlaps an attended meeting
+- **THEN** the producer clears `meeting` and `focused`
+- **AND** it writes no `away` signal and enters no owner mode
+
+#### Scenario: Status events are never meeting candidates
+
+- **WHEN** the only active event is a working-location event
+- **THEN** the producer does not set `meeting` or `focused` from it
+
+#### Scenario: Typed focus time asserts focused
+
+- **WHEN** the active eligible event has `event_type = "focusTime"`
+- **THEN** the producer publishes `focused` whatever its title says

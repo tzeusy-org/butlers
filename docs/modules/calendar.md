@@ -212,8 +212,11 @@ owners, without keeping a second engine. Every Calendar package Python file is l
     no day-load hours. A `focusTime` block is still busy time.
   - Relationship and email meeting prep, the meeting card and the connector's starting-soon
     notices skip both.
-  - Not yet: what an out-of-office block asserts beyond clearing (an owner decision), and the
-    working-location signal.
+  - Out-of-office is calendar context only (bu-u33sb7): it never writes the legacy `away`
+    signal (that maps to `owner.place`) and never enters an owner mode, since automatic entry
+    is limited to asleep, in flight and house unattended. Mode entry from it would need an
+    owner-confirmed M7 proposal.
+  - Not yet: the working-location signal (S3).
 - `calendar_sync_status` / `calendar_force_sync` report `projection_freshness` (`last_refreshed_at`,
   `staleness_ms`, per-source `fresh|stale|failed`). Dashboard `calendar_force_sync(queue=true)`
   commands are durable `calendar_action_log` rows: the worker starts even with polling disabled,
