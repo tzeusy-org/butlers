@@ -18,7 +18,6 @@ from collections.abc import Mapping
 from functools import cache
 from typing import Any
 
-import asyncpg
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import (
     LATEST_PROTOCOL_VERSION,
@@ -31,21 +30,13 @@ from mcp.types import (
 )
 
 from butlers.knowledge_read import chronology, describe, finance, graph, health, search, travel
-from butlers.knowledge_read.core import DOMAINS, Arguments, ReadContext, ReadError
+from butlers.knowledge_read.core import DOMAINS
+from butlers.knowledge_read.proposable import proposable_predicates
 from butlers.knowledge_read.records import RECORDS_LIMIT, RECORDS_MAX_DAYS, record_kinds
 
 SERVER_NAME = "butlers-public-mcp"
-# v1 proposals take relational-kind predicates only (D13); bu-y66o00.8 generates this list
-# from knowledge_read/proposable.toml when propose_fact lands.
-PROPOSABLE_PREDICATES = (
-    "knows",
-    "colleague-of",
-    "friend-of",
-    "co-attended",
-    "visited",
-    "works-at",
-    "member-of",
-)
+# v1 proposals take relational-kind predicates only (D13): the literal allowlist file.
+PROPOSABLE_PREDICATES = proposable_predicates()
 
 Schema = dict[str, Any]
 
@@ -785,7 +776,9 @@ def _annotations(name: str, title: str) -> ToolAnnotations:
         title=title,
         readOnlyHint=name != "propose_fact",
         destructiveHint=False,
-        idempotentHint=name != "propose_fact",  # each proposal creates an inbox row
+        # D10: true for every tool. propose_fact's id is derived from its arguments and its
+        # insert is no-op-on-conflict, so a repeated identical call has no further effect.
+        idempotentHint=True,
         openWorldHint=False,
     )
 
@@ -845,29 +838,3 @@ STATIC_HANDLERS = {
     "initialize": initialize,
     "tools/list": tools_list,
 }
-
-
-async def propose_fact_pending(
-    _conn: asyncpg.Connection, _context: ReadContext, arguments: object
-) -> dict[str, Any]:
-    """``propose_fact`` until its reader lands (bu-y66o00.8): closed argument parsing, then
-    ``domain_disabled`` (non-retryable, D5), so a client fixes a bad argument but never
-    retries a good one."""
-    args = Arguments(
-        arguments,
-        {
-            "subject_entity_id",
-            "predicate",
-            "object_entity_id",
-            "evidence_url",
-            "note",
-            "idempotency_key",
-        },
-    )
-    args.uuid("subject_entity_id")
-    args.choice("predicate", PROPOSABLE_PREDICATES)
-    args.uuid("object_entity_id")
-    args.text("evidence_url", max_length=2048)
-    args.text("note", max_length=500)
-    args.text("idempotency_key", max_length=64, required=True)
-    raise ReadError("domain_disabled", domain="proposals")
