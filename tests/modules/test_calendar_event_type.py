@@ -268,9 +268,12 @@ async def test_provider_projection_writes_and_replaces_the_typed_fields() -> Non
     sql = args[0]
     assert "event_type = EXCLUDED.event_type" in sql
     # Replaced, never kept: a later update without a location clears it.
-    assert "working_location = EXCLUDED.working_location" in sql
+    assert "working_location_type = EXCLUDED.working_location_type" in sql
+    assert "working_location_label = EXCLUDED.working_location_label" in sql
     assert "COALESCE" not in sql
-    assert args[19:] == ("workingLocation", {"type": "customLocation", "label": "Cafe"})
+    # Two scalar columns, not JSONB: a new JSONB column on calendar_events would have to join
+    # health's declared public JSON projection map (health_007), which refuses any drift.
+    assert args[19:] == ("workingLocation", "customLocation", "Cafe")
 
     module, pool = _projecting_module()
     await module._project_provider_changes(
@@ -280,4 +283,4 @@ async def test_provider_projection_writes_and_replaces_the_typed_fields() -> Non
         updated_events=[_parse()],
         cancelled_ids=[],
     )
-    assert _insert_args(pool)[19:] == ("default", None)
+    assert _insert_args(pool)[19:] == ("default", None, None)

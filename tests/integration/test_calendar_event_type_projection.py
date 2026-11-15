@@ -1,7 +1,7 @@
 """Typed Google event fields persist through the real core chain (bu-s11n0s.4 S1).
 
 The production parser and projector write ``calendar_events.event_type`` and
-``working_location`` (core_341); every readback is a fresh query on its own connection after the
+``working_location_type``/``working_location_label`` (core_341); every readback is a fresh query on its own connection after the
 projector returned. Payloads are synthetic (shaped after the public Events resource reference).
 """
 
@@ -42,8 +42,8 @@ async def _project(module: CalendarModule, source: Any, payload: dict[str, Any])
 async def _read(pool: Any, origin_ref: str) -> tuple[Any, ...]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT event_type, working_location, all_day, metadata->>'provider' AS provider "
-            "FROM calendar_events WHERE origin_ref = $1",
+            "SELECT event_type, working_location_type, working_location_label, all_day, "
+            "metadata->>'provider' AS provider FROM calendar_events WHERE origin_ref = $1",
             origin_ref,
         )
     assert row is not None
@@ -68,7 +68,8 @@ async def test_typed_fields_are_written_replaced_and_cleared(migrated_core_postg
         )
         assert await _read(pool, "typed-1") == (
             "workingLocation",
-            {"type": "homeOffice", "label": "home office"},
+            "homeOffice",
+            "home office",
             True,
             "google",
         )
@@ -77,26 +78,24 @@ async def test_typed_fields_are_written_replaced_and_cleared(migrated_core_postg
         await _project(
             module, source, _payload(eventType="workingLocation", workingLocationProperties=office)
         )
-        assert (await _read(pool, "typed-1"))[:2] == (
-            "workingLocation",
-            {"type": "officeLocation", "label": "HQ"},
-        )
+        assert (await _read(pool, "typed-1"))[:3] == ("workingLocation", "officeLocation", "HQ")
 
         # The provider drops the properties: the location is cleared, not kept.
         await _project(module, source, _payload(eventType="workingLocation"))
-        assert (await _read(pool, "typed-1"))[:2] == ("workingLocation", None)
+        assert (await _read(pool, "typed-1"))[:3] == ("workingLocation", None, None)
 
         # A type change replaces the type; an unknown type survives.
         await _project(module, source, _payload(eventType="someFutureType"))
-        assert (await _read(pool, "typed-1"))[:2] == ("someFutureType", None)
+        assert (await _read(pool, "typed-1"))[:3] == ("someFutureType", None, None)
 
         await _project(module, source, _payload(id="ooo-1", eventType="outOfOffice"))
-        assert (await _read(pool, "ooo-1"))[:2] == ("outOfOffice", None)
+        assert (await _read(pool, "ooo-1"))[:3] == ("outOfOffice", None, None)
 
         # The checks refuse what the normalizer never produces.
         for statement in (
             "UPDATE calendar_events SET event_type = '' WHERE origin_ref = 'ooo-1'",
-            "UPDATE calendar_events SET working_location = '[1]'::jsonb WHERE origin_ref = 'ooo-1'",
+            "UPDATE calendar_events SET working_location_type = 'homeOffice' "
+            "WHERE origin_ref = 'ooo-1'",
         ):
             with pytest.raises(Exception, match="check constraint"):
                 await pool.execute(statement)

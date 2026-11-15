@@ -127,11 +127,13 @@ class ProjectionMixin:
                           AND column_name = 'source_session_id'
                     ) AS has_events_source_session_id,
                     (
-                        SELECT count(*) = 2
+                        SELECT count(*) = 3
                         FROM information_schema.columns
                         WHERE table_schema = current_schema()
                           AND table_name = 'calendar_events'
-                          AND column_name IN ('event_type', 'working_location')
+                          AND column_name IN (
+                              'event_type', 'working_location_type', 'working_location_label'
+                          )
                     ) AS has_events_typed_fields
                 """
             )
@@ -154,7 +156,7 @@ class ProjectionMixin:
                 "calendar_events.body": row["has_events_body"],
                 "calendar_events.source_butler": row["has_events_source_butler"],
                 "calendar_events.source_session_id": row["has_events_source_session_id"],
-                # core_341: event_type + working_location.
+                # core_341: event_type + working_location_type/label.
                 "calendar_events.typed_fields": row["has_events_typed_fields"],
             }
         except KeyError:
@@ -509,8 +511,11 @@ class ProjectionMixin:
         effective_source_butler = self._resolve_effective_butler_name(source_butler)
         normalized_source_session_id = _normalize_optional_string(source_session_id)
         metadata_json = self._encode_jsonb(metadata or {})
-        working_location_json = (
-            None if working_location is None else self._encode_jsonb(working_location)
+        # Stored as two scalars, never JSONB (see core_341).
+        location_type, location_label = (
+            (None, None)
+            if working_location is None
+            else (working_location["type"], working_location["label"])
         )
         row = await pool.fetchrow(
             """
@@ -518,13 +523,13 @@ class ProjectionMixin:
                 source_id, origin_ref, title, description, body, location, timezone,
                 starts_at, ends_at, all_day, status, visibility, recurrence_rule,
                 etag, origin_updated_at, metadata, source_butler, source_session_id,
-                event_type, working_location
+                event_type, working_location_type, working_location_label
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7,
                 $8, $9, $10, $11, $12, $13,
                 $14, $15, $16, $17, $18,
-                $19, $20
+                $19, $20, $21
             )
             ON CONFLICT (source_id, origin_ref) DO UPDATE SET
                 title = EXCLUDED.title,
@@ -544,7 +549,8 @@ class ProjectionMixin:
                 source_butler = EXCLUDED.source_butler,
                 source_session_id = EXCLUDED.source_session_id,
                 event_type = EXCLUDED.event_type,
-                working_location = EXCLUDED.working_location,
+                working_location_type = EXCLUDED.working_location_type,
+                working_location_label = EXCLUDED.working_location_label,
                 updated_at = now()
             RETURNING id
             """,
@@ -567,7 +573,8 @@ class ProjectionMixin:
             effective_source_butler,
             normalized_source_session_id,
             event_type,
-            working_location_json,
+            location_type,
+            location_label,
         )
         if row is None:
             raise RuntimeError("Projection upsert did not return calendar_events.id")

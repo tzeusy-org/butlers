@@ -194,7 +194,11 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   A `workingLocation` event's `workingLocationProperties` become `working_location`
   (`{type: homeOffice, label: "home office"}`, or `officeLocation`/`customLocation` with their own
   non-empty label, cleaned and bounded to 256 characters), else NULL; building/desk ids, the
-  summary and `location` are never substituted. Every provider sync replaces both fields (a
+  summary and `location` are never substituted. It is stored as two text columns,
+  `working_location_type` and `working_location_label` (both or neither), not JSONB: finance
+  and health publish their JSONB columns through a declared map that must match exactly, and
+  plain columns stay unpublished unless the projection manifest lists them. Every provider sync
+  replaces both fields (a
   dropped location clears). They are read-side only: tool payloads include them, no create/update
   input or Google write body carries them, and list/sync requests omit `eventTypes` so every
   type is returned. Older rows are `default`/NULL; the core_341 downgrade keeps the columns.

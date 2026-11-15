@@ -7,14 +7,21 @@ Create Date: 2026-11-15 00:00:00.000000
 Google Calendar marks out-of-office, focus-time and working-location entries with
 ``eventType`` (and ``workingLocationProperties`` for the last). The canonical normalizer
 dropped both, so a declared out-of-office block looked like an ordinary meeting. This adds
-two columns to the schema's own ``calendar_events``:
+three columns to the schema's own ``calendar_events``:
 
 - ``event_type TEXT NOT NULL DEFAULT 'default'``: the provider type, kept verbatim
   (``outOfOffice``, ``focusTime``, ``workingLocation``, ``fromGmail``, ``birthday`` or a future
   value). No enumeration check: an unknown type must survive. A length check (1..64) matches the
   normalizer's bound.
-- ``working_location JSONB NULL``: the normalized ``{type, label}`` object, or NULL. A check
-  keeps it an object; the application validates its shape.
+- ``working_location_type TEXT NULL`` and ``working_location_label TEXT NULL``: the normalized
+  working location (``homeOffice``, ``officeLocation`` or ``customLocation``, and its 1..256
+  character label), or both NULL. One check keeps the pair all-or-nothing.
+
+The location is two scalars, not a JSONB object, on purpose. Finance and health install public
+JSON projections (core_320, finance_020, health_007) whose declared column map must equal the
+table's JSONB columns exactly; a new JSONB column would fail those installers on a fresh
+database and would be a new publication decision. A plain column is unpublished unless the
+projection manifest lists it.
 
 Existing rows become ``default``/NULL. Nothing is guessed from titles and no provider history
 is fetched; the next provider sync replaces both fields on every event it reports.
@@ -40,12 +47,13 @@ branch_labels = None
 depends_on = None
 
 _EVENT_TYPE_CHECK = "calendar_events_event_type_length_check"
-_WORKING_LOCATION_CHECK = "calendar_events_working_location_object_check"
+_WORKING_LOCATION_CHECK = "calendar_events_working_location_check"
 
 # (column, data_type, is_nullable, column_default) as information_schema reports them.
 _EXPECTED = {
     "event_type": ("text", "NO", "'default'::text"),
-    "working_location": ("jsonb", "YES", None),
+    "working_location_type": ("text", "YES", None),
+    "working_location_label": ("text", "YES", None),
 }
 
 
@@ -57,7 +65,8 @@ def _existing_columns() -> dict[str, tuple[str, str, str | None]]:
                 "SELECT column_name, data_type, is_nullable, column_default "
                 "FROM information_schema.columns "
                 "WHERE table_schema = current_schema() AND table_name = 'calendar_events' "
-                "AND column_name IN ('event_type', 'working_location')"
+                "AND column_name IN ('event_type', 'working_location_type', "
+                "'working_location_label')"
             )
         )
         .fetchall()
@@ -89,14 +98,20 @@ def upgrade() -> None:
             "ADD COLUMN event_type TEXT NOT NULL DEFAULT 'default'",
             f"ADD CONSTRAINT {_EVENT_TYPE_CHECK} CHECK (char_length(event_type) BETWEEN 1 AND 64)",
         ]
-    if "working_location" not in existing:
-        clauses += [
-            "ADD COLUMN working_location JSONB",
-            f"ADD CONSTRAINT {_WORKING_LOCATION_CHECK} "
-            "CHECK (working_location IS NULL OR jsonb_typeof(working_location) = 'object')",
-        ]
+    if "working_location_type" not in existing:
+        clauses.append("ADD COLUMN working_location_type TEXT")
+    if "working_location_label" not in existing:
+        clauses.append("ADD COLUMN working_location_label TEXT")
+    if "working_location_type" not in existing or "working_location_label" not in existing:
+        # Added with the second of the pair, so a partly-present pair is completed, not reused.
+        clauses.append(
+            f"ADD CONSTRAINT {_WORKING_LOCATION_CHECK} CHECK ("
+            "(working_location_type IS NULL AND working_location_label IS NULL) OR ("
+            "working_location_type IN ('homeOffice', 'officeLocation', 'customLocation') "
+            "AND char_length(working_location_label) BETWEEN 1 AND 256))"
+        )
     if clauses:
-        # One ALTER: a constant default is metadata-only and both checks hold trivially on the
+        # One ALTER: a constant default is metadata-only and every check holds trivially on the
         # new columns, so the table is not rewritten.
         op.execute("ALTER TABLE calendar_events " + ", ".join(clauses))
 

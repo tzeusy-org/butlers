@@ -2,7 +2,8 @@
 
 Real migrated databases only: a legacy row becomes ``default``/NULL, a re-run is a catalog
 no-op, the evidence-preserving downgrade keeps columns and values and a later upgrade reuses
-them, and an incompatible pre-existing column stops the migration.
+them, an incompatible pre-existing column stops the migration, no JSONB column is added, and the
+working-location pair is all-or-nothing.
 """
 
 from __future__ import annotations
@@ -64,6 +65,15 @@ _TABLE_STATE = """
 """
 
 
+_TYPED = "SELECT event_type, working_location_type, working_location_label FROM calendar_events"
+
+_JSONB_COLUMNS = """
+    SELECT array_agg(column_name::text ORDER BY column_name) FROM information_schema.columns
+    WHERE table_schema = current_schema() AND table_name = 'calendar_events'
+      AND data_type = 'jsonb'
+"""
+
+
 def test_legacy_rows_default_reruns_are_noops_and_downgrade_keeps_evidence(
     postgres_container,
 ) -> None:
@@ -71,28 +81,52 @@ def test_legacy_rows_default_reruns_are_noops_and_downgrade_keeps_evidence(
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
     command.upgrade(config, "core_340")
     _execute(db_url, _SEED_LEGACY)
+    jsonb_before = _fetch(db_url, _JSONB_COLUMNS)
 
     command.upgrade(config, "core_341")
+    # No new JSONB column: finance and health install public JSON projections whose declared
+    # column map must equal the table's JSONB columns exactly (health_007).
+    assert _fetch(db_url, _JSONB_COLUMNS) == jsonb_before
     # Never guessed from the title.
-    assert _fetch(db_url, "SELECT event_type, working_location FROM calendar_events") == [
-        ("default", None)
-    ]
+    assert _fetch(db_url, _TYPED) == [("default", None, None)]
     _execute(
         db_url,
         "UPDATE calendar_events SET event_type = 'workingLocation', "
-        """working_location = '{"type": "homeOffice", "label": "home office"}'::jsonb""",
+        "working_location_type = 'homeOffice', working_location_label = 'home office'",
     )
     table_state = _fetch(db_url, _TABLE_STATE)
 
     # Evidence-preserving downgrade: the version marker moves, the columns and values stay.
     command.downgrade(config, "core_340")
-    typed = _fetch(db_url, "SELECT event_type, working_location FROM calendar_events")
-    assert typed == [("workingLocation", {"type": "homeOffice", "label": "home office"})]
+    typed = _fetch(db_url, _TYPED)
+    assert typed == [("workingLocation", "homeOffice", "home office")]
 
     # Re-upgrade reuses the compatible columns without touching the table.
     command.upgrade(config, "core_341")
-    assert _fetch(db_url, "SELECT event_type, working_location FROM calendar_events") == typed
+    assert _fetch(db_url, _TYPED) == typed
     assert _fetch(db_url, _TABLE_STATE) == table_state
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "working_location_type = 'homeOffice'",  # a type needs its label
+        "working_location_label = 'home office'",  # a label needs its type
+        "working_location_type = 'desk', working_location_label = 'x'",  # unknown branch
+        "working_location_type = 'customLocation', working_location_label = ''",
+    ],
+)
+def test_the_working_location_pair_refuses_partial_or_unknown_values(
+    postgres_container, assignment: str
+) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
+    command.upgrade(config, "core_340")
+    _execute(db_url, _SEED_LEGACY)
+    command.upgrade(config, "core_341")
+
+    with pytest.raises(Exception, match="calendar_events_working_location_check"):
+        _execute(db_url, f"UPDATE calendar_events SET {assignment}")
 
 
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:
