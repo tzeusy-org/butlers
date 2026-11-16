@@ -112,7 +112,7 @@ class OwnerAuthService:
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
         """Closed cookie-only authoring surface, independent of D13 factor kinds."""
-        if action not in {"issue", "clause_create", "clause_revoke"}:
+        if action not in {"issue", "clause_create", "clause_revoke", "clause_list"}:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:
             raise AuthError("FORBIDDEN")

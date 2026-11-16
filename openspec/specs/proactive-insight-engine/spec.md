@@ -1118,6 +1118,12 @@ Scope: v1-mandatory
 - **THEN** the message is accepted as if no clause matched, no hit or event is recorded, and the fault is logged by error class at most once per interval rather than once per message
 - **AND** the observation is bounded by a single timeout and never raises into ingest
 
+#### Scenario: The owner can list their current clauses
+
+- **WHEN** the owner's verified cookie session reads `GET /attention/break-through-clauses`
+- **THEN** the unrevoked clauses are returned newest first (matcher ids, scope, expiry, creation time), from the same single clause store the create and revoke routes write
+- **AND** the read needs the session but not the CSRF proof, is refused for any non-cookie authority, and never exposes message content
+
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 
 - **WHEN** the owner revokes a clause
