@@ -63,7 +63,13 @@ async def _inbox(
         VALUES ($1, now(), $2::jsonb, $3::jsonb, $4, $5, $6, $7::jsonb, 'metadata')
         """,
         row_id,
-        {"source_channel": channel, "idempotency_key": key, "dedupe_key": f"idem:{key}:{copy}"},
+        {
+            "source_channel": channel,
+            "idempotency_key": key,
+            "dedupe_key": f"idem:{key}:{copy}",
+            # sha256(normalized_text:sender)[:16]: brute-forceable back to the fix.
+            "content_hash_key": "0123456789abcdef",
+        },
         {
             "source": {"channel": channel},
             "payload": {"raw": None, "normalized_text": _TEXT},
@@ -118,9 +124,11 @@ async def test_a_skipped_copy_is_withheld_and_its_key_tombstoned(switchboard_poo
     assert (receipt.already_forgotten_count, receipt.blocked_count) == (0, 0)
     row = await _row(pool, copy)
     assert _withheld(row)
-    # The lifecycle audit and dedupe identity stay.
+    # The lifecycle audit and dedupe identity stay; the content hash of the fix does not.
     assert row["lifecycle_state"] == "skipped"
-    assert _json(row["request_context"])["dedupe_key"] == f"idem:{_key(1)}:0"
+    context = _json(row["request_context"])
+    assert context["dedupe_key"] == f"idem:{_key(1)}:0"
+    assert "content_hash_key" not in context
     keys = await pool.fetch(
         "SELECT logical_source_key, grant_id FROM switchboard.location_retention_forgotten_keys "
         "ORDER BY logical_source_key"
@@ -212,7 +220,10 @@ async def test_a_later_envelope_for_a_forgotten_key_is_withheld_on_insert(
     fresh = await _inbox(pool, _key(2), lifecycle="metadata_ref", decomposition=None)
     other = await _inbox(pool, _key(1), channel="telegram_bot")
 
-    assert _withheld(await _row(pool, late))
+    late_row = await _row(pool, late)
+    assert _withheld(late_row)
+    assert "content_hash_key" not in _json(late_row["request_context"])
+    assert _json((await _row(pool, fresh))["request_context"])["content_hash_key"]
     assert (await _row(pool, fresh))["normalized_text"] == _TEXT
     assert (await _row(pool, other))["normalized_text"] == _TEXT
 

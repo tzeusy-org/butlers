@@ -10,9 +10,11 @@ role (``sw_081``):
   ``request_context.idempotency_key`` is one of the grant's logical keys (exact equality).
 * A row Switchboard handled by policy alone (``lifecycle_state = 'skipped'``, no session, a
   ``skip`` policy bypass) has its ``normalized_text`` and ``raw_payload.payload`` replaced by
-  :data:`WITHHELD_TEXT`; every other column, including the dedupe key and lifecycle audit,
-  stays. A row in any other state may still be processing or has been routed onward into
-  sessions this cannot reach truthfully, so it is left as it is and its key counts as blocked.
+  :data:`WITHHELD_TEXT`, and ``request_context.content_hash_key`` (a short hash of the text and
+  sender, brute-forceable back to the fix) is dropped; everything else, including the dedupe
+  key and lifecycle audit, stays. A row in any other state may still be processing or has been
+  routed onward into sessions this cannot reach truthfully, so it is left as it is and its key
+  counts as blocked.
 * Every key that is not blocked (including a key with no inbox row) is tombstoned, so the
   ``message_inbox`` insert trigger withholds a later envelope for it.
 * One count-only receipt is appended: ``complete`` when nothing is blocked (once per grant; a
@@ -55,6 +57,7 @@ UPDATE switchboard.message_inbox
 SET normalized_text = $3,
     raw_payload = jsonb_set(raw_payload, '{payload}',
         jsonb_build_object('raw', NULL, 'normalized_text', $3::text)),
+    request_context = request_context - 'content_hash_key',
     updated_at = now()
 WHERE (received_at, id) IN (SELECT * FROM unnest($1::timestamptz[], $2::uuid[]))
 """

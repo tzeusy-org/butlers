@@ -12,7 +12,9 @@ forgets these copies under its own role:
   connector's ``idempotency_key``, which ingest stores as ``request_context.idempotency_key``)
   and the grant that forgot it. A ``BEFORE INSERT`` trigger on ``message_inbox`` withholds the
   location of any later OwnTracks envelope for a forgotten key (a parked submission or replay
-  arriving after the forgetting), keeping the row, so dedupe and the lifecycle audit still work.
+  arriving after the forgetting): its text and payload, and its ``content_hash_key`` (a short
+  hash of text and sender, brute-forceable back to the fix). It keeps the row, so dedupe and the
+  lifecycle audit still work.
 * ``location_retention_forgetting`` keeps one count-only receipt per forgetting run for a grant:
   ``complete`` (every copy forgotten, at most once per grant) or ``blocked`` (a copy was still
   processing or had been routed onward, so it was left as it is; may repeat).
@@ -112,6 +114,8 @@ def upgrade() -> None:
                     NEW.raw_payload, '{{payload}}',
                     jsonb_build_object('raw', NULL, 'normalized_text', '{_WITHHELD}')
                 );
+                -- A short hash of the text and sender: brute-forceable back to the fix.
+                NEW.request_context := NEW.request_context - 'content_hash_key';
             END IF;
             RETURN NEW;
         END $$;
