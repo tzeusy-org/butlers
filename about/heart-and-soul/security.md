@@ -435,7 +435,107 @@ canonical `telegram:` prefix. This enables:
 - Entity merging (deduplication) is a manual or LLM-assisted process, not
   automatic.
 
-## Sensitive Data Categories
+## Data Classification
+
+What may leave the primary database is decided structurally, not by asking a
+model. The only systematic boundary today is the public read surface's
+allowlist manifest (see Public Read Surface above); this section states the
+model that boundary follows and that any later share must follow too.
+
+**The gate is structural default-deny.** Data is shareable only if a checked-in
+allowlist names its table, its columns and, where facts are involved, its
+predicates. Absence from the allowlist means not shared. No label, filter or
+model output adds anything to the allowlist; they only remove.
+
+**Labels filter rows; model labels may only narrow.** Within what the allowlist
+admits, deterministic or owner-set labels act as row filters (lifecycle state,
+deleted and placeholder flags, adapter-set privacy). A label chosen by a model,
+such as a memory fact's `sensitivity`, is advisory evidence of risk: where a
+domain's filter reads it, anything other than `normal` withholds the row, but a
+model-chosen label never admits a row a deterministic rule withholds and never
+widens an allowlist. Model labels default to `normal`, which is why the default
+cannot be the thing that shares. The owner's own act is the one thing that may
+lift a label: an owner-set privacy label replaces an adapter-set one (an
+owner override of a chronicler episode's privacy can lower `restricted` to
+`normal`), while any other override can only raise it. That lift stays inside the
+allowlist and the class rules.
+
+### The axes
+
+| Axis | Values | Source today | What it decides |
+| --- | --- | --- | --- |
+| Data class | `credential`, `personal_record`, `third_party_pii`, `third_party_content`, `system` | per-column `classes` in `src/butlers/knowledge_read/projection.toml` | Whether a column can be listed at all |
+| Subject | the owner, or another entity | fact subject (OD21) | Nothing by itself: facts about other people publish; their contact and identity predicates do not |
+| Provenance | `content_authority` (`owner`, `owner_device`, `third_party`, ...); later the S1 labels | stored on the row | How the row may be used, not whether it is shared |
+| Category | the six S1 categories | not built for rows | Future row filter; see below |
+| Owner withhold | kill switch per domain or whole surface; owner-set privacy | owner acts | Removes data the allowlist would admit; an owner-set privacy label may also lift an adapter-set one |
+
+- **Data class** is declared once per published column and enforced by the
+  manifest loader. `credential` and `third_party_pii` are recognised but never
+  publishable: the loader refuses them, so a column in either class is dropped,
+  not relabelled. A column with no class, or an unknown class, is refused.
+  `third_party_content` is text other people wrote (merchant and payee names,
+  bank descriptions, researched pages, URLs), as distinct from structured facts
+  about them; it is publishable and marks the text as untrusted input.
+- **Provenance** travels with the row. A `third_party` row is never steering
+  memory and never reads as owner-untainted, whatever else is true of it,
+  including being verified or owner-approved. Provenance narrows what the
+  system does with a row; it does not make a row shareable.
+- **Subject** is not a gate. The owner's decision for the public read surface is
+  that facts about other people are published under the same trust assumption
+  as the owner's own (OD21, with finance and health sharing everything except
+  credentials under OD17 and OD22), while contact- and identity-kind predicates
+  of other people are not.
+- **Owner withhold** always wins. The owner can switch a domain or the whole
+  surface off without a deploy, narrow the manifest, or set a privacy level that
+  a deterministic filter honours.
+
+### Precedence
+
+A row or column is shared only if every layer permits it. A refusal at the
+allowlist, the class or the owner-withhold layer is final, and no model label
+overrides any refusal. The one exception inside the filter layer is the owner's
+own act: an owner-set privacy label may lift an adapter-set one.
+
+1. **Allowlist.** Not in the manifest: not shared.
+2. **Class.** `credential` and `third_party_pii`: never, and a credential
+   written into free text is caught by shape-based screening on the way out,
+   not by a class.
+3. **Owner withhold.** A switched-off domain or an owner-set withhold wins over
+   every publish rule below.
+4. **Deterministic row filters.** Predicate allowlists, lifecycle and flag
+   filters, adapter-set privacy.
+5. **Model-chosen labels.** Where a domain's filter reads them they may
+   withhold further. They cannot reverse 1 to 4. In finance and health the
+   memory `sensitivity` label is not a filter (OD17 and OD22); the allowlist,
+   the lifecycle filter and owner withholds still apply there.
+
+Provenance and subject sit beside this order: provenance governs use after
+sharing, and subject only selects which predicates the allowlist names.
+
+### Owner decisions that fix the line (2026-11-09)
+
+- `finance.payment_destinations.last4` and `public.entities` `aliases` and
+  `canonical_name` are `personal_record`, published under OD17.
+- `finance.transactions.receipt_url` and `finance.subscriptions.cancellation_url`
+  stay published as `third_party_content`.
+
+Reclassifications applied in the same review (PR #5645), label-only and not
+owner decisions: merchant and payee columns, fact content and search text of the
+relationship and general domains, and `entity_facts.object` are
+`third_party_content`, because a person's name or other people's text can sit in
+them.
+
+### Not built yet
+
+S1 row labels (instruction, data and sensitivity sets on stored rows, with the
+six categories as row filters) are future work, tied to the RFC 0038 hard
+cutover; until then goal-lineage taint is the only row stamp and an externally
+applied fact is distinguished only by `content_authority = third_party`. Doctrine
+does not wait on them: when row labels exist they are row filters under rule 4,
+and a model that assigns one may only narrow.
+
+### Sensitive Data Categories
 
 Some connectors ingest data that is more privacy-sensitive than typical messages:
 
@@ -452,7 +552,8 @@ These data types are governed by the same trust model as all other data: the
 user owns the instance and the database. The system does not apply differential
 privacy, anonymization, or special-purpose encryption to any data category.
 Connector-level controls (ingestion tier, retention periods, opt-in activation)
-are the primary privacy mechanism.
+are the primary privacy mechanism inside Butlers; the classification above is
+the boundary for anything that leaves it.
 
 ## Why Encryption at Rest Adds Minimal Value
 
