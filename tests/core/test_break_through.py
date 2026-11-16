@@ -44,6 +44,9 @@ class _Pool:
         self.inserted: list[tuple[Any, ...]] = []
         self.stamped: list[tuple[Any, ...]] = []
         self.closed_stale: list[tuple[Any, ...]] = []
+        self.folded_into: list[tuple[Any, ...]] = []
+        self.rank = 1
+        self.pending_fold: uuid.UUID | None = None
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         if "dashboard_attention.evaluate" in query:
@@ -56,6 +59,12 @@ class _Pool:
             return args[0] if self.fresh else None
         if "UPDATE switchboard.break_through_hits SET claimed_at" in query:
             return 1 if self.stale else None
+        if "count(*) FROM switchboard.break_through_hits" in query:
+            return self.rank
+        if "UPDATE insight_candidates SET message" in query:
+            assert "claim_id IS NULL" in query  # a fold mid-send is never amended
+            self.folded_into.append(args)
+            return self.pending_fold
         if "FROM insight_candidates" in query:
             return CANDIDATE if self.proposed else None
         raise AssertionError(query)
@@ -430,3 +439,70 @@ async def test_the_sweep_closes_hits_older_than_the_candidate_lifetime_unannounc
 
     assert pool.closed_stale == [(break_through._CANDIDATE_TTL.total_seconds(),)]
     published.publish.assert_not_awaited()
+
+
+async def test_hits_within_the_hourly_cap_each_get_their_own_line(published) -> None:
+    pool = _Pool()
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR  # the last one inside the cap
+
+    await _observe(pool)
+
+    assert published.proposal.await_args.kwargs["message"] == "Mum messaged you (email) - open"
+    published.cycle.assert_awaited_once()
+
+
+async def test_the_first_hit_over_the_cap_folds_into_one_content_free_line_and_waits_for_the_hour(
+    published,
+) -> None:
+    pool = _Pool()
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR + 1
+
+    hit = await _observe(pool)
+
+    assert hit is not None
+    kwargs = published.proposal.await_args.kwargs
+    assert kwargs["message"] == "and 1 more from senders you declared (email) - open"
+    assert kwargs["dedup_key"].startswith(f"switchboard:break_through:fold-{CLAUSE}-")
+    assert kwargs["premise"] is None
+    for forbidden in ("Mum", SENDER, SUBJECT):
+        assert forbidden not in json.dumps(kwargs, default=str)
+    published.cycle.assert_not_awaited()  # the hourly urgent cycle sends it, with the full count
+    assert len(pool.stamped) == 1
+
+
+async def test_further_overflow_updates_the_one_pending_fold_instead_of_adding_lines(
+    published,
+) -> None:
+    pool = _Pool()
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR + 4
+    pool.pending_fold = CANDIDATE
+
+    await _observe(pool)
+
+    published.proposal.assert_not_awaited()
+    ((_, message, _),) = [(a[0], a[1], a[2]) for a in pool.folded_into]
+    assert message == "and 4 more from senders you declared (email) - open"
+    assert len(pool.stamped) == 1
+
+
+async def test_a_replayed_over_cap_hit_counts_once(published) -> None:
+    pool = _Pool(fresh=False)
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR + 1
+
+    assert await _observe(pool) is None  # the row already exists: nothing is announced again
+
+    assert pool.folded_into == []
+    published.proposal.assert_not_awaited()
+
+
+async def test_overflow_while_the_fold_is_mid_send_starts_a_new_fold(published) -> None:
+    pool = _Pool()
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR + 2
+    pool.pending_fold = None  # the only fold is claimed, so the guarded UPDATE matches nothing
+
+    await _observe(pool)
+
+    assert len(pool.folded_into) == 1
+    kwargs = published.proposal.await_args.kwargs
+    assert kwargs["message"] == "and 2 more from senders you declared (email) - open"
+    assert kwargs["dedup_key"].endswith(":fold")

@@ -56,6 +56,8 @@ ANNOUNCE_TIMEOUT_S = 30.0
 # A claim older than this with no stamp belongs to a call that died.
 LEASE_S = 120.0
 _CANDIDATE_TTL = timedelta(hours=6)
+# Per clause, per rolling hour, hits past this fold into one "and N more" line (not one each).
+FLOOD_CAP_PER_HOUR = 3
 _FAULT_LOG_INTERVAL_S = 300.0
 _RESOLVABLE_CHANNELS = frozenset({"telegram", "email", "whatsapp"})
 _CHANNEL_LABELS = {"email": "email", "telegram": "Telegram", "whatsapp": "WhatsApp"}
@@ -204,9 +206,13 @@ async def _record(
     return hit if await _claim(pool, hit) else None
 
 
+def _label(channel: str) -> str:
+    return _CHANNEL_LABELS.get(channel, channel)
+
+
 def _message(hit: Hit) -> str:
     who = hit.sender_name or "A sender you declared"
-    return f"{who} messaged you ({_CHANNEL_LABELS.get(hit.channel, hit.channel)}) - open"
+    return f"{who} messaged you ({_label(hit.channel)}) - open"
 
 
 def _dedup_key(hit: Hit) -> str:
@@ -238,27 +244,23 @@ async def _publish_event(pool: Any, hit: Hit) -> bool:
     return result.get("status") == "ok"
 
 
-async def _propose_candidate(pool: Any, hit: Hit) -> tuple[str | None, bool]:
-    """Queue the one urgent candidate for a hit: ``(id or None, terminal)``.
+async def _propose(
+    pool: Any, hit: Hit, *, key: str, message: str, premise: dict[str, Any] | None
+) -> tuple[str | None, bool]:
+    """Queue one urgent candidate for a hit: ``(id or None, terminal)``.
 
     ``terminal`` is True when the broker refused it for good (``filtered``: the owner's verbosity
     is off), so retrying can never succeed and the hit is closed instead of re-announced.
-
     The candidate carries the private origin the evaluator matched. Without it the broker has
     no authority to interrupt, and the line would wait for a normal cycle (it is never sent).
     """
-    from butlers.core.insight_premise import probe_premise
-
     propose_insight_candidate = _broker().propose_insight_candidate
 
-    key = _dedup_key(hit)
     existing = await pool.fetchval(
         "SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key
     )
     if existing is not None:
         return str(existing), False
-    after = (hit.received_at or datetime.now(UTC)).isoformat()
-    premise = probe_premise(PROBE_BUTLER, PROBE_NAME, {"thread": hit.thread or "", "after": after})
     token = _current_origin.set(AttentionOrigin.from_record(dict(hit.origin)))
     try:
         result = await propose_insight_candidate(
@@ -267,7 +269,7 @@ async def _propose_candidate(pool: Any, hit: Hit) -> tuple[str | None, bool]:
             priority=BREAK_THROUGH_PRIORITY,
             category=BREAK_THROUGH_CATEGORY,
             dedup_key=key,
-            message=_message(hit),
+            message=message,
             expires_at=datetime.now(UTC) + _CANDIDATE_TTL,
             premise=premise,
         )
@@ -282,6 +284,54 @@ async def _propose_candidate(pool: Any, hit: Hit) -> tuple[str | None, bool]:
     return str(found), False
 
 
+async def _propose_candidate(pool: Any, hit: Hit) -> tuple[str | None, bool]:
+    from butlers.core.insight_premise import probe_premise
+
+    after = (hit.received_at or datetime.now(UTC)).isoformat()
+    premise = probe_premise(PROBE_BUTLER, PROBE_NAME, {"thread": hit.thread or "", "after": after})
+    return await _propose(pool, hit, key=_dedup_key(hit), message=_message(hit), premise=premise)
+
+
+async def _over_cap(pool: Any, hit: Hit) -> int:
+    """How many hits past the per-clause hourly cap this one is (0 when within the cap).
+
+    A hit's rank is its place among the clause's hits of the last hour in arrival order, read from
+    the durable hit rows, so a replay (same row) never counts twice and concurrent announcers
+    agree on who is over.
+    """
+    rank = await pool.fetchval(
+        "SELECT count(*) FROM switchboard.break_through_hits h WHERE h.clause_id = $1 "
+        "AND h.observed_at > clock_timestamp() - interval '1 hour' "
+        "AND (h.observed_at, h.source_request_id) <= ("
+        "  SELECT observed_at, source_request_id FROM switchboard.break_through_hits "
+        "  WHERE clause_id = $1 AND source_request_id = $2)",
+        hit.clause_id,
+        hit.source_request_id,
+    )
+    return max(0, int(rank or 0) - FLOOD_CAP_PER_HOUR)
+
+
+async def _fold(pool: Any, hit: Hit, overflow: int) -> tuple[str | None, bool]:
+    """Fold an over-cap hit into the clause's single pending "and N more" candidate.
+
+    The fold is delivered by the hourly urgent cycle, not at once, so its count reflects every
+    overflow of that window. Content-free: a count and the channel, never a name or text.
+    """
+    message = f"and {overflow} more from senders you declared ({_label(hit.channel)}) - open"
+    prefix = f"switchboard:break_through:fold-{hit.clause_id}-"
+    pending = await pool.fetchval(
+        "UPDATE insight_candidates SET message = $2 WHERE status = 'pending' "
+        "AND claim_id IS NULL AND category = $3 AND dedup_key LIKE $1 RETURNING id",
+        prefix + "%",
+        message,
+        BREAK_THROUGH_CATEGORY,
+    )
+    if pending is not None:
+        return str(pending), False
+    key = f"{prefix}{hit.source_request_id}:fold"
+    return await _propose(pool, hit, key=key, message=message, premise=None)
+
+
 async def _deliver_now(pool: Any, candidate_id: str) -> None:
     """Run one urgent cycle scoped to the candidate so it reaches the owner in seconds."""
     from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
@@ -291,6 +341,15 @@ async def _deliver_now(pool: Any, candidate_id: str) -> None:
         notify_fn=_build_switchboard_insight_notify_fn(pool),
         urgent_only=True,
         candidate_ids=[candidate_id],
+    )
+
+
+async def _stamp(pool: Any, hit: Hit) -> None:
+    await pool.execute(
+        "UPDATE switchboard.break_through_hits SET published_at = clock_timestamp() "
+        "WHERE clause_id = $1 AND source_request_id = $2 AND published_at IS NULL",
+        hit.clause_id,
+        hit.source_request_id,
     )
 
 
@@ -305,15 +364,17 @@ async def announce(pool: Any, hit: Hit) -> bool:
     if not await _publish_event(pool, hit):
         logger.warning("break_through_event_not_published")
         return False
+    overflow = await _over_cap(pool, hit)
+    if overflow:
+        folded, terminal = await _fold(pool, hit, overflow)
+        if folded is None and not terminal:
+            return False
+        await _stamp(pool, hit)
+        return folded is not None
     candidate_id, terminal = await _propose_candidate(pool, hit)
     if candidate_id is None and not terminal:
         return False
-    await pool.execute(
-        "UPDATE switchboard.break_through_hits SET published_at = clock_timestamp() "
-        "WHERE clause_id = $1 AND source_request_id = $2 AND published_at IS NULL",
-        hit.clause_id,
-        hit.source_request_id,
-    )
+    await _stamp(pool, hit)
     if candidate_id is None:
         return False  # refused for good (verbosity off): closed, never retried or sent
     await _deliver_now(pool, candidate_id)

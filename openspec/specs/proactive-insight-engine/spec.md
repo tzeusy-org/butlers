@@ -1059,7 +1059,7 @@ Scope: v1-mandatory
 
 ### Requirement: Owner-Declared Break-Through Hits Are Observed At Ingest
 
-The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds; the owner's own current clause, not a model or a producer, is the authority to interrupt.
+The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds, except that hits past a clause's hourly cap (3) fold into one pending "and N more" candidate delivered by the next hourly urgent cycle; the owner's own current clause, not a model or a producer, is the authority to interrupt.
 
 Source: bu-s11n0s.8 S1, S2 (owner-released intent bu-9zmre6)
 Scope: v1-mandatory
@@ -1100,6 +1100,12 @@ Scope: v1-mandatory
 - **WHEN** the total-disengagement ratchet has written `verbosity = 'auto_off'` (budget 0 like `off`)
 - **THEN** routine speech stays muted but an owner-clause break-through candidate is still proposed and delivered by an urgent cycle, and no other category is
 - **AND** an explicit `verbosity = 'off'` stops every candidate including break-through, and existing `off` rows remain explicit
+
+#### Scenario: A flood from one clause folds into one line
+
+- **WHEN** a clause records more than 3 hits within a rolling hour
+- **THEN** the first 3 each get their own line and every further hit folds into a single pending "and N more from senders you declared (<channel>) - open" candidate per clause, updated in place and delivered by the next hourly urgent cycle
+- **AND** the folded line names no sender and carries no text, a replayed hit counts once because rank is read from the unique hit rows, and every folded hit is closed (never retried)
 
 #### Scenario: A promoted skip rule does not hide a hit
 
