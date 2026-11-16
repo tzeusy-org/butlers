@@ -361,8 +361,12 @@ Groundwork for that gate is in place, and still deletes nothing:
     Switchboard answers itself, with no MCP tool behind it.
   - The reply must be exactly the count-only receipt for that grant's item count. A `complete`
     one is recorded and the grant becomes `ready`; a `blocked` one is recorded and asked again
-    next run. A refusal, an unreachable relay or a malformed reply records nothing and fails the
-    run.
+    next run. A refusal, an unreachable relay or a malformed reply records nothing for that
+    grant. The other grants are still asked, reconcile and the lag snapshot still run, and then
+    the run fails, so its failure streak shows it.
+  - Each ask's time is kept in `location_retention_holder_asks` (chronicler_040), written before
+    the ask. "Least recently asked" therefore counts failed asks too, and a grant that keeps
+    failing goes behind the others instead of holding the front of every run.
   - Without a forgetter (as today: nothing schedules the job) no holder is asked, so no grant
     becomes ready.
   - A grant whose holder's latest reading is `blocked` counts its fixes as `holder_blocked` lag,

@@ -9,7 +9,8 @@ One run, uncalled until the owner-enable step (the dark guard pins that):
 2. **Work.** With an injected forgetter, :func:`collect_holder_receipts` (Switchboard's
    receipt; a complete one makes the grant ready); then :func:`reconcile_ready_grants`, then
    :func:`read_retention_lag` and its counts reconciled into the owner condition ledger under
-   :data:`LAG_SOURCE`.
+   :data:`LAG_SOURCE`. A failed holder ask does not stop reconcile or the lag snapshot; it
+   only fails the run once they are done.
 3. **Finish.** The outcome is written in its own transaction: a failure keeps the exception's
    class (never its message, which could quote evidence) and extends the streak.
 4. **Failures.** The streak, the grants that failed reconciliation and the ready grants still
@@ -311,12 +312,17 @@ async def run_location_retention_job(
     try:
         async with db_pool.acquire() as conn:
             if forget is not None:
-                collected = await collect_holder_receipts(conn, forget)
+                try:
+                    collected = await collect_holder_receipts(conn, forget)
+                except Exception as exc:
+                    # Holder asks failed; reconcile and lag still run, then the run fails.
+                    error_class = type(exc).__name__
             settled = await reconcile_ready_grants(conn)
             lag = await read_retention_lag(conn)
         await _state_lag(db_pool, lag)
     except Exception as exc:
         error_class = type(exc).__name__
+    if error_class is not None:
         logger.warning("Location retention run failed: %s", error_class)
 
     if error_class is None:

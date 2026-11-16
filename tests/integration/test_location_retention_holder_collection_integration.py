@@ -9,6 +9,7 @@ records nothing and fails the call, so the run's failure streak shows it.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 from typing import Any
 from uuid import UUID
@@ -203,3 +204,43 @@ async def test_a_run_asks_at_most_the_limit_least_recently_asked_first(
         await holders.collect_holder_receipts(conn, switchboard, limit=1)
         await holders.collect_holder_receipts(conn, switchboard, limit=1)
     assert [call[0] for call in switchboard.calls] == [first, second, first]
+
+
+async def test_a_failed_ask_does_not_stop_the_others_and_fails_at_the_end(
+    chronicler_db, runtime_db
+) -> None:
+    bad = await _grant(chronicler_db, runtime_db, minute=0)
+    good = await _grant(chronicler_db, runtime_db, minute=1)
+    switchboard = _Switchboard()
+
+    async def forget(grant_id: UUID, keys: tuple[str, ...]) -> Any:
+        if grant_id == bad:
+            raise holders.HoldersUnavailable("RelayRefused")
+        return await switchboard(grant_id, keys)
+
+    async with runtime_db.acquire() as conn:
+        with pytest.raises(holders.HoldersUnavailable):
+            await holders.collect_holder_receipts(conn, forget)
+    assert await _receipts(chronicler_db, bad) == []
+    assert await _states(chronicler_db, good) == ["ready"]
+
+
+async def test_a_grant_that_keeps_failing_is_asked_after_the_others(
+    chronicler_db, runtime_db
+) -> None:
+    """A failed ask records no receipt, but it still moves the grant to the back."""
+    bad = await _grant(chronicler_db, runtime_db, minute=0)
+    other = await _grant(chronicler_db, runtime_db, minute=1)
+    asked: list[UUID] = []
+
+    async def forget(grant_id: UUID, keys: tuple[str, ...]) -> Any:
+        asked.append(grant_id)
+        if grant_id == bad:
+            raise holders.HolderReplyMalformed("not a count-only receipt")
+        return await _Switchboard("blocked")(grant_id, keys)
+
+    async with runtime_db.acquire() as conn:
+        for _ in range(3):
+            with contextlib.suppress(holders.HolderReplyMalformed):
+                await holders.collect_holder_receipts(conn, forget, limit=1)
+    assert asked == [bad, other, bad]

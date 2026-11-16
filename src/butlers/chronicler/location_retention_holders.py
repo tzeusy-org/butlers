@@ -14,8 +14,13 @@ recently asked first, and for each:
   (``outcome``, ``items``, ``forgotten``, ``already_forgotten``, ``absent``, ``blocked``),
   with ``items`` the grant's item count, the four counts adding up to it and ``complete``
   exactly when nothing is blocked. Anything else is :class:`HolderReplyMalformed` and records
-  nothing; the run fails, so its failure streak shows it.
+  nothing.
 * records the receipt; ``complete`` then appends ``ready``. ``blocked`` waits for a later run.
+
+The time of each ask is kept in ``location_retention_holder_asks`` (chronicler_040), written
+before the ask, so "least recently asked" holds even for a failed ask. A failed ask (refusal,
+outage, malformed reply) does not stop the other grants; once they are done, the first failure
+is raised, so the run fails and its failure streak shows it.
 
 In production the forgetter is :func:`relay_forgetter`: the ``location_retention.forget_copies``
 named relay, which Switchboard answers itself. Nothing calls this yet; the retention job takes
@@ -52,10 +57,17 @@ FROM location_retention_grants g
 WHERE g.item_count > 0
   AND NOT EXISTS (SELECT 1 FROM location_retention_grant_states s WHERE s.grant_id = g.id)
 ORDER BY (
-    SELECT max(r.recorded_at) FROM location_retention_holder_receipts r
-    WHERE r.grant_id = g.id AND r.holder = $1
+    SELECT a.asked_at FROM location_retention_holder_asks a
+    WHERE a.grant_id = g.id AND a.holder = $1
 ) NULLS FIRST, g.prepared_at, g.id
 LIMIT $2
+"""
+# Written before the ask, so a failed ask (which records no receipt) still sends the grant to
+# the back of the queue and cannot hold the front of every run.
+_ASKED = """
+INSERT INTO location_retention_holder_asks (grant_id, holder, asked_at)
+VALUES ($1, $2, clock_timestamp())
+ON CONFLICT (grant_id, holder) DO UPDATE SET asked_at = EXCLUDED.asked_at
 """
 _KEYS = """
 SELECT logical_source_key FROM location_retention_grant_items
@@ -99,17 +111,26 @@ async def collect_holder_receipts(
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("limit must be a positive integer")
     made_ready = blocked = 0
+    first_failure: Exception | None = None
     for grant in await conn.fetch(_PENDING, HOLDER, limit):
         grant_id = grant["id"]
         if not grant["complete"]:
             keys = tuple(row["logical_source_key"] for row in await conn.fetch(_KEYS, grant_id))
-            outcome, counts = _checked_reply(await forget(grant_id, keys), grant["item_count"])
+            await conn.execute(_ASKED, grant_id, HOLDER)
+            try:
+                outcome, counts = _checked_reply(await forget(grant_id, keys), grant["item_count"])
+            except Exception as exc:
+                # One grant's failed ask records nothing and does not stop the others.
+                first_failure = first_failure or exc
+                continue
             await record_holder_receipt(conn, grant_id, HOLDER, outcome=outcome, receipt=counts)
             if outcome == "blocked":
                 blocked += 1
                 continue
         await append_grant_state(conn, grant_id, "ready")
         made_ready += 1
+    if first_failure is not None:
+        raise first_failure
     return {"ready": made_ready, "blocked": blocked}
 
 

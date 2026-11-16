@@ -368,3 +368,31 @@ async def test_an_unavailable_holder_fails_the_run_and_keeps_lag(
     assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
     failed = await _active(chronicler_db, job.FAILED_SOURCE)
     assert failed["run_failing"]["error_class"] == "HoldersUnavailable"
+
+
+async def test_one_failing_grant_does_not_stall_the_others_reconcile_or_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """The other grants are still asked, reconcile and lag still run, and the run fails."""
+    bad = await _prepare(chronicler_db, runtime_db, 0)
+    good = await _prepare(chronicler_db, runtime_db, 5)
+
+    async def forget(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+        if grant_id == bad:
+            raise HoldersUnavailable("RelayRefused")
+        return await _complete(grant_id, keys)
+
+    result = await job.run_location_retention_job(runtime_db, forget=forget)
+
+    assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
+    states = await chronicler_db.fetch(
+        "SELECT grant_id, state FROM location_retention_grant_states ORDER BY grant_id"
+    )
+    assert [(row["grant_id"], row["state"]) for row in states] == [(good, "ready")]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {
+        "awaiting_holders": 1,
+        "awaiting_deletion": 1,
+    }
+    failed = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failed["run_failing"]["consecutive_failures"] == 1
