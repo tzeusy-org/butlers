@@ -2,6 +2,8 @@
 {{- range $name, $c := .Values.connectors }}
 {{- if ne (toString $c.enabled) "false" }}
 {{- $scraped := and $metrics.enabled $c.healthPort }}
+{{- /* bu-s11n0s.7 S4b-3c: only OwnTracks calls a named relay (location_retention.grants_ready). */}}
+{{- $relayCaller := and (eq $name "owntracks") $.Values.servicePlaneAuth.enabled $.Values.butlersControl.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -34,6 +36,9 @@ spec:
         prometheus.io/path: /metrics
       {{- end }}
     spec:
+      {{- if $relayCaller }}
+      serviceAccountName: connector-owntracks
+      {{- end }}
       {{- if eq $name "owntracks" }}
       {{- include "butlers.hostServedNodeSelector" $ | nindent 6 }}
       {{- end }}
@@ -94,6 +99,9 @@ spec:
             {{- if $c.waBridge }}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             {{- end }}
+            {{- if $relayCaller }}
+            - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
+            {{- end }}
         {{- if $scraped }}
         # Republishes only GET /metrics from the loopback health server.
         - name: metrics-proxy
@@ -114,6 +122,16 @@ spec:
         {{- if $c.waBridge }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ $.Release.Name }}-wa-bridge}
+        {{- end }}
+        {{- if $relayCaller }}
+        # Presented to the control plane's location_retention.grants_ready relay only.
+        - name: workload-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: butlers.service-relay.v1
+                  path: butlers.service-relay.v1
+                  expirationSeconds: {{ $.Values.servicePlaneAuth.tokenExpirationSeconds }}
         {{- end }}
 {{- end }}
 {{- end }}

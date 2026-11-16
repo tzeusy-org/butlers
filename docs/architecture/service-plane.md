@@ -136,7 +136,8 @@ A token verifies only when all of these hold:
 - `kubernetes.io.namespace` is this namespace, the token is bound to a pod, and
   `sub` names the same ServiceAccount as the claim;
 - the ServiceAccount is a known workload (`butlers-control`, `butlers-up`,
-  `dashboard-api`).
+  `dashboard-api`, `connector-owntracks`). The namespace `default` account, which
+  every pod without its own runs as, is never one.
 
 Each use has its own audience: `butlers.service-relay.v1` for relays and
 `butlers.messenger-delivery.v1` for Messenger delivery. Neither is a broker call
@@ -172,10 +173,13 @@ the request body. With the switch on, Messenger admits a delivery only from
 `/var/run/secrets/butlers/workload/butlers.messenger-delivery.v1`.
 
 **Deployment.** `servicePlaneAuth.enabled` in the Helm chart (default `false`,
-requires `butlersControl.enabled`) gives `butlers-control` and `butlers-up`
-their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`, and mounts one
-token per workload: the delivery token into `butlers-control`, the relay token
-into `butlers-up`. Each workload holds only the audience it presents. Butlers holds no private key for
+requires `butlersControl.enabled`) gives `butlers-control`, `butlers-up` and
+`connector-owntracks` their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`
+(on the first two), and mounts one token per workload: the delivery token into
+`butlers-control`, the relay token into `butlers-up` and into the OwnTracks
+connector, which calls only `location_retention.grants_ready` (bu-s11n0s.7). No other
+connector gets an account or a token, and `connector-owntracks` holds no RBAC grant.
+Each workload holds only the audience it presents. Butlers holds no private key for
 this: the API server signs and the kubelet rotates.
 
 **Reachability.** This adds one site edge per verifying workload and no new chart-peer edge:

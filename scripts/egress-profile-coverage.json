@@ -5825,7 +5825,7 @@
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
     },
     "deploy/helm/butlers/templates/connectors.yaml": {
-      "sha256": "6f9c7d42df5ea9d4901acaad28031e735d920514fa382975f94edd45075136ff"
+      "sha256": "d4e51ba52dca7a6ebb269065daa14a2ff9588d708f6621545e344c89322713dc"
     },
     "deploy/helm/butlers/templates/cronjobs.yaml": {
       "sha256": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697"
@@ -5855,7 +5855,7 @@
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
     },
     "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
-      "sha256": "4eab683f218d7637593762785b6943c0487f297b4c69aa24f1dd9af517689610"
+      "sha256": "25c52b6ea66d68f2844f37f9ee64b927c1d0c4ccdc450e1f9f99e4876fef0a8b"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
       "sha256": "531f84a19f883f63b083ad88e8f0af350c5f42c6a6e1c3c74d970c15d4a475ba"
