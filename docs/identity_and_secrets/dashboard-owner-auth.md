@@ -461,6 +461,13 @@ provenance; a security label alone never authenticates a sender. These routes
 are the single shared `.8` backend store; they do not deliver its later editor,
 Telegram authoring, shadow-event activation or decay workflow.
 
+`GET /api/butlers/attention/break-through-clauses` lists the unrevoked clauses (newest
+first, at most 200) for the owner editor. It is a cookie-only session read through the same
+`dashboard_attention.api` function (`clause_list`): it needs the verified session but not the CSRF
+proof, because it mutates nothing, and it returns matcher ids, scope and dates, never message
+content. The function is rewritten in place on an installed database by the
+`ATTENTION_API_REFRESH` block of `scripts/init-db.sql`.
+
 Privileged bootstrap stages the separate `dashboard_attention` fixed interface
 before the untouched D13 block. Ordinary `core_278` invokes its checked installer
 or finalizer. Runtime roles have no direct ticket/stamp/clause write access;

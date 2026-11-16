@@ -6702,7 +6702,7 @@ BEGIN
   IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
    OR se.session_epoch<>s.session_epoch
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
-  IF NOT EXISTS(SELECT FROM dashboard_auth.csrf
+  IF action<>'clause_list' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
    WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
    THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
@@ -6735,6 +6735,13 @@ BEGIN
     RETURNING id INTO c;
    IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
    RETURN jsonb_build_object('id',c);
+  ELSIF action='clause_list' THEN
+   RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+    'entity_id',k.entity_id,'sender_domain',k.sender_domain,'channel',k.channel,
+    'security_kind',k.security_kind,'scope',k.scope,'expires_at',k.expires_at,
+    'created_at',k.created_at) ORDER BY k.created_at DESC)
+    FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+     ORDER BY created_at DESC LIMIT 200) k),'[]'::jsonb));
   END IF;
   RETURN '{"error":"INVALID_REQUEST"}';
  END $api$;
@@ -6836,6 +6843,28 @@ BEGIN
   PERFORM dashboard_attention.finalize_interface();
  END IF;
 END $attention_grant$;
+
+-- ATTENTION_API_REFRESH_BEGIN
+-- bu-s11n0s.8 S3a: dashboard_attention.api gains the read-only ``clause_list`` action (no CSRF:
+-- it mutates nothing; the session checks stay). install_interface creates the function only on a
+-- first install; an installed one is rewritten here in place, replacing exactly the CSRF guard and
+-- the tail (body, owner, proconfig and EXECUTE grants are otherwise kept). Idempotent: a rewritten
+-- body no longer carries the old text.
+DO $attention_api_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ old_csrf constant text := E'  IF NOT EXISTS(SELECT FROM dashboard_auth.csrf\n   WHERE session_digest=se.digest AND digest=p->>''csrf_digest'' AND expires_at>t)\n   THEN RETURN ''{"error":"FORBIDDEN"}''; END IF;\n  IF action=''issue'' THEN';
+ new_csrf constant text := E'  IF action<>''clause_list'' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf\n   WHERE session_digest=se.digest AND digest=p->>''csrf_digest'' AND expires_at>t)\n   THEN RETURN ''{"error":"FORBIDDEN"}''; END IF;\n  IF action=''issue'' THEN';
+ old_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''clause_list'' THEN\n   RETURN jsonb_build_object(''clauses'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''id'',k.id,\n    ''entity_id'',k.entity_id,''sender_domain'',k.sender_domain,''channel'',k.channel,\n    ''security_kind'',k.security_kind,''scope'',k.scope,''expires_at'',k.expires_at,\n    ''created_at'',k.created_at) ORDER BY k.created_at DESC)\n    FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL\n     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+BEGIN
+ IF f IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(definition, old_csrf, new_csrf), old_tail, new_tail);
+  END IF;
+ END IF;
+END $attention_api_refresh$;
+-- ATTENTION_API_REFRESH_END
 
 -- ATTENTION_DIGEST_REFRESH_BEGIN
 -- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery

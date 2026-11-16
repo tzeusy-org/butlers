@@ -891,6 +891,74 @@ async def test_lane_and_claim_columns_never_cost_a_candidate_its_origin(attentio
     assert await origin_of() == origin.record()
 
 
+def _attention_api_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_API_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_API_REFRESH_END", start)]
+
+
+async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refresh_installs_it(
+    attention_env,
+):
+    """bu-s11n0s.8 S3a: ``clause_list`` needs the session, not the CSRF; the refresh is in place."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    kept = await env.service.attention_call(
+        "clause_create", env.authority, csrf, entity_id=str(uuid4()), scope="always"
+    )
+    revoked = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="quiet_hours_only"
+    )
+    await env.service.attention_call("clause_revoke", env.authority, csrf, id=revoked["id"])
+
+    async def listed(token: str) -> list[dict]:
+        return (await env.service.attention_call("clause_list", env.authority, token))["clauses"]
+
+    rows = await listed("")  # a read: no CSRF proof is needed
+    assert [row["id"] for row in rows] == [kept["id"]]
+    assert set(rows[0]) == {
+        "id",
+        "entity_id",
+        "sender_domain",
+        "channel",
+        "security_kind",
+        "scope",
+        "expires_at",
+        "created_at",
+    }
+    for write in ("clause_create", "clause_revoke"):
+        with pytest.raises(AuthError) as denied:
+            await env.service.attention_call(
+                write, env.authority, "", scope="always", id=kept["id"]
+            )
+        assert denied.value.code == "FORBIDDEN"
+
+    # An installed pre-S3a api is rewritten in place, idempotently, keeping owner and grants.
+    definition = await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.api(text,jsonb)'::regprocedure)"
+    )
+    owner_before = await env.admin.fetchval(
+        "SELECT proowner::regrole::text FROM pg_proc "
+        "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
+    )
+    old = definition.replace("IF action<>'clause_list' AND NOT EXISTS", "IF NOT EXISTS")
+    old = old[: old.index("ELSIF action='clause_list'")] + (
+        'END IF;\n  RETURN \'{"error":"INVALID_REQUEST"}\';\n END\n$function$\n'
+    )
+    await env.admin.execute(old)
+    with pytest.raises(AuthError):
+        await listed("")
+    await env.admin.execute(_attention_api_refresh_block())
+    await env.admin.execute(_attention_api_refresh_block())  # idempotent
+    assert [row["id"] for row in await listed("")] == [kept["id"]]
+    assert owner_before == await env.admin.fetchval(
+        "SELECT proowner::regrole::text FROM pg_proc "
+        "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
+    )
+
+
 async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal(
     postgres_container, fresh_db
 ):

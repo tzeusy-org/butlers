@@ -70,6 +70,7 @@ OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
 OP GET /api/audit-log/{entry_id} bbfae7bdb716
 OP GET /api/butlers 44b4d9ade975
+OP GET /api/butlers/attention/break-through-clauses 613f823ae684
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78
@@ -757,6 +758,7 @@ ROUTE APIRoute GET '/api/attention/ledger/summary' name=get_attention_ledger_sum
 ROUTE APIRoute GET '/api/audit-log' name=list_audit_log op=list_audit_log_api_audit_log_get tags=audit schema=True
 ROUTE APIRoute GET '/api/audit-log/{entry_id}' name=get_audit_log_entry op=get_audit_log_entry_api_audit_log__entry_id__get tags=audit schema=True
 ROUTE APIRoute GET '/api/butlers' name=list_butlers op=list_butlers_api_butlers_get tags=butlers schema=True
+ROUTE APIRoute GET '/api/butlers/attention/break-through-clauses' name=list_break_through_clauses op=list_break_through_clauses_api_butlers_attention_break_through_clauses_get tags=butlers,schedules schema=True
 ROUTE APIRoute GET '/api/butlers/board' name=get_butlers_board op=get_butlers_board_api_butlers_board_get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/{name}' name=get_butler_detail op=get_butler_detail_api_butlers__name__get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/activity-feed' name=get_activity_feed op=get_activity_feed_api_butlers__name__activity_feed_get tags=butlers,activity-feed schema=True

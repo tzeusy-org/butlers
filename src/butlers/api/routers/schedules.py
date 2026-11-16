@@ -661,6 +661,12 @@ async def _clause_authoring(request: Request, action: str, values: dict) -> dict
         raise HTTPException(exc.status_code, exc.message) from None
 
 
+@router.get("/attention/break-through-clauses", response_model=ApiResponse[dict])
+async def list_break_through_clauses(request: Request):
+    """The owner's current (unrevoked) break-through clauses, newest first. Cookie-only read."""
+    return ApiResponse(data=await _clause_authoring(request, "clause_list", {}))
+
+
 @router.post("/attention/break-through-clauses", response_model=ApiResponse[dict], status_code=201)
 async def create_break_through_clause(body: BreakThroughClauseCreate, request: Request):
     return ApiResponse(
