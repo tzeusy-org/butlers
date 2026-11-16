@@ -357,6 +357,8 @@ Groundwork for that gate is in place, and still deletes nothing:
   - Without its body the event cannot be replayed, so the row carries `replay_unavailable` and a
     replay request ends `replay_failed` with `not replayable: a policy-blocked OwnTracks event
     keeps no coordinates`.
+  - core_346 gives rows recorded before this change the same shape once (idempotent; parked rows
+    and other connectors untouched). Its waypoints text keeps the count, not the names.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
   sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`):
   - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its
