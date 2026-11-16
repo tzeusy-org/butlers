@@ -526,3 +526,31 @@ async def test_the_smoke_check_reads_a_healthy_switched_on_state(
     assert report["grants"]["ready"] == {"grants": 1, "items": 1}
     assert report["overdue_raw_fixes"] == 1
     assert report["run"]["last_outcome"] == "succeeded"
+
+
+async def test_switched_off_mid_run_no_holder_is_asked(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """The switch is read again right before holders are asked: off by then, none is asked."""
+    pending = await _prepare(chronicler_db, runtime_db, 0)
+
+    async def switched_off(pool: asyncpg.Pool) -> dict[str, str]:
+        # Runs after the run read the switch on, before holders are asked.
+        await chronicler_db.execute(_grant_suite.ENFORCE, False)
+        return dict(_REVISIONS)
+
+    async def untouched(*args):
+        raise AssertionError("a holder was asked after expiry was switched off")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=switched_off, forget=untouched
+    )
+
+    assert (result["status"], result["enforced"]) == ("ok", True)
+    assert "prepared" not in result and "holders" not in result
+    assert (
+        await chronicler_db.fetch(
+            "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", pending
+        )
+        == []
+    )

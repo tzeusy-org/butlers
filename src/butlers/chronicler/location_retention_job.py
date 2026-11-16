@@ -5,7 +5,8 @@ The hourly ``chronicler_location_retention`` schedule runs :func:`run_scheduled_
 (``location_retention_policy.enforced``; a missing row counts as off):
 
 * **On.** Prepare a grant from the adapters' current revisions, ask Switchboard to forget its
-  copies through the ``location_retention.forget_copies`` relay, reconcile, measure lag.
+  copies through the ``location_retention.forget_copies`` relay (only if the switch, read again
+  just before, is still on), reconcile, measure lag.
 * **Off.** Reconcile only: grants the connector already executed are still settled, but nothing
   is prepared and no holder is asked. Lag is not measured, and open lag conditions are
   withdrawn, since there is no horizon in force to be behind.
@@ -315,12 +316,14 @@ async def run_location_retention_job(
     forget: Forgetter | None = None,
     prepare: Preparer | None = None,
     measure_lag: bool = True,
+    ask_holders: Callable[[Any], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """Run once. Takes no ``job_args``.
 
     With ``prepare``, a grant is prepared before anything else; its failure is recorded and
     fails the run once the rest is done. ``measure_lag=False`` (expiry switched off) skips the
-    lag read and withdraws the open lag conditions.
+    lag read and withdraws the open lag conditions. ``ask_holders``, when given, is checked
+    right before holders are asked; ``False`` skips the ask (and ``"holders"`` in the result).
 
     With ``forget`` (the ``location_retention.forget_copies`` relay in production), holder
     receipts are collected first and complete grants become ready; without it no holder is
@@ -339,7 +342,7 @@ async def run_location_retention_job(
     started = start["last_started_at"]
 
     error_class: str | None = None
-    collected: dict[str, int] = {}
+    collected: dict[str, int] | None = None
     prepared: PreparedGrant | None = None
     lag = RetentionLag(counts={}, oldest_age_hours={})
     try:
@@ -350,7 +353,7 @@ async def run_location_retention_job(
                 except Exception as exc:
                     # Nothing was granted; holders, reconcile and lag still run, then it fails.
                     error_class = type(exc).__name__
-            if forget is not None:
+            if forget is not None and (ask_holders is None or await ask_holders(conn)):
                 try:
                     collected = await collect_holder_receipts(conn, forget)
                 except Exception as exc:
@@ -382,7 +385,7 @@ async def run_location_retention_job(
     result: dict[str, Any] = {"status": "ok", "reconciled": len(settled), "lag": lag.counts}
     if prepared is not None:
         result["prepared"] = {"grant_id": str(prepared.id), "items": prepared.item_count}
-    if forget is not None:
+    if forget is not None and collected is not None:
         result["holders"] = collected
     return result
 
@@ -411,9 +414,9 @@ async def run_scheduled_location_retention(
     """The hourly job: what runs follows the owner's switch, read fresh each run.
 
     On, it prepares (from ``revisions``, by default the adapters as their jobs build them),
-    collects holder receipts (``forget``, by default the Switchboard relay), reconciles and
-    measures lag. Off, or with no policy row, it only reconciles. The result carries
-    ``"enforced"``. Takes no ``job_args``.
+    reads the switch again and, still on, collects holder receipts (``forget``, by default the
+    Switchboard relay), reconciles and measures lag. Off, or with no policy row, it only
+    reconciles. The result carries ``"enforced"``. Takes no ``job_args``.
     """
     if job_args:
         raise ValueError(f"location retention job takes no job_args; got: {sorted(job_args)}")
@@ -431,9 +434,14 @@ async def run_scheduled_location_retention(
         except EnforcementOff:
             return None  # switched off since this run read the switch
 
+    async def still_enforced(conn: Any) -> bool:
+        # Switched off since the start: ask no holder, so no copy is withheld for this run.
+        return bool(await conn.fetchval(_ENFORCED))
+
     result = await run_location_retention_job(
         db_pool,
         forget=forget or relay_forgetter(_switchboard_url),
         prepare=prepare,
+        ask_holders=still_enforced,
     )
     return {**result, "enforced": True}

@@ -142,7 +142,8 @@ retained indefinitely. `OWNTRACKS_RETENTION_DAYS` governs only the
 `public.ingestion_events` audit rows.
 
 - **On.** The hourly `chronicler_location_retention` job prepares a grant from the
-  adapters' current revisions, asks Switchboard to forget its copies, reconciles what the
+  adapters' current revisions, asks Switchboard to forget its copies (only if the switch, read
+  again just before, is still on), reconciles what the
   connector executed and states lag. The connector's retention worker (on in the chart)
   fetches ready grants and deletes exactly their rows.
 - **Off.** Preparation refuses (`EnforcementOff`, writing nothing) and the
