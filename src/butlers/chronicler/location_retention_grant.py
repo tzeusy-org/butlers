@@ -9,7 +9,10 @@ the granted rows' location point events (each leaves a tombstone and the run a r
 :func:`~butlers.chronicler.location_forgetting.record_forgetting`, so the resurrection floor
 refuses them forever), snaps every coordinate in the place, movement and away summaries those
 rows fed to its ~150 m cell, and coarsens trail anchors resting on them in carryover. A
-summary it cannot coarsen completely fails the whole run.
+summary it cannot coarsen completely fails the whole run. Cached day-close prose that cites a
+granted row or a summary it fed, or that cites nothing yet covers a granted fix, is deleted to
+regenerate from coarsened data; a cached row over a granted fix whose provenance cannot be read
+fails the whole run.
 
 It is dark: nothing calls :func:`prepare_retention_grant` or :func:`append_grant_state`
 (``tests/chronicler/test_location_retention_dark_guard.py``), the connector deletes nothing,
@@ -150,6 +153,7 @@ class PreparedGrant:
     point_events_forgotten: int = 0
     episodes_coarsened: int = 0
     anchors_coarsened: int = 0
+    cache_rows_invalidated: int = 0
 
 
 # ── Forgetting the granted rows' Chronicler copies (S4b-2) ────────────────────
@@ -190,6 +194,51 @@ _UPDATE_ANCHORS = (
     "SET carryover = jsonb_set(carryover, ARRAY[$2::text], ($3::text)::jsonb), "
     "updated_at = now() WHERE source_name = $1 AND subsource = ''"
 )
+
+
+_EPISODE_REFS = "SELECT source_ref FROM episodes WHERE id = ANY($1::uuid[])"
+#: Every cached prose (superseded or not) that cites a granted ref, or whose window holds a
+#: granted fix: those are the rows whose provenance must be read.
+_CACHE_CANDIDATES = """
+SELECT c.cache_key, c.provenance_refs::text AS refs,
+       EXISTS (
+           SELECT 1 FROM unnest($2::timestamptz[]) AS t(at)
+           WHERE t.at >= c.start_at AND t.at <= c.end_at
+       ) AS holds_fix
+FROM tier2_cache AS c
+WHERE (jsonb_typeof(c.provenance_refs) = 'array' AND c.provenance_refs ?| $1::text[])
+   OR EXISTS (
+       SELECT 1 FROM unnest($2::timestamptz[]) AS t(at)
+       WHERE t.at >= c.start_at AND t.at <= c.end_at
+   )
+ORDER BY c.cache_key
+"""
+_DELETE_CACHE = "DELETE FROM tier2_cache WHERE cache_key = ANY($1::text[])"
+
+
+async def _invalidate_cached_prose(conn: Any, refs: set[str], fixes_at: list[datetime]) -> int:
+    """Delete the day-close prose built on granted rows, so it regenerates from coarsened data.
+
+    Prose and its provenance cannot be coarsened, so a cached row that cites a granted point
+    event or a summary it fed, or that cites nothing yet covers a granted fix's time, is deleted
+    (``superseded_at`` would keep the prose). A row covering a granted fix whose provenance is
+    not a list of refs raises ``ValueError``: its overlap cannot be determined, so the whole
+    preparation rolls back.
+    """
+    stale: list[str] = []
+    for row in await conn.fetch(_CACHE_CANDIDATES, sorted(refs), fixes_at):
+        cited = json.loads(row["refs"])
+        readable = isinstance(cited, list) and all(isinstance(ref, str) for ref in cited)
+        strings = {ref for ref in cited if isinstance(ref, str)} if isinstance(cited, list) else ()
+        if refs.intersection(strings):
+            stale.append(row["cache_key"])
+        elif row["holds_fix"] and not readable:
+            raise ValueError("a cached day-close prose has unreadable provenance")
+        elif row["holds_fix"] and not cited:
+            stale.append(row["cache_key"])
+    if stale:
+        await conn.execute(_DELETE_CACHE, stale)
+    return len(stale)
 
 
 def _as_object(value: Any) -> dict[str, Any]:
@@ -242,11 +291,12 @@ async def _forget_granted(
     revisions: dict[str, str],
     policy_version: int,
     cutoff: datetime,
-) -> tuple[int, int]:
-    """Delete the granted rows' point events (tombstoned) and coarsen their summaries.
+) -> tuple[int, int, int]:
+    """Delete the granted rows' point events (tombstoned), coarsen their summaries and delete
+    the cached prose built on them.
 
-    Returns ``(point_events_forgotten, episodes_coarsened)``. Runs inside the grant transaction,
-    under its locks: a failure rolls the whole preparation back.
+    Returns ``(point_events_forgotten, episodes_coarsened, cache_rows_invalidated)``. Runs
+    inside the grant transaction, under its locks: a failure rolls the whole preparation back.
     """
     raw_ids = [row["id"] for row in granted]
     refs = [OWNTRACKS_SOURCE_REF_PREFIX + row["idempotency_key"] for row in granted]
@@ -271,6 +321,11 @@ async def _forget_granted(
     ]
     for event in forgotten:
         episode_ids.update(event.episode_ids)
+    cited = set(refs)
+    cited.update(row["source_ref"] for row in await conn.fetch(_EPISODE_REFS, sorted(episode_ids)))
+    invalidated = await _invalidate_cached_prose(
+        conn, cited, sorted(row["retention_at"] for row in granted)
+    )
     coarsened = await _coarsen_episodes(conn, episode_ids)
     if forgotten:
         await conn.execute(_DELETE_POINT_EVENTS, [event.point_event_id for event in forgotten])
@@ -281,7 +336,7 @@ async def _forget_granted(
         episodes_coarsened=coarsened,
         forgotten=forgotten,
     )
-    return receipt.point_events_forgotten, coarsened
+    return receipt.point_events_forgotten, coarsened, invalidated
 
 
 # ── Later grant states (chronicler_037) ───────────────────────────────────────
@@ -416,9 +471,9 @@ async def prepare_retention_grant(
         )
         capped = len(rows) > limit
         granted = rows[:limit]
-        forgotten = coarsened = 0
+        forgotten = coarsened = invalidated = 0
         if granted:
-            forgotten, coarsened = await _forget_granted(
+            forgotten, coarsened, invalidated = await _forget_granted(
                 conn,
                 granted,
                 revisions=revisions,
@@ -461,4 +516,5 @@ async def prepare_retention_grant(
         point_events_forgotten=forgotten,
         episodes_coarsened=coarsened,
         anchors_coarsened=anchors,
+        cache_rows_invalidated=invalidated,
     )

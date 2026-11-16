@@ -230,8 +230,16 @@ Groundwork for that gate is in place, and still deletes nothing:
     through their coverage records and point-event links) to its 150 m cell
     (`spatial_precision.coarsen_location_payload`; a payload with a coordinate key it does not
     know fails the whole run), and coarsens a trail anchor in carryover that rests on a granted
-    fix (an anchor without an id: once older than the cutoff). Day-close prose caches
-    (`tier2_cache`) are not rewritten.
+    fix (an anchor without an id: once older than the cutoff).
+  - Prose cannot be coarsened, so in the same transaction it deletes cached day-close prose
+    (`tier2_cache`, superseded rows included) built on the granted rows. It deletes a row that
+    cites a granted point event or a summary those rows fed, or that cites nothing but whose
+    window holds a granted fix. A row over a granted fix whose provenance is not a list of refs
+    fails the whole run, because its overlap cannot be determined. A deleted day regenerates
+    from the coarsened summaries (bu-s11n0s.7 S4b-4a).
+  - A later batch that merges into a stored movement and starts at the same instant keeps the
+    stored start and its `spatial_precision_m`/`spatial_scheme` markers, as a tie on the end
+    keeps the stored end. A replay cannot write an exact fix back over a coarsened start.
   - Nothing calls it: no job, schedule, MCP tool, route or script.
     `tests/chronicler/test_location_retention_dark_guard.py` fails on any reference to
     `prepare_retention_grant`, `append_grant_state` or the module outside the module itself.

@@ -1106,6 +1106,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             ]
 
             merged = None
+            spatial: dict[str, Any] = {}
             if seg["source_ref"] is None:
                 # Only a segment that starts fresh this batch can duplicate a
                 # stored episode; a carryover extension already targets one.
@@ -1127,10 +1128,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 # Never emit a second chunk over the same span: widen the
                 # already-stored episode instead (late or replayed fixes).
                 seg_source_ref = cast(str, merged["source_ref"])
-                if merged["start_at"] < effective_start_at:
+                # A tie keeps the stored start, as a tie on the end keeps the stored end:
+                # retention may have coarsened it, and a replay must not restore the fix.
+                if merged["start_at"] < effective_start_at or (
+                    merged["start_at"] == effective_start_at and merged["start_known"]
+                ):
                     effective_start_at = merged["start_at"]
                     effective_start_lat = merged["start_lat"]
                     effective_start_lon = merged["start_lon"]
+                    spatial = merged["spatial"]
                 end_at = max(end_at, merged["end_at"])
                 # Count distinct evidence, never a sum: a replayed batch's
                 # fixes are already linked to the stored episode.
@@ -1165,6 +1171,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "path_m": round(path_m, 1) if path_m is not None else None,
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
+                **spatial,
             }
             if terminal is not None:
                 payload.update(end_lat=terminal[0], end_lon=terminal[1])
@@ -1356,6 +1363,13 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "end_lon": self._coerce_finite_float(payload.get("end_lon")),
             "start_lat": start_lat if start_lat is not None else 0.0,
             "start_lon": start_lon if start_lon is not None else 0.0,
+            "start_known": start_lat is not None and start_lon is not None,
+            # Set once retention coarsened the stored summary (bu-s11n0s.7).
+            "spatial": {
+                key: payload[key]
+                for key in ("spatial_precision_m", "spatial_scheme")
+                if key in payload
+            },
             "point_count": stored_count,
             "path_m": _known_path(payload.get("path_m")),
             "linked_event_ids": set(row["linked_event_ids"] or ()),

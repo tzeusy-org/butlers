@@ -1245,6 +1245,53 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
 
 
 @pytest.mark.asyncio
+async def test_a_replay_starting_with_the_stored_start_keeps_its_coarsened_location() -> None:
+    """bu-s11n0s.7: a tie on the start time keeps the stored start, as a tie on the end does.
+
+    Retention coarsens a stored start whose fix was granted; a replay that begins on that
+    same instant must not write the exact fix back into the episode or the carry.
+    """
+    coarse = {"spatial_precision_m": 150, "spatial_scheme": "eqcell-150m-v1"}
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW,
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {
+            "start_lat": 1.0,
+            "start_lon": 103.0,
+            "point_count": 40,
+            "end_lat": 2.0,
+            "end_lon": 104.0,
+            **coarse,
+        },
+        "linked_event_ids": [_event_id(f"earlier-{i}") for i in range(40)],
+    }
+    rows = [
+        _location_row(ts=_NOW, idempotency_key="a"),
+        _location_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+    ]
+    _, _, episodes, saved = await _project_capturing(rows, stored=stored)
+
+    (episode,) = episodes
+    assert (episode.payload["start_lat"], episode.payload["start_lon"]) == (1.0, 103.0)
+    assert (saved[_ENDPOINT]["start_lat"], saved[_ENDPOINT]["start_lon"]) == (1.0, 103.0)
+    assert {key: episode.payload.get(key) for key in coarse} == coarse
+
+    # A stored start with no known location is no better than the fix.
+    unknown = {**stored, "payload": {"point_count": 40, "end_lat": 2.0, "end_lon": 104.0}}
+    _, _, legacy, _ = await _project_capturing(rows, stored=unknown)
+    assert (legacy[0].payload["start_lat"], legacy[0].payload["start_lon"]) == (1.2345, 103.8765)
+
+    # A genuinely earlier fix still starts the episode at its own location, unmarked.
+    earlier = [_location_row(ts=_NOW - timedelta(minutes=1), idempotency_key="z"), *rows]
+    _, _, widened, _ = await _project_capturing(earlier, stored=stored)
+    assert (widened[0].payload["start_lat"], widened[0].payload["start_lon"]) == (
+        1.2345,
+        103.8765,
+    )
+
+
+@pytest.mark.asyncio
 async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
     """point_count counts distinct linked evidence, so a replay never re-adds it."""
     others = [_event_id(f"earlier-{i}") for i in range(40)]
