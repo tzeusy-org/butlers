@@ -248,6 +248,20 @@ Groundwork for that gate is in place, and still deletes nothing:
     `ready`; `reconciled` and `failed` exclude each other and end the history). It refuses
     `ready` outright (`HoldersIncomplete`) until holder copies are recorded (slice S4c), so no
     grant can authorize a deletion yet.
+- The connector side of a deletion has somewhere to leave its evidence, still deleting nothing
+  (bu-s11n0s.7 S4b-3a, core_342):
+  - `connectors.owntracks_retention_batches` is the connector's receipt, one row per grant it
+    executed: items, rows deleted, rows already gone (`deleted + already_forgotten = items`).
+  - `connectors.owntracks_retention_tombstones` keeps one row per forgotten raw row: its
+    `idempotency_key` (the logical key), its former id, the grant's content digest and grant id.
+    Every tombstone needs its receipt in the same transaction (deferred foreign key).
+  - Both are append-only by trigger, because an `init-db.sql` replay re-grants `connector_writer`
+    every privilege on `connectors`. A fresh migration grants `connector_writer` only select and
+    insert and `butler_chronicler_rw` only select.
+  - `connectors.owntracks_points` skips an insert whose `idempotency_key` is tombstoned, as it
+    skips a duplicate, so a replayed or late webhook cannot restore a forgotten fix. It is keyed
+    on the raw logical key, so it holds even for a granted row that never had a point event.
+  - Nothing writes these tables yet. The downgrade refuses while either holds a row.
 
 ## Implementation Notes
 
