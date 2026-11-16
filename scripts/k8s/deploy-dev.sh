@@ -6,6 +6,7 @@
 #
 #   BWS_ENV_FILE      BWS env file (BWS_ACCESS_TOKEN, BWS_PROJECT_ID); default ~/.secrets/.bws.dev.env
 #   BUTLERS_SITE_ENV  site hosts file read by scripts/site-env.sh; default /secrets/.dev.env
+#   ALLOWED_TAILNET_HOSTS  optional; if unset, resolved from TAILNET_NAME (scripts/k8s/egress-allowlist.sh)
 #
 # Does not run `make secrets-dev`: butlers-dev takes its Secrets from BWS through
 # External Secrets (values.dev.yaml localSecrets.source=bws).
@@ -28,6 +29,11 @@ if [ -z "${BUTLERS_PUBLIC_HOST:-}" ] || [ -z "${BUTLERS_IMAGE_REGISTRY:-}" ]; th
   echo "site env not loaded: set BUTLERS_SITE_ENV (default /secrets/.dev.env) or TAILNET_NAME" >&2
   exit 1
 fi
+
+# The chart's egressPolicy (on in dev) needs the private destinations as IPv4 addresses; build
+# them here unless the operator exported ALLOWED_TAILNET_HOSTS. Fails closed on an unresolved host.
+. "$ROOT/scripts/k8s/egress-allowlist.sh"
+butlers_resolve_egress_allowlist || exit 2
 
 branch="$(git -C "$ROOT" branch --show-current)"
 [ "$branch" = main ] || echo "warning: deploying from branch '${branch:-detached}', not main" >&2
