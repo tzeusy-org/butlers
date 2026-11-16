@@ -183,6 +183,40 @@ describe("the switch", () => {
   });
 });
 
+describe("a refetch while the dialog is open", () => {
+  it("still writes against the version the owner confirmed", async () => {
+    api.getLocationRetention.mockResolvedValue(policy());
+    api.setLocationRetention.mockResolvedValue(policy({ enforced: true, version: 6 }));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SettingsLocationRetentionPage />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    await user.click(await expirySwitch());
+    const dialog = await screen.findByRole("alertdialog");
+
+    // Someone else changed the policy; a background refetch lands under the open dialog.
+    api.getLocationRetention.mockResolvedValue(policy({ version: 5, days: 9 }));
+    await queryClient.refetchQueries({ queryKey: ["location-retention"] });
+    await screen.findByText(/version 5/);
+
+    await user.click(within(dialog).getByRole("button", { name: "Turn expiry on" }));
+    await waitFor(() =>
+      expect(api.setLocationRetention).toHaveBeenCalledWith({
+        days: 30,
+        expected_version: 4,
+        enforced: true,
+      }),
+    );
+  });
+});
+
 describe("the horizon", () => {
   it("saves a new horizon without touching the switch", async () => {
     api.getLocationRetention.mockResolvedValue(policy());

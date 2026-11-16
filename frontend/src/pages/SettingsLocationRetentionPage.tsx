@@ -28,9 +28,14 @@ import { Time } from "@/components/ui/time";
 import { useLocationRetention, useSetLocationRetention } from "@/hooks/use-location-retention";
 import { cn } from "@/lib/utils";
 
+/**
+ * What the owner is confirming, frozen when the dialog opens: the version and horizon they saw.
+ * A background refetch while the dialog is open must not retarget the write at a newer version
+ * (the compare-and-set then refuses it instead of applying a change the owner never saw).
+ */
 type Pending =
-  | { kind: "switch"; enforced: boolean }
-  | { kind: "shorten"; days: number };
+  | { kind: "switch"; enforced: boolean; days: number; version: number }
+  | { kind: "shorten"; days: number; version: number };
 
 function parseDays(raw: string, policy: LocationRetentionPolicy): number | null {
   if (!/^\d+$/.test(raw.trim())) return null;
@@ -105,7 +110,7 @@ function confirmCopy(pending: Pending, policy: LocationRetentionPolicy) {
       title: "Turn raw location expiry on?",
       label: "Turn expiry on",
       variant: "destructive" as const,
-      body: `From the next hourly run, raw OwnTracks fixes older than ${policy.days} days that every projection has finished with are deleted, along with Chronicler's and Switchboard's copies of them. This cannot be undone; summaries keep ${policy.precision_after_forgetting}.`,
+      body: `From the next hourly run, raw OwnTracks fixes older than ${pending.days} days that every projection has finished with are deleted, along with Chronicler's and Switchboard's copies of them. This cannot be undone; summaries keep ${policy.precision_after_forgetting}.`,
     };
   }
   return {
@@ -148,14 +153,14 @@ export default function SettingsLocationRetentionPage() {
     if (!policy || !pending) return;
     if (pending.kind === "switch") {
       send(
-        { days: policy.days, expected_version: policy.version, enforced: pending.enforced },
+        { days: pending.days, expected_version: pending.version, enforced: pending.enforced },
         pending.enforced
           ? "Expiry is on. The hourly job starts deleting eligible raw fixes at its next run."
           : "Expiry is off. Raw fixes are kept from now on.",
       );
     } else {
       send(
-        { days: pending.days, expected_version: policy.version },
+        { days: pending.days, expected_version: pending.version },
         `The horizon is now ${pending.days} days.`,
       );
     }
@@ -166,7 +171,7 @@ export default function SettingsLocationRetentionPage() {
     const days = parseDays(draft, policy);
     if (days === null || days === policy.days) return;
     if (policy.enforced && days < policy.days) {
-      setPending({ kind: "shorten", days });
+      setPending({ kind: "shorten", days, version: policy.version });
       return;
     }
     send({ days, expected_version: policy.version }, `The horizon is now ${days} days.`);
@@ -238,7 +243,14 @@ export default function SettingsLocationRetentionPage() {
               <ExpirySwitch
                 checked={policy.enforced}
                 pending={busy}
-                onToggle={() => setPending({ kind: "switch", enforced: !policy.enforced })}
+                onToggle={() =>
+                  setPending({
+                    kind: "switch",
+                    enforced: !policy.enforced,
+                    days: policy.days,
+                    version: policy.version,
+                  })
+                }
               />
             </div>
 
