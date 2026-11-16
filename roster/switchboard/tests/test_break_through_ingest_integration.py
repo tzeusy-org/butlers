@@ -299,7 +299,11 @@ async def test_a_flood_past_the_hourly_cap_folds_into_one_pending_line(
 ) -> None:
     await _clause(admin)
     for index in range(5):
-        await ingest_v1(runtime, _email(f"<flood-{index}@example.test>"))
+        # Distinct bodies: identical text from one sender in one hour is a content-hash duplicate
+        # that ingest folds before the sensor ever sees it.
+        await ingest_v1(
+            runtime, _email(f"<flood-{index}@example.test>", body=f"private body {index}")
+        )
 
     assert notify.await_count == break_through.FLOOD_CAP_PER_HOUR
     folds = await runtime.fetch(
