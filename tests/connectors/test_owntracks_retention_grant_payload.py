@@ -6,6 +6,7 @@ cutoff. Anything else, or anything malformed, is no batch: the connector deletes
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -118,7 +119,9 @@ def test_only_the_flagged_worker_and_the_relay_read_reach_either_half() -> None:
             if path in _MODULES:
                 continue
             text = path.read_text(encoding="utf-8")
-            found = {needle for needle in _NEEDLES if needle in text}
+            # Whole names only: ``connectors.owntracks_retention_batches`` is a table the
+            # reconciler reads, not this module.
+            found = {needle for needle in _NEEDLES if re.search(rf"\b{re.escape(needle)}\b", text)}
             if found:
                 references[path.relative_to(_ROOT).as_posix()] = found
     assert references == _ALLOWED
