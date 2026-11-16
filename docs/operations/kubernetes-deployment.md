@@ -605,11 +605,16 @@ address must time out while an allowlisted host, a public host and DNS succeed.
 
 Dev enables the policy (`values.dev.yaml`, owner decision 2026-11-08, `bu-viat6h.11`).
 A dev deploy therefore needs `ALLOWED_TAILNET_HOSTS` (IPv4 addresses of every private or
-tailnet destination dev pods use) or it refuses to render. The owner's dev redeploy
-wrapper resolves it at deploy time from `<service>.$TAILNET_NAME` for the compose
-firewall's service set minus the compose-only Postgres hosts (dev Postgres is
-in-cluster), plus the transcription host: `otel`, `ollama`, `tzehouse-synology`,
-`homeassistant`, `wyoming-faster-whisper`. The Dolt tracker host stays denied.
+tailnet destination dev pods use) or it refuses to render. `scripts/k8s/deploy-dev.sh`
+builds it when it is unset (`scripts/k8s/egress-allowlist.sh`, `bu-viat6h.12`): it
+resolves `<service>.$TAILNET_NAME` with `getent ahostsv4` at deploy time, dedupes, and
+prints service names and a count, never addresses. The service list lives in that
+script (`BUTLERS_EGRESS_SERVICES`): the compose firewall's set minus the compose-only
+Postgres hosts (dev Postgres is in-cluster), plus the transcription host: `otel`,
+`ollama`, `tzehouse-synology`, `homeassistant`, `v-on-shenton` (the Home Assistant host
+the connector actually dials), `wyoming-faster-whisper`. It needs `TAILNET_NAME` from the
+site env and fails closed if any service does not resolve. An explicitly exported
+`ALLOWED_TAILNET_HOSTS` wins and skips resolution. The Dolt tracker host stays denied.
 Fast rollback: `helm -n butlers-dev rollback butlers` to the previous revision; with the
 flag off, the tracker-egress policy renders as before.
 Durable rollback: set `egressPolicy.enabled: false` in `values.dev.yaml`. Each allowlist
