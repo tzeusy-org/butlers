@@ -62,6 +62,7 @@ class _Pool:
         if "count(*) FROM switchboard.break_through_hits" in query:
             return self.rank
         if "UPDATE insight_candidates SET message" in query:
+            assert "claim_id IS NULL" in query  # a fold mid-send is never amended
             self.folded_into.append(args)
             return self.pending_fold
         if "FROM insight_candidates" in query:
@@ -492,3 +493,16 @@ async def test_a_replayed_over_cap_hit_counts_once(published) -> None:
 
     assert pool.folded_into == []
     published.proposal.assert_not_awaited()
+
+
+async def test_overflow_while_the_fold_is_mid_send_starts_a_new_fold(published) -> None:
+    pool = _Pool()
+    pool.rank = break_through.FLOOD_CAP_PER_HOUR + 2
+    pool.pending_fold = None  # the only fold is claimed, so the guarded UPDATE matches nothing
+
+    await _observe(pool)
+
+    assert len(pool.folded_into) == 1
+    kwargs = published.proposal.await_args.kwargs
+    assert kwargs["message"] == "and 2 more from senders you declared (email) - open"
+    assert kwargs["dedup_key"].endswith(":fold")

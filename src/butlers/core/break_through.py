@@ -321,7 +321,7 @@ async def _fold(pool: Any, hit: Hit, overflow: int) -> tuple[str | None, bool]:
     prefix = f"switchboard:break_through:fold-{hit.clause_id}-"
     pending = await pool.fetchval(
         "UPDATE insight_candidates SET message = $2 WHERE status = 'pending' "
-        "AND category = $3 AND dedup_key LIKE $1 RETURNING id",
+        "AND claim_id IS NULL AND category = $3 AND dedup_key LIKE $1 RETURNING id",
         prefix + "%",
         message,
         BREAK_THROUGH_CATEGORY,

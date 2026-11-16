@@ -1059,7 +1059,7 @@ Scope: v1-mandatory
 
 ### Requirement: Owner-Declared Break-Through Hits Are Observed At Ingest
 
-The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds; the owner's own current clause, not a model or a producer, is the authority to interrupt.
+The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds, except that hits past a clause's hourly cap (3) fold into one pending "and N more" candidate delivered by the next hourly urgent cycle; the owner's own current clause, not a model or a producer, is the authority to interrupt.
 
 Source: bu-s11n0s.8 S1, S2 (owner-released intent bu-9zmre6)
 Scope: v1-mandatory
