@@ -36,6 +36,9 @@ database:
   # only prints the plan (dry run). Enabled, it is fail-closed: if the apply cannot
   # converge or the plan would GRANT (widen), the initContainer fails and the
   # dashboard API does not start. Read the dry-run output on dev first.
+  # Needs an image that ships the `butlers db apply-grants` command; on an older image
+  # the step fails (fail-closed when true, ignored when false) so enable it only after
+  # the chart's image tag includes that command.
   applyGrants: false
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.

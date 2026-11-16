@@ -44,4 +44,11 @@ def test_execute_applies(monkeypatch: pytest.MonkeyPatch) -> None:
     result, applied = _run(monkeypatch, "--execute")
     assert result.exit_code == 0, result.output
     applied.assert_called_once()
+    assert applied.call_args.kwargs == {"allow_grants": False}
     assert "1 grant change(s) applied; 0 skipped" in result.output
+
+
+def test_allow_grants_is_passed_through_to_apply(monkeypatch: pytest.MonkeyPatch) -> None:
+    result, applied = _run(monkeypatch, "--execute", "--allow-grants")
+    assert result.exit_code == 0, result.output
+    assert applied.call_args.kwargs == {"allow_grants": True}
