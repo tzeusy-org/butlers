@@ -49,6 +49,7 @@ import {
   useRegisterCommands,
   type PaletteCommand,
 } from "@/lib/command-registry";
+import { useLocationRetention } from "@/hooks/use-location-retention";
 import { usePublicMcpSummary } from "@/hooks/use-public-mcp-controls";
 import QaStafferCard from "@/components/settings/QaStafferCard";
 
@@ -636,6 +637,52 @@ function PublicMcpPanel({ onNavigate }: { onNavigate: (route: string) => void })
   );
 }
 
+// Location retention panel: the raw OwnTracks expiry switch at a glance (bu-s11n0s.75)
+function LocationRetentionPanel({ onNavigate }: { onNavigate: (route: string) => void }) {
+  const { data: policy, isLoading, isError, refetch } = useLocationRetention();
+
+  return (
+    <PanelShell
+      title="Location retention"
+      description="Raw OwnTracks fixes: horizon and expiry switch."
+      href="/settings/location-retention"
+      onNavigate={onNavigate}
+    >
+      {isLoading ? (
+        <Skeleton className="h-8 w-full" />
+      ) : isError || typeof policy?.enforced !== "boolean" ? (
+        <p className="text-sm text-muted-foreground">
+          Failed to load.{" "}
+          <InlineActionLink
+            onClick={(e) => {
+              e.stopPropagation();
+              refetch();
+            }}
+          >
+            Retry →
+          </InlineActionLink>
+        </p>
+      ) : (
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span
+            className={cn(
+              "text-sm font-medium",
+              policy.enforced ? "text-foreground" : "text-[var(--amber-text)]",
+            )}
+          >
+            {policy.enforced ? "Expiry on" : "Expiry off"}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {policy.enforced
+              ? `raw fixes deleted after ${policy.days} days`
+              : `${policy.days}-day horizon; raw fixes kept`}
+          </span>
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -767,6 +814,9 @@ export default function SettingsConsolePage() {
 
         {/* Projections — static panel (navigates to sub-route) */}
         <ProjectionsPanel onNavigate={handleNavigate} />
+
+        {/* Location retention — independent fetch of the expiry switch */}
+        <LocationRetentionPanel onNavigate={handleNavigate} />
       </div>
 
       {/* ------------------------------------------------------------------ */}

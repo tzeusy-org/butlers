@@ -78,6 +78,7 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/settings/permissions": { policy: "none", summary: "Permissions" },
   "/settings/projections": { policy: "none", summary: "Projections" },
   "/settings/public-mcp": { policy: "none", summary: "Public MCP" },
+  "/settings/location-retention": { policy: "none", summary: "Location retention" },
   "/settings/models": { policy: "ref-only", summary: "Models" },
 
   "/entities/index": SNAPSHOT("Entities index"),

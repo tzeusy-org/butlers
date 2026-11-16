@@ -54,6 +54,7 @@ const SettingsConsolePage = shellPage('/settings')
 const SettingsPermissionsPage = shellPage('/settings/permissions')
 const SettingsProjectionsPage = shellPage('/settings/projections')
 const SettingsPublicMcpPage = shellPage('/settings/public-mcp')
+const SettingsLocationRetentionPage = shellPage('/settings/location-retention')
 const SettingsModelsPage = shellPage('/settings/models')
 const AuditLogPage = shellPage('/audit-log')
 const HealthOverviewPage = shellPage('/health')
@@ -155,6 +156,7 @@ export const routes: RouteObject[] = [
         { path: '/settings/permissions', element: routeElement(<SettingsPermissionsPage />) },
         { path: '/settings/projections', element: routeElement(<SettingsProjectionsPage />) },
         { path: '/settings/public-mcp', element: routeElement(<SettingsPublicMcpPage />) },
+        { path: '/settings/location-retention', element: routeElement(<SettingsLocationRetentionPage />) },
         { path: '/settings/models', element: routeElement(<SettingsModelsPage />) },
         { path: '/secrets', element: routeElement(<SecretsPage />) },
         { path: '/education', element: routeElement(<EducationPage />) },
