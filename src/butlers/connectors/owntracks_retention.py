@@ -20,7 +20,16 @@ The grant reaches the connector as a payload of ids, digests and the cutoff only
   and nothing is written.
 * Present rows are deleted; rows already gone count as ``already_forgotten``. Every item gets a
   tombstone keyed by its logical key, so even a row that never reached a point event cannot be
-  inserted again, and the receipt is written last.
+  inserted again.
+* The connector's parked ``connectors.filtered_events`` copies of the granted fixes (an
+  envelope parked after its ingest attempts were spent; the point is still persisted) keep their
+  row but lose the fix: ``full_payload.payload`` becomes :data:`WITHHELD_TEXT` and the row is
+  marked not replayable (S4c-4). They are matched by ``sender_identity`` and
+  ``external_message_id``, which spell the logical key. A copy written later is withheld by
+  core_345's insert trigger. A failure here rolls back the delete. A policy-filtered fix is
+  recorded without a point row, so it never enters a grant and is outside its reach (a
+  follow-up under bu-s11n0s.7).
+* The receipt is written last.
 
 The worker (:func:`run_retention_once`, :func:`start_retention_worker`) fetches ready grants
 from Chronicler through the ``location_retention.grants_ready`` named relay (RFC 0038 D7),
@@ -155,6 +164,25 @@ _TOMBSTONE = (
     "SELECT key, raw_id, digest, $4 FROM unnest($1::text[], $2::uuid[], $3::text[]) "
     "AS item(key, raw_id, digest)"
 )
+#: What a withheld ``connectors.filtered_events`` copy keeps of the fix (S4c-4). core_345's
+#: insert trigger writes the same values, for a copy written after the fix was forgotten.
+WITHHELD_TEXT = "[location withheld: raw retention]"
+#: The replay drain refuses a row carrying this reason instead of submitting a hollow event.
+NOT_REPLAYABLE = "the location was forgotten by raw retention"
+# A copy is matched by the connector's own identifiers, never by text: OwnTracks parks a
+# location envelope under ``sender_identity`` = its endpoint identity and
+# ``external_message_id`` = ``{tst}:location``, so ``owntracks:{sender}:{id}`` is the logical
+# key. Transition and waypoints copies (``{tst}:transition:{event}``, ``{tst}:waypoints``) never
+# spell a location key.
+_WITHHOLD_COPIES = f"""
+    UPDATE connectors.filtered_events
+    SET full_payload = full_payload || jsonb_build_object(
+        'payload', jsonb_build_object('raw', NULL, 'normalized_text', '{WITHHELD_TEXT}'),
+        'replay_unavailable', '{NOT_REPLAYABLE}'
+    )
+    WHERE source_channel = 'owntracks'
+      AND 'owntracks:' || sender_identity || ':' || external_message_id = ANY($1::text[])
+"""
 _BATCH = (
     "INSERT INTO connectors.owntracks_retention_batches "
     "(grant_id, item_count, deleted_count, already_forgotten_count) VALUES ($1, $2, $3, $4)"
@@ -198,6 +226,7 @@ async def execute_grant(conn: asyncpg.Connection, grant: RetentionGrant) -> Batc
             [item.content_digest for item in grant.items],
             grant.grant_id,
         )
+        withheld = await conn.execute(_WITHHOLD_COPIES, keys)
         receipt = BatchReceipt(
             grant.grant_id,
             item_count=len(grant.items),
@@ -212,6 +241,13 @@ async def execute_grant(conn: asyncpg.Connection, grant: RetentionGrant) -> Batc
             receipt.deleted_count,
             receipt.already_forgotten_count,
         )
+    # Counts only: which rows were withheld never reaches a log.
+    logger.info(
+        "owntracks retention grant %s: %d deleted, %d connector copies withheld",
+        grant.grant_id,
+        deleted_count,
+        int(withheld.rsplit(" ", 1)[-1]),
+    )
     return receipt
 
 
