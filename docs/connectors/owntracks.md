@@ -280,6 +280,23 @@ Groundwork for that gate is in place, and still deletes nothing:
     or by logical key. Anything else is `failed`. Both receipts are counts only.
   - States are appended through `append_grant_state`, so a grant another run settled first is
     skipped.
+- A retention job wraps reconciliation and states what is overdue, still dark
+  (bu-s11n0s.7 S4b-4c, `location_retention_job.run_location_retention_job`, unscheduled):
+  - `chronicler.location_retention_runs` (chronicler_038) holds one run record. `running` commits
+    before any work; a run still `running` within 30 minutes makes the next one skip, and an
+    older one counts as a failure (`Unfinished`) that stays standing even if the takeover run
+    succeeds; only a later clean run clears it. The outcome is written in its own transaction
+    and keeps only the exception class.
+  - Raw fixes past the policy cutoff are counted by the first reason that applies:
+    `grant_failed`, `awaiting_deletion`, `awaiting_holders`, `held_open`, `uncovered` (no exact
+    coverage at some adapter's last recorded revision: malformed, refused, `existing_only` miss,
+    pre-coverage) or `awaiting_grant`. Each non-zero category is an owner condition under
+    `chronicler:location-retention-projection-lag` (count and oldest age in hours only).
+  - The failure streak, grants that failed reconciliation and ready grants with no receipt after
+    24 hours (a connector that keeps refusing a grant leaves it pending forever) are conditions
+    under `chronicler:location-retention-purge-failed`.
+  - Lag is reconciled only after a complete read, so a failed run never resolves it. The job
+    proposes no insight and sends nothing.
 
 ## Implementation Notes
 
