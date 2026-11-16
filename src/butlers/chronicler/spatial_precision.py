@@ -120,6 +120,24 @@ _KNOWN_COORDINATE_KEYS = frozenset(key for pair in SUMMARY_COORDINATE_PAIRS for 
 _COORDINATE_LIKE = re.compile(r"(^|_)(lat|lon|lng|latitude|longitude)$")
 
 
+def _nested_coordinate_keys(value: Any, path: str) -> list[str]:
+    """Coordinate-like keys anywhere inside ``value`` (objects within objects or lists)."""
+    if isinstance(value, Mapping):
+        return [
+            found
+            for key, child in value.items()
+            for found in ([f"{path}.{key}"] if _COORDINATE_LIKE.search(str(key)) else [])
+            + _nested_coordinate_keys(child, f"{path}.{key}")
+        ]
+    if isinstance(value, list | tuple):
+        return [
+            found
+            for index, child in enumerate(value)
+            for found in _nested_coordinate_keys(child, f"{path}[{index}]")
+        ]
+    return []
+
+
 def coarsen_location_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """A copy of ``payload`` with every coordinate pair snapped to its cell centre.
 
@@ -133,6 +151,11 @@ def coarsen_location_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     if unknown:
         raise ValueError(f"payload has coordinates the scheme does not know: {unknown}")
+    nested = sorted(
+        path for key, value in payload.items() for path in _nested_coordinate_keys(value, key)
+    )
+    if nested:
+        raise ValueError(f"payload has nested coordinates the scheme does not know: {nested}")
     coarse = dict(payload)
     for lat_key, lon_key in SUMMARY_COORDINATE_PAIRS:
         if lat_key not in payload and lon_key not in payload:

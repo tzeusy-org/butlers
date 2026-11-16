@@ -269,7 +269,29 @@ Groundwork for that gate is in place, and still deletes nothing:
   - `connectors.owntracks_points` skips an insert whose `idempotency_key` is tombstoned, as it
     skips a duplicate, so a replayed or late webhook cannot restore a forgotten fix. It is keyed
     on the raw logical key, so it holds even for a granted row that never had a point event.
-  - Nothing writes these tables yet. The downgrade refuses while either holds a row.
+  - The downgrade refuses while either holds a row.
+- The connector can execute a grant, off by default (bu-s11n0s.7 S4b-3b):
+  - Chronicler offers grants with a `ready` state and neither `reconciled` nor `failed`
+    (`location_retention_handoff.ready_grant_payloads`): grant id, cutoff, and each raw row's
+    id, logical key and digest, nothing else. `ready` cannot be written until holder copies
+    land (S4c), so nothing is offered yet.
+  - The offer reaches the connector only through the `location_retention.grants_ready` named
+    relay on Switchboard, whose one allowed caller is the `connector-owntracks` workload
+    speaking for `owntracks`. The connector needs a relay-audience workload token for that
+    (S4b-3c); without one it fetches nothing.
+  - `owntracks_retention.execute_grant` runs one transaction per grant. It takes
+    `connectors.owntracks_forget_lock()` (core_343, one exclusive advisory lock), then refuses
+    the whole grant if a key is already tombstoned or a present row's key, recomputed digest or retention clock does not
+    match. Otherwise it deletes the present rows, counts missing ones as already forgotten,
+    tombstones every key and writes the receipt. Executing a grant again returns its receipt.
+  - The points trigger takes the same lock shared (`owntracks_forget_guard()`) before it reads
+    tombstones, and also fires on `UPDATE OF idempotency_key`. A webhook replay racing a
+    deletion waits for its commit and is then skipped, instead of slipping in after the delete.
+    Inserts never wait for each other, and a transaction holds one lock entry however many rows
+    it inserts.
+  - The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (hourly by default,
+    `OWNTRACKS_RAW_RETENTION_INTERVAL_S`). An unreachable relay, a refusal, a missing token or
+    a malformed reply executes nothing; a grant that no longer matches is skipped.
 - Chronicler reconciles each ready grant against what the connector committed, still dark
   (bu-s11n0s.7 S4b-4b, `location_retention_reconcile.reconcile_ready_grants`, uncalled):
   - It reads the batch receipt, the tombstones and `connectors.owntracks_points` under its own

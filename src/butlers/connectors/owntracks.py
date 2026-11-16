@@ -36,6 +36,9 @@ Environment variables:
 - CONNECTOR_INGESTION_TIER (optional, default "metadata"): "metadata" or "full"
 - CONNECTOR_HEALTH_PORT (optional, default 40083): HTTP server port
 - CONNECTOR_HEARTBEAT_INTERVAL_S (optional, default 120)
+- OWNTRACKS_RAW_RETENTION_ENABLED (optional, default off): only ``true`` starts the raw-fix
+  expiry worker (``owntracks_retention``), which executes Chronicler's ready grants
+- OWNTRACKS_RAW_RETENTION_INTERVAL_S (optional, default 3600, min 60)
 - BUTLER_SHARED_DB_NAME (optional; shared butler DB used for connector state
   and credentials, defaults to 'butlers')
 
@@ -1929,9 +1932,20 @@ async def run_owntracks_connector() -> None:
         cursor_pool=db_pool,
     )
 
+    # Raw-fix expiry (bu-s11n0s.7): off unless OWNTRACKS_RAW_RETENTION_ENABLED=true.
+    from butlers.connectors.owntracks_retention import (
+        RetentionWorkerConfig,
+        start_retention_worker,
+    )
+
+    retention_task = start_retention_worker(
+        RetentionWorkerConfig.from_env(), db_pool, switchboard_url=config.switchboard_mcp_url
+    )
     try:
         await connector.start()
     finally:
+        if retention_task is not None:
+            retention_task.cancel()
         if db_pool is not None:
             await db_pool.close()
 

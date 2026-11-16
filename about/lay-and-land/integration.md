@@ -320,6 +320,20 @@ the [control-plane design](../../openspec/changes/restore-butler-control-plane-l
 **Failure behavior**: Heartbeat failures are logged but never crash or block
 ingestion.
 
+### OwnTracks raw-fix expiry (dark)
+
+The OwnTracks connector is the one connector that reads a domain butler, and only through
+Switchboard: the `location_retention.grants_ready` named relay
+([service plane](../../docs/architecture/service-plane.md)) admits only the
+`(connector-owntracks, owntracks)` caller, takes no arguments and forwards to Chronicler's
+service-only `location_retention_grants_ready_service`. The reply is the ready, unsettled grants:
+grant id, cutoff, and each raw row's id, logical key and v1 digest. The connector deletes a raw
+row only when its key and recomputed digest still match and it is older than the cutoff, and
+records a tombstone and a receipt in `connectors` in the same transaction. An unreachable relay,
+a refusal or a malformed reply deletes nothing. No connector reaches a butler's MCP server.
+Off unless `OWNTRACKS_RAW_RETENTION_ENABLED=true`, and inert before the connector has a workload
+token.
+
 ---
 
 ## 9. Observability: Trace Propagation
@@ -434,6 +448,7 @@ deterministically with `content_authority = 'third_party'` and `src = 'external_
 | Dashboard -> Database | SQL | asyncpg queries | TCP |
 | Butler -> Database | SQL | asyncpg queries | TCP |
 | Connector -> Switchboard (heartbeat) | MCP | `connector.heartbeat` | SSE |
+| OwnTracks connector -> Switchboard -> Chronicler (dark) | Named relay | `location_retention.grants_ready`, no arguments; grant ids, cutoffs, raw ids, keys, digests back | HTTP POST on 41100 with a workload token; Switchboard to Chronicler over MCP |
 | Control plane -> daemon (liveness) | backend-network HTTP GET | `butler.control.v1` bounded facts | HTTP |
 | Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |
