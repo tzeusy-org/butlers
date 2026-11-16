@@ -289,14 +289,17 @@ Groundwork for that gate is in place, and still deletes nothing:
     deletion waits for its commit and is then skipped, instead of slipping in after the delete.
     Inserts never wait for each other, and a transaction holds one lock entry however many rows
     it inserts.
-  - The same transaction withholds the connector's own `connectors.filtered_events` copies of
-    each granted fix (S4c-4): a policy-filtered location, or an envelope parked after its
-    ingest attempts were spent. A copy matches when `'owntracks:' || sender_identity || ':' ||
+  - The same transaction withholds the connector's parked `connectors.filtered_events` copies
+    of each granted fix (S4c-4): envelopes parked after their ingest attempts were spent (the
+    point itself is still persisted). A copy matches when `'owntracks:' || sender_identity || ':' ||
     external_message_id` (`{tst}:location`) is a granted key; text is never matched, and
-    transition and waypoints copies never spell a location key. The row stays for the filter
-    and park audit, but its `full_payload.payload` becomes `[location withheld: raw retention]`
+    transition and waypoints copies never spell a location key. The row stays for the park
+    audit, but its `full_payload.payload` becomes `[location withheld: raw retention]`
     and it carries `replay_unavailable`, so the replay drain refuses it rather than submitting
     a hollow event. A failure here rolls back the delete, the tombstones and the receipt.
+  - A policy-filtered fix is recorded to `filtered_events` with its raw body and never reaches
+    `owntracks_points`, so it has no point row, never enters a grant and is outside a grant's
+    reach (a follow-up under bu-s11n0s.7).
   - A copy written after the fix was forgotten (a resend parked again) is withheld on insert
     by core_345's `filtered_events_withhold_forgotten` trigger, which takes the forget guard
     first, so a copy racing a deletion waits for its commit.

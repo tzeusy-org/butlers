@@ -21,12 +21,14 @@ The grant reaches the connector as a payload of ids, digests and the cutoff only
 * Present rows are deleted; rows already gone count as ``already_forgotten``. Every item gets a
   tombstone keyed by its logical key, so even a row that never reached a point event cannot be
   inserted again.
-* The connector's own ``connectors.filtered_events`` copies of the granted fixes (a
-  policy-filtered event, or an envelope parked after its ingest attempts were spent) keep their
+* The connector's parked ``connectors.filtered_events`` copies of the granted fixes (an
+  envelope parked after its ingest attempts were spent; the point is still persisted) keep their
   row but lose the fix: ``full_payload.payload`` becomes :data:`WITHHELD_TEXT` and the row is
   marked not replayable (S4c-4). They are matched by ``sender_identity`` and
   ``external_message_id``, which spell the logical key. A copy written later is withheld by
-  core_345's insert trigger. A failure here rolls back the delete.
+  core_345's insert trigger. A failure here rolls back the delete. A policy-filtered fix is
+  recorded without a point row, so it never enters a grant and is outside its reach (a
+  follow-up under bu-s11n0s.7).
 * The receipt is written last.
 
 The worker (:func:`run_retention_once`, :func:`start_retention_worker`) fetches ready grants
@@ -167,8 +169,8 @@ _TOMBSTONE = (
 WITHHELD_TEXT = "[location withheld: raw retention]"
 #: The replay drain refuses a row carrying this reason instead of submitting a hollow event.
 NOT_REPLAYABLE = "the location was forgotten by raw retention"
-# A copy is matched by the connector's own identifiers, never by text: OwnTracks records a
-# parked or policy-filtered location under ``sender_identity`` = its endpoint identity and
+# A copy is matched by the connector's own identifiers, never by text: OwnTracks parks a
+# location envelope under ``sender_identity`` = its endpoint identity and
 # ``external_message_id`` = ``{tst}:location``, so ``owntracks:{sender}:{id}`` is the logical
 # key. Transition and waypoints copies (``{tst}:transition:{event}``, ``{tst}:waypoints``) never
 # spell a location key.

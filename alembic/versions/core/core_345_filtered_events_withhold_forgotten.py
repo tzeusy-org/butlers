@@ -5,10 +5,11 @@ Revises: core_344
 Create Date: 2026-11-17 00:00:00.000000
 
 ``connectors.filtered_events`` keeps whole OwnTracks envelopes for twelve months, raw body and
-coordinate text included. Two kinds name a location fix: a policy-filtered event, and an
-envelope parked after its ingest attempts were spent (the point itself is still persisted).
-The deleter (``butlers.connectors.owntracks_retention.execute_grant``) withholds the copies of
-the fixes it deletes in its own transaction. This migration covers a copy written later (a phone
+coordinate text included. An envelope parked after its ingest attempts were spent copies a
+fix whose point is still persisted, so a grant can name it. The deleter
+(``butlers.connectors.owntracks_retention.execute_grant``) withholds the parked copies of the
+fixes it deletes in its own transaction (a policy-filtered fix has no point row and is outside
+a grant's reach: a follow-up under bu-s11n0s.7). This migration covers a copy written later (a phone
 resend that is parked after the fix was forgotten):
 
 * ``connectors.filtered_events_withhold_forgotten()``, a ``BEFORE INSERT`` row trigger on the

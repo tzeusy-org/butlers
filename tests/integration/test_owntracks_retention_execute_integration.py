@@ -6,10 +6,12 @@ mismatch refuses the whole grant: nothing is deleted and no receipt is written. 
 gone counts as already forgotten and is still tombstoned by its logical key, so it cannot be
 inserted again. A grant executed twice returns its first receipt and changes nothing.
 
-The connector's own ``connectors.filtered_events`` copies of a granted fix (a policy-filtered
-event, or an envelope parked after its ingest attempts were spent) are withheld in the same
-transaction (S4c-4): matched by ``sender_identity`` and ``external_message_id`` ``{tst}:location``,
-never by text. A withhold that fails rolls the whole grant back.
+The connector's parked ``connectors.filtered_events`` copies of a granted fix (an envelope
+parked after its ingest attempts were spent; the point itself is still persisted) are withheld
+in the same transaction (S4c-4): matched by ``sender_identity`` and ``external_message_id``
+``{tst}:location``, never by text. A withhold that fails rolls the whole grant back. A
+policy-filtered fix has no point row, so it is outside a grant's reach (a follow-up under
+bu-s11n0s.7).
 """
 
 from __future__ import annotations
@@ -94,13 +96,15 @@ async def _copy(
     external_id: str,
     *,
     channel: str = "owntracks",
-    status: str = "error",
 ) -> str:
-    """One connector copy of a fix: parked (``error``) or policy-filtered (``filtered``)."""
+    """One parked connector copy of a fix (``error``, attempts spent)."""
     await pool.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
-    reason = "retry_exhausted" if status == "error" else "policy:block"
     envelope = _envelope(sender, external_id)
-    return str(await pool.fetchval(_COPY, channel, sender, external_id, reason, status, envelope))
+    return str(
+        await pool.fetchval(
+            _COPY, channel, sender, external_id, "retry_exhausted", "error", envelope
+        )
+    )
 
 
 async def _copies(pool) -> dict[str, dict]:
@@ -263,12 +267,13 @@ _FIX = "owntracks:alice:1:location"
 
 
 async def test_a_grant_withholds_the_connector_copies_of_its_fixes(db, head_url) -> None:
-    """Parked and policy-filtered copies of a granted fix are withheld; nothing else is."""
+    """Every parked copy of a granted fix is withheld; nothing else is."""
     pool = await db.open(head_url)
     grant = _grant(await _point(pool, _FIX))
     await _point(pool, "owntracks:alice:2:location")
     parked = await _copy(pool, "alice", "1:location")
-    filtered = await _copy(pool, "alice", "1:location", status="filtered")
+    # The same fix parked again after a later resend also spent its attempts.
+    reparked = await _copy(pool, "alice", "1:location")
     kept = {
         # A fix not in the grant.
         await _copy(pool, "alice", "2:location"),
@@ -284,17 +289,14 @@ async def test_a_grant_withholds_the_connector_copies_of_its_fixes(db, head_url)
     async with pool.acquire() as conn:
         await execute_grant(conn, grant)
     after = await _copies(pool)
-    assert after[parked] == after[filtered] == _withheld("alice", "1:location")
+    assert after[parked] == after[reparked] == _withheld("alice", "1:location")
     assert {copy: after[copy] for copy in kept} == {copy: before[copy] for copy in kept}
-    # Rows are kept with their status, so the filter and park audit still count them.
+    # Rows are kept with their status, so the park audit still counts them.
     statuses = await pool.fetch(
         "SELECT id::text AS id, status FROM connectors.filtered_events WHERE id = ANY($1::uuid[])",
-        [parked, filtered],
+        [parked, reparked],
     )
-    assert {row["id"]: row["status"] for row in statuses} == {
-        parked: "error",
-        filtered: "filtered",
-    }
+    assert [row["status"] for row in statuses] == ["error", "error"]
 
 
 async def test_a_failed_withhold_rolls_back_the_delete(db, head_url) -> None:
