@@ -8,6 +8,8 @@ skipped and the others still run.
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,7 +17,10 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from butlers.connectors.filtered_event_buffer import _replay_one
 from butlers.connectors.owntracks_retention import (
+    NOT_REPLAYABLE,
+    WITHHELD_TEXT,
     BatchReceipt,
     GrantMismatch,
     RetentionWorkerConfig,
@@ -28,6 +33,7 @@ from butlers.core.service_plane.workload_identity import (
     RELAY_AUDIENCE,
     TOKEN_HEADER,
 )
+from butlers.testing.migration import load_migration
 
 _DIGEST = "v1:" + "c" * 64
 
@@ -203,3 +209,30 @@ async def test_a_refusal_executes_nothing(tmp_path: Path) -> None:
     executor = _Executor()
     assert await run_retention_once(_Pool(), fetch, execute=executor) == []
     assert executor.executed == []
+
+
+def test_the_withheld_copy_matches_core_345s_trigger() -> None:
+    """The deleter and the insert trigger leave the same withheld copy (S4c-4)."""
+    migration = load_migration(
+        Path(__file__).parents[2]
+        / "alembic/versions/core/core_345_filtered_events_withhold_forgotten.py"
+    )
+    assert (migration._WITHHELD, migration._NOT_REPLAYABLE) == (WITHHELD_TEXT, NOT_REPLAYABLE)
+
+
+async def test_a_withheld_copy_is_refused_by_the_replay_drain() -> None:
+    """A withheld copy is never submitted as a hollow location event."""
+    submitted: list[dict[str, Any]] = []
+
+    async def submit(envelope: dict[str, Any]) -> None:
+        submitted.append(envelope)
+
+    withheld = {
+        "event": {"external_event_id": "1:location"},
+        "payload": {"raw": None, "normalized_text": WITHHELD_TEXT},
+        "replay_unavailable": NOT_REPLAYABLE,
+    }
+    row = {"id": uuid4(), "full_payload": json.dumps(withheld)}
+    status, detail = await _replay_one(row, submit, logging.getLogger(__name__), 5.0)
+    assert (status, detail) == ("replay_failed", f"not replayable: {NOT_REPLAYABLE}")
+    assert submitted == []

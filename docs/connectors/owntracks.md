@@ -289,6 +289,17 @@ Groundwork for that gate is in place, and still deletes nothing:
     deletion waits for its commit and is then skipped, instead of slipping in after the delete.
     Inserts never wait for each other, and a transaction holds one lock entry however many rows
     it inserts.
+  - The same transaction withholds the connector's own `connectors.filtered_events` copies of
+    each granted fix (S4c-4): a policy-filtered location, or an envelope parked after its
+    ingest attempts were spent. A copy matches when `'owntracks:' || sender_identity || ':' ||
+    external_message_id` (`{tst}:location`) is a granted key; text is never matched, and
+    transition and waypoints copies never spell a location key. The row stays for the filter
+    and park audit, but its `full_payload.payload` becomes `[location withheld: raw retention]`
+    and it carries `replay_unavailable`, so the replay drain refuses it rather than submitting
+    a hollow event. A failure here rolls back the delete, the tombstones and the receipt.
+  - A copy written after the fix was forgotten (a resend parked again) is withheld on insert
+    by core_345's `filtered_events_withhold_forgotten` trigger, which takes the forget guard
+    first, so a copy racing a deletion waits for its commit.
   - The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (hourly by default,
     `OWNTRACKS_RAW_RETENTION_INTERVAL_S`). An unreachable relay, a refusal, a missing token or
     a malformed reply executes nothing; a grant that no longer matches is skipped.
@@ -329,7 +340,7 @@ Groundwork for that gate is in place, and still deletes nothing:
     only and stop once the grant is ready.
   - The one required holder is `switchboard.message_inbox`, whose normalized text carries exact
     coordinates. Route copies make its receipt `blocked`. The connector's `filtered_events`
-    copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
+    copies are withheld in the deletion transaction itself (S4c-4), so they are not a holder.
   - Only the holder collector (S4c-3, below) writes receipts, and only when the job is given
     a forgetter.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,

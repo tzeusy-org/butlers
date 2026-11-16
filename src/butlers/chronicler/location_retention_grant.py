@@ -369,8 +369,8 @@ class HoldersIncomplete(GrantStateRefused):
 #: Every holder of copies derived from granted raw rows, outside Chronicler's own tables (which
 #: preparation already forgot). Switchboard's inbox keeps each envelope's normalized text, which
 #: carries exact coordinates; its receipt is ``blocked`` while a copy is still processing or was
-#: routed onward. The connector's own ``filtered_events`` copies are forgotten in the deletion
-#: transaction itself, so they are not a holder here.
+#: routed onward. The connector's own ``filtered_events`` copies are withheld in the deletion
+#: transaction itself (S4c-4), so they are not a holder here.
 REQUIRED_HOLDERS = ("switchboard.message_inbox",)
 HOLDER_OUTCOMES = ("complete", "blocked")
 
