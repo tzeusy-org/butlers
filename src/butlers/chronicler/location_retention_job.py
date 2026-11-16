@@ -9,8 +9,9 @@ One run, uncalled until the owner-enable step (the dark guard pins that):
    reconciled into the owner condition ledger under :data:`LAG_SOURCE`.
 3. **Finish.** The outcome is written in its own transaction: a failure keeps the exception's
    class (never its message, which could quote evidence) and extends the streak.
-4. **Failures.** The streak and the grants that failed reconciliation are reconciled under
-   :data:`FAILED_SOURCE`.
+4. **Failures.** The streak, the grants that failed reconciliation and the ready grants still
+   without a receipt after :data:`STALLED_AFTER` (a connector that keeps refusing a grant
+   leaves it pending forever) are reconciled under :data:`FAILED_SOURCE`.
 
 Every observation is count-only: a category, a count, an age in hours. The ledger is state;
 nothing here proposes a candidate or sends a message. A lag snapshot is reconciled only after a
@@ -52,6 +53,8 @@ FAILED_SOURCE = "chronicler:location-retention-purge-failed"
 IDENTITY_VERSION = 1
 #: A run still ``running`` after this long never finished.
 RUN_LEASE = timedelta(minutes=30)
+#: A ready grant still unsettled after this long is stalled.
+STALLED_AFTER = timedelta(hours=24)
 LAG_CATEGORIES = (
     "grant_failed",
     "awaiting_deletion",
@@ -96,6 +99,17 @@ RETURNING consecutive_failures, last_error_class
 _FAILED_GRANTS = (
     "SELECT count(DISTINCT grant_id) FROM location_retention_grant_states WHERE state = 'failed'"
 )
+_STALLED_GRANTS = """
+SELECT count(*) AS count,
+       floor(extract(epoch FROM now() - min(r.recorded_at)) / 3600)::bigint AS oldest_age_hours
+FROM location_retention_grant_states AS r
+WHERE r.state = 'ready'
+  AND r.recorded_at <= now() - $1::interval
+  AND NOT EXISTS (
+      SELECT 1 FROM location_retention_grant_states AS t
+      WHERE t.grant_id = r.grant_id AND t.state IN ('reconciled', 'failed')
+  )
+"""
 _POLICY_DAYS = "SELECT days FROM location_retention_policy WHERE id = 1"
 
 
@@ -209,6 +223,7 @@ async def _state_lag(pool: asyncpg.Pool, lag: RetentionLag) -> None:
 async def _state_failures(pool: asyncpg.Pool, streak: int, error_class: str | None) -> None:
     try:
         failed_grants = await pool.fetchval(_FAILED_GRANTS)
+        stalled = await pool.fetchrow(_STALLED_GRANTS, STALLED_AFTER)
     except Exception:
         logger.warning("Location retention: failed-grant read failed; no state change")
         return
@@ -230,6 +245,16 @@ async def _state_failures(pool: asyncpg.Pool, streak: int, error_class: str | No
                 "failed_grants",
                 f"{failed_grants} retention grant(s) failed reconciliation",
                 count=failed_grants,
+            )
+        )
+    if stalled["count"]:
+        observations.append(
+            _observation(
+                FAILED_SOURCE,
+                "stalled_grants",
+                f"{stalled['count']} ready retention grant(s) unsettled for over a day",
+                count=stalled["count"],
+                oldest_age_hours=stalled["oldest_age_hours"],
             )
         )
     await reconcile_snapshot(

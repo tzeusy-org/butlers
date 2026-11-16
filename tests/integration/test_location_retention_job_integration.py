@@ -166,6 +166,33 @@ async def test_a_grant_that_failed_reconciliation_stays_a_condition(
     assert (await _active(chronicler_db, job.LAG_SOURCE))["grant_failed"]["count"] == 1
 
 
+async def test_a_ready_grant_pending_past_the_threshold_is_a_stalled_condition(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    fresh = await _prepare(chronicler_db, runtime_db, 0)
+    await chronicler_db.execute(_STATE, fresh, "ready")
+    stalled = await _prepare(chronicler_db, runtime_db, 5)
+    settled = await _prepare(chronicler_db, runtime_db, 10)
+    for grant in (stalled, settled):
+        await chronicler_db.execute(
+            "INSERT INTO location_retention_grant_states (grant_id, state, recorded_at) "
+            "VALUES ($1, 'ready', now() - $2::interval)",
+            grant,
+            job.STALLED_AFTER + timedelta(hours=2),
+        )
+    await chronicler_db.execute(_STATE, settled, "failed")
+
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+
+    failing = await _active(chronicler_db, job.FAILED_SOURCE)
+    # Only the old ready grant with no receipt: not the fresh one, not the settled one.
+    assert failing["stalled_grants"]["count"] == 1
+    assert (
+        failing["stalled_grants"]["oldest_age_hours"] >= job.STALLED_AFTER.total_seconds() // 3600
+    )
+    assert failing["failed_grants"]["count"] == 1
+
+
 async def test_coverage_at_a_revision_the_adapter_no_longer_runs_is_uncovered(
     chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
 ) -> None:

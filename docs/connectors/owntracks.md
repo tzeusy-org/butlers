@@ -291,8 +291,9 @@ Groundwork for that gate is in place, and still deletes nothing:
     coverage at some adapter's last recorded revision: malformed, refused, `existing_only` miss,
     pre-coverage) or `awaiting_grant`. Each non-zero category is an owner condition under
     `chronicler:location-retention-projection-lag` (count and oldest age in hours only).
-  - The failure streak and grants that failed reconciliation are conditions under
-    `chronicler:location-retention-purge-failed`.
+  - The failure streak, grants that failed reconciliation and ready grants with no receipt after
+    24 hours (a connector that keeps refusing a grant leaves it pending forever) are conditions
+    under `chronicler:location-retention-purge-failed`.
   - Lag is reconciled only after a complete read, so a failed run never resolves it. The job
     proposes no insight and sends nothing.
 
