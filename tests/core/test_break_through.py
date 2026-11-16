@@ -43,6 +43,7 @@ class _Pool:
         self.evaluated: list[dict[str, Any]] = []
         self.inserted: list[tuple[Any, ...]] = []
         self.stamped: list[tuple[Any, ...]] = []
+        self.closed_stale: list[tuple[Any, ...]] = []
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         if "dashboard_attention.evaluate" in query:
@@ -61,6 +62,9 @@ class _Pool:
 
     async def execute(self, query: str, *args: Any) -> str:
         assert "published_at = clock_timestamp()" in query
+        if "COALESCE(received_at" in query:
+            self.closed_stale.append(args)
+            return "UPDATE 0"
         self.stamped.append(args)
         return "UPDATE 1"
 
@@ -76,7 +80,9 @@ def _quiet_state():
 def published():
     pool_holder: dict[str, Any] = {}
     publish = AsyncMock(return_value={"status": "ok"})
-    resolve = AsyncMock(return_value=SimpleNamespace(entity_id=ENTITY, name="Mum"))
+    resolve = AsyncMock(
+        return_value=SimpleNamespace(entity_id=ENTITY, name="Mum", is_unidentified=False)
+    )
     origins: list[Any] = []
 
     async def propose(pool: Any, **kwargs: Any) -> dict[str, Any]:
@@ -378,4 +384,49 @@ async def test_the_owners_own_message_is_never_a_hit(published) -> None:
     assert await _observe(pool, owner_sender_identity=f" {SENDER} ") is None
 
     assert pool.evaluated == []
+    published.publish.assert_not_awaited()
+
+
+UNKNOWN_ADDRESS = "stranger@example.test"
+
+
+async def test_an_unidentified_senders_placeholder_name_never_leaks_the_address(published) -> None:
+    published.resolve.return_value = SimpleNamespace(
+        entity_id=ENTITY, name=f"Unknown (email {UNKNOWN_ADDRESS})", is_unidentified=True
+    )
+    pool = _Pool()
+
+    await _observe(pool, sender_identity=UNKNOWN_ADDRESS)
+
+    rendered = json.dumps(
+        [
+            _published_kwargs(published)["payload"],
+            published.proposal.await_args.kwargs["message"],
+            [str(a) for a in pool.inserted],
+        ]
+    )
+    assert UNKNOWN_ADDRESS not in rendered
+    assert "A sender you declared messaged you" in published.proposal.await_args.kwargs["message"]
+
+
+async def test_a_refused_candidate_closes_the_hit_instead_of_retrying_forever(published) -> None:
+    published.proposal.side_effect = None
+    published.proposal.return_value = {"status": "filtered", "reason": "verbosity is off"}
+    pool = _Pool()
+
+    await _observe(pool)
+
+    assert len(pool.stamped) == 1
+    published.cycle.assert_not_awaited()
+
+
+async def test_the_sweep_closes_hits_older_than_the_candidate_lifetime_unannounced(
+    published,
+) -> None:
+    pool = _Pool()
+    pool.fetch = AsyncMock(return_value=[])  # type: ignore[attr-defined]
+
+    assert await retry_unpublished(pool) == 0
+
+    assert pool.closed_stale == [(break_through._CANDIDATE_TTL.total_seconds(),)]
     published.publish.assert_not_awaited()

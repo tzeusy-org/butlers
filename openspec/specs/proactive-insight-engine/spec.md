@@ -70,7 +70,7 @@ The system SHALL enforce a global daily delivery budget that caps the total numb
 
 #### Scenario: Zero budget (verbosity off)
 - **WHEN** the user's verbosity is set to `off` or `auto_off` (budget = 0)
-- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery
+- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery, except that under `auto_off` an owner-clause `break_through` candidate is retained and delivered by an urgent cycle
 - **AND** butler insight-scan jobs SHALL skip candidate generation entirely (early return)
 
 ### Requirement: Verbosity Presets

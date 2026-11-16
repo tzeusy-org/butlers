@@ -103,7 +103,8 @@ async def _resolve_sender(
     contact = await resolve_contact_by_channel(pool, channel, sender)
     if contact is None:
         return None, None
-    return contact.entity_id, contact.name
+    # An unidentified sender's placeholder name embeds its address: never a display name.
+    return contact.entity_id, None if contact.is_unidentified else contact.name
 
 
 async def _matching_clause(pool: Any, origin_record: Mapping[str, str]) -> uuid.UUID | None:
@@ -237,8 +238,11 @@ async def _publish_event(pool: Any, hit: Hit) -> bool:
     return result.get("status") == "ok"
 
 
-async def _propose_candidate(pool: Any, hit: Hit) -> str | None:
-    """Queue the one urgent candidate for a hit; return its id, or ``None`` if it was not queued.
+async def _propose_candidate(pool: Any, hit: Hit) -> tuple[str | None, bool]:
+    """Queue the one urgent candidate for a hit: ``(id or None, terminal)``.
+
+    ``terminal`` is True when the broker refused it for good (``filtered``: the owner's verbosity
+    is off), so retrying can never succeed and the hit is closed instead of re-announced.
 
     The candidate carries the private origin the evaluator matched. Without it the broker has
     no authority to interrupt, and the line would wait for a normal cycle (it is never sent).
@@ -252,7 +256,7 @@ async def _propose_candidate(pool: Any, hit: Hit) -> str | None:
         "SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key
     )
     if existing is not None:
-        return str(existing)
+        return str(existing), False
     after = (hit.received_at or datetime.now(UTC)).isoformat()
     premise = probe_premise(PROBE_BUTLER, PROBE_NAME, {"thread": hit.thread or "", "after": after})
     token = _current_origin.set(AttentionOrigin.from_record(dict(hit.origin)))
@@ -271,10 +275,11 @@ async def _propose_candidate(pool: Any, hit: Hit) -> str | None:
         _current_origin.reset(token)
     if result.get("status") != "accepted":
         logger.warning("break_through_candidate_not_queued status=%s", result.get("status"))
-        return None
-    return str(
-        await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key)
+        return None, result.get("status") == "filtered"
+    found = await pool.fetchval(
+        "SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key
     )
+    return str(found), False
 
 
 async def _deliver_now(pool: Any, candidate_id: str) -> None:
@@ -300,8 +305,8 @@ async def announce(pool: Any, hit: Hit) -> bool:
     if not await _publish_event(pool, hit):
         logger.warning("break_through_event_not_published")
         return False
-    candidate_id = await _propose_candidate(pool, hit)
-    if candidate_id is None:
+    candidate_id, terminal = await _propose_candidate(pool, hit)
+    if candidate_id is None and not terminal:
         return False
     await pool.execute(
         "UPDATE switchboard.break_through_hits SET published_at = clock_timestamp() "
@@ -309,13 +314,26 @@ async def announce(pool: Any, hit: Hit) -> bool:
         hit.clause_id,
         hit.source_request_id,
     )
+    if candidate_id is None:
+        return False  # refused for good (verbosity off): closed, never retried or sent
     await _deliver_now(pool, candidate_id)
     return True
 
 
 async def retry_unpublished(pool: Any, *, limit: int = 20) -> int:
-    """Claim and announce hits whose announcement lapsed; return how many were announced."""
+    """Claim and announce hits whose announcement lapsed; return how many were announced.
+
+    A hit older than the candidate's lifetime is closed without an announcement: telling the
+    owner about a weeks-old message as if it were fresh is worse than silence.
+    """
     try:
+        await pool.execute(
+            "UPDATE switchboard.break_through_hits SET published_at = clock_timestamp() "
+            "WHERE published_at IS NULL "
+            "AND COALESCE(received_at, observed_at) "
+            "< clock_timestamp() - make_interval(secs => $1)",
+            _CANDIDATE_TTL.total_seconds(),
+        )
         rows = await pool.fetch(
             "UPDATE switchboard.break_through_hits SET claimed_at = clock_timestamp() "
             "WHERE (clause_id, source_request_id) IN ("
