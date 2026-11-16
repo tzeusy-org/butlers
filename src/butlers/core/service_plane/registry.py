@@ -15,10 +15,17 @@ import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 from butlers.core.domain_event_contracts import DomainEventContractRegistry
 from butlers.core.service_plane.relays import RelayEndpoint, RelayRefused, ServiceCaller
@@ -37,6 +44,10 @@ FLEET_CASE_RECORD_LINK = "fleet_case.record_link"
 MEMORY_CATALOG_FETCH = "memory.catalog_fetch"
 OWNER_CHAT_SPANS = "owner_chat.spans"
 LOCATION_RETENTION_GRANTS_READY = "location_retention.grants_ready"
+LOCATION_RETENTION_FORGET_COPIES = "location_retention.forget_copies"
+#: At most this many logical keys per forget request: one grant's rows (Chronicler's grant
+#: ``GRANT_LIMIT``; a test pins the two equal).
+FORGET_KEYS_LIMIT = 500
 #: The OwnTracks connector's workload (its chart component label).
 CONNECTOR_OWNTRACKS_WORKLOAD = "connector-owntracks"
 
@@ -47,6 +58,9 @@ CatalogPointer = Callable[[str, str, UUID], Awaitable[Mapping[str, Any] | None]]
 #: One page of owner-chat spans after an optional ``(received_at, inbox id)``
 #: cursor, read by Switchboard from its own inbox (REQ-butler-switchboard-011).
 OwnerChatSpans = Callable[[datetime | None, UUID | None], Awaitable[Mapping[str, Any]]]
+#: Switchboard forgets its inbox copies of one grant's OwnTracks fixes and returns the
+#: count-only receipt (bu-s11n0s.7 S4c-3).
+LocationForget = Callable[[UUID, tuple[str, ...]], Awaitable[Mapping[str, Any]]]
 
 
 class _Strict(BaseModel):
@@ -125,6 +139,29 @@ class OwnerChatSpansArgs(_Strict):
         if (self.after_received_at is None) != (self.after_inbox_id is None):
             raise ValueError("cursor_incomplete")
         return self
+
+
+class ForgetCopiesArgs(_Strict):
+    """One grant and its distinct OwnTracks logical keys; the caller chooses nothing else."""
+
+    grant_id: UUID
+    logical_source_keys: list[
+        Annotated[str, StringConstraints(pattern=r"^owntracks:", max_length=256)]
+    ] = Field(min_length=1, max_length=FORGET_KEYS_LIMIT)
+
+    @model_validator(mode="after")
+    def _distinct(self) -> ForgetCopiesArgs:
+        if len(set(self.logical_source_keys)) != len(self.logical_source_keys):
+            raise ValueError("duplicate_keys")
+        return self
+
+
+def _location_forget_local(forget: LocationForget):
+    async def local(validated: BaseModel) -> Mapping[str, Any]:
+        request = ForgetCopiesArgs.model_validate(validated.model_dump())
+        return await forget(request.grant_id, tuple(request.logical_source_keys))
+
+    return local
 
 
 def _owner_chat_local(read: OwnerChatSpans):
@@ -221,6 +258,7 @@ def build_relays(
     memory_daemons: Iterable[str] = (),
     catalog_pointer: CatalogPointer | None = None,
     owner_chat_spans: OwnerChatSpans | None = None,
+    location_forget: LocationForget | None = None,
 ) -> Mapping[str, RelayEndpoint]:
     """The relay registry for a roster and its domain-event contracts.
 
@@ -230,7 +268,9 @@ def build_relays(
     memory catalog relay, which is served only when it is given.
     ``owner_chat_spans`` is Switchboard's own owner-chat read; the
     ``owner_chat.spans`` relay is served only when it is given, and only the
-    Relationship daemon may call it.
+    Relationship daemon may call it. ``location_forget`` is Switchboard's own forgetting of
+    its inbox copies of granted OwnTracks fixes; the ``location_retention.forget_copies``
+    relay is served only when it is given, and only the Chronicler daemon may call it.
     """
     callers = _domain_callers(daemons)
     owner_chat_relays = (
@@ -248,6 +288,22 @@ def build_relays(
             )
         }
         if owner_chat_spans is not None
+        else {}
+    )
+    location_forget_relays = (
+        {
+            # bu-s11n0s.7 S4c-3: answered by Switchboard itself, with no MCP tool behind it,
+            # so no model session or direct MCP caller can reach the forgetter.
+            LOCATION_RETENTION_FORGET_COPIES: RelayEndpoint(
+                name=LOCATION_RETENTION_FORGET_COPIES,
+                target_butlers=frozenset({"switchboard"}),
+                target_tool="location_retention_forget_copies",
+                args_model=ForgetCopiesArgs,
+                allowed_callers=frozenset(c for c in callers if c.daemon == "chronicler"),
+                local=_location_forget_local(location_forget),
+            )
+        }
+        if location_forget is not None
         else {}
     )
     memory_relays = (
@@ -291,6 +347,7 @@ def build_relays(
         **fleet_case_relays,
         **memory_relays,
         **owner_chat_relays,
+        **location_forget_relays,
         # bu-s11n0s.7 S4b-3b: the OwnTracks connector's only read of Chronicler, the grants
         # it may execute. Ids, digests and cutoffs only; the caller chooses nothing. The
         # caller is a connector workload, not a domain daemon on butlers-up.

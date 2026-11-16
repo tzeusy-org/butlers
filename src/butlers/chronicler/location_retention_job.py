@@ -6,8 +6,10 @@ One run, uncalled until the owner-enable step (the dark guard pins that):
    A run still ``running`` inside :data:`RUN_LEASE` makes this one skip; an older one never
    finished, so it is unknown, never green: taking it over counts one failure (``Unfinished``),
    and that failure stands even if this run succeeds; only a later clean run clears it.
-2. **Work.** :func:`reconcile_ready_grants`, then :func:`read_retention_lag` and its counts
-   reconciled into the owner condition ledger under :data:`LAG_SOURCE`.
+2. **Work.** With an injected forgetter, :func:`collect_holder_receipts` (Switchboard's
+   receipt; a complete one makes the grant ready); then :func:`reconcile_ready_grants`, then
+   :func:`read_retention_lag` and its counts reconciled into the owner condition ledger under
+   :data:`LAG_SOURCE`.
 3. **Finish.** The outcome is written in its own transaction: a failure keeps the exception's
    class (never its message, which could quote evidence) and extends the streak.
 4. **Failures.** The streak, the grants that failed reconciliation and the ready grants still
@@ -24,6 +26,8 @@ that applies:
 * ``grant_failed``: granted to a grant that failed reconciliation; the connector will not
   delete it under that grant.
 * ``awaiting_deletion``: granted to a ready grant the connector has not yet settled.
+* ``holder_blocked``: granted to a grant not yet ready whose holder's latest reading is
+  ``blocked`` (a copy still processing, routed onward or dead-lettered).
 * ``awaiting_holders``: granted to a grant not yet ready.
 * ``held_open``: an adapter holds it in an open carry.
 * ``uncovered``: some covered adapter has no exact record for it at that adapter's last
@@ -42,6 +46,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.chronicler.location_retention_holders import Forgetter, collect_holder_receipts
 from butlers.chronicler.location_retention_reconcile import reconcile_ready_grants
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS, raw_row_digest_sql
 from butlers.core.condition_ledger import Observation, compute_fingerprint
@@ -59,6 +64,7 @@ STALLED_AFTER = timedelta(hours=24)
 LAG_CATEGORIES = (
     "grant_failed",
     "awaiting_deletion",
+    "holder_blocked",
     "awaiting_holders",
     "held_open",
     "uncovered",
@@ -128,6 +134,7 @@ classified AS (
         CASE
             WHEN st.failed THEN 'grant_failed'
             WHEN st.ready THEN 'awaiting_deletion'
+            WHEN gi.grant_id IS NOT NULL AND hr.blocked THEN 'holder_blocked'
             WHEN gi.grant_id IS NOT NULL THEN 'awaiting_holders'
             WHEN EXISTS (
                 SELECT 1 FROM location_projection_open_members AS m
@@ -156,6 +163,12 @@ classified AS (
         FROM location_retention_grant_states AS s
         WHERE s.grant_id = gi.grant_id
     ) AS st ON true
+    LEFT JOIN LATERAL (
+        -- The holder's latest reading is blocked (a holder that completed takes no more).
+        SELECT (array_agg(r.outcome ORDER BY r.id DESC))[1] = 'blocked' AS blocked
+        FROM location_retention_holder_receipts AS r
+        WHERE r.grant_id = gi.grant_id
+    ) AS hr ON true
 )
 SELECT category, count(*) AS count,
        floor(extract(epoch FROM now() - min(retention_at)) / 3600)::bigint AS oldest_age_hours
@@ -270,12 +283,20 @@ async def _state_failures(pool: asyncpg.Pool, streak: int, error_class: str | No
 
 
 async def run_location_retention_job(
-    db_pool: asyncpg.Pool, job_args: dict[str, Any] | None = None
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None = None,
+    *,
+    forget: Forgetter | None = None,
 ) -> dict[str, Any]:
     """Run once. Takes no ``job_args``.
 
+    With ``forget`` (the ``location_retention.forget_copies`` relay in production), holder
+    receipts are collected first and complete grants become ready; without it no holder is
+    asked and prepared grants stay ``awaiting_holders``.
+
     Returns ``{"status": "skipped", "reason": "running"}`` when another run holds the lease,
-    ``{"status": "ok", "reconciled": n, "lag": {...}}`` on success, and
+    ``{"status": "ok", "reconciled": n, "lag": {...}}`` on success (plus
+    ``"holders": {"ready": n, "blocked": n}`` with ``forget``), and
     ``{"status": "failed", "error_class": ..., "consecutive_failures": n}`` otherwise.
     """
     if job_args:
@@ -286,8 +307,11 @@ async def run_location_retention_job(
     started = start["last_started_at"]
 
     error_class: str | None = None
+    collected: dict[str, int] = {}
     try:
         async with db_pool.acquire() as conn:
+            if forget is not None:
+                collected = await collect_holder_receipts(conn, forget)
             settled = await reconcile_ready_grants(conn)
             lag = await read_retention_lag(conn)
         await _state_lag(db_pool, lag)
@@ -309,4 +333,7 @@ async def run_location_retention_job(
             "error_class": error_class,
             "consecutive_failures": run["consecutive_failures"],
         }
-    return {"status": "ok", "reconciled": len(settled), "lag": lag.counts}
+    result: dict[str, Any] = {"status": "ok", "reconciled": len(settled), "lag": lag.counts}
+    if forget is not None:
+        result["holders"] = collected
+    return result
