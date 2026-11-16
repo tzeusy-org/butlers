@@ -35,6 +35,11 @@ _NUMERIC_KEYS = frozenset({"amount", "total", "value", "balance", "minutes", "co
 _NUMERIC_TYPES = ("numeric", "integer", "bigint", "smallint", "double precision", "real")
 _DECIMAL = re.compile(r"-?\d+(?:\.\d+)?\Z")
 _UUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\Z")
+# A UUID token anywhere in text: ids and refs carry them, and their digit groups can look like a
+# phone number (``...-8175-4977-...``), which must not be redacted out of a stored identifier.
+_UUID_TOKEN = re.compile(
+    r"(?<![0-9A-Za-z])[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}(?![0-9A-Za-z])"
+)
 _KEEP = {"\n", "\t"}
 
 _PEM = re.compile(r"-----BEGIN [A-Z0-9 ]{1,40}-----.*?(?:-----END [A-Z0-9 ]{1,40}-----|\Z)", re.S)
@@ -185,7 +190,16 @@ class Scan:
                 lambda m: "account" if 8 <= sum(c.isdigit() for c in m.group(1)) <= 17 else None,
             )
             text = self._sub(_EMAIL, text, lambda m: "email")
-            text = self._sub(_PHONE, text, lambda m: "phone")
+            uuids = [m.span() for m in _UUID_TOKEN.finditer(text)]
+            text = self._sub(
+                _PHONE,
+                text,
+                lambda m: (
+                    None
+                    if any(m.start() < end and start < m.end() for start, end in uuids)
+                    else "phone"
+                ),
+            )
         return text
 
     def _luhn_rule(self, match: re.Match[str]) -> str | None:

@@ -31,6 +31,39 @@ def test_a_card_number_is_redacted():
     assert text == "paid with [redacted:luhn] yesterday" and scan.counted == 1
 
 
+PHONE_SHAPED_UUID = "e0bce383-8175-4977-b5a7-eb427d30fb38"
+PHONE_SHAPED_TAIL = "7f2c91a4-0b3d-4e8f-9123-4567a6a7e968"
+# The proposal view (test_public_mcp_proposal_e2e) lost its last two groups the same way.
+PHONE_SHAPED_V5 = "2883f486-86be-53ee-9876-5432a6a7e968"
+
+
+@pytest.mark.parametrize(
+    "uuid", [PHONE_SHAPED_UUID, PHONE_SHAPED_TAIL, PHONE_SHAPED_V5, PHONE_SHAPED_UUID.upper()]
+)
+def test_a_uuid_is_never_phone_redacted_even_when_its_digit_groups_look_like_a_phone(uuid):
+    """bu-y66o00.54: a stored id such as ...-8175-4977-... must reach the caller intact."""
+    out, scan = scan_result("search", None, {"items": [{"id": uuid, "ref": f"proposal:{uuid}"}]})
+
+    assert out["items"][0] == {"id": uuid, "ref": f"proposal:{uuid}"}
+    assert "phone" not in scan.rules
+
+
+def test_a_uuid_in_free_text_survives_while_a_real_phone_beside_it_is_redacted():
+    text, scan = _text(
+        "search", None, f"see {PHONE_SHAPED_UUID}, then call 8123 4567 or +65 6123 4567"
+    )
+
+    assert PHONE_SHAPED_UUID in text
+    assert "8123 4567" not in text and "+65 6123 4567" not in text
+    assert text.count("[redacted:phone]") == 2 and scan.rules["phone"] == 2
+
+
+def test_digits_that_merely_touch_a_uuid_are_not_exempt():
+    text, _ = _text("search", None, f"{PHONE_SHAPED_UUID}x call 6123-4567")
+
+    assert "6123-4567" not in text
+
+
 def test_separators_and_invisible_characters_do_not_defeat_the_scan():
     wide = "".join(chr(ord(c) + 0xFEE0) for c in CARD)  # full-width digits
     spaced = " ".join(wide[i : i + 4] for i in range(0, 16, 4))
