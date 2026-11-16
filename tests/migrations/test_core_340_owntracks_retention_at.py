@@ -226,7 +226,8 @@ def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
     finally:
         engine.dispose()
 
-    command.upgrade(first, "core@head")
+    # Pinned to core_340: later revisions add their own owntracks_points triggers (core_342).
+    command.upgrade(first, "core_340")
 
     engine = create_engine(db_url)
     try:
@@ -248,5 +249,5 @@ def test_first_run_backfills_in_pages_and_later_schema_runs_write_nothing(
     installed = _shared_catalog(db_url)
     assert len(installed[0]) == 2 and len(installed[1]) == 2 and installed[2] == 0
 
-    command.upgrade(second, "core@head")
+    command.upgrade(second, "core_340")
     assert _shared_catalog(db_url) == installed

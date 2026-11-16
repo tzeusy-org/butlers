@@ -310,6 +310,15 @@ through its SELECT-only runtime role. The established `connector_writer` role
 writes the table. Bootstrap replay maintains the read grant. The table survives
 source downgrade so rolling back a producer cannot erase captured observations.
 
+### OwnTracks retention evidence
+
+`connectors.owntracks_retention_batches` and `connectors.owntracks_retention_tombstones`
+(core_342, dark) are where the connector will record executing a Chronicler retention grant:
+one receipt per grant and one tombstone per forgotten raw row, keyed by its `idempotency_key`.
+Both are append-only by trigger, since bootstrap replay re-grants `connector_writer` full DML on
+`connectors`. A BEFORE INSERT trigger on `connectors.owntracks_points` skips a tombstoned key.
+The downgrade refuses while either table holds a row. See [OwnTracks](../connectors/owntracks.md).
+
 ### Dark canonical perception
 
 `core_322` installs the shared, forced owner-only representation under
