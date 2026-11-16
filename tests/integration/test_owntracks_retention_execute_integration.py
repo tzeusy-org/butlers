@@ -9,6 +9,7 @@ inserted again. A grant executed twice returns its first receipt and changes not
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -85,6 +86,25 @@ async def test_a_grant_deletes_its_rows_and_leaves_tombstones_and_a_receipt(db, 
     assert {t["grant_id"] for t in tombstones} == {grant.grant_id}
     # The webhook replays the forgotten fix: skipped.
     assert await pool.fetchval(_INSERT, "k1", _RECEIVED) is None
+
+
+async def test_a_replay_racing_the_deleter_does_not_restore_the_row(db, head_url) -> None:
+    """The deleter's uncommitted delete and tombstone hold the key: the replay waits, then skips."""
+    pool = await db.open(head_url, max_size=3)
+    item = await _point(pool, "k1")
+    deleter = await pool.acquire()
+    try:
+        outer = deleter.transaction()
+        await outer.start()
+        await execute_grant(deleter, _grant(item))
+        replay = asyncio.create_task(pool.fetchval(_INSERT, "k1", _RECEIVED))
+        await asyncio.sleep(0.5)
+        assert not replay.done()
+        await outer.commit()
+        assert await asyncio.wait_for(replay, timeout=10) is None
+    finally:
+        await pool.release(deleter)
+    assert await _keys(pool) == []
 
 
 async def test_a_row_already_gone_is_counted_and_still_tombstoned(db, head_url) -> None:
