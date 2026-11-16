@@ -332,7 +332,7 @@ Groundwork for that gate is in place, and still deletes nothing:
     copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
   - Nothing writes a receipt yet, so no grant can become ready.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
-  sw_081, `roster/switchboard/tools/location_retention.forget_location_copies`, uncalled):
+  sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`, uncalled):
   - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its
     `normalized_text` and `raw_payload.payload` carry exact coordinates even at the metadata tier.
     Rows are matched by `source_channel = 'owntracks'` and exact `request_context.idempotency_key`.

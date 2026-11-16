@@ -1,4 +1,4 @@
-"""sw_081: Switchboard's location forgetting record is append-only, and the downgrade fences it.
+"""sw_082: Switchboard's location forgetting record is append-only, and the downgrade fences it.
 
 Real PostgreSQL. The runtime role reads and appends forgotten keys and receipts and may take the
 forget lock; nothing updates, deletes or truncates either table; a receipt's outcome agrees with
@@ -33,7 +33,7 @@ def _db(container):
         migration_db_name(),
         ["core", "switchboard"],
         schemas={"core": "switchboard", "switchboard": "switchboard"},
-        revisions={"switchboard": "sw_081"},  # pinned-revision: owns the forgetting record
+        revisions={"switchboard": "sw_082"},  # pinned-revision: owns the forgetting record
     )
 
 
@@ -113,10 +113,10 @@ def test_the_downgrade_fences_a_record_and_drops_an_empty_one(postgres_container
     url = _db(postgres_container)
     asyncio.run(_run(url, (_RECEIPT, uuid4(), "blocked", 1)))
     with pytest.raises(Exception, match="forgetting is recorded"):
-        command.downgrade(_config(url), "switchboard@sw_080")  # pinned-revision: sw_081 fence
+        command.downgrade(_config(url), "switchboard@sw_081")  # pinned-revision: sw_082 fence
 
     empty = _db(postgres_container)
-    command.downgrade(_config(empty), "switchboard@sw_080")  # pinned-revision: sw_081 fence
+    command.downgrade(_config(empty), "switchboard@sw_081")  # pinned-revision: sw_082 fence
 
     async def _gone() -> tuple:
         conn = await asyncpg.connect(empty)

@@ -3,7 +3,7 @@
 Switchboard keeps every accepted OwnTracks envelope in ``message_inbox``; its
 ``normalized_text`` carries the fix's exact coordinates even at the metadata tier. Before
 Chronicler lets the connector delete a raw fix, Switchboard forgets these copies under its own
-role (``sw_081``):
+role (``sw_082``):
 
 * :func:`forget_location_copies` takes ``location_retention_forget_lock()`` and, in one
   transaction, finds every OwnTracks inbox row whose ingest-stored
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-#: What a forgotten copy's text becomes (also written by sw_081's insert trigger).
+#: What a forgotten copy's text becomes (also written by sw_082's insert trigger).
 WITHHELD_TEXT = "[location withheld: raw retention]"
 
 _LOCK = "SELECT switchboard.location_retention_forget_lock()"

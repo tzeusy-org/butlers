@@ -55,5 +55,5 @@ def test_nothing_calls_switchboard_location_forgetting() -> None:
 def test_the_insert_trigger_withholds_with_the_same_text() -> None:
     from butlers.tools.switchboard.location_retention import WITHHELD_TEXT
 
-    migration = _ROOT / "roster/switchboard/migrations/081_location_retention_forgetting.py"
+    migration = _ROOT / "roster/switchboard/migrations/082_location_retention_forgetting.py"
     assert f'_WITHHELD = "{WITHHELD_TEXT}"' in migration.read_text(encoding="utf-8")

@@ -1,7 +1,7 @@
 """Switchboard forgets its copies of expired OwnTracks fixes (bu-s11n0s.7, slice S4c-2).
 
-Revision ID: sw_081
-Revises: sw_080
+Revision ID: sw_082
+Revises: sw_081
 
 Every OwnTracks envelope Switchboard accepts stays in ``message_inbox``, whose
 ``normalized_text`` (and ``raw_payload.payload``) carries the fix's exact coordinates even at
@@ -29,8 +29,8 @@ either holds a row.
 
 from alembic import op
 
-revision = "sw_081"
-down_revision = "sw_080"
+revision = "sw_082"
+down_revision = "sw_081"
 branch_labels = None
 depends_on = None
 
