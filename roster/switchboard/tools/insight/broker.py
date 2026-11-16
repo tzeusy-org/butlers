@@ -20,6 +20,7 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -75,10 +76,17 @@ _DEFAULT_COOLDOWN_BY_PRIORITY: list[tuple[range, int]] = [
 # Verbosity presets: name -> daily budget
 VERBOSITY_BUDGETS: dict[str, int] = {
     "off": 0,
+    # The state the total-disengagement ratchet writes. Budget 0 like "off", but an owner-declared
+    # break-through candidate is still delivered (bu-s11n0s.8): the owner commissioned it, so the
+    # fleet going quiet on unread routine speech must not mute it. An explicit "off" stops all.
+    "auto_off": 0,
     "minimal": 1,
     "normal": 3,
     "verbose": 5,
 }
+
+# The one candidate category an auto-off ratchet does not mute (bu-s11n0s.8).
+BREAK_THROUGH_CATEGORY = "break_through"
 
 # Compiled dedup_key pattern
 _DEDUP_KEY_PATTERN = re.compile(r"^[^:]+:[^:]+:[^:]+(?::[^:]+)?$")
@@ -461,10 +469,11 @@ async def propose_insight_candidate(
     # --- Verbosity gate ---
     settings = await get_insight_settings(pool)
     verbosity = settings.get("verbosity", "minimal")
+    exempt = verbosity == "auto_off" and category == BREAK_THROUGH_CATEGORY
     if verbosity == "off" and settings.get("custom_budget") is None:
         return {"status": "filtered", "reason": "verbosity is off"}
     configured_budget = _get_configured_budget(settings)
-    if configured_budget == 0:
+    if configured_budget == 0 and not exempt:
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
@@ -1079,8 +1088,9 @@ async def check_total_disengagement_auto_off(
     """Check for total disengagement (0% engagement for 14 consecutive days).
 
     Per spec: if engagement_rate == 0.0 for 14 consecutive days with at least
-    1 insight delivered per day, auto-downgrade verbosity to 'off' and deliver
-    a final notification.
+    1 insight delivered per day, auto-downgrade verbosity to 'auto_off' (budget 0 like
+    'off', but an owner-declared break-through candidate is still delivered) and
+    deliver a final notification.
 
     Returns True if auto-off was triggered, False otherwise.
     """
@@ -1172,7 +1182,7 @@ async def check_total_disengagement_auto_off(
     """)
     await pool.execute(
         """
-        UPDATE insight_settings SET verbosity = 'off', updated_at = $1
+        UPDATE insight_settings SET verbosity = 'auto_off', updated_at = $1
         WHERE id = 1
         """,
         now,
@@ -2600,8 +2610,14 @@ async def delivery_cycle(
     amend_fn: Any | None = None,
     finance_warning_reader: Any | None = None,
     tension_confirm_fn: Any | None = None,
+    candidate_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
+
+    ``candidate_ids`` (bu-s11n0s.8): restrict selection to these pending candidates. The
+    break-through sensor passes the candidate it just proposed so one declared message is
+    delivered within seconds without sweeping unrelated urgent work. Premise revalidation,
+    expiry and the suppression and verbosity reads are unchanged.
 
     ``tension_confirm_fn`` (bu-7dpw8): optional owner-confirm transport; a cluster
     whose members declare conflicting ``metadata.choice`` options becomes one owner
@@ -2716,7 +2732,12 @@ async def delivery_cycle(
     # the time-based quiet-hours/context-bus deferral above), so it applies
     # even in urgent_only mode: a verified cause never overrides this opt-out.
     configured_budget = _get_configured_budget(settings)
-    if configured_budget == 0:
+    # An auto-off ratchet mutes routine speech but not an owner-declared break-through. Under it
+    # an urgent cycle runs for owner-clause candidates alone; an explicit "off" stops everything.
+    auto_off = settings.get("verbosity") == "auto_off" and settings.get("custom_budget") is None
+    if configured_budget == 0 and auto_off and urgent_only:
+        pass
+    elif configured_budget == 0:
         if urgent_only:
             # Only touch the urgent working set this cycle actually considers.
             # Routine (sub-threshold) candidates must stay untouched 'pending'
@@ -2740,7 +2761,10 @@ async def delivery_cycle(
                 """
                 UPDATE insight_candidates SET status = 'filtered'
                 WHERE status = 'pending' AND claim_id IS NULL
-                """
+                  AND NOT ($1 AND category = $2)
+                """,
+                auto_off,
+                BREAK_THROUGH_CATEGORY,
             )
         result["skipped"] = True
         return result
@@ -2803,7 +2827,12 @@ async def delivery_cycle(
     rows = await pool.fetch(
         "SELECT id FROM insight_candidates WHERE status = 'pending' "
         "AND lane = 'digest' AND claim_id IS NULL "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND ($1::uuid[] IS NULL OR id = ANY($1::uuid[])) "
+        "AND (NOT $2::bool OR category = $3) "
+        "ORDER BY priority DESC, created_at ASC",
+        None if candidate_ids is None else [uuid.UUID(str(c)) for c in candidate_ids],
+        configured_budget == 0,
+        BREAK_THROUGH_CATEGORY,
     )
     pending_ids = [str(row["id"]) for row in rows]
     if not pending_ids:
@@ -2819,9 +2848,11 @@ async def delivery_cycle(
         if not gates:
             gates.append("context")  # urgent-only requires a real cause even outside quiet hours
         for gate in gates:
-            if not (
-                await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
-            ).interrupts:
+            decision = await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            if not decision.interrupts:
+                return False
+            # Under an auto-off ratchet only the owner's own clause may speak.
+            if configured_budget == 0 and decision.cause != "owner_clause":
                 return False
         return True
 

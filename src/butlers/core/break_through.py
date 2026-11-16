@@ -1,49 +1,85 @@
-"""Break-through sensor: does an inbound message match an owner-declared clause (bu-s11n0s.8, S1).
+"""Break-through sensor: an inbound message from a sender the owner declared (bu-s11n0s.8).
 
 The owner may declare who always reaches them (a person, an authenticated sender domain, a
-channel, an account-security kind). This module is the ingest-time half: after an inbound
-message is accepted it asks the fixed private evaluator whether a current clause matches, and a
-hit is recorded once and announced as a metadata-only ``switchboard.break_through_hit`` event.
+channel, an account-security kind). After an inbound message is accepted this module asks the
+fixed private evaluator whether a current clause matches. A match is recorded once as a durable
+hit, announced as a metadata-only ``switchboard.break_through_hit`` event, and turned into one
+urgent insight candidate that the broker delivers within seconds (S2).
 
-Slice 1 is shadow-only. A hit sends nothing and promotes nothing; it is a durable row plus an
-event. The urgent notice, the withdrawal probe and the owner surfaces follow in later slices.
+Properties this module holds:
 
-Properties this module holds on the ingest hot path:
-
-* **Never fails or blocks ingest.** The whole observation runs under one timeout and any
-  failure, including an evaluator that raises, returns ``None``.
-* **Unknown is routine.** An unreadable evaluator, a missing interface or a timeout is a miss,
-  never a hit. The fault is logged at most once per interval, not once per message.
+* **Never blocks or fails ingest.** The observation runs as a tracked background task; the
+  record step is bounded by one timeout and every failure, including an evaluator that raises,
+  is a miss.
+* **Unknown is routine.** An unreadable evaluator, a deactivated interface or a timeout is a
+  miss, never a hit. The fault is logged at most once per interval, not once per message.
 * **Independent of ingestion rules.** The decision reads only sender, channel and the account
   classification, so a promoted skip rule cannot hide a hit.
-* **Exactly once.** The hit row is keyed by ``(clause_id, source_request_id)`` and inserted
-  with ``ON CONFLICT DO NOTHING``; only the inserter publishes, so a connector replay is silent.
-* **Metadata only.** The event names the clause, channel, resolved sender name and source
-  request. It never carries a body, subject, snippet or address.
+* **Recorded once, announced until done.** The hit row is keyed by ``(clause_id,
+  source_request_id)`` and inserted with ``ON CONFLICT DO NOTHING``. The row carries its own
+  announcement lease: a crash or timeout between the insert and the announcement leaves it
+  unpublished, and :func:`retry_unpublished` (run by the hourly urgent sub-cycle) claims and
+  announces it. A published hit is never announced again.
+* **Metadata only.** The event and the candidate name the sender (display name, never an
+  address), the channel and the clause. They never carry a body, subject or snippet.
+* **The owner's current word decides delivery.** The candidate carries the private origin the
+  evaluator matched, so the broker re-evaluates the live clause at send time: a clause revoked
+  after the hit sends nothing. A reply by the owner in the thread withdraws it unsent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import time
 import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from butlers.core.attention_urgency import accepted_source_origin
+from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
 
 logger = logging.getLogger(__name__)
 
 BREAK_THROUGH_EVENT_TYPE = "switchboard.break_through_hit"
+BREAK_THROUGH_CATEGORY = "break_through"
+BREAK_THROUGH_PRIORITY = 95
+PROBE_BUTLER = "switchboard"
+PROBE_NAME = "inbound_still_unanswered"
 
-# One bound for resolve + evaluate + record + publish. Ingest is a hot path.
-SENSOR_TIMEOUT_S = 2.0
+# Bounds. Ingest is a hot path; delivery is a network send.
+RECORD_TIMEOUT_S = 2.0
+ANNOUNCE_TIMEOUT_S = 30.0
+# A claim older than this with no stamp belongs to a call that died.
+LEASE_S = 120.0
+_CANDIDATE_TTL = timedelta(hours=6)
 _FAULT_LOG_INTERVAL_S = 300.0
 _RESOLVABLE_CHANNELS = frozenset({"telegram", "email", "whatsapp"})
+_CHANNEL_LABELS = {"email": "email", "telegram": "Telegram", "whatsapp": "WhatsApp"}
 
 _last_fault_log: float | None = None
+_tasks: set[asyncio.Task[Any]] = set()
+
+
+@dataclass(frozen=True)
+class Hit:
+    """One recorded match, with what its announcement needs and nothing of the message."""
+
+    clause_id: uuid.UUID
+    source_request_id: uuid.UUID
+    channel: str
+    sender_name: str | None
+    thread: str | None
+    received_at: datetime | None
+    origin: Mapping[str, str]
+
+
+def _broker() -> Any:
+    """The Switchboard insight broker, imported lazily (a roster tool package, not core)."""
+    return importlib.import_module("butlers.tools.switchboard.insight.broker")
 
 
 def _log_fault(error_class: str) -> None:
@@ -81,7 +117,52 @@ async def _matching_clause(pool: Any, origin_record: Mapping[str, str]) -> uuid.
     return None
 
 
-async def _observe(
+_HIT_COLUMNS = "clause_id, source_request_id, channel, sender_name, thread, received_at, origin"
+
+
+def _hit_from_row(row: Any) -> Hit:
+    origin = row["origin"]
+    origin = json.loads(origin) if isinstance(origin, str) else origin
+    return Hit(
+        clause_id=row["clause_id"],
+        source_request_id=row["source_request_id"],
+        channel=row["channel"],
+        sender_name=row["sender_name"],
+        thread=row["thread"],
+        received_at=row["received_at"],
+        origin=dict(origin or {}),
+    )
+
+
+async def _claim(pool: Any, hit: Hit) -> bool:
+    """Take the announcement of a hit: the insert, or the lease of an abandoned one."""
+    inserted = await pool.fetchval(
+        "INSERT INTO switchboard.break_through_hits "
+        "(clause_id, source_request_id, channel, sender_name, thread, received_at, origin) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) "
+        "ON CONFLICT (clause_id, source_request_id) DO NOTHING RETURNING clause_id",
+        hit.clause_id,
+        hit.source_request_id,
+        hit.channel,
+        hit.sender_name,
+        hit.thread,
+        hit.received_at,
+        dict(hit.origin),
+    )
+    if inserted is not None:
+        return True
+    reclaimed = await pool.fetchval(
+        "UPDATE switchboard.break_through_hits SET claimed_at = clock_timestamp() "
+        "WHERE clause_id = $1 AND source_request_id = $2 AND published_at IS NULL "
+        "AND claimed_at < clock_timestamp() - make_interval(secs => $3) RETURNING 1",
+        hit.clause_id,
+        hit.source_request_id,
+        LEASE_S,
+    )
+    return reclaimed is not None
+
+
+async def _record(
     pool: Any,
     *,
     channel: str,
@@ -89,8 +170,14 @@ async def _observe(
     normalized_text: str | None,
     raw: Any,
     source_request_id: str,
-) -> str | None:
+    thread: str | None,
+    received_at: datetime | None,
+    owner_sender_identity: str | None,
+) -> Hit | None:
+    """Evaluate the message and, on a match this call owns, return the claimed hit."""
     sender = sender_identity.strip()
+    if owner_sender_identity and sender == owner_sender_identity.strip():
+        return None  # the owner's own message never interrupts the owner
     entity_id, name = await _resolve_sender(pool, channel, sender)
     row = {
         "request_context": {"source_channel": channel, "source_sender_identity": sender},
@@ -98,33 +185,48 @@ async def _observe(
         "normalized_text": normalized_text,
     }
     origin = accepted_source_origin(row, entity_id)
-    if not origin.record():
+    record = origin.record()
+    if not record:
         return None
-    clause_id = await _matching_clause(pool, origin.record())
+    clause_id = await _matching_clause(pool, record)
     if clause_id is None:
         return None
-    inserted = await pool.fetchval(
-        "INSERT INTO switchboard.break_through_hits (clause_id, source_request_id, channel) "
-        "VALUES ($1, $2, $3) ON CONFLICT (clause_id, source_request_id) DO NOTHING "
-        "RETURNING clause_id",
-        clause_id,
-        uuid.UUID(str(source_request_id)),
-        origin.channel,
+    hit = Hit(
+        clause_id=clause_id,
+        source_request_id=uuid.UUID(str(source_request_id)),
+        channel=origin.channel or channel,
+        sender_name=name,
+        thread=thread,
+        received_at=received_at,
+        origin=record,
     )
-    if inserted is None:
-        return None
-    payload: dict[str, str] = {
-        "clause_id": str(clause_id),
-        "channel": origin.channel or channel,
-        "source_request_id": str(source_request_id),
-    }
-    if name:
-        payload["sender_name"] = name
+    return hit if await _claim(pool, hit) else None
+
+
+def _message(hit: Hit) -> str:
+    who = hit.sender_name or "A sender you declared"
+    return f"{who} messaged you ({_CHANNEL_LABELS.get(hit.channel, hit.channel)}) - open"
+
+
+def _dedup_key(hit: Hit) -> str:
+    # The family (everything before the last segment) is per request, so one hit never
+    # cools down the next: every declared message is its own candidate.
+    return f"switchboard:{BREAK_THROUGH_CATEGORY}:{hit.source_request_id}:{hit.clause_id}"
+
+
+async def _publish_event(pool: Any, hit: Hit) -> bool:
     from butlers.core_tools._domain_events import (
         _SwitchboardInProcessRouteClient,
         publish_domain_event,
     )
 
+    payload: dict[str, str] = {
+        "clause_id": str(hit.clause_id),
+        "channel": hit.channel,
+        "source_request_id": str(hit.source_request_id),
+    }
+    if hit.sender_name:
+        payload["sender_name"] = hit.sender_name
     result = await publish_domain_event(
         pool,
         _SwitchboardInProcessRouteClient(pool),
@@ -132,11 +234,113 @@ async def _observe(
         source_butler="switchboard",
         payload=payload,
     )
-    if result.get("status") != "ok":
-        # The hit row is the durable record; the event is the announcement.
-        logger.warning("break_through_event_not_published status=%s", result.get("status"))
+    return result.get("status") == "ok"
+
+
+async def _propose_candidate(pool: Any, hit: Hit) -> str | None:
+    """Queue the one urgent candidate for a hit; return its id, or ``None`` if it was not queued.
+
+    The candidate carries the private origin the evaluator matched. Without it the broker has
+    no authority to interrupt, and the line would wait for a normal cycle (it is never sent).
+    """
+    from butlers.core.insight_premise import probe_premise
+
+    propose_insight_candidate = _broker().propose_insight_candidate
+
+    key = _dedup_key(hit)
+    existing = await pool.fetchval(
+        "SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key
+    )
+    if existing is not None:
+        return str(existing)
+    after = (hit.received_at or datetime.now(UTC)).isoformat()
+    premise = probe_premise(PROBE_BUTLER, PROBE_NAME, {"thread": hit.thread or "", "after": after})
+    token = _current_origin.set(AttentionOrigin.from_record(dict(hit.origin)))
+    try:
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="switchboard",
+            priority=BREAK_THROUGH_PRIORITY,
+            category=BREAK_THROUGH_CATEGORY,
+            dedup_key=key,
+            message=_message(hit),
+            expires_at=datetime.now(UTC) + _CANDIDATE_TTL,
+            premise=premise,
+        )
+    finally:
+        _current_origin.reset(token)
+    if result.get("status") != "accepted":
+        logger.warning("break_through_candidate_not_queued status=%s", result.get("status"))
         return None
-    return str(clause_id)
+    return str(
+        await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key)
+    )
+
+
+async def _deliver_now(pool: Any, candidate_id: str) -> None:
+    """Run one urgent cycle scoped to the candidate so it reaches the owner in seconds."""
+    from butlers.scheduled_jobs import _build_switchboard_insight_notify_fn
+
+    await _broker().delivery_cycle(
+        pool,
+        notify_fn=_build_switchboard_insight_notify_fn(pool),
+        urgent_only=True,
+        candidate_ids=[candidate_id],
+    )
+
+
+async def announce(pool: Any, hit: Hit) -> bool:
+    """Announce a claimed hit: the event, the candidate, the stamp, then an immediate delivery.
+
+    The hit is stamped published only once the event and the candidate exist, so a failure before
+    that leaves it for :func:`retry_unpublished`. The immediate delivery comes after the stamp: a
+    failed send is the broker's to retry (the candidate stays pending for the hourly cycle), not
+    a reason to announce the hit again.
+    """
+    if not await _publish_event(pool, hit):
+        logger.warning("break_through_event_not_published")
+        return False
+    candidate_id = await _propose_candidate(pool, hit)
+    if candidate_id is None:
+        return False
+    await pool.execute(
+        "UPDATE switchboard.break_through_hits SET published_at = clock_timestamp() "
+        "WHERE clause_id = $1 AND source_request_id = $2 AND published_at IS NULL",
+        hit.clause_id,
+        hit.source_request_id,
+    )
+    await _deliver_now(pool, candidate_id)
+    return True
+
+
+async def retry_unpublished(pool: Any, *, limit: int = 20) -> int:
+    """Claim and announce hits whose announcement lapsed; return how many were announced."""
+    try:
+        rows = await pool.fetch(
+            "UPDATE switchboard.break_through_hits SET claimed_at = clock_timestamp() "
+            "WHERE (clause_id, source_request_id) IN ("
+            "  SELECT clause_id, source_request_id FROM switchboard.break_through_hits "
+            "  WHERE published_at IS NULL "
+            "  AND claimed_at < clock_timestamp() - make_interval(secs => $1) "
+            "  ORDER BY claimed_at LIMIT $2 FOR UPDATE SKIP LOCKED"
+            f") RETURNING {_HIT_COLUMNS}",
+            LEASE_S,
+            limit,
+        )
+    except Exception as exc:
+        _log_fault(type(exc).__name__)
+        return 0
+    announced = 0
+    for row in rows:
+        try:
+            announced += bool(
+                await asyncio.wait_for(announce(pool, _hit_from_row(row)), ANNOUNCE_TIMEOUT_S)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log_fault(type(exc).__name__)
+    return announced
 
 
 async def observe_inbound(
@@ -147,28 +351,53 @@ async def observe_inbound(
     normalized_text: str | None,
     raw: Any,
     source_request_id: str,
-    timeout_s: float = SENSOR_TIMEOUT_S,
-) -> str | None:
-    """Record and announce a clause hit for an accepted inbound message.
+    thread: str | None = None,
+    received_at: datetime | None = None,
+    owner_sender_identity: str | None = None,
+    timeout_s: float = RECORD_TIMEOUT_S,
+) -> Hit | None:
+    """Record a clause hit for an accepted inbound message and announce it.
 
-    Returns the matched clause id when this call recorded a new hit, otherwise ``None``: no
-    match, a replay, or any failure. Never raises, never exceeds ``timeout_s``.
+    Returns the hit when this call recorded (or took over) it, otherwise ``None``: no match, a
+    replay, or any failure. Never raises. The record step is bounded by ``timeout_s`` and the
+    announcement by its own bound; a failed announcement leaves the hit for the retry sweep.
     """
     try:
-        return await asyncio.wait_for(
-            _observe(
+        hit = await asyncio.wait_for(
+            _record(
                 pool,
                 channel=channel,
                 sender_identity=sender_identity,
                 normalized_text=normalized_text,
                 raw=raw,
                 source_request_id=source_request_id,
+                thread=thread,
+                received_at=received_at,
+                owner_sender_identity=owner_sender_identity,
             ),
             timeout_s,
         )
+        if hit is None:
+            return None
+        await asyncio.wait_for(announce(pool, hit), ANNOUNCE_TIMEOUT_S)
+        return hit
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         # Class only: provider and SQL error text is never evidence.
         _log_fault(type(exc).__name__)
         return None
+
+
+def spawn_observation(pool: Any, **kwargs: Any) -> asyncio.Task[Hit | None]:
+    """Run :func:`observe_inbound` as a tracked background task: ingest never waits for it."""
+    task = asyncio.ensure_future(observe_inbound(pool, **kwargs))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return task
+
+
+async def drain() -> None:
+    """Wait for every spawned observation (tests and orderly shutdown)."""
+    while _tasks:
+        await asyncio.gather(*list(_tasks), return_exceptions=True)

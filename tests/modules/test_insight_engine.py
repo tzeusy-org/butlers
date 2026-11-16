@@ -2381,7 +2381,8 @@ class TestAutoOffTotalDisengagement:
 
         assert triggered is True
         settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] == "off"
+        # The ratchet's own state, distinct from the owner's explicit "off" (bu-s11n0s.8).
+        assert settings["verbosity"] == "auto_off"
         notify_mock.assert_called_once()
         call_args = notify_mock.call_args[0]
         assert "paused proactive insights" in call_args[0]
@@ -2445,7 +2446,8 @@ class TestAutoOffTotalDisengagement:
         )
         assert triggered is True
         settings = await get_insight_settings(insight_pool)
-        assert settings["verbosity"] == "off"
+        # The ratchet's own state, distinct from the owner's explicit "off" (bu-s11n0s.8).
+        assert settings["verbosity"] == "auto_off"
         notify_mock.assert_called_once()
         assert notify_mock.call_args[0][0] == _AUTO_OFF_MESSAGE
 
@@ -2462,7 +2464,7 @@ class TestAutoOffTotalDisengagement:
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now, notify_fn=None)
         assert triggered is True
-        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "auto_off"
 
     async def test_auto_off_window_boundary_excludes_today(self, insight_pool):
         """Today's partial day excluded from window; 14 complete days still trigger;
@@ -2490,7 +2492,7 @@ class TestAutoOffTotalDisengagement:
         )
         triggered = await check_total_disengagement_auto_off(insight_pool, now=now)
         assert triggered is True
-        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "auto_off"
 
     async def test_auto_off_13_days_plus_today_not_triggered(self, insight_pool):
         """13 complete past days plus today's partial row do not trigger auto-off."""
@@ -2551,7 +2553,7 @@ class TestAutoOffTotalDisengagement:
         )
 
         assert triggered is True
-        assert (await get_insight_settings(insight_pool))["verbosity"] == "off"
+        assert (await get_insight_settings(insight_pool))["verbosity"] == "auto_off"
 
     async def test_auto_off_rollup_engagement_blocks_trigger(self, insight_pool):
         """A rollup day recording real engagement (insights_engaged > 0) for a
