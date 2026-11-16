@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import datetime
 from typing import Any
 
 import asyncpg
@@ -117,6 +118,51 @@ async def _home_fix_status_unchanged(pool: asyncpg.Pool, args: Mapping[str, Any]
     return current == shown
 
 
+async def _switchboard_inbound_still_unanswered(
+    pool: asyncpg.Pool, args: Mapping[str, Any]
+) -> bool | None:
+    """True while the owner has not answered the thread since a break-through message arrived.
+
+    False once an accepted message from the owner has landed in the same conversation after
+    ``after`` (the owner dealt with it, so telling them again would be noise). None when the
+    thread or the instant is missing or malformed, or the inbox cannot be read: the delivery
+    cycle then stamps the line "as of" rather than claiming a recheck. bu-s11n0s.8.
+
+    "From the owner" is a sender equal to the connector's recorded owner identity, or to the
+    owner's primary email address. Only ids and a time are read, never message text.
+    """
+    thread = args.get("thread")
+    after = args.get("after")
+    if not isinstance(thread, str) or not thread or not isinstance(after, str):
+        return None
+    try:
+        since = datetime.fromisoformat(after)
+    except ValueError:
+        return None
+    if since.tzinfo is None:
+        return None
+    from butlers.credential_store import resolve_owner_entity_info
+
+    owner_email = await resolve_owner_entity_info(pool, "email")
+    replied = await pool.fetchval(
+        """
+        SELECT 1 FROM switchboard.message_inbox
+        WHERE received_at > $2
+          AND request_context ->> 'external_conversation_id' = $1
+          AND (
+                request_context ->> 'source_sender_identity'
+                    = request_context ->> 'owner_sender_identity'
+                OR lower(request_context ->> 'source_sender_identity') = $3
+          )
+        LIMIT 1
+        """,
+        thread,
+        since,
+        (owner_email or "").strip().lower() or None,
+    )
+    return replied is None
+
+
 #: ``(butler, probe)`` -> probe. A butler adopts premises by registering here.
 PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("finance", "bill_still_pending"): _finance_bill_still_pending,
@@ -124,6 +170,7 @@ PREMISE_PROBES: dict[tuple[str, str], ProbeFn] = {
     ("home", "departure_still_open"): _home_departure_still_open,
     ("home", "arrival_card_current"): _home_arrival_card_current,
     ("home", "fix_status_unchanged"): _home_fix_status_unchanged,
+    ("switchboard", "inbound_still_unanswered"): _switchboard_inbound_still_unanswered,
 }
 
 

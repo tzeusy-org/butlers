@@ -117,16 +117,26 @@ Switchboard ingest tool publishes one `switchboard.security_event` regardless of
 decision. The sensor never reads a body, code or link. See `openspec/specs/account-security-perception`
 once the change is archived.
 
-## Owner Break-Through Sensor (shadow)
+## Owner Break-Through Sensor
 
-After an inbound message is accepted, the Switchboard ingest tool asks the private clause evaluator
-whether it matches an owner-declared break-through clause (a person, an authenticated sender domain,
-a channel or an account-security kind). The check reads only the resolved sender, channel and
-account classification, so an ingestion rule, including a promoted `skip`, cannot hide a hit. A
-match is recorded once in `switchboard.break_through_hits` (keyed by clause and source request, so
-a replay is silent) and announced as a metadata-only `switchboard.break_through_hit` event. The
-sensor is shadow-only: it sends nothing, an unavailable evaluator counts as "no match", and it
-never fails or delays ingest beyond a two-second bound. See `openspec/specs/proactive-insight-engine`
+After an inbound message is accepted, the Switchboard ingest tool starts a background observation
+(ingest never waits for it) that asks the private clause evaluator whether the message matches an
+owner-declared break-through clause (a person, an authenticated sender domain, a channel or an
+account-security kind). The check reads only the resolved sender, channel and account
+classification, so an ingestion rule, including a promoted `skip`, cannot hide a hit, and the
+owner's own messages are never hits. A match is recorded once in `switchboard.break_through_hits`
+(keyed by clause and source request, so a replay is silent) and announced: a metadata-only
+`switchboard.break_through_hit` event, then one urgent insight candidate (priority 95, category
+`break_through`) that the broker delivers at once through the normal Telegram path. The hit carries
+an announcement lease (`claimed_at`, `published_at`): a crash after the insert leaves it unpublished
+and the hourly urgent cycle announces it, so a lost announcement is retried and a published one is
+never repeated.
+
+The line names the sender and channel only. It is withdrawn unsent when the owner has replied in the
+thread (`switchboard`/`inbound_still_unanswered` probe) or the clause was revoked. The total
+disengagement ratchet writes `verbosity = 'auto_off'` instead of `'off'`: that mutes routine speech
+but not this line, while an explicit `off` stops everything. An unavailable evaluator counts as "no
+match" and never fails ingest. See `openspec/specs/proactive-insight-engine`
 (Owner-Declared Break-Through Hits Are Observed At Ingest).
 
 ## Retention by Tier

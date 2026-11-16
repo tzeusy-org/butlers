@@ -69,8 +69,8 @@ The system SHALL enforce a global daily delivery budget that caps the total numb
 - **AND** pending candidates SHALL remain for the next day's cycle
 
 #### Scenario: Zero budget (verbosity off)
-- **WHEN** the user's verbosity is set to `off` (budget = 0)
-- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery
+- **WHEN** the user's verbosity is set to `off` or `auto_off` (budget = 0)
+- **THEN** the delivery cycle SHALL mark all pending candidates as `status='filtered'` with no delivery, except that under `auto_off` an owner-clause `break_through` candidate is retained and delivered by an urgent cycle
 - **AND** butler insight-scan jobs SHALL skip candidate generation entirely (early return)
 
 ### Requirement: Verbosity Presets
@@ -157,7 +157,7 @@ remained unengaged across the existing fourteen-day safety window.
 #### Scenario: Total disengagement auto-off
 - **WHEN** every insight delivered on each of 14 consecutive days remains
   unengaged (at least 1 insight delivered per day)
-- **THEN** the system SHALL auto-downgrade verbosity to `off`
+- **THEN** the system SHALL auto-downgrade verbosity to `auto_off`, a distinct state with budget 0 that is treated as `off` for all routine speech (an owner-declared break-through candidate is the one exception, see Owner-Declared Break-Through Hits Are Observed At Ingest), so an auto-downgrade is distinguishable from the owner's explicit `off`; pre-existing `off` rows remain explicit opt-outs
 - **AND** SHALL deliver a final notification: "I've paused proactive insights
   since you haven't found them useful. You can re-enable them anytime."
 - **AND** this final notification SHALL be delivered via direct `notify` (not
@@ -359,7 +359,7 @@ In this mode:
   covers once a day.
 
 An explicit `verbosity=off` configuration SHALL still suppress delivery in
-`urgent_only` mode exactly as it does in the regular cycle — this is a hard
+`urgent_only` mode (including owner-declared break-through candidates) exactly as it does in the regular cycle — this is a hard
 user opt-out, not a time-based deferral the urgent bypass is meant to
 override.
 
@@ -1059,16 +1059,16 @@ Scope: v1-mandatory
 
 ### Requirement: Owner-Declared Break-Through Hits Are Observed At Ingest
 
-The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Until a later slice enables delivery, a hit is shadow-only: it records and announces and sends nothing.
+The system SHALL evaluate every accepted inbound message against the owner's current break-through clauses at ingest, independent of ingestion rules, and SHALL record each match once as a durable hit and announce it as a metadata-only `switchboard.break_through_hit` event. A clause is owner-authored only (the authenticated dashboard route), never created by a butler or a model tool. Each announced hit queues one urgent, content-free insight candidate that the broker delivers within seconds; the owner's own current clause, not a model or a producer, is the authority to interrupt.
 
-Source: bu-s11n0s.8 S1 (owner-released intent bu-9zmre6)
+Source: bu-s11n0s.8 S1, S2 (owner-released intent bu-9zmre6)
 Scope: v1-mandatory
 
 #### Scenario: A matching inbound message yields one hit and one event
 
 - **WHEN** an inbound message is accepted whose resolved sender entity, authenticated sender domain, channel or account-security kind matches a current, unrevoked, unexpired clause
 - **THEN** exactly one row is recorded in `switchboard.break_through_hits` keyed by `(clause_id, source_request_id)` and exactly one `switchboard.break_through_hit` event is published
-- **AND** nothing is sent to the owner and no insight candidate is created
+- **AND** one urgent insight candidate (priority 95, category `break_through`) is queued for it
 
 #### Scenario: The event carries metadata only
 
@@ -1080,6 +1080,26 @@ Scope: v1-mandatory
 
 - **WHEN** the same `(clause_id, source_request_id)` is observed again, such as a connector replay
 - **THEN** the insert conflicts, no second event is published and the first hit is unchanged, including under concurrent replays
+- **AND** a replay never loses an announcement: a hit whose event and candidate were not completed (a timeout or crash after the insert) stays unpublished and is announced by the next replay or the hourly sweep once its lease lapses, while a published hit is never announced again
+
+#### Scenario: The owner is told within seconds, without content
+
+- **WHEN** a hit is announced
+- **THEN** a delivery cycle scoped to that one candidate runs immediately with the production notify path, and the owner receives one line naming the sender's display name and the channel only
+- **AND** the line never contains a body, subject, snippet, address or link, and the observation runs as a tracked background task so ingest never waits for it
+- **AND** a failed send leaves the candidate pending for the hourly urgent cycle and never re-announces the hit
+
+#### Scenario: The owner's current word decides at send time
+
+- **WHEN** the clause is revoked after the hit, or the owner has replied in the same thread after the message arrived
+- **THEN** nothing is sent: the broker re-evaluates the live clause, and the `switchboard`/`inbound_still_unanswered` probe withdraws the candidate unsent with `premise_false`
+- **AND** a probe that cannot read its inputs is unknown, never a withdrawal, and the owner's own message is never a hit
+
+#### Scenario: Auto-off does not mute the owner's declared sender, an explicit off does
+
+- **WHEN** the total-disengagement ratchet has written `verbosity = 'auto_off'` (budget 0 like `off`)
+- **THEN** routine speech stays muted but an owner-clause break-through candidate is still proposed and delivered by an urgent cycle, and no other category is
+- **AND** an explicit `verbosity = 'off'` stops every candidate including break-through, and existing `off` rows remain explicit
 
 #### Scenario: A promoted skip rule does not hide a hit
 
@@ -1095,4 +1115,4 @@ Scope: v1-mandatory
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 
 - **WHEN** the owner revokes a clause
-- **THEN** later messages no longer match it, and hits already recorded remain, because the hit record has no update, delete or truncate path
+- **THEN** later messages no longer match it, and hits already recorded remain, because the hit record has no delete or truncate path and no update path beyond its announcement lease (`claimed_at`, and a one-way `published_at`)

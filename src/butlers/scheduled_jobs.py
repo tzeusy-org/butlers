@@ -306,9 +306,13 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.break_through import retry_unpublished
     from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    # Announce break-through hits whose announcement lapsed (bu-s11n0s.8), so the candidate
+    # exists before this cycle selects. Bounded and never raises.
+    await retry_unpublished(pool)
     owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(

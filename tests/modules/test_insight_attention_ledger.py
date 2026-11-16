@@ -1422,3 +1422,137 @@ class TestCatchupReadAvailability:
                     await attempt()
             detail.assert_awaited_once_with(pool, now=_PINNED_NOW)
             reconcile.assert_not_awaited()
+
+
+async def _set_verbosity(pool, verbosity: str) -> None:
+    await pool.execute(
+        """
+        INSERT INTO insight_settings (id, verbosity) VALUES (1, $1)
+        ON CONFLICT (id) DO UPDATE SET verbosity = $1
+        """,
+        verbosity,
+    )
+
+
+async def _break_through_candidate(pool, authority, key: str, *, category="break_through") -> str:
+    await _insert_candidate(pool, dedup_key=key, priority=95, origin_butler="switchboard")
+    await pool.execute(
+        "UPDATE insight_candidates SET category = $2 WHERE dedup_key = $1", key, category
+    )
+    await _owner_authorize_candidate(pool, authority, key)
+    return await _candidate_id(pool, key)
+
+
+class TestBreakThroughVerbosityExemption:
+    """bu-s11n0s.8: an auto-off ratchet mutes routine speech, never the owner's declared sender."""
+
+    async def test_auto_off_still_delivers_an_owner_authorized_break_through(
+        self, insight_pool, authority
+    ):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await _set_verbosity(insight_pool, "auto_off")
+        await _break_through_candidate(insight_pool, authority, "switchboard:break_through:r1:c1")
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify, urgent_only=True, now=_PINNED_NOW
+        )
+
+        assert len(result["delivered"]) == 1
+        notify.assert_awaited_once()
+
+    async def test_explicit_off_stops_a_break_through(self, insight_pool, authority):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await _set_verbosity(insight_pool, "off")
+        await _break_through_candidate(insight_pool, authority, "switchboard:break_through:r2:c1")
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify, urgent_only=True, now=_PINNED_NOW
+        )
+
+        assert result["skipped"] is True
+        notify.assert_not_awaited()
+
+    async def test_auto_off_still_mutes_every_other_urgent_category(self, insight_pool, authority):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await _set_verbosity(insight_pool, "auto_off")
+        await _break_through_candidate(
+            insight_pool, authority, "health:urgent:r3:2026", category="health"
+        )
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        result = await delivery_cycle(
+            insight_pool, notify_fn=notify, urgent_only=True, now=_PINNED_NOW
+        )
+
+        assert result["delivered"] == []
+        notify.assert_not_awaited()
+
+    async def test_auto_off_without_a_clause_cause_sends_nothing(self, insight_pool):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await _set_verbosity(insight_pool, "auto_off")
+        await _insert_candidate(
+            insight_pool, dedup_key="switchboard:break_through:r4:c1", priority=95
+        )
+        await insight_pool.execute("UPDATE insight_candidates SET category = 'break_through'")
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        await delivery_cycle(insight_pool, notify_fn=notify, urgent_only=True, now=_PINNED_NOW)
+
+        notify.assert_not_awaited()
+
+    async def test_proposal_is_filtered_under_explicit_off_but_queued_under_auto_off(
+        self, insight_pool
+    ):
+        from butlers.tools.switchboard.insight.broker import propose_insight_candidate
+
+        async def propose(key: str, category: str) -> str:
+            result = await propose_insight_candidate(
+                insight_pool,
+                origin_butler="switchboard",
+                priority=95,
+                category=category,
+                dedup_key=key,
+                message="Mum messaged you (email) - open",
+                expires_at=datetime.now(UTC) + timedelta(hours=6),
+            )
+            return result["status"]
+
+        await _set_verbosity(insight_pool, "off")
+        assert await propose("switchboard:break_through:p1:c1", "break_through") == "filtered"
+        await _set_verbosity(insight_pool, "auto_off")
+        assert await propose("switchboard:break_through:p2:c1", "break_through") == "accepted"
+        assert await propose("switchboard:other:p3:c1", "weekly") == "filtered"
+
+
+class TestScopedUrgentCycle:
+    async def test_candidate_ids_restrict_an_urgent_cycle_to_those_candidates(
+        self, insight_pool, authority
+    ):
+        from butlers.tools.switchboard.insight.broker import delivery_cycle
+
+        await _set_verbosity(insight_pool, "normal")
+        first = await _break_through_candidate(
+            insight_pool, authority, "switchboard:break_through:s1:c1"
+        )
+        await _break_through_candidate(insight_pool, authority, "switchboard:break_through:s2:c1")
+
+        notify = AsyncMock(return_value={"status": "ok"})
+        result = await delivery_cycle(
+            insight_pool,
+            notify_fn=notify,
+            urgent_only=True,
+            candidate_ids=[first],
+            now=_PINNED_NOW,
+        )
+
+        assert [str(i) for i in result["delivered"]] == [first]
+        other = await insight_pool.fetchval(
+            "SELECT status FROM insight_candidates WHERE dedup_key = 'switchboard:break_through:s2:c1'"
+        )
+        assert other == "pending"

@@ -29,7 +29,9 @@ domain, the channel and the account-security kind, independent of ingestion rule
 skip rule cannot hide a hit. The payload names the clause, the channel, the resolved sender's \
 display name when known, and the source request id; no message text, subject, snippet, address \
 or link crosses the bus. A hit is announced once per (clause, source request); a connector \
-replay emits nothing. Slice 1 is shadow-only: the event reports a match and sends nothing."""
+replay emits nothing, and a hit whose announcement lapsed is announced again by the hourly sweep \
+(at-least-once: consumers key on the clause and source request ids). The broker delivers the \
+matching urgent candidate; the event itself sends nothing."""
 permitted_subscribers = []
 required_fields = ["clause_id", "channel", "source_request_id"]
 optional_fields = ["sender_name"]
