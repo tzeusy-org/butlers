@@ -27,8 +27,8 @@ The grant reaches the connector as a payload of ids, digests and the cutoff only
   marked not replayable (S4c-4). They are matched by ``sender_identity`` and
   ``external_message_id``, which spell the logical key. A copy written later is withheld by
   core_345's insert trigger. A failure here rolls back the delete. A policy-filtered fix is
-  recorded without a point row, so it never enters a grant and is outside its reach (a
-  follow-up under bu-s11n0s.7).
+  recorded without a point row, so it never enters a grant and is outside its reach; the
+  connector stores it without coordinates instead (bu-s11n0s.73).
 * The receipt is written last.
 
 The worker (:func:`run_retention_once`, :func:`start_retention_worker`) fetches ready grants

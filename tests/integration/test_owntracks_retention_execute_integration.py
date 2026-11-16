@@ -10,8 +10,8 @@ The connector's parked ``connectors.filtered_events`` copies of a granted fix (a
 parked after its ingest attempts were spent; the point itself is still persisted) are withheld
 in the same transaction (S4c-4): matched by ``sender_identity`` and ``external_message_id``
 ``{tst}:location``, never by text. A withhold that fails rolls the whole grant back. A
-policy-filtered fix has no point row, so it is outside a grant's reach (a follow-up under
-bu-s11n0s.7).
+policy-filtered fix has no point row, so it is outside a grant's reach; the connector stores
+it without coordinates instead (bu-s11n0s.73).
 """
 
 from __future__ import annotations
