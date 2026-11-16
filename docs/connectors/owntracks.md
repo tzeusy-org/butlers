@@ -284,7 +284,8 @@ Groundwork for that gate is in place, and still deletes nothing:
   (bu-s11n0s.7 S4b-4c, `location_retention_job.run_location_retention_job`, unscheduled):
   - `chronicler.location_retention_runs` (chronicler_038) holds one run record. `running` commits
     before any work; a run still `running` within 30 minutes makes the next one skip, and an
-    older one counts as a failure (`Unfinished`). The outcome is written in its own transaction
+    older one counts as a failure (`Unfinished`) that stays standing even if the takeover run
+    succeeds; only a later clean run clears it. The outcome is written in its own transaction
     and keeps only the exception class.
   - Raw fixes past the policy cutoff are counted by the first reason that applies:
     `grant_failed`, `awaiting_deletion`, `awaiting_holders`, `held_open`, `uncovered` (no exact

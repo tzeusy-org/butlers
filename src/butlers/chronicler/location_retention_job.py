@@ -4,7 +4,8 @@ One run, uncalled until the owner-enable step (the dark guard pins that):
 
 1. **Start.** ``location_retention_runs`` is set to ``running`` and committed before any work.
    A run still ``running`` inside :data:`RUN_LEASE` makes this one skip; an older one never
-   finished, so it is unknown, never green: taking it over counts one failure.
+   finished, so it is unknown, never green: taking it over counts one failure (``Unfinished``),
+   and that failure stands even if this run succeeds; only a later clean run clears it.
 2. **Work.** :func:`reconcile_ready_grants`, then :func:`read_retention_lag` and its counts
    reconciled into the owner condition ledger under :data:`LAG_SOURCE`.
 3. **Finish.** The outcome is written in its own transaction: a failure keeps the exception's
@@ -79,12 +80,14 @@ ON CONFLICT (id) DO UPDATE SET
         THEN 'Unfinished' ELSE location_retention_runs.last_error_class END
 WHERE location_retention_runs.last_outcome <> 'running'
    OR location_retention_runs.last_started_at <= clock_timestamp() - $1::interval
-RETURNING last_started_at
+RETURNING last_started_at, last_failure_at = last_started_at AS took_over
 """
 _SUCCEEDED = """
 UPDATE location_retention_runs
 SET last_outcome = 'succeeded', last_finished_at = clock_timestamp(),
-    last_success_at = clock_timestamp(), consecutive_failures = 0
+    last_success_at = clock_timestamp(),
+    -- A takeover's success does not clear the unfinished run it replaced.
+    consecutive_failures = CASE WHEN $2 THEN consecutive_failures ELSE 0 END
 WHERE id = 1 AND last_started_at = $1
 RETURNING consecutive_failures, last_error_class
 """
@@ -277,9 +280,10 @@ async def run_location_retention_job(
     """
     if job_args:
         raise ValueError(f"location retention job takes no job_args; got: {sorted(job_args)}")
-    started = await db_pool.fetchval(_START, RUN_LEASE)
-    if started is None:
+    start = await db_pool.fetchrow(_START, RUN_LEASE)
+    if start is None:
         return {"status": "skipped", "reason": "running"}
+    started = start["last_started_at"]
 
     error_class: str | None = None
     try:
@@ -292,7 +296,7 @@ async def run_location_retention_job(
         logger.warning("Location retention run failed: %s", error_class)
 
     if error_class is None:
-        run = await db_pool.fetchrow(_SUCCEEDED, started)
+        run = await db_pool.fetchrow(_SUCCEEDED, started, start["took_over"])
     else:
         run = await db_pool.fetchrow(_FAILED, started, error_class)
     if run is None:  # another run took the lease over; it owns the outcome

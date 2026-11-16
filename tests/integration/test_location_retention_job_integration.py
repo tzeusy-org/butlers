@@ -276,6 +276,27 @@ async def test_an_unfinished_run_skips_within_its_lease_and_counts_as_a_failure_
     assert result["consecutive_failures"] == 2
 
 
+async def test_a_taken_over_run_stays_failing_until_a_later_clean_run(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await chronicler_db.execute(
+        "INSERT INTO location_retention_runs (id, last_started_at, last_outcome) "
+        "VALUES (1, now() - $1::interval, 'running')",
+        job.RUN_LEASE + timedelta(minutes=1),
+    )
+
+    # The takeover run itself succeeds, but the run it replaced never finished.
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+    failing = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failing["run_failing"]["error_class"] == "Unfinished"
+    assert failing["run_failing"]["consecutive_failures"] == 1
+    assert (await _run_row(chronicler_db))["last_outcome"] == "succeeded"
+
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+    assert await _active(chronicler_db, job.FAILED_SOURCE) == {}
+    assert (await _run_row(chronicler_db))["consecutive_failures"] == 0
+
+
 async def test_job_args_are_refused(runtime_db: asyncpg.Pool) -> None:
     with pytest.raises(ValueError):
         await job.run_location_retention_job(runtime_db, {"limit": 5})
