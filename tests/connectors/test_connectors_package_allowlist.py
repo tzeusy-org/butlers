@@ -57,6 +57,7 @@ CONNECTOR_FILES = {
     "metrics.py": "K",
     "owner_outbound_events.py": "K",
     "owntracks.py": "E",
+    "owntracks_retention.py": "H:owntracks",
     "spotify.py": "E",
     "steam.py": "E",
     "telegram_bot.py": "E",
