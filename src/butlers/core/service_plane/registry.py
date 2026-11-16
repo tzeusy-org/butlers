@@ -36,6 +36,9 @@ FLEET_CASE_PROPOSE_POSTURE = "fleet_case.propose_posture"
 FLEET_CASE_RECORD_LINK = "fleet_case.record_link"
 MEMORY_CATALOG_FETCH = "memory.catalog_fetch"
 OWNER_CHAT_SPANS = "owner_chat.spans"
+LOCATION_RETENTION_GRANTS_READY = "location_retention.grants_ready"
+#: The OwnTracks connector's workload (its chart component label).
+CONNECTOR_OWNTRACKS_WORKLOAD = "connector-owntracks"
 
 #: Reads one live, visible ``public.memory_catalog`` row by its source pointer:
 #: ``(source_schema, source_table, source_id)`` to a row with ``source_butler``
@@ -288,6 +291,16 @@ def build_relays(
         **fleet_case_relays,
         **memory_relays,
         **owner_chat_relays,
+        # bu-s11n0s.7 S4b-3b: the OwnTracks connector's only read of Chronicler, the grants
+        # it may execute. Ids, digests and cutoffs only; the caller chooses nothing. The
+        # caller is a connector workload, not a domain daemon on butlers-up.
+        LOCATION_RETENTION_GRANTS_READY: RelayEndpoint(
+            name=LOCATION_RETENTION_GRANTS_READY,
+            target_butlers=frozenset({"chronicler"}),
+            target_tool="location_retention_grants_ready_service",
+            args_model=NoArgs,
+            allowed_callers=frozenset({ServiceCaller(CONNECTOR_OWNTRACKS_WORKLOAD, "owntracks")}),
+        ),
         QA_REPORT_FINDING: RelayEndpoint(
             name=QA_REPORT_FINDING,
             target_butlers=frozenset({"qa"}),

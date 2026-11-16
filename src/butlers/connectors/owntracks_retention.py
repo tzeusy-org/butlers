@@ -22,22 +22,38 @@ The grant reaches the connector as a payload of ids, digests and the cutoff only
   tombstone keyed by its logical key, so even a row that never reached a point event cannot be
   inserted again, and the receipt is written last.
 
-Nothing calls this yet: deleting raw fixes is irreversible and waits for the owner to enable it.
+The worker (:func:`run_retention_once`, :func:`start_retention_worker`) fetches ready grants
+from Chronicler through the ``location_retention.grants_ready`` named relay (RFC 0038 D7),
+presenting the connector's workload token and the ``owntracks`` daemon name, and executes each.
+It fails closed: an unreachable relay, a refusal, a missing token or a malformed reply executes
+nothing, and a grant whose rows no longer match is skipped. It runs only when
+``OWNTRACKS_RAW_RETENTION_ENABLED=true``, which is off by default and stays off until the owner
+enables raw expiry; ``ready`` grants do not exist before holder copies (S4c) anyway.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
 import re
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import asyncpg
+import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from butlers.chronicler.projection_coverage import raw_row_digest_sql
+from butlers.core.service_plane.client import call_relay
+from butlers.core.service_plane.registry import LOCATION_RETENTION_GRANTS_READY
+from butlers.core.service_plane.workload_identity import TOKEN_DIR
+
+logger = logging.getLogger(__name__)
 
 #: Chronicler grants at most 500 raw rows per preparation run.
 MAX_GRANT_ITEMS = 500
@@ -198,3 +214,117 @@ async def execute_grant(conn: asyncpg.Connection, grant: RetentionGrant) -> Batc
             receipt.already_forgotten_count,
         )
     return receipt
+
+
+# ── Worker ────────────────────────────────────────────────────────────────
+
+#: The daemon name the connector presents beside its workload token.
+RELAY_DAEMON = "owntracks"
+_ENABLED_ENV = "OWNTRACKS_RAW_RETENTION_ENABLED"
+_INTERVAL_ENV = "OWNTRACKS_RAW_RETENTION_INTERVAL_S"
+_DEFAULT_INTERVAL_S = 3600.0
+_MIN_INTERVAL_S = 60.0
+
+FetchGrants = Callable[[], Awaitable[Any]]
+ExecuteGrant = Callable[[Any, RetentionGrant], Awaitable[BatchReceipt]]
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionWorkerConfig:
+    enabled: bool = False
+    interval_s: float = _DEFAULT_INTERVAL_S
+
+    @classmethod
+    def from_env(cls) -> RetentionWorkerConfig:
+        """Enabled only by an exact ``true``; any other value leaves the worker off."""
+        enabled = os.environ.get(_ENABLED_ENV, "").strip().lower() == "true"
+        try:
+            interval = float(os.environ.get(_INTERVAL_ENV, "") or _DEFAULT_INTERVAL_S)
+        except ValueError:
+            interval = _DEFAULT_INTERVAL_S
+        return cls(enabled=enabled, interval_s=max(interval, _MIN_INTERVAL_S))
+
+
+class _Reply(_Strict):
+    grants: list[Any]
+
+
+def _grants_from(reply: Any) -> list[RetentionGrant]:
+    """Every grant in a relay reply, or :class:`MalformedGrant` for the whole reply."""
+    if not isinstance(reply, Mapping):
+        raise MalformedGrant("relay reply is not an object")
+    try:
+        grants = _Reply.model_validate(dict(reply)).grants
+    except ValidationError:
+        raise MalformedGrant("relay reply is not {grants: [...]}") from None
+    return [parse_grant(grant) for grant in grants]
+
+
+async def fetch_ready_grants(
+    *,
+    switchboard_url: str,
+    token_dir: Path = TOKEN_DIR,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> Any:
+    """Ask Chronicler, through the named relay, which grants are ready."""
+    return await call_relay(
+        LOCATION_RETENTION_GRANTS_READY,
+        {},
+        daemon=RELAY_DAEMON,
+        switchboard_url=switchboard_url,
+        token_dir=token_dir,
+        transport=transport,
+    )
+
+
+async def run_retention_once(
+    pool: Any, fetch: FetchGrants, *, execute: ExecuteGrant = execute_grant
+) -> list[BatchReceipt]:
+    """Fetch the ready grants and execute each; anything untrusted executes nothing."""
+    try:
+        grants = _grants_from(await fetch())
+    except MalformedGrant as exc:
+        logger.warning("owntracks retention: %s; nothing executed", exc)
+        return []
+    except Exception as exc:  # unreachable, refused, no token: fail closed
+        logger.warning(
+            "owntracks retention: ready grants unavailable (%s); nothing executed",
+            type(exc).__name__,
+        )
+        return []
+    receipts: list[BatchReceipt] = []
+    for grant in grants:
+        try:
+            async with pool.acquire() as conn:
+                receipts.append(await execute(conn, grant))
+        except GrantMismatch as exc:
+            logger.warning("owntracks retention: grant %s refused: %s", grant.grant_id, exc)
+    return receipts
+
+
+async def _worker_loop(pool: Any, fetch: FetchGrants, interval_s: float) -> None:
+    while True:
+        try:
+            receipts = await run_retention_once(pool, fetch)
+            if receipts:
+                logger.info(
+                    "owntracks retention: %d grants executed, %d rows deleted",
+                    len(receipts),
+                    sum(r.deleted_count for r in receipts),
+                )
+        except Exception:
+            logger.exception("owntracks retention: run failed; retrying next interval")
+        await asyncio.sleep(interval_s)
+
+
+def start_retention_worker(
+    config: RetentionWorkerConfig, pool: Any, *, switchboard_url: str
+) -> asyncio.Task[None] | None:
+    """Start the worker when the owner enabled it; otherwise start nothing."""
+    if not config.enabled or pool is None or not switchboard_url:
+        return None
+
+    async def fetch() -> Any:
+        return await fetch_ready_grants(switchboard_url=switchboard_url)
+
+    return asyncio.create_task(_worker_loop(pool, fetch, config.interval_s))

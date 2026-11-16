@@ -543,6 +543,26 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         )
 
     # ------------------------------------------------------------------
+    # location_retention_grants_ready_service  — relay-only grant read
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def location_retention_grants_ready_service() -> dict[str, Any]:
+        """Service-only: the location retention grants the OwnTracks connector may execute.
+
+        The target of the ``location_retention.grants_ready`` named relay (RFC 0038 D7,
+        bu-s11n0s.7 S4b-3b), whose only allowed caller is the OwnTracks connector workload.
+        Declared ``presentable=False``. Returns ``{"grants": [...]}``: for each ready,
+        unsettled grant only its id, cutoff, and each granted raw row's id, logical key and
+        content digest. The caller chooses nothing.
+        """
+        from butlers.chronicler import location_retention_handoff
+
+        async with module._get_pool().acquire() as conn:
+            grants = await location_retention_handoff.ready_grant_payloads(conn)
+        return {"grants": grants}
+
+    # ------------------------------------------------------------------
     # chronicler_day_close_bundle  — Tier-2 bounded assembler
     # ------------------------------------------------------------------
 

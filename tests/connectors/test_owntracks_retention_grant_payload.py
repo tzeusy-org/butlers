@@ -91,22 +91,34 @@ _MODULES = {
 }
 
 
-def test_nothing_offers_or_executes_a_grant_yet() -> None:
-    """Deleting raw fixes is irreversible: both halves stay uncalled until the owner enables it."""
-    callers = [
-        path.relative_to(_ROOT).as_posix()
-        for top in ("src", "roster", "scripts")
-        for path in (_ROOT / top).rglob("*.py")
-        if path not in _MODULES
-        and any(
-            name in path.read_text(encoding="utf-8")
-            for name in (
-                "execute_grant",
-                "ready_grant_payloads",
-                "connectors.owntracks_retention",
-                "owntracks_retention import",
-                "location_retention_handoff",
-            )
-        )
-    ]
-    assert callers == []
+_NEEDLES = (
+    "execute_grant",
+    "run_retention_once",
+    "start_retention_worker",
+    "ready_grant_payloads",
+    "connectors.owntracks_retention",
+    "location_retention_handoff",
+)
+#: The only references allowed outside the two modules: the connector starts the worker
+#: (which starts nothing unless the owner enables it) and Chronicler serves the relay's read.
+_ALLOWED = {
+    "src/butlers/connectors/owntracks.py": {
+        "connectors.owntracks_retention",
+        "start_retention_worker",
+    },
+    "roster/chronicler/modules/__init__.py": {"location_retention_handoff", "ready_grant_payloads"},
+}
+
+
+def test_only_the_flagged_worker_and_the_relay_read_reach_either_half() -> None:
+    """Deleting raw fixes is irreversible: nothing else may offer or execute a grant."""
+    references = {}
+    for top in ("src", "roster", "scripts"):
+        for path in (_ROOT / top).rglob("*.py"):
+            if path in _MODULES:
+                continue
+            text = path.read_text(encoding="utf-8")
+            found = {needle for needle in _NEEDLES if needle in text}
+            if found:
+                references[path.relative_to(_ROOT).as_posix()] = found
+    assert references == _ALLOWED

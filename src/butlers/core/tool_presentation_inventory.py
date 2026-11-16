@@ -7358,6 +7358,30 @@ TOOL_PRESENTATION_INVENTORY = (
         presentable=False,
         categories=ALL_CATEGORIES,
     ),
+    # bu-s11n0s.7 S4b-3b: the service-only grant read the location_retention.grants_ready
+    # named relay reaches for the OwnTracks connector. Ids, digests and cutoffs only.
+    *_declare(
+        "chronicler",
+        "chronicle",
+        "location_retention_grants_ready_service",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=(),
+        selection_bound={},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(
+            "location_retention_grants",
+            "location_retention_grant_items",
+            "location_retention_grant_states",
+        ),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        presentable=False,
+        categories=ALL_CATEGORIES,
+    ),
     *_declare(
         "health",
         "conditions",
