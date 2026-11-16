@@ -334,6 +334,12 @@ a refusal or a malformed reply deletes nothing. No connector reaches a butler's 
 Off unless `OWNTRACKS_RAW_RETENTION_ENABLED=true`, and inert before the connector has a workload
 token.
 
+Before a grant is ready, Chronicler asks Switchboard to forget its `message_inbox` copies of the
+granted fixes through the `location_retention.forget_copies` named relay (bu-s11n0s.7 S4c-3,
+dark). Only `(butlers-up, chronicler)` may call it, with exactly the grant id and its distinct
+OwnTracks logical keys. Switchboard answers it itself (a local relay, no MCP tool) and returns a
+count-only receipt; Chronicler records it and makes the grant ready only when it is `complete`.
+
 ---
 
 ## 9. Observability: Trace Propagation

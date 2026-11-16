@@ -189,6 +189,30 @@ async def test_a_blocked_key_keeps_every_copy(switchboard_pool) -> None:
     assert (await _row(pool, held))["normalized_text"] == _TEXT
 
 
+async def test_a_dead_letter_copy_blocks_its_key(switchboard_pool) -> None:
+    """A dead-letter copy is never purged and this cannot reach it: fail closed."""
+    pool = switchboard_pool
+    safe = await _inbox(pool, _key(1))
+    await pool.execute(
+        """
+        INSERT INTO switchboard.dead_letter_queue (original_request_id, source_table,
+            failure_reason, failure_category, original_payload, request_context)
+        VALUES ($1, 'message_inbox', 'r', 'unknown', $2::jsonb, $3::jsonb)
+        """,
+        uuid4(),
+        {"message_text": _TEXT},
+        {"source_channel": "owntracks", "idempotency_key": _key(1)},
+    )
+    async with pool.acquire() as conn:
+        receipt = await forget_location_copies(conn, uuid4(), [_key(1), _key(2)])
+    assert (receipt.outcome, receipt.blocked_count, receipt.absent_count) == ("blocked", 1, 1)
+    assert (await _row(pool, safe))["normalized_text"] == _TEXT
+    forgotten = await pool.fetch(
+        "SELECT logical_source_key FROM switchboard.location_retention_forgotten_keys"
+    )
+    assert [k["logical_source_key"] for k in forgotten] == [_key(2)]
+
+
 async def test_a_complete_grant_replays_its_receipt(switchboard_pool) -> None:
     pool = switchboard_pool
     await _inbox(pool, _key(1))

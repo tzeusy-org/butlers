@@ -255,7 +255,7 @@ Groundwork for that gate is in place, and still deletes nothing:
     only when it legally follows the history (`unknown`, `reconciled` or `failed` only after
     `ready`; `reconciled` and `failed` exclude each other and end the history). It refuses
     `ready` (`HoldersIncomplete`) unless every required holder has a `complete` receipt (S4c-1,
-    below). Nothing records receipts yet, so no grant can authorize a deletion.
+    below). Receipts are recorded only by the dark holder collector (S4c-3).
 - The connector side of a deletion has somewhere to leave its evidence, still deleting nothing
   (bu-s11n0s.7 S4b-3a, core_342):
   - `connectors.owntracks_retention_batches` is the connector's receipt, one row per grant it
@@ -310,9 +310,9 @@ Groundwork for that gate is in place, and still deletes nothing:
     succeeds; only a later clean run clears it. The outcome is written in its own transaction
     and keeps only the exception class.
   - Raw fixes past the policy cutoff are counted by the first reason that applies:
-    `grant_failed`, `awaiting_deletion`, `awaiting_holders`, `held_open`, `uncovered` (no exact
-    coverage at some adapter's last recorded revision: malformed, refused, `existing_only` miss,
-    pre-coverage) or `awaiting_grant`. Each non-zero category is an owner condition under
+    `grant_failed`, `awaiting_deletion`, `holder_blocked`, `awaiting_holders`, `held_open`,
+    `uncovered` (no exact coverage at some adapter's last recorded revision: malformed, refused,
+    `existing_only` miss, pre-coverage) or `awaiting_grant`. Each non-zero category is an owner condition under
     `chronicler:location-retention-projection-lag` (count and oldest age in hours only).
   - The failure streak, grants that failed reconciliation and ready grants with no receipt after
     24 hours (a connector that keeps refusing a grant leaves it pending forever) are conditions
@@ -330,9 +330,10 @@ Groundwork for that gate is in place, and still deletes nothing:
   - The one required holder is `switchboard.message_inbox`, whose normalized text carries exact
     coordinates. Route copies make its receipt `blocked`. The connector's `filtered_events`
     copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
-  - Nothing writes a receipt yet, so no grant can become ready.
+  - Only the holder collector (S4c-3, below) writes receipts, and only when the job is given
+    a forgetter.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
-  sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`, uncalled):
+  sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`):
   - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its
     `normalized_text` and `raw_payload.payload` carry exact coordinates even at the metadata tier.
     Rows are matched by `source_channel = 'owntracks'` and exact `request_context.idempotency_key`.
@@ -349,6 +350,32 @@ Groundwork for that gate is in place, and still deletes nothing:
     (once per grant; a repeat returns it) or `blocked` (repeats until the block clears).
   - Both tables are append-only by trigger; the runtime role may only read and insert them.
     The downgrade refuses while either holds a row.
+  - A key with any `switchboard.dead_letter_queue` row (by `request_context.idempotency_key`)
+    is blocked too: dead letters are never purged and the forgetter does not reach them. Today
+    only dashboard messages are dead-lettered (bu-s11n0s.7 S4c-3).
+- Chronicler collects Switchboard's receipt and makes a grant ready, still dark (bu-s11n0s.7
+  S4c-3, `location_retention_holders.collect_holder_receipts`):
+  - The retention job, given a forgetter, first asks Switchboard about each prepared grant with
+    rows and no state, least recently asked first (five per run). In production the forgetter
+    is the `location_retention.forget_copies` named relay, which only Chronicler may call and
+    Switchboard answers itself, with no MCP tool behind it.
+  - The reply must be exactly the count-only receipt for that grant's item count. A `complete`
+    one is recorded and the grant becomes `ready`; a `blocked` one is recorded and asked again
+    next run. A refusal, an unreachable relay or a malformed reply records nothing for that
+    grant. The other grants are still asked, reconcile and the lag snapshot still run, and then
+    the run fails, so its failure streak shows it.
+  - Each ask's time is kept in `location_retention_holder_asks` (chronicler_040), written before
+    the ask. "Least recently asked" therefore counts failed asks too, and a grant that keeps
+    failing goes behind the others instead of holding the front of every run.
+  - Without a forgetter (as today: nothing schedules the job) no holder is asked, so no grant
+    becomes ready.
+  - A grant whose holder's latest reading is `blocked` counts its fixes as `holder_blocked` lag,
+    ahead of `awaiting_holders`.
+- The raw-retention promise covers transition and waypoint envelopes only at the metadata
+  ingestion tier (the default; `CONNECTOR_INGESTION_TIER` unset). There their inbox copies hold
+  region or waypoint names and no coordinates. At the full tier their `raw_payload` keeps the
+  OwnTracks body with coordinates, which no grant names because only location fixes reach
+  `connectors.owntracks_points`; withholding those is bu-s11n0s.70 (S4c-5).
 
 ## Implementation Notes
 

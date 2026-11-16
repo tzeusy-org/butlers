@@ -45,6 +45,7 @@ def build_switchboard_relay_route(pool: Any, roster_dir: Path) -> Any:
             memory_daemons=roster_module_daemons("memory", roster_dir),
             catalog_pointer=catalog_pointer_reader(pool),
             owner_chat_spans=owner_chat_spans_reader(pool),
+            location_forget=location_forget_reader(pool),
         )
 
     return build_relay_route(
@@ -66,6 +67,30 @@ def owner_chat_spans_reader(pool: Any) -> Callable[..., Awaitable[Any]]:
         )
 
     return read
+
+
+def location_forget_reader(pool: Any) -> Callable[..., Awaitable[Any]]:
+    """Switchboard's own forgetting for the ``location_retention.forget_copies`` relay.
+
+    One pooled connection; the roster tool runs its own transaction. The reply is the
+    count-only receipt and nothing else.
+    """
+
+    async def forget(grant_id: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+        # Switchboard's tools package is loaded from the roster at runtime.
+        tool = importlib.import_module("butlers.tools.switchboard.location_retention")
+        async with pool.acquire() as conn:
+            receipt = await tool.forget_location_copies(conn, grant_id, keys)
+        return {
+            "outcome": receipt.outcome,
+            "items": receipt.item_count,
+            "forgotten": receipt.forgotten_count,
+            "already_forgotten": receipt.already_forgotten_count,
+            "absent": receipt.absent_count,
+            "blocked": receipt.blocked_count,
+        }
+
+    return forget
 
 
 def relay_dispatch(pool: Any, endpoint: RelayEndpoint) -> Dispatch:

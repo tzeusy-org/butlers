@@ -1,4 +1,4 @@
-"""Switchboard forgets its copies of expired OwnTracks fixes (bu-s11n0s.7, slice S4c-2). Dark.
+"""Switchboard forgets its copies of expired OwnTracks fixes (bu-s11n0s.7, slices S4c-2/3).
 
 Switchboard keeps every accepted OwnTracks envelope in ``message_inbox``; its
 ``normalized_text`` carries the fix's exact coordinates even at the metadata tier. Before
@@ -15,13 +15,17 @@ role (``sw_082``):
   key and lifecycle audit, stays. A row in any other state may still be processing or has been
   routed onward into sessions this cannot reach truthfully, so it is left as it is and its key
   counts as blocked.
+* A key with any ``dead_letter_queue`` row (matched on ``request_context.idempotency_key``) is
+  blocked too: dead letters are never purged and this does not reach them, so it fails closed.
+  Today only dashboard messages are dead-lettered.
 * Every key that is not blocked (including a key with no inbox row) is tombstoned, so the
   ``message_inbox`` insert trigger withholds a later envelope for it.
 * One count-only receipt is appended: ``complete`` when nothing is blocked (once per grant; a
   repeat returns it, ``replayed``), else ``blocked`` (may repeat until the block clears).
 
-It never decides what to forget: the keys come from Chronicler's grant (the relay in S4c-3).
-Nothing calls it yet.
+It never decides what to forget: the keys come from Chronicler's grant. Its one caller is
+Switchboard's ``location_retention.forget_copies`` local relay (S4c-3), which only Chronicler
+may call.
 """
 
 from __future__ import annotations
@@ -51,6 +55,11 @@ FROM switchboard.message_inbox
 WHERE request_context ->> 'source_channel' = 'owntracks'
   AND request_context ->> 'idempotency_key' = ANY($1::text[])
 FOR UPDATE
+"""
+_DEAD_LETTERED = """
+SELECT DISTINCT request_context ->> 'idempotency_key' AS key
+FROM switchboard.dead_letter_queue
+WHERE request_context ->> 'idempotency_key' = ANY($1::text[])
 """
 _WITHHOLD = """
 UPDATE switchboard.message_inbox
@@ -104,7 +113,7 @@ async def forget_location_copies(
             key
             for key, copies in by_key.items()
             if any(not c["forgotten"] and not c["policy_only"] for c in copies)
-        }
+        } | {row["key"] for row in await conn.fetch(_DEAD_LETTERED, keys)}
         pending = [
             row
             for row in rows
@@ -129,7 +138,7 @@ async def forget_location_copies(
             already_forgotten_count=sum(
                 1 for key in by_key if key not in blocked and key not in withheld_now
             ),
-            absent_count=sum(1 for key in keys if key not in by_key),
+            absent_count=sum(1 for key in keys if key not in by_key and key not in blocked),
             blocked_count=len(blocked),
         )
         await conn.execute(

@@ -18,21 +18,22 @@ from butlers.chronicler import location_retention
 pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
-#: The grant module, the reconciler (S4b-4b), the one other module that appends states, and the
-#: retention job (S4b-4c), the one caller of the reconciler.
+#: The grant module, the reconciler (S4b-4b) and the holder collector (S4c-3), the other modules
+#: that append states, and the retention job (S4b-4c), the one caller of both.
 _DEFINING = {
     _ROOT / "src/butlers/chronicler/location_retention_grant.py",
     _ROOT / "src/butlers/chronicler/location_retention_reconcile.py",
+    _ROOT / "src/butlers/chronicler/location_retention_holders.py",
     _ROOT / "src/butlers/chronicler/location_retention_job.py",
 }
 # The entry points by name, and the modules by import path (the grant module's bare name is
 # also the grant tables' prefix, which migrations and docs legitimately mention).
 _GUARDED = re.compile(
     r"\bprepare_retention_grant\b|\bappend_grant_state\b|\breconcile_ready_grants\b"
-    r"|\brecord_holder_receipt\b"
+    r"|\brecord_holder_receipt\b|\bcollect_holder_receipts\b|\brelay_forgetter\b"
     r"|\brun_location_retention_job\b"
-    r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile|job)\b"
-    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile|job)\b"
+    r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile|holders|job)\b"
+    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile|holders|job)\b"
 )
 _SCANNED = ("src", "roster", "scripts")
 _SUFFIXES = {".py", ".toml", ".md", ".yaml", ".yml", ".json", ".sql"}
@@ -62,6 +63,9 @@ def _references() -> list[str]:
         "await record_holder_receipt(conn, grant, holder, outcome='complete')",
         'job_name = "location_retention_job"  # butlers.chronicler.location_retention_job',
         "from butlers.chronicler import location_retention_job as job",
+        "await collect_holder_receipts(conn, forget)",
+        "forget = relay_forgetter(lambda: url)",
+        "from butlers.chronicler import location_retention_holders",
     ],
 )
 def test_the_guard_recognises_a_reference(line: str) -> None:

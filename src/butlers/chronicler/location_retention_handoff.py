@@ -9,7 +9,7 @@ key and v1 content digest, oldest grant first. It is the exact shape
 :func:`butlers.connectors.owntracks_retention.parse_grant` accepts: nothing about coordinates,
 episodes or the owner crosses.
 
-``ready`` is unreachable until holder copies land (S4c), and nothing calls this yet.
+``ready`` is reached only through the dark holder collector (S4c-3).
 """
 
 from __future__ import annotations

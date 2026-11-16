@@ -19,7 +19,11 @@ import asyncpg
 import pytest
 
 from butlers.chronicler import location_retention_job as job
-from butlers.chronicler.location_retention_grant import prepare_retention_grant
+from butlers.chronicler.location_retention_grant import (
+    prepare_retention_grant,
+    record_holder_receipt,
+)
+from butlers.chronicler.location_retention_holders import HoldersUnavailable
 from tests.integration import test_owntracks_retention_grant_integration as _grant_suite
 
 grant_url = _grant_suite.grant_url
@@ -54,6 +58,11 @@ async def _every_category(chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool)
     held = await _insert_point(chronicler_db, 15)
     await _cover(chronicler_db, held, skip="owntracks.place_cluster")
     await _hold(chronicler_db, held, "owntracks.place_cluster")  # held_open
+    blocked = await _prepare(chronicler_db, runtime_db, 25)  # holder_blocked
+    async with runtime_db.acquire() as conn:
+        await record_holder_receipt(
+            conn, blocked, "switchboard.message_inbox", outcome="blocked", receipt={"blocked": 1}
+        )
     await _cover(chronicler_db, await _insert_point(chronicler_db, 20))  # awaiting_grant
     await chronicler_db.execute(
         "INSERT INTO connectors.owntracks_points (idempotency_key, ts, lat, lon, accuracy, "
@@ -89,6 +98,7 @@ async def test_lag_is_counted_by_why_each_overdue_fix_is_still_there(
 
     assert lag.counts == {
         "awaiting_holders": 1,
+        "holder_blocked": 1,
         "awaiting_deletion": 1,
         "uncovered": 1,
         "held_open": 1,
@@ -108,6 +118,7 @@ async def test_the_job_states_lag_and_resolves_it_once_the_fixes_are_gone(
     lag = await _active(chronicler_db, job.LAG_SOURCE)
     assert {category: meta["count"] for category, meta in lag.items()} == {
         "awaiting_holders": 1,
+        "holder_blocked": 1,
         "awaiting_deletion": 1,
         "uncovered": 1,
         "held_open": 1,
@@ -145,7 +156,7 @@ async def test_a_failing_run_is_its_own_condition_and_never_clears_lag(
     failing = await _active(chronicler_db, job.FAILED_SOURCE)
     assert failing["run_failing"]["consecutive_failures"] == 2
     assert failing["run_failing"]["error_class"] == "RuntimeError"
-    assert len(await _active(chronicler_db, job.LAG_SOURCE)) == 5  # not closed by omission
+    assert len(await _active(chronicler_db, job.LAG_SOURCE)) == 6  # not closed by omission
 
     monkeypatch.undo()
     assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
@@ -300,3 +311,88 @@ async def test_a_taken_over_run_stays_failing_until_a_later_clean_run(
 async def test_job_args_are_refused(runtime_db: asyncpg.Pool) -> None:
     with pytest.raises(ValueError):
         await job.run_location_retention_job(runtime_db, {"limit": 5})
+
+
+async def _complete(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+    n = len(keys)
+    return {
+        "outcome": "complete",
+        "items": n,
+        "forgotten": n,
+        "already_forgotten": 0,
+        "absent": 0,
+        "blocked": 0,
+    }
+
+
+async def test_with_a_forgetter_the_job_makes_a_grant_ready_before_reconciling(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    grant = await _prepare(chronicler_db, runtime_db, 0)
+
+    result = await job.run_location_retention_job(runtime_db, forget=_complete)
+
+    assert result["status"] == "ok"
+    assert result["holders"] == {"ready": 1, "blocked": 0}
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", grant
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_deletion": 1}
+
+
+async def test_without_a_forgetter_no_holder_is_asked(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _prepare(chronicler_db, runtime_db, 0)
+
+    result = await job.run_location_retention_job(runtime_db)
+
+    assert result["status"] == "ok"
+    assert "holders" not in result
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_holders": 1}
+
+
+async def test_an_unavailable_holder_fails_the_run_and_keeps_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _prepare(chronicler_db, runtime_db, 0)
+
+    async def unavailable(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+        raise HoldersUnavailable("RelayUnavailable")
+
+    result = await job.run_location_retention_job(runtime_db, forget=unavailable)
+
+    assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
+    failed = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failed["run_failing"]["error_class"] == "HoldersUnavailable"
+
+
+async def test_one_failing_grant_does_not_stall_the_others_reconcile_or_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """The other grants are still asked, reconcile and lag still run, and the run fails."""
+    bad = await _prepare(chronicler_db, runtime_db, 0)
+    good = await _prepare(chronicler_db, runtime_db, 5)
+
+    async def forget(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+        if grant_id == bad:
+            raise HoldersUnavailable("RelayRefused")
+        return await _complete(grant_id, keys)
+
+    result = await job.run_location_retention_job(runtime_db, forget=forget)
+
+    assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
+    states = await chronicler_db.fetch(
+        "SELECT grant_id, state FROM location_retention_grant_states ORDER BY grant_id"
+    )
+    assert [(row["grant_id"], row["state"]) for row in states] == [(good, "ready")]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {
+        "awaiting_holders": 1,
+        "awaiting_deletion": 1,
+    }
+    failed = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failed["run_failing"]["consecutive_failures"] == 1
