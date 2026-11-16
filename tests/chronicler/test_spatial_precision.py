@@ -187,9 +187,17 @@ def test_an_absent_or_unknown_coordinate_stays_unknown() -> None:
         pytest.param({**_MOVEMENT, "start_lon": None}, id="half-a-pair"),
         pytest.param({**_MOVEMENT, "start_lat": "1.23"}, id="not-a-number"),
         pytest.param({**_MOVEMENT, "start_lat": 91.0}, id="out-of-range"),
+        pytest.param({**_PLACE, "meta": {"lat": 1.0}}, id="nested-in-an-object"),
+        pytest.param({**_PLACE, "path": [{"lon": 2.0}]}, id="nested-in-a-list"),
+        pytest.param({**_PLACE, "a": [[{"b": {"geo_latitude": 1.0}}]]}, id="deeply-nested"),
     ],
 )
 def test_a_payload_it_cannot_fully_coarsen_is_refused(payload: dict) -> None:
     # Fail closed: an exact coordinate the scheme does not know must never survive silently.
     with pytest.raises(ValueError):
         coarsen_location_payload(payload)
+
+
+def test_nested_values_without_coordinates_are_kept_as_they_are() -> None:
+    payload = {**_PLACE, "meta": {"name": "home", "tags": ["a", {"kind": "stay"}]}}
+    assert coarsen_location_payload(payload)["meta"] == payload["meta"]
