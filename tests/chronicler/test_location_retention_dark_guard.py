@@ -18,17 +18,20 @@ from butlers.chronicler import location_retention
 pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
-#: The grant module, and the reconciler (S4b-4b), the one other module that appends states.
+#: The grant module, the reconciler (S4b-4b), the one other module that appends states, and the
+#: retention job (S4b-4c), the one caller of the reconciler.
 _DEFINING = {
     _ROOT / "src/butlers/chronicler/location_retention_grant.py",
     _ROOT / "src/butlers/chronicler/location_retention_reconcile.py",
+    _ROOT / "src/butlers/chronicler/location_retention_job.py",
 }
 # The entry points by name, and the modules by import path (the grant module's bare name is
 # also the grant tables' prefix, which migrations and docs legitimately mention).
 _GUARDED = re.compile(
     r"\bprepare_retention_grant\b|\bappend_grant_state\b|\breconcile_ready_grants\b"
-    r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile)\b"
-    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile)\b"
+    r"|\brun_location_retention_job\b"
+    r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile|job)\b"
+    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile|job)\b"
 )
 _SCANNED = ("src", "roster", "scripts")
 _SUFFIXES = {".py", ".toml", ".md", ".yaml", ".yml", ".json", ".sql"}
@@ -54,6 +57,9 @@ def _references() -> list[str]:
         "await append_grant_state(conn, grant, 'ready')",
         "await reconcile_ready_grants(conn)",
         "from butlers.chronicler import location_retention_reconcile",
+        "await run_location_retention_job(pool)",
+        'job_name = "location_retention_job"  # butlers.chronicler.location_retention_job',
+        "from butlers.chronicler import location_retention_job as job",
     ],
 )
 def test_the_guard_recognises_a_reference(line: str) -> None:
