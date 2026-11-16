@@ -77,16 +77,16 @@ async def _tombstone(conn, key: str = _KEY) -> None:
 
 
 @pytest.fixture
-async def pool(db, head_url):
-    pool = await db.open(head_url, max_size=3)
-    await pool.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
-    return pool
+async def events_db(db, head_url):
+    events_db = await db.open(head_url, max_size=3)
+    await events_db.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
+    return events_db
 
 
 @_async
-async def test_a_copy_of_a_forgotten_fix_is_withheld(pool) -> None:
-    await _tombstone(pool)
-    assert await _copy(pool) == {**_ENVELOPE, **_WITHHELD}
+async def test_a_copy_of_a_forgotten_fix_is_withheld(events_db) -> None:
+    await _tombstone(events_db)
+    assert await _copy(events_db) == {**_ENVELOPE, **_WITHHELD}
 
 
 @_async
@@ -100,43 +100,43 @@ async def test_a_copy_of_a_forgotten_fix_is_withheld(pool) -> None:
     ],
     ids=["other-fix", "other-device", "transition", "other-channel"],
 )
-async def test_any_other_copy_is_kept(pool, sender, external_id, channel) -> None:
-    await _tombstone(pool)
-    assert await _copy(pool, sender, external_id, channel) == _ENVELOPE
+async def test_any_other_copy_is_kept(events_db, sender, external_id, channel) -> None:
+    await _tombstone(events_db)
+    assert await _copy(events_db, sender, external_id, channel) == _ENVELOPE
 
 
 @_async
-async def test_a_copy_racing_the_deleter_is_withheld_after_it_commits(pool) -> None:
-    deleter = await pool.acquire()
+async def test_a_copy_racing_the_deleter_is_withheld_after_it_commits(events_db) -> None:
+    deleter = await events_db.acquire()
     try:
         transaction = deleter.transaction()
         await transaction.start()
         await _tombstone(deleter)
-        racing = asyncio.create_task(_copy(pool))
+        racing = asyncio.create_task(_copy(events_db))
         await asyncio.sleep(0.5)
         assert not racing.done()
         await transaction.commit()
         assert await asyncio.wait_for(racing, timeout=10) == {**_ENVELOPE, **_WITHHELD}
     finally:
-        await pool.release(deleter)
+        await events_db.release(deleter)
 
 
 @_async
-async def test_another_connector_does_not_wait_for_the_deleter(pool) -> None:
-    deleter = await pool.acquire()
+async def test_another_connector_does_not_wait_for_the_deleter(events_db) -> None:
+    deleter = await events_db.acquire()
     try:
         async with deleter.transaction():
             await _tombstone(deleter)
-            copy = await asyncio.wait_for(_copy(pool, channel="telegram"), timeout=5)
+            copy = await asyncio.wait_for(_copy(events_db, channel="telegram"), timeout=5)
             assert copy == _ENVELOPE
     finally:
-        await pool.release(deleter)
+        await events_db.release(deleter)
 
 
 @_async
-async def test_the_connector_role_writes_a_withheld_copy(pool) -> None:
-    await _tombstone(pool)
-    async with pool.acquire() as conn, conn.transaction():
+async def test_the_connector_role_writes_a_withheld_copy(events_db) -> None:
+    await _tombstone(events_db)
+    async with events_db.acquire() as conn, conn.transaction():
         await conn.execute("SET LOCAL ROLE connector_writer")
         assert await _copy(conn) == {**_ENVELOPE, **_WITHHELD}
 
