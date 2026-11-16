@@ -262,6 +262,16 @@ Groundwork for that gate is in place, and still deletes nothing:
     skips a duplicate, so a replayed or late webhook cannot restore a forgotten fix. It is keyed
     on the raw logical key, so it holds even for a granted row that never had a point event.
   - Nothing writes these tables yet. The downgrade refuses while either holds a row.
+- Chronicler reconciles each ready grant against what the connector committed, still dark
+  (bu-s11n0s.7 S4b-4b, `location_retention_reconcile.reconcile_ready_grants`, uncalled):
+  - It reads the batch receipt, the tombstones and `connectors.owntracks_points` under its own
+    `SELECT` grants. The connector's reply is never evidence.
+  - With no receipt the grant stays `ready` (pending); nothing re-mints a deletion set.
+  - `reconciled` needs the receipt's item count to equal the grant's, the tombstones to be
+    exactly the grant's items (raw id, logical key, digest), and no granted row present by id
+    or by logical key. Anything else is `failed`. Both receipts are counts only.
+  - States are appended through `append_grant_state`, so a grant another run settled first is
+    skipped.
 
 ## Implementation Notes
 

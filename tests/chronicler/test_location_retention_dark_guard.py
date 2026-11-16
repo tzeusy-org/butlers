@@ -18,13 +18,17 @@ from butlers.chronicler import location_retention
 pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
-_DEFINING = _ROOT / "src/butlers/chronicler/location_retention_grant.py"
-# The two entry points by name, and the module by import path (its bare name is also the grant
-# tables' prefix, which migrations and docs legitimately mention).
+#: The grant module, and the reconciler (S4b-4b), the one other module that appends states.
+_DEFINING = {
+    _ROOT / "src/butlers/chronicler/location_retention_grant.py",
+    _ROOT / "src/butlers/chronicler/location_retention_reconcile.py",
+}
+# The entry points by name, and the modules by import path (the grant module's bare name is
+# also the grant tables' prefix, which migrations and docs legitimately mention).
 _GUARDED = re.compile(
-    r"\bprepare_retention_grant\b|\bappend_grant_state\b"
-    r"|\bbutlers\.chronicler\.location_retention_grant\b"
-    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_grant\b"
+    r"\bprepare_retention_grant\b|\bappend_grant_state\b|\breconcile_ready_grants\b"
+    r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile)\b"
+    r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile)\b"
 )
 _SCANNED = ("src", "roster", "scripts")
 _SUFFIXES = {".py", ".toml", ".md", ".yaml", ".yml", ".json", ".sql"}
@@ -34,7 +38,7 @@ def _references() -> list[str]:
     found = []
     for top in _SCANNED:
         for path in sorted((_ROOT / top).rglob("*")):
-            if path.suffix not in _SUFFIXES or not path.is_file() or path == _DEFINING:
+            if path.suffix not in _SUFFIXES or not path.is_file() or path in _DEFINING:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             found += [f"{path.relative_to(_ROOT)}: {m.group(0)}" for m in _GUARDED.finditer(text)]
@@ -48,6 +52,8 @@ def _references() -> list[str]:
         "from butlers.chronicler import location_retention_grant",
         'importlib.import_module("butlers.chronicler.location_retention_grant")',
         "await append_grant_state(conn, grant, 'ready')",
+        "await reconcile_ready_grants(conn)",
+        "from butlers.chronicler import location_retention_reconcile",
     ],
 )
 def test_the_guard_recognises_a_reference(line: str) -> None:
