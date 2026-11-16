@@ -1,19 +1,22 @@
-"""Raw-expiry preparation stays uncalled until the owner enables it (bu-s11n0s.7 S4b-2).
+"""Raw-expiry preparation has exactly one caller: the owner-switched job (bu-s11n0s.7, .75).
 
 ``prepare_retention_grant`` irreversibly deletes Chronicler location point events and coarsens
-their summaries. Nothing may schedule, expose or call it (no job, scheduled task, MCP tool,
-API route or script) before the owner-enable step, and the same holds for the grant-state
-writer. This guard fails on any reference outside the module that defines them.
+their summaries. Nothing may expose or call it (no MCP tool, API route or script) except the
+hourly ``chronicler_location_retention`` schedule, whose handler reads the owner's switch each
+run; the same holds for the grant-state and holder-receipt writers. This guard fails on any
+reference outside the modules that define them, other than that one registration.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from butlers.chronicler import location_retention
+from butlers.chronicler.location_retention import LocationRetentionPolicy
 
 pytestmark = pytest.mark.unit
 
@@ -35,6 +38,8 @@ _GUARDED = re.compile(
     r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile|holders|job)\b"
     r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile|holders|job)\b"
 )
+#: The one admitted reference: the scheduled-job registry imports the switched handler.
+_ADMITTED = ["src/butlers/scheduled_jobs.py: butlers.chronicler.location_retention_job"]
 _SCANNED = ("src", "roster", "scripts")
 _SUFFIXES = {".py", ".toml", ".md", ".yaml", ".yml", ".json", ".sql"}
 
@@ -72,9 +77,23 @@ def test_the_guard_recognises_a_reference(line: str) -> None:
     assert _GUARDED.search(line)
 
 
-def test_nothing_schedules_exposes_or_calls_raw_expiry_preparation() -> None:
-    assert _references() == []
+def test_only_the_switched_schedule_reaches_raw_expiry_preparation() -> None:
+    assert _references() == _ADMITTED
 
 
-def test_raw_expiry_is_still_declared_not_enforced() -> None:
-    assert location_retention.ENFORCEMENT_STATUS == "not_enforced"
+def test_the_registered_handler_is_the_switched_one() -> None:
+    from butlers.chronicler import location_retention_job as job
+    from butlers.scheduled_jobs import _DETERMINISTIC_SCHEDULE_JOB_REGISTRY
+
+    text = (_ROOT / "src/butlers/scheduled_jobs.py").read_text(encoding="utf-8")
+    assert "import run_scheduled_location_retention" in text
+    assert callable(job.run_scheduled_location_retention)
+    assert "chronicler_location_retention" in _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["chronicler"]
+
+
+@pytest.mark.parametrize(("enforced", "status"), [(False, "not_enforced"), (True, "enforcing")])
+def test_the_status_follows_the_owner_switch(enforced: bool, status: str) -> None:
+    policy = LocationRetentionPolicy(
+        days=30, version=1, updated_at=datetime.now(UTC), updated_by="owner", enforced=enforced
+    )
+    assert location_retention.enforcement_status(policy) == status

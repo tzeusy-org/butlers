@@ -177,3 +177,14 @@ def test_the_api_server_site_admits_only_the_jwks_port_from_both_verifiers() -> 
         assert _egress_to(docs, workload, "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
     # Without the switch the optional site stays unadmitted unless located.
     assert _helm(*_PROFILED).returncode == 0
+
+
+def test_the_owntracks_connector_runs_its_retention_worker() -> None:
+    # bu-s11n0s.75: the worker is on in the chart; Chronicler offers it nothing unless the owner
+    # has turned raw expiry on, and without its relay token it is inert.
+    for docs in (_render(), _render("servicePlaneAuth.enabled=true")):
+        owntracks = _connector_pods(docs)["connector-owntracks"]
+        assert _env(owntracks)["OWNTRACKS_RAW_RETENTION_ENABLED"] == "true"
+        others = _connector_pods(docs)
+        others.pop("connector-owntracks")
+        assert all("OWNTRACKS_RAW_RETENTION_ENABLED" not in _env(pod) for pod in others.values())

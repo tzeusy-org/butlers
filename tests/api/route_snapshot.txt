@@ -649,7 +649,7 @@ OP PUT /api/butlers/{name}/schedules/{schedule_id} 85ab02c17dc9
 OP PUT /api/butlers/{name}/secrets/{key} a5a4aef339a7
 OP PUT /api/butlers/{name}/state/{key} 4d87b05ca5e7
 OP PUT /api/calendar/workspace/primary a9007685c24b
-OP PUT /api/chronicler/location-retention 7603b4dfff84
+OP PUT /api/chronicler/location-retention 47c5de2e80db
 OP PUT /api/cli-auth/{provider}/api-key ab21c009e83a
 OP PUT /api/education/mind-maps/{mind_map_id}/status 8e9578f3bc34
 OP PUT /api/general/projects/{project_id}/charter 7a07ef974e12
@@ -2086,7 +2086,7 @@ SCHEMA LatestMeasurementsResponse 3bac8602f979
 SCHEMA LegModel ed5e1552e26c
 SCHEMA LinkedChatMessage 621df8bbf00d
 SCHEMA LinkedContactSummary ed96b55cb102
-SCHEMA LocationRetentionPolicyResponse a547e3c4c291
+SCHEMA LocationRetentionPolicyResponse f986f3f4948f
 SCHEMA LogLine 3f73f7dfb645
 SCHEMA LogLines 98502f715663
 SCHEMA MCPToolCallRequest cc49886d0aff
@@ -2542,7 +2542,7 @@ SCHEMA UpdateContactRequest fa29cfdef746
 SCHEMA UpdateContactResponse f1376359ddea
 SCHEMA UpdateEntityInfoRequest 0aacb9743c56
 SCHEMA UpdateEntityRequest e833e7ee511e
-SCHEMA UpdateLocationRetentionRequest 24f8b29412ab
+SCHEMA UpdateLocationRetentionRequest 90529c48c5f9
 SCHEMA UpdateRetentionPoliciesRequest ec0050161a2a
 SCHEMA UpdateRetentionPolicyEntry a032908be9e3
 SCHEMA UpdateRoutineRequest e920d2d97967

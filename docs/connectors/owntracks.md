@@ -133,12 +133,29 @@ access accordingly and use SSID/region names that reveal no more than intended.
 The raw-fix retention horizon is declared in Chronicler at
 `GET`/`PUT /api/chronicler/location-retention`. It defaults to 30 days, and the
 owner may shorten it to as little as 1 day; the PUT is owner-only and versioned.
-Raw expiry is **not yet enforced**: the response reports `status: not_enforced`
-until deletion is gated on per-row projection coverage (bu-s11n0s.7). Until
-then, raw fixes are still retained indefinitely. `OWNTRACKS_RETENTION_DAYS`
-governs only the `public.ingestion_events` audit rows.
+Raw expiry is **off until the owner turns it on** (bu-s11n0s.75): the policy's
+`enforced` switch (chronicler_041) defaults to false, and the response reports
+`status: not_enforced` while it is off and `enforcing` while it is on. The owner
+sets it with the same compare-and-set PUT as the horizon (`enforced: true|false`;
+omitted, it is kept), and the change is audited. While it is off, raw fixes are
+retained indefinitely. `OWNTRACKS_RETENTION_DAYS` governs only the
+`public.ingestion_events` audit rows.
 
-Groundwork for that gate is in place, and still deletes nothing:
+- **On.** The hourly `chronicler_location_retention` job prepares a grant from the
+  adapters' current revisions, asks Switchboard to forget its copies (only if the switch, read
+  again just before, is still on), reconciles what the
+  connector executed and states lag. The connector's retention worker (on in the chart)
+  fetches ready grants and deletes exactly their rows.
+- **Off.** Preparation refuses (`EnforcementOff`, writing nothing) and the
+  `location_retention.grants_ready` offer is empty, read in the same statement, so the
+  connector's next fetch deletes nothing. A grant it fetched before the switch went off may
+  still execute. The job only reconciles, measures no lag and withdraws open lag conditions.
+  A missing policy row counts as off.
+- **Smoke.** `scripts/location_retention_smoke.py` (DSN on stdin) prints a read-only,
+  count-only report and exits non-zero on a missing policy, a failing or (while on) stale
+  run, a grant with rows prepared since the switch last changed while off, or a failed grant.
+
+The deletion path, built dark slice by slice and now switched as above:
 
 - Each raw fix carries an immutable retention clock, `retention_at` (core_340): the device
   timestamp, or the server receipt time when the device timestamp is more than 4 hours after
@@ -240,10 +257,10 @@ Groundwork for that gate is in place, and still deletes nothing:
   - A later batch that merges into a stored movement and starts at the same instant keeps the
     stored start and its `spatial_precision_m`/`spatial_scheme` markers, as a tie on the end
     keeps the stored end. A replay cannot write an exact fix back over a coarsened start.
-  - Nothing calls it: no job, schedule, MCP tool, route or script.
+  - Only the switched retention job calls it, and it refuses while the owner's switch is off.
     `tests/chronicler/test_location_retention_dark_guard.py` fails on any reference to
-    `prepare_retention_grant`, `append_grant_state` or the module outside the module itself.
-    Enabling it is an owner act.
+    `prepare_retention_grant`, `append_grant_state` or the retention modules outside them, but
+    the one scheduled-job registration.
   - A grant row stays `prepared`. chronicler_037 adds `chronicler.location_retention_grant_states`,
     where each later state is a new row: `ready` (holder copies read back; deletion may start),
     `unknown` (a deletion's committed receipt could not be read; may repeat), `reconciled` and
@@ -255,7 +272,7 @@ Groundwork for that gate is in place, and still deletes nothing:
     only when it legally follows the history (`unknown`, `reconciled` or `failed` only after
     `ready`; `reconciled` and `failed` exclude each other and end the history). It refuses
     `ready` (`HoldersIncomplete`) unless every required holder has a `complete` receipt (S4c-1,
-    below). Receipts are recorded only by the dark holder collector (S4c-3).
+    below). Receipts are recorded only by the holder collector (S4c-3).
 - The connector side of a deletion has somewhere to leave its evidence, still deleting nothing
   (bu-s11n0s.7 S4b-3a, core_342):
   - `connectors.owntracks_retention_batches` is the connector's receipt, one row per grant it
@@ -306,8 +323,8 @@ Groundwork for that gate is in place, and still deletes nothing:
   - The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (hourly by default,
     `OWNTRACKS_RAW_RETENTION_INTERVAL_S`). An unreachable relay, a refusal, a missing token or
     a malformed reply executes nothing; a grant that no longer matches is skipped.
-- Chronicler reconciles each ready grant against what the connector committed, still dark
-  (bu-s11n0s.7 S4b-4b, `location_retention_reconcile.reconcile_ready_grants`, uncalled):
+- Chronicler reconciles each ready grant against what the connector committed
+  (bu-s11n0s.7 S4b-4b, `location_retention_reconcile.reconcile_ready_grants`):
   - It reads the batch receipt, the tombstones and `connectors.owntracks_points` under its own
     `SELECT` grants. The connector's reply is never evidence.
   - With no receipt the grant stays `ready` (pending); nothing re-mints a deletion set.
@@ -316,8 +333,9 @@ Groundwork for that gate is in place, and still deletes nothing:
     or by logical key. Anything else is `failed`. Both receipts are counts only.
   - States are appended through `append_grant_state`, so a grant another run settled first is
     skipped.
-- A retention job wraps reconciliation and states what is overdue, still dark
-  (bu-s11n0s.7 S4b-4c, `location_retention_job.run_location_retention_job`, unscheduled):
+- A retention job wraps reconciliation and states what is overdue
+  (bu-s11n0s.7 S4b-4c, `location_retention_job.run_location_retention_job`, run hourly by
+  `run_scheduled_location_retention` as above):
   - `chronicler.location_retention_runs` (chronicler_038) holds one run record. `running` commits
     before any work; a run still `running` within 30 minutes makes the next one skip, and an
     older one counts as a failure (`Unfinished`) that stays standing even if the takeover run
@@ -333,8 +351,8 @@ Groundwork for that gate is in place, and still deletes nothing:
     under `chronicler:location-retention-purge-failed`.
   - Lag is reconciled only after a complete read, so a failed run never resolves it. The job
     proposes no insight and sends nothing.
-- A grant becomes `ready` only with every holder's complete receipt, still dark
-  (bu-s11n0s.7 S4c-1, `location_retention_grant.record_holder_receipt`, uncalled):
+- A grant becomes `ready` only with every holder's complete receipt
+  (bu-s11n0s.7 S4c-1, `location_retention_grant.record_holder_receipt`):
   - `chronicler.location_retention_holder_receipts` (chronicler_039, append-only) records what
     Chronicler read back from each holder of a copy derived from granted rows: `complete` at
     most once per grant and holder, or `blocked` (still processing, routed onward, ambiguous),
@@ -378,7 +396,7 @@ Groundwork for that gate is in place, and still deletes nothing:
   - A key with any `switchboard.dead_letter_queue` row (by `request_context.idempotency_key`)
     is blocked too: dead letters are never purged and the forgetter does not reach them. Today
     only dashboard messages are dead-lettered (bu-s11n0s.7 S4c-3).
-- Chronicler collects Switchboard's receipt and makes a grant ready, still dark (bu-s11n0s.7
+- Chronicler collects Switchboard's receipt and makes a grant ready (bu-s11n0s.7
   S4c-3, `location_retention_holders.collect_holder_receipts`):
   - The retention job, given a forgetter, first asks Switchboard about each prepared grant with
     rows and no state, least recently asked first (five per run). In production the forgetter
@@ -392,7 +410,7 @@ Groundwork for that gate is in place, and still deletes nothing:
   - Each ask's time is kept in `location_retention_holder_asks` (chronicler_040), written before
     the ask. "Least recently asked" therefore counts failed asks too, and a grant that keeps
     failing goes behind the others instead of holding the front of every run.
-  - Without a forgetter (as today: nothing schedules the job) no holder is asked, so no grant
+  - Without a forgetter (the job while expiry is off) no holder is asked, so no grant
     becomes ready.
   - A grant whose holder's latest reading is `blocked` counts its fixes as `holder_blocked` lag,
     ahead of `awaiting_holders`.

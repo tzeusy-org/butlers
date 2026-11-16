@@ -6,10 +6,11 @@ canonical typed policy record (``chronicler.location_retention_policy``,
 migration ``chronicler_028``) and the declared semantics later expiry work must
 honour.
 
-This slice declares and versions the horizon only. Raw expiry is not yet
-enforced: deletion must wait for genuine per-row projection coverage, so
-:data:`ENFORCEMENT_STATUS` stays ``"not_enforced"`` until that machinery lands
-and the status must never claim raw evidence was forgotten.
+Raw expiry is off until the owner turns it on: ``enforced`` (migration
+``chronicler_041``, bu-s11n0s.75) defaults to false and is set only through the
+same compare-and-set as the horizon. While it is false Chronicler prepares no
+retention grant and offers none to the connector, so nothing is deleted.
+:func:`enforcement_status` reports the switch, never that evidence was forgotten.
 """
 
 from __future__ import annotations
@@ -36,8 +37,9 @@ RAW_AGE_BASIS = (
 #: Spatial precision the projected summaries keep once their raw fixes expire.
 PRECISION_AFTER_FORGETTING = "approximately 150 m grid cells"
 
-#: Raw expiry is declared but not yet enforced (no deletion path exists yet).
-ENFORCEMENT_STATUS = "not_enforced"
+#: The status while the owner's switch is off (the default) and while it is on.
+NOT_ENFORCED = "not_enforced"
+ENFORCING = "enforcing"
 
 #: Sources whose raw evidence the horizon governs.
 COVERED_SOURCES = (
@@ -59,15 +61,26 @@ class PolicyUnavailable(Exception):
     """The canonical policy row is missing; callers must fail closed."""
 
 
+class EnforcementOff(Exception):
+    """The owner has not turned raw expiry on; nothing may be granted."""
+
+
 @dataclass(frozen=True)
 class LocationRetentionPolicy:
     days: int
     version: int
     updated_at: datetime
     updated_by: str
+    enforced: bool = False
 
 
-_SELECT = "SELECT days, version, updated_at, updated_by FROM location_retention_policy WHERE id = 1"
+def enforcement_status(policy: LocationRetentionPolicy) -> str:
+    """``enforcing`` only while the owner's switch is on."""
+    return ENFORCING if policy.enforced else NOT_ENFORCED
+
+
+_COLUMNS = "days, version, updated_at, updated_by, enforced"
+_SELECT = f"SELECT {_COLUMNS} FROM location_retention_policy WHERE id = 1"
 
 
 def _row_to_policy(row: asyncpg.Record) -> LocationRetentionPolicy:
@@ -76,6 +89,7 @@ def _row_to_policy(row: asyncpg.Record) -> LocationRetentionPolicy:
         version=row["version"],
         updated_at=row["updated_at"],
         updated_by=row["updated_by"],
+        enforced=row["enforced"],
     )
 
 
@@ -93,11 +107,13 @@ async def set_location_retention_policy(
     days: int,
     expected_version: int,
     actor: str,
+    enforced: bool | None = None,
 ) -> LocationRetentionPolicy:
-    """Compare-and-set the horizon; increments ``version`` on success.
+    """Compare-and-set the horizon and, when ``enforced`` is given, the owner's switch.
 
-    Raises :class:`PolicyVersionConflict` when ``expected_version`` is stale and
-    :class:`PolicyUnavailable` when the row is missing. ``days`` outside
+    ``enforced=None`` keeps the switch as stored. Increments ``version`` on
+    success. Raises :class:`PolicyVersionConflict` when ``expected_version`` is
+    stale and :class:`PolicyUnavailable` when the row is missing. ``days`` outside
     ``MIN..MAX`` raises ``ValueError`` before any write.
     """
     if (
@@ -106,6 +122,8 @@ async def set_location_retention_policy(
         or not MIN_RETENTION_DAYS <= days <= MAX_RETENTION_DAYS
     ):
         raise ValueError(f"days must be an integer in {MIN_RETENTION_DAYS}..{MAX_RETENTION_DAYS}")
+    if enforced is not None and not isinstance(enforced, bool):
+        raise ValueError("enforced must be a boolean")
     async with pool.acquire() as conn, conn.transaction():
         current = await conn.fetchrow(_SELECT + " FOR UPDATE")
         if current is None:
@@ -113,13 +131,15 @@ async def set_location_retention_policy(
         if current["version"] != expected_version:
             raise PolicyVersionConflict(_row_to_policy(current))
         row = await conn.fetchrow(
-            """
+            f"""
             UPDATE location_retention_policy
-            SET days = $1, version = version + 1, updated_at = now(), updated_by = $2
+            SET days = $1, version = version + 1, updated_at = now(), updated_by = $2,
+                enforced = COALESCE($3, enforced)
             WHERE id = 1
-            RETURNING days, version, updated_at, updated_by
+            RETURNING {_COLUMNS}
             """,
             days,
             actor,
+            enforced,
         )
     return _row_to_policy(row)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.api.audit_emit import IgnoresCallerAssertedActor
 
@@ -898,8 +898,9 @@ class UpdateRoutineRequest(BaseModel):
 class LocationRetentionPolicyResponse(BaseModel):
     """GET/PUT /api/chronicler/location-retention (bu-s11n0s.7).
 
-    ``status`` is ``not_enforced`` until raw expiry is gated on genuine
-    projection coverage; it never claims raw location evidence was forgotten.
+    ``enforced`` is the owner's switch (off by default, bu-s11n0s.75) and
+    ``status`` follows it: ``enforcing`` only while it is on. It never claims
+    raw location evidence was forgotten.
     """
 
     days: int
@@ -910,7 +911,8 @@ class LocationRetentionPolicyResponse(BaseModel):
     raw_age_basis: str
     precision_after_forgetting: str
     covered_sources: list[str]
-    status: Literal["not_enforced"]
+    enforced: bool
+    status: Literal["not_enforced", "enforcing"]
 
 
 class UpdateLocationRetentionRequest(BaseModel):
@@ -918,12 +920,22 @@ class UpdateLocationRetentionRequest(BaseModel):
 
     Strict: booleans, strings, floats and unknown fields (including any
     caller-asserted actor) are refused; the actor comes from authentication.
+    ``enforced`` turns raw expiry on or off; omitted, the switch is kept. An
+    explicit ``null`` is refused.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     days: int = Field(..., ge=1, le=30)
     expected_version: int = Field(..., ge=1)
+    enforced: bool | None = None
+
+    @field_validator("enforced", mode="before")
+    @classmethod
+    def _no_explicit_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("enforced must be true or false when given")
+        return value
 
 
 __all__ = [

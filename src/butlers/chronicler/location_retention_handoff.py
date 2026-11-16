@@ -1,4 +1,4 @@
-"""What Chronicler offers the OwnTracks connector to delete (bu-s11n0s.7 S4b-3b). Dark.
+"""What Chronicler offers the OwnTracks connector to delete (bu-s11n0s.7 S4b-3b).
 
 :func:`ready_grant_payloads` reads the retention grants that may be executed: a grant with a
 ``ready`` state (holder copies read back) and no ``reconciled`` or ``failed`` one. ``unknown``
@@ -9,7 +9,12 @@ key and v1 content digest, oldest grant first. It is the exact shape
 :func:`butlers.connectors.owntracks_retention.parse_grant` accepts: nothing about coordinates,
 episodes or the owner crosses.
 
-``ready`` is reached only through the dark holder collector (S4c-3).
+``ready`` is reached only through the holder collector (S4c-3).
+
+Nothing is offered unless the owner's switch is on (``location_retention_policy.enforced``,
+bu-s11n0s.75), read in the same statement: switching it off withdraws every ready grant from
+the connector's next fetch, and a missing policy row offers nothing (fail closed). A grant the
+connector already fetched before the switch went off may still execute.
 """
 
 from __future__ import annotations
@@ -22,7 +27,8 @@ DEFAULT_LIMIT = 5
 _READY = """
 SELECT g.id, g.cutoff
 FROM location_retention_grants g
-WHERE EXISTS (
+WHERE EXISTS (SELECT 1 FROM location_retention_policy p WHERE p.id = 1 AND p.enforced)
+  AND EXISTS (
         SELECT 1 FROM location_retention_grant_states s
         WHERE s.grant_id = g.id AND s.state = 'ready'
     )

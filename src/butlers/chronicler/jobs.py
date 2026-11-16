@@ -278,6 +278,11 @@ async def run_project_owntracks_place_cluster(
         job_args,
         supported_fields=("batch_limit", "min_dwell_minutes", "max_gap_minutes"),
     )
+    adapter = _owntracks_place_cluster_adapter(options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+def _owntracks_place_cluster_adapter(options: dict[str, int]) -> OwnTracksPlaceClusterAdapter:
     raw_references = os.environ.get("OWNTRACKS_PLACE_REFERENCES", "")
     try:
         reference_points = parse_place_references(raw_references)
@@ -288,8 +293,7 @@ async def run_project_owntracks_place_cluster(
             exc_info=True,
         )
         reference_points = ()
-    adapter = OwnTracksPlaceClusterAdapter(reference_points=reference_points, **options)
-    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+    return OwnTracksPlaceClusterAdapter(reference_points=reference_points, **options)
 
 
 async def run_project_owntracks_ssid(
@@ -302,6 +306,13 @@ async def run_project_owntracks_ssid(
         job_args,
         supported_fields=("batch_limit", "max_gap_minutes"),
     )
+    adapter = await _owntracks_ssid_adapter(db_pool, options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def _owntracks_ssid_adapter(
+    db_pool: asyncpg.Pool, options: dict[str, int]
+) -> OwnTracksSsidPresenceAdapter:
     raw_mapping = await state_get(db_pool, SSID_PLACE_STATE_KEY)
     try:
         ssid_places = parse_ssid_places(raw_mapping)
@@ -312,8 +323,22 @@ async def run_project_owntracks_ssid(
             exc_info=True,
         )
         ssid_places = {}
-    adapter = OwnTracksSsidPresenceAdapter(ssid_places=ssid_places, **options)
-    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+    return OwnTracksSsidPresenceAdapter(ssid_places=ssid_places, **options)
+
+
+async def owntracks_coverage_revisions(db_pool: asyncpg.Pool) -> dict[str, str]:
+    """Each covered OwnTracks adapter's current config revision, as its scheduled job builds it.
+
+    The schedules pass no ``job_args``, so each adapter is built from the same environment and
+    state its next run reads. Location retention passes these to grant preparation, which
+    refuses them unless they equal each adapter's last recorded run (bu-s11n0s.75).
+    """
+    adapters = (
+        OwnTracksPointAdapter(),
+        _owntracks_place_cluster_adapter({}),
+        await _owntracks_ssid_adapter(db_pool, {}),
+    )
+    return {adapter.source_name: adapter.coverage_revision for adapter in adapters}
 
 
 async def run_project_activitywatch(

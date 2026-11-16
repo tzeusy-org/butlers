@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-from butlers.chronicler.location_retention import PolicyUnavailable
+from butlers.chronicler.location_retention import EnforcementOff, PolicyUnavailable
 from butlers.chronicler.location_retention_grant import (
     GrantStateRefused,
     HoldersIncomplete,
@@ -112,13 +112,14 @@ async def test_a_missing_policy_fails_closed_and_writes_nothing() -> None:
 class _Attempts(_NoPolicy):
     """A connection with a policy row and the given per-adapter attempt revisions."""
 
-    def __init__(self, attempts: dict[str, str]) -> None:
+    def __init__(self, attempts: dict[str, str], *, enforced: bool = True) -> None:
         super().__init__()
         self.attempts = attempts
+        self.enforced = enforced
 
-    async def fetchrow(self, query: str, *args: Any) -> dict[str, int]:
+    async def fetchrow(self, query: str, *args: Any) -> dict[str, Any]:
         self.statements.append(query)
-        return {"days": 30, "version": 1}
+        return {"days": 30, "version": 1, "enforced": self.enforced}
 
     async def fetchval(self, query: str, *args: Any) -> Any:
         self.statements.append(query)
@@ -158,6 +159,15 @@ async def test_matching_attempt_revisions_let_preparation_proceed() -> None:
     grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
     assert grant.item_count == 0
     assert any("INSERT INTO location_retention_grants" in s for s in conn.statements)
+
+
+async def test_preparation_refuses_while_the_owner_has_expiry_off() -> None:
+    """bu-s11n0s.75: the switch is read under the policy lock; off grants and writes nothing."""
+    conn = _Attempts(dict(_REVISIONS), enforced=False)
+    with pytest.raises(EnforcementOff):
+        await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert "enforced" in conn.statements[0] and "FOR SHARE" in conn.statements[0]
+    assert not [s for s in conn.statements if "INSERT" in s.upper() or "advisory" in s]
 
 
 # ── Later grant states (S4b-2: writer exclusivity) ────────────────────────────

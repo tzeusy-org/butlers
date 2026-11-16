@@ -109,3 +109,25 @@ async def test_a_limit_bounds_the_offer(
         assert len(await ready_grant_payloads(conn)) == 2
         with pytest.raises(ValueError):
             await ready_grant_payloads(conn, limit=0)
+
+
+async def test_nothing_is_offered_while_the_owner_has_expiry_off(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """bu-s11n0s.75: turning expiry off withdraws even a ready grant within one connector tick.
+
+    A missing policy row offers nothing either: the offer fails closed.
+    """
+    ready = await _prepared(chronicler_db, runtime_db, 0)
+    await chronicler_db.execute(_STATE, ready.id, "ready")
+    await chronicler_db.execute(_grant_suite.ENFORCE, False)
+    async with runtime_db.acquire() as conn:
+        assert await ready_grant_payloads(conn) == []
+
+    await chronicler_db.execute(_grant_suite.ENFORCE, True)
+    async with runtime_db.acquire() as conn:
+        assert [p["grant_id"] for p in await ready_grant_payloads(conn)] == [str(ready.id)]
+
+    await chronicler_db.execute("DELETE FROM location_retention_policy")
+    async with runtime_db.acquire() as conn:
+        assert await ready_grant_payloads(conn) == []

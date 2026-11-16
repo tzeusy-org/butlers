@@ -14,10 +14,12 @@ granted row or a summary it fed, or that cites nothing yet covers a granted fix,
 regenerate from coarsened data; a cached row over a granted fix whose provenance cannot be read
 fails the whole run.
 
-It is dark: nothing calls :func:`prepare_retention_grant`, :func:`append_grant_state` or
-:func:`record_holder_receipt` (``tests/chronicler/test_location_retention_dark_guard.py``), no
-holder writes a receipt yet, so no grant can become ``ready`` (slice S4c), and
-``location_retention.ENFORCEMENT_STATUS`` stays ``not_enforced``.
+Only the location retention job calls :func:`prepare_retention_grant`,
+:func:`append_grant_state` and :func:`record_holder_receipt`
+(``tests/chronicler/test_location_retention_dark_guard.py``), and preparation refuses with
+:class:`~butlers.chronicler.location_retention.EnforcementOff`, writing nothing, unless the
+owner's switch (``location_retention_policy.enforced``, bu-s11n0s.75) is on under the policy
+lock.
 
 A raw row is granted only when all of these hold, checked in one statement:
 
@@ -60,7 +62,7 @@ from butlers.chronicler.location_forgetting import (
     ForgottenPointEvent,
     record_forgetting,
 )
-from butlers.chronicler.location_retention import PolicyUnavailable
+from butlers.chronicler.location_retention import EnforcementOff, PolicyUnavailable
 from butlers.chronicler.projection_coverage import (
     COVERED_ADAPTERS,
     DISCOVERY_SETTLE,
@@ -87,7 +89,9 @@ __all__ = [
 #: Rows one preparation run grants at most; the rest wait for the next run.
 GRANT_LIMIT = 500
 
-_LOCK_POLICY = "SELECT days, version FROM location_retention_policy WHERE id = 1 FOR SHARE"
+_LOCK_POLICY = (
+    "SELECT days, version, enforced FROM location_retention_policy WHERE id = 1 FOR SHARE"
+)
 _LOCK_ADAPTER = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
 _CUTOFF = "SELECT now() - make_interval(days => $1)"
 _ATTEMPT_REVISIONS = (
@@ -505,7 +509,8 @@ async def prepare_retention_grant(
 
     ``conn`` is a Chronicler connection (not a pool): the run is one transaction. Raises
     ``ValueError`` before touching the database for incomplete or malformed revisions or a bad
-    limit, and :class:`PolicyUnavailable` (writing nothing) when the policy row is missing.
+    limit, :class:`PolicyUnavailable` (writing nothing) when the policy row is missing, and
+    :class:`EnforcementOff` (writing nothing) while the owner has raw expiry off.
     """
     revisions = _checked_revisions(config_revisions)
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -515,6 +520,8 @@ async def prepare_retention_grant(
         policy = await conn.fetchrow(_LOCK_POLICY)
         if policy is None:
             raise PolicyUnavailable("location retention policy row is missing")
+        if not policy["enforced"]:
+            raise EnforcementOff("the owner has raw location expiry off")
         for adapter in revisions:  # source-name order
             await conn.execute(_LOCK_ADAPTER, owntracks_projection_lock_key(adapter))
         # Under the locks, each adapter's last recorded run must be at the revision the caller

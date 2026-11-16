@@ -3920,7 +3920,8 @@ def _location_retention_response(
         raw_age_basis=_location_retention.RAW_AGE_BASIS,
         precision_after_forgetting=_location_retention.PRECISION_AFTER_FORGETTING,
         covered_sources=list(_location_retention.COVERED_SOURCES),
-        status=_location_retention.ENFORCEMENT_STATUS,
+        enforced=policy.enforced,
+        status=_location_retention.enforcement_status(policy),
     )
 
 
@@ -3951,14 +3952,20 @@ async def put_location_retention(
 ) -> LocationRetentionPolicyResponse:
     """Owner sets the raw location horizon (1..30 days) by compare-and-set.
 
-    ``expected_version`` must name the stored version, else 409 with the
-    current policy. The actor is the authenticated owner, never a body field.
+    ``enforced``, when given, turns raw expiry on or off in the same write
+    (bu-s11n0s.75); omitted, the switch is kept. ``expected_version`` must name
+    the stored version, else 409 with the current policy. The actor is the
+    authenticated owner, never a body field.
     """
     actor = authenticated_principal()
     pool = _pool(db)
     try:
         policy = await _location_retention.set_location_retention_policy(
-            pool, days=body.days, expected_version=body.expected_version, actor=actor
+            pool,
+            days=body.days,
+            expected_version=body.expected_version,
+            actor=actor,
+            enforced=body.enforced,
         )
     except _location_retention.PolicyVersionConflict as exc:
         raise HTTPException(
@@ -3978,7 +3985,7 @@ async def put_location_retention(
         operation="location_retention_set",
         method="PUT",
         path="/api/chronicler/location-retention",
-        body={"days": policy.days, "version": policy.version},
+        body={"days": policy.days, "version": policy.version, "enforced": policy.enforced},
         response_status=200,
         request=request,
     )
