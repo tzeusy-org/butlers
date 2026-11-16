@@ -422,6 +422,102 @@ async def test_preparation_forgets_point_events_and_coarsens_every_summary_and_a
     assert after["_trail_state"] == carryover["_trail_state"]
 
 
+async def _cache(
+    target: asyncpg.Pool,
+    key: str,
+    refs: object,
+    *,
+    hours: tuple[int, int] = (-1, 1),
+    superseded: bool = False,
+) -> None:
+    await target.execute(
+        "INSERT INTO tier2_cache (cache_key, start_at, end_at, prose, provenance_refs, "
+        "superseded_at) VALUES ($1, $2, $3, 'You walked from home.', ($4::text)::jsonb, "
+        "CASE WHEN $5 THEN now() END)",
+        key,
+        _T0 + timedelta(hours=hours[0]),
+        _T0 + timedelta(hours=hours[1]),
+        json.dumps(refs),
+        superseded,
+    )
+
+
+async def _cache_keys(target: asyncpg.Pool) -> set[str]:
+    return {row["cache_key"] for row in await target.fetch("SELECT cache_key FROM tier2_cache")}
+
+
+async def test_preparation_deletes_every_cached_prose_that_cites_a_granted_row(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    # Prose cannot be coarsened: a cache row citing a forgotten fix would keep it.
+    await _sources(chronicler_db)
+    granted = await _insert_point(chronicler_db, 0)
+    event = await _point_event(chronicler_db, granted)
+    movement = await _episode(
+        chronicler_db,
+        "owntracks.points",
+        {"start_lat": _EXACT[0], "start_lon": _EXACT[1]},
+        event=event,
+    )
+    await _cover(chronicler_db, granted, episodes={"owntracks.points": movement})
+    point_ref = await chronicler_db.fetchval(
+        "SELECT source_ref FROM point_events WHERE id = $1", event
+    )
+    movement_ref = await chronicler_db.fetchval(
+        "SELECT source_ref FROM episodes WHERE id = $1", movement
+    )
+    await _cache(chronicler_db, "cites-point", ["calendar:x", point_ref], hours=(24, 25))
+    await _cache(chronicler_db, "cites-movement", [movement_ref], hours=(24, 25))
+    await _cache(
+        chronicler_db, "superseded-cites-point", [point_ref], hours=(24, 25), superseded=True
+    )
+    await _cache(chronicler_db, "half-readable-cites-point", [point_ref, 7], hours=(24, 25))
+    await _cache(chronicler_db, "uncited-day-of-the-fix", [])
+    await _cache(chronicler_db, "cites-others-that-day", ["calendar:x"])
+    await _cache(chronicler_db, "uncited-other-day", [], hours=(24, 25))
+
+    async with runtime_db.acquire() as conn:
+        grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+
+    assert grant.item_count == 1
+    assert grant.cache_rows_invalidated == 5
+    assert await _cache_keys(chronicler_db) == {"cites-others-that-day", "uncited-other-day"}
+
+
+@pytest.mark.parametrize(
+    "refs", [{"refs": ["x"]}, ["calendar:x", 7], "connectors.owntracks_points:x"], ids=str
+)
+async def test_a_cache_row_whose_provenance_cannot_be_read_rolls_the_preparation_back(
+    chronicler_db: asyncpg.Pool, refs: object
+) -> None:
+    await _sources(chronicler_db)
+    granted = await _insert_point(chronicler_db, 0)
+    await _cover(chronicler_db, granted)
+    await _cache(chronicler_db, "unreadable", refs)
+
+    async with chronicler_db.acquire() as conn:
+        with pytest.raises(ValueError, match="provenance"):
+            await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+
+    assert await chronicler_db.fetchval("SELECT count(*) FROM location_retention_grants") == 0
+    assert await _cache_keys(chronicler_db) == {"unreadable"}
+
+
+async def test_an_unreadable_cache_row_on_another_day_does_not_block_preparation(
+    chronicler_db: asyncpg.Pool,
+) -> None:
+    await _sources(chronicler_db)
+    granted = await _insert_point(chronicler_db, 0)
+    await _cover(chronicler_db, granted)
+    await _cache(chronicler_db, "unreadable-elsewhere", {"refs": []}, hours=(24, 25))
+
+    async with chronicler_db.acquire() as conn:
+        grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+
+    assert (grant.item_count, grant.cache_rows_invalidated) == (1, 0)
+    assert await _cache_keys(chronicler_db) == {"unreadable-elsewhere"}
+
+
 async def test_a_summary_it_cannot_coarsen_rolls_the_whole_preparation_back(
     chronicler_db: asyncpg.Pool,
 ) -> None:
