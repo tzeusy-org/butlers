@@ -75,7 +75,11 @@ from prometheus_client import Counter
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
@@ -629,6 +633,34 @@ def build_location_normalized_text(
     # In full tier, the SSID would be in payload.raw but not in normalized text
 
     return text
+
+
+#: Why a policy-blocked event's filtered_events row cannot be replayed (bu-s11n0s.7).
+POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked OwnTracks event keeps no coordinates"
+
+
+def build_filtered_location_text(payload: dict[str, Any]) -> str:
+    """Text for a policy-blocked location fix: region names only, never coordinates.
+
+    The fix has no ``owntracks_points`` row, so raw retention cannot reach this copy; it keeps
+    nothing a retention horizon would have to forget.
+    """
+    text = "Location update (blocked by policy; coordinates not kept)"
+    inregions = payload.get("inregions")
+    if inregions and isinstance(inregions, list):
+        text += f" (in: {', '.join(str(r) for r in inregions)})"
+    return text
+
+
+def build_filtered_event_text(payload_type: str, payload: dict[str, Any]) -> str:
+    """Coordinate-free text for any policy-blocked OwnTracks event (names, never lat/lon)."""
+    if payload_type == "location":
+        return build_filtered_location_text(payload)
+    if payload_type == "transition":
+        return build_transition_normalized_text(payload)
+    if payload_type == "waypoints":
+        return build_waypoints_normalized_text(payload)
+    return f"OwnTracks {payload_type} event"
 
 
 def build_transition_normalized_text(payload: dict[str, Any]) -> str:
@@ -1360,6 +1392,20 @@ class OwnTracksConnector:
             if payload_type == "transition":
                 external_event_id = f"{tst}:transition:{body.get('event', 'unknown')}"
 
+            # A blocked event never reaches owntracks_points, so no retention grant can name
+            # it: its row keeps no coordinates and cannot be replayed (bu-s11n0s.7).
+            stored = FilteredEventBuffer.full_payload(
+                channel=_DESCRIPTOR.channel,
+                provider=_DESCRIPTOR.provider,
+                endpoint_identity=device.endpoint_identity,
+                external_event_id=external_event_id,
+                external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
+                observed_at=observed_at,
+                sender_identity=device.endpoint_identity,
+                raw=None,
+                normalized_text=build_filtered_event_text(payload_type, body),
+            )
+            stored[REPLAY_UNAVAILABLE_KEY] = POLICY_FILTERED_NOT_REPLAYABLE
             device.filtered_event_buffer.record(
                 external_message_id=external_event_id,
                 source_channel=_DESCRIPTOR.channel,
@@ -1370,16 +1416,7 @@ class OwnTracksConnector:
                     action=decision.action,
                     rule_type=decision.matched_rule_type or "unknown",
                 ),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=_DESCRIPTOR.channel,
-                    provider=_DESCRIPTOR.provider,
-                    endpoint_identity=device.endpoint_identity,
-                    external_event_id=external_event_id,
-                    external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
-                    observed_at=observed_at,
-                    sender_identity=device.endpoint_identity,
-                    raw=body,
-                ),
+                full_payload=stored,
             )
             return
 
