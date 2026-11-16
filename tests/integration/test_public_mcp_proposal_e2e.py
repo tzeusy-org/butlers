@@ -117,7 +117,11 @@ async def test_proposals_reach_applied_rejected_and_expired(
         received = conn.execute(
             text("SELECT max(received_at) FROM mcp_inbox.proposals")
         ).scalar_one()
-    base = received.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    # Offsets run from the exact receipt instant. Flooring it (to the hour, say) can leave
+    # ``base + FIRST_PASS`` inside the importer's settle window when a proposal lands just
+    # before the boundary, and the first pass would then leave every proposal ``imported``.
+    base = received.astimezone(UTC)
+    assert base + FIRST_PASS - importer.SETTLE >= received
     report = await importer.run_public_mcp_proposal_import(
         primary, now=base + FIRST_PASS, inbox=inbox
     )
