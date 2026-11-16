@@ -331,12 +331,13 @@ grant id, cutoff, and each raw row's id, logical key and v1 digest. The connecto
 row only when its key and recomputed digest still match and it is older than the cutoff, and
 records a tombstone and a receipt in `connectors` in the same transaction. An unreachable relay,
 a refusal or a malformed reply deletes nothing. No connector reaches a butler's MCP server.
-Off unless `OWNTRACKS_RAW_RETENTION_ENABLED=true`, and inert before the connector has a workload
-token.
+The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (set in the chart), is inert
+before the connector has a workload token, and is offered nothing unless the owner has turned
+raw expiry on (`location_retention_policy.enforced`, bu-s11n0s.75).
 
 Before a grant is ready, Chronicler asks Switchboard to forget its `message_inbox` copies of the
-granted fixes through the `location_retention.forget_copies` named relay (bu-s11n0s.7 S4c-3,
-dark). Only `(butlers-up, chronicler)` may call it, with exactly the grant id and its distinct
+granted fixes through the `location_retention.forget_copies` named relay (bu-s11n0s.7 S4c-3;
+only while the owner has raw expiry on). Only `(butlers-up, chronicler)` may call it, with exactly the grant id and its distinct
 OwnTracks logical keys. Switchboard answers it itself (a local relay, no MCP tool) and returns a
 count-only receipt; Chronicler records it and makes the grant ready only when it is `complete`.
 

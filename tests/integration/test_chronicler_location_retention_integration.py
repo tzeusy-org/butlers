@@ -104,3 +104,40 @@ async def test_missing_or_out_of_range_policy_fails_closed(chronicler_pool) -> N
         put = await client.put(_URL, json={"days": 5, "expected_version": 1})
         assert put.status_code == 503
     assert await chronicler_pool.fetchval("SELECT count(*) FROM location_retention_policy") == 0
+
+
+async def test_owner_turns_enforcement_on_and_off_by_compare_and_set(chronicler_pool) -> None:
+    """The owner's single switch (bu-s11n0s.75): off by default, strict bool, audited CAS."""
+    async with _client(chronicler_pool) as client:
+        initial = (await client.get(_URL)).json()
+        assert (initial["enforced"], initial["status"]) == (False, "not_enforced")
+
+        for body in (
+            {"days": 30, "expected_version": 1, "enforced": "true"},
+            {"days": 30, "expected_version": 1, "enforced": 1},
+            {"days": 30, "expected_version": 1, "enforced": None},
+        ):
+            assert (await client.put(_URL, json=body)).status_code == 422, body
+        assert await chronicler_pool.fetchval(_ENFORCED) is False
+
+        on = await client.put(_URL, json={"days": 7, "expected_version": 1, "enforced": True})
+        assert on.status_code == 200, on.text
+        assert (on.json()["enforced"], on.json()["status"], on.json()["days"]) == (
+            True,
+            "enforcing",
+            7,
+        )
+        # A horizon change without the field keeps the switch where it is.
+        kept = await client.put(_URL, json={"days": 5, "expected_version": 2})
+        assert (kept.json()["enforced"], kept.json()["version"]) == (True, 3)
+
+        stale = await client.put(_URL, json={"days": 5, "expected_version": 2, "enforced": False})
+        assert stale.status_code == 409
+        assert await chronicler_pool.fetchval(_ENFORCED) is True
+
+        off = await client.put(_URL, json={"days": 5, "expected_version": 3, "enforced": False})
+        assert (off.json()["enforced"], off.json()["status"]) == (False, "not_enforced")
+    assert await chronicler_pool.fetchval(_ENFORCED) is False
+
+
+_ENFORCED = "SELECT enforced FROM location_retention_policy WHERE id = 1"

@@ -19,7 +19,7 @@ transaction:
 
 States are appended through :func:`~butlers.chronicler.location_retention_grant.append_grant_state`
 under its per-grant lock, so a concurrent run that settled the grant first makes this one skip
-it. Dark: nothing calls :func:`reconcile_ready_grants`
+it. Only the location retention job calls :func:`reconcile_ready_grants`
 (``tests/chronicler/test_location_retention_dark_guard.py``), and no grant can be ``ready``
 before holder copies are recorded (S4c).
 """

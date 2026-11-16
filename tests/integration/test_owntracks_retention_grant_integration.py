@@ -23,6 +23,7 @@ import pytest
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceClusterAdapter
 from butlers.chronicler.adapters.owntracks_ssid import OwnTracksSsidPresenceAdapter
+from butlers.chronicler.location_retention import EnforcementOff
 from butlers.chronicler.location_retention_grant import StaleRevisions, prepare_retention_grant
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS, raw_row_digest_sql
 from butlers.chronicler.spatial_precision import coarsen
@@ -80,7 +81,12 @@ async def _record_runs(target: asyncpg.Pool, revisions: dict[str, str]) -> None:
 async def chronicler_db(db, grant_url: str) -> asyncpg.Pool:
     pool = await db.open(grant_url, schema="chronicler", max_size=5)
     await _record_runs(pool, _REVISIONS)
+    # The owner's switch (bu-s11n0s.75) is on for these suites; off is proved on its own.
+    await pool.execute(ENFORCE, True)
     return pool
+
+
+ENFORCE = "UPDATE location_retention_policy SET enforced = $1 WHERE id = 1"
 
 
 @pytest.fixture
@@ -538,3 +544,19 @@ async def test_a_summary_it_cannot_coarsen_rolls_the_whole_preparation_back(
     assert await chronicler_db.fetchval("SELECT count(*) FROM location_evidence_tombstones") == 0
     assert await chronicler_db.fetchval("SELECT count(*) FROM point_events") == 1
     assert (await _payload(chronicler_db, odd))["start_lat"] == _EXACT[0]
+
+
+async def test_nothing_is_granted_while_the_owner_has_expiry_off(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """bu-s11n0s.75: an eligible row is not granted, and no grant row written, while off."""
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 0))
+    await chronicler_db.execute(ENFORCE, False)
+    async with runtime_db.acquire() as conn:
+        with pytest.raises(EnforcementOff):
+            await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert await chronicler_db.fetchval("SELECT count(*) FROM location_retention_grants") == 0
+    await chronicler_db.execute(ENFORCE, True)
+    async with runtime_db.acquire() as conn:
+        grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
+    assert grant.item_count == 1

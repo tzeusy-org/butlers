@@ -1,4 +1,4 @@
-"""Execute one Chronicler-prepared OwnTracks retention grant (bu-s11n0s.7 S4b-3b). Dark.
+"""Execute one Chronicler-prepared OwnTracks retention grant (bu-s11n0s.7 S4b-3b).
 
 Retention runs in two committed stages. Chronicler prepares a grant and forgets its own copies;
 the connector then deletes the granted raw rows here, under ``connector_writer``, and leaves its
@@ -27,8 +27,8 @@ from Chronicler through the ``location_retention.grants_ready`` named relay (RFC
 presenting the connector's workload token and the ``owntracks`` daemon name, and executes each.
 It fails closed: an unreachable relay, a refusal, a missing token or a malformed reply executes
 nothing, and a grant whose rows no longer match is skipped. It runs only when
-``OWNTRACKS_RAW_RETENTION_ENABLED=true``, which is off by default and stays off until the owner
-enables raw expiry; ``ready`` grants do not exist before holder copies (S4c) anyway.
+``OWNTRACKS_RAW_RETENTION_ENABLED=true`` (off by default; the chart sets it), and Chronicler
+offers no grant unless the owner has turned raw expiry on (bu-s11n0s.75).
 """
 
 from __future__ import annotations

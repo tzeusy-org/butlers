@@ -356,6 +356,10 @@ connectors:
     provider: owntracks
     channel: owntracks
     healthPort: 40086
+    env:
+      # Raw-fix expiry worker (bu-s11n0s.75). It deletes only what Chronicler offers, and
+      # Chronicler offers nothing unless the owner turned expiry on in Settings.
+      OWNTRACKS_RAW_RETENTION_ENABLED: "true"
   activitywatch:
     module: activitywatch
     logSubdir: activitywatch

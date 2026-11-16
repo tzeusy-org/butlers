@@ -58,8 +58,9 @@ Switchboard health endpoint with exponential backoff (up to ~5 minutes).
 **Failure mode**: If the Switchboard is unreachable, connectors block at startup
 and cannot ingest events.
 
-The OwnTracks connector has one more Switchboard dependency, dark until the owner enables raw
-fix expiry (`OWNTRACKS_RAW_RETENTION_ENABLED`, default off): it reads Chronicler's ready
+The OwnTracks connector has one more Switchboard dependency for raw fix expiry
+(`OWNTRACKS_RAW_RETENTION_ENABLED`, on in the chart; Chronicler offers nothing until the owner
+turns expiry on, bu-s11n0s.75): it reads Chronicler's ready
 retention grants through the `location_retention.grants_ready` named relay on the same
 `:41100` listener, with its workload token, and Switchboard forwards to Chronicler. If the
 relay, Switchboard or Chronicler is unavailable, or refuses, nothing is deleted; raw fixes

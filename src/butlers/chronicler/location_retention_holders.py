@@ -1,4 +1,4 @@
-"""Chronicler collects holder receipts and makes grants ready (bu-s11n0s.7 S4c-3). Dark.
+"""Chronicler collects holder receipts and makes grants ready (bu-s11n0s.7 S4c-3).
 
 A prepared grant may become ``ready`` (and so be offered to the connector for deletion) only
 once every holder of a copy derived from its raw rows has forgotten that copy. The one holder
@@ -23,8 +23,9 @@ outage, malformed reply) does not stop the other grants; once they are done, the
 is raised, so the run fails and its failure streak shows it.
 
 In production the forgetter is :func:`relay_forgetter`: the ``location_retention.forget_copies``
-named relay, which Switchboard answers itself. Nothing calls this yet; the retention job takes
-the forgetter as an argument and the owner-enable step supplies it.
+named relay, which Switchboard answers itself. The retention job takes the forgetter as an
+argument; its hourly schedule supplies this one only while the owner has raw expiry on
+(bu-s11n0s.75).
 """
 
 from __future__ import annotations

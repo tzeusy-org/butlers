@@ -2,7 +2,7 @@
 
 ### Requirement: Owner-Declared Location Retention Horizon
 
-The Chronicler API SHALL expose the raw OwnTracks location retention horizon as a single canonical, versioned policy record. The horizon SHALL default to 30 days and SHALL accept only integers from 1 to 30. `GET /api/chronicler/location-retention` SHALL return `days`, `version`, `updated_at`, `min_days`, `max_days`, `raw_age_basis`, `precision_after_forgetting`, `covered_sources` and `status`. `PUT /api/chronicler/location-retention` SHALL require dashboard owner control. It SHALL accept only a strict body of `days` and `expected_version`, SHALL derive the actor from the authenticated principal, and SHALL apply the change by compare-and-set on `version`. A missing policy record SHALL fail closed and SHALL NOT be reported as the default. Until raw expiry is gated on genuine projection coverage, `status` SHALL be `not_enforced` and the API SHALL NOT claim raw location evidence was forgotten.
+The Chronicler API SHALL expose the raw OwnTracks location retention horizon as a single canonical, versioned policy record. The horizon SHALL default to 30 days and SHALL accept only integers from 1 to 30. `GET /api/chronicler/location-retention` SHALL return `days`, `version`, `updated_at`, `min_days`, `max_days`, `raw_age_basis`, `precision_after_forgetting`, `covered_sources`, `enforced` and `status`. `PUT /api/chronicler/location-retention` SHALL require dashboard owner control. It SHALL accept only a strict body of `days`, `expected_version` and an optional boolean `enforced`, SHALL derive the actor from the authenticated principal, and SHALL apply the change by compare-and-set on `version`. A missing policy record SHALL fail closed and SHALL NOT be reported as the default. `enforced` is the owner's single switch for raw expiry (bu-s11n0s.75): it SHALL default to false, SHALL change only through this compare-and-set, and SHALL be kept when a request omits it. `status` SHALL be `enforcing` while `enforced` is true and `not_enforced` otherwise, and the API SHALL NOT claim raw location evidence was forgotten. While `enforced` is false Chronicler SHALL prepare no retention grant and SHALL offer none to the connector.
 
 ID: REQ-chronicler-api-018
 Source: bu-s11n0s.7 (run16 #7); openspec/changes/enforce-owntracks-location-retention/proposal.md
@@ -11,7 +11,14 @@ Scope: v1-mandatory
 #### Scenario: Default horizon is declared but not yet enforced
 
 - **WHEN** the owner reads the policy on a freshly migrated database
-- **THEN** the response SHALL report `days = 30`, `version = 1`, bounds 1..30 and `status = not_enforced`
+- **THEN** the response SHALL report `days = 30`, `version = 1`, bounds 1..30, `enforced = false` and `status = not_enforced`
+
+#### Scenario: Owner turns raw expiry on and off
+
+- **WHEN** the authenticated owner sends `enforced = true` with the current `expected_version`
+- **THEN** the response SHALL report `enforced = true` and `status = enforcing`, and `version` SHALL increase by one
+- **AND** a later request that omits `enforced` SHALL keep it, and a request carrying `enforced = false` SHALL turn it off, after which no ready grant SHALL be offered to the connector
+- **AND** a non-boolean or `null` `enforced` SHALL be refused with 422 and SHALL write nothing
 
 #### Scenario: Owner shortens the horizon by compare-and-set
 

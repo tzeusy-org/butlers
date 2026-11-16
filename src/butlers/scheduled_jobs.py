@@ -1832,6 +1832,16 @@ async def _run_chronicler_gap_interview_job(
     return await run_gap_interview_job(pool, job_args, **store_kwargs)
 
 
+async def _run_chronicler_location_retention_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Raw location expiry, hourly; only reconciles unless the owner turned it on (bu-s11n0s.75)."""
+    from butlers.chronicler.location_retention_job import run_scheduled_location_retention
+
+    return await run_scheduled_location_retention(pool, job_args)
+
+
 async def _run_chronicler_project_sessions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2365,6 +2375,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "chronicler_gap_interview": _run_chronicler_gap_interview_job,
+            "chronicler_location_retention": _run_chronicler_location_retention_job,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,

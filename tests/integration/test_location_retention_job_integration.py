@@ -396,3 +396,133 @@ async def test_one_failing_grant_does_not_stall_the_others_reconcile_or_lag(
     }
     failed = await _active(chronicler_db, job.FAILED_SOURCE)
     assert failed["run_failing"]["consecutive_failures"] == 1
+
+
+# ── The scheduled job: the owner's switch decides what runs (bu-s11n0s.75) ─────────────────
+
+
+async def _current(pool: asyncpg.Pool) -> dict[str, str]:
+    return dict(_REVISIONS)
+
+
+async def _grant_count(target: asyncpg.Pool) -> int:
+    return await target.fetchval("SELECT count(*) FROM location_retention_grants")
+
+
+async def test_switched_on_the_scheduled_job_prepares_asks_and_reconciles(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 0))
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=_current, forget=_complete
+    )
+
+    assert (result["status"], result["enforced"]) == ("ok", True)
+    assert result["prepared"]["items"] == 1
+    assert result["holders"] == {"ready": 1, "blocked": 0}
+    grant = UUID(result["prepared"]["grant_id"])
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", grant
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_deletion": 1}
+
+
+async def test_switched_off_the_scheduled_job_only_reconciles(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """Off: no grant is prepared, no holder asked, no revision read; lag is not stated."""
+    await _prepare(chronicler_db, runtime_db, 0)
+    await job.run_location_retention_job(runtime_db)
+    assert await _active(chronicler_db, job.LAG_SOURCE)
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 5))
+    await chronicler_db.execute(_grant_suite.ENFORCE, False)
+    before = await _grant_count(chronicler_db)
+
+    async def untouched(*args):
+        raise AssertionError("called while expiry is off")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=untouched, forget=untouched
+    )
+
+    assert (result["status"], result["enforced"], result["reconciled"]) == ("ok", False, 0)
+    assert "prepared" not in result and "holders" not in result
+    assert await _grant_count(chronicler_db) == before
+    # Lag measures expiry the owner turned off; the open conditions are withdrawn.
+    assert await _active(chronicler_db, job.LAG_SOURCE) == {}
+
+
+async def test_a_missing_policy_row_counts_as_off(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await chronicler_db.execute("DELETE FROM location_retention_policy")
+
+    async def untouched(*args):
+        raise AssertionError("called without a policy")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=untouched, forget=untouched
+    )
+    assert (result["status"], result["enforced"]) == ("ok", False)
+
+
+async def test_a_failed_preparation_fails_the_run_but_holders_and_reconcile_still_run(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    pending = await _prepare(chronicler_db, runtime_db, 0)
+
+    async def stale(pool: asyncpg.Pool) -> dict[str, str]:
+        return {**_REVISIONS, "owntracks.points": "v1:" + "d" * 64}
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=stale, forget=_complete
+    )
+
+    assert (result["status"], result["error_class"]) == ("failed", "StaleRevisions")
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", pending
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    assert await _grant_count(chronicler_db) == 1
+
+
+async def test_the_scheduled_job_takes_no_job_args(runtime_db: asyncpg.Pool) -> None:
+    with pytest.raises(ValueError):
+        await job.run_scheduled_location_retention(runtime_db, {"limit": 5})
+
+
+def _smoke_script():
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "location_retention_smoke.py"
+    spec = importlib.util.spec_from_file_location("location_retention_smoke", script)
+    assert spec is not None and spec.loader is not None
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    return smoke
+
+
+async def test_the_smoke_check_reads_a_healthy_switched_on_state(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """scripts/location_retention_smoke.py: its queries run read-only and see the run."""
+    smoke = _smoke_script()
+
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 0))
+    await job.run_scheduled_location_retention(runtime_db, revisions=_current, forget=_complete)
+    async with chronicler_db.acquire() as conn:
+        await conn.execute("SET default_transaction_read_only = on")
+        try:
+            report = await smoke.collect(conn)
+        finally:
+            await conn.execute("RESET default_transaction_read_only")
+
+    assert smoke.problems(report) == []
+    assert report["policy"]["enforced"] is True
+    assert report["grants"]["ready"] == {"grants": 1, "items": 1}
+    assert report["overdue_raw_fixes"] == 1
+    assert report["run"]["last_outcome"] == "succeeded"

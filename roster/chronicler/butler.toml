@@ -76,6 +76,14 @@ cron = "*/30 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_project_owntracks_ssid"
 
+# Raw OwnTracks expiry (bu-s11n0s.75): prepares, asks holders and reconciles only while the
+# owner's switch (location_retention_policy.enforced) is on; otherwise it only reconciles.
+[[butler.schedule]]
+name = "chronicler_location_retention"
+cron = "17 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_location_retention"
+
 [[butler.schedule]]
 name = "chronicler_project_activitywatch"
 cron = "*/15 * * * *"
