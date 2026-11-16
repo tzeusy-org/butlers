@@ -14,9 +14,9 @@ granted row or a summary it fed, or that cites nothing yet covers a granted fix,
 regenerate from coarsened data; a cached row over a granted fix whose provenance cannot be read
 fails the whole run.
 
-It is dark: nothing calls :func:`prepare_retention_grant` or :func:`append_grant_state`
-(``tests/chronicler/test_location_retention_dark_guard.py``), the connector deletes nothing,
-no grant can become ``ready`` until holder copies are recorded (slice S4c), and
+It is dark: nothing calls :func:`prepare_retention_grant`, :func:`append_grant_state` or
+:func:`record_holder_receipt` (``tests/chronicler/test_location_retention_dark_guard.py``), no
+holder writes a receipt yet, so no grant can become ``ready`` (slice S4c), and
 ``location_retention.ENFORCEMENT_STATUS`` stays ``not_enforced``.
 
 A raw row is granted only when all of these hold, checked in one statement:
@@ -75,9 +75,11 @@ __all__ = [
     "GRANT_STATES",
     "GrantStateRefused",
     "HoldersIncomplete",
+    "REQUIRED_HOLDERS",
     "PreparedGrant",
     "StaleRevisions",
     "append_grant_state",
+    "record_holder_receipt",
     "check_grant_transition",
     "prepare_retention_grant",
 ]
@@ -359,7 +361,65 @@ class GrantStateRefused(ValueError):
 
 
 class HoldersIncomplete(GrantStateRefused):
-    """A grant becomes ready only with every holder copy read back (slice S4c)."""
+    """A grant becomes ready only with every holder's complete receipt (slice S4c)."""
+
+
+# ── Holder receipts (chronicler_039) ──────────────────────────────────────────
+
+#: Every holder of copies derived from granted raw rows, outside Chronicler's own tables (which
+#: preparation already forgot). Switchboard's inbox keeps each envelope's normalized text, which
+#: carries exact coordinates; its receipt is ``blocked`` while a copy is still processing or was
+#: routed onward. The connector's own ``filtered_events`` copies are forgotten in the deletion
+#: transaction itself, so they are not a holder here.
+REQUIRED_HOLDERS = ("switchboard.message_inbox",)
+HOLDER_OUTCOMES = ("complete", "blocked")
+
+_HOLDER_COMPLETE = (
+    "SELECT holder FROM location_retention_holder_receipts "
+    "WHERE grant_id = $1 AND outcome = 'complete'"
+)
+_INSERT_HOLDER_RECEIPT = (
+    "INSERT INTO location_retention_holder_receipts (grant_id, holder, outcome, receipt) "
+    "VALUES ($1, $2, $3, ($4::text)::jsonb)"
+)
+
+
+async def record_holder_receipt(
+    conn: Any,
+    grant_id: UUID,
+    holder: str,
+    *,
+    outcome: str,
+    receipt: Mapping[str, Any] | None = None,
+) -> None:
+    """Append what Chronicler read back from ``holder`` for a grant not yet ready.
+
+    ``complete`` at most once per grant and holder; ``blocked`` may repeat and never counts.
+    Raises ``ValueError`` for an unknown holder or outcome or a receipt that is not count-only,
+    and :class:`GrantStateRefused` for a missing or already-ready grant or a second complete,
+    writing nothing.
+    """
+    if holder not in REQUIRED_HOLDERS:
+        raise ValueError(f"not a retention holder: {holder!r}")
+    if outcome not in HOLDER_OUTCOMES:
+        raise ValueError(f"not a holder outcome: {outcome!r}")
+    checked = _checked_receipt(receipt)
+    async with conn.transaction():
+        await conn.execute(_LOCK_GRANT, f"chronicler.retention_grant:{grant_id}")
+        if not await conn.fetchval(_GRANT_EXISTS, grant_id):
+            raise GrantStateRefused("no such grant")
+        if [row["state"] for row in await conn.fetch(_GRANT_HISTORY, grant_id)]:
+            raise GrantStateRefused("the grant is already ready")
+        complete = {row["holder"] for row in await conn.fetch(_HOLDER_COMPLETE, grant_id)}
+        if outcome == "complete" and holder in complete:
+            raise GrantStateRefused(f"{holder} already completed this grant")
+        await conn.execute(
+            _INSERT_HOLDER_RECEIPT,
+            grant_id,
+            holder,
+            outcome,
+            json.dumps(checked, sort_keys=True),
+        )
 
 
 def check_grant_transition(history: Sequence[str], state: str) -> None:
@@ -403,13 +463,12 @@ async def append_grant_state(
 ) -> None:
     """Append ``state`` to the grant's history, under a per-grant lock, if it may follow.
 
-    ``ready`` is refused (:class:`HoldersIncomplete`) until slice S4c records holder copies, so
-    no grant can authorize a deletion yet. Raises :class:`GrantStateRefused` for a missing grant
-    or an illegal transition, writing nothing.
+    ``ready`` is refused (:class:`HoldersIncomplete`) unless every holder in
+    :data:`REQUIRED_HOLDERS` has a complete receipt for this grant, read under the same lock.
+    Raises :class:`GrantStateRefused` for a missing grant or an illegal transition, writing
+    nothing.
     """
     checked = _checked_receipt(receipt)
-    if state == "ready":
-        raise HoldersIncomplete("holder copies are not recorded yet (slice S4c)")
     if state not in GRANT_STATES:
         raise GrantStateRefused(f"not a grant state: {state!r}")
     async with conn.transaction():
@@ -418,6 +477,10 @@ async def append_grant_state(
             raise GrantStateRefused("no such grant")
         history = [row["state"] for row in await conn.fetch(_GRANT_HISTORY, grant_id)]
         check_grant_transition(history, state)
+        if state == "ready":
+            complete = {row["holder"] for row in await conn.fetch(_HOLDER_COMPLETE, grant_id)}
+            if missing := sorted(set(REQUIRED_HOLDERS) - complete):
+                raise HoldersIncomplete(f"no complete receipt from {', '.join(missing)}")
         await conn.execute(_INSERT_STATE, grant_id, state, json.dumps(checked, sort_keys=True))
 
 

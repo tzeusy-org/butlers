@@ -319,6 +319,16 @@ Groundwork for that gate is in place, and still deletes nothing:
     under `chronicler:location-retention-purge-failed`.
   - Lag is reconciled only after a complete read, so a failed run never resolves it. The job
     proposes no insight and sends nothing.
+- A grant becomes `ready` only with every holder's complete receipt, still dark
+  (bu-s11n0s.7 S4c-1, `location_retention_grant.record_holder_receipt`, uncalled):
+  - `chronicler.location_retention_holder_receipts` (chronicler_039, append-only) records what
+    Chronicler read back from each holder of a copy derived from granted rows: `complete` at
+    most once per grant and holder, or `blocked` (still processing, routed onward, ambiguous),
+    which may repeat and never counts. Receipts are counts only and stop once the grant is ready.
+  - The one required holder is `switchboard.message_inbox`, whose normalized text carries exact
+    coordinates. Route copies make its receipt `blocked`. The connector's `filtered_events`
+    copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
+  - Nothing writes a receipt yet, so no grant can become ready.
 
 ## Implementation Notes
 
