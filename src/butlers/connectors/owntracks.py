@@ -635,8 +635,8 @@ def build_location_normalized_text(
     return text
 
 
-#: Why a policy-blocked location's filtered_events row cannot be replayed (bu-s11n0s.7).
-POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked location keeps no coordinates"
+#: Why a policy-blocked event's filtered_events row cannot be replayed (bu-s11n0s.7).
+POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked OwnTracks event keeps no coordinates"
 
 
 def build_filtered_location_text(payload: dict[str, Any]) -> str:
@@ -650,6 +650,17 @@ def build_filtered_location_text(payload: dict[str, Any]) -> str:
     if inregions and isinstance(inregions, list):
         text += f" (in: {', '.join(str(r) for r in inregions)})"
     return text
+
+
+def build_filtered_event_text(payload_type: str, payload: dict[str, Any]) -> str:
+    """Coordinate-free text for any policy-blocked OwnTracks event (names, never lat/lon)."""
+    if payload_type == "location":
+        return build_filtered_location_text(payload)
+    if payload_type == "transition":
+        return build_transition_normalized_text(payload)
+    if payload_type == "waypoints":
+        return build_waypoints_normalized_text(payload)
+    return f"OwnTracks {payload_type} event"
 
 
 def build_transition_normalized_text(payload: dict[str, Any]) -> str:
@@ -1381,9 +1392,8 @@ class OwnTracksConnector:
             if payload_type == "transition":
                 external_event_id = f"{tst}:transition:{body.get('event', 'unknown')}"
 
-            # A blocked location never reaches owntracks_points, so no retention grant can
-            # name it: its row keeps no coordinates and cannot be replayed (bu-s11n0s.7).
-            is_location = payload_type == "location"
+            # A blocked event never reaches owntracks_points, so no retention grant can name
+            # it: its row keeps no coordinates and cannot be replayed (bu-s11n0s.7).
             stored = FilteredEventBuffer.full_payload(
                 channel=_DESCRIPTOR.channel,
                 provider=_DESCRIPTOR.provider,
@@ -1392,11 +1402,10 @@ class OwnTracksConnector:
                 external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
                 observed_at=observed_at,
                 sender_identity=device.endpoint_identity,
-                raw=None if is_location else body,
-                normalized_text=build_filtered_location_text(body) if is_location else None,
+                raw=None,
+                normalized_text=build_filtered_event_text(payload_type, body),
             )
-            if is_location:
-                stored[REPLAY_UNAVAILABLE_KEY] = POLICY_FILTERED_NOT_REPLAYABLE
+            stored[REPLAY_UNAVAILABLE_KEY] = POLICY_FILTERED_NOT_REPLAYABLE
             device.filtered_event_buffer.record(
                 external_message_id=external_event_id,
                 source_channel=_DESCRIPTOR.channel,

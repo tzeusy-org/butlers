@@ -332,17 +332,17 @@ Groundwork for that gate is in place, and still deletes nothing:
     copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
   - Only the holder collector (S4c-3, below) writes receipts, and only when the job is given
     a forgetter.
-- A location fix the connector's ingestion policy blocks keeps no coordinates (bu-s11n0s.7):
+- An OwnTracks event the connector's ingestion policy blocks keeps no coordinates
+  (bu-s11n0s.73):
   - It returns before `owntracks_points`, so no retention grant can name it, yet its
     `connectors.filtered_events` row lives for twelve months. The row therefore stores
-    `payload.raw = null` and a `normalized_text` naming only the regions the device reported
-    (`build_filtered_location_text`); the device and fix time stay in `sender_identity` and
+    `payload.raw = null` and coordinate-free `normalized_text` (`build_filtered_event_text`): the
+    reported regions for a location, the region and direction for a transition, the waypoint
+    names for a waypoints sync. The device and event time stay in `sender_identity` and
     `external_message_id`, so the filter audit still counts it.
-  - Without its body the fix cannot be replayed, so the row carries `replay_unavailable` and a
-    replay request ends `replay_failed` with `not replayable: a policy-blocked location keeps no
-    coordinates`. Rows recorded before this change keep their raw body until the twelve-month
-    partition drop.
-  - Blocked transition and waypoints events are unchanged: they keep their raw body.
+  - Without its body the event cannot be replayed, so the row carries `replay_unavailable` and a
+    replay request ends `replay_failed` with `not replayable: a policy-blocked OwnTracks event
+    keeps no coordinates`.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
   sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`):
   - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its

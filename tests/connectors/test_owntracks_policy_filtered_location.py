@@ -1,4 +1,4 @@
-"""A policy-blocked OwnTracks location fix keeps no coordinates (bu-s11n0s.7).
+"""A policy-blocked OwnTracks event keeps no coordinates (bu-s11n0s.73).
 
 A fix the connector's ingestion policy blocks never reaches ``connectors.owntracks_points``, so
 no retention grant can name it, and ``connectors.filtered_events`` keeps its row for twelve
@@ -71,6 +71,52 @@ async def test_a_blocked_location_keeps_no_coordinates() -> None:
 async def test_a_blocked_location_is_marked_not_replayable() -> None:
     row = await _blocked(_FIX)
     assert row["full_payload"][REPLAY_UNAVAILABLE_KEY] == POLICY_FILTERED_NOT_REPLAYABLE
+
+
+_TRANSITION = {
+    "_type": "transition",
+    "tst": 1_700_000_100,
+    "tid": "a1",
+    "event": "enter",
+    "desc": "Office",
+    "lat": 1.352083,
+    "lon": 103.819836,
+    "acc": 12,
+    "wtst": 1_600_000_000,
+    "t": "c",
+}
+_WAYPOINTS = {
+    "_type": "waypoints",
+    "tst": 1_700_000_200,
+    "tid": "a1",
+    "waypoints": [
+        {"_type": "waypoint", "desc": "Home", "lat": 1.352083, "lon": 103.819836, "rad": 50},
+        {"_type": "waypoint", "desc": "Office", "lat": 1.290270, "lon": 103.851959, "rad": 80},
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "external_id", "names"),
+    [
+        (_TRANSITION, "1700000100:transition:enter", ["Office"]),
+        (_WAYPOINTS, "1700000200:waypoints", ["Home", "Office"]),
+    ],
+    ids=["transition", "waypoints"],
+)
+async def test_a_blocked_transition_or_waypoints_keeps_no_coordinates(
+    body, external_id, names
+) -> None:
+    row = await _blocked(body)
+    stored = row["full_payload"]
+    assert stored["payload"]["raw"] is None
+    assert stored[REPLAY_UNAVAILABLE_KEY] == POLICY_FILTERED_NOT_REPLAYABLE
+    serialized = json.dumps(row)
+    for value in ("1.352", "103.81", "1.290", "103.85"):
+        assert value not in serialized
+    for name in names:
+        assert name in stored["payload"]["normalized_text"]
+    assert row["external_message_id"] == external_id
 
 
 async def test_a_blocked_location_without_regions_still_has_text() -> None:
