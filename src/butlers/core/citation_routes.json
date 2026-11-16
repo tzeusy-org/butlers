@@ -32,6 +32,7 @@
     {"path": "/settings/models"},
     {"path": "/settings/projections"},
     {"path": "/settings/public-mcp"},
+    {"path": "/settings/location-retention"},
     {"path": "/entities/index", "query": {"has": {"values": ["contact"]}}},
     {"path": "/entities/concentration"},
     {"path": "/entities/circles"},
