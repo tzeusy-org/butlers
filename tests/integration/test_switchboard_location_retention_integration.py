@@ -68,7 +68,7 @@ async def _inbox(
             "idempotency_key": key,
             "dedupe_key": f"idem:{key}:{copy}",
             # sha256(normalized_text:sender)[:16]: brute-forceable back to the fix.
-            "content_hash_key": "0123456789abcdef",
+            "content_hash_key": "hash-of-text-and-sender",
         },
         {
             "source": {"channel": channel},
