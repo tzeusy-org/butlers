@@ -25,6 +25,7 @@ import SettingsPermissionsPage from "@/pages/SettingsPermissionsPage";
 import SettingsPublicMcpPage from "@/pages/SettingsPublicMcpPage";
 import SettingsModelsPage from "@/pages/SettingsModelsPage";
 import SettingsProjectionsPage from "@/pages/SettingsProjectionsPage";
+import SettingsReachPage from "@/pages/SettingsReachPage";
 import { EntitiesIndexPage } from "@/components/relationship/EntitiesIndexPage";
 import ConcentrationPage from "@/components/relationship/ConcentrationPage";
 import CirclesPage from "@/components/relationship/CirclesPage";
@@ -41,6 +42,7 @@ export const ROUTE_AXE_CASES = [
   ["/health/conditions", ConditionsPage], ["/health/symptoms", SymptomsPage], ["/health/meals", MealsPage],
   ["/health/research", ResearchPage], ["/settings/permissions", SettingsPermissionsPage], ["/settings/models", SettingsModelsPage],
   ["/settings/projections", SettingsProjectionsPage],
+  ["/settings/reach", SettingsReachPage],
   ["/settings/public-mcp", SettingsPublicMcpPage],
   ["/entities/index", EntitiesIndexPage], ["/entities/concentration", ConcentrationPage], ["/entities/circles", CirclesPage],
   ["/entities/index?has=contact", EntitiesIndexPage],

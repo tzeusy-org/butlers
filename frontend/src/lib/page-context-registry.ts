@@ -77,6 +77,7 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   // route alone is useful grounding, but query params/resource detail are not.
   "/settings/permissions": { policy: "none", summary: "Permissions" },
   "/settings/projections": { policy: "none", summary: "Projections" },
+  "/settings/reach": { policy: "none", summary: "Reach" },
   "/settings/public-mcp": { policy: "none", summary: "Public MCP" },
   "/settings/models": { policy: "ref-only", summary: "Models" },
 

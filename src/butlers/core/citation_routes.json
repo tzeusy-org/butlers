@@ -31,6 +31,7 @@
     {"path": "/settings/permissions"},
     {"path": "/settings/models"},
     {"path": "/settings/projections"},
+    {"path": "/settings/reach"},
     {"path": "/settings/public-mcp"},
     {"path": "/entities/index", "query": {"has": {"values": ["contact"]}}},
     {"path": "/entities/concentration"},
