@@ -394,10 +394,10 @@ async def record_holder_receipt(
 ) -> None:
     """Append what Chronicler read back from ``holder`` for a grant not yet ready.
 
-    ``complete`` at most once per grant and holder; ``blocked`` may repeat and never counts.
-    Raises ``ValueError`` for an unknown holder or outcome or a receipt that is not count-only,
-    and :class:`GrantStateRefused` for a missing or already-ready grant or a second complete,
-    writing nothing.
+    ``complete`` at most once per grant and holder, and nothing after it; ``blocked`` may repeat
+    until then and never counts. Raises ``ValueError`` for an unknown holder or outcome or a
+    receipt that is not count-only, and :class:`GrantStateRefused` for a missing or
+    already-ready grant or any receipt from a holder that already completed, writing nothing.
     """
     if holder not in REQUIRED_HOLDERS:
         raise ValueError(f"not a retention holder: {holder!r}")
@@ -411,7 +411,9 @@ async def record_holder_receipt(
         if [row["state"] for row in await conn.fetch(_GRANT_HISTORY, grant_id)]:
             raise GrantStateRefused("the grant is already ready")
         complete = {row["holder"] for row in await conn.fetch(_HOLDER_COMPLETE, grant_id)}
-        if outcome == "complete" and holder in complete:
+        # Any later reading from a completed holder is refused, so ready never rests on a
+        # complete that a newer blocked reading contradicts.
+        if holder in complete:
             raise GrantStateRefused(f"{holder} already completed this grant")
         await conn.execute(
             _INSERT_HOLDER_RECEIPT,

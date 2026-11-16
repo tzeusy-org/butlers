@@ -111,6 +111,19 @@ async def test_complete_is_recorded_once_and_nothing_after_ready(
     assert await _receipts(chronicler_db, grant) == [(holder, "complete")]
 
 
+async def test_a_completed_holder_takes_no_later_receipt(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """A later blocked reading must not sit behind an earlier complete that ready would trust."""
+    grant = await _grant(chronicler_db, runtime_db)
+    (holder,) = grants.REQUIRED_HOLDERS
+    async with runtime_db.acquire() as conn:
+        await _complete_all(conn, grant)
+        with pytest.raises(grants.GrantStateRefused):
+            await grants.record_holder_receipt(conn, grant, holder, outcome="blocked")
+    assert await _receipts(chronicler_db, grant) == [(holder, "complete")]
+
+
 @pytest.mark.parametrize(
     ("holder", "outcome", "receipt", "error"),
     [
