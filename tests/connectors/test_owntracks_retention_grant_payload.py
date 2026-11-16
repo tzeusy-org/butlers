@@ -85,22 +85,27 @@ def test_a_malformed_grant_is_refused(payload) -> None:
 
 
 _ROOT = Path(__file__).resolve().parents[2]
-_MODULE = _ROOT / "src/butlers/connectors/owntracks_retention.py"
+_MODULES = {
+    _ROOT / "src/butlers/connectors/owntracks_retention.py",
+    _ROOT / "src/butlers/chronicler/location_retention_handoff.py",
+}
 
 
-def test_nothing_executes_a_grant_yet() -> None:
-    """Deleting raw fixes is irreversible: it stays uncalled until the owner enables it."""
+def test_nothing_offers_or_executes_a_grant_yet() -> None:
+    """Deleting raw fixes is irreversible: both halves stay uncalled until the owner enables it."""
     callers = [
         path.relative_to(_ROOT).as_posix()
         for top in ("src", "roster", "scripts")
         for path in (_ROOT / top).rglob("*.py")
-        if path != _MODULE
+        if path not in _MODULES
         and any(
             name in path.read_text(encoding="utf-8")
             for name in (
                 "execute_grant",
+                "ready_grant_payloads",
                 "connectors.owntracks_retention",
                 "owntracks_retention import",
+                "location_retention_handoff",
             )
         )
     ]
