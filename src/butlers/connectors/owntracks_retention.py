@@ -10,9 +10,9 @@ The grant reaches the connector as a payload of ids, digests and the cutoff only
 :func:`execute_grant` runs one transaction:
 
 * A grant whose receipt exists returns that receipt and changes nothing.
-* Every granted key's ``connectors.owntracks_forget_lock`` is taken first (core_343). The points
-  insert trigger takes the same lock, so a webhook replay racing this transaction waits for its
-  commit and then finds the tombstone instead of restoring the row.
+* ``connectors.owntracks_forget_lock()`` is taken first, exclusive (core_343). The points
+  insert trigger takes the same lock shared, so a webhook replay racing this transaction waits
+  for its commit and then finds the tombstone instead of restoring the row.
 * Each granted row still present is locked and must be exactly the row Chronicler granted: same
   logical key, same v1 content digest (recomputed in SQL by the shared
   :func:`~butlers.chronicler.projection_coverage.raw_row_digest_sql`), retention clock strictly
@@ -140,13 +140,10 @@ _LOCK_ROWS = f"""
     ORDER BY p.id
     FOR UPDATE
 """
-# core_343's per-key lock, also taken by the points insert trigger: a webhook replay of a key
-# being forgotten waits for this transaction and then reads its tombstone. Sorted, so two
-# deleters cannot deadlock.
-_FORGET_LOCKS = (
-    "SELECT connectors.owntracks_forget_lock(key) "
-    'FROM unnest($1::text[]) AS key ORDER BY key COLLATE "C"'
-)
+# core_343's forget lock, exclusive here and shared in the points insert trigger: a webhook
+# replay of a key being forgotten waits for this transaction and then reads its tombstone. One
+# lock, so a grant of any size holds one lock-table entry and two deleters serialise.
+_FORGET_LOCK = "SELECT connectors.owntracks_forget_lock()"
 _TOMBSTONED = (
     "SELECT count(*) FROM connectors.owntracks_retention_tombstones "
     "WHERE logical_source_key = ANY($1::text[]) OR raw_source_id = ANY($2::uuid[])"
@@ -178,10 +175,12 @@ async def execute_grant(conn: asyncpg.Connection, grant: RetentionGrant) -> Batc
     raw_ids = [item.raw_source_id for item in grant.items]
     keys = [item.logical_source_key for item in grant.items]
     async with conn.transaction():
+        # Locked before the receipt read: a concurrent run of the same grant waits, then
+        # returns the receipt this one wrote.
+        await conn.execute(_FORGET_LOCK)
         existing = await conn.fetchrow(_RECEIPT, grant.grant_id)
         if existing is not None:
             return BatchReceipt(grant.grant_id, *existing.values(), replayed=True)
-        await conn.execute(_FORGET_LOCKS, keys)
         if await conn.fetchval(_TOMBSTONED, keys, raw_ids):
             raise GrantMismatch("a granted row is already tombstoned under another grant")
         rows = {row["id"]: row for row in await conn.fetch(_LOCK_ROWS, raw_ids)}

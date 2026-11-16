@@ -4,9 +4,11 @@ core_342's insert trigger checked for a tombstone before ``ON CONFLICT`` waited 
 deleted. A webhook replay racing the deleter's uncommitted DELETE and tombstone saw no
 tombstone, waited on the unique key, and inserted the fix again once the deleter committed.
 
-core_343 adds ``connectors.owntracks_forget_lock(key)``, a per-key transaction advisory lock.
-The trigger takes it before reading tombstones, and the deleter takes it before deleting, so the
-replay reads the tombstone after the deleter commits. The trigger also fires on
+core_343 adds one transaction advisory lock: the trigger takes it shared
+(``owntracks_forget_guard()``) before reading tombstones and the deleter takes it exclusive
+(``owntracks_forget_lock()``) before deleting, so the replay reads the tombstone after the
+deleter commits. Inserts do not wait for each other, and a bulk insert holds one lock entry
+(a per-row lock exhausted ``max_locks_per_transaction``). The trigger also fires on
 ``UPDATE OF idempotency_key``: no update can move a row onto a forgotten key.
 """
 
@@ -50,7 +52,7 @@ def head_url(fresh_db) -> str:
 async def _forget_uncommitted(conn, key: str, raw_id) -> None:
     """The deleter's work, left uncommitted in ``conn``'s open transaction."""
     grant = uuid4()
-    await conn.execute("SELECT connectors.owntracks_forget_lock($1)", key)
+    await conn.execute("SELECT connectors.owntracks_forget_lock()")
     await conn.execute("DELETE FROM connectors.owntracks_points WHERE id = $1", raw_id)
     await conn.execute(
         "INSERT INTO connectors.owntracks_retention_tombstones "
@@ -87,19 +89,57 @@ async def test_a_replay_racing_the_deleter_is_skipped_after_it_commits(db, head_
 
 
 @_async
-async def test_another_key_does_not_wait(db, head_url) -> None:
+async def test_another_key_waits_out_the_deletion_and_is_kept(db, head_url) -> None:
     pool = await db.open(head_url, max_size=3)
     raw_id = await pool.fetchval(_INSERT_POINT, _KEY, _TS)
     deleter = await pool.acquire()
     try:
-        async with deleter.transaction():
-            await _forget_uncommitted(deleter, _KEY, raw_id)
+        transaction = deleter.transaction()
+        await transaction.start()
+        await _forget_uncommitted(deleter, _KEY, raw_id)
+        other = asyncio.create_task(pool.fetchval(_INSERT_POINT, "owntracks:alice:2:location", _TS))
+        await asyncio.sleep(0.5)
+        await transaction.commit()
+        assert await asyncio.wait_for(other, timeout=10) is not None
+    finally:
+        await pool.release(deleter)
+
+
+@_async
+async def test_inserts_do_not_wait_for_each_other(db, head_url) -> None:
+    pool = await db.open(head_url, max_size=3)
+    first = await pool.acquire()
+    try:
+        async with first.transaction():
+            assert await first.fetchval(_INSERT_POINT, _KEY, _TS) is not None
             other = await asyncio.wait_for(
                 pool.fetchval(_INSERT_POINT, "owntracks:alice:2:location", _TS), timeout=5
             )
             assert other is not None
     finally:
-        await pool.release(deleter)
+        await pool.release(first)
+
+
+@_async
+async def test_a_bulk_insert_holds_one_lock_entry(db, head_url) -> None:
+    pool = await db.open(head_url)
+    # Twice the rows the server's whole lock table holds, so one lock per row cannot fit.
+    rows = await pool.fetchval(
+        "SELECT current_setting('max_locks_per_transaction')::int "
+        "* (current_setting('max_connections')::int "
+        "+ current_setting('max_prepared_transactions')::int) * 2"
+    )
+    inserted = await pool.execute(
+        """
+        INSERT INTO connectors.owntracks_points
+            (idempotency_key, ts, lat, lon, endpoint_identity, recorded_at)
+        SELECT 'owntracks:alice:' || n || ':location', $1, 1.3, 103.8, 'owntracks:alice', $1
+        FROM generate_series(1, $2) AS n
+        """,
+        _TS,
+        rows,
+    )
+    assert inserted == f"INSERT 0 {rows}"
 
 
 @_async
@@ -126,7 +166,7 @@ async def test_the_connector_role_may_take_the_lock(db, head_url) -> None:
     pool = await db.open(head_url)
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("SET LOCAL ROLE connector_writer")
-        await conn.execute("SELECT connectors.owntracks_forget_lock($1)", _KEY)
+        await conn.execute("SELECT connectors.owntracks_forget_lock()")
         assert await conn.fetchval(_INSERT_POINT, _KEY, _TS) is not None
 
 
@@ -134,7 +174,8 @@ _SHARED_CATALOG = """
 SELECT
     (SELECT array_agg(proname || ':' || oid || ':' || xmin ORDER BY proname) FROM pg_proc
      WHERE pronamespace = 'connectors'::regnamespace
-       AND proname IN ('owntracks_forget_lock', 'owntracks_points_refuse_forgotten')),
+       AND proname IN ('owntracks_forget_guard', 'owntracks_forget_lock',
+                       'owntracks_points_refuse_forgotten')),
     (SELECT array_agg(tgname || ':' || oid || ':' || pg_get_triggerdef(oid) ORDER BY tgname)
      FROM pg_trigger WHERE tgname = 'owntracks_points_refuse_forgotten')
 """
@@ -158,7 +199,7 @@ def test_installed_once_and_the_last_downgrade_restores_core_342(postgres_contai
     before = _catalog(db_url)
     command.upgrade(first, "core_343")
     installed = _catalog(db_url)
-    assert len(installed[0]) == 2
+    assert len(installed[0]) == 3
     (trigger,) = installed[1]
     assert "INSERT OR UPDATE OF idempotency_key" in trigger
     command.upgrade(second, "core_343")

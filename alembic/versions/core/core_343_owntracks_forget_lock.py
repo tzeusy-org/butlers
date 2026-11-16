@@ -9,12 +9,16 @@ waited on the conflicting row. A webhook replay racing the deleter's uncommitted
 tombstone therefore saw no tombstone, waited on the unique key while the row was being deleted,
 and inserted the forgotten fix again once the deleter committed.
 
-* ``connectors.owntracks_forget_lock(key)`` takes a per-key transaction advisory lock. It is the
-  one definition of that lock: the connector's deleter
-  (``butlers.connectors.owntracks_retention.execute_grant``) calls it for every granted key
-  before it reads or deletes anything, and the trigger calls it before it reads the tombstones.
-  A racing replay therefore waits for the deleter's commit and then reads its tombstone. Keys
-  only collide by hash, which serialises two unrelated keys and changes nothing else.
+* One transaction advisory lock guards forgetting, in two modes. The trigger takes it shared
+  (``connectors.owntracks_forget_guard()``) before it reads the tombstones; the connector's
+  deleter (``butlers.connectors.owntracks_retention.execute_grant``) takes it exclusive
+  (``connectors.owntracks_forget_lock()``) before it reads or deletes anything. A racing replay
+  therefore waits for the deleter's commit and then reads its tombstone, while inserts never
+  wait for each other.
+* It is one lock, not one per key: a transaction holds a single lock-table entry however many
+  rows it inserts (a per-row lock exhausted ``max_locks_per_transaction`` on a bulk insert), and
+  with one lock a multi-row insert and a deleter cannot deadlock over lock order. The cost is
+  that an insert waits out a deletion transaction, which runs at most hourly and briefly.
 * The trigger also fires on ``UPDATE OF idempotency_key``, so no update can move a row onto a
   forgotten key (the update is skipped, as an insert is).
 
@@ -42,21 +46,35 @@ _INSTALL_LOCK_WAIT_SECONDS = 300
 _CONNECTOR_ROLE = "connector_writer"
 _POINTS = "connectors.owntracks_points"
 _TOMBSTONES = "connectors.owntracks_retention_tombstones"
-_FORGET_LOCK = "connectors.owntracks_forget_lock(text)"
+_FORGET_LOCK = "connectors.owntracks_forget_lock()"
+_FORGET_GUARD = "connectors.owntracks_forget_guard()"
 _REFUSE_FUNCTION = "connectors.owntracks_points_refuse_forgotten()"
 _REFUSE_TRIGGER = "owntracks_points_refuse_forgotten"
 _EVENTS = "INSERT OR UPDATE OF idempotency_key"
 
-_CREATE_FORGET_LOCK = """
-CREATE OR REPLACE FUNCTION connectors.owntracks_forget_lock(key text)
+_LOCK_ID = "hashtextextended('butlers:owntracks-forget', 0)"
+_CREATE_FORGET_LOCKS = (
+    f"""
+CREATE OR REPLACE FUNCTION {_FORGET_LOCK}
 RETURNS void
 LANGUAGE sql
 VOLATILE
 SET search_path = pg_catalog, pg_temp
 AS $fn$
-    SELECT pg_advisory_xact_lock(hashtextextended('butlers:owntracks-forget:' || key, 0))
+    SELECT pg_advisory_xact_lock({_LOCK_ID})
 $fn$
-"""
+""",
+    f"""
+CREATE OR REPLACE FUNCTION {_FORGET_GUARD}
+RETURNS void
+LANGUAGE sql
+VOLATILE
+SET search_path = pg_catalog, pg_temp
+AS $fn$
+    SELECT pg_advisory_xact_lock_shared({_LOCK_ID})
+$fn$
+""",
+)
 
 _CREATE_REFUSE = f"""
 CREATE OR REPLACE FUNCTION {_REFUSE_FUNCTION}
@@ -65,8 +83,8 @@ LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp
 AS $fn$
 BEGIN
-    -- Wait for any deleter of this key to commit, then read its tombstone.
-    PERFORM connectors.owntracks_forget_lock(NEW.idempotency_key);
+    -- Wait for any deleter to commit, then read its tombstone.
+    PERFORM connectors.owntracks_forget_guard();
     IF EXISTS (
         SELECT 1 FROM {_TOMBSTONES} WHERE logical_source_key = NEW.idempotency_key
     ) THEN
@@ -146,6 +164,7 @@ def _installed(bind) -> bool:
         bind.exec_driver_sql(
             f"""
             SELECT to_regprocedure('{_FORGET_LOCK}') IS NOT NULL
+               AND to_regprocedure('{_FORGET_GUARD}') IS NOT NULL
                AND EXISTS (
                     SELECT 1 FROM pg_trigger
                     WHERE tgrelid = to_regclass('{_POINTS}') AND tgname = '{_REFUSE_TRIGGER}'
@@ -154,7 +173,7 @@ def _installed(bind) -> bool:
                AND EXISTS (
                     SELECT 1 FROM pg_proc
                     WHERE oid = to_regprocedure('{_REFUSE_FUNCTION}')
-                      AND position('owntracks_forget_lock' IN prosrc) > 0
+                      AND position('owntracks_forget_guard' IN prosrc) > 0
                )
             """
         ).scalar()
@@ -171,14 +190,15 @@ def _acquire_install_lock(bind) -> None:
 
 
 def _install(connection) -> None:
-    connection.exec_driver_sql(_CREATE_FORGET_LOCK)
+    for statement in _CREATE_FORGET_LOCKS:
+        connection.exec_driver_sql(statement)
     connection.exec_driver_sql(
         f"""
         DO $do$
         BEGIN
-            REVOKE ALL ON FUNCTION {_FORGET_LOCK} FROM PUBLIC;
+            REVOKE ALL ON FUNCTION {_FORGET_LOCK}, {_FORGET_GUARD} FROM PUBLIC;
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_CONNECTOR_ROLE}') THEN
-                GRANT EXECUTE ON FUNCTION {_FORGET_LOCK} TO {_CONNECTOR_ROLE};
+                GRANT EXECUTE ON FUNCTION {_FORGET_LOCK}, {_FORGET_GUARD} TO {_CONNECTOR_ROLE};
             END IF;
         END
         $do$
@@ -221,4 +241,4 @@ def downgrade() -> None:
         $do$
         """
     )
-    op.execute(f"DROP FUNCTION IF EXISTS {_FORGET_LOCK}")
+    op.execute(f"DROP FUNCTION IF EXISTS {_FORGET_LOCK}, {_FORGET_GUARD}")

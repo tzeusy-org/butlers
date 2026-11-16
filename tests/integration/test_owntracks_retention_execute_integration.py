@@ -130,6 +130,29 @@ async def test_a_grant_executed_twice_returns_its_first_receipt(db, head_url) ->
     assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_retention_batches") == 1
 
 
+async def test_a_concurrent_run_of_the_same_grant_returns_its_receipt(db, head_url) -> None:
+    """The lock comes before the receipt read: the second run waits, then replays."""
+    pool = await db.open(head_url, max_size=3)
+    grant = _grant(await _point(pool, "k1"))
+    first = await pool.acquire()
+    try:
+        outer = first.transaction()
+        await outer.start()
+        await execute_grant(first, grant)
+
+        async def second_run():
+            async with pool.acquire() as conn:
+                return await execute_grant(conn, grant)
+
+        second = asyncio.create_task(second_run())
+        await asyncio.sleep(0.5)
+        assert not second.done()
+        await outer.commit()
+        assert (await asyncio.wait_for(second, timeout=10)).replayed
+    finally:
+        await pool.release(first)
+
+
 @pytest.mark.parametrize(
     "tamper",
     ["digest", "key", "after-cutoff", "at-cutoff"],

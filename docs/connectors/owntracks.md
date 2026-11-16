@@ -279,14 +279,16 @@ Groundwork for that gate is in place, and still deletes nothing:
     relay on Switchboard, whose one allowed caller is the `connector-owntracks` workload
     speaking for `owntracks`. The connector needs a relay-audience workload token for that
     (S4b-3c); without one it fetches nothing.
-  - `owntracks_retention.execute_grant` runs one transaction per grant. It takes every granted
-    key's `connectors.owntracks_forget_lock` (core_343), then refuses the whole grant if a key
-    is already tombstoned or a present row's key, recomputed digest or retention clock does not
+  - `owntracks_retention.execute_grant` runs one transaction per grant. It takes
+    `connectors.owntracks_forget_lock()` (core_343, one exclusive advisory lock), then refuses
+    the whole grant if a key is already tombstoned or a present row's key, recomputed digest or retention clock does not
     match. Otherwise it deletes the present rows, counts missing ones as already forgotten,
     tombstones every key and writes the receipt. Executing a grant again returns its receipt.
-  - The points trigger takes the same per-key lock before it reads tombstones, and also fires
-    on `UPDATE OF idempotency_key`. A webhook replay racing a deletion waits for its commit and
-    is then skipped, instead of slipping in after the delete.
+  - The points trigger takes the same lock shared (`owntracks_forget_guard()`) before it reads
+    tombstones, and also fires on `UPDATE OF idempotency_key`. A webhook replay racing a
+    deletion waits for its commit and is then skipped, instead of slipping in after the delete.
+    Inserts never wait for each other, and a transaction holds one lock entry however many rows
+    it inserts.
   - The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (hourly by default,
     `OWNTRACKS_RAW_RETENTION_INTERVAL_S`). An unreachable relay, a refusal, a missing token or
     a malformed reply executes nothing; a grant that no longer matches is skipped.
