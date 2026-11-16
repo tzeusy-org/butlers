@@ -331,6 +331,24 @@ Groundwork for that gate is in place, and still deletes nothing:
     coordinates. Route copies make its receipt `blocked`. The connector's `filtered_events`
     copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
   - Nothing writes a receipt yet, so no grant can become ready.
+- Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
+  sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`, uncalled):
+  - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its
+    `normalized_text` and `raw_payload.payload` carry exact coordinates even at the metadata tier.
+    Rows are matched by `source_channel = 'owntracks'` and exact `request_context.idempotency_key`.
+  - A copy Switchboard handled by policy alone (`skipped`, no session, a `skip` policy bypass)
+    has both fields replaced by a fixed withheld marker. Its `request_context.content_hash_key` is
+    dropped too: a 16-hex hash of text and sender that could be brute-forced back to the fix.
+    Everything else stays, so dedupe and the lifecycle audit still work.
+  - Any other copy may still be processing or was routed into sessions, so the whole key is
+    left as it is and counts as blocked (fail closed). Nothing reaches routed copies.
+  - Every unblocked key is tombstoned in `switchboard.location_retention_forgotten_keys`. A
+    `BEFORE INSERT` trigger withholds a later OwnTracks envelope for a tombstoned key. A shared
+    advisory lock makes an insert racing the forgetter wait for its commit.
+  - `switchboard.location_retention_forgetting` keeps one count-only receipt per run: `complete`
+    (once per grant; a repeat returns it) or `blocked` (repeats until the block clears).
+  - Both tables are append-only by trigger; the runtime role may only read and insert them.
+    The downgrade refuses while either holds a row.
 
 ## Implementation Notes
 
