@@ -225,13 +225,17 @@ class _States:
 
     async def fetch(self, query: str, *args: Any) -> list[Any]:
         self.statements.append(query)
+        if "holder_receipts" in query:
+            return []
         return [{"state": s} for s in self.history]
 
 
-async def test_ready_is_unreachable_until_holder_copies_exist() -> None:
-    """S4c gates readiness: with no holder ledger, no grant can become ready (dark)."""
+async def test_ready_without_holder_receipts_writes_nothing() -> None:
+    """S4c gates readiness: with no complete holder receipt, no grant can become ready."""
+    conn = _States([])
     with pytest.raises(HoldersIncomplete):
-        await append_grant_state(_Untouched(), uuid4(), "ready")
+        await append_grant_state(conn, uuid4(), "ready")
+    assert not [s for s in conn.statements if "INSERT" in s]
 
 
 async def test_a_state_is_appended_under_the_grant_lock_after_reading_its_history() -> None:

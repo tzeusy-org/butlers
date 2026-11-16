@@ -29,6 +29,7 @@ _DEFINING = {
 # also the grant tables' prefix, which migrations and docs legitimately mention).
 _GUARDED = re.compile(
     r"\bprepare_retention_grant\b|\bappend_grant_state\b|\breconcile_ready_grants\b"
+    r"|\brecord_holder_receipt\b"
     r"|\brun_location_retention_job\b"
     r"|\bbutlers\.chronicler\.location_retention_(?:grant|reconcile|job)\b"
     r"|\bfrom\s+butlers\.chronicler\s+import\b[^\n]*\blocation_retention_(?:grant|reconcile|job)\b"
@@ -58,6 +59,7 @@ def _references() -> list[str]:
         "await reconcile_ready_grants(conn)",
         "from butlers.chronicler import location_retention_reconcile",
         "await run_location_retention_job(pool)",
+        "await record_holder_receipt(conn, grant, holder, outcome='complete')",
         'job_name = "location_retention_job"  # butlers.chronicler.location_retention_job',
         "from butlers.chronicler import location_retention_job as job",
     ],

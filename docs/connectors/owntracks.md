@@ -254,8 +254,8 @@ Groundwork for that gate is in place, and still deletes nothing:
   - `append_grant_state` is the only writer: under a per-grant advisory lock it appends a state
     only when it legally follows the history (`unknown`, `reconciled` or `failed` only after
     `ready`; `reconciled` and `failed` exclude each other and end the history). It refuses
-    `ready` outright (`HoldersIncomplete`) until holder copies are recorded (slice S4c), so no
-    grant can authorize a deletion yet.
+    `ready` (`HoldersIncomplete`) unless every required holder has a `complete` receipt (S4c-1,
+    below). Nothing records receipts yet, so no grant can authorize a deletion.
 - The connector side of a deletion has somewhere to leave its evidence, still deleting nothing
   (bu-s11n0s.7 S4b-3a, core_342):
   - `connectors.owntracks_retention_batches` is the connector's receipt, one row per grant it
@@ -319,6 +319,18 @@ Groundwork for that gate is in place, and still deletes nothing:
     under `chronicler:location-retention-purge-failed`.
   - Lag is reconciled only after a complete read, so a failed run never resolves it. The job
     proposes no insight and sends nothing.
+- A grant becomes `ready` only with every holder's complete receipt, still dark
+  (bu-s11n0s.7 S4c-1, `location_retention_grant.record_holder_receipt`, uncalled):
+  - `chronicler.location_retention_holder_receipts` (chronicler_039, append-only) records what
+    Chronicler read back from each holder of a copy derived from granted rows: `complete` at
+    most once per grant and holder, or `blocked` (still processing, routed onward, ambiguous),
+    which may repeat until then and never counts. A holder that completed takes no later receipt,
+    so `ready` never rests on a complete that a newer reading contradicts. Receipts are counts
+    only and stop once the grant is ready.
+  - The one required holder is `switchboard.message_inbox`, whose normalized text carries exact
+    coordinates. Route copies make its receipt `blocked`. The connector's `filtered_events`
+    copies are forgotten in the deletion transaction itself (S4c-4), so they are not a holder.
+  - Nothing writes a receipt yet, so no grant can become ready.
 
 ## Implementation Notes
 
