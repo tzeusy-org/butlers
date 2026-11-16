@@ -292,3 +292,25 @@ async def test_hits_are_append_only_apart_from_the_announcement_lease(
             await runtime.execute(statement)
     await runtime.execute("UPDATE switchboard.break_through_hits SET claimed_at = now()")
     assert await runtime.fetchval("SELECT count(*) FROM switchboard.break_through_hits") == 1
+
+
+async def test_a_flood_past_the_hourly_cap_folds_into_one_pending_line(
+    runtime: asyncpg.Pool, admin: asyncpg.Pool, notify: AsyncMock
+) -> None:
+    await _clause(admin)
+    for index in range(5):
+        await ingest_v1(runtime, _email(f"<flood-{index}@example.test>"))
+
+    assert notify.await_count == break_through.FLOOD_CAP_PER_HOUR
+    folds = await runtime.fetch(
+        "SELECT message, status FROM insight_candidates WHERE dedup_key LIKE '%:fold'"
+    )
+    assert [(r["message"], r["status"]) for r in folds] == [
+        ("and 2 more from senders you declared (email) - open", "pending")
+    ]
+    assert (
+        await runtime.fetchval(
+            "SELECT count(*) FROM switchboard.break_through_hits WHERE published_at IS NOT NULL"
+        )
+        == 5
+    )

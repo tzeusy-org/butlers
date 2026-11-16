@@ -1101,6 +1101,12 @@ Scope: v1-mandatory
 - **THEN** routine speech stays muted but an owner-clause break-through candidate is still proposed and delivered by an urgent cycle, and no other category is
 - **AND** an explicit `verbosity = 'off'` stops every candidate including break-through, and existing `off` rows remain explicit
 
+#### Scenario: A flood from one clause folds into one line
+
+- **WHEN** a clause records more than 3 hits within a rolling hour
+- **THEN** the first 3 each get their own line and every further hit folds into a single pending "and N more from senders you declared (<channel>) - open" candidate per clause, updated in place and delivered by the next hourly urgent cycle
+- **AND** the folded line names no sender and carries no text, a replayed hit counts once because rank is read from the unique hit rows, and every folded hit is closed (never retried)
+
 #### Scenario: A promoted skip rule does not hide a hit
 
 - **WHEN** an ingestion rule skips or blocks the same sender

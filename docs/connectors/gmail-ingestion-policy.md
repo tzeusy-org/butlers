@@ -132,7 +132,7 @@ an announcement lease (`claimed_at`, `published_at`): a crash after the insert l
 and the hourly urgent cycle announces it, so a lost announcement is retried and a published one is
 never repeated.
 
-The line names the sender and channel only. It is withdrawn unsent when the owner has replied in the
+Per clause, the first 3 hits in a rolling hour each get a line; any more fold into one pending "and N more" line that the next hourly urgent cycle delivers. The line names the sender and channel only. It is withdrawn unsent when the owner has replied in the
 thread (`switchboard`/`inbound_still_unanswered` probe) or the clause was revoked. The total
 disengagement ratchet writes `verbosity = 'auto_off'` instead of `'off'`: that mutes routine speech
 but not this line, while an explicit `off` stops everything. An unavailable evaluator counts as "no
