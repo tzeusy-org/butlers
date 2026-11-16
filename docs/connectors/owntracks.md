@@ -297,7 +297,7 @@ Groundwork for that gate is in place, and still deletes nothing:
     audit, but its `full_payload.payload` becomes `[location withheld: raw retention]`
     and it carries `replay_unavailable`, so the replay drain refuses it rather than submitting
     a hollow event. A failure here rolls back the delete, the tombstones and the receipt.
-  - A policy-filtered fix is recorded to `filtered_events` with its raw body and never reaches
+  - A policy-filtered fix is recorded to `filtered_events` without its raw body and never reaches
     `owntracks_points`, so it has no point row, never enters a grant and is outside a grant's
     reach. Such a row keeps no coordinates in the first place: see the policy-blocked bullet
     below (bu-s11n0s.73).

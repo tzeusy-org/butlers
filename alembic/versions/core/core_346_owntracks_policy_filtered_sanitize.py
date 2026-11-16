@@ -11,9 +11,10 @@ hold the raw body (exact coordinates, SSID). This one-shot pass gives each of th
 connector writes now:
 
 * ``full_payload.payload`` becomes ``{"raw": null, "normalized_text": <coordinate-free text>}``,
-  the text built from the raw body as ``butlers.connectors.owntracks.build_filtered_event_text``
-  does (region names for a location, region and direction for a transition, the waypoint count
-  for a waypoints sync);
+  the text built from the raw body: region names for a location and region and direction for a
+  transition, as ``butlers.connectors.owntracks.build_filtered_event_text`` writes them, but only
+  the waypoint count for a waypoints sync (the connector names the waypoints; this pass keeps
+  the count only);
 * ``full_payload.replay_unavailable`` is set, so the replay drain refuses the row.
 
 Rows are OwnTracks policy rows only (``connector_type = 'owntracks'`` and a
