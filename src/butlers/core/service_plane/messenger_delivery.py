@@ -38,8 +38,10 @@ ISSUER_ENV = "BUTLERS_SERVICE_PLANE_ISSUER"
 DEFAULT_ISSUER = "https://kubernetes.default.svc.cluster.local"
 _NAMESPACE_FILE = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
-#: Each deployment ServiceAccount is its own workload label.
-WORKLOAD_ACCOUNTS = ("butlers-control", "butlers-up", "dashboard-api")
+#: Each deployment ServiceAccount is its own workload label. ``connector-owntracks`` is the
+#: one connector account (bu-s11n0s.7 S4b-3c); the namespace ``default`` account, which every
+#: pod without its own runs as, is never a workload.
+WORKLOAD_ACCOUNTS = ("butlers-control", "butlers-up", "dashboard-api", "connector-owntracks")
 MESSENGER_DELIVERY_CALLERS = frozenset({ServiceCaller("butlers-control", "switchboard")})
 REFUSED = "messenger_delivery_caller_refused"
 #: The caller could not be verified right now (no verifier, key set unreadable).

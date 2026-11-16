@@ -87,6 +87,54 @@ def test_on_gives_each_workload_its_account_and_its_one_bound_token() -> None:
     assert audiences(up) == {"butlers.service-relay.v1"}
 
 
+def _connector_pods(docs: list[dict]) -> dict[str, dict]:
+    return {
+        d["metadata"]["name"]: d["spec"]["template"]["spec"]
+        for d in docs
+        if d["kind"] == "Deployment" and d["metadata"]["name"].startswith("connector-")
+    }
+
+
+def test_only_the_owntracks_connector_gets_an_account_and_a_relay_token() -> None:
+    # bu-s11n0s.7 S4b-3c: the connector reads Chronicler's ready retention grants through
+    # the location_retention.grants_ready relay, so it presents its own workload token.
+    docs = _render("servicePlaneAuth.enabled=true")
+
+    accounts = {d["metadata"]["name"] for d in docs if d["kind"] == "ServiceAccount"}
+    assert "connector-owntracks" in accounts
+    assert "default" not in accounts
+    pods = _connector_pods(docs)
+    owntracks = pods.pop("connector-owntracks")
+    assert owntracks["serviceAccountName"] == "connector-owntracks"
+    (volume,) = [v for v in owntracks["volumes"] if v["name"] == "workload-token"]
+    (source,) = volume["projected"]["sources"]
+    token = source["serviceAccountToken"]
+    assert token["audience"] == token["path"] == "butlers.service-relay.v1"
+    assert token["expirationSeconds"] <= 3600
+    (connector,) = [c for c in owntracks["containers"] if c["name"] == "connector"]
+    assert {
+        "name": "workload-token",
+        "mountPath": "/var/run/secrets/butlers/workload",
+        "readOnly": True,
+    } in connector["volumeMounts"]
+    assert all(c["name"] == "connector" for c in owntracks["containers"] if "volumeMounts" in c)
+
+    assert pods, "the other connectors must still render"
+    for name, pod in pods.items():
+        assert "serviceAccountName" not in pod, name
+        assert all(v["name"] != "workload-token" for v in pod.get("volumes", [])), name
+
+
+def test_off_the_owntracks_connector_has_no_account_or_token() -> None:
+    docs = _render()
+
+    owntracks = _connector_pods(docs)["connector-owntracks"]
+    assert "serviceAccountName" not in owntracks
+    assert all(v["name"] != "workload-token" for v in owntracks["volumes"])
+    (connector,) = [c for c in owntracks["containers"] if c["name"] == "connector"]
+    assert all(m["name"] != "workload-token" for m in connector["volumeMounts"])
+
+
 _PROFILED = (
     "egressProfiles.enabled=true",
     "egressPolicy.enabled=false",

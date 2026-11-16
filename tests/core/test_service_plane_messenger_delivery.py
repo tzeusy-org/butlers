@@ -139,6 +139,39 @@ def test_a_built_verifier_refreshes_its_own_key_set_on_an_unknown_kid(
     assert verifier._refresh == verifier._fetch.refresh
 
 
+def _account_token(account: str) -> str:
+    claims = _claims(aud=[RELAY_AUDIENCE], sub=f"system:serviceaccount:butlers-dev:{account}")
+    claims["kubernetes.io"] = {
+        **claims["kubernetes.io"],
+        "serviceaccount": {"name": account, "uid": "u9"},
+    }
+    return _token(claims)
+
+
+@pytest.mark.parametrize(
+    ("account", "workload"),
+    [
+        ("butlers-up", "butlers-up"),
+        ("connector-owntracks", "connector-owntracks"),
+        # The namespace default account is every pod without its own: never a workload.
+        ("default", None),
+        ("connector-telegram-bot", None),
+    ],
+)
+async def test_a_built_verifier_names_only_the_chart_accounts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, account: str, workload: str | None
+) -> None:
+    namespace = tmp_path / "namespace"
+    namespace.write_text("butlers-dev\n")
+    monkeypatch.setattr(messenger_delivery, "_NAMESPACE_FILE", namespace)
+    built = messenger_delivery.build_verifier(RELAY_AUDIENCE, {})
+    # Real policy, test key set and clock.
+    keyed = _verifier(RELAY_AUDIENCE)
+    built._fetch, built._refresh, built._clock = keyed._fetch, None, keyed._clock
+
+    assert await built.verify(_account_token(account)) == workload
+
+
 def test_a_refused_delivery_caller_is_a_permanent_validation_error() -> None:
     assert delivery_refusal_error(REFUSED) == ("validation_error", False)
 
