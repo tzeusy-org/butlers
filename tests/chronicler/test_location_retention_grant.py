@@ -8,11 +8,19 @@ preparer refuses before it touches the database, and that a missing policy write
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from butlers.chronicler.location_retention import PolicyUnavailable
-from butlers.chronicler.location_retention_grant import StaleRevisions, prepare_retention_grant
+from butlers.chronicler.location_retention_grant import (
+    GrantStateRefused,
+    HoldersIncomplete,
+    StaleRevisions,
+    append_grant_state,
+    check_grant_transition,
+    prepare_retention_grant,
+)
 from butlers.chronicler.projection_coverage import COVERED_ADAPTERS
 from butlers.chronicler.storage import owntracks_projection_lock_key
 
@@ -150,3 +158,106 @@ async def test_matching_attempt_revisions_let_preparation_proceed() -> None:
     grant = await prepare_retention_grant(conn, config_revisions=_REVISIONS)
     assert grant.item_count == 0
     assert any("INSERT INTO location_retention_grants" in s for s in conn.statements)
+
+
+# ── Later grant states (S4b-2: writer exclusivity) ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("history", "state"),
+    [
+        pytest.param(["ready"], "unknown", id="unknown-after-ready"),
+        pytest.param(["ready", "unknown"], "unknown", id="unknown-repeats"),
+        pytest.param(["ready"], "reconciled", id="reconciled-after-ready"),
+        pytest.param(["ready", "unknown"], "reconciled", id="reconciled-after-unknown"),
+        pytest.param(["ready"], "failed", id="failed-after-ready"),
+        pytest.param(["ready", "unknown", "unknown"], "failed", id="failed-after-unknowns"),
+    ],
+)
+def test_allowed_transitions(history: list[str], state: str) -> None:
+    check_grant_transition(history, state)
+
+
+@pytest.mark.parametrize(
+    ("history", "state"),
+    [
+        pytest.param([], "unknown", id="unknown-before-ready"),
+        pytest.param([], "reconciled", id="reconciled-before-ready"),
+        pytest.param([], "failed", id="failed-before-ready"),
+        pytest.param(["ready"], "ready", id="ready-twice"),
+        pytest.param(["ready", "reconciled"], "failed", id="failed-after-reconciled"),
+        pytest.param(["ready", "failed"], "reconciled", id="reconciled-after-failed"),
+        pytest.param(["ready", "reconciled"], "reconciled", id="reconciled-twice"),
+        pytest.param(["ready", "failed"], "unknown", id="unknown-after-terminal"),
+        pytest.param(["ready"], "prepared", id="prepared-is-the-grant-row"),
+        pytest.param(["ready"], "deleted", id="not-a-state"),
+    ],
+)
+def test_refused_transitions(history: list[str], state: str) -> None:
+    with pytest.raises(GrantStateRefused):
+        check_grant_transition(history, state)
+
+
+class _States:
+    """A connection holding one grant's state history; records every statement."""
+
+    def __init__(self, history: list[str], *, grant_exists: bool = True) -> None:
+        self.history = history
+        self.grant_exists = grant_exists
+        self.statements: list[str] = []
+
+    def transaction(self) -> _States:
+        return self
+
+    async def __aenter__(self) -> _States:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, query: str, *args: Any) -> str:
+        self.statements.append(query)
+        return ""
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self.statements.append(query)
+        return self.grant_exists
+
+    async def fetch(self, query: str, *args: Any) -> list[Any]:
+        self.statements.append(query)
+        return [{"state": s} for s in self.history]
+
+
+async def test_ready_is_unreachable_until_holder_copies_exist() -> None:
+    """S4c gates readiness: with no holder ledger, no grant can become ready (dark)."""
+    with pytest.raises(HoldersIncomplete):
+        await append_grant_state(_Untouched(), uuid4(), "ready")
+
+
+async def test_a_state_is_appended_under_the_grant_lock_after_reading_its_history() -> None:
+    conn = _States(["ready"])
+    await append_grant_state(conn, uuid4(), "reconciled", receipt={"deleted": 3})
+    lock = next(i for i, s in enumerate(conn.statements) if "advisory" in s)
+    read = next(i for i, s in enumerate(conn.statements) if "SELECT state" in s)
+    insert = next(i for i, s in enumerate(conn.statements) if "INSERT" in s)
+    assert lock < read < insert
+
+
+async def test_a_refused_state_writes_nothing() -> None:
+    conn = _States(["ready", "failed"])
+    with pytest.raises(GrantStateRefused):
+        await append_grant_state(conn, uuid4(), "reconciled")
+    assert not [s for s in conn.statements if "INSERT" in s]
+
+
+async def test_a_state_for_a_missing_grant_writes_nothing() -> None:
+    conn = _States(["ready"], grant_exists=False)
+    with pytest.raises(GrantStateRefused):
+        await append_grant_state(conn, uuid4(), "failed")
+    assert not [s for s in conn.statements if "INSERT" in s]
+
+
+@pytest.mark.parametrize("receipt", [[], "x", {"lat": 1.0}, {"n": {"nested": 1}}])
+async def test_a_receipt_must_be_a_flat_count_only_object(receipt: Any) -> None:
+    with pytest.raises(ValueError, match="receipt"):
+        await append_grant_state(_Untouched(), uuid4(), "failed", receipt=receipt)

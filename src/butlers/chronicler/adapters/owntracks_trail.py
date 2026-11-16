@@ -44,6 +44,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from butlers.chronicler.spatial_precision import coarsen
+
 logger = logging.getLogger(__name__)
 
 # Fastest plausible owner ground speed. 1000 km/h sits just above airliner
@@ -149,6 +151,43 @@ def load_anchors(carryover: dict | None) -> dict[str, TrailAnchor]:
 def dump_anchors(anchors: dict[str, TrailAnchor]) -> dict[str, Any]:
     """Serialize anchors for an adapter's carryover blob."""
     return {endpoint: anchor.to_carryover() for endpoint, anchor in anchors.items()}
+
+
+def coarsen_trail_anchors(
+    carryover: dict[str, Any], *, granted_ids: set[str], cutoff: datetime
+) -> tuple[dict[str, Any], int]:
+    """Coarsen the anchors that rest on expiring fixes (bu-s11n0s.7 S4b-2, requirement 3).
+
+    An anchor is the endpoint's last accepted fix and outlives its batch, so it is not an open
+    carry member and retention would otherwise leave its exact coordinates in carryover. Its
+    coordinates snap to their ~150 m cell when the trail state names its fix (``anchor_id``) in
+    ``granted_ids``, or, for an anchor without an id, when it is strictly older than ``cutoff``.
+    A malformed anchor is dropped. Returns a new carryover (nothing else changes) and how many
+    anchors changed. A coarse anchor still judges jumps: they start at 1 km, cells are 150 m.
+    """
+    raw = carryover.get(TRAIL_ANCHORS_CARRYOVER_KEY)
+    if not isinstance(raw, dict):
+        return carryover, 0
+    state = load_trail_state(carryover)
+    anchors: dict[str, Any] = {}
+    changed = 0
+    for endpoint, entry in raw.items():
+        anchor = TrailAnchor.from_carryover(entry)
+        if anchor is None:
+            changed += 1
+            continue
+        anchors[endpoint] = entry
+        anchor_id = state.get(endpoint, {}).get("anchor_id")
+        expiring = anchor_id in granted_ids if anchor_id is not None else anchor.ts < cutoff
+        if not expiring:
+            continue
+        cell = coarsen(anchor.lat, anchor.lon)
+        if (cell.lat, cell.lon) != (anchor.lat, anchor.lon):
+            anchors[endpoint] = TrailAnchor(ts=anchor.ts, lat=cell.lat, lon=cell.lon).to_carryover()
+            changed += 1
+    if not changed:
+        return carryover, 0
+    return {**carryover, TRAIL_ANCHORS_CARRYOVER_KEY: anchors}, changed
 
 
 def _jump(

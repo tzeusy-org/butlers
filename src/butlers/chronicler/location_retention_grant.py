@@ -1,9 +1,19 @@
-"""Prepared retention grants for raw OwnTracks fixes (bu-s11n0s.7, slice 4a).
+"""Prepared retention grants for raw OwnTracks fixes (bu-s11n0s.7, slices 4a and 4b).
 
 Raw expiry has two committed stages. Chronicler first prepares a grant: the exact raw rows it
 has finished projecting, frozen under the current policy (tables ``chronicler_036``). A later
-slice lets the connector delete exactly those rows under its own role. This module only
-prepares. It is dark: nothing calls :func:`prepare_retention_grant`, nothing is deleted and
+slice lets the connector delete exactly those rows under its own role.
+
+Preparation is irreversible for Chronicler's own copies. In the grant's transaction it deletes
+the granted rows' location point events (each leaves a tombstone and the run a receipt, via
+:func:`~butlers.chronicler.location_forgetting.record_forgetting`, so the resurrection floor
+refuses them forever), snaps every coordinate in the place, movement and away summaries those
+rows fed to its ~150 m cell, and coarsens trail anchors resting on them in carryover. A
+summary it cannot coarsen completely fails the whole run.
+
+It is dark: nothing calls :func:`prepare_retention_grant` or :func:`append_grant_state`
+(``tests/chronicler/test_location_retention_dark_guard.py``), the connector deletes nothing,
+no grant can become ``ready`` until holder copies are recorded (slice S4c), and
 ``location_retention.ENFORCEMENT_STATUS`` stays ``not_enforced``.
 
 A raw row is granted only when all of these hold, checked in one statement:
@@ -32,12 +42,21 @@ receipt, written even when it grants nothing.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+from butlers.chronicler.adapters.owntracks_trail import (
+    TRAIL_ANCHORS_CARRYOVER_KEY,
+    coarsen_trail_anchors,
+)
+from butlers.chronicler.location_forgetting import (
+    OWNTRACKS_SOURCE_REF_PREFIX,
+    ForgottenPointEvent,
+    record_forgetting,
+)
 from butlers.chronicler.location_retention import PolicyUnavailable
 from butlers.chronicler.projection_coverage import (
     COVERED_ADAPTERS,
@@ -45,9 +64,20 @@ from butlers.chronicler.projection_coverage import (
     is_digest,
     raw_row_digest_sql,
 )
+from butlers.chronicler.spatial_precision import coarsen_location_payload
 from butlers.chronicler.storage import owntracks_projection_lock_key
 
-__all__ = ["GRANT_LIMIT", "PreparedGrant", "StaleRevisions", "prepare_retention_grant"]
+__all__ = [
+    "GRANT_LIMIT",
+    "GRANT_STATES",
+    "GrantStateRefused",
+    "HoldersIncomplete",
+    "PreparedGrant",
+    "StaleRevisions",
+    "append_grant_state",
+    "check_grant_transition",
+    "prepare_retention_grant",
+]
 
 #: Rows one preparation run grants at most; the rest wait for the next run.
 GRANT_LIMIT = 500
@@ -117,6 +147,223 @@ class PreparedGrant:
     cutoff: datetime
     item_count: int
     capped: bool
+    point_events_forgotten: int = 0
+    episodes_coarsened: int = 0
+    anchors_coarsened: int = 0
+
+
+# ── Forgetting the granted rows' Chronicler copies (S4b-2) ────────────────────
+
+#: Adapters whose summaries carry coordinates. SSID presence stores none.
+_COORDINATE_ADAPTERS = ("owntracks.points", "owntracks.place_cluster")
+_POINT_SOURCE = "owntracks.points"
+
+_GRANTED_EPISODES = """
+WITH current_revision AS (
+    SELECT * FROM unnest($2::text[], $3::text[]) AS r(adapter_name, config_revision)
+)
+SELECT DISTINCT unnest(c.output_episode_ids) AS episode_id
+FROM location_projection_coverage AS c
+JOIN current_revision AS r USING (adapter_name, config_revision)
+WHERE c.raw_source_id = ANY($1::uuid[]) AND c.adapter_name = ANY($4::text[])
+"""
+_GRANTED_POINT_EVENTS = """
+SELECT pe.id, pe.source_ref,
+       COALESCE(array_agg(l.episode_id ORDER BY l.episode_id)
+                FILTER (WHERE l.episode_id IS NOT NULL), '{}') AS episode_ids
+FROM point_events AS pe
+LEFT JOIN episode_event_links AS l ON l.event_id = pe.id
+WHERE pe.source_name = $2 AND pe.source_ref = ANY($1::text[])
+GROUP BY pe.id, pe.source_ref
+ORDER BY pe.source_ref
+"""
+_COORDINATE_EPISODES = (
+    "SELECT id, payload FROM episodes WHERE id = ANY($1::uuid[]) "
+    "AND source_name = ANY($2::text[]) ORDER BY id"
+)
+_DELETE_POINT_EVENTS = "DELETE FROM point_events WHERE id = ANY($1::uuid[])"
+_CARRYOVER = (
+    "SELECT carryover FROM projection_checkpoints WHERE source_name = $1 AND subsource = ''"
+)
+_UPDATE_ANCHORS = (
+    "UPDATE projection_checkpoints "
+    "SET carryover = jsonb_set(carryover, ARRAY[$2::text], ($3::text)::jsonb), "
+    "updated_at = now() WHERE source_name = $1 AND subsource = ''"
+)
+
+
+def _as_object(value: Any) -> dict[str, Any]:
+    loaded = json.loads(value) if isinstance(value, str) else value
+    return dict(loaded) if isinstance(loaded, Mapping) else {}
+
+
+async def _coarsen_episodes(conn: Any, episode_ids: set[UUID]) -> int:
+    """Snap every coordinate in the granted rows' location summaries; count those changed.
+
+    Raises ``ValueError`` (rolling the whole preparation back) on a payload it cannot coarsen
+    completely: an exact coordinate never survives silently.
+    """
+    changed = 0
+    rows = await conn.fetch(_COORDINATE_EPISODES, sorted(episode_ids), list(_COORDINATE_ADAPTERS))
+    for row in rows:
+        payload = _as_object(row["payload"])
+        coarse = coarsen_location_payload(payload)
+        if coarse != payload:
+            await conn.execute(
+                "UPDATE episodes SET payload = ($2::text)::jsonb, updated_at = now() WHERE id = $1",
+                row["id"],
+                json.dumps(coarse, sort_keys=True),
+            )
+            changed += 1
+    return changed
+
+
+async def _coarsen_anchors(conn: Any, granted_ids: set[str], cutoff: datetime) -> int:
+    """Requirement 3: trail anchors on expiring fixes leave carryover coarsened."""
+    changed = 0
+    for source in _COORDINATE_ADAPTERS:
+        carryover = _as_object(await conn.fetchval(_CARRYOVER, source))
+        coarse, count = coarsen_trail_anchors(carryover, granted_ids=granted_ids, cutoff=cutoff)
+        if count:
+            await conn.execute(
+                _UPDATE_ANCHORS,
+                source,
+                TRAIL_ANCHORS_CARRYOVER_KEY,
+                json.dumps(coarse[TRAIL_ANCHORS_CARRYOVER_KEY], sort_keys=True),
+            )
+            changed += count
+    return changed
+
+
+async def _forget_granted(
+    conn: Any,
+    granted: list[Any],
+    *,
+    revisions: dict[str, str],
+    policy_version: int,
+    cutoff: datetime,
+) -> tuple[int, int]:
+    """Delete the granted rows' point events (tombstoned) and coarsen their summaries.
+
+    Returns ``(point_events_forgotten, episodes_coarsened)``. Runs inside the grant transaction,
+    under its locks: a failure rolls the whole preparation back.
+    """
+    raw_ids = [row["id"] for row in granted]
+    refs = [OWNTRACKS_SOURCE_REF_PREFIX + row["idempotency_key"] for row in granted]
+    episode_ids = {
+        row["episode_id"]
+        for row in await conn.fetch(
+            _GRANTED_EPISODES,
+            raw_ids,
+            list(revisions),
+            list(revisions.values()),
+            list(_COORDINATE_ADAPTERS),
+        )
+    }
+    events = await conn.fetch(_GRANTED_POINT_EVENTS, refs, _POINT_SOURCE)
+    forgotten = [
+        ForgottenPointEvent(
+            point_event_id=event["id"],
+            source_ref=event["source_ref"],
+            episode_ids=tuple(event["episode_ids"]),
+        )
+        for event in events
+    ]
+    for event in forgotten:
+        episode_ids.update(event.episode_ids)
+    coarsened = await _coarsen_episodes(conn, episode_ids)
+    if forgotten:
+        await conn.execute(_DELETE_POINT_EVENTS, [event.point_event_id for event in forgotten])
+    receipt = await record_forgetting(
+        conn,
+        policy_version=policy_version,
+        cutoff=cutoff,
+        episodes_coarsened=coarsened,
+        forgotten=forgotten,
+    )
+    return receipt.point_events_forgotten, coarsened
+
+
+# ── Later grant states (chronicler_037) ───────────────────────────────────────
+
+#: States a grant reaches after ``prepared``; each is a new row, never an update.
+GRANT_STATES = ("ready", "unknown", "reconciled", "failed")
+_TERMINAL_STATES = frozenset({"reconciled", "failed"})
+
+_LOCK_GRANT = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+_GRANT_EXISTS = "SELECT EXISTS (SELECT 1 FROM location_retention_grants WHERE id = $1)"
+_GRANT_HISTORY = "SELECT state FROM location_retention_grant_states WHERE grant_id = $1 ORDER BY id"
+_INSERT_STATE = (
+    "INSERT INTO location_retention_grant_states (grant_id, state, receipt) "
+    "VALUES ($1, $2, ($3::text)::jsonb)"
+)
+
+
+class GrantStateRefused(ValueError):
+    """The state is not a legal next state for this grant: nothing is written."""
+
+
+class HoldersIncomplete(GrantStateRefused):
+    """A grant becomes ready only with every holder copy read back (slice S4c)."""
+
+
+def check_grant_transition(history: Sequence[str], state: str) -> None:
+    """Refuse ``state`` unless it legally follows ``history`` (oldest first).
+
+    ``ready`` at most once. ``unknown``, ``reconciled`` and ``failed`` only after ``ready``;
+    ``reconciled`` and ``failed`` exclude each other, and nothing follows either.
+    """
+    if state not in GRANT_STATES:
+        raise GrantStateRefused(f"not a grant state: {state!r}")
+    if state == "ready":
+        if "ready" in history:
+            raise GrantStateRefused("the grant is already ready")
+        return
+    if "ready" not in history:
+        raise GrantStateRefused(f"{state} needs a ready grant")
+    if _TERMINAL_STATES.intersection(history):
+        raise GrantStateRefused("the grant is already reconciled or failed")
+
+
+def _checked_receipt(receipt: Mapping[str, Any] | None) -> dict[str, int]:
+    if receipt is None:
+        return {}
+    if not isinstance(receipt, Mapping) or not all(
+        isinstance(key, str)
+        and not isinstance(value, bool)
+        and isinstance(value, int)
+        and value >= 0
+        for key, value in receipt.items()
+    ):
+        raise ValueError("receipt must map names to non-negative counts")
+    return dict(receipt)
+
+
+async def append_grant_state(
+    conn: Any,
+    grant_id: UUID,
+    state: str,
+    *,
+    receipt: Mapping[str, Any] | None = None,
+) -> None:
+    """Append ``state`` to the grant's history, under a per-grant lock, if it may follow.
+
+    ``ready`` is refused (:class:`HoldersIncomplete`) until slice S4c records holder copies, so
+    no grant can authorize a deletion yet. Raises :class:`GrantStateRefused` for a missing grant
+    or an illegal transition, writing nothing.
+    """
+    checked = _checked_receipt(receipt)
+    if state == "ready":
+        raise HoldersIncomplete("holder copies are not recorded yet (slice S4c)")
+    if state not in GRANT_STATES:
+        raise GrantStateRefused(f"not a grant state: {state!r}")
+    async with conn.transaction():
+        await conn.execute(_LOCK_GRANT, f"chronicler.retention_grant:{grant_id}")
+        if not await conn.fetchval(_GRANT_EXISTS, grant_id):
+            raise GrantStateRefused("no such grant")
+        history = [row["state"] for row in await conn.fetch(_GRANT_HISTORY, grant_id)]
+        check_grant_transition(history, state)
+        await conn.execute(_INSERT_STATE, grant_id, state, json.dumps(checked, sort_keys=True))
 
 
 def _checked_revisions(config_revisions: Mapping[str, str]) -> dict[str, str]:
@@ -169,6 +416,16 @@ async def prepare_retention_grant(
         )
         capped = len(rows) > limit
         granted = rows[:limit]
+        forgotten = coarsened = 0
+        if granted:
+            forgotten, coarsened = await _forget_granted(
+                conn,
+                granted,
+                revisions=revisions,
+                policy_version=policy["version"],
+                cutoff=cutoff,
+            )
+        anchors = await _coarsen_anchors(conn, {str(row["id"]) for row in granted}, cutoff)
         grant_id = uuid4()
         if granted:
             await conn.executemany(
@@ -201,4 +458,7 @@ async def prepare_retention_grant(
         cutoff=cutoff,
         item_count=len(granted),
         capped=capped,
+        point_events_forgotten=forgotten,
+        episodes_coarsened=coarsened,
+        anchors_coarsened=anchors,
     )

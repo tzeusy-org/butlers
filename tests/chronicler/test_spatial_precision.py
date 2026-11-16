@@ -15,6 +15,7 @@ from butlers.chronicler.spatial_precision import (
     SPATIAL_SCHEME_REVISION,
     SpatialCell,
     coarsen,
+    coarsen_location_payload,
     longitude_cells,
 )
 
@@ -127,3 +128,68 @@ def test_the_cell_carries_no_input_precision() -> None:
         "spatial_precision_m": 150,
         "spatial_scheme": "eqcell-150m-v1",
     }
+
+
+# ── Summary payloads (S4b-2) ─────────────────────────────────────────────────
+
+_MOVEMENT = {
+    "endpoint_identity": "owntracks:alice",
+    "point_count": 4,
+    "path_m": 812.4,
+    "start_lat": 1.2345678,
+    "start_lon": 103.8765432,
+    "end_lat": 1.2401234,
+    "end_lon": 103.8812345,
+}
+_PLACE = {
+    "endpoint_identity": "owntracks:alice",
+    "point_count": 9,
+    "centroid_lat": 51.5007292,
+    "centroid_lon": -0.1246254,
+    "label": "Home",
+    "label_source": "owner_reference",
+    "bridged": False,
+}
+_AWAY = {"max_distance_km": 12.3, "farthest_lat": -33.8567844, "farthest_lon": 151.2152967}
+
+
+@pytest.mark.parametrize("payload", [_MOVEMENT, _PLACE, _AWAY], ids=["movement", "place", "away"])
+def test_every_coordinate_pair_in_a_summary_becomes_its_cell_centre(payload: dict) -> None:
+    coarse = coarsen_location_payload(payload)
+    pairs = [(k, k[: -len("lat")] + "lon") for k in payload if k.endswith("lat")]
+    assert pairs
+    for lat_key, lon_key in pairs:
+        cell = coarsen(payload[lat_key], payload[lon_key])
+        assert (coarse[lat_key], coarse[lon_key]) == (cell.lat, cell.lon)
+    others = {k: v for k, v in payload.items() if not k.endswith(("lat", "lon"))}
+    assert {k: coarse[k] for k in others} == others
+    assert (coarse["spatial_precision_m"], coarse["spatial_scheme"]) == (150, "eqcell-150m-v1")
+    assert payload is not coarse and "spatial_scheme" not in payload
+
+
+def test_coarsening_a_summary_twice_changes_nothing() -> None:
+    once = coarsen_location_payload(_MOVEMENT)
+    assert coarsen_location_payload(once) == once
+
+
+def test_an_absent_or_unknown_coordinate_stays_unknown() -> None:
+    payload = {**_MOVEMENT, "end_lat": None, "end_lon": None}
+    coarse = coarsen_location_payload(payload)
+    assert (coarse["end_lat"], coarse["end_lon"]) == (None, None)
+    assert coarse["start_lat"] == coarsen(_MOVEMENT["start_lat"], _MOVEMENT["start_lon"]).lat
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({**_PLACE, "anchor_lat": 1.0, "anchor_lon": 2.0}, id="an-unknown-pair"),
+        pytest.param({**_PLACE, "latitude": 1.0}, id="an-unknown-name"),
+        pytest.param({**_MOVEMENT, "start_lon": None}, id="half-a-pair"),
+        pytest.param({**_MOVEMENT, "start_lat": "1.23"}, id="not-a-number"),
+        pytest.param({**_MOVEMENT, "start_lat": 91.0}, id="out-of-range"),
+    ],
+)
+def test_a_payload_it_cannot_fully_coarsen_is_refused(payload: dict) -> None:
+    # Fail closed: an exact coordinate the scheme does not know must never survive silently.
+    with pytest.raises(ValueError):
+        coarsen_location_payload(payload)

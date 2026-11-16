@@ -100,6 +100,8 @@ NOT_MODEL_REACHABLE = {
     "src/butlers/chronicler/adapters/home_assistant_sensor_activity.py::HomeAssistantSensorActivityAdapter._recheck_evidence_promotions",
     "src/butlers/chronicler/adapters/owntracks_ssid.py::OwnTracksSsidPresenceAdapter._tombstone_stale_mapping_episodes",
     "src/butlers/chronicler/adapters/situation.py::SituationInferredAdapter._tombstone_stale",
+    # Raw-expiry preparation: no caller at all yet (test_location_retention_dark_guard.py).
+    "src/butlers/chronicler/location_retention_grant.py::_coarsen_episodes",
     "src/butlers/chronicler/storage.py::refresh_episode_evidence_refs",
     "src/butlers/chronicler/storage.py::upsert_episode",
     "src/butlers/modules/memory/authority_demotion.py::apply",
