@@ -13,6 +13,7 @@ Statements and the report name relations, roles and privileges only, never row d
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection
@@ -117,46 +118,70 @@ def _statement(conn: Connection, change: GrantChange) -> str:
 
 _COLUMN_ACL_SQL = text(
     """
-    SELECT c.relname, a.attname, r.rolname, p.privilege_type
+    SELECT c.relname, a.attname, r.rolname, p.privilege_type, p.is_grantable, g.rolname
     FROM pg_catalog.pg_attribute AS a
     JOIN pg_catalog.pg_class AS c ON c.oid = a.attrelid
     JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
     CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS p
     JOIN pg_catalog.pg_roles AS r ON r.oid = p.grantee
+    JOIN pg_catalog.pg_roles AS g ON g.oid = p.grantor
     WHERE n.nspname = 'public' AND a.attacl IS NOT NULL
       AND a.attnum > 0 AND NOT a.attisdropped AND r.rolname IN :roles
     """
 ).bindparams(bindparam("roles", expanding=True))
 
 
-def column_acls(conn: Connection) -> frozenset[tuple[str, str, str, str]]:
-    """Column-level grants (relation, column, role, privilege); the manifest does not model them."""
+class ColumnAcl(NamedTuple):
+    """One column-level grant, including who granted it and whether it can be passed on."""
+
+    relation: str
+    column: str
+    role: str
+    privilege: str
+    grantable: bool
+    grantor: str
+
+
+def column_acls(conn: Connection) -> frozenset[ColumnAcl]:
+    """Column-level grants the manifest does not model, with grant option and grantor."""
     rows = conn.execute(_COLUMN_ACL_SQL, {"roles": list(runtime_roles())})
-    return frozenset((r[0], r[1], r[2], r[3]) for r in rows)
+    return frozenset(ColumnAcl(r[0], r[1], r[2], r[3], bool(r[4]), r[5]) for r in rows)
 
 
-def _restorecolumn_acls(conn: Connection, before: frozenset[tuple[str, str, str, str]]) -> None:
-    """Re-grant column privileges a table-level REVOKE dropped (it revokes every column too)."""
+def _restore_column_acls(conn: Connection, before: frozenset[ColumnAcl]) -> None:
+    """Re-grant column privileges a table-level REVOKE dropped (it revokes every column too).
+
+    Each grant keeps its ``WITH GRANT OPTION`` and its grantor: a grant made by another role
+    is restored under ``SET LOCAL ROLE`` to that role (the login must be a member of it;
+    otherwise the statement fails and the whole apply rolls back).
+    """
     quote = conn.dialect.identifier_preparer.quote
-    grouped: dict[tuple[str, str, str], list[str]] = {}
-    for relation, column, role, privilege in sorted(before - column_acls(conn)):
-        grouped.setdefault((relation, role, privilege), []).append(quote(column))
-    for (relation, role, privilege), columns in grouped.items():
-        conn.execute(
-            text(
-                " ".join(
-                    [
-                        "GRANT",
-                        privilege,
-                        "(" + ", ".join(columns) + ")",
-                        "ON TABLE",
-                        "public." + quote(relation),
-                        "TO",
-                        quote(role),
-                    ]
-                )
-            )
+    grouped: dict[tuple[str, str, str, bool, str], list[str]] = {}
+    for acl in sorted(before - column_acls(conn)):
+        key = (acl.relation, acl.role, acl.privilege, acl.grantable, acl.grantor)
+        grouped.setdefault(key, []).append(quote(acl.column))
+    if not grouped:
+        return
+    login = conn.execute(text("SELECT current_user")).scalar_one()
+    for (relation, role, privilege, grantable, grantor), columns in grouped.items():
+        statement = " ".join(
+            [
+                "GRANT",
+                privilege,
+                "(" + ", ".join(columns) + ")",
+                "ON TABLE",
+                "public." + quote(relation),
+                "TO",
+                quote(role),
+                *(["WITH GRANT OPTION"] if grantable else []),
+            ]
         )
+        if grantor == login:
+            conn.execute(text(statement))
+            continue
+        conn.execute(text("SET LOCAL ROLE " + quote(grantor)))
+        conn.execute(text(statement))  # a failure aborts the transaction; no reset needed
+        conn.execute(text("RESET ROLE"))
 
 
 def apply_public_grants(conn: Connection, *, allow_grants: bool = False) -> list[GrantChange]:
@@ -179,7 +204,7 @@ def apply_public_grants(conn: Connection, *, allow_grants: bool = False) -> list
     for change in changes:
         if not change.skipped:
             conn.execute(text(_statement(conn, change)))
-    _restorecolumn_acls(conn, columns_before)
+    _restore_column_acls(conn, columns_before)
     if column_acls(conn) != columns_before:
         raise RuntimeError("grant apply changed column-level grants; rolled back")
     leftover = [

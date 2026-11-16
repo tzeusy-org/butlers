@@ -649,6 +649,7 @@ def test_enabled_grant_step_is_fail_closed_and_runs_before_reconcile(tmp_path: P
     ok, calls = _run_chain(tmp_path / "ok", args)
     assert ok.returncode == 0, ok.stderr
     apply_at = next(i for i, c in enumerate(calls) if "apply-grants" in c and "--execute" in c)
+    assert calls[apply_at].endswith("db apply-grants --database butlers --execute")
     assert apply_at < next(i for i, c in enumerate(calls) if "--help" in c)
     assert calls[-1].endswith("public-mcp reconcile --database butlers")
 
