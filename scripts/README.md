@@ -359,6 +359,7 @@ criteria and dry-run controls before applying it to a database.
 | Script | Caller | Why it stays |
 | --- | --- | --- |
 | [`backfill_fleet_cases.py`](backfill_fleet_cases.py) | operators, per `REQ-fleet-case-file-011` in the [fleet-case-file spec](../openspec/specs/fleet-case-file/spec.md) | Previews or backfills resolved owner-condition episodes as closed historical cases using the Switchboard writer role; never scheduled. |
+| [`location_retention_smoke.py`](location_retention_smoke.py) | operators, per [OwnTracks privacy note](../docs/connectors/owntracks.md#privacy-note) (DSN on stdin) | Read-only, count-only check of raw OwnTracks expiry: policy switch, hourly run, grants by state; exits non-zero on a problem. |
 | [`memory_authority_demotion.py`](memory_authority_demotion.py) | operators, per the [authority demotion runbook](../docs/operations/memory-authority-demotion.md), after separate operational authorization | Classifies one memory schema against an evidence manifest (default read-only dry run); an exact owner-approved apply demotes laundered owner-authority rows to `mixed` with receipts. |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
 | [`qa_reconcile_publications.py`](qa_reconcile_publications.py) | operators, with `bws run -- ...` supplying the GitHub token | Runs one read-only sweep of held QA publication operations against a fixed repository and prints a content-free JSON report. |
