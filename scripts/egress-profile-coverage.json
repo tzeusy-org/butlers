@@ -3206,6 +3206,26 @@
         "connector-gmail"
       ]
     },
+    "src/butlers/connectors/gmail.py::GmailConnectorRuntime._sent_original_recipients::url::143d3ce91aa5c4043ee687673da97cb72b0f982bb3bf00a1c312cb29546ea146": {
+      "class": "external",
+      "observed": {
+        "authorities": [
+          "gmail.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/connectors/gmail.py",
+        "scope": "GmailConnectorRuntime._sent_original_recipients",
+        "sha256": "143d3ce91aa5c4043ee687673da97cb72b0f982bb3bf00a1c312cb29546ea146"
+      },
+      "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "connector-gmail"
+      ]
+    },
     "src/butlers/connectors/gmail.py::GmailConnectorRuntime._fetch_sent_message_ids::url::27b64c8d761047f4872964415cc11d2dad4c991724b4e9eb0f6dfe2a37a5412a": {
       "class": "external",
       "observed": {
@@ -3217,6 +3237,26 @@
         "kind": "url",
         "path": "src/butlers/connectors/gmail.py",
         "scope": "GmailConnectorRuntime._fetch_sent_message_ids",
+        "sha256": "27b64c8d761047f4872964415cc11d2dad4c991724b4e9eb0f6dfe2a37a5412a"
+      },
+      "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "connector-gmail"
+      ]
+    },
+    "src/butlers/connectors/gmail.py::GmailConnectorRuntime._sent_original_recipients::url::27b64c8d761047f4872964415cc11d2dad4c991724b4e9eb0f6dfe2a37a5412a": {
+      "class": "external",
+      "observed": {
+        "authorities": [
+          "gmail.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/connectors/gmail.py",
+        "scope": "GmailConnectorRuntime._sent_original_recipients",
         "sha256": "27b64c8d761047f4872964415cc11d2dad4c991724b4e9eb0f6dfe2a37a5412a"
       },
       "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
@@ -347,6 +347,41 @@ class IngestPayloadV1(BaseModel):
 PayloadType = Literal["conversation_history"]
 
 
+class AutomatedEvidenceV1(BaseModel):
+    """Connector-verified facts about an automated reply or bounce (bu-s11n0s.14).
+
+    ``automated_kind`` is sender-asserted. These fields record what the connector checked: the
+    message answers mail found in the owner's SENT mailbox, the sender was one of its
+    recipients, and Gmail's own Authentication-Results passed. ``away_until`` is set only when
+    all three hold; ``failed_recipients`` lists only permanently failed (5.x.x) addresses the
+    original was sent to.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    original_sent: bool
+    sender_was_recipient: bool
+    sender_authenticated: bool
+    away_until: date | None = None
+    failed_recipients: list[NonEmptyStr] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _bound_before_effect(self) -> AutomatedEvidenceV1:
+        if self.away_until is not None and not (
+            self.original_sent and self.sender_was_recipient and self.sender_authenticated
+        ):
+            raise PydanticCustomError(
+                "automated_evidence_unbound",
+                "automated_evidence.away_until requires bound, authenticated evidence.",
+            )
+        if self.failed_recipients and not self.original_sent:
+            raise PydanticCustomError(
+                "automated_evidence_unbound",
+                "automated_evidence.failed_recipients requires a sent original.",
+            )
+        return self
+
+
 class IngestControlV1(BaseModel):
     """Optional ingest control metadata.
 
@@ -378,6 +413,11 @@ class IngestControlV1(BaseModel):
 
     Such an envelope is Tier 2 (metadata-only); the marker lets later admission logic read
     why without re-parsing headers. Persisted into ``raw_payload.control``."""
+    automated_evidence: AutomatedEvidenceV1 | None = None
+    """What the connector verified about an ``automated_kind`` message (bu-s11n0s.14).
+
+    Only alongside ``automated_kind`` on a metadata-tier envelope. Persisted into
+    ``raw_payload.control``; carries typed values only, never third-party text."""
     known_contact: bool | None = None
     """Connector-asserted: the sender matched the loaded known-contact snapshot.
 
@@ -397,6 +437,25 @@ class IngestControlV1(BaseModel):
     misrouted. Used by per-butler dashboard conversations to pin follow-up
     messages to the butler the owner is already talking to.
     """
+
+    @model_validator(mode="after")
+    def _evidence_belongs_to_its_kind(self) -> IngestControlV1:
+        evidence = self.automated_evidence
+        if evidence is None:
+            return self
+        if self.automated_kind is None or self.ingestion_tier != "metadata":
+            raise PydanticCustomError(
+                "automated_evidence_without_kind",
+                "control.automated_evidence requires automated_kind on a metadata envelope.",
+            )
+        if (self.automated_kind == "auto_reply" and evidence.failed_recipients) or (
+            self.automated_kind == "bounce" and evidence.away_until is not None
+        ):
+            raise PydanticCustomError(
+                "automated_evidence_kind_mismatch",
+                "away_until belongs to an auto_reply and failed_recipients to a bounce.",
+            )
+        return self
 
 
 class IngestEnvelopeV1(BaseModel):

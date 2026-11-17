@@ -47,8 +47,9 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.message import Message
 from email.utils import parsedate_to_datetime
 from functools import partial
@@ -80,6 +81,15 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.automated_evidence import (
+    AutomatedEvidence,
+    auto_reply_evidence,
+    bounce_evidence,
+    bracketed_message_id,
+    parse_delivery_status,
+    recipients_of,
+    referenced_message_ids,
+)
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
@@ -826,6 +836,91 @@ class GmailConnectorRuntime:
                     break
 
         return frozenset(sent_ids)
+
+    async def _sent_original_recipients(self, message_ids: Iterable[str]) -> frozenset[str] | None:
+        """Recipients of the first named message found in the owner's SENT mailbox.
+
+        A live ``rfc822msgid:`` lookup, so a bounce that lands before the cached SENT window
+        refreshes still binds. The found message's own Message-ID must match exactly. Any
+        error, or no match, returns None: the automated message then binds to nothing.
+        """
+        if not self._http_client:
+            return None
+        try:
+            token = await self._get_access_token()
+            auth = {"Authorization": f"Bearer {token}"}
+            for message_id in list(message_ids)[:3]:
+                bare = message_id.strip("<>")
+                response = await self._http_client.get(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                    params={"q": f"rfc822msgid:{bare} in:sent", "maxResults": 1},
+                    headers=auth,
+                )
+                response.raise_for_status()
+                self._metrics.record_source_api_call(
+                    api_method="messages.list.sent_original", status="success"
+                )
+                stubs = response.json().get("messages") or []
+                if not stubs or not isinstance(stubs[0], dict) or not stubs[0].get("id"):
+                    continue
+                response = await self._http_client.get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{stubs[0]['id']}",
+                    params=[
+                        ("format", "metadata"),
+                        *(("metadataHeaders", name) for name in ("Message-ID", "To", "Cc", "Bcc")),
+                    ],
+                    headers=auth,
+                )
+                response.raise_for_status()
+                self._metrics.record_source_api_call(
+                    api_method="messages.get.sent_original", status="success"
+                )
+                data = response.json()
+                headers = _message_header_entries(data)
+                found = next(
+                    (_header_str_value(h) for h in headers if _header_name_is(h, "message-id")),
+                    "",
+                )
+                labels = data.get("labelIds") if isinstance(data, dict) else None
+                if (
+                    bracketed_message_id(found) != message_id
+                    or not isinstance(labels, list)
+                    or "SENT" not in labels
+                ):
+                    continue
+                return recipients_of(headers)
+        except Exception as exc:
+            self._metrics.record_source_api_call(
+                api_method="messages.get.sent_original", status="error"
+            )
+            logger.warning("Sent-original lookup failed; automated message stays unbound: %s", exc)
+        return None
+
+    async def _automated_evidence(
+        self,
+        kind: str,
+        message_data: dict[str, Any],
+        *,
+        subject: str,
+        body_text: str,
+        received: date,
+    ) -> AutomatedEvidence:
+        """Bind an automated reply or bounce to sent mail before it may claim anything."""
+        payload = message_data.get("payload")
+        headers = payload.get("headers") if isinstance(payload, dict) else None
+        if kind == "bounce":
+            status = parse_delivery_status(payload)
+            originals = (*status.original_message_ids, *referenced_message_ids(headers))
+            recipients = await self._sent_original_recipients(dict.fromkeys(originals))
+            return bounce_evidence(headers, status, original_recipients=recipients)
+        recipients = await self._sent_original_recipients(referenced_message_ids(headers))
+        return auto_reply_evidence(
+            headers,
+            original_recipients=recipients,
+            subject=subject,
+            body_text=body_text,
+            received=received,
+        )
 
     async def get_health_status(self) -> HealthStatus:
         """Get current health status for Kubernetes probes."""
@@ -2756,6 +2851,15 @@ class GmailConnectorRuntime:
                 metadata_envelope["payload"]["untrusted_spans"] = collapse_spans(
                     metadata_envelope["payload"]["normalized_text"], known
                 )
+            if policy_result is not None and policy_result.automated_kind:
+                evidence = await self._automated_evidence(
+                    policy_result.automated_kind,
+                    message_data,
+                    subject=subject,
+                    body_text=body,
+                    received=observed_at.date(),
+                )
+                metadata_envelope["control"]["automated_evidence"] = evidence.to_control()
             return scrub_envelope(metadata_envelope)[0]
 
         # --- Tier 1: Full envelope ---

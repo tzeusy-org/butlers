@@ -694,6 +694,69 @@ def test_ingest_control_accepts_only_known_automated_kinds():
         parse_ingest_envelope(base)
 
 
+def _automated(kind: str, evidence: dict, *, tier: str = "metadata") -> dict:
+    base = _build_valid_ingest_envelope()
+    if tier == "metadata":
+        base["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
+    base["control"] = {
+        "ingestion_tier": tier,
+        "automated_kind": kind,
+        "automated_evidence": evidence,
+    }
+    return base
+
+
+_BOUND = {"original_sent": True, "sender_was_recipient": True, "sender_authenticated": True}
+
+
+def test_ingest_control_carries_typed_automated_evidence():
+    """bu-s11n0s.14: bound evidence rides with its automated_kind on a metadata envelope."""
+    parsed = parse_ingest_envelope(_automated("auto_reply", _BOUND | {"away_until": "2026-11-24"}))
+    assert str(parsed.control.automated_evidence.away_until) == "2026-11-24"
+    bounce = {"original_sent": True, "sender_was_recipient": False, "sender_authenticated": False}
+    parsed = parse_ingest_envelope(
+        _automated("bounce", bounce | {"failed_recipients": ["gone@example.net"]})
+    )
+    assert parsed.control.automated_evidence.failed_recipients == ["gone@example.net"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "evidence", "tier"),
+    [
+        # Effects without binding or authentication.
+        (
+            "auto_reply",
+            {**_BOUND, "sender_authenticated": False, "away_until": "2026-11-24"},
+            "metadata",
+        ),
+        (
+            "auto_reply",
+            {**_BOUND, "sender_was_recipient": False, "away_until": "2026-11-24"},
+            "metadata",
+        ),
+        (
+            "bounce",
+            {**_BOUND, "original_sent": False, "failed_recipients": ["a@x.test"]},
+            "metadata",
+        ),
+        # Effects on the wrong kind.
+        ("auto_reply", {**_BOUND, "failed_recipients": ["a@x.test"]}, "metadata"),
+        ("bounce", {**_BOUND, "away_until": "2026-11-24"}, "metadata"),
+        # Evidence never rides a full-tier envelope, and carries no free text.
+        ("auto_reply", _BOUND, "full"),
+        ("auto_reply", {**_BOUND, "reason_text": "I am away"}, "metadata"),
+    ],
+)
+def test_ingest_control_refuses_unbound_or_misplaced_evidence(kind, evidence, tier):
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(_automated(kind, evidence, tier=tier))
+    base = _build_valid_ingest_envelope()
+    base["payload"] = {"raw": None, "normalized_text": "Subject: x"}
+    base["control"] = {"ingestion_tier": "metadata", "automated_evidence": _BOUND}
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(base)
+
+
 @pytest.mark.parametrize(
     "origin,route_key,params,expected_path",
     [

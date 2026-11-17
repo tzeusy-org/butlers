@@ -53,6 +53,12 @@ Rules the models encode and connectors must respect:
   which has no passive lane, queues it as `default`.
 - **`control.pinned_target`** routes deterministically to a named, routable butler without LLM
   classification; an unknown or non-routable target is rejected, never silently misrouted.
+- **`control.automated_kind`** (`auto_reply` or `bounce`) is a sender-asserted hint.
+  **`control.automated_evidence`** may ride with it on a `metadata` envelope only. It is the
+  connector's typed binding of that message to mail the owner sent (`original_sent`,
+  `sender_was_recipient`, `sender_authenticated`, `away_until`, `failed_recipients`), with no
+  free text. `away_until` requires all three checks, and `failed_recipients` a sent original.
+  Both are persisted under `raw_payload.control` (see `docs/connectors/gmail-ingestion-policy.md`).
 
 ## Transport
 

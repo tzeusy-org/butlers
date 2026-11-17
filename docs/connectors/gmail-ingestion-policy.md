@@ -88,6 +88,20 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
   malformed headers are ordinary mail.
 - `automated_kind` is asserted by the sender's headers: a hint for admission, not evidence.
   Anything that acts on it must authenticate and bind the message first.
+- The connector does that binding (`src/butlers/connectors/automated_evidence.py`, bu-s11n0s.14)
+  and adds `control.automated_evidence`. It holds typed values only:
+  - `original_sent`: a live `rfc822msgid:` lookup found the message the bounce or auto-reply
+    names (attached original, `In-Reply-To`, `References`) in the owner's SENT mailbox.
+  - `sender_was_recipient`: the auto-reply's sender was a To/Cc/Bcc recipient of that original.
+  - `sender_authenticated`: Gmail's own topmost `Authentication-Results`
+    (`mx.google.com`) shows `dmarc=pass`, or `dkim=pass` for the From domain.
+  - `away_until`: an auto-reply's single stated return date, read deterministically after a
+    return cue, at most 180 days out, and only when the three checks above hold.
+  - `failed_recipients`: a bounce's permanently failed (`Action: failed`, `5.x.x`) recipients that
+    the original was addressed to. Backscatter and delays name nobody.
+
+  Nothing reads the evidence yet: the Relationship availability and dead-address writers and the
+  nudge deferral are later slices of bu-s11n0s.14.
 
 ### Tier 3
 
