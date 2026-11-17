@@ -30,12 +30,23 @@ not built here: both wait for the RFC 0038 cutover.
   it. A mutation needs an explicit ``confirm``. It takes the same singleton lock first.
 
 Lock order: the ``dashboard_auth`` singleton, then sorted per-target advisory locks, then the hold
-rows, then the case, evidence and receipt. The core chain runs once per butler schema over these
-shared objects, so every statement is idempotent under one advisory lock and only the last
-schema still at core_347 drops them. Downgrade refuses while any receipt exists.
+rows, then the case, evidence and receipt.
+
+Installed once across the per-schema core chains, as core_343 and core_345: a run that finds the
+engine installed reads the catalog only. Otherwise it leaves the chain's open transaction (which
+still holds core_346's row lock on ``connectors.filtered_events``), takes a polled session lock and
+installs in one transaction of its own under a short lock timeout, rolling back and retrying
+while a sibling chain holds a row it needs. Granting on schema ``public`` while the earlier lock
+was held deadlocked against a sibling chain a few revision segments behind (core_315 and core_336
+grant on the same ``pg_namespace`` row). Only the last schema still at core_347 drops the objects,
+and downgrade refuses while any receipt exists.
 """
 
 from __future__ import annotations
+
+from time import monotonic, sleep
+
+from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
@@ -45,6 +56,10 @@ branch_labels = None
 depends_on = None
 
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_293:custody_holds', 0))"
+_INSTALL_LOCK = 347_20261117
+_INSTALL_LOCK_WAIT_SECONDS = 300
+#: Well under ``deadlock_timeout`` (1s), so this run gives up before a sibling's deadlock check.
+_INSTALL_LOCK_TIMEOUT = "100ms"
 _API = "dashboard_auth_api"
 
 _TABLE = """
@@ -562,7 +577,36 @@ def _installation_count() -> int:
     return count
 
 
-def upgrade() -> None:
+def _installed(bind) -> bool:
+    """Whether an earlier schema's run committed the engine (catalog reads only).
+
+    The install is one transaction, so its last objects stand for all of it.
+    """
+    return bool(
+        bind.exec_driver_sql(
+            """
+            SELECT to_regclass('public.custody_commands') IS NOT NULL
+               AND to_regprocedure('public.custody_dashboard(text, jsonb)') IS NOT NULL
+               AND EXISTS (
+                    SELECT 1 FROM pg_policy
+                    WHERE polrelid = 'public.fleet_cases'::regclass
+                      AND polname = 'fleet_cases_custody_engine'
+               )
+            """
+        ).scalar()
+    )
+
+
+def _acquire_install_lock(bind) -> None:
+    # Session lock polled in autocommit, as core_345 does: a blocking wait would hold a snapshot.
+    deadline = monotonic() + _INSTALL_LOCK_WAIT_SECONDS
+    while not bind.exec_driver_sql(f"SELECT pg_try_advisory_lock({_INSTALL_LOCK})").scalar_one():
+        if monotonic() >= deadline:
+            raise RuntimeError("custody command engine install is busy; retry this upgrade")
+        sleep(0.1)
+
+
+def _install() -> None:
     op.execute(_LOCK)
     # As the executor, which owns dashboard_auth and the fleet case tables it created.
     _database_owner_access()
@@ -574,6 +618,56 @@ def upgrade() -> None:
     op.execute(_HOST)
     _fence()
     op.execute("RESET ROLE")
+
+
+def _yields_to_a_sibling(error: DBAPIError) -> bool:
+    """A lock wait timed out, a deadlock was broken, or a sibling committed a catalog row first."""
+    code = getattr(error.orig, "pgcode", None)
+    return code in {"55P03", "40P01"} or (
+        code == "XX000" and "tuple concurrently updated" in str(error.orig)
+    )
+
+
+def _install_yielding(connection) -> None:
+    """Install in one explicit transaction that never waits long while holding anything.
+
+    The install grants on shared catalog rows (schema ``public``, the fleet case table) that a
+    sibling chain, still revisions behind, may hold or be about to take while it waits for this
+    run. A short lock timeout makes this run the one that backs off: it rolls back, releasing
+    everything, and retries until the sibling's segment commits.
+    """
+    deadline = monotonic() + _INSTALL_LOCK_WAIT_SECONDS
+    while True:
+        connection.exec_driver_sql("BEGIN")
+        try:
+            connection.exec_driver_sql(f"SET LOCAL lock_timeout = '{_INSTALL_LOCK_TIMEOUT}'")
+            _install()
+        except DBAPIError as error:
+            connection.exec_driver_sql("ROLLBACK")
+            if not _yields_to_a_sibling(error) or monotonic() >= deadline:
+                raise
+            sleep(0.2)
+            continue
+        except BaseException:
+            connection.exec_driver_sql("ROLLBACK")
+            raise
+        connection.exec_driver_sql("COMMIT")
+        return
+
+
+def upgrade() -> None:
+    # Every later schema's run lands here: catalog reads only, no lock, no catalog write.
+    if _installed(op.get_bind()):
+        return
+
+    with op.get_context().autocommit_block():
+        connection = op.get_bind()
+        _acquire_install_lock(connection)
+        try:
+            if not _installed(connection):
+                _install_yielding(connection)
+        finally:
+            connection.exec_driver_sql(f"SELECT pg_advisory_unlock({_INSTALL_LOCK})")
 
 
 def downgrade() -> None:
