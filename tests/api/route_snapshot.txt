@@ -70,7 +70,7 @@ OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
 OP GET /api/audit-log/{entry_id} bbfae7bdb716
 OP GET /api/butlers 44b4d9ade975
-OP GET /api/butlers/attention/break-through-clauses 613f823ae684
+OP GET /api/butlers/attention/break-through-clauses 3158df0862fe
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78

@@ -53,6 +53,7 @@ const EpisodeDetailPage = shellPage('/memory/episodes/:episodeId')
 const SettingsConsolePage = shellPage('/settings')
 const SettingsPermissionsPage = shellPage('/settings/permissions')
 const SettingsProjectionsPage = shellPage('/settings/projections')
+const SettingsReachPage = shellPage('/settings/reach')
 const SettingsPublicMcpPage = shellPage('/settings/public-mcp')
 const SettingsLocationRetentionPage = shellPage('/settings/location-retention')
 const SettingsModelsPage = shellPage('/settings/models')
@@ -155,6 +156,7 @@ export const routes: RouteObject[] = [
         { path: '/settings/spend', element: <Navigate to="/spend" replace /> },
         { path: '/settings/permissions', element: routeElement(<SettingsPermissionsPage />) },
         { path: '/settings/projections', element: routeElement(<SettingsProjectionsPage />) },
+        { path: '/settings/reach', element: routeElement(<SettingsReachPage />) },
         { path: '/settings/public-mcp', element: routeElement(<SettingsPublicMcpPage />) },
         { path: '/settings/location-retention', element: routeElement(<SettingsLocationRetentionPage />) },
         { path: '/settings/models', element: routeElement(<SettingsModelsPage />) },
