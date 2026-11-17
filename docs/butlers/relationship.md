@@ -220,6 +220,39 @@ owner leaves a job). A `resolved` row is never re-queried until its text changes
 ids, statuses and providers, httpx's own request log line is suppressed for these calls (its URL
 contains the address), and the job returns counts only.
 
+## Automated email evidence
+
+Auto-replies and bounces become Relationship facts without a session (bu-s11n0s.14 slice S2b,
+REQ-relationship-facts-013). The Gmail connector binds each one to mail the owner sent and checks
+Gmail's authentication verdict ([Gmail ingestion policy](../connectors/gmail-ingestion-policy.md));
+Switchboard stores the result in `raw_payload.control.automated_evidence` on a metadata-only inbox
+row. The deterministic hourly `automated_evidence_sync` job reads those rows from
+`switchboard.message_inbox` in `roster/relationship/jobs/relationship_jobs.py`, beside
+`interaction_sync` and with the same grant. The claim rules and writes live in
+`roster/relationship/tools/automated_evidence_facts.py` and go through
+`relationship_assert_fact()` with `src='automated_evidence_sync'`:
+
+| Predicate | Object | Written when |
+| --- | --- | --- |
+| `away-until` | return date, `YYYY-MM-DD` | the auto-reply answered owner mail, its sender was a recipient and is authenticated, and the date is 0 to 180 days after receipt |
+| `undeliverable-email` | the failed address | an authenticated DSN for owner mail reports the address `failed` with a `5.x.x` status |
+
+- Both are `kind='state'`, multi-valued literals (`rel_044`). Each distinct return date is its own
+  row; the most recently observed active `away-until` row is current. The effective-time packet
+  is not used while its cutover fence stands.
+- The job re-checks every evidence flag, so a backscatter DSN writes nothing even if a malformed
+  row lists recipients.
+- An address writes a fact only when it resolves to exactly one live, non-owner entity through the
+  shared channel resolver. Ambiguous, unknown and owner addresses are counted and skipped; nothing
+  parks for approval.
+- Replay is a no-op (the writer reports `unchanged`), so each run re-reads an hour before its
+  checkpoint (`automated_evidence_sync.last_scan_at`, at most 30 days back). A resolution or write
+  error leaves the checkpoint where it was.
+- Each fact cites `switchboard.message_inbox:<id>` as evidence and copies no message text.
+
+Not built yet (slice S2c): nothing reads these facts. Nudge deferral while someone is away,
+Messenger preferring a live address, and the owner's door to replace a dead one come later.
+
 ## Owner-chat commitment candidates
 
 Promises the owner makes in their own one-to-one WhatsApp and Telegram chats become

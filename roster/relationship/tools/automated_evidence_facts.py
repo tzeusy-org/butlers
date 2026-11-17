@@ -1,0 +1,251 @@
+"""Away-until and dead-address facts from automated email evidence (bu-s11n0s.14, slice S2b).
+
+The Gmail connector (S2a) binds an auto-reply or bounce to mail the owner actually sent, checks
+Gmail's own authentication verdict, and parses a return date. Switchboard ingest persists the
+result under ``raw_payload.control.automated_evidence`` on a metadata-only inbox row. The
+``automated_evidence_sync`` job (``run_automated_evidence_sync`` in the Relationship job module)
+reads those rows beside ``interaction_sync``'s read of ``switchboard.message_inbox`` (same table,
+same SELECT grant) and hands them to :func:`sync`, which writes through the central writer with no
+session and no model:
+
+* ``away-until <YYYY-MM-DD>`` on the auto-reply sender's entity, when the auto-reply answered the
+  owner's sent mail, the sender was a recipient of it, the sender authenticated, and the date lies
+  within 180 days after receipt;
+* ``undeliverable-email <address>`` on the entity owning each address a bound, authenticated DSN
+  reports as permanently failed.
+
+The job re-checks every condition rather than trusting the row, so a backscatter DSN (no sent
+original) writes nothing even if a malformed row still lists recipients. An address writes a fact
+only when it resolves to exactly one live entity (``resolve_contacts_by_channel_bulk`` drops
+ambiguous matches) that is not the owner. Resolution runs strict, so a database fault fails the
+run without advancing the checkpoint instead of silently skipping rows.
+
+Replay is a no-op: the fact identity is ``(subject, predicate, object)`` and the provenance is
+fixed, so the central writer reports ``unchanged``. That is what lets each run overlap the last
+checkpoint by an hour to catch rows committed late.
+
+Reading these facts (nudge deferral, Messenger's live-address preference, the owner's door to
+replace a dead address) is slice S2c and not built here.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
+
+import asyncpg
+
+from butlers.core.state import state_get, state_set
+from butlers.identity import resolve_contacts_by_channel_bulk
+
+from .relationship_assert_fact import AssertOutcome, relationship_assert_fact
+
+logger = logging.getLogger(__name__)
+
+AWAY_UNTIL_PREDICATE = "away-until"
+UNDELIVERABLE_EMAIL_PREDICATE = "undeliverable-email"
+#: Server-set ``src`` for every fact this job writes.
+SOURCE = "automated_evidence_sync"
+STATE_KEY = "automated_evidence_sync.last_scan_at"
+
+#: Same bound as ``interaction_sync``: an outage never triggers an unbounded backfill.
+MAX_WINDOW_DAYS = 30
+#: Each run re-reads this much before the checkpoint; replay is idempotent.
+_OVERLAP = timedelta(hours=1)
+#: Mirrors the connector's bound; a return date further out is refused.
+MAX_AWAY_DAYS = 180
+#: Mirrors the connector's DSN recipient cap.
+MAX_FAILED_RECIPIENTS = 16
+_EMAIL_CHANNEL = "email"
+_FACT_CONF = 1.0
+
+#: Reads inbound automated email rows received at or after the given instant. Each row maps
+#: ``id``, ``received_at``, ``sender``, ``automated_kind`` and ``automated_evidence``. The
+#: Relationship job module supplies it, beside ``interaction_sync``'s read of the same table.
+InboxReader = Callable[[datetime], Awaitable[Sequence[Mapping[str, Any]]]]
+
+
+@dataclass(frozen=True)
+class Claim:
+    """One fact an inbox row supports: write ``predicate object`` on ``address``'s entity."""
+
+    address: str
+    predicate: str
+    object: str
+
+
+def _address(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    address = value.strip().lower()
+    local, at, domain = address.partition("@")
+    return address if at and local and domain and " " not in address else ""
+
+
+def _checked(evidence: dict[str, Any], key: str) -> bool:
+    # A verified check is the JSON literal true, never a truthy string or number.
+    return evidence.get(key) is True
+
+
+def _away_until(evidence: dict[str, Any], received: date) -> str | None:
+    raw = evidence.get("away_until")
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return None
+    if raw != parsed.isoformat():
+        return None
+    if not received <= parsed <= received + timedelta(days=MAX_AWAY_DAYS):
+        return None
+    return parsed.isoformat()
+
+
+def claims_for(
+    automated_kind: Any, evidence: Any, sender: Any, received_at: datetime
+) -> tuple[Claim, ...]:
+    """The facts one inbox row supports, or ``()``. Pure; re-checks every connector check."""
+    if not isinstance(evidence, dict) or not _checked(evidence, "original_sent"):
+        return ()
+    if not _checked(evidence, "sender_authenticated"):
+        return ()
+    received = received_at.astimezone(UTC).date()
+
+    if automated_kind == "auto_reply":
+        address = _address(sender)
+        away_until = _away_until(evidence, received)
+        if not address or away_until is None or not _checked(evidence, "sender_was_recipient"):
+            return ()
+        return (Claim(address, AWAY_UNTIL_PREDICATE, away_until),)
+
+    if automated_kind == "bounce":
+        failed = evidence.get("failed_recipients")
+        if not isinstance(failed, list):
+            return ()
+        addresses = sorted({a for a in map(_address, failed[:MAX_FAILED_RECIPIENTS]) if a})
+        return tuple(Claim(a, UNDELIVERABLE_EMAIL_PREDICATE, a) for a in addresses)
+
+    return ()
+
+
+async def _scan_start(pool: asyncpg.Pool, now: datetime) -> tuple[datetime, int]:
+    floor = now - timedelta(days=MAX_WINDOW_DAYS)
+    try:
+        raw = await state_get(pool, STATE_KEY)
+    except Exception:
+        logger.warning("automated_evidence_sync: checkpoint read failed", exc_info=True)
+        return floor, 1
+    if raw is None:
+        return floor, 0
+    try:
+        checkpoint = datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        logger.warning("automated_evidence_sync: invalid checkpoint; using the window floor")
+        return floor, 0
+    if checkpoint.tzinfo is None:
+        checkpoint = checkpoint.replace(tzinfo=UTC)
+    return min(max(checkpoint - _OVERLAP, floor), now), 0
+
+
+async def sync(pool: asyncpg.Pool, *, read_inbox: InboxReader) -> dict[str, Any]:
+    """Write away-until and dead-address facts from bound automated email evidence."""
+    now = datetime.now(UTC)
+    start, errors = await _scan_start(pool, now)
+    stats: dict[str, Any] = {
+        "scan_window_start": start.isoformat(),
+        "scan_window_end": now.isoformat(),
+        "scanned": 0,
+        "written": 0,
+        "unchanged": 0,
+        "skipped_unbound": 0,
+        "skipped_unresolved": 0,
+        "skipped_owner": 0,
+        "errors": errors,
+    }
+
+    try:
+        rows = await read_inbox(start)
+    except Exception:
+        logger.exception("automated_evidence_sync: failed to read switchboard.message_inbox")
+        stats["errors"] += 1
+        return stats
+    stats["scanned"] = len(rows)
+
+    planned: list[tuple[Mapping[str, Any], Claim]] = []
+    for row in rows:
+        claims = claims_for(
+            row["automated_kind"], row["automated_evidence"], row["sender"], row["received_at"]
+        )
+        if not claims:
+            stats["skipped_unbound"] += 1
+        planned.extend((row, claim) for claim in claims)
+
+    pairs = sorted({(_EMAIL_CHANNEL, claim.address) for _row, claim in planned})
+    try:
+        resolved = await resolve_contacts_by_channel_bulk(pool, pairs, raise_on_error=True)
+    except Exception:
+        logger.exception("automated_evidence_sync: entity resolution failed")
+        stats["errors"] += 1
+        return stats
+
+    for row, claim in planned:
+        contact = resolved.get((_EMAIL_CHANNEL, claim.address))
+        if contact is None or contact.entity_id is None:
+            stats["skipped_unresolved"] += 1
+            continue
+        if "owner" in contact.roles:
+            stats["skipped_owner"] += 1
+            continue
+        try:
+            result = await relationship_assert_fact(
+                pool,
+                contact.entity_id,
+                claim.predicate,
+                claim.object,
+                src=SOURCE,
+                conf=_FACT_CONF,
+                observed_at=row["received_at"],
+                evidence=[
+                    {
+                        "type": "text",
+                        "ref": f"switchboard.message_inbox:{row['id']}",
+                        "note": (
+                            f"Gmail {row['automated_kind']} bound to the owner's sent mail "
+                            "and authenticated by mx.google.com"
+                        ),
+                    }
+                ],
+            )
+        except Exception:
+            logger.exception(
+                "automated_evidence_sync: fact write failed predicate=%s inbox_id=%s",
+                claim.predicate,
+                row["id"],
+            )
+            stats["errors"] += 1
+            continue
+        if result.outcome == AssertOutcome.unchanged:
+            stats["unchanged"] += 1
+        elif result.outcome in (AssertOutcome.inserted, AssertOutcome.superseded):
+            stats["written"] += 1
+        else:
+            # Owner subjects are skipped above, so a park or candidate here is unexpected.
+            logger.warning(
+                "automated_evidence_sync: unexpected outcome=%s predicate=%s inbox_id=%s",
+                result.outcome,
+                claim.predicate,
+                row["id"],
+            )
+            stats["errors"] += 1
+
+    if stats["errors"] == 0:
+        try:
+            await state_set(pool, STATE_KEY, now.isoformat())
+        except Exception:
+            logger.warning("automated_evidence_sync: checkpoint write failed", exc_info=True)
+            stats["errors"] += 1
+    return stats

@@ -103,8 +103,10 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
     to, or a subdomain of, the failed address's domain. A co-recipient's own signed DSN naming
     someone else, backscatter and delays name nobody.
 
-  Nothing reads the evidence yet: the Relationship availability and dead-address writers and the
-  nudge deferral are later slices of bu-s11n0s.14.
+  Relationship's hourly `automated_evidence_sync` job turns the evidence into `away-until` and
+  `undeliverable-email` facts (see [Relationship](../butlers/relationship.md#automated-email-evidence)).
+  Nothing reads those facts yet: nudge deferral, Messenger's live-address preference and the
+  owner's door to replace a dead address are a later slice of bu-s11n0s.14.
 
 ### Tier 3
 

@@ -1340,6 +1340,21 @@ async def _run_relationship_interaction_sync_job(
     return await mod.run_interaction_sync(pool)
 
 
+async def _run_relationship_automated_evidence_sync_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Away-until and dead-address facts from bound Gmail auto-replies and bounces (zero LLM).
+
+    bu-s11n0s.14 slice S2b.
+    """
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("relationship")
+    return await mod.run_automated_evidence_sync(pool)
+
+
 async def _run_relationship_commitment_candidate_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2329,6 +2344,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "meeting_debrief": _run_relationship_meeting_debrief_job,
             "meeting_card_push": _run_relationship_meeting_card_push_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
+            "automated_evidence_sync": _run_relationship_automated_evidence_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
             "memory_curation": _run_relationship_memory_curation_job,
             "pending_actions_curation": _run_relationship_pending_actions_curation_job,

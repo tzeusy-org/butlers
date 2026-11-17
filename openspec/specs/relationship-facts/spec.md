@@ -104,6 +104,9 @@ Alembic migration). Predicates MUST be grouped into families:
   catalog predicate.
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
+- **State predicates** (`kind='state'`, `object_kind='literal'`): `queue.dismissed`, and the
+  automated-evidence predicates `away-until` and `undeliverable-email` (see "Automated email
+  evidence becomes away-until and dead-address facts").
 
 Predicate names in the registry are **hyphenated** (`friend-of`, not `friend_of`). The set is
 extended ONLY by adding seed rows to `relationship.entity_predicate_registry`; no predicate ID
@@ -739,3 +742,49 @@ Scope: v1-mandatory
 - **WHEN** a later owner session replays or closes a gap from an existing third-party fact
 - **THEN** the stored reporter/authority SHALL govern the answer and remain unchanged
 - **AND** an owner-confirmed positive SHALL use its stored confirmation once
+
+### Requirement: Automated email evidence becomes away-until and dead-address facts
+
+A scheduled, deterministic Relationship job (`automated_evidence_sync`, no session and no model)
+SHALL read inbound email rows of `switchboard.message_inbox` whose `raw_payload.control` carries
+`automated_kind` and `automated_evidence` (written by the Gmail connector, `connector-gmail`), and
+SHALL write through `relationship_assert_fact()` with `src='automated_evidence_sync'`:
+
+- `away-until` with the civil return date (`YYYY-MM-DD`) on the auto-reply sender's entity, only
+  when the evidence shows `original_sent`, `sender_was_recipient` and `sender_authenticated` all
+  true and the date lies between the receipt date and 180 days after it;
+- `undeliverable-email` with the address on the entity owning each address in
+  `failed_recipients`, only when the evidence shows `original_sent` and `sender_authenticated`
+  true.
+
+Both predicates are seeded with `kind='state'`, `object_kind='literal'` and
+`cardinality='multi'` (`rel_044`). Each distinct return date is its own row; a reader SHALL take
+the most recently observed active `away-until` row. The job SHALL re-check every evidence
+condition rather than trust the row, SHALL resolve an address with the shared channel resolver,
+and SHALL write nothing for an address that resolves to no entity, to more than one entity, or to
+the owner. A resolution fault SHALL fail the run without advancing its checkpoint. Each fact
+cites its inbox row as evidence and copies no text of the automated message. Reading these facts
+(nudge deferral, Messenger's live-address preference, the owner's door to replace a dead address)
+is not part of this requirement.
+
+ID: REQ-relationship-facts-013
+Source: bu-s11n0s.14 acceptance criteria and design constraint (bind to sent mail, check sender authentication, delays never dead); RFC 0038 deterministic-handler check
+Scope: v1-mandatory
+
+#### Scenario: Bound auto-reply writes availability without a session
+- **WHEN** the scheduled job reads a bound, authenticated auto-reply from a known contact
+- **THEN** an active `away-until` fact with the return date SHALL exist on that contact's entity
+- **AND** the LLM spawner SHALL never be called
+
+#### Scenario: Backscatter writes no fact
+- **WHEN** a DSN names no original in the owner's SENT mailbox (`original_sent` false)
+- **THEN** no `undeliverable-email` fact SHALL be written, even if the row lists recipients
+
+#### Scenario: Replay is idempotent
+- **WHEN** the job reads the same inbox row again
+- **THEN** the central writer SHALL report `unchanged`
+- **AND** exactly one fact row SHALL exist for that subject, predicate and object
+
+#### Scenario: Ambiguous address writes nothing
+- **WHEN** the address resolves to two entities, to no entity, or to the owner
+- **THEN** no fact SHALL be written and no approval SHALL be parked

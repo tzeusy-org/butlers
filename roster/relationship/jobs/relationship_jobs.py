@@ -1798,6 +1798,45 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Automated email evidence job (bu-s11n0s.14, slice S2b)
+# ---------------------------------------------------------------------------
+
+# The inverse of interaction_sync's automated_kind filter: only the rows it skips, and only
+# when ingest persisted the connector's typed evidence object.
+_AUTOMATED_EVIDENCE_INBOX_SQL = """
+SELECT id,
+       received_at,
+       request_context ->> 'source_sender_identity'    AS sender,
+       raw_payload -> 'control' ->> 'automated_kind'    AS automated_kind,
+       raw_payload -> 'control' -> 'automated_evidence' AS automated_evidence
+FROM   switchboard.message_inbox
+WHERE  direction = 'inbound'
+  AND  received_at >= $1
+  AND  request_context ->> 'source_channel' = 'email'
+  AND  raw_payload -> 'control' ->> 'automated_kind' IN ('auto_reply', 'bounce')
+  AND  jsonb_typeof(raw_payload -> 'control' -> 'automated_evidence') = 'object'
+ORDER  BY received_at, id
+"""
+
+
+async def run_automated_evidence_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Away-until and dead-address facts from bound Gmail auto-replies and bounces.
+
+    Deterministic and model-free. Reads ``switchboard.message_inbox`` here, beside
+    ``run_interaction_sync``, with the same SELECT grant; the claim rules and fact writes live
+    in ``tools/automated_evidence_facts.py``. The result holds counts only.
+    """
+    from butlers.roster_imports import roster_module
+
+    facts = roster_module("relationship", "tools/automated_evidence_facts")
+
+    async def read_inbox(since: datetime) -> list[asyncpg.Record]:
+        return await db_pool.fetch(_AUTOMATED_EVIDENCE_INBOX_SQL, since)
+
+    return await facts.sync(db_pool, read_inbox=read_inbox)
+
+
+# ---------------------------------------------------------------------------
 # Memory curation: object_entity_id authoring backfill
 # ---------------------------------------------------------------------------
 #
