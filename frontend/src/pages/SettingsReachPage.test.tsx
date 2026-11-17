@@ -8,7 +8,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { axe, toHaveNoViolations } from "jest-axe";
 
@@ -105,6 +105,15 @@ describe("SettingsReachPage", () => {
     expect(revoke).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("revoke-reach-dialog-confirm"));
     expect(revoke.mock.calls[0][0]).toBe("c-1");
+  });
+
+  it("closes the confirm dialog when the revoke fails", () => {
+    listing([clause({})]);
+    view();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke Mum" }));
+    fireEvent.click(screen.getByTestId("revoke-reach-dialog-confirm"));
+    act(() => revoke.mock.calls[0][1].onError());
+    expect(screen.queryByTestId("revoke-reach-dialog-confirm")).toBeNull();
   });
 
   it("offers no way to add a clause", () => {

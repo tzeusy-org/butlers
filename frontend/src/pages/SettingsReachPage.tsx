@@ -38,7 +38,11 @@ export default function SettingsReachPage() {
         setRevoking(null);
         toast.success("Revoked. New messages from this clause no longer break through.");
       },
-      onError: () => toast.error("Could not revoke this clause"),
+      onError: () => {
+        // The refetch may already have dropped this row; do not leave its dialog open.
+        setRevoking(null);
+        toast.error("Could not revoke this clause");
+      },
     });
   }
 
