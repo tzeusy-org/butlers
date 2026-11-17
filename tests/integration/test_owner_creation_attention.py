@@ -899,48 +899,6 @@ def _attention_api_refresh_block() -> str:
     return source[start : source.index("-- ATTENTION_API_REFRESH_END", start)]
 
 
-def _attention_api_owner_channel_refresh_block() -> str:
-    from pathlib import Path
-
-    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
-    start = source.index("-- ATTENTION_API_OWNER_CHANNEL_REFRESH_BEGIN")
-    return source[start : source.index("-- ATTENTION_API_OWNER_CHANNEL_REFRESH_END", start)]
-
-
-async def test_owner_channel_actions_read_and_revoke_without_a_session_and_never_grant(
-    attention_env,
-):
-    """bu-s11n0s.8 S3c-1: the Telegram owner channel can list and revoke, never create."""
-    env = attention_env
-    csrf = env.session.data["csrf_token"]
-    kept = await env.service.attention_call(
-        "clause_create", env.authority, csrf, entity_id=str(uuid4()), scope="always"
-    )
-    dropped = await env.service.attention_call(
-        "clause_create", env.authority, csrf, channel="email", scope="quiet_hours_only"
-    )
-
-    listed = await env.service.owner_channel_attention_call("clause_list_owner")
-    assert {row["id"] for row in listed["clauses"]} == {kept["id"], dropped["id"]}
-
-    await env.service.owner_channel_attention_call("clause_revoke_owner", id=dropped["id"])
-    listed = await env.service.owner_channel_attention_call("clause_list_owner")
-    assert [row["id"] for row in listed["clauses"]] == [kept["id"]]
-    with pytest.raises(AuthError) as unknown:
-        await env.service.owner_channel_attention_call("clause_revoke_owner", id=str(uuid4()))
-    assert unknown.value.code == "INVALID_REQUEST"
-
-    # The same unauthenticated shape can reach no granting or session-bound action.
-    for action in ("clause_create", "clause_revoke", "clause_list", "issue"):
-        with pytest.raises(AuthError) as denied:
-            await env.service._capability_call(
-                "SELECT dashboard_attention.api($1,$2::jsonb)", action, {"scope": "always"}
-            )
-        assert denied.value.code == "UNAUTHORIZED"
-    after = await env.service.owner_channel_attention_call("clause_list_owner")
-    assert [row["id"] for row in after["clauses"]] == [kept["id"]]
-
-
 async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refresh_installs_it(
     attention_env,
 ):
@@ -985,23 +943,8 @@ async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refres
         "SELECT proowner::regrole::text FROM pg_proc "
         "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
     )
-    old = (
-        definition.replace(
-            "IF action NOT IN('clause_list','clause_list_owner','clause_revoke_owner') AND NOT EXISTS",
-            "IF NOT EXISTS",
-        )
-        .replace(
-            "IF action NOT IN('clause_list_owner','clause_revoke_owner') AND (NOT FOUND OR se.revoked\n"
-            "   OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch\n"
-            "   OR se.session_epoch<>s.session_epoch)",
-            "IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch\n"
-            "   OR se.session_epoch<>s.session_epoch",
-        )
-        .replace(
-            "ELSIF action IN('clause_revoke','clause_revoke_owner')", "ELSIF action='clause_revoke'"
-        )
-    )
-    old = old[: old.index("ELSIF action IN('clause_list','clause_list_owner')")] + (
+    old = definition.replace("IF action<>'clause_list' AND NOT EXISTS", "IF NOT EXISTS")
+    old = old[: old.index("ELSIF action='clause_list'")] + (
         'END IF;\n  RETURN \'{"error":"INVALID_REQUEST"}\';\n END\n$function$\n'
     )
     await env.admin.execute(old)
@@ -1009,8 +952,6 @@ async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refres
         await listed("")
     await env.admin.execute(_attention_api_refresh_block())
     await env.admin.execute(_attention_api_refresh_block())  # idempotent
-    await env.admin.execute(_attention_api_owner_channel_refresh_block())
-    await env.admin.execute(_attention_api_owner_channel_refresh_block())  # idempotent
     assert [row["id"] for row in await listed("")] == [kept["id"]]
     assert owner_before == await env.admin.fetchval(
         "SELECT proowner::regrole::text FROM pg_proc "
@@ -1163,3 +1104,53 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         assert refused.value.diag.message_primary == "untrusted attention function catalog"
     finally:
         await admin.close()
+
+
+async def test_owner_channel_functions_list_and_revoke_without_a_session_and_never_grant(
+    attention_env,
+):
+    """bu-s11n0s.8 S3c-1: the Telegram owner channel can list and revoke, never create."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    kept = await env.service.attention_call(
+        "clause_create", env.authority, csrf, entity_id=str(uuid4()), scope="always"
+    )
+    dropped = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="quiet_hours_only"
+    )
+
+    listed = await env.service.owner_channel_clauses()
+    assert {row["id"] for row in listed} == {kept["id"], dropped["id"]}
+    assert set(listed[0]) == {
+        "id",
+        "sender_domain",
+        "channel",
+        "security_kind",
+        "scope",
+        "expires_at",
+    }
+
+    await env.service.owner_channel_revoke(dropped["id"])
+    assert [row["id"] for row in await env.service.owner_channel_clauses()] == [kept["id"]]
+    for unknown_or_repeat in (str(uuid4()), dropped["id"]):
+        with pytest.raises(AuthError) as refused:
+            await env.service.owner_channel_revoke(unknown_or_repeat)
+        assert refused.value.code == "INVALID_REQUEST"
+
+    # The same unauthenticated shape reaches no granting or session-bound api() action.
+    for action in ("clause_create", "clause_revoke", "clause_revoke_owner", "clause_list", "issue"):
+        with pytest.raises(AuthError) as denied:
+            await env.service._capability_call(
+                "SELECT dashboard_attention.api($1,$2::jsonb)", action, {"scope": "always"}
+            )
+        assert denied.value.code == "UNAUTHORIZED"
+    assert [row["id"] for row in await env.service.owner_channel_clauses()] == [kept["id"]]
+
+    # Only the API runtime role (beside the owner) may execute either function.
+    grantees = await env.admin.fetch(
+        "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
+        "FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x "
+        "WHERE p.pronamespace='dashboard_attention'::regnamespace "
+        "AND p.proname IN ('owner_channel_list','owner_channel_revoke')"
+    )
+    assert {row["g"] for row in grantees} == {"dashboard_attention_owner", "dashboard_auth_api"}

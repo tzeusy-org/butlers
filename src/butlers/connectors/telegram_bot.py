@@ -1312,7 +1312,7 @@ class TelegramBotConnector:
         else:
             clauses = [c for c in data.get("clauses", []) if isinstance(c, dict)]
             lines = []
-            for clause in clauses[:10]:
+            for clause in clauses:
                 who = clause.get("sender_domain") or "a sender you named"
                 label = f"{clause.get('channel') or 'any channel'}: {who}"
                 lines.append(label)
@@ -1325,8 +1325,6 @@ class TelegramBotConnector:
                 keyboard.append([{"text": f"Revoke {label}"[:60], "callback_data": token}])
             if lines:
                 reply = "Senders who can break through:\n" + "\n".join(f"- {x}" for x in lines)
-                if len(clauses) > 10:
-                    reply += f"\n(and {len(clauses) - 10} more; see the dashboard)"
             else:
                 reply = "No break-through clauses are active."
         payload: dict[str, Any] = {"chat_id": str(chat_id), "text": reply}

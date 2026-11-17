@@ -136,17 +136,39 @@ class OwnerAuthService:
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
 
-    async def owner_channel_attention_call(self, action: str, **values: Any) -> dict:
-        """Narrowing-only surface for the verified Telegram owner channel.
+    async def owner_channel_clauses(self) -> list[dict]:
+        """The unrevoked clauses for the verified Telegram owner channel (read only)."""
+        result = await self._owner_channel_call("SELECT dashboard_attention.owner_channel_list()")
+        clauses = result.get("clauses")
+        return clauses if isinstance(clauses, list) else []
 
-        The caller (the connector-token route) has already verified the primary owner
-        channel; this set is closed to read and revoke so no channel path can grant.
+    async def owner_channel_revoke(self, clause_id: str) -> None:
+        """Revoke one clause for the verified Telegram owner channel; never creates or grants.
+
+        Raises ``AuthError("INVALID_REQUEST")`` for an unknown or already-revoked clause.
         """
-        if action not in {"clause_list_owner", "clause_revoke_owner"}:
-            raise AuthError("INVALID_REQUEST")
-        return await self._capability_call(
-            "SELECT dashboard_attention.api($1,$2::jsonb)", action, values
+        await self._owner_channel_call(
+            "SELECT dashboard_attention.owner_channel_revoke($1::uuid)", clause_id
         )
+
+    async def _owner_channel_call(self, sql: str, *args: Any) -> dict:
+        if self.pool is None:
+            raise AuthError()
+        try:
+            with suppress_instrumentation():
+                async with self.pool.acquire() as connection, connection.transaction():
+                    await connection.execute("SET LOCAL ROLE dashboard_auth_api")
+                    raw = await connection.fetchval(sql, *args)
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(result, dict):
+                raise AuthError()
+        except AuthError:
+            raise
+        except Exception:
+            raise AuthError() from None
+        if "error" in result:
+            raise AuthError(result["error"])
+        return result
 
     async def _stepup_call(self, action: str, **values: Any) -> dict:
         return await self._capability_call(

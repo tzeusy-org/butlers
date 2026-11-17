@@ -2,9 +2,9 @@
 
 Narrowing only (RFC 0038 D4). The route is reachable solely with the connector credential
 (admitted in ``owner_auth/http.py``, which sets ``reach_callback_authenticated``) and never
-creates an owner principal. It re-verifies that the sender is the primary owner channel, then
-calls the closed ``owner_channel_attention_call`` surface, which can read and revoke but can
-never create a clause: granting stays with the dashboard cookie session.
+creates an owner principal. It re-verifies that the sender and the chat are the primary owner
+channel, then calls the two narrow ``dashboard_attention`` functions (list, revoke one live
+clause), which can never create a clause: granting stays with the dashboard cookie session.
 """
 
 from __future__ import annotations
@@ -48,16 +48,19 @@ async def reach_telegram(body: ReachTelegramRequest, request: Request, db: Db):
         raise HTTPException(403, detail="connector_required")
     if body.action == "revoke" and body.clause_id is None:
         raise HTTPException(422, detail="clause_id_required")
-    if not await _is_primary_owner(db, body.sender_id):
+    # Both the sender and the chat must be the primary owner channel: a list is never sent to a
+    # group or any chat other than the owner's own, whatever the connector believed.
+    if not (
+        await _is_primary_owner(db, body.sender_id) and await _is_primary_owner(db, body.chat_id)
+    ):
         return {"data": {"status": "refused"}}
     service = getattr(request.app.state, "owner_auth_service", None)
     if service is None:
         raise HTTPException(503, detail="owner_auth_unavailable")
     try:
         if body.action == "list":
-            result = await service.owner_channel_attention_call("clause_list_owner")
-            return {"data": {"status": "ok", "clauses": result.get("clauses", [])}}
-        await service.owner_channel_attention_call("clause_revoke_owner", id=str(body.clause_id))
+            return {"data": {"status": "ok", "clauses": await service.owner_channel_clauses()}}
+        await service.owner_channel_revoke(str(body.clause_id))
     except AuthError as exc:
         if exc.code == "INVALID_REQUEST" and body.action == "revoke":
             return {"data": {"status": "unknown_clause"}}

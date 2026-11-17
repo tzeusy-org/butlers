@@ -1128,8 +1128,8 @@ Scope: v1-mandatory
 
 - **WHEN** the primary owner's Telegram channel sends exactly `/reach`
 - **THEN** the connector answers deterministically with the unrevoked clauses and a signed, chat-bound revoke button per clause, and the message never reaches ingest or any model
-- **AND** a revoke tap is honoured only from the primary owner channel, verified at the connector and again at the API, through the connector-credential route and the narrowing-only `clause_list_owner` and `clause_revoke_owner` actions
-- **AND** no Telegram path can create a clause: `clause_create` and `issue` keep the verified cookie session and CSRF proof, so a break-through clause is only ever granted from the dashboard
+- **AND** a revoke tap is honoured only from the primary owner channel, verified at the connector and again at the API, through the connector-credential route and two narrow SQL functions (`dashboard_attention.owner_channel_list`, `dashboard_attention.owner_channel_revoke`), the second of which only sets `revoked_at` on one live clause
+- **AND** no Telegram path can create a clause: `dashboard_attention.api` keeps the verified cookie session and CSRF proof for `clause_create` and `issue` and is unchanged, so a break-through clause is only ever granted from the dashboard
 
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 
