@@ -19,6 +19,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.owner_delivery", "router"),
     ("butlers.api.routers.decision_sets", "router"),
     ("butlers.api.routers.confirms", "router"),
+    ("butlers.api.routers.reach_telegram", "router"),
     ("butlers.api.routers.attention_ledger", "router"),
     ("butlers.api.routers.events", "router"),
     ("butlers.api.routers.butler_logs", "router"),

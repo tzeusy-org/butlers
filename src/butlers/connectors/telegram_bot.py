@@ -38,6 +38,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import UUID
 
 if TYPE_CHECKING:
     import asyncpg
@@ -1113,7 +1114,11 @@ class TelegramBotConnector:
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
                     return
+                if await self._maybe_handle_reach_callback(update):
+                    return
                 if await self._maybe_ack_unhandled_callback(update):
+                    return
+                if await self._maybe_handle_reach_command(update):
                     return
 
                 envelope = await self._normalize_to_ingest_v1(update)
@@ -1250,6 +1255,130 @@ class TelegramBotConnector:
                     ),
                     error_detail=str(exc),
                 )
+
+    async def _post_reach(self, body: dict[str, Any]) -> dict[str, Any] | None:
+        """POST one narrowing-only /reach request; ``None`` when the API is unreachable."""
+        credential = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not credential:
+            return None
+        try:
+            response = await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}/api/attention/reach/telegram",
+                headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: credential},
+                json=body,
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json().get("data")
+            return data if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001 -- no credential or payload in logs
+            logger.warning("Reach callback service unavailable")
+            return None
+
+    async def _maybe_handle_reach_command(self, update: dict[str, Any]) -> bool:
+        """Answer an exact ``/reach`` from the primary owner with the revocable clause list.
+
+        Deterministic and connector-parsed: the command never reaches ingest or a model, and a
+        non-owner sender falls through as an ordinary message. Read and revoke only; granting a
+        break-through clause stays with the dashboard cookie session (RFC 0038 D4).
+        """
+        from butlers.core.reach_tokens import mint_reach_revoke_token
+
+        message = update.get("message")
+        if not isinstance(message, dict):
+            return False
+        text = message.get("text")
+        if not isinstance(text, str) or text.strip() != "/reach":
+            return False
+        sender = message.get("from")
+        chat = message.get("chat")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        if sender_id is None or chat_id is None:
+            return False
+        if not await self._is_primary_owner_callback({"from": sender}):
+            return False
+        secret = self._config.approval_callback_secret
+        data = (
+            await self._post_reach(
+                {"action": "list", "sender_id": str(sender_id), "chat_id": str(chat_id)}
+            )
+            if secret
+            else None
+        )
+        keyboard: list[list[dict[str, str]]] = []
+        if secret is None or data is None or data.get("status") != "ok":
+            reply = "I couldn't read your break-through list right now. Use the dashboard."
+        else:
+            clauses = [c for c in data.get("clauses", []) if isinstance(c, dict)]
+            lines = []
+            for clause in clauses[:10]:
+                who = clause.get("sender_domain") or "a sender you named"
+                label = f"{clause.get('channel') or 'any channel'}: {who}"
+                lines.append(label)
+                try:
+                    token = mint_reach_revoke_token(
+                        UUID(str(clause.get("id"))), chat_id=str(chat_id), secret=secret
+                    )
+                except ValueError:
+                    continue
+                keyboard.append([{"text": f"Revoke {label}"[:60], "callback_data": token}])
+            if lines:
+                reply = "Senders who can break through:\n" + "\n".join(f"- {x}" for x in lines)
+                if len(clauses) > 10:
+                    reply += f"\n(and {len(clauses) - 10} more; see the dashboard)"
+            else:
+                reply = "No break-through clauses are active."
+        payload: dict[str, Any] = {"chat_id": str(chat_id), "text": reply}
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": keyboard}
+        try:
+            await self._http_client.post(f"{self._telegram_api_base}/sendMessage", json=payload)
+        except Exception:  # noqa: BLE001 -- best-effort reply
+            logger.warning("Failed to send /reach reply")
+        return True
+
+    async def _maybe_handle_reach_callback(self, update: dict[str, Any]) -> bool:
+        """Revoke one clause from a signed ``rch1:`` button tap by the primary owner."""
+        from butlers.core.reach_tokens import REACH_PREFIX, verify_reach_revoke_token
+
+        callback = update.get("callback_query")
+        if not isinstance(callback, dict):
+            return False
+        token = callback.get("data")
+        if not isinstance(token, str) or not token.startswith(f"{REACH_PREFIX}:"):
+            return False
+        callback_id = str(callback.get("id", ""))
+        sender = callback.get("from")
+        message = callback.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        secret = self._config.approval_callback_secret
+        toast = ""
+        clause_id = (
+            verify_reach_revoke_token(token, chat_id=str(chat_id), secret=secret)
+            if secret and chat_id is not None
+            else None
+        )
+        if clause_id is not None and sender_id is not None:
+            if await self._is_primary_owner_callback(callback):
+                data = await self._post_reach(
+                    {
+                        "action": "revoke",
+                        "sender_id": str(sender_id),
+                        "chat_id": str(chat_id),
+                        "clause_id": str(clause_id),
+                    }
+                )
+                status = data.get("status") if data else None
+                toast = {
+                    "revoked": "Revoked.",
+                    "unknown_clause": "Already gone.",
+                }.get(status or "", "Couldn't revoke that right now. Use the dashboard.")
+        if callback_id:
+            await self._answer_callback_query(callback_id, toast)
+        return True
 
     async def _maybe_handle_confirm_callback(self, update: dict[str, Any]) -> bool:
         """Forward authenticated informational taps; never call a domain or approval sink."""

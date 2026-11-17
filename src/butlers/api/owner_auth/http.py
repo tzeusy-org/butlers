@@ -236,6 +236,17 @@ class OwnerAuthMiddleware:
                     await self.app(scope, receive, send)
                     return
                 if (
+                    method == "POST"
+                    and path == "/api/attention/reach/telegram"
+                    and expected
+                    and supplied
+                    and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    # Narrowing-only Telegram /reach (bu-s11n0s.8); no owner principal or session.
+                    scope.setdefault("state", {})["reach_callback_authenticated"] = True
+                    await self.app(scope, receive, send)
+                    return
+                if (
                     expected
                     and supplied
                     and _is_approval_callback_route(Request(scope))

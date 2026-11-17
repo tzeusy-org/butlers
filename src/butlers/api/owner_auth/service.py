@@ -136,6 +136,18 @@ class OwnerAuthService:
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
 
+    async def owner_channel_attention_call(self, action: str, **values: Any) -> dict:
+        """Narrowing-only surface for the verified Telegram owner channel.
+
+        The caller (the connector-token route) has already verified the primary owner
+        channel; this set is closed to read and revoke so no channel path can grant.
+        """
+        if action not in {"clause_list_owner", "clause_revoke_owner"}:
+            raise AuthError("INVALID_REQUEST")
+        return await self._capability_call(
+            "SELECT dashboard_attention.api($1,$2::jsonb)", action, values
+        )
+
     async def _stepup_call(self, action: str, **values: Any) -> dict:
         return await self._capability_call(
             "SELECT dashboard_stepup.ceremony($1, $2::jsonb)", action, values

@@ -468,6 +468,18 @@ proof, because it mutates nothing, and it returns matcher ids, scope and dates, 
 content. The function is rewritten in place on an installed database by the
 `ATTENTION_API_REFRESH` block of `scripts/init-db.sql`.
 
+The owner's Telegram channel may list and revoke clauses, never grant them (RFC 0038 D4). The
+connector parses an exact `/reach` from the primary owner, calls `POST /api/attention/reach/telegram`
+with its callback credential (admitted in `owner_auth/http.py`, no owner principal or session),
+and the route re-verifies the primary owner channel before calling
+`OwnerAuthService.owner_channel_attention_call`. That call is a closed set of two actions,
+`clause_list_owner` and `clause_revoke_owner`, which `dashboard_attention.api` serves without a
+session or CSRF proof because they can only read the unrevoked list or set `revoked_at`.
+`clause_create` and `issue` still require the cookie session and CSRF proof. Revoke buttons carry
+`rch1:<clause uuid>:<16 hex>` tokens (`core/reach_tokens.py`) bound to the chat they were listed
+in. The function is rewritten in place on an installed database by the
+`ATTENTION_API_OWNER_CHANNEL_REFRESH` block of `scripts/init-db.sql`.
+
 Privileged bootstrap stages the separate `dashboard_attention` fixed interface
 before the untouched D13 block. Ordinary `core_278` invokes its checked installer
 or finalizer. Runtime roles have no direct ticket/stamp/clause write access;

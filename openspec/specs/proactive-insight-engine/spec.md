@@ -1124,6 +1124,13 @@ Scope: v1-mandatory
 - **THEN** the unrevoked clauses are returned newest first (matcher ids, scope, expiry, creation time), from the same single clause store the create and revoke routes write
 - **AND** the read needs the session but not the CSRF proof, is refused for any non-cookie authority, and never exposes message content
 
+#### Scenario: The owner can list and revoke clauses from Telegram but never grant
+
+- **WHEN** the primary owner's Telegram channel sends exactly `/reach`
+- **THEN** the connector answers deterministically with the unrevoked clauses and a signed, chat-bound revoke button per clause, and the message never reaches ingest or any model
+- **AND** a revoke tap is honoured only from the primary owner channel, verified at the connector and again at the API, through the connector-credential route and the narrowing-only `clause_list_owner` and `clause_revoke_owner` actions
+- **AND** no Telegram path can create a clause: `clause_create` and `issue` keep the verified cookie session and CSRF proof, so a break-through clause is only ever granted from the dashboard
+
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 
 - **WHEN** the owner revokes a clause

@@ -6699,10 +6699,11 @@ BEGIN
    OR s.origin IS DISTINCT FROM p->>'origin' OR s.rp_id IS DISTINCT FROM p->>'rp_id'
    OR s.key_generation IS DISTINCT FROM p->>'key_generation' THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   SELECT * INTO se FROM dashboard_auth.sessions WHERE digest=p->>'session_digest';
-  IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
-   OR se.session_epoch<>s.session_epoch
+  IF action NOT IN('clause_list_owner','clause_revoke_owner') AND (NOT FOUND OR se.revoked
+   OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
+   OR se.session_epoch<>s.session_epoch)
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
-  IF action<>'clause_list' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
+  IF action NOT IN('clause_list','clause_list_owner','clause_revoke_owner') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
    WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
    THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
@@ -6730,12 +6731,12 @@ BEGIN
     VALUES((p->>'entity_id')::uuid,p->>'sender_domain',p->>'channel',p->>'security_kind',p->>'scope',
      (p->>'expires_at')::timestamptz) RETURNING id INTO c;
    RETURN jsonb_build_object('id',c);
-  ELSIF action='clause_revoke' THEN
+  ELSIF action IN('clause_revoke','clause_revoke_owner') THEN
    UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,t) WHERE id=(p->>'id')::uuid
     RETURNING id INTO c;
    IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
    RETURN jsonb_build_object('id',c);
-  ELSIF action='clause_list' THEN
+  ELSIF action IN('clause_list','clause_list_owner') THEN
    RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
     'entity_id',k.entity_id,'sender_domain',k.sender_domain,'channel',k.channel,
     'security_kind',k.security_kind,'scope',k.scope,'expires_at',k.expires_at,
@@ -6865,6 +6866,30 @@ BEGIN
  END IF;
 END $attention_api_refresh$;
 -- ATTENTION_API_REFRESH_END
+
+-- ATTENTION_API_OWNER_CHANNEL_REFRESH_BEGIN
+-- bu-s11n0s.8 S3c-1: ``clause_list_owner`` and ``clause_revoke_owner`` are the two narrowing
+-- actions the Telegram connector route may reach once it has verified the primary owner channel
+-- and its own credential. They skip the dashboard session and CSRF checks (no browser is
+-- involved) and can only read the unrevoked list or set ``revoked_at``: ``clause_create`` and
+-- ``issue`` keep the full session and CSRF proof, so no Telegram path can grant. Installed
+-- databases are rewritten in place after ATTENTION_API_REFRESH; idempotent.
+DO $attention_api_owner_channel_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ old_session constant text := E'  IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch\n   OR se.session_epoch<>s.session_epoch\n   THEN RETURN ''{"error":"UNAUTHORIZED"}''; END IF;\n  IF action<>''clause_list'' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ new_session constant text := E'  IF action NOT IN(''clause_list_owner'',''clause_revoke_owner'') AND (NOT FOUND OR se.revoked\n   OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch\n   OR se.session_epoch<>s.session_epoch)\n   THEN RETURN ''{"error":"UNAUTHORIZED"}''; END IF;\n  IF action NOT IN(''clause_list'',''clause_list_owner'',''clause_revoke_owner'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+BEGIN
+ IF f IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_session IN definition) > 0 THEN
+   definition := replace(definition, old_session, new_session);
+   definition := replace(definition, E'  ELSIF action=''clause_revoke'' THEN\n', E'  ELSIF action IN(''clause_revoke'',''clause_revoke_owner'') THEN\n');
+   definition := replace(definition, E'  ELSIF action=''clause_list'' THEN\n', E'  ELSIF action IN(''clause_list'',''clause_list_owner'') THEN\n');
+   EXECUTE definition;
+  END IF;
+ END IF;
+END $attention_api_owner_channel_refresh$;
+-- ATTENTION_API_OWNER_CHANNEL_REFRESH_END
 
 -- ATTENTION_DIGEST_REFRESH_BEGIN
 -- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery
