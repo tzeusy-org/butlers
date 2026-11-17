@@ -314,9 +314,10 @@ The deletion path, built dark slice by slice and now switched as above:
     audit, but its `full_payload.payload` becomes `[location withheld: raw retention]`
     and it carries `replay_unavailable`, so the replay drain refuses it rather than submitting
     a hollow event. A failure here rolls back the delete, the tombstones and the receipt.
-  - A policy-filtered fix is recorded to `filtered_events` with its raw body and never reaches
+  - A policy-filtered fix is recorded to `filtered_events` without its raw body and never reaches
     `owntracks_points`, so it has no point row, never enters a grant and is outside a grant's
-    reach (a follow-up under bu-s11n0s.7).
+    reach. Such a row keeps no coordinates in the first place: see the policy-blocked bullet
+    below (bu-s11n0s.73).
   - A copy written after the fix was forgotten (a resend parked again) is withheld on insert
     by core_345's `filtered_events_withhold_forgotten` trigger, which takes the forget guard
     first, so a copy racing a deletion waits for its commit.
@@ -375,6 +376,8 @@ The deletion path, built dark slice by slice and now switched as above:
   - Without its body the event cannot be replayed, so the row carries `replay_unavailable` and a
     replay request ends `replay_failed` with `not replayable: a policy-blocked OwnTracks event
     keeps no coordinates`.
+  - core_346 gives rows recorded before this change the same shape once (idempotent; parked rows
+    and other connectors untouched). Its waypoints text keeps the count, not the names.
 - Switchboard can forget its inbox copies of granted fixes, still dark (bu-s11n0s.7 S4c-2,
   sw_082, `roster/switchboard/tools/location_retention.forget_location_copies`):
   - Every accepted OwnTracks envelope stays in `switchboard.message_inbox`, and its

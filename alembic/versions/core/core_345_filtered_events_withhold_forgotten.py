@@ -9,8 +9,9 @@ coordinate text included. An envelope parked after its ingest attempts were spen
 fix whose point is still persisted, so a grant can name it. The deleter
 (``butlers.connectors.owntracks_retention.execute_grant``) withholds the parked copies of the
 fixes it deletes in its own transaction (a policy-filtered fix has no point row and is outside
-a grant's reach: a follow-up under bu-s11n0s.7). This migration covers a copy written later (a phone
-resend that is parked after the fix was forgotten):
+a grant's reach; its row keeps no coordinates from the start, bu-s11n0s.73 and core_346). This
+migration covers a copy written later (a phone resend that is parked after the fix was
+forgotten):
 
 * ``connectors.filtered_events_withhold_forgotten()``, a ``BEFORE INSERT`` row trigger on the
   partitioned table, takes ``connectors.owntracks_forget_guard()`` (core_343) shared and, for an
