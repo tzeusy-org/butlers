@@ -42,6 +42,7 @@ cleanup() {
     fi
   fi
   kubectl -n "$MCP_NS" delete pod "$PROBE" --ignore-not-found --wait=false >/dev/null 2>&1
+  kubectl -n "$MCP_NS" delete networkpolicy butlers-public-mcp-probe-egress --ignore-not-found >/dev/null 2>&1
   rm -rf "$TMP"
 }
 trap cleanup EXIT
@@ -67,13 +68,14 @@ kubectl -n "$MCP_NS" get svc -o json | python3 -c '
 import json, sys
 for svc in json.load(sys.stdin)["items"]:
     sel = svc["spec"].get("selector") or {}
-    if sel and all({"app.kubernetes.io/instance": "butlers"}.get(a) == b for a, b in sel.items()):
+    probe = {"app.kubernetes.io/instance": "mcp-butlers", "butlers.tze.how/public-mcp-probe": "true"}
+    if sel and all(probe.get(a) == b for a, b in sel.items()):
         sys.exit("probe labels would match Service " + svc["metadata"]["name"])
 ' || { echo "smoke ABORTED: cannot prove the labelled probe is safe in $MCP_NS" >&2; exit 3; }
 
 # 2. Probe pod, test key, restart.
 overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":10001,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"probe","image":"'"$IMAGE"'","command":["sleep","1200"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]},"readOnlyRootFilesystem":true,"runAsNonRoot":true,"seccompProfile":{"type":"RuntimeDefault"}}}]}}'
-kubectl -n "$MCP_NS" run "$PROBE" --image="$IMAGE" --restart=Never --labels=app.kubernetes.io/instance=butlers --overrides="$overrides" >/dev/null \
+kubectl -n "$MCP_NS" run "$PROBE" --image="$IMAGE" --restart=Never --labels=app.kubernetes.io/instance=mcp-butlers,butlers.tze.how/public-mcp-probe=true --overrides="$overrides" >/dev/null \
   && kubectl -n "$MCP_NS" wait --for=condition=Ready "pod/$PROBE" --timeout=120s >/dev/null \
   || { echo "smoke ABORTED: probe pod did not start" >&2; exit 3; }
 CODE="$(cat "$HERE/public-mcp-smoke.py")"
@@ -94,6 +96,11 @@ echo "server restarted on the test keyring"
 if [ "${LIVE_CHECKS:-1}" = 1 ]; then
   "$HERE/public-mcp-live-checks.sh" "$ENV_NAME" || fails=$((fails + 1))
 fi
+
+# Namespace `mcp` is default-deny both ways (homelab); the probe needs its short-lived egress
+# allow to the public pod's 8080. Applied here, after the live checks, which delete their copy.
+kubectl apply -f "$HERE/public-mcp-probe-egress.yaml" >/dev/null || { echo "smoke ABORTED: cannot apply the probe egress allow in $MCP_NS" >&2; exit 3; }
+sleep 5  # let the CNI program the allow before the first call
 
 # 3 and 4. Smoke inside the witness window.
 primary="$(kubectl -n "$PG_NS" get pod -l "cnpg.io/cluster=$PG_NS,cnpg.io/instanceRole=primary" -o name | head -1)"
@@ -127,7 +134,8 @@ SELECT format('SELECT %L, %s, count(*) FROM %I.%I WHERE %I >= %L::timestamptz GR
 FROM t ORDER BY sch, tbl
 \gexec
 SQL
-window="$(psql_butlers -v t0="$T0" -c "SELECT round(extract(epoch FROM now() - :'t0'::timestamptz))" 2>/dev/null || echo '?')"
+# psql interpolates :'t0' only in script input, never in -c.
+window="$(echo "SELECT round(extract(epoch FROM now() - :'t0'::timestamptz))" | psql_butlers -v t0="$T0" 2>/dev/null || echo '?')"
 echo "WITNESS rows created in butlers during the ${window}s smoke window (table|source|count):"
 sed 's/^/  /' "$TMP/witness.txt"
 if awk -F'|' 'tolower($2) ~ /mcp|public/ { found = 1 } END { exit !found }' "$TMP/witness.txt"; then

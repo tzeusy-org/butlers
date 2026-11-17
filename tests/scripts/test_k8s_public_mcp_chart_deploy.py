@@ -189,7 +189,7 @@ case "$args" in
     esac ;;
   *"get crd"*) echo "NotFound" >&2; exit 1 ;;
   *"get svc -o json"*) echo '{"items": []}' ;;
-  *" run "*|*" wait "*|*" delete "*) exit 0 ;;
+  *" run "*|*" wait "*|*" delete "*|*"apply -f "*) exit 0 ;;
   *"exec -i srv -- /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py python -"*)
     case "${FAKE_ISOLATION:-}" in
       three_verdicts_exit_0) printf 'ok   ISOLATION a\nok   ISOLATION b\nok   ISOLATION c\n'; exit 0 ;;

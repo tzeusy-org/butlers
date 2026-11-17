@@ -36,9 +36,11 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: mcp
+          # homelab helm/mcp_server labels release `butlers` with instance `mcp-butlers` (its
+          # fullname); homelab servers/butlers.yaml asks Butlers to admit exactly that label.
           podSelector:
             matchLabels:
-              app.kubernetes.io/instance: butlers
+              app.kubernetes.io/instance: mcp-butlers
       ports:
         - {protocol: TCP, port: 8080}
 ---

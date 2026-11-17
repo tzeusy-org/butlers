@@ -120,6 +120,11 @@ def tool_arguments(today: date) -> dict[str, dict[str, Any]]:
     }
 
 
+class Unreachable(Exception):
+    """No HTTP answer at all: refused, reset or timed out (on kube-router, a policy rejection
+    also reads as refused)."""
+
+
 def http_transport(url: str) -> Transport:
     def send(method: str, body: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
         request = urllib.request.Request(url, data=body or None, method=method, headers=headers)
@@ -128,6 +133,9 @@ def http_transport(url: str) -> Transport:
                 return response.status, response.read()
         except urllib.error.HTTPError as error:
             return error.code, error.read()
+        except (urllib.error.URLError, OSError) as error:
+            reason = getattr(error, "reason", error)
+            raise Unreachable(getattr(reason, "strerror", None) or str(reason)) from None
 
     return send
 
@@ -309,11 +317,17 @@ def main(argv: list[str]) -> int:
     if mode != "smoke":
         print("usage: public-mcp-smoke.py keyring|smoke < config-json", file=sys.stderr)
         return 2
-    smoke = Smoke(cfg, http_transport(cfg["url"]))
-    smoke.first_call()
-    smoke.transport_and_auth()
-    smoke.catalogue()
-    smoke.timing(int(cfg.get("rounds", 30)))
+    return run(Smoke(cfg, http_transport(cfg["url"])), rounds=int(cfg.get("rounds", 30)))
+
+
+def run(smoke: Smoke, *, rounds: int) -> int:
+    try:
+        smoke.first_call()
+        smoke.transport_and_auth()
+        smoke.catalogue()
+        smoke.timing(rounds)
+    except Unreachable as error:
+        smoke.verdict(False, f"REACH the server is unreachable from the probe ({error})")
     print("smoke passed" if smoke.failures == 0 else f"smoke FAILED ({smoke.failures})")
     return 0 if smoke.failures == 0 else 1
 

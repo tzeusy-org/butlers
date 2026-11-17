@@ -10,7 +10,11 @@
 #             instance pods without admitting the public pod, and none admits the namespace
 #             beyond the instance pods on 5432
 #   REACH     task 2.5 network half: the labelled mcp pod reaches 8080, an unlabelled one does
-#             not, the server pod reaches 5432 and nothing on the internet
+#             not, the server pod reaches 5432 and nothing on the internet. Namespace `mcp` is
+#             default-deny both ways (homelab), so both probes get a short-lived egress allow
+#             (public-mcp-probe-egress.yaml, marker label only, public pod 8080 only); the
+#             refusal of the unlabelled probe is then our ingress policy's, not mcp's egress.
+#             On kube-router a policy rejection reads as "connection refused".
 #   ISOLATION task 1.8 public half: mcp_public_ro logs in to butlers_public, is refused by
 #             pg_hba on butlers/postgres/template1
 # Exit 0 only when every check passes; INCONCLUSIVE counts as not passed. Exit 3: aborted before
@@ -29,7 +33,7 @@ fails=0
 ok() { echo "ok   $*"; }
 inconclusive() { echo "INCONCLUSIVE $*"; fails=$((fails + 1)); }
 bad() { echo "FAIL $*"; fails=$((fails + 1)); }
-cleanup() { kubectl -n "$MCP_NS" delete pod pubmcp-probe-labelled pubmcp-probe-plain --ignore-not-found --wait=false >/dev/null 2>&1; }
+cleanup() { kubectl -n "$MCP_NS" delete pod pubmcp-probe-labelled pubmcp-probe-plain --ignore-not-found --wait=false >/dev/null 2>&1; kubectl -n "$MCP_NS" delete networkpolicy butlers-public-mcp-probe-egress --ignore-not-found >/dev/null 2>&1; }
 trap cleanup EXIT
 
 server_pod="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public-mcp -o name | head -1)"; server_pod="${server_pod#pod/}"
@@ -101,15 +105,17 @@ esac
 # REACH
 # Probe pods satisfy the restricted Pod Security profile. Their labels must not match any Service
 # selector in `mcp`: a match would put the probe behind that Service. Abort if that cannot be read.
-PROBE_LABEL="app.kubernetes.io/instance=butlers"
+# The filter-proxy release's instance label (homelab helm/mcp_server names release `butlers`
+# `mcp-butlers`), plus the marker the probe egress allow selects.
+LABELLED="app.kubernetes.io/instance=mcp-butlers,butlers.tze.how/public-mcp-probe=true"
+PLAIN="butlers.tze.how/public-mcp-probe=true"
 svc_json="$(kubectl -n "$MCP_NS" get svc -o json 2>/dev/null)" || {
   echo "live checks ABORTED: cannot read Services in $MCP_NS (forbidden?); the labelled probe cannot be proven safe" >&2
   exit 3
 }
-echo "$svc_json" | PROBE_LABEL="$PROBE_LABEL" python3 -c '
+echo "$svc_json" | PROBE_LABELS="$LABELLED" python3 -c '
 import json, os, sys
-k, v = os.environ["PROBE_LABEL"].split("=", 1)
-labels = {k: v}
+labels = dict(item.split("=", 1) for item in os.environ["PROBE_LABELS"].split(","))
 for svc in json.load(sys.stdin)["items"]:
     sel = svc["spec"].get("selector") or {}
     if sel and all(labels.get(a) == b for a, b in sel.items()):
@@ -134,7 +140,11 @@ except OSError:
 # reach <want: open|closed> <label> <ns> <pod> <host> <port>
 reach() {
   local want="$1" label="$2"; shift 2
-  tcp "$@"; local rc=$?
+  tcp "$@"; local rc=$? tries=1
+  # A just-applied policy can take a few seconds to program: retry an expected-open path only.
+  while [ "$want:$rc" = open:2 ] && [ "$tries" -lt 5 ]; do
+    sleep 3; tcp "$@"; rc=$?; tries=$((tries + 1))
+  done
   case "$want:$rc" in
     open:0|closed:2) ok "REACH $label" ;;
     open:2) bad "REACH $label (connection refused or timed out)" ;;
@@ -142,8 +152,12 @@ reach() {
     *) inconclusive "REACH $label (probe failed with status $rc)" ;;
   esac
 }
-probe pubmcp-probe-labelled "$PROBE_LABEL"
-probe pubmcp-probe-plain ""
+kubectl apply -f "$(dirname "${BASH_SOURCE[0]}")/public-mcp-probe-egress.yaml" >/dev/null 2>&1 || {
+  echo "live checks ABORTED: cannot apply the probe egress allow in $MCP_NS" >&2
+  exit 3
+}
+probe pubmcp-probe-labelled "$LABELLED"
+probe pubmcp-probe-plain "$PLAIN"
 server="$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=butlers-public-mcp -o name | head -1)"; server="${server#pod/}"
 reach open "labelled mcp pod reaches 8080" "$MCP_NS" pubmcp-probe-labelled "$SVC" 8080
 reach closed "unlabelled mcp pod is refused on 8080" "$MCP_NS" pubmcp-probe-plain "$SVC" 8080
