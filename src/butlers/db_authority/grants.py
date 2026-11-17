@@ -230,6 +230,12 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
             ("condition_receipts", frozenset({"SELECT", "INSERT"})),
         )
     },
+    "custody_commands": _replay_widened(
+        _NONE,
+        {},
+        "core_347: custody command receipts, written only by the engine definer; RLS fences a "
+        "replay",
+    ),
     "dashboard_conversation_turn_sessions": _replay_widened(
         _NONE, {_CONCIERGE: _DML}, "migration: dashboard conversation store, concierge only"
     ),

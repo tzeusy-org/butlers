@@ -91,9 +91,52 @@ and the history guard all belong to the database owner (core_295 moved the last 
 migration executor), so no runtime-assumable role can replace code a hold check runs. The core_293
 downgrade refuses while any hold is active.
 
-There is no runtime writer yet. The admitted Switchboard hold engine, protected dashboard/host
-release, the direct `resolve_contact_by_channel` routing path, Messenger egress fallback and the
-security-question flow are later slices of bu-s11n0s.1.
+#### Protected hold, release and replace (core_347)
+
+The one writer is `public.custody_engine_apply`, reached only through two entry points:
+
+- `public.custody_dashboard(action, p)`: EXECUTE for `dashboard_auth_api` alone. The dashboard
+  routes under `/api/custody` call it through `OwnerAuthService.custody_call`. It takes the
+  `dashboard_auth` singleton lock first, then checks the configured origin, the current cookie
+  session and, for a mutation, its CSRF token, in the transaction that commits the command. A
+  session revoked, expired or out of epoch before that commit cannot hold or release. API-key
+  header authority is refused.
+- `public.custody_host(action, p)`: no grant at all. The host's administrative login runs it as
+  the database owner (`butlers custody hold|release|replace|status|list`). A mutation needs an
+  explicit `confirm`, and it takes the same singleton lock first.
+
+A hold names owner channel facts by `relationship.entity_facts` id, never by raw identifier. Each
+must be an active literal `has-email`, `has-handle` or `has-phone` fact of one live owner entity,
+and an unheld target must resolve to that owner alone through `resolve_owner_triple`, so an
+identifier shared with another entity is refused (`unresolved_target`). The selected set is held
+atomically under one episode, reusing the episode of any already-held target; selecting targets
+from two active episodes is refused. Release and replace name one hold and its expected
+generation, so a stale release of generation G never clears a later hold. Replace is a release
+that refuses (`still_bound`) while the owner still has an active fact for the target, or for a
+phone any spelling with the same trailing eight digits: a replaced endpoint never regains owner
+authority. The owner retires the old binding first.
+
+Each committed command opens or reuses one fleet case per episode
+(`endpoint_custody:<episode_id>`), adds content-blind evidence (hold id, target kind, generation,
+reason; no identifier or digest) and writes an immutable receipt in `public.custody_commands`, all
+in one transaction. Any failure rolls back the hold, case, evidence and receipt together. The
+receipt is keyed by the caller's command id with a digest of the canonical request: repeating a
+command returns the stored result with `replayed: true`, and reusing its id for a different request
+is refused (`command_conflict`). A lost acknowledgement is read back by command id
+(`GET /api/custody/commands/{id}`, `butlers custody status`); `unknown_command` means it never
+committed. Concurrent commands serialize on the singleton, then on sorted per-target advisory
+locks; two holds of one target converge on one episode and case. Release does not close the case:
+closing a lost-device recovery case belongs to the later recovery slice.
+
+Receipts follow the hold posture: row level security with no policy, owned by the database owner,
+no runtime grant (`butlers.db_authority.grants`). The core_347 downgrade refuses while any receipt
+exists.
+
+The cheap owner-resolved LOCK (`endpoint_lock`, any surviving owner channel including
+unauthenticated email) and the supported-process source protocol (P-CUSTODY-1c) are not built:
+both wait for the RFC 0038 cutover, which freezes new cross-butler delegation and is expected to
+replace P-CUSTODY-1c with broker assertions. The direct `resolve_contact_by_channel` routing path,
+Messenger egress fallback and the security-question flow are later slices of bu-s11n0s.1.
 
 ### Credential Resolution
 

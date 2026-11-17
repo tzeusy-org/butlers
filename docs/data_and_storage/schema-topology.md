@@ -71,6 +71,12 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   to its caller through `current_setting('role', true)`, and the dashboard capability role
   `dashboard_vendor_doors` is the only reader of proposals. The view `public.vendor_doors_current`
   shows confirmed rows of the live owner. See [Vendor doors](vendor-doors.md).
+- **`public.custody_holds`** and **`public.custody_commands`** -- Endpoint custody holds (core_293)
+  and the immutable receipts of the protected hold, release and replace commands that write them
+  (core_347). In `public` because every owner-only definer consumer checks holds. Row level
+  security with no policy and no runtime grant: only the database owner's definers read or write
+  them, from a current dashboard owner session or the host. See
+  [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
