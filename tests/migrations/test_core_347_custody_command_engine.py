@@ -1,8 +1,8 @@
 """core_347 endpoint custody command engine on migrated PostgreSQL (bu-s11n0s.1 slice 2a).
 
-openspec change ``endpoint-custody-holds``: REQ-001 (exact owner targets, ambiguity refuses),
-REQ-002 (peer DML and caller strings never mint custody), the protected half of REQ-003
-(current owner session and CSRF checked in the committing transaction; host acts) and REQ-004
+openspec change ``endpoint-custody-holds``: REQ-endpoint-custody-holds-001 (exact owner targets, ambiguity refuses),
+REQ-endpoint-custody-holds-002 (peer DML and caller strings never mint custody), the protected half of REQ-endpoint-custody-holds-003
+(current owner session and CSRF checked in the committing transaction; host acts) and REQ-endpoint-custody-holds-004
 (hold, case and receipt commit together; replay, convergence, stale release, failure before
 commit). Real migrated roles: runtime calls run under ``SET LOCAL ROLE``; the host is the
 migration login that owns the database.
@@ -166,7 +166,7 @@ def as_role(dbs, role: str, sql: str, **params):
 
 
 def test_only_the_dashboard_auth_role_and_the_host_reach_the_engine(dbs) -> None:
-    """REQ-002: no runtime role, and nothing via PUBLIC, can call any engine entry point."""
+    """REQ-endpoint-custody-holds-002: no runtime role, and nothing via PUBLIC, can call any engine entry point."""
     with dbs["admin"].connect() as c:
 
         def can(role: str, fn: str) -> bool:
@@ -193,7 +193,7 @@ def test_only_the_dashboard_auth_role_and_the_host_reach_the_engine(dbs) -> None
 
 @pytest.mark.parametrize("role", ["butler_general_rw", "butler_finance_rw"])
 def test_peer_dml_does_not_forge_custody_even_after_a_regrant(dbs, role) -> None:
-    """REQ-002 'Peer DML does not forge custody': RLS holds after a bootstrap-style regrant."""
+    """REQ-endpoint-custody-holds-002 'Peer DML does not forge custody': RLS holds after a bootstrap-style regrant."""
     target = fact(dbs, "has-email", unique("peer-") + "@example.test")
     proof = session(dbs)
     held = dashboard(dbs, "hold", hold_payload(target), proof)
@@ -235,7 +235,7 @@ def test_peer_dml_does_not_forge_custody_even_after_a_regrant(dbs, role) -> None
 
 
 def test_caller_strings_do_not_authenticate(dbs) -> None:
-    """REQ-002 'Caller strings do not authenticate': no forged session, field or target works."""
+    """REQ-endpoint-custody-holds-002 'Caller strings do not authenticate': no forged session, field or target works."""
     address = unique("strings-") + "@example.test"
     target = fact(dbs, "has-email", address)
     proof = session(dbs)
@@ -265,7 +265,7 @@ def test_caller_strings_do_not_authenticate(dbs) -> None:
 
 
 def test_an_ambiguous_identifier_is_not_held(dbs) -> None:
-    """REQ-001 'Ambiguity refuses success'."""
+    """REQ-endpoint-custody-holds-001 'Ambiguity refuses success'."""
     shared = unique("shared-") + "@example.test"
     target = fact(dbs, "has-email", shared)
     fact(dbs, "has-email", shared, subject=dbs["other"])
@@ -275,7 +275,7 @@ def test_an_ambiguous_identifier_is_not_held(dbs) -> None:
 
 
 def test_a_revoked_session_cannot_commit_and_a_fresh_one_can(dbs) -> None:
-    """REQ-003: revocation before commit fences the command; a current owner positive commits."""
+    """REQ-endpoint-custody-holds-003: revocation before commit fences the command; a current owner positive commits."""
     address = unique("revoked-") + "@example.test"
     target = fact(dbs, "has-email", address)
     proof = session(dbs)
@@ -299,7 +299,7 @@ def test_a_revoked_session_cannot_commit_and_a_fresh_one_can(dbs) -> None:
 
 
 def test_a_dashboard_hold_commits_holds_case_and_receipt_together(dbs) -> None:
-    """REQ-001 'Multiple targets are explicit', REQ-004 atomic hold/case/receipt."""
+    """REQ-endpoint-custody-holds-001 'Multiple targets are explicit', REQ-endpoint-custody-holds-004 atomic hold/case/receipt."""
     address = unique("multi-") + "@example.test"
     handle = unique("telegram:")
     email_fact = fact(dbs, "has-email", address)
@@ -357,7 +357,7 @@ def test_a_dashboard_hold_commits_holds_case_and_receipt_together(dbs) -> None:
 
 
 def test_a_replayed_command_returns_its_result_and_a_reused_id_refuses(dbs) -> None:
-    """REQ-004 'Unknown commit uses same command': replay never re-executes."""
+    """REQ-endpoint-custody-holds-004 'Unknown commit uses same command': replay never re-executes."""
     target = fact(dbs, "has-handle", unique("telegram:"))
     command = hold_payload(target)
     first = dashboard(dbs, "hold", command, session(dbs))
@@ -381,7 +381,7 @@ def test_a_replayed_command_returns_its_result_and_a_reused_id_refuses(dbs) -> N
 
 
 def test_competing_holds_converge_on_one_episode(dbs) -> None:
-    """REQ-004 'Competing holds converge': one active hold, both callers see it."""
+    """REQ-endpoint-custody-holds-004 'Competing holds converge': one active hold, both callers see it."""
     target = fact(dbs, "has-email", unique("race-") + "@example.test")
     barrier = Barrier(2)
 
@@ -408,7 +408,7 @@ def test_competing_holds_converge_on_one_episode(dbs) -> None:
 
 
 def test_a_stale_release_cannot_clear_a_rehold(dbs) -> None:
-    """REQ-004 'Stale release cannot clear rehold'; host release restores eligibility."""
+    """REQ-endpoint-custody-holds-004 'Stale release cannot clear rehold'; host release restores eligibility."""
     address = unique("rehold-") + "@example.test"
     target = fact(dbs, "has-email", address)
     first = dashboard(dbs, "hold", hold_payload(target), session(dbs))["holds"][0]
@@ -450,7 +450,7 @@ def test_a_stale_release_cannot_clear_a_rehold(dbs) -> None:
 
 
 def test_failure_before_commit_leaves_no_hold_case_or_receipt(dbs) -> None:
-    """REQ-004 'Failure before commit is not success'."""
+    """REQ-endpoint-custody-holds-004 'Failure before commit is not success'."""
     address = unique("fault-") + "@example.test"
     target = fact(dbs, "has-email", address)
     cases_before = scalar(dbs, "SELECT count(*) FROM public.fleet_cases")
