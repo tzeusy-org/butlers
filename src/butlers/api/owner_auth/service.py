@@ -122,6 +122,20 @@ class OwnerAuthService:
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
 
+    async def custody_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Endpoint custody commands (core_347); the definer rechecks session and CSRF at commit."""
+        if action not in {"hold", "release", "replace", "status", "list"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.custody_dashboard($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
     async def _stepup_call(self, action: str, **values: Any) -> dict:
         return await self._capability_call(
             "SELECT dashboard_stepup.ceremony($1, $2::jsonb)", action, values
