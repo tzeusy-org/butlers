@@ -28,6 +28,19 @@ vi.mock("@/hooks/use-settings-console-live", () => ({
 // "MTD" label is only true when it prices from the ledger (bu-7o89u.2).
 const DEFAULT_FORECAST = { mtd_usd: 0, ceiling_source_error: false };
 
+const LOCATION_RETENTION = {
+  days: 30,
+  version: 1,
+  updated_at: "2026-11-14T09:00:00Z",
+  min_days: 1,
+  max_days: 30,
+  raw_age_basis: "device timestamp",
+  precision_after_forgetting: "approximately 150 m grid cells",
+  covered_sources: ["owntracks.points"],
+  enforced: false,
+  status: "not_enforced",
+};
+
 function defaultApiFetchImpl(path: string) {
   if (path === "/settings/console") {
     return Promise.resolve({
@@ -55,6 +68,9 @@ function defaultApiFetchImpl(path: string) {
     return Promise.resolve({
       data: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 0 },
     });
+  }
+  if (path === "/chronicler/location-retention") {
+    return Promise.resolve(LOCATION_RETENTION as never);
   }
   if (path === "/approvals/metrics") {
     return Promise.resolve({ data: { total_pending: 0 }, meta: {} });
@@ -395,5 +411,61 @@ describe("SettingsConsolePage Public MCP panel", () => {
     await userEvent.setup().click(await within(panel).findByText("Retry →"));
     expect(screen.getByTestId("location").textContent).toBe("/");
     expect(await within(panel).findByText("of 7 domains disabled")).toBeTruthy();
+  });
+});
+
+// bu-s11n0s.75 (S5b): the raw location expiry switch at a glance.
+describe("SettingsConsolePage Location retention panel", () => {
+  function renderWithProbe() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SettingsConsolePage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("says expiry is off and raw fixes are kept", async () => {
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText("Expiry off")).toBeTruthy();
+    expect(within(panel).getByText("30-day horizon; raw fixes kept")).toBeTruthy();
+  });
+
+  it("says expiry is on with its horizon", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/chronicler/location-retention"
+        ? Promise.resolve({
+            ...LOCATION_RETENTION,
+            days: 7,
+            enforced: true,
+            status: "enforcing",
+          } as never)
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText("Expiry on")).toBeTruthy();
+    expect(within(panel).getByText("raw fixes deleted after 7 days")).toBeTruthy();
+  });
+
+  it("fails alone and navigates to its page", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/chronicler/location-retention"
+        ? Promise.reject(new Error("down"))
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText(/Failed to load\./)).toBeTruthy();
+    expect(screen.getByLabelText("Go to Secrets")).toBeTruthy();
+    await user.click(panel);
+    expect(screen.getByTestId("location").textContent).toBe("/settings/location-retention");
   });
 });

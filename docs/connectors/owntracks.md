@@ -137,8 +137,11 @@ Raw expiry is **off until the owner turns it on** (bu-s11n0s.75): the policy's
 `enforced` switch (chronicler_041) defaults to false, and the response reports
 `status: not_enforced` while it is off and `enforcing` while it is on. The owner
 sets it with the same compare-and-set PUT as the horizon (`enforced: true|false`;
-omitted, it is kept), and the change is audited. While it is off, raw fixes are
-retained indefinitely. `OWNTRACKS_RETENTION_DAYS` governs only the
+omitted, it is kept), and the change is audited. The dashboard's
+**Settings > Location retention** page (`/settings/location-retention`) sets both: the horizon,
+and the switch behind a confirmation that says what turning it on deletes; shortening the
+horizon while expiry is on is confirmed too. While it is off, raw fixes are retained
+indefinitely. `OWNTRACKS_RETENTION_DAYS` governs only the
 `public.ingestion_events` audit rows.
 
 - **On.** The hourly `chronicler_location_retention` job prepares a grant from the
