@@ -31,6 +31,7 @@ _POD = {
     "app.kubernetes.io/instance": "butlers-public-mcp",
     "app.kubernetes.io/component": "butlers-public-mcp",
 }
+_FILTER_PROXY_INSTANCE = "mcp-butlers"
 _MCP_PORT = 8080
 _METRICS_PORT = 9090
 _BEARER_DIR = "/etc/butlers-public-mcp/bearer"
@@ -377,13 +378,17 @@ def test_exactly_the_four_allows_and_nothing_wider(docs):
     assert ingress_summary == sorted(
         json.dumps(entry, sort_keys=True)
         for entry in (
-            {  # the filter-proxy release in `mcp`, on the MCP port only
+            {  # the filter-proxy release in `mcp`, on the MCP port only. homelab
+                # helm/mcp_server names release `butlers` `mcp-butlers` (fullname) and that is
+                # its selector instance label (servers/butlers.yaml says so).
                 "from": [
                     {
                         "namespaceSelector": {
                             "matchLabels": {"kubernetes.io/metadata.name": "mcp"}
                         },
-                        "podSelector": {"matchLabels": {"app.kubernetes.io/instance": "butlers"}},
+                        "podSelector": {
+                            "matchLabels": {"app.kubernetes.io/instance": _FILTER_PROXY_INSTANCE}
+                        },
                     }
                 ],
                 "ports": [("TCP", _MCP_PORT)],

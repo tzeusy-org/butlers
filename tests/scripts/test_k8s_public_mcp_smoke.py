@@ -118,6 +118,25 @@ def test_output_never_carries_the_bearer_or_the_seed(tmp_path, capsys):
     assert _SEED.hex() not in out
 
 
+def test_an_unreachable_server_is_one_clean_failure_not_a_traceback(tmp_path, capsys):
+    def refused(method: str, body: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
+        raise smoke_module.Unreachable("connection refused")
+
+    config = {"seed_hex": _SEED.hex(), "kid": _KID, "bearer": BEARER, "aud": AUD, "sub": SUB}
+    smoke = smoke_module.Smoke(config, refused, pace=0)
+    assert smoke_module.run(smoke, rounds=2) == 1
+    out = capsys.readouterr().out
+    assert "FAIL REACH the server is unreachable from the probe (connection refused)" in out
+    assert "smoke FAILED" in out
+    assert "TOOL" not in out  # stops at once instead of pacing through every call
+
+
+def test_the_http_transport_reports_socket_errors_as_unreachable():
+    send = smoke_module.http_transport("http://127.0.0.1:9/mcp")  # discard port: nothing listens
+    with pytest.raises(smoke_module.Unreachable):
+        send("POST", b"{}", {})
+
+
 def test_p95_is_the_nearest_rank():
     assert smoke_module.p95([float(i) for i in range(1, 101)]) == 95.0
     assert smoke_module.p95([5.0]) == 5.0

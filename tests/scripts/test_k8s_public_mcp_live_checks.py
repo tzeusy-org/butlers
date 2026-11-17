@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.unit
 
@@ -47,3 +48,90 @@ def test_the_isolation_probe_runs_in_the_venv():
     assert f"-- {_VENV_PYTHON} -" in line
     probe = (_ROOT / "scripts" / "k8s" / "public-mcp-isolation-probe.py").read_text()
     assert "import asyncpg" in probe  # why the venv is needed
+
+
+# --- the probe pods' egress out of `mcp` --------------------------------------------------
+# Namespace `mcp` is default-deny both ways (homelab helm/traefik_mcp_local, only DNS out), so a
+# probe pod there is rejected on egress before it reaches the public pod. On kube-router a
+# rejection reads as "connection refused", exactly like a closed port, which hid this in the
+# first dark smoke: the labelled probe failed and the unlabelled "refused" proved nothing.
+
+_EGRESS = _ROOT / "scripts" / "k8s" / "public-mcp-probe-egress.yaml"
+_SMOKE = (_ROOT / "scripts" / "k8s" / "public-mcp-smoke.sh").read_text()
+_MARKER = "butlers.tze.how/public-mcp-probe"
+_FILTER_PROXY = "app.kubernetes.io/instance=mcp-butlers"
+
+
+def test_the_probe_egress_allow_is_narrow():
+    (policy,) = [d for d in yaml.safe_load_all(_EGRESS.read_text()) if d]
+    assert policy["kind"] == "NetworkPolicy"
+    assert policy["metadata"] == {
+        "name": "butlers-public-mcp-probe-egress",
+        "namespace": "mcp",
+        "labels": {"app.kubernetes.io/part-of": "butlers-public-mcp-checks"},
+    }
+    spec = policy["spec"]
+    # Only marked probe pods: no gateway pod carries the marker, so nothing else gains egress.
+    assert spec["podSelector"] == {"matchLabels": {_MARKER: "true"}}
+    assert spec["policyTypes"] == ["Egress"]
+    assert "ingress" not in spec
+    assert spec["egress"] == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "butlers-public-dev"}
+                    },
+                    "podSelector": {
+                        "matchLabels": {"app.kubernetes.io/component": "butlers-public-mcp"}
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8080}],
+        }
+    ]
+
+
+def _position(text: str, needle: str) -> int:
+    index = text.find(needle)
+    assert index >= 0, needle
+    return index
+
+
+def test_live_checks_allow_probe_egress_before_the_probes_and_remove_it_on_exit():
+    apply = _position(_SCRIPT, "apply -f")
+    assert "public-mcp-probe-egress.yaml" in _SCRIPT
+    assert apply < _position(_SCRIPT, "probe pubmcp-probe-labelled")
+    cleanup = _SCRIPT[_position(_SCRIPT, "cleanup()") :].split("\n", 1)[0]
+    assert "delete networkpolicy butlers-public-mcp-probe-egress" in cleanup
+
+
+def test_both_live_check_probes_get_egress_and_only_one_is_the_filter_proxy():
+    # The unlabelled probe must reach the policy decision on our side to prove the refusal.
+    assert f'LABELLED="{_FILTER_PROXY},{_MARKER}=true"' in _SCRIPT
+    assert f'PLAIN="{_MARKER}=true"' in _SCRIPT
+    probes = [line for line in _SCRIPT.splitlines() if line.startswith("probe pubmcp-probe-")]
+    assert sorted(probes) == [
+        'probe pubmcp-probe-labelled "$LABELLED"',
+        'probe pubmcp-probe-plain "$PLAIN"',
+    ]
+    # The Service-selector guard checks the labelled probe's full label set.
+    assert 'PROBE_LABELS="$LABELLED"' in _SCRIPT
+    assert 'instance=butlers"' not in _SCRIPT
+
+
+def test_the_smoke_probe_is_the_filter_proxy_label_with_egress_after_the_live_checks():
+    # The live checks delete the allow on exit, so the smoke re-applies it afterwards.
+    assert f"--labels={_FILTER_PROXY},{_MARKER}=true" in _SMOKE
+    live = _position(_SMOKE, 'public-mcp-live-checks.sh" "$ENV_NAME"')
+    assert _position(_SMOKE[live:], "apply -f") > 0
+    cleanup = _SMOKE[_position(_SMOKE, "cleanup() {") : _position(_SMOKE, "trap cleanup EXIT")]
+    assert "delete networkpolicy butlers-public-mcp-probe-egress" in cleanup
+    assert '{"app.kubernetes.io/instance": "butlers"}' not in _SMOKE
+
+
+def test_psql_variables_are_never_used_inside_dash_c():
+    # psql interpolates :'var' only in script input; under -c the window printed "?s".
+    for line in _SMOKE.splitlines():
+        if ":'t0'" in line:
+            assert " -c " not in line, line

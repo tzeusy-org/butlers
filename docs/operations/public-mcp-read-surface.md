@@ -474,6 +474,17 @@ created in `butlers` during the window (sessions, route inbox, schedules, routin
 message inbox, ingestion events) by source and fails on any mcp/public source. The empty keyring
 is restored on exit. Past act 4 the smoke goes through the gateway Worker (`bu-y66o00.7`).
 
+*Probe pods and namespace `mcp`.* Homelab makes `mcp` default-deny in both directions
+(`helm/traefik_mcp_local`, DNS only), so a probe pod there cannot leave the namespace on its own.
+The live checks and the smoke apply `scripts/k8s/public-mcp-probe-egress.yaml` for their run and
+delete it on exit. It allows egress only to the public pod's 8080, and only for pods with the
+marker label `butlers.tze.how/public-mcp-probe=true`, which no gateway pod carries. Both REACH
+probes carry the marker, so the unlabelled probe's refusal comes from this chart's ingress
+policy. The labelled probe also carries `app.kubernetes.io/instance=mcp-butlers`, the selector
+label homelab `helm/mcp_server` gives release `butlers`; the chart's ingress allow admits exactly
+that label. On kube-router a policy rejection reads as "connection refused", the same as a closed
+port, so a refusal alone never says which side denied the connection.
+
 ### 3e. Alerts and monitors
 
 **Lands with `bu-y66o00.7`** (task 3.2). Butlers ships the alert rules and the two flag recording

@@ -35,7 +35,7 @@ bws run -- scripts/k8s/public-mcp-smoke.sh dev         # dark smoke + witness, t
 
 | | Peer | Port |
 |---|---|---|
-| ingress | pods labelled `app.kubernetes.io/instance=butlers` in namespace `mcp` (the filter-proxy release) | 8080 |
+| ingress | pods labelled `app.kubernetes.io/instance=mcp-butlers` in namespace `mcp` (homelab filter-proxy release `butlers`; `helm/mcp_server` prefixes `mcp-`) | 8080 |
 | ingress | namespace `lgtm` (monitoring) | 9090 |
 | egress | `postgres-<env>` instance pods (`cnpg.io/cluster`, `cnpg.io/podRole=instance`) | 5432 |
 | egress | kube-dns | 53 UDP/TCP |
