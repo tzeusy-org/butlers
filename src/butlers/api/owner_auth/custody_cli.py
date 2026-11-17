@@ -28,14 +28,10 @@ class CustodyHostError(Exception):
 
 async def run_custody_host(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     connection = None
+    params: dict[str, Any] = {**db_params_from_env(), "database": database_name_from_env("butlers")}
     try:
         with suppress_instrumentation():
-            connection = await asyncpg.connect(
-                **db_params_from_env(),
-                database=database_name_from_env("butlers"),
-                command_timeout=10,
-                timeout=5,
-            )
+            connection = await asyncpg.connect(**params, command_timeout=10, timeout=5)
             raw = await connection.fetchval(
                 "SELECT public.custody_host($1, $2::jsonb)", action, json.dumps(payload)
             )
