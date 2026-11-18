@@ -120,6 +120,8 @@ class OwnerAuthService:
             "proposal_list",
             "proposal_confirm",
             "proposal_dismiss",
+            "decay_state",
+            "clause_keep",
         }:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:

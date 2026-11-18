@@ -6386,7 +6386,7 @@ BEGIN
   RAISE EXCEPTION 'untrusted attention bootstrap namespace'; END IF;
  IF EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='dashboard_attention'
-  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims','reach_proposals')
+  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims','reach_proposals','clause_decay')
   AND NOT(c.relkind='r' AND c.relowner=CASE WHEN c.oid=to_regclass('dashboard_attention.bootstrap_configuration')
    THEN current_user::regrole ELSE 'dashboard_attention_owner'::regrole END)) THEN
   RAISE EXCEPTION 'untrusted attention bootstrap table'; END IF;
@@ -6442,7 +6442,8 @@ BEGIN
   ('dashboard_attention.candidate_causes','candidate_id,definition_digest,origin,created_at'),
   ('dashboard_attention.final_claims','namespace,task_id,original_next_run_at,definition_digest,revoked'),
   ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by'),
-  ('dashboard_attention.reach_proposals','id,sender_domain,channel,security_kind,scope,created_at,expires_at,consumed_at,dismissed_at,clause_id')
+  ('dashboard_attention.reach_proposals','id,sender_domain,channel,security_kind,scope,created_at,expires_at,consumed_at,dismissed_at,clause_id'),
+  ('dashboard_attention.clause_decay','clause_id,state,changed_at')
  ) expected(relation,columns) LOOP
   IF NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass(item.relation)
    AND c.relkind='r' AND c.relowner=owner_oid
@@ -6478,7 +6479,9 @@ BEGIN
   ('dashboard_attention.candidate_origin(uuid)','jsonb'),
   ('dashboard_attention.owner_channel_list()','jsonb'),
   ('dashboard_attention.owner_channel_revoke(uuid)','jsonb'),
-  ('dashboard_attention.owner_channel_propose(jsonb)','jsonb')
+  ('dashboard_attention.owner_channel_propose(jsonb)','jsonb'),
+  ('dashboard_attention.decay_clauses()','jsonb'),
+  ('dashboard_attention.decay_apply(jsonb)','jsonb')
  ) expected(signature,result) LOOP
   IF NOT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure(item.signature)
    AND p.proowner=owner_oid AND p.prosecdef AND p.prorettype=item.result::regtype
@@ -6492,7 +6495,7 @@ BEGIN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %s',item.signature,grantee_name);
   END LOOP;
  END LOOP;
- IF 13<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
+ IF 15<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
   RAISE EXCEPTION 'unexpected attention function'; END IF;
  REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
  IF to_regclass('public.insight_candidates') IS NOT NULL THEN
@@ -6503,9 +6506,12 @@ BEGIN
   GRANT SELECT ON public.insight_candidates TO dashboard_attention_owner;
  END IF;
  REVOKE ALL ON dashboard_attention.candidate_causes FROM PUBLIC,dashboard_auth_api;
- REVOKE ALL ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM PUBLIC,dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM PUBLIC,dashboard_auth_api;
  IF EXISTS(SELECT FROM pg_roles WHERE rolname='butler_switchboard_rw') THEN
   GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO butler_switchboard_rw;
+  -- S4 decay: the Switchboard sweep may read live clause ids and narrow them (ask, dormant); the
+  -- dashboard session alone can keep or revive one.
+  GRANT EXECUTE ON FUNCTION dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) TO butler_switchboard_rw;
  END IF;
  GRANT USAGE ON SCHEMA dashboard_auth TO dashboard_attention_owner;
  GRANT SELECT ON dashboard_auth.instance,dashboard_auth.sessions TO dashboard_attention_owner;
@@ -6541,7 +6547,7 @@ BEGIN
   END IF;
  END LOOP;
  EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',r);
- EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,dashboard_attention.reach_proposals,public.break_through_clauses TO %I',r);
+ EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,dashboard_attention.reach_proposals,dashboard_attention.clause_decay,public.break_through_clauses TO %I',r);
  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO %I',r);
 END $finalize$;
 REVOKE ALL ON FUNCTION dashboard_attention.finalize_interface() FROM PUBLIC;
@@ -6708,7 +6714,7 @@ BEGIN
   IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
    OR se.session_epoch<>s.session_epoch
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
-  IF action NOT IN('clause_list','proposal_list') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
+  IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
    WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
    THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
@@ -6765,6 +6771,17 @@ BEGIN
   ELSIF action='proposal_dismiss' THEN
    UPDATE dashboard_attention.reach_proposals SET dismissed_at=t WHERE id=(p->>'id')::uuid
     AND consumed_at IS NULL AND dismissed_at IS NULL RETURNING id INTO c;
+   IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='decay_state' THEN
+   RETURN jsonb_build_object('decay',COALESCE((SELECT jsonb_agg(jsonb_build_object('clause_id',d.clause_id,
+    'state',d.state,'changed_at',d.changed_at) ORDER BY d.changed_at DESC)
+    FROM dashboard_attention.clause_decay d JOIN public.break_through_clauses k ON k.id=d.clause_id
+    WHERE k.revoked_at IS NULL),'[]'::jsonb));
+  ELSIF action='clause_keep' THEN
+   UPDATE dashboard_attention.clause_decay d SET state='kept',changed_at=t
+    FROM public.break_through_clauses k WHERE k.id=d.clause_id AND k.revoked_at IS NULL
+    AND d.clause_id=(p->>'id')::uuid AND d.state IN('asked','dormant') RETURNING d.clause_id INTO c;
    IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
    RETURN jsonb_build_object('id',c);
   END IF;
@@ -6834,7 +6851,9 @@ BEGIN
    AND (entity_id IS NULL OR entity_id=(p->>'entity_id')::uuid)
    AND (sender_domain IS NULL OR sender_domain=p->>'sender_domain')
    AND (channel IS NULL OR channel=p->>'channel')
-   AND (security_kind IS NULL OR security_kind=p->>'security_kind') ORDER BY created_at,id LIMIT 1;
+   AND (security_kind IS NULL OR security_kind=p->>'security_kind')
+   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d
+    WHERE d.clause_id=public.break_through_clauses.id AND d.state='dormant') ORDER BY created_at,id LIMIT 1;
   IF c IS NOT NULL THEN RETURN jsonb_build_object('cause','owner_clause','ref',c); END IF;
   RETURN '{"cause":"routine"}';
  END $evaluate$;
@@ -6851,10 +6870,65 @@ BEGIN
  UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
  UPDATE dashboard_attention.reach_proposals SET dismissed_at=clock_timestamp() WHERE consumed_at IS NULL AND dismissed_at IS NULL;
  FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
-  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) FROM %I',n);
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb),dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM %I',n);
  END LOOP;
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
+
+-- bu-s11n0s.8 S4: decay narrows a clause, never widens one. ``clause_decay`` holds one row per
+-- clause the sweep asked about ('asked') or put dormant ('dormant'); the owner's dashboard session
+-- sets 'kept' (re-arming it). A dormant clause is skipped by ``evaluate`` but stays listed and
+-- revivable. The Switchboard sweep may only read live clause ids/dates (decay_clauses) and apply
+-- ask/dormant to clauses old enough (decay_apply, thresholds enforced here, not by the caller).
+CREATE TABLE IF NOT EXISTS dashboard_attention.clause_decay (
+ clause_id uuid PRIMARY KEY,
+ state text NOT NULL CHECK(state IN('asked','dormant','kept')),
+ changed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE dashboard_attention.clause_decay OWNER TO dashboard_attention_owner;
+REVOKE ALL ON TABLE dashboard_attention.clause_decay FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.decay_clauses() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $decay_list$
+BEGIN
+ RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+  'created_at',k.created_at,'state',d.state,'changed_at',d.changed_at) ORDER BY k.created_at)
+  FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+   AND (expires_at IS NULL OR expires_at>clock_timestamp()) ORDER BY created_at LIMIT 500) k
+  LEFT JOIN dashboard_attention.clause_decay d ON d.clause_id=k.id),'[]'::jsonb));
+END $decay_list$;
+ALTER FUNCTION dashboard_attention.decay_clauses() OWNER TO dashboard_attention_owner;
+CREATE OR REPLACE FUNCTION dashboard_attention.decay_apply(p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $decay_apply$
+DECLARE t timestamptz:=clock_timestamp(); ask uuid[]; dormant uuid[]; asked uuid[]; slept uuid[];
+BEGIN
+ IF p IS NULL OR jsonb_typeof(p)<>'object'
+  OR EXISTS(SELECT FROM jsonb_object_keys(p) k WHERE k NOT IN('ask','dormant'))
+  OR jsonb_typeof(COALESCE(p->'ask','[]'::jsonb))<>'array'
+  OR jsonb_typeof(COALESCE(p->'dormant','[]'::jsonb))<>'array'
+  OR jsonb_array_length(COALESCE(p->'ask','[]'::jsonb))>200
+  OR jsonb_array_length(COALESCE(p->'dormant','[]'::jsonb))>200 THEN
+  RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ BEGIN
+  SELECT COALESCE(array_agg(x::uuid),'{}') INTO ask FROM jsonb_array_elements_text(COALESCE(p->'ask','[]'::jsonb)) x;
+  SELECT COALESCE(array_agg(x::uuid),'{}') INTO dormant FROM jsonb_array_elements_text(COALESCE(p->'dormant','[]'::jsonb)) x;
+ EXCEPTION WHEN invalid_text_representation THEN RETURN '{"error":"INVALID_REQUEST"}'; END;
+ -- Dormant first, so a clause in both lists ends dormant and is never also asked.
+ WITH w AS (INSERT INTO dashboard_attention.clause_decay AS d(clause_id,state,changed_at)
+  SELECT k.id,'dormant',t FROM public.break_through_clauses k WHERE k.id=ANY(dormant)
+   AND k.revoked_at IS NULL AND k.created_at<=t-interval '90 days'
+  ON CONFLICT (clause_id) DO UPDATE SET state='dormant',changed_at=t
+   WHERE d.state='asked' OR (d.state='kept' AND d.changed_at<=t-interval '90 days')
+  RETURNING d.clause_id) SELECT COALESCE(array_agg(clause_id),'{}') INTO slept FROM w;
+ WITH w AS (INSERT INTO dashboard_attention.clause_decay AS d(clause_id,state,changed_at)
+  SELECT k.id,'asked',t FROM public.break_through_clauses k WHERE k.id=ANY(ask) AND NOT k.id=ANY(slept)
+   AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>t) AND k.created_at<=t-interval '30 days'
+  ON CONFLICT (clause_id) DO UPDATE SET state='asked',changed_at=t
+   WHERE d.state='kept' AND d.changed_at<=t-interval '30 days'
+  RETURNING d.clause_id) SELECT COALESCE(array_agg(clause_id),'{}') INTO asked FROM w;
+ RETURN jsonb_build_object('asked',to_jsonb(asked),'dormant',to_jsonb(slept));
+END $decay_apply$;
+ALTER FUNCTION dashboard_attention.decay_apply(jsonb) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM PUBLIC;
 
 -- bu-s11n0s.8 S3c-1: the Telegram owner channel may list and revoke break-through clauses, and
 -- nothing else. These two SECURITY DEFINER functions are the whole of that authority: the list
@@ -6995,6 +7069,36 @@ BEGIN
  END IF;
 END $attention_proposal_refresh$;
 -- ATTENTION_PROPOSAL_REFRESH_END
+
+-- ATTENTION_DECAY_REFRESH_BEGIN
+-- bu-s11n0s.8 S4: an installed dashboard_attention.api gains decay_state (read, no CSRF) and
+-- clause_keep (session + CSRF), and an installed evaluate skips dormant clauses. Both are
+-- rewritten in place by replacing exactly the guard/tail text; owner, proconfig and EXECUTE
+-- grants are otherwise kept. Idempotent: a rewritten body no longer carries the old text.
+DO $attention_decay_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ g regprocedure := to_regprocedure('dashboard_attention.evaluate(jsonb)');
+ old_csrf constant text := E'IF action NOT IN(''clause_list'',''proposal_list'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ new_csrf constant text := E'IF action NOT IN(''clause_list'',''proposal_list'',''decay_state'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ old_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''decay_state'' THEN\n   RETURN jsonb_build_object(''decay'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''clause_id'',d.clause_id,\n    ''state'',d.state,''changed_at'',d.changed_at) ORDER BY d.changed_at DESC)\n    FROM dashboard_attention.clause_decay d JOIN public.break_through_clauses k ON k.id=d.clause_id\n    WHERE k.revoked_at IS NULL),''[]''::jsonb));\n  ELSIF action=''clause_keep'' THEN\n   UPDATE dashboard_attention.clause_decay d SET state=''kept'',changed_at=t\n    FROM public.break_through_clauses k WHERE k.id=d.clause_id AND k.revoked_at IS NULL\n    AND d.clause_id=(p->>''id'')::uuid AND d.state IN(''asked'',''dormant'') RETURNING d.clause_id INTO c;\n   IF c IS NULL THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ old_eval constant text := E'   AND (security_kind IS NULL OR security_kind=p->>''security_kind'') ORDER BY created_at,id LIMIT 1;';
+ new_eval constant text := E'   AND (security_kind IS NULL OR security_kind=p->>''security_kind'')\n   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d\n    WHERE d.clause_id=public.break_through_clauses.id AND d.state=''dormant'') ORDER BY created_at,id LIMIT 1;';
+BEGIN
+ IF f IS NOT NULL AND to_regclass('dashboard_attention.clause_decay') IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(definition, old_csrf, new_csrf), old_tail, new_tail);
+  END IF;
+ END IF;
+ IF g IS NOT NULL AND to_regclass('dashboard_attention.clause_decay') IS NOT NULL THEN
+  definition := pg_get_functiondef(g);
+  IF position(old_eval IN definition) > 0 THEN
+   EXECUTE replace(definition, old_eval, new_eval);
+  END IF;
+ END IF;
+END $attention_decay_refresh$;
+-- ATTENTION_DECAY_REFRESH_END
 
 -- ATTENTION_DIGEST_REFRESH_BEGIN
 -- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery

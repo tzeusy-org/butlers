@@ -154,3 +154,32 @@ def test_an_expired_or_consumed_proposal_is_refused_by_the_store() -> None:
     response = client.post(f"{PROPOSALS}/{PROPOSAL_ID}/confirm", headers={"x-csrf-token": "t"})
 
     assert response.status_code == 400
+
+
+DECAY = (router.prefix or "") + "/attention/break-through-decay"
+CLAUSE_ID = "22222222-2222-4222-8222-222222222222"
+
+
+def test_the_decay_read_and_keep_go_through_the_closed_authoring_call() -> None:
+    call = AsyncMock(return_value={"decay": []})
+    client = _client(authority="authority", service=SimpleNamespace(attention_call=call))
+
+    assert client.get(DECAY).status_code == 200
+    assert call.await_args is not None and call.await_args.args[0] == "decay_state"
+    response = client.post(
+        (router.prefix or "") + f"/attention/break-through-clauses/{CLAUSE_ID}/keep",
+        headers={"x-csrf-token": "tok"},
+    )
+    assert response.status_code == 200
+    assert call.await_args.args == ("clause_keep", "authority", "tok")
+    assert call.await_args.kwargs == {"id": CLAUSE_ID}
+
+
+def test_keep_and_the_decay_read_require_a_cookie_session() -> None:
+    call = AsyncMock()
+    client = _client(authority=None, service=SimpleNamespace(attention_call=call))
+
+    assert client.get(DECAY).status_code == 403
+    keep = (router.prefix or "") + f"/attention/break-through-clauses/{CLAUSE_ID}/keep"
+    assert client.post(keep).status_code == 403
+    call.assert_not_awaited()

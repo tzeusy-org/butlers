@@ -1138,6 +1138,14 @@ Scope: v1-mandatory
 - **AND** the dashboard `/settings/reach` page lists pending, unexpired proposals, and Confirm (behind a confirm dialog, with no optimistic update) calls the cookie-session, CSRF-checked `dashboard_attention.api` action `proposal_confirm`, which creates the clause in the one clause store and marks the proposal consumed in one transaction; Dismiss calls `proposal_dismiss`
 - **AND** an expired, dismissed or already consumed proposal cannot be confirmed, so a repeated confirm creates no second clause, and the Telegram connector credential can reach neither `clause_create` nor any proposal action
 
+#### Scenario: A clause nobody opens is asked about once, then goes dormant
+
+- **WHEN** the deterministic hourly Switchboard sweep finds a live clause at least 30 days old (or 30 days past the owner's last keep) whose break-through lines were delivered in the last 30 days and none was opened, where "opened" is the delivered line's `insight_engagement.engaged` flag
+- **THEN** exactly one content-free "keep?" candidate (category `break_through_keep`, below the urgent threshold, no sender, address or message text) is queued through the ordinary insight broker, and the clause is marked `asked` in the owner-only `dashboard_attention.clause_decay` table
+- **AND** a clause with no hit at all for 90 days is marked `dormant`: the fixed evaluator skips it, so it no longer breaks through, while it stays listed on `/settings/reach` and can be revived
+- **AND** decay only narrows: the sweep reaches the clause store through two Switchboard-only SECURITY DEFINER functions (`decay_clauses` reads live clause ids and dates, `decay_apply` enforces the 30 and 90 day age thresholds itself), and can neither create, widen, revoke nor re-arm a clause
+- **AND** keeping an asked clause or reviving a dormant one is only the cookie-session, CSRF-checked `dashboard_attention.api` action `clause_keep` (`POST /api/butlers/attention/break-through-clauses/{id}/keep`), behind a confirm dialog for a revive; no Telegram path keeps or revives, because re-arming a clause is grant-adjacent
+
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 
 - **WHEN** the owner revokes a clause

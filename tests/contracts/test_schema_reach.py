@@ -971,6 +971,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.break_through_hits",
     ): "sanctioned:bu-s11n0s.8 S1: the ingest sensor's content-blind (clause, request) hit record (sw_080), written on the Switchboard runtime pool that ingest already holds",
     (
+        "src/butlers/core/break_through_decay.py",
+        "switchboard.break_through_hits",
+    ): "sanctioned:bu-s11n0s.8 S4: the decay sweep reads the content-blind hit record (clause ids and times) on the Switchboard pool it runs on, to age a clause",
+    (
         "src/butlers/goal_runner/owner_recovery.py",
         "switchboard.pending_asks",
     ): "sanctioned:RFC-0038 S6: Run/Drop decisions over the Switchboard-owned pending_asks (bu-dhloi1.14 4b)",

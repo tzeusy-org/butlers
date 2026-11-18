@@ -719,6 +719,21 @@ async def dismiss_break_through_proposal(proposal_id: UUID, request: Request):
     )
 
 
+# Decay (bu-s11n0s.8 S4) only narrows: a clause nobody opened is asked about, and one that has had
+# no hit for 90 days goes dormant. Keeping or reviving one is a grant-adjacent act, so it is the
+# cookie session with CSRF alone; the Telegram channel has no route to it.
+@router.get("/attention/break-through-decay", response_model=ApiResponse[dict])
+async def list_break_through_decay(request: Request):
+    """Which live clauses are asked about ('asked') or dormant, by clause id. Cookie-only read."""
+    return ApiResponse(data=await _clause_authoring(request, "decay_state", {}))
+
+
+@router.post("/attention/break-through-clauses/{clause_id}/keep", response_model=ApiResponse[dict])
+async def keep_break_through_clause(clause_id: UUID, request: Request):
+    """Keep an asked clause or revive a dormant one (it is evaluated again)."""
+    return ApiResponse(data=await _clause_authoring(request, "clause_keep", {"id": str(clause_id)}))
+
+
 @router.delete("/attention/break-through-clauses/{clause_id}", response_model=ApiResponse[dict])
 async def revoke_break_through_clause(clause_id: UUID, request: Request):
     return ApiResponse(

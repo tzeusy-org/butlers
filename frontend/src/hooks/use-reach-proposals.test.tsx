@@ -5,11 +5,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 
-import { useConfirmReachProposal, useDismissReachProposal } from "@/hooks/use-reach-clauses";
+import {
+  useConfirmReachProposal,
+  useDismissReachProposal,
+  useKeepReachClause,
+} from "@/hooks/use-reach-clauses";
 
 const api = vi.hoisted(() => ({
   confirmReachProposal: vi.fn(),
   dismissReachProposal: vi.fn(),
+  keepReachClause: vi.fn(),
+  listReachDecay: vi.fn(),
   listReachClauses: vi.fn(),
   listReachProposals: vi.fn(),
   revokeReachClause: vi.fn(),
@@ -58,5 +64,16 @@ describe("reach proposal mutations", () => {
     await act(async () => result.current.mutate("p-1"));
     await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(1));
     expect(invalidate.mock.calls[0][0]?.queryKey).toEqual(["reach-proposals"]);
+  });
+
+  it("keep refetches the decay state and the clauses on settle, even on failure", async () => {
+    api.keepReachClause.mockRejectedValue(new Error("400"));
+    const { invalidate, wrapper } = setup();
+    const { result } = renderHook(() => useKeepReachClause(), { wrapper });
+    await act(async () => result.current.mutate("c-1"));
+    await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
+    const keys = invalidate.mock.calls.map((call) => call[0]?.queryKey);
+    expect(keys).toContainEqual(["reach-decay"]);
+    expect(keys).toContainEqual(["reach-clauses"]);
   });
 });
