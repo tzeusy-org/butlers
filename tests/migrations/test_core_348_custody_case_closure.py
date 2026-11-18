@@ -1,5 +1,5 @@
 # ruff: noqa: F811
-"""core_348 custody case closure on migrated PostgreSQL (bu-s11n0s.1 S5a, REQ-010).
+"""core_348 custody case closure on migrated PostgreSQL (bu-s11n0s.1 S5a, REQ-endpoint-custody-holds-010).
 
 A release or replace closes the episode's fleet case only when every generation held in that
 episode is released or replaced. Real migrated roles through ``custody_dashboard``; the helpers
@@ -72,7 +72,7 @@ def _active(dbs, episode_id: str) -> int:
 
 
 def test_a_single_generation_release_closes_the_case(dbs) -> None:
-    """REQ-010: the only held generation released closes the episode's case."""
+    """REQ-endpoint-custody-holds-010: the only held generation released closes the episode's case."""
     target = fact(dbs, "has-email", unique("single-") + "@example.test")
     held = dashboard(dbs, "hold", hold_payload(target), session(dbs))
     assert _case(dbs, held["case_id"]) == ("open", None)
@@ -85,7 +85,7 @@ def test_a_single_generation_release_closes_the_case(dbs) -> None:
 
 
 def test_a_partial_release_leaves_the_case_active_until_the_last(dbs) -> None:
-    """REQ-010: a partial recovery stays active; the second release closes the same case."""
+    """REQ-endpoint-custody-holds-010: a partial recovery stays active; the second release closes the same case."""
     held, _ = _hold_two(dbs)
     first, second = held["holds"]
     partial = _resolve(dbs, "release", first)
@@ -101,7 +101,7 @@ def test_a_partial_release_leaves_the_case_active_until_the_last(dbs) -> None:
 
 
 def test_a_replace_counts_as_resolved_for_the_closure(dbs) -> None:
-    """REQ-010: a replaced generation is resolved exactly like a released one."""
+    """REQ-endpoint-custody-holds-010: a replaced generation is resolved exactly like a released one."""
     held, facts = _hold_two(dbs)
     first, second = held["holds"]
     with dbs["admin"].begin() as c:
@@ -132,7 +132,7 @@ def test_a_replace_of_the_last_generation_closes_the_case(dbs) -> None:
 
 
 def test_an_ordinary_case_close_never_releases_a_hold(dbs) -> None:
-    """REQ-010: closing the case by any other route leaves the hold held."""
+    """REQ-endpoint-custody-holds-010: closing the case by any other route leaves the hold held."""
     target = fact(dbs, "has-email", unique("ordinary-") + "@example.test")
     held = dashboard(dbs, "hold", hold_payload(target), session(dbs))
     with dbs["admin"].begin() as c:
