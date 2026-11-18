@@ -20,8 +20,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlsplit
 
+from butlers.core import dashboard_links
 from butlers.core.account_security_events import SECURITY_EVENT_TYPE, record_security_answer
 
 logger = logging.getLogger(__name__)
@@ -63,13 +63,9 @@ def question_message(provider: str, kind: str, link: str) -> str:
     )
 
 
-def question_link(dashboard_url: str | None, event_id: str) -> str | None:
-    # The configured dashboard base (``DASHBOARD_URL``); anything but an http(s) base is no link.
-    base = dashboard_url or ""
-    parts = urlsplit(base)
-    if parts.scheme not in {"http", "https"} or not parts.netloc:
-        return None
-    return f"{base.rstrip('/')}/security/{event_id}"
+def question_link(event_id: str, *, base: str | None = None) -> str | None:
+    """The owner's dashboard link for one question, or ``None`` when no dashboard is configured."""
+    return dashboard_links.dashboard_link(f"/security/{event_id}", base=base)
 
 
 async def admit_event(pool: Any, *, event_id: str, provider: str, kind: str) -> bool:
@@ -120,7 +116,7 @@ async def present_pending(
     pool: Any,
     *,
     notify: NotifyFn,
-    dashboard_url: str | None,
+    dashboard_url: str | None = None,
     now: datetime | None = None,
     limit: int = PRESENT_BATCH,
 ) -> dict[str, int]:
@@ -146,7 +142,7 @@ async def present_pending(
     )
     for row in rows:
         event_id = str(row["event_id"])
-        link = question_link(dashboard_url, event_id)
+        link = question_link(event_id, base=dashboard_url)
         if link is None:
             # Without a link the owner cannot answer: visibly unanswered, nothing sent.
             if await _transition(pool, event_id, "pending", "unavailable", "no_dashboard_link"):
@@ -285,7 +281,7 @@ async def record_answered_cases(pool: Any, *, limit: int = CASE_BATCH) -> int:
 
 
 async def run_security_question_cycle(
-    pool: Any, *, notify: NotifyFn, dashboard_url: str | None, now: datetime | None = None
+    pool: Any, *, notify: NotifyFn, dashboard_url: str | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
     """One scheduled pass: admit, present, then record cases for answered ``no`` decisions."""
     admitted = await admit_missing(pool, now=now)

@@ -40,18 +40,11 @@ def test_message_uses_fixed_vocabulary_and_the_link() -> None:
     assert "security change" in sq.question_message("google", "unheard_of", "l")
 
 
-@pytest.mark.parametrize(
-    ("base", "expected"),
-    [
-        (URL, f"{URL}/security/e1"),
-        (URL + "/", f"{URL}/security/e1"),
-        (None, None),
-        ("", None),
-        ("javascript:alert(1)", None),
-    ],
-)
-def test_link_needs_an_http_base(base, expected) -> None:
-    assert sq.question_link(base, "e1") == expected
+def test_link_uses_the_configured_dashboard_and_none_without_one(monkeypatch) -> None:
+    monkeypatch.setenv("DASHBOARD_URL", URL + "/")
+    assert sq.question_link("e1") == f"{URL}/security/e1"
+    monkeypatch.delenv("DASHBOARD_URL")
+    assert sq.question_link("e1") is None
 
 
 async def test_a_sent_question_is_presented_once() -> None:
@@ -129,7 +122,8 @@ async def test_a_held_telegram_refusal_marks_the_question_unavailable() -> None:
     assert pool.execute.await_args.args[2] == "unavailable"
 
 
-async def test_no_dashboard_link_is_unavailable_without_a_send() -> None:
+async def test_no_dashboard_link_is_unavailable_without_a_send(monkeypatch) -> None:
+    monkeypatch.delenv("DASHBOARD_URL", raising=False)
     notify = AsyncMock()
     pool = _pool([_row()])
     counts = await sq.present_pending(pool, notify=notify, dashboard_url=None)

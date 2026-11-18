@@ -143,7 +143,6 @@ async def _run_switchboard_security_question_cycle_job(
     """
     del job_args
     import importlib
-    import os
 
     from butlers.core.security_questions import run_security_question_cycle
     from butlers.credential_store import resolve_owner_telegram_recipient
@@ -171,10 +170,9 @@ async def _run_switchboard_security_question_cycle_job(
             },
         )
 
-    # An explicit DASHBOARD_URL only: without one there is no link the owner can open.
-    return await run_security_question_cycle(
-        pool, notify=_notify, dashboard_url=os.environ.get("DASHBOARD_URL")
-    )
+    # The link comes from the one dashboard-links helper: without a configured DASHBOARD_URL
+    # there is no link the owner can open, so the question is `unavailable`, never sent.
+    return await run_security_question_cycle(pool, notify=_notify)
 
 
 async def _run_switchboard_fleet_case_lapse_sweep_job(

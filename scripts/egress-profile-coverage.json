@@ -5502,22 +5502,6 @@
         "butlers-control"
       ]
     },
-    "src/butlers/scheduled_jobs.py::_run_switchboard_security_question_cycle_job::config::cea46fe9faf230286f2768a707c0ce02aa46f12789b85456c5547d2e729d27b6": {
-      "class": "reference",
-      "observed": {
-        "authorities": [],
-        "config": "DASHBOARD_URL",
-        "count": 1,
-        "kind": "config",
-        "path": "src/butlers/scheduled_jobs.py",
-        "scope": "_run_switchboard_security_question_cycle_job",
-        "sha256": "cea46fe9faf230286f2768a707c0ce02aa46f12789b85456c5547d2e729d27b6"
-      },
-      "reason": "DASHBOARD_URL constructs a browser/callback/self link; this declaration is not a server-side dial.",
-      "resolver": null,
-      "sites": [],
-      "workloads": []
-    },
     "src/butlers/session_host/codex_oauth.py::_id_token_account::url::a3c42bb889a2c72e6cb1e84f8bcc9319035a4020081c9f200523f6e15b7b36d9": {
       "class": "reference",
       "observed": {
