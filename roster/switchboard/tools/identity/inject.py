@@ -8,7 +8,8 @@ For each incoming message:
 1. Call ``resolve_contact_by_channel(pool, channel_type, channel_value)`` to
    look up the sender in ``relationship.entity_facts`` (migration bead 7).
 2. If unknown: create a transitory entity with
-   ``metadata.unidentified=true`` and notify the owner at most once.
+   ``metadata.unidentified=true`` and notify the owner at most once, naming the
+   sender (display name, raw address, email subject) and linking to the entity.
 3. Build the identity preamble and inject it at the top of the routed prompt.
 
 Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
@@ -31,7 +32,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from html import escape
 from typing import Any
 from uuid import UUID
 
@@ -57,7 +57,11 @@ _NOTIFIED_STATE_KEY_PREFIX = "identity:unknown_notified:"
 # the relationship-owned post-resolution fact writer has established the
 # channel-triple lookup key.
 _TEMP_ENTITY_STATE_KEY_PREFIX = "identity:unknown_entity:"
-_UNIDENTIFIED_ENTITIES_REVIEW_PATH = "/entities/index?state=unidentified"
+# Owner-only notice bounds for sender-controlled fields (bu-g0nsbw).
+_NAME_LIMIT = 120
+_ADDRESS_LIMIT = 254
+_SUBJECT_LIMIT = 200
+_MARKDOWN_NEUTRAL = str.maketrans({"[": "(", "]": ")", "*": None, "`": None, "~": None, "|": None})
 
 
 @dataclass
@@ -120,6 +124,7 @@ async def resolve_and_inject_identity(
     notify_owner_fn: Callable[[str], Awaitable[None]] | None = None,
     state_pool: asyncpg.Pool | None = None,
     resolver: Any = None,
+    subject: str | None = None,
 ) -> IdentityResolutionResult:
     """Resolve sender identity and build the preamble for the routed prompt.
 
@@ -141,8 +146,11 @@ async def resolve_and_inject_identity(
         returned (no preamble, no column population).
     display_name:
         Optional human-readable name for the sender (e.g. from Telegram's
-        ``from_user.full_name``). Used when creating the transitory entity and
-        as the safe notification label.
+        ``from_user.full_name`` or an email's From: display name). Used when
+        creating the transitory entity and in the owner notice.
+    subject:
+        Optional email subject, shown in the owner notice for an unknown sender.
+        Never the message body.
     notify_owner_fn:
         Async callable ``(message: str) -> None`` that sends a notification to
         the owner through the standard delivery boundary. When ``None``, no
@@ -175,6 +183,7 @@ async def resolve_and_inject_identity(
         channel_value,
         source_channel_type=channel_type,
         display_name=display_name,
+        subject=subject,
         notify_owner_fn=notify_owner_fn,
         state_pool=state_pool,
         resolver=resolver,
@@ -192,6 +201,7 @@ async def _inject_unknown_identity(
     state_pool: asyncpg.Pool | None,
     strict_reservation: bool = False,
     resolver: Any = None,
+    subject: str | None = None,
 ) -> IdentityResolutionResult:
     """Reserve and inject an already-confirmed unresolved sender.
 
@@ -250,10 +260,14 @@ async def _inject_unknown_identity(
     # delivery failure is observable but intentionally does not clear the
     # durable claim: later ingress must not retry into a notification storm.
     if notification_claimed and notify_owner_fn is not None:
-        sender_label = _safe_sender_label(display_name)
-        notification_msg = (
-            f"Unknown sender: {sender_label} ({source_channel_type}). "
-            f"Review in Unidentified Entities: {_UNIDENTIFIED_ENTITIES_REVIEW_PATH}"
+        notification_msg = "\n".join(
+            unknown_sender_notice_lines(
+                channel=source_channel_type,
+                address=channel_value,
+                display_name=display_name,
+                subject=subject,
+                entity_id=result.entity_id,
+            )
         )
         try:
             await notify_owner_fn(notification_msg)
@@ -315,7 +329,9 @@ async def resolve_sender_identities(
 
     Known speakers are constructed directly from the bulk result. Only values
     that the successful bulk lookup leaves unresolved enter the existing
-    reservation and owner-notification path.
+    reservation and owner-notification path. Batch speaker labels are neutral
+    placeholders or untrusted source labels (REQ-switchboard-identity-002), so
+    no display name is taken from them; the owner notice names the raw address.
     """
     distinct_values: list[str] = []
     seen: set[str] = set()
@@ -383,10 +399,46 @@ async def resolve_sender_identities(
     return results
 
 
-def _safe_sender_label(display_name: str | None) -> str:
-    """Normalize an untrusted source label without exposing its raw identifier."""
-    normalized = " ".join(display_name.split()) if isinstance(display_name, str) else ""
-    return escape(normalized[:120], quote=False) if normalized else "Unknown sender"
+def _clean(value: str | None, limit: int) -> str:
+    """Collapse whitespace, bound and neutralise one sender-controlled field.
+
+    Owner Telegram renders the notice's Markdown (HTML characters are escaped by the
+    renderer), so a sender could otherwise plant a disguised ``[text](url)`` link or
+    formatting in the owner's trusted channel. Link brackets become parentheses and
+    emphasis/code markers are dropped; everything else is shown as sent.
+    """
+    normalized = " ".join(value.split()) if isinstance(value, str) else ""
+    return normalized[:limit].translate(_MARKDOWN_NEUTRAL)
+
+
+def unknown_sender_notice_lines(
+    *,
+    channel: str,
+    address: str,
+    display_name: str | None,
+    subject: str | None,
+    entity_id: UUID | None,
+) -> list[str]:
+    """The owner-only Telegram notice for one newly surfaced unknown sender (bu-g0nsbw).
+
+    Names the sender as ``Name <address>`` (the bare address without a name), adds the
+    email subject when there is one, and links to the transitory entity on the
+    dashboard. It never carries the message body. Every field is sender-controlled,
+    so each is whitespace-collapsed, length-bounded and Markdown-neutralised.
+    """
+    from butlers.core.dashboard_links import dashboard_link
+
+    name = _clean(display_name, _NAME_LIMIT)
+    raw_address = _clean(address, _ADDRESS_LIMIT)
+    sender = f"{name} <{raw_address}>" if name else raw_address
+    lines = [f"New sender on {channel}: {sender}"]
+    if clean_subject := _clean(subject, _SUBJECT_LIMIT):
+        lines.append(f"Subject: {clean_subject}")
+    link = dashboard_link(f"/entities/{entity_id}") if entity_id is not None else None
+    lines.append(
+        f"Open: {link}" if link else "Review it in Unidentified Entities on the dashboard."
+    )
+    return lines
 
 
 async def _claim_unknown_sender_notification(

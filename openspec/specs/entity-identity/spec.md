@@ -873,26 +873,40 @@ durable across concurrent ingress workers and SHALL NOT write
 `relationship.entity_facts` from Switchboard; the existing relationship-owned
 post-resolution assertion remains responsible for the channel fact.
 
-The notification SHALL identify the sender only with the safe display label
-and source channel needed for review, SHALL direct the owner to the existing
-Unidentified Entities review flow, and SHALL NOT include the inbound message
-body or grant the unknown sender any role or approval authority.
+The notification is delivered only to the owner. It SHALL identify the sender
+by the connector-supplied display name, when one exists, together with the raw
+sender identifier (for example the email address) and the source channel. For an
+email it SHALL include the message subject. It SHALL link to the transitory
+entity on the dashboard when a dashboard origin is configured, and otherwise
+direct the owner to the existing Unidentified Entities review flow. Every
+sender-controlled field SHALL be bounded in length and neutralised so it cannot
+render as a link or formatting. The notification SHALL NOT include the inbound
+message body or grant the unknown sender any role or approval authority. One
+notification SHALL be sent per sender; senders SHALL NOT be batched into a digest.
 
 #### Scenario: New unknown sender is surfaced for entity review
 
-- **WHEN** reverse lookup misses an inbound Telegram sender with display name
-  `Chloe L`
+- **WHEN** reverse lookup misses an inbound email from `chloe@x.com` with display
+  name `Chloe L` and subject `Re: dinner`
 - **AND** the unknown-sender flow creates transitory entity `E` with
-  `metadata.unidentified = true`, `source_channel = 'telegram'`, and the
+  `metadata.unidentified = true`, `source_channel = 'email'`, and the
   observed source value
 - **THEN** the system MUST atomically reserve one owner-notification attempt
   for that sender
-- **AND** the system MUST make that attempt identifying `Chloe L` and the
-  Telegram source
-- **AND** the notification MUST direct the owner to the Unidentified Entities
-  review flow for `E`
+- **AND** the system MUST make that attempt identifying `Chloe L <chloe@x.com>`,
+  the email source and the subject `Re: dinner`
+- **AND** the notification MUST link to `E` on the dashboard, or direct the
+  owner to the Unidentified Entities review flow when no dashboard origin is
+  configured
 - **AND** the notification MUST NOT expose the inbound message body or a
   contact-table identifier
+
+#### Scenario: Sender-controlled text cannot plant a link
+
+- **WHEN** an unknown sender's display name or subject contains Markdown link
+  or emphasis syntax such as `[Bank](https://evil.example)`
+- **THEN** the owner notification MUST show that text without rendering a link
+  to the sender-chosen target or any formatting
 
 #### Scenario: Repeated sender does not create a notification storm
 

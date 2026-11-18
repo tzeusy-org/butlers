@@ -375,6 +375,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         elif _sender_identity not in ("unknown", ""):
             # Single message: sender.identity is the actual sender ID.
             _source_id = _sender_identity
+            # Same rule as build_buffer_pipeline_inputs: the connector's sender label
+            # names an unknown sender in the owner notice.
+            _display_name = sender.get("display_name")
+            if isinstance(_display_name, str) and _display_name.strip():
+                _sender_name = _display_name.strip()
 
         _tool_args: dict[str, Any] = {
             "source": channel,

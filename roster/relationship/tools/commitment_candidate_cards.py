@@ -33,6 +33,7 @@ import asyncpg
 from butlers.core.commitments import create_commitment
 from butlers.core.confirm_authority import ConfirmSource
 from butlers.core.confirm_models import ConfirmCard, ConfirmOption, ConfirmPrompt, Recipient
+from butlers.core.confirm_recipient import OwnerRecipient
 from butlers.core.entity_posture import ACTIVE, fetch_entity_posture
 from butlers.core.owner_conditions import get_active_condition
 
@@ -57,33 +58,12 @@ _CLEAR_CONTENT: Final = """
     evidence_ref = NULL, taint = NULL, card_snapshot = NULL, card_expires_at = NULL
 """
 
-#: The owner's current confirm recipient, or None when it cannot be resolved.
-OwnerRecipient = Callable[[], Awaitable[Recipient | None]]
 #: The trusted producer client's ``request(key, data)``.
 CardRequest = Callable[[str, dict], Awaitable[Mapping[str, Any]]]
 
 
 class CardRefused(ValueError):
     """``prepare`` will not build a card for this candidate now; it stays pending."""
-
-
-def owner_recipient_reader(pool: asyncpg.Pool) -> OwnerRecipient:
-    """The owner entity and the numeric Telegram chat id it answers from.
-
-    A ``@username`` cannot be a confirm recipient: the callback names a numeric
-    sender and chat, so only a stored ``telegram_chat_id`` qualifies.
-    """
-    from butlers.core.owner import resolve_owner_entity_id_two_step
-    from butlers.credential_store import resolve_owner_entity_info
-
-    async def read() -> Recipient | None:
-        entity = await resolve_owner_entity_id_two_step(pool)
-        chat = await resolve_owner_entity_info(pool, "telegram_chat_id")
-        if entity is None or not chat or not str(chat).lstrip("-").isdigit():
-            return None
-        return Recipient(entity, str(chat), str(chat), True)
-
-    return read
 
 
 def _recipient_json(recipient: Recipient) -> dict[str, str]:

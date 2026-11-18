@@ -78,6 +78,22 @@ def test_runtime_attention_doors_are_registered():
         assert_registered(door)
 
 
+def test_unknown_sender_notice_link_is_registered(monkeypatch):
+    from uuid import UUID
+
+    from butlers.tools.switchboard.identity.inject import unknown_sender_notice_lines
+
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example")
+    lines = unknown_sender_notice_lines(
+        channel="email",
+        address="a@x.com",
+        display_name=None,
+        subject=None,
+        entity_id=UUID("55555555-5555-4555-8555-555555555555"),
+    )
+    assert_registered(lines[-1].removeprefix("Open: https://dash.example"))
+
+
 def test_approval_self_routes_are_registered():
     from butlers.tools.switchboard.notification.self_links import SELF_ROUTES
 

@@ -588,6 +588,7 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
         channel_value="sender-1",
         display_name=None,
         notify_owner_fn=None,
+        subject=None,
     )
     pipeline._resolve_decomp_speakers.assert_not_awaited()
     pipeline._assert_sender_channel_fact.assert_not_awaited()
@@ -611,6 +612,55 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
     assert warning.stack_info is None
     assert sentinel not in caplog.text
     assert sentinel not in repr([record.__dict__ for record in caplog.records])
+
+
+@pytest.mark.parametrize(
+    ("source_channel", "text", "subject"),
+    [
+        ("email", "Subject: Re: dinner &amp; drinks \n\nsee you", "Re: dinner & drinks"),
+        ("email", "no subject line here", None),
+        ("telegram_bot", "Subject: not an email", None),
+    ],
+)
+async def test_single_sender_identity_receives_name_and_email_subject(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+    source_channel: str,
+    text: str,
+    subject: str | None,
+):
+    """The unknown-sender notice gets the display name and an email's subject (bu-g0nsbw)."""
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="Routed to health.", tool_calls=[_route_call("health")])
+
+    resolver = AsyncMock(return_value=IdentityResolutionResult())
+    pipeline = MessagePipeline(
+        MagicMock(), dispatch, source_butler="switchboard", enable_identity_resolution=True
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+
+    with (
+        unregistered_identity_source(),
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(identity_inject, "resolve_and_inject_identity", resolver),
+    ):
+        await pipeline.process(
+            text,
+            tool_args={
+                "source_channel": source_channel,
+                "source_id": "chloe@x.com",
+                "sender_name": "Chloe L",
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000098",
+        )
+
+    assert resolver.await_args.kwargs["display_name"] == "Chloe L"
+    assert resolver.await_args.kwargs["subject"] == subject
 
 
 @pytest.mark.parametrize(

@@ -89,15 +89,43 @@ The identity preamble for unknown senders includes `-- pending disambiguation`, 
 Normal Switchboard fleet ingress enables identity resolution and supplies a
 deterministic owner-notification callback. When the helper surfaces a
 transitory entity, it first atomically inserts a sender-scoped claim in the
-Switchboard `state` table. Only the winner sends one content-free `notify.v1`
-notice through the normal Switchboard-to-Messenger boundary; the notice points
-to `/entities/index?state=unidentified`, never a contacts route.
+Switchboard `state` table. Only the winner sends one `notify.v1` notice through
+the normal Switchboard-to-Messenger boundary to the owner's Telegram. One notice
+goes out per sender; there is no digest.
+
+The notice names the sender so the owner can decide without opening the
+dashboard (`inject.unknown_sender_notice_lines`):
+
+```text
+New sender on email: Chloe L <chloe@x.com>
+Subject: Re: dinner
+Open: https://<DASHBOARD_URL>/entities/<entity_id>
+```
+
+- The display name comes from the connector's sender label (Gmail's `From:`
+  display name, carried as `sender.display_name`). Without one, the line shows
+  the bare address. Batch speakers (WhatsApp/Telegram user-client batches) carry
+  only neutral labels, so their notice shows the address alone.
+- The raw address is shown because the notice goes only to the owner.
+- The subject is the first `Subject:` line of an email's normalized text. The
+  message body is never included.
+- Every sender-controlled field is whitespace-collapsed, length-bounded and
+  Markdown-neutralised, so a sender cannot plant a disguised link.
+- The `Open:` link is built by `core.dashboard_links`. Without `DASHBOARD_URL` the
+  last line reads "Review it in Unidentified Entities on the dashboard." and
+  carries no link.
 
 The claim remains after a delivery failure, so later ingress cannot turn an
 outage into a notification storm. If the state claim cannot be persisted, the
 helper logs the problem, skips the owner send, and leaves normal unknown-sender
 routing intact. The owner can still review the transitory entity through the
 Unidentified Entities flow.
+
+An actionable card version (Add as contact / Ignore this sender / Open) is built
+as the `switchboard.unknown_sender` signed-confirm source
+(`roster/switchboard/tools/identity/unknown_sender_cards.py`) but stays dark with
+the rest of signed confirm. See
+[signed confirms](../runtime/signed-confirms.md); bu-6hszs3 tracks turning it on.
 
 ## Identity Preamble
 

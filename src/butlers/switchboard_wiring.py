@@ -89,6 +89,11 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
                 sender_name = participants.get(first)
     elif sender_identity not in ("unknown", ""):
         source_id = str(sender_identity)
+        # The connector's own sender label (e.g. Gmail's From: display name) names
+        # an unknown sender in the owner notice; a blank or non-text value is dropped.
+        display_name = ref.sender.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            sender_name = display_name.strip()
 
     source_sender_identity = source_id or sender_identity
     request_context: dict[str, Any] = {
@@ -200,7 +205,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         """Deliver one entity-review notice through the normal notify boundary.
 
         This callback is deliberately deterministic and narrow: identity ingress
-        has already constructed a content-free review message, and this seam
+        has already constructed the body-free owner notice, and this seam
         only resolves the configured owner Telegram recipient before sending a
         ``notify.v1`` envelope through Switchboard → Messenger.  It must raise
         for every unsent result so identity injection can log the failed attempt

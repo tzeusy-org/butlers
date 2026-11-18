@@ -292,6 +292,37 @@ async def test_buffer_pipeline_inputs_extract_non_owner_batch_sender() -> None:
     assert tool_args["sender_name"] == "Chloe Wong"
 
 
+def _single_sender_ref(sender: dict) -> _MessageRef:
+    return _MessageRef(
+        request_id="r1",
+        message_inbox_id="r1",
+        message_text="Subject: Re: dinner ",
+        source={"channel": "email", "endpoint_identity": "gmail:owner@x.com"},
+        event={"external_event_id": "m1", "external_thread_id": "t1"},
+        sender=sender,
+        enqueued_at=datetime.now(UTC),
+    )
+
+
+def test_buffer_pipeline_inputs_carry_a_single_sender_display_name() -> None:
+    """The connector's From: display name reaches identity resolution (bu-g0nsbw)."""
+    _, tool_args = build_buffer_pipeline_inputs(
+        _single_sender_ref({"identity": "chloe@x.com", "display_name": "Chloe L"})
+    )
+
+    assert tool_args["source_id"] == "chloe@x.com"
+    assert tool_args["sender_name"] == "Chloe L"
+
+
+@pytest.mark.parametrize("display_name", [None, "", "   ", 7])
+def test_buffer_pipeline_inputs_omit_a_blank_display_name(display_name: object) -> None:
+    _, tool_args = build_buffer_pipeline_inputs(
+        _single_sender_ref({"identity": "chloe@x.com", "display_name": display_name})
+    )
+
+    assert "sender_name" not in tool_args
+
+
 # ---------------------------------------------------------------------------
 # Scanner
 # ---------------------------------------------------------------------------
