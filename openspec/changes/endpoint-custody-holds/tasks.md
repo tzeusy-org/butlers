@@ -67,5 +67,14 @@
       - message-retaining park and flush on release, which belongs to REQ-010 (task 2.4).
       The Telegram bot account is not an owner channel fact, so the core_347 engine cannot hold
       it.
+- [x] 2.4a Case closure (core_348, REQ-010 closure half): a release or replace closes the
+      episode's fleet case (outcome `custody_resolved`) only when every generation held in that
+      episode is released or replaced; a partial recovery leaves the case active and the result
+      reports `remaining_held`. The command locks every active member's target (sorted) before
+      the case row, so concurrent last releases serialize and a member joining mid-command
+      refuses `membership_changed`. Ordinary case close never reaches the engine and releases
+      nothing. Same SECURITY DEFINER authority; one added UPDATE policy on `fleet_cases`. Installed
+      once across the per-schema chains with core_347's yielding installer (catalog-read check,
+      polled session lock, short lock timeout, retry on sibling conflict).
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
