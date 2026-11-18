@@ -1191,7 +1191,7 @@ async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
                   AND p.proname IN (
                       'custody_target_digest', 'guard_custody_holds', 'custody_target_held',
                       'custody_engine_apply', 'custody_dashboard', 'custody_host',
-                      'guard_custody_commands'
+                      'guard_custody_commands', 'custody_target_episode'
                   )
                 """
             )
@@ -1213,6 +1213,7 @@ async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
                 "custody_host",
                 "guard_custody_commands",
                 "custody_commands",
+                "custody_target_episode",
             ),
             trusted_owner,
         )

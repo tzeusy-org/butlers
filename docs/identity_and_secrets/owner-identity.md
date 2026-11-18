@@ -196,7 +196,10 @@ provably unheld. When every configured owner target is held, a generic notice (`
 (`butlers.core.custody_park`) and `notify()` returns `status: deferred`, `code: endpoint_held`.
 The deferred flush leaves the row pending while every target is held or unreadable. Once one is
 clear it sends the notice once, by that target's channel and with a "held while your device was
-lost" marker; a re-hold before the flush sends nothing, and the ordinary 24-hour expiry applies.
+lost" marker, to the owner's current default recipient (re-resolved and rechecked at flush
+time). The row keeps the hold episode it was parked under, read through the content-blind
+`public.custody_target_episode` (core_349). A re-hold before the flush sends nothing, and the
+ordinary 24-hour expiry applies (with an `expired` ledger row).
 When custody cannot be read (`eligibility_unknown`), or the notice is not generic, nothing is
 parked: `notify()` returns the refusal and writes a `failed` attention-ledger row. Nothing is sent
 in either case. A forced channel or recipient is never retargeted; the adapter fence refuses it.

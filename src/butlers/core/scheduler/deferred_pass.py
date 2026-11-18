@@ -202,6 +202,10 @@ async def _tick_deferred_notification_pass(
     # or transitioned here, and every status write below repeats the ``pending`` guard so a
     # row reserved after the due-fetch is left as the protocol set it
     # (strict-owner-telegram-wake-recovery: Fenced Wake-Recovery Cohorts).
+    # Custody-parked rows expire first, so each gets its ledger row (bu-s11n0s.1 S5b).
+    from butlers.core.custody_park import expire_custody_parked
+
+    await expire_custody_parked(pool, now)
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(
         """

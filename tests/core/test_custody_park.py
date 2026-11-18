@@ -108,6 +108,11 @@ def _envelope(targets=(TG, EMAIL)) -> dict[str, Any]:
 def _ledger(monkeypatch):
     mock = AsyncMock(return_value=None)
     monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", mock)
+    owner = {"telegram_chat_id": "111", "email": "owner@example.test"}
+    monkeypatch.setattr(
+        "butlers.credential_store.resolve_owner_entity_info",
+        AsyncMock(side_effect=lambda pool, info_type: owner.get(info_type)),
+    )
     return mock
 
 
@@ -149,6 +154,9 @@ def notification(monkeypatch):
         monkeypatch.setattr(f"{module}.{name}", AsyncMock(return_value=value))
     ledger = AsyncMock(return_value=None)
     monkeypatch.setattr("butlers.core_tools._notifications.record_attention_event", ledger)
+    monkeypatch.setattr(
+        "butlers.core.custody_park._hold_episode", AsyncMock(return_value="episode-1")
+    )
     insert = AsyncMock(return_value="parked-id")
     monkeypatch.setattr("butlers.core.temporal.delivery_db.insert_deferred_notification", insert)
     target = AsyncMock()
@@ -188,6 +196,7 @@ async def test_notify_parks_an_owner_default_notice_when_every_target_is_held(no
     assert result["notification_id"] == "parked-id"
     envelope = insert.call_args.kwargs["envelope"]
     assert parked_targets(envelope) == [TG, EMAIL]
+    assert envelope[PARK_KEY]["episode"] == "episode-1"
     assert envelope["delivery"] == {
         "intent": "send",
         "channel": "telegram",
@@ -220,6 +229,40 @@ async def test_an_unreadable_custody_refusal_is_not_parked(notification):
     target.return_value = OwnerDefaultTarget(None, None, "eligibility_unknown", ())
     result = await notify(intent="send", message="Take your pills")
     assert result["status"] == "error" and result["code"] == "eligibility_unknown"
+    insert.assert_not_awaited()
+
+
+async def test_park_stores_the_episode_of_the_first_held_target() -> None:
+    class Pool:
+        calls: list = []
+
+        async def fetchval(self, sql, predicate, obj):
+            self.calls.append((sql, predicate, obj))
+            return None if predicate == "has-handle" else uuid.UUID(int=7)
+
+    pool = Pool()
+    from butlers.core.custody_park import _hold_episode
+
+    assert await _hold_episode(pool, (TG, EMAIL)) == str(uuid.UUID(int=7))
+    assert "public.custody_target_episode" in pool.calls[0][0]
+
+
+async def test_an_episode_lookup_failure_refuses_instead_of_parking(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "butlers.core.custody_park._hold_episode", AsyncMock(side_effect=ConnectionError("down"))
+    )
+    insert = AsyncMock()
+    monkeypatch.setattr("butlers.core.temporal.delivery_db.insert_deferred_notification", insert)
+    parked = await park_owner_default_notice(
+        SimpleNamespace(),
+        butler_name="health",
+        intent="send",
+        priority="medium",
+        message="hi",
+        targets=(TG,),
+        now=NOW,
+    )
+    assert parked is None
     insert.assert_not_awaited()
 
 
@@ -269,20 +312,22 @@ async def test_release_makes_the_row_flush_once_with_the_marker() -> None:
     sent = notify.call_args.args[0]
     assert sent["delivery"]["message"] == HELD_WHILE_LOST_MARKER + "Take your pills"
     assert sent["delivery"]["channel"] == "telegram"
-    assert "recipient" not in sent["delivery"] and PARK_KEY not in sent
+    assert sent["delivery"]["recipient"] == "111" and PARK_KEY not in sent
     assert store.rows[row_id]["status"] == "delivered"
 
     assert await _tick_deferred_notification_pass(store_pool(store), NOW, notify_fn=notify) == 0
     assert notify.await_count == 1
 
 
-async def test_a_released_email_target_sends_by_email() -> None:
+async def test_a_released_email_target_sends_by_email(_ledger) -> None:
     """Telegram still held, email clear: the owning pipeline is asked for email."""
     store = FakeStore(held={TG})
     store.add(_envelope())
     notify = AsyncMock(return_value={"status": "sent"})
     assert await flush_custody_parked(store, NOW, list(store.rows.values()), notify) == 1
-    assert notify.call_args.args[0]["delivery"]["channel"] == "email"
+    delivery = notify.call_args.args[0]["delivery"]
+    assert (delivery["channel"], delivery["recipient"]) == ("email", "owner@example.test")
+    assert _ledger.call_args.kwargs["channel"] == "email"  # the channel actually used
 
 
 async def test_a_rehold_before_the_flush_does_not_send() -> None:
@@ -311,13 +356,15 @@ async def test_unreadable_custody_does_not_send() -> None:
     assert store.rows[row_id]["status"] == "pending"
 
 
-async def test_an_expired_row_never_sends() -> None:
+async def test_an_expired_row_never_sends_and_leaves_an_expired_ledger_row(_ledger) -> None:
     store = FakeStore(held=set())
     row_id = store.add(_envelope(), age=timedelta(hours=30))
     notify = AsyncMock()
     assert await _tick_deferred_notification_pass(store_pool(store), NOW, notify_fn=notify) == 0
     notify.assert_not_awaited()
     assert store.rows[row_id]["status"] == "expired"
+    assert _ledger.call_args.kwargs["outcome"] == "expired"
+    assert _ledger.call_args.kwargs["notification_ref"] == str(row_id)
 
 
 async def test_a_non_generic_row_is_cancelled_not_sent() -> None:
@@ -380,6 +427,17 @@ def store_pool(store: FakeStore) -> Any:
             await store.execute(sql, *args)
 
         async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+            if "RETURNING id, butler_name" in sql:
+                expired = [
+                    r
+                    for r in store.rows.values()
+                    if r["status"] == "pending"
+                    and r["deliver_at"] < args[0]
+                    and "custody_park" in r["envelope"]
+                ]
+                for r in expired:
+                    r["status"] = "expired"
+                return expired
             if "SELECT id, butler_name, channel, message" in sql:
                 return [
                     r

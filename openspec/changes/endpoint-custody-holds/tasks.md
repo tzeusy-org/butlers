@@ -79,15 +79,19 @@
 - [x] 2.4b Park and flush (REQ-007 park path, REQ-010 automatic recovery, S5b): an owner-default
       `send`/`insight` notice with no channel, recipient, entity, attachment or reply prompt whose
       every configured owner target is held is parked in the butler's `deferred_notifications`
-      (due at once, `custody_park` envelope section naming the held targets; no episode, since
-      `custody_target_held` answers only a boolean) instead of only a `failed` ledger row.
-      An unreadable custody (`eligibility_unknown`) and every non-generic notice are still
-      refused, never parked. No release-time write: the table is per butler schema, out of the
-      public engine's reach, so the flush (`butlers.core.custody_park`) re-reads
-      `custody_target_held`: while every target is held or unreadable the row stays pending;
-      once one is clear it is sent once (row `FOR UPDATE SKIP LOCKED` across revalidation and
-      send) by the owning pipeline with the held-while-lost marker, by the clear target's
-      channel. A re-hold before the flush sends nothing; the ordinary 24-hour expiry applies;
-      a row not exactly the generic shape is cancelled. No migration.
+      (due at once, `custody_park` envelope section naming the held targets and their hold
+      episode) instead of only a `failed` ledger row. An unreadable custody
+      (`eligibility_unknown`), a failed episode lookup and every non-generic notice are still
+      refused, never parked. The episode comes from the new content-blind
+      `public.custody_target_episode(predicate, object)` (core_349, granted like
+      `custody_target_held`). No release-time write: the table is per butler schema, out of the
+      public engine's reach, so the flush (`butlers.core.custody_park`) re-resolves the owner
+      default (Telegram chat id, then email); while every target is held or unreadable the row
+      stays pending. Once one is provably unheld it is sent by that channel with that exact
+      `delivery.recipient` (so the Switchboard deliver path has a recipient and Messenger's
+      adapter fence rechecks it) and the held-while-lost marker, under `FOR UPDATE SKIP LOCKED`
+      across revalidation and send: once, or at least once on a send-then-commit failure. A
+      re-hold before the flush sends nothing; the 24-hour expiry writes an `expired` ledger row;
+      a row not exactly the generic shape is cancelled.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).

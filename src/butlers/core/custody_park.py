@@ -6,8 +6,8 @@ An owner-default notice (no channel, recipient, entity, attachment or reply prom
 configured owner target is under a custody hold is parked in the butler's own
 ``deferred_notifications`` table instead of only being refused. The row is due at once and
 carries a ``custody_park`` section naming the held targets (the content-blind
-``(predicate, object)`` pairs the fence already uses; no credential, and no episode, since the
-public ``custody_target_held`` read answers only a boolean).
+``(predicate, object)`` pairs the fence already uses; no credential) and the hold episode they
+were parked under (the opaque uuid from the content-blind ``public.custody_target_episode``).
 
 The row needs no release-time write. ``deferred_notifications`` lives in each butler's schema,
 which the public custody engine (core_347/348) cannot reach, so the flush asks the same
@@ -19,19 +19,27 @@ refuses a target that was re-held in the meantime. A row the flush expires (24 h
 so an ambiguous, approval, voice, expired, superseded or historical item cannot reach this path;
 an envelope that is not the exact generic shape is cancelled, never sent.
 
-Single send: each row is flushed inside a transaction holding ``FOR UPDATE SKIP LOCKED`` on it
-across the revalidation and the send, so a concurrent flush skips a row in flight, and a row is
-marked ``delivered`` in the same transaction as the send returns.
+Delivery guarantee: each row is flushed inside a transaction holding ``FOR UPDATE SKIP LOCKED``
+on it across the revalidation and the send, so a concurrent flush skips a row in flight and a row
+is marked ``delivered`` in the same transaction as the send returns. A send that succeeds and
+whose commit then fails leaves the row pending, so delivery is at least once on a
+send-then-commit failure (the same bound as the ordinary deferred flush), exactly once otherwise.
+
+Flush-time target: the owner default is re-resolved from the owner entity (Telegram chat id,
+then email) and the first one provably unheld is written into ``delivery.recipient``, so the
+Switchboard deliver path has a recipient and Messenger's own egress fence rechecks that exact
+target. The target list stored with the row is the held set it waited on, and ``episode`` the
+hold episode it was parked under (``public.custody_target_episode``, core_349).
 """
 
 from __future__ import annotations
 
 import copy
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from butlers.core.custody_egress import CustodyEgressRefused, custody_targets_held
+from butlers.core.custody_egress import choose_owner_default_target
 from butlers.telegram_api import terminal_telegram_metadata
 
 logger = logging.getLogger("butlers.core.custody_park")
@@ -40,6 +48,7 @@ PARK_KEY = "custody_park"
 HELD_WHILE_LOST_MARKER = "[Held while your device was lost] "
 _PARKABLE_INTENTS = frozenset({"send", "insight"})
 _MAX_TARGETS = 4
+EXPIRY = timedelta(hours=24)
 
 
 def build_parked_envelope(
@@ -48,13 +57,18 @@ def build_parked_envelope(
     intent: str,
     message: str,
     targets: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    episode: str | None = None,
 ) -> dict[str, Any]:
     """The ``notify.v1`` envelope of a parked owner-default notice."""
     return {
         "schema_version": "notify.v1",
         "origin_butler": origin_butler,
         "delivery": {"intent": intent, "channel": "telegram", "message": message},
-        PARK_KEY: {"reason": "endpoint_held", "targets": [list(t) for t in targets]},
+        PARK_KEY: {
+            "reason": "endpoint_held",
+            "targets": [list(t) for t in targets],
+            "episode": episode,
+        },
     }
 
 
@@ -87,6 +101,17 @@ def parked_targets(envelope: Any) -> list[tuple[str, str]] | None:
     return targets
 
 
+async def _hold_episode(pool: Any, targets: tuple[tuple[str, str], ...]) -> str | None:
+    """The active hold episode of the first held target, or ``None`` if none is held now."""
+    for predicate, obj in targets:
+        episode = await pool.fetchval(
+            "SELECT public.custody_target_episode($1, $2)", predicate, obj
+        )
+        if episode is not None:
+            return str(episode)
+    return None
+
+
 async def park_owner_default_notice(
     pool: Any,
     *,
@@ -104,8 +129,17 @@ async def park_owner_default_notice(
         return None
     from butlers.core.temporal.delivery_db import insert_deferred_notification
 
+    try:
+        episode = await _hold_episode(pool, targets)
+    except Exception:
+        logger.exception("Custody episode lookup failed; refusing the notice instead of parking")
+        return None
     envelope = build_parked_envelope(
-        origin_butler=butler_name, intent=intent, message=message, targets=targets
+        origin_butler=butler_name,
+        intent=intent,
+        message=message,
+        targets=targets,
+        episode=episode,
     )
     if parked_targets(envelope) is None:
         return None
@@ -125,27 +159,71 @@ async def park_owner_default_notice(
         return None
 
 
-async def _first_clear(pool: Any, targets: list[tuple[str, str]]) -> tuple[str, str] | None:
-    """The first owner target (Telegram, then email) provably unheld; unreadable is not clear."""
-    for target in targets:
+async def _owner_default(pool: Any) -> Any:
+    """The current owner default (Telegram chat id, then email) that is provably unheld.
+
+    Re-resolved at flush time, so a changed owner binding is honoured and the exact target that
+    will be written into ``delivery.recipient`` is the one checked. ``channel`` is ``None`` when
+    none is clear or readable.
+    """
+    from butlers.credential_store import resolve_owner_entity_info
+
+    async def read(info_type: str) -> str | None:
         try:
-            if not await custody_targets_held(pool, [target]):
-                return target
-        except CustodyEgressRefused:
+            return await resolve_owner_entity_info(pool, info_type)
+        except Exception:
+            logger.warning("Owner %s lookup failed during custody flush", info_type)
             return None
-    return None
+
+    return await choose_owner_default_target(
+        pool,
+        telegram_chat_id=await read("telegram_chat_id"),
+        owner_email=await read("email"),
+    )
 
 
-def _marked(envelope: dict[str, Any], target: tuple[str, str]) -> dict[str, Any]:
-    """The envelope the owning pipeline receives: the park section dropped, the channel of the
-    clear target, the held-while-lost marker prefixed. No recipient: the owner default resolves
-    again, behind the owning transport's own egress fence."""
+def _marked(envelope: dict[str, Any], channel: str, recipient: str) -> dict[str, Any]:
+    """The envelope the owning pipeline receives.
+
+    The park section is dropped, the channel and exact recipient of the clear target are set (the
+    Switchboard deliver path needs ``delivery.recipient``; Messenger's egress fence rechecks it)
+    and the held-while-lost marker is prefixed.
+    """
     sent = copy.deepcopy(envelope)
     sent.pop(PARK_KEY, None)
     delivery = sent["delivery"]
-    delivery["channel"] = "email" if target[0] == "has-email" else "telegram"
+    delivery["channel"] = channel
+    delivery["recipient"] = recipient
     delivery["message"] = HELD_WHILE_LOST_MARKER + str(delivery.get("message") or "")
     return sent
+
+
+async def expire_custody_parked(pool: Any, now: datetime) -> int:
+    """Expire parked rows 24 hours past ``deliver_at`` (never sent) with an ``expired`` ledger row.
+
+    Runs before the ordinary expiry so those rows are recorded; other rows are untouched.
+    """
+    from butlers.core.attention_ledger import record_attention_event
+
+    rows = await pool.fetch(
+        "UPDATE deferred_notifications SET status = 'expired' "
+        "WHERE status = 'pending' AND deliver_at < $1 AND envelope ? 'custody_park' "
+        "RETURNING id, butler_name, channel, priority",
+        now - EXPIRY,
+    )
+    for row in rows:
+        await record_attention_event(
+            pool,
+            origin_butler=row["butler_name"],
+            source="notify",
+            outcome="expired",
+            channel=row["channel"],
+            intent="send",
+            priority=row["priority"],
+            notification_ref=str(row["id"]),
+            reason="custody_park_expired",
+        )
+    return len(rows)
 
 
 async def flush_custody_parked(
@@ -158,8 +236,7 @@ async def flush_custody_parked(
     for row in rows:
         row_id = row["id"]
         envelope = row["envelope"]
-        targets = parked_targets(envelope)
-        if targets is None:
+        if parked_targets(envelope) is None:
             await pool.execute(
                 "UPDATE deferred_notifications SET status = 'cancelled' "
                 "WHERE id = $1 AND status = 'pending'",
@@ -178,10 +255,11 @@ async def flush_custody_parked(
                 )
                 if locked is None:
                     continue  # in flight elsewhere, or no longer pending
-                clear = await _first_clear(pool, targets)
-                if clear is None:
+                choice = await _owner_default(pool)
+                if choice.channel is None or not choice.recipient:
                     continue  # still held, re-held, or unreadable: stays parked
-                outcome = await notify_fn(_marked(envelope, clear))
+                channel = choice.channel
+                outcome = await notify_fn(_marked(envelope, channel, choice.recipient))
                 metadata = terminal_telegram_metadata(outcome)
                 await conn.execute(
                     "UPDATE deferred_notifications SET status = $3, delivered_at = $2 "
@@ -199,7 +277,7 @@ async def flush_custody_parked(
                 origin_butler=row["butler_name"],
                 source="notify",
                 outcome="failed",
-                channel=row["channel"],
+                channel=channel,
                 intent="send",
                 priority=row["priority"],
                 notification_ref=str(row_id),
@@ -213,7 +291,7 @@ async def flush_custody_parked(
             origin_butler=row["butler_name"],
             source="notify",
             outcome="delivered",
-            channel=row["channel"],
+            channel=channel,
             intent="send",
             priority=row["priority"],
             notification_ref=str(row_id),
