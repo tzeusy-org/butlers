@@ -23,7 +23,7 @@ from butlers.core.custody_egress import (
     telegram_chat_target,
 )
 from butlers.modules.email import EmailConfig, EmailModule
-from butlers.modules.telegram import TelegramConfig, TelegramModule
+from butlers.modules.telegram import REACTION_IN_PROGRESS, TelegramConfig, TelegramModule
 
 pytestmark = pytest.mark.unit
 
@@ -253,6 +253,26 @@ async def test_unheld_telegram_chat_sends(allow_permissions) -> None:
         result = await module._send_message("222", "hello")
     chunk.assert_awaited_once()
     assert result["result"]["message_id"] == 9
+
+
+async def test_telegram_reaction_into_held_chat_is_refused(allow_permissions) -> None:
+    module = _telegram_module(FakeCustodyPool({HELD_TG}))
+    client = MagicMock()
+    client.post = AsyncMock()
+    module._client = client
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await module._react_to_message("111", 7, "👍")
+    client.post.assert_not_awaited()
+
+
+async def test_lifecycle_reaction_into_held_chat_is_skipped_not_raised(allow_permissions) -> None:
+    """Ingest never breaks on a refused lifecycle reaction; it logs and skips."""
+    module = _telegram_module(FakeCustodyPool(error=True))
+    client = MagicMock()
+    client.post = AsyncMock()
+    module._client = client
+    await module.react_for_ingest(external_thread_id="111:7", reaction=REACTION_IN_PROGRESS)
+    client.post.assert_not_awaited()
 
 
 # --------------------------------------------------------------------------- notify default

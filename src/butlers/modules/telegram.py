@@ -413,6 +413,9 @@ class TelegramModule(Module):
                 message_id=message_id,
                 reaction=reaction,
             )
+        except CustodyEgressRefused as exc:
+            # A held (or unreadable) chat gets no lifecycle reaction; ingest carries on.
+            logger.info("react_for_ingest: reaction skipped, custody %s", exc.reason)
         except Exception:
             logger.debug(
                 "react_for_ingest: failed to set reaction %r for %s",
@@ -879,6 +882,8 @@ class TelegramModule(Module):
 
     async def _react_to_message(self, chat_id: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Call Telegram setMessageReaction API with an arbitrary emoji."""
+        # A reaction is a visible signal into the chat, so a held chat gets none.
+        await self._require_custody_clear(chat_id)
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
         resp = await client.post(
