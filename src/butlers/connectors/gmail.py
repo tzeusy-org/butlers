@@ -846,11 +846,13 @@ class GmailConnectorRuntime:
         """
         if not self._http_client:
             return None
+        api_method = "messages.list.sent_original"
         try:
             token = await self._get_access_token()
             auth = {"Authorization": f"Bearer {token}"}
             for message_id in list(message_ids)[:3]:
                 bare = message_id.strip("<>")
+                api_method = "messages.list.sent_original"
                 response = await self._http_client.get(
                     "https://gmail.googleapis.com/gmail/v1/users/me/messages",
                     params={"q": f"rfc822msgid:{bare} in:sent", "maxResults": 1},
@@ -863,6 +865,7 @@ class GmailConnectorRuntime:
                 stubs = response.json().get("messages") or []
                 if not stubs or not isinstance(stubs[0], dict) or not stubs[0].get("id"):
                     continue
+                api_method = "messages.get.sent_original"
                 response = await self._http_client.get(
                     f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{stubs[0]['id']}",
                     params=[
@@ -890,9 +893,8 @@ class GmailConnectorRuntime:
                     continue
                 return recipients_of(headers)
         except Exception as exc:
-            self._metrics.record_source_api_call(
-                api_method="messages.get.sent_original", status="error"
-            )
+            # Label the error by the call that failed (token refresh counts as the list call).
+            self._metrics.record_source_api_call(api_method=api_method, status="error")
             logger.warning("Sent-original lookup failed; automated message stays unbound: %s", exc)
         return None
 

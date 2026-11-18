@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -1138,7 +1138,8 @@ class TestAutomatedKindPersistence:
             "original_sent": True,
             "sender_was_recipient": True,
             "sender_authenticated": True,
-            "away_until": "2026-11-24",
+            # Inside the 180-day window after the envelope's observed_at (now).
+            "away_until": (datetime.now(UTC) + timedelta(days=7)).date().isoformat(),
         }
         control = await self._control(
             switchboard_pool,

@@ -30,6 +30,8 @@ from datetime import date, timedelta
 from email.utils import getaddresses, parseaddr
 from typing import Any
 
+from butlers.account_security import VERIFICATION_AUTHENTICATED, verify_sender_domain
+
 #: Return dates further out than this are refused: an auto-reply is not a sabbatical plan.
 MAX_AWAY_DAYS = 180
 #: A DSN with more recipients than this is malformed or abusive; the rest are ignored.
@@ -141,40 +143,28 @@ def referenced_message_ids(headers: Any) -> tuple[str, ...]:
     return tuple(found[:8])
 
 
-_AUTH_RESULT = re.compile(r"\b(dkim|spf|dmarc)\s*=\s*([a-z]+)", re.IGNORECASE)
-_DKIM_DOMAIN = re.compile(r"\bheader\.(?:d|i)\s*=\s*@?([a-z0-9.\-]+)", re.IGNORECASE)
+_AUTHSERV_ID = re.compile(r"\s*([^\s;()\"]+)\s*;")
 
 
 def sender_authenticated(headers: Any) -> bool:
-    """Gmail's own verdict: DMARC pass, or a DKIM pass signed by the From domain (or a parent).
+    """Gmail's own verdict on the From domain is ``authenticated``.
 
     Only the topmost ``Authentication-Results`` header counts, and only when its authserv-id is
     Gmail's receiving server: headers further down were written by whoever sent the message.
+    The verdict is the shared ingest one (:func:`butlers.account_security.verify_sender_domain`):
+    its RFC 8601 parser is quote-, comment- and literal-aware, a method counts only at the start
+    of its own clause, a ``dmarc=pass`` counts only for its own ``header.from`` and a
+    ``dkim=pass`` only for an aligned ``header.d``, any ``dmarc`` fail wins, and a header it
+    cannot parse is never authenticated.
     """
     results = _first(headers, "authentication-results")
-    if not results:
-        return False
-    authserv_id = results.split(";", 1)[0].strip().lower()
-    if authserv_id != TRUSTED_AUTHSERV_ID:
+    authserv = _AUTHSERV_ID.match(results)
+    if authserv is None or authserv.group(1).lower() != TRUSTED_AUTHSERV_ID:
         return False
     from_domain = _domain(normalize_address(_first(headers, "from")))
     if not from_domain:
         return False
-    for clause in results.split(";")[1:]:
-        match = _AUTH_RESULT.search(clause)
-        if not match:
-            continue
-        method, verdict = match.group(1).lower(), match.group(2).lower()
-        if verdict != "pass":
-            continue
-        if method == "dmarc":
-            return True
-        if method == "dkim":
-            signer = _DKIM_DOMAIN.search(clause)
-            signed = signer.group(1).lower().rstrip(".") if signer else ""
-            if signed and (from_domain == signed or from_domain.endswith("." + signed)):
-                return True
-    return False
+    return verify_sender_domain(results, from_domain) == VERIFICATION_AUTHENTICATED
 
 
 # --------------------------------------------------------------------------- DSN parsing
@@ -300,7 +290,8 @@ _DATE_FORMS = (
     ("iso", re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})\b")),
     ("dmy_name", re.compile(_WEEKDAY + _DAY + r"\s+(?:of\s+)?" + _MONTH + _YEAR, re.IGNORECASE)),
     ("mdy_name", re.compile(_WEEKDAY + _MONTH + r"\s+" + _DAY + _YEAR, re.IGNORECASE)),
-    ("numeric", re.compile(_WEEKDAY + r"(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2}|\d{4}))?\b")),
+    # Only "/" separates a numeric date: "until 5.30" and "out until 4.15 today" are times.
+    ("numeric", re.compile(_WEEKDAY + r"(\d{1,2})/(\d{1,2})(?:/(\d{2}|\d{4}))?\b")),
 )
 
 

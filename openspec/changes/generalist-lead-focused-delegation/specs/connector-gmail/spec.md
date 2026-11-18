@@ -25,6 +25,15 @@ Scope: v1-mandatory
 - **AND** a global rule resolving to `skip` still skips the message, while `route_to`, `low_priority_queue` and `pass_through` do not raise it to Tier 1
 - **AND** `Auto-Submitted: auto-generated` or `no`, `Precedence: bulk` or `list`, list mail, and missing or malformed headers are ordinary mail, so detection never drops a message
 
+#### Scenario: Automated replies and bounces carry bound, typed evidence
+- **WHEN** the connector submits an envelope with `control.automated_kind`
+- **THEN** it also carries `control.automated_evidence` with `original_sent`, `sender_was_recipient`, `sender_authenticated`, `away_until` and `failed_recipients`, and no other field
+- **AND** `original_sent` is true only when a Message-ID the message names (a bounce's attached original, `In-Reply-To` or `References`) is found by a live lookup in the owner's SENT mailbox; a lookup error or no match leaves it false
+- **AND** `sender_authenticated` reads only the topmost `Authentication-Results` header, only when its authserv-id is `mx.google.com`, and is true for a `dmarc=pass` whose own `header.from` is the From domain or a `dkim=pass` whose own `header.d` is the From domain or a parent of it, read per RFC 8601 (comments and quoted strings never carry a verdict) and never when DMARC failed or the header does not parse
+- **AND** an auto-reply's `away_until` is the one calendar date its subject or plain body states after a return cue (`until`, `back on`, `returning`…), set only when the sender was a recipient of the sent original and is authenticated, and only within 180 days after receipt; an ambiguous numeric date or two different dates yield none
+- **AND** a bounce's `failed_recipients` lists only `Final-Recipient` addresses with `Action: failed` and a `5.x.x` status that the sent original was addressed to; delays, `4.x.x` statuses and DSNs for mail the owner never sent (backscatter) list nobody
+- **AND** no subject, body or diagnostic text of the automated message leaves the connector in the evidence, and the envelope stays metadata-only
+
 #### Scenario: Tier 3 — skip
 - **WHEN** a message's triage action is `skip` or label exclusion matched
 - **THEN** the connector does not submit to Switchboard

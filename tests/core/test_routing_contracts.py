@@ -694,8 +694,13 @@ def test_ingest_control_accepts_only_known_automated_kinds():
         parse_ingest_envelope(base)
 
 
-def _automated(kind: str, evidence: dict, *, tier: str = "metadata") -> dict:
-    base = _build_valid_ingest_envelope()
+_AUTOMATED_OBSERVED_AT = "2026-11-17T09:30:00+00:00"
+
+
+def _automated(
+    kind: str, evidence: dict, *, tier: str = "metadata", observed_at: str = _AUTOMATED_OBSERVED_AT
+) -> dict:
+    base = _build_valid_ingest_envelope(observed_at=observed_at)
     if tier == "metadata":
         base["payload"] = {"raw": None, "normalized_text": "Subject: Out of office"}
     base["control"] = {
@@ -755,6 +760,30 @@ def test_ingest_control_refuses_unbound_or_misplaced_evidence(kind, evidence, ti
     base["control"] = {"ingestion_tier": "metadata", "automated_evidence": _BOUND}
     with pytest.raises(ValidationError):
         parse_ingest_envelope(base)
+
+
+@pytest.mark.parametrize(
+    ("away_until", "accepted"),
+    [
+        ("2026-11-16", True),  # one day of slack for the mailbox's own day
+        ("2026-11-17", True),
+        ("2027-05-16", True),  # 180 days after observation
+        ("2027-05-17", True),  # plus one day of slack
+        ("2026-11-15", False),
+        ("2027-05-18", False),
+        ("2030-01-01", False),
+    ],
+)
+def test_ingest_control_bounds_away_until_to_180_days(away_until, accepted):
+    """Review (b) on #5896: the connector's 180-day cap holds at ingest too."""
+    envelope = _automated("auto_reply", _BOUND | {"away_until": away_until})
+    if accepted:
+        assert str(parse_ingest_envelope(envelope).control.automated_evidence.away_until) == (
+            away_until
+        )
+    else:
+        with pytest.raises(ValidationError, match="away_until"):
+            parse_ingest_envelope(envelope)
 
 
 @pytest.mark.parametrize(
