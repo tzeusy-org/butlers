@@ -46,38 +46,6 @@ Scope: v1-mandatory
 - **AND** when the internal API URL is unconfigured or unreachable, the tap
   SHALL still be acknowledged with a graceful toast rather than left with a
   loading spinner
-
-#### Scenario: Owner /reach lists and revokes break-through clauses
-- **WHEN** a message whose text is exactly `/reach` arrives in a private chat
-  (`chat.id` equals `from.id`) from the primary owner
-- **THEN** the connector SHALL answer deterministically, without ingesting the
-  message or invoking a model, with the unrevoked break-through clauses and one
-  inline button per clause whose `callback_data` is a signed `rch1:` token
-  bound to the chat
-- **AND** a tap on an `rch1:` button from the primary owner SHALL revoke that
-  clause via `POST /api/attention/reach/telegram` and SHALL always be
-  acknowledged via `answerCallbackQuery`, including when the owner lookup fails
-- **AND** the surface SHALL be narrowing-only: no Telegram path creates or
-  grants a clause
-- **AND** `/reach` from a non-owner or from a group chat SHALL fall through
-  unanswered as an ordinary message
-
-#### Scenario: Owner /reach add records a pending proposal only
-- **WHEN** a message `/reach add <matcher>` arrives in a private chat from the
-  primary owner, where the matcher words are `domain:`/a bare domain,
-  `channel:`, `kind:` and `scope:` drawn from the closed clause sets
-- **THEN** the connector SHALL NOT ingest the message or invoke a model, SHALL
-  forward only the parsed matchers (never message text) to
-  `POST /api/attention/reach/telegram`, and SHALL reply "Proposed; confirm on
-  the dashboard at /settings/reach" with no confirm button
-- **AND** an unparseable command (no matcher, an unknown or repeated field, an
-  out-of-set value, free text) SHALL be answered with usage and SHALL propose
-  nothing
-- **AND** from a non-owner, a non-primary sender or a group chat the command
-  SHALL fall through as an ordinary message
-- **AND** no Telegram path SHALL create a clause
-
-
 ## ADDED Requirements
 
 ### Requirement: Approval Callback Ingestion

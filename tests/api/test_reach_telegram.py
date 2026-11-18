@@ -290,10 +290,9 @@ async def test_the_connector_credential_cannot_call_clause_create_or_confirm(mon
 
 
 async def test_owner_channel_propose_hands_the_sql_a_dict_not_a_json_string():
-    """The pool's jsonb codec encodes the argument; a pre-encoded string would be double-encoded."""
+    """The pool init registers the jsonb codec; a pre-encoded string would be double-encoded."""
     from contextlib import asynccontextmanager
     from types import SimpleNamespace
-    from unittest.mock import patch
 
     connection = MagicMock()
     connection.execute = AsyncMock()
@@ -310,9 +309,7 @@ async def test_owner_channel_propose_hands_the_sql_a_dict_not_a_json_string():
 
     pool: Any = SimpleNamespace(acquire=acquire)
     service = OwnerAuthService(pool, MagicMock())
-    with patch("butlers.api.owner_auth.service.register_jsonb_codec", AsyncMock()) as codec:
-        assert await service.owner_channel_propose({"channel": "email"}) == "p1"
-    codec.assert_awaited_once()
+    assert await service.owner_channel_propose({"channel": "email"}) == "p1"
     call = connection.fetchval.await_args
     assert call is not None
     args = call.args

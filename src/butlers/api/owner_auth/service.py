@@ -178,9 +178,6 @@ class OwnerAuthService:
             with suppress_instrumentation():
                 async with self.pool.acquire() as connection, connection.transaction():
                     await connection.execute("SET LOCAL ROLE dashboard_auth_api")
-                    # A pooled connection may or may not already carry the jsonb codec; make it
-                    # certain so a dict argument is encoded exactly once.
-                    await register_jsonb_codec(connection)  # pyright: ignore[reportArgumentType]
                     raw = await connection.fetchval(sql, *args)
             result = json.loads(raw) if isinstance(raw, str) else raw
             if not isinstance(result, dict):
