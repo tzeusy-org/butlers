@@ -457,6 +457,11 @@ def _core_347():
     return module
 
 
+def _dollar_quote(sql: str) -> str:
+    assert "$restore_body$" not in sql
+    return "$restore_body$" + sql + "$restore_body$"
+
+
 def _previous_apply() -> str:
     """core_347's function body, the single source of the previous definition."""
     return _core_347()._APPLY
@@ -526,11 +531,22 @@ def downgrade() -> None:
     op.execute("""DO $$ DECLARE owner_oid oid; db_owner name; BEGIN
         SELECT datdba, pg_get_userbyid(datdba) INTO STRICT owner_oid, db_owner FROM pg_database
             WHERE datname = current_database();
-        IF (SELECT relowner FROM pg_class WHERE oid = 'public.fleet_cases'::regclass)
+        IF to_regclass('public.fleet_cases') IS NOT NULL
+           AND (SELECT relowner FROM pg_class WHERE oid = 'public.fleet_cases'::regclass)
            <> owner_oid THEN
             EXECUTE format('REVOKE UPDATE ON public.fleet_cases FROM %I', db_owner);
         END IF;
     END $$""")
     op.execute(_ASSUME_OWNER)
-    op.execute(_previous_apply())
+    # A sibling chain's downgrade may already have dropped the shared custody objects (core_347
+    # then core_293 drop them with the last schema); restoring the body would not compile.
+    op.execute(
+        "DO $restore$ BEGIN IF to_regclass('public.custody_holds') IS NOT NULL "
+        "AND to_regclass('public.custody_commands') IS NOT NULL "
+        "AND to_regprocedure('"
+        + _APPLY_FN
+        + "') IS NOT NULL THEN EXECUTE "
+        + _dollar_quote(_previous_apply())
+        + "; END IF; END $restore$"
+    )
     op.execute("RESET ROLE")
