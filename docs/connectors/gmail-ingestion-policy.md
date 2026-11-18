@@ -100,7 +100,7 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
   - `failed_recipients`: a bounce's permanently failed (`Action: failed`, `5.x.x`) recipients that
     the original was addressed to, and only when the DSN sender is authenticated and speaks for the
     address: Gmail's own bouncer (`mailer-daemon@googlemail.com`) or a sender whose domain is equal
-    to, or a parent or child of, the failed address's domain. A co-recipient's own signed DSN naming
+    to, or a subdomain of, the failed address's domain. A co-recipient's own signed DSN naming
     someone else, backscatter and delays name nobody.
 
   Nothing reads the evidence yet: the Relationship availability and dead-address writers and the

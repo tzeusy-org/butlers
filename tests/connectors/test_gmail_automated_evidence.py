@@ -372,6 +372,35 @@ def test_a_co_recipients_signed_dsn_from_another_domain_fails_nobody():
     assert evidence.failed_recipients == ()
 
 
+@pytest.mark.parametrize(
+    ("sender", "signer", "failed"),
+    [
+        ("mailer-daemon@com", "evil.com", "alice@x.com"),
+        ("mailer-daemon@co.uk", "evil.co.uk", "alice@x.co.uk"),
+        ("mailer-daemon@x.com", "x.com", "alice@mx.x.com"),
+    ],
+)
+def test_a_parent_or_suffix_sender_cannot_fail_an_address_below_it(sender, signer, failed):
+    msg, status = _dsn_from(sender, f"mx.google.com; dkim=pass header.d={signer}", failed)
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({failed})
+    )
+    assert evidence.sender_authenticated
+    assert evidence.failed_recipients == ()
+
+
+def test_gmails_real_authentication_results_format_still_claims_for_its_bouncer():
+    msg, status = _dsn_from(
+        "mailer-daemon@googlemail.com",
+        "mx.google.com; dkim=pass header.i=@googlemail.com header.s=20230601 header.b=abc; "
+        "dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=googlemail.com",
+    )
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({"alice@x.com"})
+    )
+    assert evidence.failed_recipients == ("alice@x.com",)
+
+
 def test_an_authenticated_gmail_bouncer_may_fail_any_mailed_address():
     msg, status = _dsn_from(
         "mailer-daemon@googlemail.com", "mx.google.com; dkim=pass header.d=googlemail.com"
@@ -383,7 +412,7 @@ def test_an_authenticated_gmail_bouncer_may_fail_any_mailed_address():
 
 
 @pytest.mark.parametrize("sender", ["mailer-daemon@x.com", "mailer-daemon@mx.x.com"])
-def test_an_authenticated_aligned_domain_dsn_may_fail_its_own_address(sender):
+def test_an_authenticated_same_or_sub_domain_dsn_may_fail_its_own_address(sender):
     domain = sender.rpartition("@")[2]
     msg, status = _dsn_from(sender, f"mx.google.com; dkim=pass header.d={domain}")
     evidence = bounce_evidence(

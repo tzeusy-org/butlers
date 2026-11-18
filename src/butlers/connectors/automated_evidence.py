@@ -386,9 +386,16 @@ def auto_reply_evidence(
 GMAIL_BOUNCER = "mailer-daemon@googlemail.com"
 
 
-def _domains_aligned(a: str, b: str) -> bool:
-    """Equal, or one a parent (dot-suffix) of the other."""
-    return bool(a) and bool(b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+def _domains_aligned(sender_domain: str, address_domain: str) -> bool:
+    """The sender's domain equals the address's domain or is a subdomain of it.
+
+    Never the reverse: a sender at a parent or public suffix (``@com``) is not that domain.
+    """
+    return (
+        bool(sender_domain)
+        and bool(address_domain)
+        and (sender_domain == address_domain or sender_domain.endswith("." + address_domain))
+    )
 
 
 def _may_fail(sender: str, failed_address: str) -> bool:
@@ -396,7 +403,7 @@ def _may_fail(sender: str, failed_address: str) -> bool:
 
     A co-recipient can send a DKIM-signed DSN from their own domain naming someone else, so
     authentication alone is not enough: the sender is Gmail's own bouncer, or its domain is
-    aligned with the failed address's domain.
+    equal to or a subdomain of the failed address's domain.
     """
     return sender == GMAIL_BOUNCER or _domains_aligned(_domain(sender), _domain(failed_address))
 
@@ -410,7 +417,8 @@ def bounce_evidence(
     """Evidence for a bounce: only addresses the owner's original was sent to can fail.
 
     A failed recipient is kept only when the DSN sender is authenticated and speaks for that
-    address (Gmail's own bouncer, or an aligned domain); anything else under-claims.
+    address (Gmail's own bouncer, or the address's own domain or a subdomain); anything else
+    under-claims.
     """
     authenticated = sender_authenticated(headers)
     sender = normalize_address(_first(headers, "from"))
