@@ -170,6 +170,9 @@ class OwnerDefaultTarget:
     channel: Literal["telegram", "email"] | None
     recipient: str | None
     refusal: CustodyRefusalReason | None = None
+    #: With ``endpoint_held``, every configured owner target, all provably held: the targets a
+    #: parked notice waits on (bu-s11n0s.1 S5b). Empty otherwise.
+    held_targets: tuple[tuple[str, str], ...] = ()
 
 
 async def choose_owner_default_target(
@@ -182,6 +185,7 @@ async def choose_owner_default_target(
     ``eligibility_unknown`` when any lookup failed, otherwise ``endpoint_held``.
     """
     unknown = False
+    held_targets: list[tuple[str, str]] = []
     candidates: list[tuple[Literal["telegram", "email"], str | None, Any]] = [
         ("telegram", telegram_chat_id, telegram_chat_target(telegram_chat_id)),
         ("email", owner_email, (email_targets([owner_email]) or [None])[0]),
@@ -199,10 +203,12 @@ async def choose_owner_default_target(
             continue
         if not held:
             return OwnerDefaultTarget(channel=channel, recipient=recipient.strip())
+        held_targets.append(target)
     return OwnerDefaultTarget(
         channel=None,
         recipient=None,
         refusal="eligibility_unknown" if unknown else "endpoint_held",
+        held_targets=() if unknown else tuple(held_targets),
     )
 
 

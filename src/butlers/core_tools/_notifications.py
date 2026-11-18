@@ -692,6 +692,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # Messenger's adapter fence refuses those itself.
             _custody_default_email: str | None = None
             _custody_default_refusal: str | None = None
+            _custody_default_targets: tuple[tuple[str, str], ...] = ()
             if channel is None:
                 resolved_channel: str | None = None
                 if (
@@ -705,6 +706,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     if _custody_default is not None:
                         if _custody_default.refusal is not None:
                             _custody_default_refusal = _custody_default.refusal
+                            _custody_default_targets = _custody_default.held_targets
                         elif _custody_default.channel == "email":
                             resolved_channel = "email"
                             _custody_default_email = _custody_default.recipient
@@ -1137,6 +1139,41 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     }
                 resolved_recipient = entity_identifier
             else:
+                if _custody_default_refusal == "endpoint_held":
+                    # Every owner target is held: park the generic notice (REQ-007); it flushes
+                    # once on release (REQ-010). No provider is attempted now.
+                    from butlers.core.custody_park import park_owner_default_notice
+
+                    _parked_id = await park_owner_default_notice(
+                        _notify_pool,
+                        butler_name=butler_name,
+                        intent=intent,
+                        priority=priority,
+                        message=message,
+                        targets=_custody_default_targets,
+                        now=datetime.now(UTC),
+                    )
+                    if _parked_id is not None:
+                        await record_attention_event(
+                            _notify_pool,
+                            origin_butler=butler_name,
+                            source="notify",
+                            outcome="deferred",
+                            channel=channel,
+                            intent=intent,
+                            priority=priority,
+                            reason="endpoint_held",
+                            notification_ref=_parked_id,
+                            metadata={"retryable": False},
+                            session_id=_ledger_session_id,
+                        )
+                        return {
+                            "status": "deferred",
+                            "code": "endpoint_held",
+                            "notification_id": _parked_id,
+                            "channel": channel,
+                            "priority": priority,
+                        }
                 if _custody_default_refusal is not None:
                     # No supported owner target is provably unheld: nothing is parked for
                     # approval and no provider is attempted; the ledger row is the record.

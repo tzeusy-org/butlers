@@ -76,7 +76,9 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   (core_347). In `public` because every owner-only definer consumer checks holds. Row level
   security with no policy and no runtime grant: only the database owner's definers read or write
   them, from a current dashboard owner session or the host. Since core_348 a release or replace
-  also closes the episode's fleet case once every generation of that episode is resolved. See
+  also closes the episode's fleet case once every generation of that episode is resolved, and
+  core_349 adds the content-blind `public.custody_target_episode` read beside `custody_target_held`.
+  See
   [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
