@@ -219,6 +219,8 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
             "ALTER TABLE dashboard_attention.final_claims RENAME COLUMN definition_digest TO wrong_digest",
             f'GRANT SELECT(nonce_digest) ON dashboard_attention.tickets TO "{source.username}"',
             f'ALTER FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid) OWNER TO "{source.username}"',
+            f'ALTER FUNCTION dashboard_attention.owner_channel_revoke(uuid) OWNER TO "{source.username}"',
+            "DROP FUNCTION dashboard_attention.owner_channel_list()",
             "DROP TABLE dashboard_attention.bootstrap_configuration",
             "DROP SCHEMA dashboard_attention CASCADE",
         ):

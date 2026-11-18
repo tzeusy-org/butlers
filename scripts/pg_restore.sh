@@ -691,8 +691,8 @@ BEGIN
    AND 3=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid AND p.proowner=boot.oid
     AND p.proname IN('install_interface','finalize_interface','deactivate_interface')
     AND p.pronargs=0 AND p.prorettype='void'::regtype AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[])
-   AND 10=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid)
-   AND 7=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
+   AND 12=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid)
+   AND 9=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
     WHERE p.pronamespace=n.oid AND own.rolname='dashboard_attention_owner' AND p.prosecdef AND p.provolatile='v'
      AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
      AND (p.oid,p.prorettype) IN (VALUES
@@ -702,7 +702,9 @@ BEGIN
       (to_regprocedure('dashboard_attention.evaluate(jsonb)'),'jsonb'::regtype),
       (to_regprocedure('dashboard_attention.final_claim(text,uuid,timestamp with time zone)'),'boolean'::regtype),
       (to_regprocedure('dashboard_attention.remember(uuid,jsonb)'),'boolean'::regtype),
-      (to_regprocedure('dashboard_attention.candidate_origin(uuid)'),'jsonb'::regtype)))
+      (to_regprocedure('dashboard_attention.candidate_origin(uuid)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.owner_channel_list()'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.owner_channel_revoke(uuid)'),'jsonb'::regtype)))
    AND 5=(SELECT count(*) FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
     WHERE c.oid IN(to_regclass('dashboard_attention.tickets'),to_regclass('dashboard_attention.stamps'),
      to_regclass('dashboard_attention.candidate_causes'),to_regclass('dashboard_attention.final_claims'),to_regclass('public.break_through_clauses'))

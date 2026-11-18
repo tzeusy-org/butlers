@@ -6474,7 +6474,9 @@ BEGIN
   ('dashboard_attention.evaluate(jsonb)','jsonb'),
   ('dashboard_attention.final_claim(text,uuid,timestamp with time zone)','boolean'),
   ('dashboard_attention.remember(uuid,jsonb)','boolean'),
-  ('dashboard_attention.candidate_origin(uuid)','jsonb')
+  ('dashboard_attention.candidate_origin(uuid)','jsonb'),
+  ('dashboard_attention.owner_channel_list()','jsonb'),
+  ('dashboard_attention.owner_channel_revoke(uuid)','jsonb')
  ) expected(signature,result) LOOP
   IF NOT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure(item.signature)
    AND p.proowner=owner_oid AND p.prosecdef AND p.prorettype=item.result::regtype
@@ -6488,7 +6490,7 @@ BEGIN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %s',item.signature,grantee_name);
   END LOOP;
  END LOOP;
- IF 10<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
+ IF 12<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
   RAISE EXCEPTION 'unexpected attention function'; END IF;
  REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
  IF to_regclass('public.insight_candidates') IS NOT NULL THEN
@@ -6510,6 +6512,8 @@ BEGIN
  GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.api(text,jsonb) FROM PUBLIC;
  GRANT EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb) TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM PUBLIC;
+ GRANT EXECUTE ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid),
   dashboard_attention.definition_digest(text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb)
   FROM PUBLIC,dashboard_auth_api;
@@ -6825,10 +6829,39 @@ BEGIN
  DELETE FROM dashboard_attention.tickets WHERE task_id IS NULL;
  UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
  FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
-  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM %I',n);
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM %I',n);
  END LOOP;
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
+
+-- bu-s11n0s.8 S3c-1: the Telegram owner channel may list and revoke break-through clauses, and
+-- nothing else. These two SECURITY DEFINER functions are the whole of that authority: the list
+-- reads the unrevoked clauses (never message content), and the revoke only sets ``revoked_at`` on
+-- one still-live clause. Neither can create a clause or touch a session; ``api()`` keeps the
+-- cookie session and CSRF proof for every grant. They are created here, before the grant block
+-- finalizes the catalog, so a fresh install (install_interface) and an installed database both
+-- reach the same twelve-function interface. CREATE OR REPLACE keeps owner and ACL; idempotent.
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_list() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $list_owner$
+BEGIN
+ RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+  'sender_domain',k.sender_domain,'channel',k.channel,'security_kind',k.security_kind,
+  'scope',k.scope,'expires_at',k.expires_at) ORDER BY k.created_at DESC)
+  FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+   ORDER BY created_at DESC LIMIT 10) k),'[]'::jsonb));
+END $list_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_list() OWNER TO dashboard_attention_owner;
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_revoke(clause uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $revoke_owner$
+DECLARE c uuid;
+BEGIN
+ UPDATE public.break_through_clauses SET revoked_at=clock_timestamp()
+  WHERE id=clause AND revoked_at IS NULL RETURNING id INTO c;
+ IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ RETURN jsonb_build_object('id',c);
+END $revoke_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_revoke(uuid) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM PUBLIC;
 
 DO $attention_grant$
 DECLARE migration_name name;

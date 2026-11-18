@@ -129,6 +129,24 @@ other `callback_query` SHALL retain its existing drop behavior.
   SHALL still be acknowledged with a graceful toast rather than left with a
   loading spinner
 
+### Requirement: Owner Reach Command
+The connector SHALL answer an exact `/reach` from the primary owner in a private chat with the revocable break-through clauses, and SHALL let the owner revoke but never create or grant a clause.
+
+#### Scenario: Owner /reach lists and revokes break-through clauses
+- **WHEN** a message whose text is exactly `/reach` arrives in a private chat
+  (`chat.id` equals `from.id`) from the primary owner
+- **THEN** the connector SHALL answer deterministically, without ingesting the
+  message or invoking a model, with the unrevoked break-through clauses and one
+  inline button per clause whose `callback_data` is a signed `rch1:` token
+  bound to the chat
+- **AND** a tap on an `rch1:` button from the primary owner SHALL revoke that
+  clause via `POST /api/attention/reach/telegram` and SHALL always be
+  acknowledged via `answerCallbackQuery`, including when the owner lookup fails
+- **AND** the surface SHALL be narrowing-only: no Telegram path creates or
+  grants a clause
+- **AND** `/reach` from a non-owner or from a group chat SHALL fall through
+  unanswered as an ordinary message
+
 ### Requirement: Lifecycle Reactions
 Lifecycle reactions SHALL be applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector SHALL neither send nor track reactions. The emoji mapping below documents the cross-component behavior for reference.
 
