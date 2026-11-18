@@ -1189,21 +1189,30 @@ async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
                 JOIN pg_namespace n ON n.oid = p.pronamespace
                 WHERE n.nspname = 'public'
                   AND p.proname IN (
-                      'custody_target_digest', 'guard_custody_holds', 'custody_target_held'
+                      'custody_target_digest', 'guard_custody_holds', 'custody_target_held',
+                      'custody_engine_apply', 'custody_dashboard', 'custody_host',
+                      'guard_custody_commands'
                   )
                 """
             )
         )
-        owners["custody_holds"] = await pool.fetchval(
-            "SELECT pg_get_userbyid(relowner) FROM pg_class "
-            "WHERE oid = 'public.custody_holds'::regclass"
-        )
+        for table in ("custody_holds", "custody_commands"):
+            owners[table] = await pool.fetchval(
+                "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = $1::regclass",
+                f"public.{table}",
+            )
+        # core_347 builds its objects as the owner too (bu-s11n0s.1 slice 2a).
         assert owners == dict.fromkeys(
             (
                 "custody_target_digest",
                 "guard_custody_holds",
                 "custody_target_held",
                 "custody_holds",
+                "custody_engine_apply",
+                "custody_dashboard",
+                "custody_host",
+                "guard_custody_commands",
+                "custody_commands",
             ),
             trusted_owner,
         )

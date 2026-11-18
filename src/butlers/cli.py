@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from butlers.api.owner_auth.custody_cli import custody as custody_commands
 from butlers.api.owner_auth.host_cli import auth as owner_auth_commands
 from butlers.config import ConfigError, load_config
 from butlers.db import is_db_unreachable
@@ -1492,3 +1493,4 @@ async def _start_single(config_path: Path) -> None:
 # Host-only commands are deliberately absent from the dashboard HTTP router.
 
 cli.add_command(owner_auth_commands)
+cli.add_command(custody_commands)

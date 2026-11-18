@@ -662,9 +662,29 @@ async def _clause_authoring(request: Request, action: str, values: dict) -> dict
 
 
 @router.get("/attention/break-through-clauses", response_model=ApiResponse[dict])
-async def list_break_through_clauses(request: Request):
-    """The owner's current (unrevoked) break-through clauses, newest first. Cookie-only read."""
-    return ApiResponse(data=await _clause_authoring(request, "clause_list", {}))
+async def list_break_through_clauses(request: Request, db: Db):
+    """The owner's current (unrevoked) break-through clauses, newest first. Cookie-only read.
+
+    Each clause naming an entity also carries its display name (``entity_name``) so the owner
+    sees who, not an id. A name that cannot be read is simply absent; the list never fails on it.
+    """
+    data = await _clause_authoring(request, "clause_list", {})
+    clauses: list[dict] = data.get("clauses") or []
+    ids = [c["entity_id"] for c in clauses if isinstance(c, dict) and c.get("entity_id")]
+    if ids:
+        try:
+            rows = await db.pool("switchboard").fetch(
+                "SELECT id::text AS id, canonical_name FROM public.entities "
+                "WHERE id = ANY($1::uuid[])",
+                ids,
+            )
+            names = {row["id"]: row["canonical_name"] for row in rows}
+            for clause in clauses:
+                if clause.get("entity_id") in names:
+                    clause["entity_name"] = names[clause["entity_id"]]
+        except Exception:
+            logger.debug("break-through clause entity names unavailable", exc_info=True)
+    return ApiResponse(data=data)
 
 
 @router.post("/attention/break-through-clauses", response_model=ApiResponse[dict], status_code=201)

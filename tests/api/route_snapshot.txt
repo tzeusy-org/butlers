@@ -70,7 +70,7 @@ OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
 OP GET /api/audit-log/{entry_id} bbfae7bdb716
 OP GET /api/butlers 44b4d9ade975
-OP GET /api/butlers/attention/break-through-clauses 613f823ae684
+OP GET /api/butlers/attention/break-through-clauses 3158df0862fe
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78
@@ -152,6 +152,8 @@ OP GET /api/connectors/whatsapp/status 67561b9e24af
 OP GET /api/contacts/search 6f76391e4e72
 OP GET /api/conversations/messages/search 19e9f0cdb7f0
 OP GET /api/conversations/{conversation_id} 617a3a919a5f
+OP GET /api/custody/commands/{command_id} 0f99146a52ef
+OP GET /api/custody/holds 638eb60aa6c8
 OP GET /api/dashboard/briefing f41083e3f0c0
 OP GET /api/data/export/download/{export_id} 5669ed0c101b
 OP GET /api/decision-sets/{set_id} b41b7c8a201c
@@ -518,6 +520,9 @@ OP POST /api/connectors/spotify/disconnect 7b1bbf48a3dd
 OP POST /api/connectors/spotify/oauth/start 70c6cb18c5d0
 OP POST /api/connectors/whatsapp/disconnect 77e1145ada70
 OP POST /api/connectors/whatsapp/pair/start b67b234f192b
+OP POST /api/custody/holds 3187cd52fdea
+OP POST /api/custody/holds/{hold_id}/release 95b0f4369e03
+OP POST /api/custody/holds/{hold_id}/replace 8faccf475bcf
 OP POST /api/data/export ef7048daaa86
 OP POST /api/decision-sets/{set_id}/decision fe17f9b5cafe
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
@@ -840,6 +845,8 @@ ROUTE APIRoute GET '/api/connectors/whatsapp/status' name=get_whatsapp_status op
 ROUTE APIRoute GET '/api/contacts/search' name=search_contacts op=search_contacts_api_contacts_search_get tags=contacts schema=True
 ROUTE APIRoute GET '/api/conversations/messages/search' name=search_messages op=search_messages_api_conversations_messages_search_get tags=conversations schema=True
 ROUTE APIRoute GET '/api/conversations/{conversation_id}' name=get_conversation_by_id op=get_conversation_by_id_api_conversations__conversation_id__get tags=conversations schema=True
+ROUTE APIRoute GET '/api/custody/commands/{command_id}' name=read_command op=read_command_api_custody_commands__command_id__get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/holds' name=list_holds op=list_holds_api_custody_holds_get tags=custody schema=True
 ROUTE APIRoute GET '/api/dashboard/briefing' name=get_dashboard_briefing op=get_dashboard_briefing_api_dashboard_briefing_get tags=dashboard-briefing schema=True
 ROUTE APIRoute GET '/api/data/export/download/{export_id}' name=download_export op=download_export_api_data_export_download__export_id__get tags=data-ops schema=True
 ROUTE APIRoute GET '/api/decision-sets/{set_id}' name=get_decision_set op=get_decision_set_api_decision_sets__set_id__get tags=decision-sets schema=True
@@ -1195,6 +1202,9 @@ ROUTE APIRoute POST '/api/connectors/spotify/disconnect' name=disconnect_spotify
 ROUTE APIRoute POST '/api/connectors/spotify/oauth/start' name=start_spotify_oauth op=start_spotify_oauth_api_connectors_spotify_oauth_start_post tags=spotify schema=True
 ROUTE APIRoute POST '/api/connectors/whatsapp/disconnect' name=disconnect_whatsapp op=disconnect_whatsapp_api_connectors_whatsapp_disconnect_post tags=whatsapp schema=True
 ROUTE APIRoute POST '/api/connectors/whatsapp/pair/start' name=start_whatsapp_pairing op=start_whatsapp_pairing_api_connectors_whatsapp_pair_start_post tags=whatsapp schema=True
+ROUTE APIRoute POST '/api/custody/holds' name=hold op=hold_api_custody_holds_post tags=custody schema=True
+ROUTE APIRoute POST '/api/custody/holds/{hold_id}/release' name=release op=release_api_custody_holds__hold_id__release_post tags=custody schema=True
+ROUTE APIRoute POST '/api/custody/holds/{hold_id}/replace' name=replace op=replace_api_custody_holds__hold_id__replace_post tags=custody schema=True
 ROUTE APIRoute POST '/api/data/export' name=export_data op=export_data_api_data_export_post tags=data-ops schema=True
 ROUTE APIRoute POST '/api/decision-sets/{set_id}/decision' name=decide_decision_set op=decide_decision_set_api_decision_sets__set_id__decision_post tags=decision-sets schema=True
 ROUTE APIRoute POST '/api/domain-events/deliveries/{delivery_id}/replay' name=replay_domain_event_delivery op=replay_domain_event_delivery_api_domain_events_deliveries__delivery_id__replay_post tags=domain-events schema=True
@@ -1591,6 +1601,7 @@ SCHEMA ApiResponse_WebhookWithSecret_ 729f172b2f8f
 SCHEMA ApiResponse_WhoYouWereWithResponse_ 1777f9df7913
 SCHEMA ApiResponse_WipeResponse_ 2e52e898632a
 SCHEMA ApiResponse_dict_ e81539888d12
+SCHEMA ApiResponse_dict_str__Any__ c25cb6c5a8af
 SCHEMA ApiResponse_dict_str__ModelPricingResponse__ eb42c2620f15
 SCHEMA ApiResponse_dict_str__bool__ a729459b7679
 SCHEMA ApiResponse_list_AllowedRepo__ 98c5d1a855d2
@@ -1943,6 +1954,7 @@ SCHEMA DismissQueueResponse a28b8346b9b1
 SCHEMA DismissRequest 7e13ed32ed6d
 SCHEMA DispatchAttemptEntry 0523c6c89168
 SCHEMA DisplayedApprovalCall 3d1a7b6cdcf0
+SCHEMA DispositionRequest f8f21a32579e
 SCHEMA DistinctMerchantModel 979d0a8d1a67
 SCHEMA DocumentModel 45309aaf1e81
 SCHEMA DoorView 05efdfd72197
@@ -2045,6 +2057,7 @@ SCHEMA HealingDispatchEvent 4821bbe5004a
 SCHEMA HeartbeatFacts a2f39fa2d434
 SCHEMA HeartbeatRequest 32995f9fe071
 SCHEMA HeartbeatResponse 03569862eb2b
+SCHEMA HoldRequest db4c120305c7
 SCHEMA HourlyActivity 478d981d4bab
 SCHEMA HourlyActivityBucket be581198a6b2
 SCHEMA IdentityInfo 307c5b09734f

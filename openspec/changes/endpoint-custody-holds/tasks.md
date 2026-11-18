@@ -19,6 +19,18 @@
 
 - [ ] 2.1 Admitted Switchboard hold engine: cheap owner-resolved LOCK, protected dashboard/host
       hold, release and replaced, command/case/receipt atomicity (REQ-001, -002, -003, -004).
+  - [x] 2.1a Protected engine (core_347): dashboard and host hold, release and replace in one
+        transaction with the episode's fleet case, content-blind evidence and an immutable
+        receipt; session and CSRF checked at commit; replay, read back, convergence, stale
+        release and failure-before-commit on real PostgreSQL. Exact targets and owner-selected
+        sets only (REQ-001 exact half, REQ-002 peer-DML and caller-string negatives, REQ-003
+        protected half, REQ-004).
+  - [ ] 2.1b Cheap owner-resolved LOCK (`endpoint_lock`, REQ-003 cheap half) and the closed
+        provider-inventory fallback (REQ-001 provider half). Waits for the RFC 0038 cutover:
+        the freeze bars a new General-to-Switchboard delegation path.
+  - [ ] 2.1c Supported-process source protocol (REQ-002 P-CUSTODY-1c). UNDELIVERED; expected to
+        be replaced by RFC 0038 broker assertions and control-plane admission, with the REQ-002
+        amendment made at the cutover.
 - [ ] 2.2 Direct `resolve_contact_by_channel` routing, memory and session-recheck demotion
       (REQ-005, needs the D3 `endpoint_held` amendment).
 - [ ] 2.3 Approved-executor and Messenger egress fences with owner-default fallback (REQ-006
