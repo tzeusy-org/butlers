@@ -39,6 +39,11 @@ MIRRORS = (
     "https://archive.ubuntu.com/ubuntu/\tpriority:2",
     "https://security.ubuntu.com/ubuntu/\tpriority:3",
 )
+# Hosted runners on Azure carry MIRRORS verbatim; EC2-hosted runners differ only
+# in the first (cloud-local) line, e.g. http://us-east-2.ec2.archive.ubuntu.com.
+RUNNER_MIRROR = re.compile(
+    r"http://(?:azure|[a-z]{2}(?:-[a-z]+)+-[0-9]\.ec2)\.archive\.ubuntu\.com/ubuntu/\tpriority:1"
+)
 
 
 def read_owned_file(path: Path) -> bytes:
@@ -136,7 +141,11 @@ def prepare_recovery(owned: Path) -> None:
     ):
         raise ValueError("unsupported recovery platform/config")
     candidates = read_owned_file(APT_ROOT / "apt-mirrors.txt").decode().splitlines()
-    if tuple(candidates) != MIRRORS:
+    if (
+        len(candidates) != len(MIRRORS)
+        or not RUNNER_MIRROR.fullmatch(candidates[0])
+        or tuple(candidates[1:]) != MIRRORS[1:]
+    ):
         raise ValueError("unsupported apt mirror candidates/metadata")
     # Only this nonsecret mirror list is sandbox-readable. Copied source files
     # may contain credentials and stay root-private, including their directory.
@@ -146,7 +155,7 @@ def prepare_recovery(owned: Path) -> None:
         "\n".join(
             (
                 MIRRORS[1].replace("priority:2", "priority:1"),
-                MIRRORS[0].replace("priority:1", "priority:2"),
+                candidates[0].replace("priority:1", "priority:2"),
                 MIRRORS[2],
             )
         )

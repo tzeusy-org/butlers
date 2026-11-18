@@ -105,6 +105,7 @@ def _exercise_apt_recovery(root: Path) -> None:
     source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
     for case in [
         "valid",
+        "valid-ec2",
         "late-override",
         "binary-override",
         "state-override",
@@ -117,6 +118,10 @@ def _exercise_apt_recovery(root: Path) -> None:
         "mirror-encoded-path",
         "mirror-wrapper",
         "mirror-metadata",
+        "runner-unknown",
+        "runner-ec2-lookalike",
+        "runner-ec2-scheme",
+        "runner-ec2-region",
         "missing-official",
         "duplicate-uris",
         "multiline-uris",
@@ -157,6 +162,19 @@ def _exercise_apt_recovery(root: Path) -> None:
             mirrors.write_text(
                 mirrors.read_text().replace("https://archive.ubuntu.com/ubuntu/", bad)
             )
+        elif case == "valid-ec2" or case.startswith("runner-"):
+            # EC2-hosted runners (job 134584776492) carry a cloud-local first line.
+            runner = {
+                "valid-ec2": "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/",
+                "runner-unknown": "http://mirror.example.invalid/ubuntu/",
+                "runner-ec2-lookalike": "http://us-east-2.ec2.archive.ubuntu.com.evil.invalid/ubuntu/",
+                "runner-ec2-scheme": "https://us-east-2.ec2.archive.ubuntu.com/ubuntu/",
+                "runner-ec2-region": "http://evil.ec2.archive.ubuntu.com/ubuntu/",
+            }[case]
+            mirrors.write_text(
+                mirrors.read_text().replace("http://azure.archive.ubuntu.com/ubuntu/", runner)
+            )
+            before[mirrors] = mirrors.read_bytes()
         elif case == "missing-official":
             mirrors.write_text(mirrors.read_text().splitlines()[0] + "\n")
         elif case == "duplicate-uris":
@@ -184,7 +202,7 @@ def _exercise_apt_recovery(root: Path) -> None:
             release.write_text('ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\n')
         overlay = directory / "owned"
         overlay.mkdir(mode=0o700)
-        if case not in {"valid", "late-override", "binary-override", "state-override"}:
+        if case not in {"valid", "valid-ec2", "late-override", "binary-override", "state-override"}:
             with pytest.raises((ValueError, OSError)):
                 namespace["prepare_recovery"](overlay)
             continue
@@ -201,6 +219,16 @@ def _exercise_apt_recovery(root: Path) -> None:
         assert private.stat().st_mode & 0o777 == 0o700
         assert all(p.stat().st_mode & 0o777 == 0o600 for p in private.rglob("*") if p.is_file())
         assert (overlay / "mirrors.txt").stat().st_mode & 0o777 == 0o644
+        runner = (
+            "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/"
+            if case == "valid-ec2"
+            else "http://azure.archive.ubuntu.com/ubuntu/"
+        )
+        assert (overlay / "mirrors.txt").read_text() == (
+            "https://archive.ubuntu.com/ubuntu/\tpriority:1\n"
+            f"{runner}\tpriority:2\n"
+            "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+        )
         assert {p: p.read_bytes() for p in before} == before, "host-like inputs were rewritten"
         # Exercise the same recovery child admission without execing apt/CLI.
         if case == "late-override":
