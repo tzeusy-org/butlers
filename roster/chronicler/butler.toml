@@ -84,6 +84,13 @@ cron = "17 * * * *"
 dispatch_mode = "job"
 job_name = "chronicler_location_retention"
 
+# bu-s11n0s.1 S5f: deterministic (no session) last-fix evidence for the owner-bound custody device.
+[[butler.schedule]]
+name = "chronicler_custody_device_fix_evidence"
+cron = "*/10 * * * *"
+dispatch_mode = "job"
+job_name = "chronicler_custody_device_fix_evidence"
+
 [[butler.schedule]]
 name = "chronicler_project_activitywatch"
 cron = "*/15 * * * *"
