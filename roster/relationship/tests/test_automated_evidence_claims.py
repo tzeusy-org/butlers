@@ -102,6 +102,20 @@ def test_a_co_recipients_signed_dsn_from_another_domain_claims_nothing() -> None
     assert claims_for("bounce", evidence, "mailer-daemon@evil.com", _RECEIVED) == ()
 
 
+@pytest.mark.parametrize(
+    ("sender", "failed"),
+    [
+        ("mailer-daemon@com", "alice@x.com"),
+        ("mailer-daemon@co.uk", "alice@x.co.uk"),
+        ("mailer-daemon@x.com", "alice@mx.x.com"),
+    ],
+)
+def test_a_parent_or_suffix_sender_claims_nothing_below_it(sender: str, failed: str) -> None:
+    evidence = _bounce(failed_recipients=[failed])
+
+    assert claims_for("bounce", evidence, sender, _RECEIVED) == ()
+
+
 @pytest.mark.parametrize("sender", ["mailer-daemon@x.com", "mailer-daemon@mx.x.com"])
 def test_an_aligned_domain_dsn_claims_its_own_address(sender: str) -> None:
     evidence = _bounce(failed_recipients=["alice@x.com"])

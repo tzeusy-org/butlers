@@ -89,14 +89,14 @@ GMAIL_BOUNCER = "mailer-daemon@googlemail.com"
 
 
 def _sender_speaks_for(sender: str, address: str) -> bool:
-    """Gmail's own bouncer, or a sender domain equal to / a parent or child of the address's.
+    """Gmail's own bouncer, or a sender domain equal to or a subdomain of the address's.
 
     A co-recipient's own signed DSN must not name someone else's address as undeliverable.
     """
     if sender == GMAIL_BOUNCER:
         return True
     a, b = sender.rpartition("@")[2], address.rpartition("@")[2]
-    return bool(a) and bool(b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+    return bool(a) and bool(b) and (a == b or a.endswith("." + b))
 
 
 def _checked(evidence: dict[str, Any], key: str) -> bool:
