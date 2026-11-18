@@ -1,4 +1,5 @@
 OP DELETE /api/butlers/attention/break-through-clauses/{clause_id} 4b0aa8100bd4
+OP DELETE /api/butlers/attention/break-through-proposals/{proposal_id} c6eed010e024
 OP DELETE /api/butlers/{name}/model-overrides/{override_id} d47974ce72b0
 OP DELETE /api/butlers/{name}/schedules/{schedule_id} 15b4b4126696
 OP DELETE /api/butlers/{name}/secrets/{key} 72d8037086c0
@@ -71,6 +72,7 @@ OP GET /api/audit-log 1fa5758d7c96
 OP GET /api/audit-log/{entry_id} bbfae7bdb716
 OP GET /api/butlers 44b4d9ade975
 OP GET /api/butlers/attention/break-through-clauses 3158df0862fe
+OP GET /api/butlers/attention/break-through-proposals 8abc2507720b
 OP GET /api/butlers/board 8c402d0a3b7a
 OP GET /api/butlers/{name} cf932cf97998
 OP GET /api/butlers/{name}/activity-feed 39ecf7362f78
@@ -487,6 +489,7 @@ OP POST /api/approvals/{action_id}/deny c7962e0aaebb
 OP POST /api/approvals/{action_id}/retry 9bfa62884a4b
 OP POST /api/attention/reach/telegram a0d2fcc86665
 OP POST /api/butlers/attention/break-through-clauses d941a6df7d96
+OP POST /api/butlers/attention/break-through-proposals/{proposal_id}/confirm 027006624e21
 OP POST /api/butlers/{name}/conversation-turns/{message_id}/cancel 0e7a8ceb0d3d
 OP POST /api/butlers/{name}/conversations 4965b8077bdd
 OP POST /api/butlers/{name}/conversations/{conversation_id}/cancel a82b05acce8c
@@ -693,6 +696,7 @@ OP PUT /api/steam/accounts/{account_id}/primary cacf4e1dbd8c
 OP PUT /api/switchboard/thread-affinity/overrides/{thread_id} 5f8c719153d6
 OP PUT /api/webhooks/{webhook_id} f7d247f5f8af
 ROUTE APIRoute DELETE '/api/butlers/attention/break-through-clauses/{clause_id}' name=revoke_break_through_clause op=revoke_break_through_clause_api_butlers_attention_break_through_clauses__clause_id__delete tags=butlers,schedules schema=True
+ROUTE APIRoute DELETE '/api/butlers/attention/break-through-proposals/{proposal_id}' name=dismiss_break_through_proposal op=dismiss_break_through_proposal_api_butlers_attention_break_through_proposals__proposal_id__delete tags=butlers,schedules schema=True
 ROUTE APIRoute DELETE '/api/butlers/{name}/model-overrides/{override_id}' name=delete_butler_model_override op=delete_butler_model_override_api_butlers__name__model_overrides__override_id__delete tags=butlers,model-overrides schema=True
 ROUTE APIRoute DELETE '/api/butlers/{name}/schedules/{schedule_id}' name=delete_schedule op=delete_schedule_api_butlers__name__schedules__schedule_id__delete tags=butlers,schedules schema=True
 ROUTE APIRoute DELETE '/api/butlers/{name}/secrets/{key}' name=delete_secret op=delete_secret_api_butlers__name__secrets__key__delete tags=butlers,secrets schema=True
@@ -765,6 +769,7 @@ ROUTE APIRoute GET '/api/audit-log' name=list_audit_log op=list_audit_log_api_au
 ROUTE APIRoute GET '/api/audit-log/{entry_id}' name=get_audit_log_entry op=get_audit_log_entry_api_audit_log__entry_id__get tags=audit schema=True
 ROUTE APIRoute GET '/api/butlers' name=list_butlers op=list_butlers_api_butlers_get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/attention/break-through-clauses' name=list_break_through_clauses op=list_break_through_clauses_api_butlers_attention_break_through_clauses_get tags=butlers,schedules schema=True
+ROUTE APIRoute GET '/api/butlers/attention/break-through-proposals' name=list_break_through_proposals op=list_break_through_proposals_api_butlers_attention_break_through_proposals_get tags=butlers,schedules schema=True
 ROUTE APIRoute GET '/api/butlers/board' name=get_butlers_board op=get_butlers_board_api_butlers_board_get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/{name}' name=get_butler_detail op=get_butler_detail_api_butlers__name__get tags=butlers schema=True
 ROUTE APIRoute GET '/api/butlers/{name}/activity-feed' name=get_activity_feed op=get_activity_feed_api_butlers__name__activity_feed_get tags=butlers,activity-feed schema=True
@@ -1170,6 +1175,7 @@ ROUTE APIRoute POST '/api/approvals/{action_id}/deny' name=deny_approval op=deny
 ROUTE APIRoute POST '/api/approvals/{action_id}/retry' name=retry_approval op=retry_approval_api_approvals__action_id__retry_post tags=approvals schema=True
 ROUTE APIRoute POST '/api/attention/reach/telegram' name=reach_telegram op=reach_telegram_api_attention_reach_telegram_post tags=attention schema=True
 ROUTE APIRoute POST '/api/butlers/attention/break-through-clauses' name=create_break_through_clause op=create_break_through_clause_api_butlers_attention_break_through_clauses_post tags=butlers,schedules schema=True
+ROUTE APIRoute POST '/api/butlers/attention/break-through-proposals/{proposal_id}/confirm' name=confirm_break_through_proposal op=confirm_break_through_proposal_api_butlers_attention_break_through_proposals__proposal_id__confirm_post tags=butlers,schedules schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/conversation-turns/{message_id}/cancel' name=cancel_dashboard_message_turn op=cancel_dashboard_message_turn_api_butlers__name__conversation_turns__message_id__cancel_post tags=conversations schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/conversations' name=create_conversation op=create_conversation_api_butlers__name__conversations_post tags=conversations schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/conversations/{conversation_id}/cancel' name=cancel_conversation_turn op=cancel_conversation_turn_api_butlers__name__conversations__conversation_id__cancel_post tags=conversations schema=True
@@ -2354,7 +2360,7 @@ SCHEMA QuickAddDraft 9ffc3befcf92
 SCHEMA QuickAddParseRequest ed8ac52c09d7
 SCHEMA QuickAddParseResponse 2b8ac535e16b
 SCHEMA QuizResponseModel de95eca0f169
-SCHEMA ReachTelegramRequest 15a4a3211a21
+SCHEMA ReachTelegramRequest 70d2cbc1f56c
 SCHEMA ReactionEntry ba11b66928e7
 SCHEMA ReactionSummary 94f8c3ee8479
 SCHEMA ReauthorizeResponse 8e2463297818

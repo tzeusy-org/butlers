@@ -694,6 +694,31 @@ async def create_break_through_clause(body: BreakThroughClauseCreate, request: R
     )
 
 
+# Telegram `/reach add` writes a pending proposal (matchers only, 24h). Only the cookie session
+# with CSRF can confirm it into a clause; the connector credential reaches none of these routes.
+@router.get("/attention/break-through-proposals", response_model=ApiResponse[dict])
+async def list_break_through_proposals(request: Request):
+    """Pending, unexpired proposals from the Telegram owner channel, newest first. Cookie-only."""
+    return ApiResponse(data=await _clause_authoring(request, "proposal_list", {}))
+
+
+@router.post(
+    "/attention/break-through-proposals/{proposal_id}/confirm", response_model=ApiResponse[dict]
+)
+async def confirm_break_through_proposal(proposal_id: UUID, request: Request):
+    """Create the clause a live proposal names and consume the proposal, in one transaction."""
+    return ApiResponse(
+        data=await _clause_authoring(request, "proposal_confirm", {"id": str(proposal_id)})
+    )
+
+
+@router.delete("/attention/break-through-proposals/{proposal_id}", response_model=ApiResponse[dict])
+async def dismiss_break_through_proposal(proposal_id: UUID, request: Request):
+    return ApiResponse(
+        data=await _clause_authoring(request, "proposal_dismiss", {"id": str(proposal_id)})
+    )
+
+
 @router.delete("/attention/break-through-clauses/{clause_id}", response_model=ApiResponse[dict])
 async def revoke_break_through_clause(clause_id: UUID, request: Request):
     return ApiResponse(

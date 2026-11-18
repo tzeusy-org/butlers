@@ -15,8 +15,13 @@ const CHANNEL_LABEL: Record<string, string> = {
   dashboard: "dashboard",
 };
 
-/** The matchers of one clause, in words. All present matchers must hold together. */
-export function describeClause(clause: ReachClause): string {
+type Matchers = Pick<ReachClause, "sender_domain" | "channel" | "security_kind"> & {
+  entity_id?: string | null;
+  entity_name?: string;
+};
+
+/** The matchers of one clause (or proposal), in words. All present matchers must hold together. */
+export function describeClause(clause: Matchers): string {
   const parts: string[] = [];
   if (clause.entity_id) parts.push(clause.entity_name ?? "a person you named");
   if (clause.sender_domain) parts.push(`anyone at ${clause.sender_domain}`);

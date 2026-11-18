@@ -221,6 +221,10 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
             f'ALTER FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid) OWNER TO "{source.username}"',
             f'ALTER FUNCTION dashboard_attention.owner_channel_revoke(uuid) OWNER TO "{source.username}"',
             "DROP FUNCTION dashboard_attention.owner_channel_list()",
+            f'ALTER FUNCTION dashboard_attention.owner_channel_propose(jsonb) OWNER TO "{source.username}"',
+            "DROP FUNCTION dashboard_attention.owner_channel_propose(jsonb)",
+            "DROP TABLE dashboard_attention.reach_proposals",
+            "GRANT SELECT ON dashboard_attention.reach_proposals TO PUBLIC",
             "DROP TABLE dashboard_attention.bootstrap_configuration",
             "DROP SCHEMA dashboard_attention CASCADE",
         ):

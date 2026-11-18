@@ -1129,7 +1129,14 @@ Scope: v1-mandatory
 - **WHEN** the primary owner's Telegram channel sends exactly `/reach`
 - **THEN** the connector answers deterministically with the unrevoked clauses and a signed, chat-bound revoke button per clause, and the message never reaches ingest or any model
 - **AND** a revoke tap is honoured only from the primary owner channel, verified at the connector and again at the API, through the connector-credential route and two narrow SQL functions (`dashboard_attention.owner_channel_list`, `dashboard_attention.owner_channel_revoke`), the second of which only sets `revoked_at` on one live clause
-- **AND** no Telegram path can create a clause: `dashboard_attention.api` keeps the verified cookie session and CSRF proof for `clause_create` and `issue` and is unchanged, so a break-through clause is only ever granted from the dashboard
+- **AND** no Telegram path can create a clause: `dashboard_attention.api` keeps the verified cookie session and CSRF proof for `clause_create` and `issue`, so a break-through clause is only ever granted from the dashboard
+
+#### Scenario: Telegram proposes a clause and only the dashboard confirms it
+
+- **WHEN** the primary owner sends `/reach add <matcher>` in a private chat
+- **THEN** one pending row of matchers only (sender domain, channel, security kind, scope; never message text) is written to the owner-owned `dashboard_attention.reach_proposals` table (no runtime role can read or write it directly; only the migration role may SELECT it for backup) through the SECURITY DEFINER `dashboard_attention.owner_channel_propose(jsonb)`, which validates lengths and closed sets again, expires the proposal after 24 hours, treats an identical live proposal as the same proposal and refuses an eleventh pending proposal, and no clause exists
+- **AND** the dashboard `/settings/reach` page lists pending, unexpired proposals, and Confirm (behind a confirm dialog, with no optimistic update) calls the cookie-session, CSRF-checked `dashboard_attention.api` action `proposal_confirm`, which creates the clause in the one clause store and marks the proposal consumed in one transaction; Dismiss calls `proposal_dismiss`
+- **AND** an expired, dismissed or already consumed proposal cannot be confirmed, so a repeated confirm creates no second clause, and the Telegram connector credential can reach neither `clause_create` nor any proposal action
 
 #### Scenario: Revoking a clause stops new hits and keeps old ones
 

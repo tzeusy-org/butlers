@@ -1288,7 +1288,11 @@ class TelegramBotConnector:
         if not isinstance(message, dict):
             return False
         text = message.get("text")
-        if not isinstance(text, str) or text.strip() != "/reach":
+        if not isinstance(text, str):
+            return False
+        command = text.strip()
+        proposing = command == "/reach add" or command.startswith(("/reach add ", "/reach add\n"))
+        if command != "/reach" and not proposing:
             return False
         sender = message.get("from")
         chat = message.get("chat")
@@ -1301,6 +1305,9 @@ class TelegramBotConnector:
             return False
         if not await self._is_primary_owner_callback({"from": sender}):
             return False
+        if proposing:
+            await self._reach_propose(command, str(sender_id), str(chat_id))
+            return True
         secret = self._config.approval_callback_secret
         data = (
             await self._post_reach(
@@ -1338,6 +1345,40 @@ class TelegramBotConnector:
         except Exception:  # noqa: BLE001 -- best-effort reply
             logger.warning("Failed to send /reach reply")
         return True
+
+    async def _reach_propose(self, command: str, sender_id: str, chat_id: str) -> None:
+        """Record a PENDING clause proposal from ``/reach add <matcher>`` and confirm it.
+
+        Only the parsed matchers leave the connector, never the message text. The proposal
+        grants nothing: the owner confirms it on the dashboard, which alone creates a clause.
+        """
+        from butlers.core.reach_matchers import parse_reach_matchers
+
+        matchers = parse_reach_matchers(command.removeprefix("/reach add"))
+        if matchers is None:
+            reply = (
+                "Name who to let through, e.g. /reach add domain:bank.example channel:email "
+                "scope:always. Fields: domain, channel, kind, scope."
+            )
+        else:
+            data = await self._post_reach(
+                {"action": "propose", "sender_id": sender_id, "chat_id": chat_id} | matchers
+            )
+            status = data.get("status") if data else None
+            reply = {
+                "proposed": "Proposed; confirm on the dashboard at /settings/reach",
+                "too_many_pending": (
+                    "Too many proposals are waiting. Confirm or dismiss some at /settings/reach."
+                ),
+                "invalid": "That isn't a valid matcher. Try /reach add domain:bank.example",
+            }.get(status or "", "I couldn't record that right now. Use the dashboard.")
+        try:
+            await self._http_client.post(
+                f"{self._telegram_api_base}/sendMessage",
+                json={"chat_id": chat_id, "text": reply},
+            )
+        except Exception:  # noqa: BLE001 -- best-effort reply
+            logger.warning("Failed to send /reach reply")
 
     async def _maybe_handle_reach_callback(self, update: dict[str, Any]) -> bool:
         """Revoke one clause from a signed ``rch1:`` button tap by the primary owner."""

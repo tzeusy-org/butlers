@@ -33,3 +33,35 @@ export function revokeReachClause(id: string): Promise<ApiResponse<{ id: string 
     method: "DELETE",
   });
 }
+
+/**
+ * A clause the owner proposed from Telegram (`/reach add`). It is matchers only and grants
+ * nothing until confirmed here; it expires after 24 hours.
+ */
+export interface ReachProposal {
+  id: string;
+  sender_domain: string | null;
+  channel: string | null;
+  security_kind: string | null;
+  scope: "always" | "quiet_hours_only";
+  created_at: string;
+  expires_at: string;
+}
+
+const PROPOSALS = "/butlers/attention/break-through-proposals";
+
+export function listReachProposals(): Promise<ApiResponse<{ proposals: ReachProposal[] }>> {
+  return apiFetch<ApiResponse<{ proposals: ReachProposal[] }>>(PROPOSALS);
+}
+
+export function confirmReachProposal(id: string): Promise<ApiResponse<{ id: string }>> {
+  return apiFetch<ApiResponse<{ id: string }>>(`${PROPOSALS}/${encodeURIComponent(id)}/confirm`, {
+    method: "POST",
+  });
+}
+
+export function dismissReachProposal(id: string): Promise<ApiResponse<{ id: string }>> {
+  return apiFetch<ApiResponse<{ id: string }>>(`${PROPOSALS}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
