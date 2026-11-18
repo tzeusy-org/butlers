@@ -34,10 +34,16 @@ MAX_FILE_BYTES = 65536
 MAX_SOURCE_FILES = 64
 MAX_CONFIG_BYTES = 1048576
 MIRROR_URI = "mirror+file:/etc/apt/apt-mirrors.txt"
+SECURITY_URI = "http://security.ubuntu.com/ubuntu"
 MIRRORS = (
     "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
     "https://archive.ubuntu.com/ubuntu/\tpriority:2",
     "https://security.ubuntu.com/ubuntu/\tpriority:3",
+)
+# Hosted runners on Azure carry MIRRORS verbatim; EC2-hosted runners differ only
+# in the first (cloud-local) line, e.g. http://us-east-2.ec2.archive.ubuntu.com.
+RUNNER_MIRROR = re.compile(
+    r"http://(?:azure|[a-z]{2}(?:-[a-z]+)+-[0-9]\.ec2)\.archive\.ubuntu\.com/ubuntu/\tpriority:1"
 )
 
 
@@ -97,8 +103,13 @@ def ubuntu_sources(content: bytes, mirror: Path) -> bytes:
             fields[key] = value.strip()
         if not fields:  # Preserve standalone comment paragraphs verbatim.
             continue
+        # EC2-hosted runners keep cloud-init's direct security stanza (job
+        # 134605438801); it is preserved unrewritten, never counted as mirrored.
+        direct_security = (
+            fields.get("uris") == SECURITY_URI and fields.get("suites") == "noble-security"
+        )
         if (
-            fields.get("uris") != MIRROR_URI
+            (fields.get("uris") != MIRROR_URI and not direct_security)
             or fields.get("signed-by") != "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
             or not set(fields.get("types", "").split()) <= {"deb", "deb-src"}
             or "deb" not in fields.get("types", "").split()
@@ -111,7 +122,8 @@ def ubuntu_sources(content: bytes, mirror: Path) -> bytes:
             or fields.get("enabled", "yes") != "yes"
         ):
             raise ValueError("unsupported Ubuntu source/trust/layout")
-        replacements += 1
+        if not direct_security:
+            replacements += 1
     transformed, count = re.subn(
         r"(?im)^(URIs:[ \t]*)" + re.escape(MIRROR_URI) + r"([ \t]*)(?=\n|$)",
         lambda match: match[1] + "mirror+file:" + str(mirror) + match[2],
@@ -136,7 +148,11 @@ def prepare_recovery(owned: Path) -> None:
     ):
         raise ValueError("unsupported recovery platform/config")
     candidates = read_owned_file(APT_ROOT / "apt-mirrors.txt").decode().splitlines()
-    if tuple(candidates) != MIRRORS:
+    if (
+        len(candidates) != len(MIRRORS)
+        or not RUNNER_MIRROR.fullmatch(candidates[0])
+        or tuple(candidates[1:]) != MIRRORS[1:]
+    ):
         raise ValueError("unsupported apt mirror candidates/metadata")
     # Only this nonsecret mirror list is sandbox-readable. Copied source files
     # may contain credentials and stay root-private, including their directory.
@@ -146,7 +162,7 @@ def prepare_recovery(owned: Path) -> None:
         "\n".join(
             (
                 MIRRORS[1].replace("priority:2", "priority:1"),
-                MIRRORS[0].replace("priority:1", "priority:2"),
+                candidates[0].replace("priority:1", "priority:2"),
                 MIRRORS[2],
             )
         )
@@ -319,7 +335,11 @@ def main() -> int:
                         pass
                 selector.select(0.02)
     except Exception as error:
-        print(f"Playwright dependency supervisor failed: {type(error).__name__}", file=sys.stderr)
+        # Every ValueError raised here carries a constant, nonsecret message.
+        print(
+            f"Playwright dependency supervisor failed: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
     finally:
         if child is not None:
             group = child.pid
@@ -367,8 +387,11 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--recovery-child":
         try:
             recovery_child(Path(sys.argv[2]), sys.argv[3])
-        except Exception:
-            print("Playwright private apt configuration refused", file=sys.stderr)
+        except Exception as error:
+            print(
+                f"Playwright private apt configuration refused: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from None
     else:
         raise SystemExit(main())
