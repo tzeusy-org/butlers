@@ -82,11 +82,16 @@ def _unique(prefix: str) -> str:
 
 
 async def _hold(owner_pool: asyncpg.Pool, predicate: str, obj: str) -> uuid.UUID:
+    # public.entities admits one owner (ix_entities_owner_singleton): reuse it when present.
     owner = await owner_pool.fetchval(
-        "INSERT INTO public.entities (canonical_name, roles) "
-        "VALUES ($1, ARRAY['owner']) RETURNING id",
-        _unique("egress owner "),
+        "SELECT id FROM public.entities WHERE 'owner' = ANY(roles) ORDER BY created_at LIMIT 1"
     )
+    if owner is None:
+        owner = await owner_pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, roles) "
+            "VALUES ($1, ARRAY['owner']) RETURNING id",
+            _unique("egress owner "),
+        )
     return await owner_pool.fetchval(_HOLD_INSERT, owner, predicate, obj)
 
 
