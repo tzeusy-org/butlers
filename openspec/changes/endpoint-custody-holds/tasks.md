@@ -95,7 +95,7 @@
       a row not exactly the generic shape is cancelled.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
-  - [x] 2.4b Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's
+  - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's
         publisher-local outbox (`public.security_questions`, one row per authenticated
         `switchboard.security_event`, admitted at publish and recovered by the scheduled
         `security_question_cycle` from the stored event); one bounded notify with a dashboard link
