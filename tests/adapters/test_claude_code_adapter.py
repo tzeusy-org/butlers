@@ -255,8 +255,12 @@ async def test_invoke_declares_sandbox_only_when_running_as_root():
 
 
 def test_supports_resume_flag():
-    """ClaudeCodeAdapter opts into the resume extension point (bu-ep4ks.8)."""
-    assert ClaudeCodeAdapter.supports_resume is True
+    """ClaudeCodeAdapter does not advertise resume (bu-089bjy).
+
+    ``invoke()`` always passes ``--no-session-persistence``, so a later
+    ``--resume`` finds no transcript; advertising resume broke every second turn.
+    """
+    assert ClaudeCodeAdapter.supports_resume is False
 
 
 async def test_invoke_resume_session_id_conditional():

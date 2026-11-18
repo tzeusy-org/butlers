@@ -359,7 +359,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     primary safety mechanism.
     """
 
-    supports_resume = True
+    #: Off: ``invoke()`` always passes ``--no-session-persistence`` (core-spawner
+    #: spec), so the CLI never writes a transcript a later ``--resume`` could load.
+    #: Advertising resume made every second conversational turn fail with "No
+    #: conversation found with session ID" (bu-089bjy). Re-enable only together
+    #: with a persisted, owner-approved transcript store.
+    supports_resume = False
 
     #: The CLI receives the butler's MCP server config and executes its tools.
     declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}

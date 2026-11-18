@@ -808,6 +808,42 @@ class TestEmptyRuntimeResponsesEligible:
         assert "empty_runtime_response" in dec.reason
 
 
+class TestStaleResumeHandleEligible:
+    """A rejected ``--resume`` handle is a pre-work handle fault (bu-089bjy).
+
+    Live 2026-11-18: the Claude CLI exited 1 with "No conversation found with
+    session ID <id>" for every second conversational turn. Classified as an
+    unknown error it was terminal and counted against the model breaker; it must
+    instead be eligible so the spawner's resume branch evicts the handle and
+    retries the same candidate cold under the non-breaker ``resume_failure``.
+    """
+
+    _MSG = (
+        "Claude CLI exited with code 1: No conversation found with session ID: "
+        "163fca0a-59fe-4ab6-848f-5dd3f31d3426"
+    )
+
+    def test_no_conversation_found_is_eligible(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": True})
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("stale_resume_handle")
+
+    def test_tool_work_still_suppresses(self) -> None:
+        """Gate 6a wins: adapter-reported tool work is never retried."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": False})
+        )
+        assert _suppressed(dec), dec.reason
+
+    def test_captured_tool_calls_still_suppress(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), tool_calls=[{"name": "notify"}])
+        )
+        assert _suppressed(dec), dec.reason
+
+
 # ---------------------------------------------------------------------------
 # AC-1c: Rate-limit errors ARE eligible
 # ---------------------------------------------------------------------------
@@ -1282,7 +1318,7 @@ class TestMarkerBucketDisjointness:
             if name.endswith("_MARKERS") and isinstance(getattr(_fc, name), tuple)
         }
 
-    def test_expected_eight_marker_buckets_present(self) -> None:
+    def test_expected_nine_marker_buckets_present(self) -> None:
         """Guards against a bucket being renamed/dropped out of the invariant."""
         assert set(self._marker_buckets()) == {
             "_PROVIDER_AUTH_MARKERS",
@@ -1293,6 +1329,7 @@ class TestMarkerBucketDisjointness:
             "_MCP_DISCOVERY_MARKERS",
             "_RUNTIME_CONFIG_MARKERS",
             "_GUARDRAIL_MARKERS",
+            "_STALE_RESUME_MARKERS",
         }
 
     def test_no_pairwise_substring_overlap_across_buckets(self) -> None:
