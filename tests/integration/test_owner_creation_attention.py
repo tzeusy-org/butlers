@@ -1438,17 +1438,17 @@ async def test_the_switchboard_role_can_call_both_decay_functions(attention_env)
         channel="email",
         scope="always",
     )
-    async with env.admin.transaction():
-        await env.admin.execute("SET LOCAL ROLE butler_switchboard_rw")
-        listed = await env.admin.fetchval("SELECT dashboard_attention.decay_clauses()::text")
-        applied = await env.admin.fetchval(
+    async with env.admin.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        listed = await conn.fetchval("SELECT dashboard_attention.decay_clauses()::text")
+        applied = await conn.fetchval(
             "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
             '{"ask": [], "dormant": []}',
         )
         # ...and it has no way to widen anything: no direct table access, no api() grant.
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
-            async with env.admin.transaction():
-                await env.admin.fetchval("SELECT count(*) FROM dashboard_attention.clause_decay")
+            async with conn.transaction():
+                await conn.fetchval("SELECT count(*) FROM dashboard_attention.clause_decay")
     import json
 
     assert [c["id"] for c in json.loads(listed)["clauses"]] == [clause["id"]]
