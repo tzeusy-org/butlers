@@ -2,7 +2,7 @@
 
 Thin routes over ``OwnerAuthService.security_question_call``; the definer's session, CSRF and
 hold checks are covered on real PostgreSQL in
-``tests/migrations/test_core_348_security_question_answer.py``.
+``tests/migrations/test_core_350_security_question_answer.py``.
 """
 
 from __future__ import annotations

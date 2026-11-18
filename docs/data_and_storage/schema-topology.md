@@ -81,7 +81,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   See
   [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
 - **`public.security_questions`** and **`public.security_answers`** -- One durable "was this
-  you?" question per authenticated `switchboard.security_event` (core_349): Switchboard's
+  you?" question per authenticated `switchboard.security_event` (core_350): Switchboard's
   publisher-local outbox (the only writer of questions, walking a one-way presentation state) and
   the owner's answer, written only by the definer `public.security_question_dashboard` from a
   current dashboard session and CSRF. A `no` binds owner-selected exact targets through

@@ -1,7 +1,7 @@
 """One durable security question per authenticated event, answered on the dashboard (S5c).
 
-Revision ID: core_349
-Revises: core_348
+Revision ID: core_350
+Revises: core_349
 Create Date: 2026-11-19 00:00:00.000000
 
 openspec change ``endpoint-custody-holds``, REQ-endpoint-custody-holds-008, dashboard half
@@ -32,7 +32,7 @@ Installed once across the per-schema core chains, as core_347: a run that finds 
 installed reads the catalog only; otherwise it leaves the chain's open transaction, takes a
 polled session lock and installs in one transaction of its own under a short lock timeout,
 retrying while a sibling chain holds a catalog row it needs. Only the last schema still at
-core_349 drops the objects, and downgrade refuses while any question or answer exists.
+core_350 drops the objects, and downgrade refuses while any question or answer exists.
 """
 
 from __future__ import annotations
@@ -43,13 +43,13 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
-revision = "core_349"
-down_revision = "core_348"
+revision = "core_350"
+down_revision = "core_349"
 branch_labels = None
 depends_on = None
 
-_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_349:security_questions', 0))"
-_INSTALL_LOCK = 349_20261119
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_350:security_questions', 0))"
+_INSTALL_LOCK = 350_20261119
 _INSTALL_LOCK_WAIT_SECONDS = 300
 _INSTALL_LOCK_TIMEOUT = "100ms"
 _API = "dashboard_auth_api"
@@ -360,7 +360,7 @@ def _fence() -> None:
         op.execute(f"REVOKE ALL ON FUNCTION {function} FROM PUBLIC")
     op.execute(f"""DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_API}') THEN
-            RAISE EXCEPTION 'core_349 requires the {_API} role from core_240';
+            RAISE EXCEPTION 'core_350 requires the {_API} role from core_240';
         END IF;
     END $$""")
     op.execute(
@@ -369,7 +369,7 @@ def _fence() -> None:
 
 
 def _installation_count() -> int:
-    """Count schema-local core chains still at core_349 or later."""
+    """Count schema-local core chains still at core_350 or later."""
     bind = op.get_bind()
     schemas = bind.exec_driver_sql(
         """
@@ -390,7 +390,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 349
+                    THEN substring(version_num FROM 6)::integer >= 350
                     ELSE false END
             )
             """
@@ -492,12 +492,12 @@ def downgrade() -> None:
         END IF;
         IF NOT pg_has_role(current_user, (SELECT relowner FROM pg_class
                 WHERE oid = to_regclass('public.security_questions')), 'USAGE') THEN
-            RAISE EXCEPTION 'core_349 downgrade refused: only the maintenance owner can prove '
+            RAISE EXCEPTION 'core_350 downgrade refused: only the maintenance owner can prove '
                 'no security question exists' USING ERRCODE = '42501';
         END IF;
         IF EXISTS (SELECT 1 FROM public.security_questions)
            OR EXISTS (SELECT 1 FROM public.security_answers) THEN
-            RAISE EXCEPTION 'core_349 downgrade refused: security questions or answers exist'
+            RAISE EXCEPTION 'core_350 downgrade refused: security questions or answers exist'
                 USING ERRCODE = '55000';
         END IF;
     END $$""")

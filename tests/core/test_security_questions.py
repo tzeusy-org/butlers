@@ -1,7 +1,7 @@
 """Security question outbox: presentation is bounded and never re-sent (bu-s11n0s.1 S5c).
 
 REQ-endpoint-custody-holds-008. The state walk, the database fence and the dashboard answer are
-covered on real PostgreSQL in ``tests/migrations/test_core_348_security_question_answer.py``.
+covered on real PostgreSQL in ``tests/migrations/test_core_350_security_question_answer.py``.
 """
 
 from __future__ import annotations

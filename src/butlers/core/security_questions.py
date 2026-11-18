@@ -2,7 +2,7 @@
 
 openspec ``endpoint-custody-holds`` REQ-endpoint-custody-holds-008, dashboard half. The bus
 excludes a publisher from its own fan-out, so Switchboard keeps a publisher-local outbox
-(``public.security_questions``, core_349): one row per authenticated
+(``public.security_questions``, core_350): one row per authenticated
 ``switchboard.security_event``, keyed by the event id. Duplicate observations and consumer
 retries find the same row. Unverified and failed events get no row (the event stays an honest
 record) and never interrupt the owner.

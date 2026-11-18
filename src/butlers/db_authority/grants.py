@@ -239,13 +239,13 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
     "security_answers": _replay_widened(
         _NONE,
         {_SWITCHBOARD: _SELECT},
-        "core_349: owner answers, written only by the dashboard definer; Switchboard reads; "
+        "core_350: owner answers, written only by the dashboard definer; Switchboard reads; "
         "RLS fences a replay",
     ),
     "security_questions": _replay_widened(
         _NONE,
         {_SWITCHBOARD: frozenset({"SELECT", "INSERT", "UPDATE"})},
-        "core_349: security question outbox, Switchboard only; RLS fences a replay",
+        "core_350: security question outbox, Switchboard only; RLS fences a replay",
     ),
     "dashboard_conversation_turn_sessions": _replay_widened(
         _NONE, {_CONCIERGE: _DML}, "migration: dashboard conversation store, concierge only"

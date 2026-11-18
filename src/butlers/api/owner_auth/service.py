@@ -149,7 +149,7 @@ class OwnerAuthService:
     async def security_question_call(
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
-        """Security questions (core_349); the definer rechecks session and CSRF at commit."""
+        """Security questions (core_350); the definer rechecks session and CSRF at commit."""
         if action not in {"get", "list", "answer"}:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:

@@ -1,4 +1,4 @@
-"""core_349 security questions and the dashboard answer on migrated PostgreSQL (bu-s11n0s.1 S5c).
+"""core_350 security questions and the dashboard answer on migrated PostgreSQL (bu-s11n0s.1 S5c).
 
 openspec change ``endpoint-custody-holds``, REQ-endpoint-custody-holds-008 (dashboard half):
 one durable question per authenticated event (duplicates and retries reuse it); the answer is
