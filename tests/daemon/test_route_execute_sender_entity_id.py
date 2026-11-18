@@ -182,7 +182,9 @@ class TestRouteExecuteSenderEntityIdInjection:
         booted = await booted_daemon(write_butler_config(tmp_path))
         sender_entity_id = "550e8400-e29b-41d4-a716-446655440000"
         captured_routing_ctx: list[Any] = []
-        booted.runtime.script(_capture_routing_ctx(captured_routing_ctx))
+        # One scripted reply per invocation: an unscripted run falls back to the default reply.
+        capture = _capture_routing_ctx(captured_routing_ctx)
+        booted.runtime.script(capture, capture)
 
         await _route(
             booted,
@@ -190,6 +192,7 @@ class TestRouteExecuteSenderEntityIdInjection:
             source_sender_entity_id=sender_entity_id,
             source_sender_custody="endpoint_held",
         )
+        await booted.runtime.wait_for_invocations(1)
         await _route(
             booted,
             {"prompt": "Remember that rule.", "context": {"source_custody": "cleared"}},
