@@ -39,12 +39,23 @@ const hooks = vi.hoisted(() => ({
   useReachProposals: vi.fn(),
   useConfirmReachProposal: vi.fn(),
   useDismissReachProposal: vi.fn(),
+  useReachDecay: vi.fn(),
+  useKeepReachClause: vi.fn(),
 }));
 vi.mock("@/hooks/use-reach-clauses", () => hooks);
 
 const revoke = vi.fn();
 const confirmProposal = vi.fn();
 const dismissProposal = vi.fn();
+const keepClause = vi.fn();
+
+function decaying(rows: { clause_id: string; state: "asked" | "dormant" | "kept" }[]) {
+  hooks.useReachDecay.mockReturnValue({
+    data: { data: { decay: rows.map((r) => ({ ...r, changed_at: "2026-11-01T00:00:00Z" })) } },
+    isLoading: false,
+    isError: false,
+  });
+}
 
 function proposal(over: Partial<ReachProposal> = {}): ReachProposal {
   return {
@@ -88,6 +99,9 @@ beforeEach(() => {
   revoke.mockReset();
   confirmProposal.mockReset();
   dismissProposal.mockReset();
+  keepClause.mockReset();
+  decaying([]);
+  hooks.useKeepReachClause.mockReturnValue({ mutate: keepClause, isPending: false });
   proposals([]);
   hooks.useConfirmReachProposal.mockReturnValue({ mutate: confirmProposal, isPending: false });
   hooks.useDismissReachProposal.mockReturnValue({ mutate: dismissProposal, isPending: false });
@@ -200,6 +214,46 @@ describe("SettingsReachPage", () => {
     view();
     fireEvent.click(screen.getByRole("button", { name: /^Dismiss anyone at bank\.example/ }));
     expect(dismissProposal.mock.calls[0][0]).toBe("p-1");
+  });
+
+  it("asks whether to keep a clause nobody opened and keeps it on one tap", () => {
+    listing([clause({})]);
+    decaying([{ clause_id: "c-1", state: "asked" }]);
+    view();
+    expect(screen.getByText(/Not opened in 30 days/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep Mum" }));
+    expect(keepClause.mock.calls[0][0]).toBe("c-1");
+  });
+
+  it("shows a dormant clause as listed and revives it only after a confirm", () => {
+    listing([clause({})]);
+    decaying([{ clause_id: "c-1", state: "dormant" }]);
+    view();
+    expect(screen.getByText(/Dormant: no hits in 90 days/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Revoke Mum" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Revive Mum" }));
+    expect(keepClause).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("revive-reach-dialog-confirm"));
+    expect(keepClause.mock.calls[0][0]).toBe("c-1");
+  });
+
+  it("says so when the decay state cannot be loaded, so dormant clauses are not shown as active", () => {
+    listing([clause({})]);
+    hooks.useReachDecay.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    view();
+    expect(screen.getByText(/Could not load which clauses are dormant/i)).toBeTruthy();
+  });
+
+  it("offers neither Keep nor Revive for an ordinary or kept clause", () => {
+    listing([clause({})]);
+    decaying([{ clause_id: "c-1", state: "kept" }]);
+    view();
+    expect(screen.queryByRole("button", { name: /^(Keep|Revive)/ })).toBeNull();
   });
 
   it("offers no way to add a clause", () => {

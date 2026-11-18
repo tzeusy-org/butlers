@@ -507,6 +507,30 @@ the actions from the `ATTENTION_PROPOSAL_REFRESH` block of `scripts/init-db.sql`
 credential reaches none of these routes. The interface is now thirteen functions and six tables;
 `scripts/pg_restore.sh` `owner_attention_intact` counts both, lists the new definer and the table.
 
+Decay (S4) lets the sweep ask about and quiet stale clauses without ever widening one. The hourly
+Switchboard urgent sub-cycle runs `core/break_through_decay.py`, which reads live clause ids and
+dates through `dashboard_attention.decay_clauses()` and applies `decay_apply(jsonb)` (both
+`EXECUTE` for `butler_switchboard_rw` only, revoked from `PUBLIC` and from the dashboard role). The
+definer enforces the age thresholds itself, from the clause's own age and its last keep: a clause may be
+`asked` only at 30 days and `dormant` only at 90, so a wrong caller cannot dormant a fresh clause.
+It cannot, however, verify the evidence: "no hit in 90 days" and "unopened" are asserted by the
+Switchboard, which owns the hit and engagement records. Decay is therefore a caller-asserted
+narrowing bounded by clause age; the worst a wrong caller can do is dormant or ask about a clause
+that is old enough, and the owner can keep or revive it.
+State lives in the owner-owned table `dashboard_attention.clause_decay` (`asked`, `dormant`, `kept`;
+no runtime role can read or write it, and the migration role may SELECT it for backup). Each ask
+has its own "keep?" candidate key (the ask's time), so a kept clause that goes unopened again is
+asked again; the sweep is bounded by a 5 second timeout and a timeout is a logged skip. `evaluate` skips a dormant clause; an installed
+`evaluate` and `api` are rewritten in place by the `ATTENTION_DECAY_REFRESH` block. "Opened" is the
+delivered line's `insight_engagement.engaged` flag (the broker's own proxy; engagement rows are
+kept 30 days, which is the unopened window), and "hit" is a durable row in
+`switchboard.break_through_hits`. Keep and revive are the cookie-session `clause_keep` action
+(`POST /api/butlers/attention/break-through-clauses/{id}/keep`); `decay_state` is a read (session,
+no CSRF) behind `GET /api/butlers/attention/break-through-decay`. There is deliberately no Telegram
+keep or revive: re-arming a clause is grant-adjacent, so it stays on the dashboard. The interface
+is now fifteen functions and seven tables, counted by `finalize_interface` and by `scripts/pg_restore.sh`
+`owner_attention_intact`.
+
 Privileged bootstrap stages the separate `dashboard_attention` fixed interface
 before the untouched D13 block. Ordinary `core_278` invokes its checked installer
 or finalizer. Runtime roles have no direct ticket/stamp/clause write access;

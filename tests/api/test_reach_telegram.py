@@ -281,6 +281,8 @@ async def test_the_connector_credential_cannot_call_clause_create_or_confirm(mon
             ("POST", f"/api/butlers/attention/break-through-proposals/{uuid4()}/confirm"),
             ("DELETE", f"/api/butlers/attention/break-through-proposals/{uuid4()}"),
             ("GET", "/api/butlers/attention/break-through-proposals"),
+            ("POST", f"/api/butlers/attention/break-through-clauses/{uuid4()}/keep"),
+            ("GET", "/api/butlers/attention/break-through-decay"),
         ):
             response = await client.request(
                 method, path, json={"scope": "always", "channel": "email"}, headers=GOOD

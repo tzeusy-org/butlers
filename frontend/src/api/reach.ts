@@ -65,3 +65,23 @@ export function dismissReachProposal(id: string): Promise<ApiResponse<{ id: stri
     method: "DELETE",
   });
 }
+
+/**
+ * Decay (S4): a clause nobody opened for 30 days is "asked" about, one with no hit for 90 days is
+ * "dormant" (not evaluated, still listed). Only the owner's session can keep or revive one.
+ */
+export interface ReachDecay {
+  clause_id: string;
+  state: "asked" | "dormant" | "kept";
+  changed_at: string;
+}
+
+export function listReachDecay(): Promise<ApiResponse<{ decay: ReachDecay[] }>> {
+  return apiFetch<ApiResponse<{ decay: ReachDecay[] }>>("/butlers/attention/break-through-decay");
+}
+
+export function keepReachClause(id: string): Promise<ApiResponse<{ id: string }>> {
+  return apiFetch<ApiResponse<{ id: string }>>(`${PATH}/${encodeURIComponent(id)}/keep`, {
+    method: "POST",
+  });
+}

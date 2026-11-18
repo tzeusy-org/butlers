@@ -944,7 +944,8 @@ async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refres
         "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
     )
     old = definition.replace(
-        "IF action NOT IN('clause_list','proposal_list') AND NOT EXISTS", "IF NOT EXISTS"
+        "IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS",
+        "IF NOT EXISTS",
     )
     old = old[: old.index("ELSIF action='clause_list'")] + (
         'END IF;\n  RETURN \'{"error":"INVALID_REQUEST"}\';\n END\n$function$\n'
@@ -1301,7 +1302,7 @@ async def test_installed_api_is_rewritten_in_place_to_gain_the_proposal_actions(
         "SELECT pg_get_functiondef('dashboard_attention.api(text,jsonb)'::regprocedure)"
     )
     old = definition.replace(
-        "IF action NOT IN('clause_list','proposal_list') AND NOT EXISTS",
+        "IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS",
         "IF action<>'clause_list' AND NOT EXISTS",
     ).replace(" pr dashboard_attention.reach_proposals%ROWTYPE;", "")
     old = old[: old.index("ELSIF action='proposal_list'")] + (
@@ -1313,3 +1314,142 @@ async def test_installed_api_is_rewritten_in_place_to_gain_the_proposal_actions(
     await env.admin.execute(_attention_proposal_refresh_block())
     await env.admin.execute(_attention_proposal_refresh_block())  # idempotent
     assert (await env.service.attention_call("proposal_list", env.authority, ""))["proposals"] == []
+
+
+def _attention_decay_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_DECAY_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_DECAY_REFRESH_END", start)]
+
+
+async def _decay(env, ask=(), dormant=()) -> dict:
+    import json
+
+    raw = await env.admin.fetchval(
+        "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
+        json.dumps({"ask": list(ask), "dormant": list(dormant)}),
+    )
+    out = json.loads(raw)
+    if isinstance(out.get("asked"), list):
+        out["asked"] = [item["id"] for item in out["asked"]]
+    return out
+
+
+async def _matches(env, channel: str) -> bool:
+    import json
+
+    raw = await env.admin.fetchval(
+        "SELECT dashboard_attention.evaluate($1::text::jsonb)::text",
+        json.dumps({"gate": "quiet_hours", "channel": channel}),
+    )
+    return json.loads(raw).get("cause") == "owner_clause"
+
+
+async def test_decay_only_narrows_and_the_session_alone_keeps_or_revives(attention_env):
+    """bu-s11n0s.8 S4: thresholds live in the definer; dormant is skipped, listed and revivable."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    clause = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="always"
+    )
+    cid = clause["id"]
+    assert await _matches(env, "email")
+
+    # A fresh clause can be neither asked nor dormant, whatever the caller says.
+    assert await _decay(env, ask=[cid], dormant=[cid]) == {"asked": [], "dormant": []}
+    assert await _decay(env, ask=["not-a-uuid"]) == {"error": "INVALID_REQUEST"}
+
+    await env.admin.execute(
+        "UPDATE public.break_through_clauses SET created_at = clock_timestamp() - interval '40 days' "
+        "WHERE id = $1::uuid",
+        cid,
+    )
+    assert await _decay(env, dormant=[cid]) == {"asked": [], "dormant": []}  # not 90 days old
+    assert await _decay(env, ask=[cid]) == {"asked": [cid], "dormant": []}
+    assert await _decay(env, ask=[cid]) == {"asked": [], "dormant": []}  # asked once only
+    assert await _matches(env, "email")  # asking changes nothing about evaluation
+    read = await env.service.attention_call("decay_state", env.authority, "")
+    assert [(d["clause_id"], d["state"]) for d in read["decay"]] == [(cid, "asked")]
+
+    await env.admin.execute(
+        "UPDATE public.break_through_clauses SET created_at = clock_timestamp() - interval '100 days' "
+        "WHERE id = $1::uuid",
+        cid,
+    )
+    assert await _decay(env, dormant=[cid]) == {"asked": [], "dormant": [cid]}
+    assert not await _matches(env, "email")  # dormant: not evaluated
+    listed = await env.service.attention_call("clause_list", env.authority, "")
+    assert [row["id"] for row in listed["clauses"]] == [cid]  # but still listed
+
+    # Keep/revive is the cookie session with CSRF; the proof is required and nothing else works.
+    with pytest.raises(AuthError) as no_csrf:
+        await env.service.attention_call("clause_keep", env.authority, "", id=cid)
+    assert no_csrf.value.code == "FORBIDDEN"
+    assert await _decay(env, ask=[cid]) == {"asked": [], "dormant": []}
+    await env.service.attention_call("clause_keep", env.authority, csrf, id=cid)
+    assert await _matches(env, "email")  # revived
+    # A kept clause is not re-asked or re-dormanted until its clock runs out again.
+    assert await _decay(env, ask=[cid], dormant=[cid]) == {"asked": [], "dormant": []}
+    with pytest.raises(AuthError) as repeat:
+        await env.service.attention_call("clause_keep", env.authority, csrf, id=cid)
+    assert repeat.value.code == "INVALID_REQUEST"
+
+
+async def test_decay_functions_are_switchboard_only_and_installed_evaluate_is_rewritten(
+    attention_env,
+):
+    env = attention_env
+    grantees = await env.admin.fetch(
+        "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
+        "FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x "
+        "WHERE p.pronamespace='dashboard_attention'::regnamespace "
+        "AND p.proname IN ('decay_clauses','decay_apply')"
+    )
+    # The sweep runs as the Switchboard role: a missing grant would make it fail silently.
+    assert {r["g"] for r in grantees} == {"dashboard_attention_owner", "butler_switchboard_rw"}
+    assert await env.admin.fetchval(
+        "SELECT NOT has_function_privilege('dashboard_auth_api',"
+        "'dashboard_attention.decay_apply(jsonb)','EXECUTE')"
+    )
+
+    # An installed pre-S4 evaluate is rewritten in place, idempotently.
+    definition = await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.evaluate(jsonb)'::regprocedure)"
+    )
+    marker = "\n   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d\n    WHERE d.clause_id=public.break_through_clauses.id AND d.state='dormant')"
+    assert marker in definition
+    await env.admin.execute(definition.replace(marker, ""))
+    await env.admin.execute(_attention_decay_refresh_block())
+    await env.admin.execute(_attention_decay_refresh_block())
+    assert marker in await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.evaluate(jsonb)'::regprocedure)"
+    )
+
+
+async def test_the_switchboard_role_can_call_both_decay_functions(attention_env):
+    """The sweep's own role: SET ROLE butler_switchboard_rw, then read and apply."""
+    env = attention_env
+    clause = await env.service.attention_call(
+        "clause_create",
+        env.authority,
+        env.session.data["csrf_token"],
+        channel="email",
+        scope="always",
+    )
+    async with env.admin.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        listed = await conn.fetchval("SELECT dashboard_attention.decay_clauses()::text")
+        applied = await conn.fetchval(
+            "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
+            '{"ask": [], "dormant": []}',
+        )
+        # ...and it has no way to widen anything: no direct table access, no api() grant.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with conn.transaction():
+                await conn.fetchval("SELECT count(*) FROM dashboard_attention.clause_decay")
+    import json
+
+    assert [c["id"] for c in json.loads(listed)["clauses"]] == [clause["id"]]
+    assert json.loads(applied) == {"asked": [], "dormant": []}

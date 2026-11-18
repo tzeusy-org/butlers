@@ -26,6 +26,8 @@ import { Time } from "@/components/ui/time";
 import {
   useConfirmReachProposal,
   useDismissReachProposal,
+  useKeepReachClause,
+  useReachDecay,
   useReachClauses,
   useReachProposals,
   useRevokeReachClause,
@@ -39,6 +41,31 @@ export default function SettingsReachPage() {
   const confirm = useConfirmReachProposal();
   const dismiss = useDismissReachProposal();
   const [confirming, setConfirming] = useState<ReachProposal | null>(null);
+  const decayQuery = useReachDecay();
+  const keep = useKeepReachClause();
+  const [reviving, setReviving] = useState<ReachClause | null>(null);
+
+  const decay = new Map(
+    (!decayQuery.isError && decayQuery.data ? decayQuery.data.data.decay : []).map((d) => [
+      d.clause_id,
+      d.state,
+    ]),
+  );
+
+  function onKeep(clause: ReachClause, revive: boolean) {
+    keep.mutate(clause.id, {
+      onSuccess: () => {
+        setReviving(null);
+        toast.success(
+          revive ? "Revived. This clause can break through again." : "Kept. We will not ask again soon.",
+        );
+      },
+      onError: () => {
+        setReviving(null);
+        toast.error("Could not update this clause");
+      },
+    });
+  }
 
   const proposals =
     !proposalsQuery.isError && proposalsQuery.data ? proposalsQuery.data.data.proposals : [];
@@ -94,6 +121,20 @@ export default function SettingsReachPage() {
           receive names the sender and channel only, never the message.
         </p>
       </div>
+
+      {decayQuery.isError && (
+        <div
+          className="attention-row px-4 py-3 flex items-center justify-between"
+          data-tone="amber"
+          role="alert"
+        >
+          <p className="text-sm">
+            Could not load which clauses are dormant, so the list below may show dormant clauses as
+            active.
+          </p>
+          <InlineActionLink onClick={() => void decayQuery.refetch()}>Retry →</InlineActionLink>
+        </div>
+      )}
 
       {proposalsQuery.isError && (
         <div
@@ -193,7 +234,19 @@ export default function SettingsReachPage() {
           <tbody>
             {clauses.map((clause) => (
               <tr key={clause.id} className="border-b border-border/60">
-                <td className="py-2 pr-4 font-medium">{describeClause(clause)}</td>
+                <td className="py-2 pr-4 font-medium">
+                  {describeClause(clause)}
+                  {decay.get(clause.id) === "asked" && (
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      Not opened in 30 days. Keep it?
+                    </span>
+                  )}
+                  {decay.get(clause.id) === "dormant" && (
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      Dormant: no hits in 90 days, so it does not break through.
+                    </span>
+                  )}
+                </td>
                 <td className="py-2 pr-4">
                   {clause.scope === "always" ? "Always" : "Only during quiet hours"}
                 </td>
@@ -204,7 +257,26 @@ export default function SettingsReachPage() {
                     <span className="text-muted-foreground">no expiry</span>
                   )}
                 </td>
-                <td className="py-2 text-right">
+                <td className="py-2 text-right space-x-2">
+                  {decay.get(clause.id) === "asked" && (
+                    <Button
+                      size="xs"
+                      aria-label={`Keep ${describeClause(clause)}`}
+                      disabled={keep.isPending}
+                      onClick={() => onKeep(clause, false)}
+                    >
+                      Keep
+                    </Button>
+                  )}
+                  {decay.get(clause.id) === "dormant" && (
+                    <Button
+                      size="xs"
+                      aria-label={`Revive ${describeClause(clause)}`}
+                      onClick={() => setReviving(clause)}
+                    >
+                      Revive
+                    </Button>
+                  )}
                   <Button
                     size="xs"
                     variant="outline"
@@ -231,6 +303,18 @@ export default function SettingsReachPage() {
         pending={revoke.isPending}
         onConfirm={onRevoke}
         testId="revoke-reach-dialog"
+      />
+
+      <ConfirmDialog
+        open={reviving !== null}
+        onOpenChange={(open) => !open && setReviving(null)}
+        title={`Let ${reviving ? describeClause(reviving) : "this clause"} break through again?`}
+        description="It will be evaluated again and can interrupt you from now on."
+        confirmLabel="Revive"
+        pendingLabel="Reviving…"
+        pending={keep.isPending}
+        onConfirm={() => reviving && onKeep(reviving, true)}
+        testId="revive-reach-dialog"
       />
 
       <ConfirmDialog

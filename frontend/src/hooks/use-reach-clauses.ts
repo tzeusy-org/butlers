@@ -5,6 +5,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   confirmReachProposal,
   dismissReachProposal,
+  keepReachClause,
+  listReachDecay,
   listReachClauses,
   listReachProposals,
   revokeReachClause,
@@ -52,5 +54,25 @@ export function useDismissReachProposal() {
   return useMutation({
     mutationFn: (id: string) => dismissReachProposal(id),
     onSettled: () => queryClient.invalidateQueries({ queryKey: PROPOSALS_KEY }),
+  });
+}
+
+const DECAY_KEY = ["reach-decay"] as const;
+
+export function useReachDecay() {
+  return useQuery({ queryKey: DECAY_KEY, queryFn: listReachDecay, staleTime: 15_000 });
+}
+
+// Keep / revive re-arms a clause, so it is HONEST-PENDING (no optimistic update) and refetches
+// the decay state and the clauses on settle.
+export function useKeepReachClause() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => keepReachClause(id),
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: DECAY_KEY }),
+        queryClient.invalidateQueries({ queryKey: KEY }),
+      ]),
   });
 }
