@@ -14,6 +14,7 @@ CONNECTOR_FILES = {
     "README.md": "K",
     "__init__.py": "K",
     "activitywatch.py": "E",
+    "automated_evidence.py": "H:gmail",
     "blob_store.py": "K",
     "bridge_manager.py": "H:whatsapp_user_client",
     "cursor_store.py": "K",

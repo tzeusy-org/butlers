@@ -104,7 +104,7 @@ EXCHANGE_OOF = [
 def postfix_dsn(action: str = "failed", status: str = "5.1.1") -> dict:
     return message(
         [
-            h("Authentication-Results", "mx.google.com; spf=none smtp.helo=mx.example.net"),
+            h("Authentication-Results", "mx.google.com; dkim=pass header.d=example.net"),
             h("From", "MAILER-DAEMON@mx.example.net (Mail Delivery System)"),
             h("To", "owner@example.org"),
             h("Subject", "Undelivered Mail Returned to Sender"),
@@ -140,7 +140,7 @@ def postfix_dsn(action: str = "failed", status: str = "5.1.1") -> dict:
 def gmail_mailer_daemon_dsn() -> dict:
     return message(
         [
-            h("Authentication-Results", "mx.google.com; dkim=pass header.i=@googlemail.com"),
+            h("Authentication-Results", "mx.google.com; dkim=pass header.d=googlemail.com"),
             h("From", "Mail Delivery Subsystem <mailer-daemon@googlemail.com>"),
             h("To", "owner@example.org"),
             h("Subject", "Delivery Status Notification (Failure)"),
@@ -249,7 +249,7 @@ def test_rfc_8601_spacing_and_comments_still_parse_a_real_pass():
     ]
     assert sender_authenticated(headers)
     dkim_only = [
-        h("Authentication-Results", 'mx.google.com; dkim=pass header.d=victim.com (ok)'),
+        h("Authentication-Results", "mx.google.com; dkim=pass header.d=victim.com (ok)"),
         h("From", "ceo@victim.com"),
     ]
     assert sender_authenticated(dkim_only)
@@ -328,7 +328,7 @@ def test_a_postfix_permanent_failure_for_a_mailed_address_is_failed():
         msg["payload"]["headers"], status, original_recipients=frozenset({"gone@example.net"})
     )
     assert evidence.failed_recipients == ("gone@example.net",)
-    assert evidence.original_sent and not evidence.sender_authenticated
+    assert evidence.original_sent and evidence.sender_authenticated
 
 
 def test_a_gmail_mailer_daemon_bounce_binds_through_the_attached_original():
@@ -340,6 +340,64 @@ def test_a_gmail_mailer_daemon_bounce_binds_through_the_attached_original():
         msg["payload"]["headers"], status, original_recipients=frozenset({"gone@example.net"})
     )
     assert evidence.failed_recipients == ("gone@example.net",)
+
+
+def _dsn_from(sender: str, auth: str, failed: str = "alice@x.com") -> tuple[dict, Any]:
+    msg = postfix_dsn()
+    headers = [
+        h("Authentication-Results", auth),
+        h("From", sender),
+        *[
+            x
+            for x in msg["payload"]["headers"]
+            if x["name"] not in ("From", "Authentication-Results")
+        ],
+    ]
+    msg["payload"]["headers"] = headers
+    for p in msg["payload"]["parts"]:
+        if p["mimeType"] == "message/delivery-status":
+            p["body"]["data"] = b64(
+                f"Final-Recipient: rfc822; {failed}\nAction: failed\nStatus: 5.1.1\n"
+            )
+    return msg, parse_delivery_status(msg["payload"])
+
+
+def test_a_co_recipients_signed_dsn_from_another_domain_fails_nobody():
+    msg, status = _dsn_from("mailer-daemon@evil.com", "mx.google.com; dkim=pass header.d=evil.com")
+    assert [r.final_recipient for r in status.recipients] == ["alice@x.com"]
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({"alice@x.com"})
+    )
+    assert evidence.original_sent and evidence.sender_authenticated
+    assert evidence.failed_recipients == ()
+
+
+def test_an_authenticated_gmail_bouncer_may_fail_any_mailed_address():
+    msg, status = _dsn_from(
+        "mailer-daemon@googlemail.com", "mx.google.com; dkim=pass header.d=googlemail.com"
+    )
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({"alice@x.com"})
+    )
+    assert evidence.failed_recipients == ("alice@x.com",)
+
+
+@pytest.mark.parametrize("sender", ["mailer-daemon@x.com", "mailer-daemon@mx.x.com"])
+def test_an_authenticated_aligned_domain_dsn_may_fail_its_own_address(sender):
+    domain = sender.rpartition("@")[2]
+    msg, status = _dsn_from(sender, f"mx.google.com; dkim=pass header.d={domain}")
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({"alice@x.com"})
+    )
+    assert evidence.failed_recipients == ("alice@x.com",)
+
+
+def test_an_unauthenticated_gmail_bouncer_lookalike_fails_nobody():
+    msg, status = _dsn_from("mailer-daemon@googlemail.com", "mx.google.com; spf=none")
+    evidence = bounce_evidence(
+        msg["payload"]["headers"], status, original_recipients=frozenset({"alice@x.com"})
+    )
+    assert evidence.failed_recipients == ()
 
 
 def test_backscatter_for_never_mailed_mail_fails_nobody():

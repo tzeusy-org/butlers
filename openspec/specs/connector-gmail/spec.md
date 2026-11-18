@@ -131,6 +131,10 @@ Gmail label include/exclude policy SHALL gate ingestion before tier evaluation.
 
 ### Requirement: Tiered Email Ingestion Policy
 
+ID: REQ-connector-gmail-005
+Source: RFC 0038 D1, D5; RFC 0003 disposition
+Scope: v1-mandatory
+
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value.
 
 #### Scenario: Tier 1 — full pipeline

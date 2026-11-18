@@ -57,7 +57,8 @@ Rules the models encode and connectors must respect:
   **`control.automated_evidence`** may ride with it on a `metadata` envelope only. It is the
   connector's typed binding of that message to mail the owner sent (`original_sent`,
   `sender_was_recipient`, `sender_authenticated`, `away_until`, `failed_recipients`), with no
-  free text. `away_until` requires all three checks, and `failed_recipients` a sent original.
+  free text. `away_until` requires all three checks, and `failed_recipients` a sent original and an authenticated DSN sender that
+  is Gmail's bouncer or domain-aligned with the failed address.
   Both are persisted under `raw_payload.control` (see `docs/connectors/gmail-ingestion-policy.md`).
 
 ## Transport

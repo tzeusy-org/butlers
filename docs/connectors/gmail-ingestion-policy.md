@@ -98,7 +98,10 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
   - `away_until`: an auto-reply's single stated return date, read deterministically after a
     return cue, at most 180 days out, and only when the three checks above hold.
   - `failed_recipients`: a bounce's permanently failed (`Action: failed`, `5.x.x`) recipients that
-    the original was addressed to. Backscatter and delays name nobody.
+    the original was addressed to, and only when the DSN sender is authenticated and speaks for the
+    address: Gmail's own bouncer (`mailer-daemon@googlemail.com`) or a sender whose domain is equal
+    to, or a parent or child of, the failed address's domain. A co-recipient's own signed DSN naming
+    someone else, backscatter and delays name nobody.
 
   Nothing reads the evidence yet: the Relationship availability and dead-address writers and the
   nudge deferral are later slices of bu-s11n0s.14.

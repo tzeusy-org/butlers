@@ -383,28 +383,54 @@ def auto_reply_evidence(
     )
 
 
+GMAIL_BOUNCER = "mailer-daemon@googlemail.com"
+
+
+def _domains_aligned(a: str, b: str) -> bool:
+    """Equal, or one a parent (dot-suffix) of the other."""
+    return bool(a) and bool(b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+
+
+def _may_fail(sender: str, failed_address: str) -> bool:
+    """Whether an authenticated DSN sender may speak for ``failed_address``.
+
+    A co-recipient can send a DKIM-signed DSN from their own domain naming someone else, so
+    authentication alone is not enough: the sender is Gmail's own bouncer, or its domain is
+    aligned with the failed address's domain.
+    """
+    return sender == GMAIL_BOUNCER or _domains_aligned(_domain(sender), _domain(failed_address))
+
+
 def bounce_evidence(
     headers: Any,
     status: DeliveryStatus,
     *,
     original_recipients: frozenset[str] | None,
 ) -> AutomatedEvidence:
-    """Evidence for a bounce: only addresses the owner's original was sent to can fail."""
+    """Evidence for a bounce: only addresses the owner's original was sent to can fail.
+
+    A failed recipient is kept only when the DSN sender is authenticated and speaks for that
+    address (Gmail's own bouncer, or an aligned domain); anything else under-claims.
+    """
+    authenticated = sender_authenticated(headers)
+    sender = normalize_address(_first(headers, "from"))
     failed: tuple[str, ...] = ()
-    if original_recipients is not None:
+    if original_recipients is not None and authenticated:
         failed = tuple(
             sorted(
                 {
                     r.final_recipient
                     for r in status.recipients
-                    if r.permanently_failed and r.final_recipient in original_recipients
+                    if r.permanently_failed
+                    and r.final_recipient in original_recipients
+                    and _may_fail(sender, r.final_recipient)
                 }
             )
         )
     return AutomatedEvidence(
         original_sent=original_recipients is not None,
         sender_was_recipient=False,
-        sender_authenticated=sender_authenticated(headers),
+        sender_authenticated=authenticated,
         failed_recipients=failed,
     )
 
