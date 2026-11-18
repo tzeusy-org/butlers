@@ -208,9 +208,17 @@ async def expire_custody_parked(pool: Any, now: datetime) -> int:
     rows = await pool.fetch(
         "UPDATE deferred_notifications SET status = 'expired' "
         "WHERE status = 'pending' AND deliver_at < $1 AND envelope ? 'custody_park' "
-        "RETURNING id, butler_name, channel, priority",
+        "RETURNING id, butler_name, channel, priority, envelope",
         now - EXPIRY,
     )
+    # The statement's WHERE already limits it to parked rows; the filter keeps a ledger row from
+    # being written for anything else a stand-in pool might hand back.
+    rows = [
+        r
+        for r in rows
+        if PARK_KEY in (r["envelope"] if isinstance(r["envelope"], dict) else {})
+        or (isinstance(r["envelope"], str) and PARK_KEY in r["envelope"])
+    ]
     for row in rows:
         await record_attention_event(
             pool,

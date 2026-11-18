@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -30,6 +30,9 @@ pytestmark = [
 
 CHAT = "424242"
 EMAIL = "owner-custody-park@example.test"
+# Pinned instants: parked at PARKED_AT, flushed a minute later (inside the 24-hour expiry).
+PARKED_AT = datetime(2026, 11, 19, 9, 0, tzinfo=UTC)
+NOW = PARKED_AT + timedelta(minutes=1)
 TG = ("has-handle", f"telegram:{CHAT}")
 MAIL = ("has-email", EMAIL)
 
@@ -128,7 +131,7 @@ async def _park(pool) -> tuple[str, uuid.UUID]:
         priority="medium",
         message="Take your pills",
         targets=(TG, MAIL),
-        now=datetime.now(UTC),
+        now=PARKED_AT,
     )
     assert notif_id is not None
     return notif_id, episode
@@ -144,7 +147,7 @@ async def test_the_parked_row_keeps_its_episode_and_flushes_once_with_a_recipien
 
     calls: list[dict[str, Any]] = []
     notify_fn = _deliver_fn(sb_pool, calls)
-    now = datetime.now(UTC)
+    now = NOW
     # Held: nothing is sent and the row stays parked.
     assert await _tick_deferred_notification_pass(sb_pool, now, notify_fn=notify_fn) == 0
     assert calls == []
@@ -191,9 +194,7 @@ async def test_a_rehold_before_the_flush_sends_nothing(sb_pool) -> None:
         await _hold(sb_pool, kind, obj)  # held again before any flush ran
     calls: list[dict[str, Any]] = []
     assert (
-        await _tick_deferred_notification_pass(
-            sb_pool, datetime.now(UTC), notify_fn=_deliver_fn(sb_pool, calls)
-        )
+        await _tick_deferred_notification_pass(sb_pool, NOW, notify_fn=_deliver_fn(sb_pool, calls))
         == 0
     )
     assert calls == []
@@ -217,7 +218,7 @@ async def test_two_concurrent_passes_send_once_and_a_failed_send_rolls_back(sb_p
                 obj,
             ),
         )
-    now = datetime.now(UTC)
+    now = NOW
 
     # A send that fails rolls the row lock back: the row stays pending and is retried.
     async def failing(envelope: dict[str, Any]) -> None:
