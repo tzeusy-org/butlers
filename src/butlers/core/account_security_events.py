@@ -164,7 +164,23 @@ async def publish_security_event(
     if result.get("status") != "ok":
         logger.warning("account-security event publish refused: %s", result.get("error"))
         return None
-    return str(result["event_id"])
+    event_id = str(result["event_id"])
+    if classification.sender_verification == "authenticated":
+        # Publisher-local outbox (the bus excludes a publisher from its own fan-out): one
+        # durable question per authenticated event. A crash before this line is recovered from
+        # the stored event by the scheduled cycle. Unverified events stay quiet records.
+        from butlers.core.security_questions import admit_event
+
+        try:
+            await admit_event(
+                pool,
+                event_id=event_id,
+                provider=classification.provider,
+                kind=classification.kind,
+            )
+        except Exception:
+            logger.warning("security question admission deferred to the sweep", exc_info=True)
+    return event_id
 
 
 async def record_security_answer(pool: Any, *, event_id: str, answer: str) -> dict[str, Any]:

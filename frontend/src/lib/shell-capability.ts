@@ -201,6 +201,8 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/ingestion/connectors/:connectorType/:endpointIdentity", label: "Connector detail", keywords: ["ingestion", "connector", "provider"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/ConnectorDetailPage.tsx")) },
   // No query warmup: a card or link opens it, and it reads parked approval rows on demand.
   { path: "/decision-sets/:setId", label: "Decision set", keywords: ["decision", "approval", "review"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/DecisionSetPage.tsx")) },
+  // Opened from the "was this you?" notification link; no warmup, it reads one question on demand.
+  { path: "/security/:eventId", label: "Security question", keywords: ["security", "account", "alert"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/SecurityQuestionPage.tsx")) },
   { path: "/qa/patrols/:patrolId", label: "QA patrol detail", keywords: ["qa", "patrol"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaPatrolDetailPage.tsx")) },
   { path: "/qa/investigations/:attemptId", label: "QA investigation detail", keywords: ["qa", "investigation"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/QaInvestigationDetailPage.tsx")) },
 ];

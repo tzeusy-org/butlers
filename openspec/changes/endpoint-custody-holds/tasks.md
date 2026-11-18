@@ -95,3 +95,19 @@
       a row not exactly the generic shape is cancelled.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
+  - [x] 2.4b Security question, dashboard half (S5c, core_349, REQ-008): Switchboard's
+        publisher-local outbox (`public.security_questions`, one row per authenticated
+        `switchboard.security_event`, admitted at publish and recovered by the scheduled
+        `security_question_cycle` from the stored event); one bounded notify with a dashboard link
+        that is claimed before the send and never re-sent (a doubtful send ends `ambiguous`);
+        unverified events get no question. The owner answers on the protected dashboard
+        (`/security/:eventId`, `/api/custody/security-questions`): `yes` changes nothing, `no`
+        binds owner-selected exact targets through `custody_dashboard` in one transaction with the
+        recorded answer, and the cycle then opens the canonical case and recovery-door evidence
+        through `record_security_answer`. A retained `no` is never erased; no automatic `no`.
+        Deferred (bu-s11n0s.81): the Telegram callback and `csq1` question tokens (the last three
+        REQ-008 scenarios), the provider inventory fallback for an unresolved affected account
+        with `containment unknown`, and source-owned reconciliation of an ingest that committed
+        before the publisher crashed (the cycle recovers a published event only). Not built: the
+        S5g owner-surface page (only the questions needed to answer); an owner whose Telegram
+        recipient is held gets an `unavailable`/`ambiguous` question, not the email fallback.

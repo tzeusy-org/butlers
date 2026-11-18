@@ -80,6 +80,13 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   core_349 adds the content-blind `public.custody_target_episode` read beside `custody_target_held`.
   See
   [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
+- **`public.security_questions`** and **`public.security_answers`** -- One durable "was this
+  you?" question per authenticated `switchboard.security_event` (core_349): Switchboard's
+  publisher-local outbox (the only writer of questions, walking a one-way presentation state) and
+  the owner's answer, written only by the definer `public.security_question_dashboard` from a
+  current dashboard session and CSRF. A `no` binds owner-selected exact targets through
+  `public.custody_dashboard` in the same transaction. Row level security; Switchboard has one
+  policy and no other runtime role has a grant.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

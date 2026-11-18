@@ -131,6 +131,31 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_security_question_cycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Present each authenticated security event's one question and record answered cases.
+
+    bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008. One bounded notify per question with a
+    dashboard link (``DASHBOARD_URL``); never re-sent once claimed. See
+    ``butlers.core.security_questions``.
+    """
+    del job_args
+    from butlers.core.security_questions import run_security_question_cycle
+    from butlers.startup_guard import _default_dashboard_url
+
+    deliver_to_owner = _build_switchboard_insight_notify_fn(pool)
+
+    async def _notify(message: str) -> dict[str, Any]:
+        # The owner's Telegram chat through the Switchboard's own delivery path.
+        return await deliver_to_owner(message, {"channel": "telegram"})
+
+    return await run_security_question_cycle(
+        pool, notify=_notify, dashboard_url=_default_dashboard_url()
+    )
+
+
 async def _run_switchboard_fleet_case_lapse_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2465,6 +2490,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
+            "security_question_cycle": _run_switchboard_security_question_cycle_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_retention_pruner_job_handlers("switchboard"),
         },
