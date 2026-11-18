@@ -62,7 +62,7 @@ with the owner-default fallback (tasks 2.3a and 2.3b):
   approval-card handoff, approved execution and deferred flush reach Messenger's adapters
   through those methods. Connector replies stay guarded by `resolve_owner_triple`.
 - Follow-up bu-s11n0s.93 fences the informational confirm edit and WhatsApp send/reply
-  (recipient JID/phone and the bridge account phone; unknown fails closed).
+  (recipient JID/phone and the bridge account JID/phone; unknown fails closed).
 - Known unfenced: Google Calendar invitations with `sendUpdates=all`, which are outside
   REQ-007's Messenger scope (bu-s11n0s.94). Username-form Telegram holds do not fence chat-id
   sends (documented limitation).

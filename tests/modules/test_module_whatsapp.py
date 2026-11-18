@@ -399,16 +399,41 @@ class TestCustodyEgressFence:
             await module._reply_to_message(chat_jid=OWNER_JID, message_id="m", text="re")
         assert posted == []
 
-    async def test_held_bridge_account_refuses_every_send(self, monkeypatch) -> None:
+    @pytest.mark.parametrize(
+        "held",
+        [
+            ("has-phone", BRIDGE_PHONE),
+            # The owner's WhatsApp is stored as a has-handle JID fact (identity.py).
+            ("has-handle", f"{BRIDGE_PHONE}@s.whatsapp.net"),
+            # core_296 parity: a held spelling up to two digits longer.
+            ("has-phone", f"00{BRIDGE_PHONE}"),
+        ],
+        ids=["account-phone", "account-jid-handle", "account-00-prefixed"],
+    )
+    async def test_held_bridge_account_refuses_every_send(self, monkeypatch, held) -> None:
         """The bridge's own account (owner's number, from /status) held refuses all sends."""
         from butlers.core.custody_egress import CustodyEgressRefused
 
-        pool = FakeCustodyPool({("has-phone", BRIDGE_PHONE)})
+        pool = FakeCustodyPool({held})
         module, posted = await self._module(monkeypatch, pool)
         with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
             await module._send_message(recipient="6512345678@s.whatsapp.net", text="hi")
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._reply_to_message(
+                chat_jid="6512345678@s.whatsapp.net", message_id="m", text="re"
+            )
         assert posted == []
-        assert ("has-phone", BRIDGE_PHONE) in pool.lookups[0]
+        assert held in pool.lookups[0]
+
+    async def test_held_00_prefixed_recipient_spelling_refuses(self, monkeypatch) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(
+            monkeypatch, FakeCustodyPool({("has-phone", "006587650123")})
+        )
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient=OWNER_JID, text="hi")
+        assert posted == []
 
     @pytest.mark.parametrize(
         ("pool", "bridge_phone", "recipient"),

@@ -109,16 +109,20 @@ def test_whatsapp_targets_cover_jid_forms_and_phone_suffixes() -> None:
 
 
 def test_whatsapp_targets_for_bare_phone_lid_and_group() -> None:
-    assert phone_targets("6587650123") == [
-        ("has-phone", "6587650123"),
-        ("has-phone", "587650123"),
-        ("has-phone", "87650123"),
-    ]
+    phones = phone_targets("6587650123")
+    assert phones is not None
+    values = [value for _predicate, value in phones]
+    # Suffixes of at least eight digits, then every one- and two-digit prefix (core_296's
+    # length difference of at most two): 3 + 110 digests, all distinct.
+    assert values[:3] == ["6587650123", "587650123", "87650123"]
+    assert len(values) == len(set(values)) == 113
+    assert {"06587650123", "96587650123", "006587650123", "996587650123"} <= set(values)
+    assert "0006587650123" not in values
+    assert "087650123" not in values  # a trunk-0 local form differs inside the number
+    assert {predicate for predicate, _value in phones} == {"has-phone"}
     assert whatsapp_targets("+65 8765 0123") == [
         ("has-handle", "6587650123@s.whatsapp.net"),
-        ("has-phone", "6587650123"),
-        ("has-phone", "587650123"),
-        ("has-phone", "87650123"),
+        *phones,
     ]
     assert whatsapp_targets("123456789@lid") == [("has-handle", "123456789@lid")]
     assert whatsapp_targets("120363@g.us") == [("has-handle", "120363@g.us")]

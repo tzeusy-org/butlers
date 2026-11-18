@@ -27,7 +27,6 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.core.custody_egress import (
-    phone_targets,
     require_custody_clear,
     whatsapp_targets,
 )
@@ -204,19 +203,20 @@ class WhatsAppModule(Module):
 
         REQ-endpoint-custody-holds-007. Returns the bridge's actionable error when it is not
         ready. Otherwise checks the recipient and the bridge's own account, whose phone the
-        bridge reports in ``/status`` (the connector learns its endpoint identity the same way).
-        An unreported account phone, a recipient that names no endpoint or an unreadable
-        custody state raises ``CustodyEgressRefused("eligibility_unknown")``.
+        bridge reports in ``/status`` (the connector learns its endpoint identity the same way),
+        as both its ``has-handle`` JID (how the owner's WhatsApp fact is stored) and its
+        ``has-phone`` spellings. An unreported account phone, a recipient that names no endpoint
+        or an unreadable custody state raises ``CustodyEgressRefused("eligibility_unknown")``.
         """
         error, account_phone = await self._bridge_status()
         if error is not None:
             return error
         recipient_targets = whatsapp_targets(recipient)
-        account_targets = phone_targets(account_phone) if account_phone else None
+        account_targets = whatsapp_targets(account_phone)
         targets = (
             None
             if recipient_targets is None or account_targets is None
-            else [*recipient_targets, *account_targets]
+            else list(dict.fromkeys([*recipient_targets, *account_targets]))
         )
         await require_custody_clear(self._pool, targets)
         return None

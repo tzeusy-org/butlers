@@ -45,12 +45,14 @@
       adapters through those methods. Connector replies are guarded by `resolve_owner_triple`
       (slice 1), not by this fence. Since bu-s11n0s.93 the informational confirm edit and
       WhatsApp send/reply are fenced too: WhatsApp checks the recipient (JID handle forms and
-      `has-phone` suffixes of at least eight digits) and the bridge account phone from
-      `/status`, refusing `eligibility_unknown` when either cannot be named. Known unfenced:
+      `has-phone` spellings: suffixes of at least eight digits and one- or two-digit prefixed
+      forms) and the bridge account from `/status` the same way, including its `has-handle` JID,
+      refusing `eligibility_unknown` when either cannot be named. Known unfenced:
       Google Calendar invitations with `sendUpdates=all` (`modules/calendar/google.py`, outside
       REQ-007's Messenger scope; bu-s11n0s.94). Known limits: a hold only on a username-form
-      Telegram fact does not fence chat-id sends, and a held phone spelling with extra leading
-      digits is not matched by the WhatsApp suffix check. Route.execute reports `endpoint_held` as a
+      Telegram fact does not fence chat-id sends, and a held phone spelling three or more digits
+      longer or differing inside the number is not matched (core_296's suffix rule, length
+      difference at most two, does not match it either). Route.execute reports `endpoint_held` as a
       non-retryable policy refusal and `eligibility_unknown` as retryable; the approval-card
       handoff records the refusal as pre-provider `safe_retry`, never ambiguous.
 - [x] 2.3b Owner-default fallback (slice 4): a notify with no channel, recipient or entity

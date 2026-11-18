@@ -144,6 +144,14 @@ async def test_whatsapp_targets_match_formatted_and_local_phone_holds(
         await require_custody_clear(messenger_pool, whatsapp_targets(f"+{full}"))
     await _release(owner_pool, local_hold)
 
+    # A held international-prefix spelling (core_296: length difference at most two); the
+    # fence's ~115 phone digests per number ride in one unnest query.
+    intl_hold = await _hold(owner_pool, "has-phone", f"00 {full}")
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await require_custody_clear(messenger_pool, whatsapp_targets(jid))
+    await _release(owner_pool, intl_hold)
+    await require_custody_clear(messenger_pool, whatsapp_targets(jid))
+
     jid_hold = await _hold(owner_pool, "has-handle", jid.upper())
     with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
         await require_custody_clear(messenger_pool, whatsapp_targets(f"{full}:3@s.whatsapp.net"))

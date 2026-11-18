@@ -80,18 +80,27 @@ def email_targets(addresses: Iterable[str | None]) -> list[tuple[str, str]] | No
 
 _WHATSAPP_JID_RE = re.compile(r"^(\d+)(?::\d+)?@(s\.whatsapp\.net|lid)$")
 _PHONE_SUFFIX_DIGITS = 8
+# Every one- and two-digit prefix: a held spelling up to two digits longer (core_296 allows a
+# length difference of at most two), e.g. an international ``00`` dialling prefix.
+_PHONE_PREFIXES = (*(str(d) for d in range(10)), *(f"{d:02d}" for d in range(100)))
 
 
 def phone_targets(digits: str) -> list[tuple[str, str]] | None:
     """``has-phone`` targets for a number, or ``None`` when it is too short to name one.
 
-    The digest is over a held fact's digits, so a hold on any spelling that is a suffix of
-    ``digits`` with at least eight digits (``6587650123``, ``87650123``) is matched. A held
-    spelling with extra leading digits (``006587650123``, a trunk ``0``) is not.
+    A hold stores only the digest of a fact's digits, so every spelling the fence should match
+    is sent as its own target. Mirroring core_296's suffix rule, that is every suffix of
+    ``digits`` with at least eight digits (``6587650123``, ``87650123``) and ``digits`` with any
+    one- or two-digit prefix (``06587650123``, ``006587650123``): 110 prefixed digests, all
+    asked in the fence's single query. Not matched, as in core_296: a held spelling with three
+    or more extra leading digits, or one that differs inside the number (a trunk-``0`` local
+    form ``087650123`` against ``6587650123``).
     """
     if not digits.isdigit() or len(digits) < _PHONE_SUFFIX_DIGITS:
         return None
-    return [("has-phone", digits[i:]) for i in range(len(digits) - _PHONE_SUFFIX_DIGITS + 1)]
+    suffixes = [digits[i:] for i in range(len(digits) - _PHONE_SUFFIX_DIGITS + 1)]
+    prefixed = [f"{p}{digits}" for p in _PHONE_PREFIXES]
+    return [("has-phone", value) for value in (*suffixes, *prefixed)]
 
 
 def whatsapp_targets(recipient: str | None) -> list[tuple[str, str]] | None:
