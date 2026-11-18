@@ -96,6 +96,18 @@ def test_unbound_or_unauthenticated_bounce_claims_nothing(overrides: dict[str, A
     assert claims_for("bounce", evidence, "mailer-daemon@googlemail.com", _RECEIVED) == ()
 
 
+@pytest.mark.parametrize("flag", ["original_sent", "sender_authenticated"])
+@pytest.mark.parametrize("value", [False, None, "true", 1, "yes"])
+def test_a_forged_dsn_needs_both_the_sent_original_and_gmails_authentication(
+    flag: str, value: Any
+) -> None:
+    # A co-recipient can send a DSN-shaped message: either check alone is not enough, and only
+    # the JSON literal true counts as a passed check.
+    evidence = _bounce(**{flag: value})
+
+    assert claims_for("bounce", evidence, "mailer-daemon@googlemail.com", _RECEIVED) == ()
+
+
 def test_kind_and_evidence_must_agree() -> None:
     assert claims_for("bounce", _auto_reply(), "ada@example.test", _RECEIVED) == ()
     assert claims_for("auto_reply", _bounce(), "ada@example.test", _RECEIVED) == ()
