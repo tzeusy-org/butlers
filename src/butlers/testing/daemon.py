@@ -76,7 +76,8 @@ class FakeRuntime(RuntimeAdapter):
     (a runtime failure), or a callable that gets the recorded invocation and
     returns the text.
 
-    Set ``supports_resume = True`` to act as a resume-capable adapter (Claude's):
+    Set ``supports_resume = True`` to act as a resume-capable adapter (no in-tree
+    adapter is one today, bu-089bjy):
     each turn then reports a fresh ``provider_session_id`` (``fake-session-<n>``)
     in :attr:`last_process_info`, and invocations record the ``resume_session_id``
     the spawner passed.

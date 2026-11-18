@@ -428,7 +428,10 @@ the winner and tie-break reason, and the ordered candidates with exclusions
 such as `breaker_open`, capability fit, budget, or quota. A same-tier failover
 receipt names the preceding attempt and its classified failure. A safe resume-handle failure that
 retries the same candidate cold instead records `retry.kind="same_candidate_cold"`; it is not a
-model failover. Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
+model failover. A provider rejecting an unknown handle ("No conversation found with session ID")
+classifies as `stale_resume_handle` and takes this path. No in-tree adapter advertises resume
+today: the Claude adapter runs with `--no-session-persistence`, so it has no transcript to resume
+(bu-089bjy). Receipts are bounded to 32 KiB by retaining an ordered candidate prefix and setting
 `truncated=true` plus the original `candidate_count`; they are never silently dropped for size. The
 size check uses the exact registered JSONB serializer, including its default ASCII escaping, and
 the minimal projection retains both requested and effective intent. Historical and explicit

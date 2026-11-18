@@ -168,7 +168,8 @@ def test_api_adapter_baseline_reports_no_tool_use() -> None:
 
     claude = adapter_capability_baseline("claude")
     assert claude.support(ModelFeature.TOOL_USE) is Support.SUPPORTED
-    assert claude.support(ModelFeature.SESSION_RESUME) is Support.SUPPORTED
+    # --no-session-persistence leaves nothing to resume (bu-089bjy).
+    assert claude.support(ModelFeature.SESSION_RESUME) is Support.UNSUPPORTED
 
 
 @pytest.mark.unit
