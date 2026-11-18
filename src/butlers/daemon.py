@@ -1072,6 +1072,10 @@ class ButlerDaemon:
         context validation — only the context-aware *ordering* during resolution
         is dropped.
 
+        Email addresses carrying an active ``undeliverable-email`` fact are skipped. When the
+        entity has addresses and every one is dead, raises ``NoLiveEmailAddressError`` (notify
+        surfaces ``no_live_address`` rather than parking or sending).
+
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
         - No matching ``entity_facts`` row exists.
@@ -1131,21 +1135,50 @@ class ButlerDaemon:
                         return numeric or None
                     return None
                 else:
+                    # An email address carrying an active ``undeliverable-email`` fact (a bound,
+                    # authenticated permanent bounce) is skipped, so another live address wins.
+                    dead_filter = ""
+                    if channel == "email":
+                        dead_filter = """
+                          AND NOT EXISTS (
+                              SELECT 1 FROM relationship.entity_facts dead
+                              WHERE dead.subject = ef.subject
+                                AND dead.predicate = 'undeliverable-email'
+                                AND dead.object_kind = 'literal'
+                                AND dead.validity = 'active'
+                                AND lower(btrim(dead.object)) = lower(btrim(ef.object))
+                          )"""
                     row = await conn.fetchrow(
-                        """
+                        f"""
                         SELECT ef.object
                         FROM relationship.entity_facts ef
                         WHERE ef.subject    = $1
                           AND ef.predicate  = $2
                           AND ef.object_kind = 'literal'
-                          AND ef.validity   = 'active'
+                          AND ef.validity   = 'active'{dead_filter}
                         ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
                         LIMIT 1
-                        """,
+                        """,  # noqa: S608 - dead_filter is a constant fragment, never user input
                         entity_id,
                         predicate,
                     )
                     if row is None:
+                        if channel == "email" and await conn.fetchrow(
+                            """
+                            SELECT 1 AS present
+                            FROM relationship.entity_facts ef
+                            WHERE ef.subject = $1
+                              AND ef.predicate = $2
+                              AND ef.object_kind = 'literal'
+                              AND ef.validity = 'active'
+                            LIMIT 1
+                            """,
+                            entity_id,
+                            predicate,
+                        ):
+                            from butlers.entity_facts_channels import NoLiveEmailAddressError
+
+                            raise NoLiveEmailAddressError(str(entity_id))
                         return None
                     value = row["object"]
                     if not value:

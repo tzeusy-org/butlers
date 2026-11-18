@@ -8,13 +8,15 @@ so these tests need no database.
 
 from __future__ import annotations
 
+import importlib
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.roster_imports import roster_module
 from butlers.tools.relationship.reminders import (
     ALL_CLEAR_MESSAGE,
     run_relationship_maintenance,
@@ -23,7 +25,19 @@ from butlers.tools.relationship.reminders import (
 
 pytestmark = pytest.mark.unit
 
+# The module object the job under test actually resolves its globals from.
+reminders = importlib.import_module(run_relationship_maintenance.__module__)
+
+_away = roster_module("relationship", "tools/away_until")
+
 _NOW = datetime(2026, 10, 22, 6, 0, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _nobody_away(monkeypatch):
+    """Default: no contact is away, and the owner timezone resolves to UTC without a database."""
+    monkeypatch.setattr(reminders, "away_until_by_entity", AsyncMock(return_value={}))
+    monkeypatch.setattr(reminders, "resolve_general_timezone", AsyncMock(return_value="UTC"))
 
 
 def _notify(outcome: str = "delivered") -> AsyncMock:
@@ -92,6 +106,7 @@ async def test_dates_job_failed_read_sends_nothing_and_propagates():
 def _contact(name: str, *, days: float | None, cadence: int) -> dict[str, Any]:
     return {
         "id": uuid.uuid4(),
+        "entity_id": uuid.uuid4(),
         "name": name,
         "days_since_last_interaction": days,
         "effective_cadence": cadence,
@@ -200,6 +215,7 @@ async def test_maintenance_ranks_only_eligible_contacts_by_urgency_top_three():
         "suggested": 3,
         "overdue": 4,
         "unranked": 0,
+        "deferred": 0,
         "notify": "delivered",
     }
 
@@ -260,3 +276,94 @@ async def test_maintenance_overdue_but_nothing_ranked_sends_nothing():
         "unranked": 1,
         "notify": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# away-until deferral (bu-s11n0s.14 S2c)
+# ---------------------------------------------------------------------------
+
+_TODAY = date(2026, 10, 22)
+
+
+async def _run_with_away(contacts, away, *, notify, now=_NOW):
+    away_fn = AsyncMock(return_value=away)
+    result = await run_relationship_maintenance(
+        MagicMock(),
+        evaluate_fn=_evaluation(contacts),
+        rank_fn=AsyncMock(return_value=_ranking(*contacts)),
+        urgency_fn=_urgency_by(contacts),
+        notify_fn=notify,
+        away_fn=away_fn,
+        now=now,
+    )
+    return result, away_fn
+
+
+async def test_maintenance_defers_an_away_contact_to_the_day_after_the_return_date():
+    ann = _contact("Ann", days=40.0, cadence=14)
+    ben = _contact("Ben", days=30.0, cadence=21)
+    notify = _notify()
+
+    result, away_fn = await _run_with_away(
+        [ann, ben], {ann["entity_id"]: _TODAY + timedelta(days=3)}, notify=notify
+    )
+
+    assert away_fn.await_args_list[-1].args[2] == _TODAY
+    message = notify.await_args_list[-1].args[0]
+    assert "Ann" not in message and "Ben" in message
+    assert (result["suggested"], result["overdue"], result["deferred"]) == (1, 1, 1)
+    assert _away.deferred_until(_TODAY + timedelta(days=3)) == date(2026, 10, 26)
+
+
+async def test_maintenance_a_contact_back_today_plus_one_is_nudged_again():
+    # The away date is the last away day; the first run on until+1 sees no unexpired fact.
+    ann = _contact("Ann", days=40.0, cadence=14)
+    notify = _notify()
+
+    result, away_fn = await _run_with_away(
+        [ann], {}, notify=notify, now=datetime(2026, 10, 26, 6, 0, tzinfo=UTC)
+    )
+
+    assert away_fn.await_args_list[-1].args[2] == date(2026, 10, 26)
+    assert "Ann" in notify.await_args_list[-1].args[0]
+    assert result["deferred"] == 0
+
+
+async def test_maintenance_everyone_deferred_sends_neither_nudge_nor_all_clear():
+    ann = _contact("Ann", days=40.0, cadence=14)
+    notify = _notify()
+
+    result, _ = await _run_with_away([ann], {ann["entity_id"]: _TODAY}, notify=notify)
+
+    notify.assert_not_awaited()
+    assert result == {"status": "deferred", "deferred": 1, "notify": None}
+
+
+async def test_maintenance_failed_away_read_sends_nothing_and_propagates():
+    ann = _contact("Ann", days=40.0, cadence=14)
+    notify = _notify()
+
+    with pytest.raises(RuntimeError, match="facts unreadable"):
+        await run_relationship_maintenance(
+            MagicMock(),
+            evaluate_fn=_evaluation([ann]),
+            rank_fn=AsyncMock(),
+            notify_fn=notify,
+            away_fn=AsyncMock(side_effect=RuntimeError("facts unreadable")),
+        )
+
+    notify.assert_not_awaited()
+
+
+async def test_maintenance_uses_the_owner_local_date_for_today(monkeypatch):
+    monkeypatch.setattr(
+        reminders, "resolve_general_timezone", AsyncMock(return_value="Asia/Singapore")
+    )
+    ann = _contact("Ann", days=40.0, cadence=14)
+
+    # 20:00 UTC on Oct 22 is already Oct 23 in Singapore.
+    _, away_fn = await _run_with_away(
+        [ann], {}, notify=_notify(), now=datetime(2026, 10, 22, 20, 0, tzinfo=UTC)
+    )
+
+    assert away_fn.await_args_list[-1].args[2] == date(2026, 10, 23)

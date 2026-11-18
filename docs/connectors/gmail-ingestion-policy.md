@@ -105,8 +105,9 @@ Automated replies and bounces are assigned Tier 2 from headers alone, before any
 
   Relationship's hourly `automated_evidence_sync` job turns the evidence into `away-until` and
   `undeliverable-email` facts (see [Relationship](../butlers/relationship.md#automated-email-evidence)).
-  Nothing reads those facts yet: nudge deferral, Messenger's live-address preference and the
-  owner's door to replace a dead address are a later slice of bu-s11n0s.14.
+  Two consumers read them: the weekly reconnect suggestion skips a contact who is away, and
+  `notify()` skips a dead email address (see the Relationship page for the exact rules). The
+  owner's door to replace a dead address is not built.
 
 ### Tier 3
 

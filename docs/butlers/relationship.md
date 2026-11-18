@@ -250,8 +250,23 @@ row. The deterministic hourly `automated_evidence_sync` job reads those rows fro
   error leaves the checkpoint where it was.
 - Each fact cites `switchboard.message_inbox:<id>` as evidence and copies no message text.
 
-Not built yet (slice S2c): nothing reads these facts. Nudge deferral while someone is away,
-Messenger preferring a live address, and the owner's door to replace a dead one come later.
+Two consumers read these facts, with no session and no cross-butler read:
+
+- **Reconnect deferral.** The weekly `relationship-maintenance` job leaves out an overdue contact
+  whose most recently observed `away-until` date is today or later (today in the owner's
+  timezone). The contact is reconsidered by the first run after that date, so the nudge lands on
+  the return date plus one day at the earliest. A past date never defers. If every overdue contact
+  is away the job sends nothing, not even the all-clear. Code: `tools/away_until.py`,
+  `tools/reminders.py::run_relationship_maintenance`.
+- **Dead-address avoidance.** `notify(entity_id=..., channel="email")` skips an address carrying an
+  active `undeliverable-email` fact (`ButlerDaemon._resolve_entity_channel_identifier`) and uses
+  another live one. When every address is dead it returns `no_live_address` and neither sends nor
+  parks an approval.
+
+Not built (follow-ups): clearing an `undeliverable-email` fact when a later inbound message from
+the same address is observed (today the fact holds until retracted; it needs an address-keyed read
+of `switchboard.message_inbox` that Relationship's role does not have beside the entity-keyed
+interaction rows), and the owner's door to replace a dead address.
 
 ## Owner-chat commitment candidates
 
