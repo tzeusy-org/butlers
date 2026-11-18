@@ -33,11 +33,45 @@ def provider(monkeypatch):
         _butler_name="messenger",
         _get_client=Mock(return_value=client),
         _base_url=Mock(return_value="https://telegram.invalid"),
+        _require_custody_clear=AsyncMock(),
     )
     delivery = telegram_confirms.messenger_confirm_delivery(
         object(), telegram, allowed=AsyncMock(return_value=True)
     )
     return delivery, telegram, client, permission
+
+
+@pytest.mark.parametrize("reason", ["endpoint_held", "eligibility_unknown"])
+async def test_edit_into_held_or_unreadable_chat_refuses_before_provider(provider, reason):
+    """REQ-endpoint-custody-holds-007: the confirm edit asks the adapter's custody fence."""
+    from butlers.core.custody_egress import CustodyEgressRefused
+
+    delivery, telegram, client, _permission = provider
+    telegram._require_custody_clear.side_effect = CustodyEgressRefused(reason)
+    with pytest.raises(CustodyEgressRefused, match=reason):
+        await delivery.edit({"recipient_chat": "-10042", "message_ref": "71"}, "Recorded.")
+    telegram._require_custody_clear.assert_awaited_once_with("-10042")
+    client.post.assert_not_awaited()
+
+
+async def test_edit_with_real_adapter_fence_refuses_held_chat(monkeypatch):
+    """The real TelegramModule fence (not a stub) refuses the confirm edit for a held chat."""
+    from butlers.core.custody_egress import CustodyEgressRefused
+    from butlers.modules.telegram import TelegramModule
+
+    monkeypatch.setattr(telegram_confirms, "require_permission", AsyncMock())
+    telegram = TelegramModule()
+    pool = SimpleNamespace(fetchval=AsyncMock(return_value=True))
+    telegram._audit_pool = pool
+    client = SimpleNamespace(post=AsyncMock())
+    telegram._client = client
+    delivery = telegram_confirms.messenger_confirm_delivery(
+        object(), telegram, allowed=AsyncMock(return_value=True)
+    )
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await delivery.edit({"recipient_chat": "-10042", "message_ref": "71"}, "Recorded.")
+    client.post.assert_not_awaited()
+    assert pool.fetchval.await_args.args[1:] == (["has-handle"], ["telegram:-10042"])
 
 
 async def test_terminal_edit_is_one_literal_provider_call_with_atomic_keyboard_removal(provider):
