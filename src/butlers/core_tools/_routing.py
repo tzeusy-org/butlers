@@ -1244,6 +1244,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         _route_internal_context["request_context"] = {
             "source_channel": parsed_route.request_context.source_channel
         }
+        # REQ-endpoint-custody-holds-005: Switchboard's custody read found the owner-looking
+        # sender's endpoint held or unreadable. Only the validated envelope field sets it.
+        if parsed_route.request_context.source_sender_custody == "endpoint_held":
+            _route_internal_context["source_custody"] = "endpoint_held"
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )

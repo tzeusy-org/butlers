@@ -162,6 +162,46 @@ async def test_route_to_butler_envelope_behavior(
     assert captured["input"]["complexity"] == "workhorse"
 
 
+@pytest.mark.parametrize("custody", ["endpoint_held", None, "cleared"])
+async def test_route_to_butler_carries_only_the_held_custody_flag(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custody
+) -> None:
+    """REQ-endpoint-custody-holds-005: the identity step's custody read reaches the envelope."""
+    captured: dict[str, Any] = {}
+
+    async def _capture(*_args, **kwargs):
+        captured.update(kwargs["args"])
+        return {"result": {"status": "accepted"}}
+
+    _, fn = await _route_to_butler(
+        tool_host, tmp_path, monkeypatch, AsyncMock(side_effect=_capture)
+    )
+    runtime_session_id = f"sess-route-custody-{custody}"
+    set_runtime_session_routing_context(
+        runtime_session_id,
+        {
+            "request_context": {
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+                "source_channel": "telegram_bot",
+                "source_sender_identity": "123456789",
+            },
+            "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+            "source_entity_id": "550e8400-e29b-41d4-a716-446655440000",
+            "source_custody": custody,
+        },
+    )
+    token = set_current_runtime_session_id(runtime_session_id)
+    try:
+        await fn(butler="general", prompt="remember this")
+    finally:
+        reset_current_runtime_session_id(token)
+        clear_runtime_session_routing_context(runtime_session_id)
+    payload = {k: v for k, v in captured.items() if k != "__switchboard_route_context"}
+    parsed = parse_route_envelope(payload).request_context
+    expected = "endpoint_held" if custody == "endpoint_held" else None
+    assert parsed.source_sender_custody == expected
+
+
 # ---------------------------------------------------------------------------
 # Permissions-matrix enforcement (public.permissions: cross_butler) [bu-tzlq6]
 # ---------------------------------------------------------------------------

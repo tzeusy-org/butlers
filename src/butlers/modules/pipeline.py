@@ -1295,6 +1295,7 @@ class MessagePipeline:
         identity_preamble: str | None = None,
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
+        source_custody: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         dashboard_context: dict[str, Any] | None = None,
     ) -> None:
@@ -1322,6 +1323,8 @@ class MessagePipeline:
                 "identity_preamble": identity_preamble,
                 "source_contact_id": source_contact_id,
                 "source_entity_id": source_entity_id,
+                # Server-side custody read only (REQ-endpoint-custody-holds-005).
+                "source_custody": source_custody,
                 "attachments": attachments,
                 "dashboard_context": dashboard_context,
             }
@@ -3091,6 +3094,7 @@ class MessagePipeline:
                     identity_preamble: str | None = None
                     source_contact_id: str | None = None
                     source_entity_id: str | None = None
+                    source_custody: str | None = None
                     if self._enable_identity_resolution:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.identity_resolution"
@@ -3136,6 +3140,7 @@ class MessagePipeline:
                                         source_contact_id = str(identity_result.contact_id)
                                     if identity_result.entity_id is not None:
                                         source_entity_id = str(identity_result.entity_id)
+                                    source_custody = identity_result.custody_reason
 
                                     # entity-v3 (bu-hvrt1): for an unresolved/temp
                                     # sender, deterministically assert the channel
@@ -3254,6 +3259,7 @@ class MessagePipeline:
                         identity_preamble=identity_preamble,
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
+                        source_custody=source_custody,
                         attachments=attachments,
                         dashboard_context=dashboard_context,
                     )

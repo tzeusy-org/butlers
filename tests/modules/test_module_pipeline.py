@@ -383,6 +383,7 @@ async def test_decomposition_primary_sender_reuses_batch_resolution(
         display_name="Chloe Wong",
         is_unknown=False,
         channel_value=None,
+        custody_reason="endpoint_held",
     )
 
     async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
@@ -437,6 +438,8 @@ async def test_decomposition_primary_sender_reuses_batch_resolution(
     routing_context = pipeline._set_routing_context.call_args.kwargs
     assert routing_context["identity_preamble"] == primary_result.preamble
     assert routing_context["source_entity_id"] == str(primary_entity)
+    # REQ-endpoint-custody-holds-005: the identity step's custody read rides along.
+    assert routing_context["source_custody"] == "endpoint_held"
 
     with pytest.raises(RuntimeError, match="primary scenario failed"):
         with unregistered_identity_source():

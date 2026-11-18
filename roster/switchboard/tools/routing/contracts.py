@@ -62,6 +62,9 @@ class RouteRequestContextV1(BaseModel):
     source_sender_identity: NonEmptyStr
     source_sender_contact_id: NonEmptyStr | None = None
     source_sender_entity_id: NonEmptyStr | None = None
+    # REQ-endpoint-custody-holds-005: the sender resolved to the owner through a held or
+    # unreadable endpoint; the routed session stamps third_party, never owner.
+    source_sender_custody: Literal["endpoint_held"] | None = None
     source_thread_identity: NonEmptyStr | None = None
     external_conversation_id: NonEmptyStr | None = None
     reply_target_ref: NonEmptyStr | None = None

@@ -172,6 +172,20 @@ parked send and deferred flush reach Messenger's adapters through these methods.
 are not fenced here; their owner authority comes from `resolve_owner_triple`, which already refuses
 owner for a held endpoint.
 
+#### Ingress demotion (REQ-endpoint-custody-holds-005)
+
+Switchboard resolves an inbound sender with `resolve_contact_by_channel`, which does not consult
+custody. When the result is the owner, the identity step (`inject.py`) asks
+`butlers.core.custody_ingress.owner_source_custody_reason` over the owner definer's typed
+candidates for that channel. A held endpoint, a lookup error, no pool, or a channel outside owner
+channel authorization yields `endpoint_held`: the sender keeps the owner entity for attribution,
+and the route envelope carries `source_sender_custody = endpoint_held`, so memory stamps
+`third_party` (see `docs/modules/memory.md`). Owner-ingress engagement does not count it, and
+break-through resolves it to no entity, which can only narrow. Approval admission already goes
+through the custody-aware definer. Discretion weighting is unchanged: it grants no authority, and
+demoting it could drop held-chat content that REQ-005 keeps as a report. This is a pre-cutover
+fix; at cutover owner origin comes from owner-channel authorization through the same definer.
+
 Known unfenced paths and limits:
 
 - Google Calendar invitations sent with `sendUpdates=all` (`modules/calendar/google.py`), outside
