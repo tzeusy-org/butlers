@@ -6908,8 +6908,8 @@ BEGIN
  IF 10<=(SELECT count(*) FROM dashboard_attention.reach_proposals
   WHERE consumed_at IS NULL AND dismissed_at IS NULL AND expires_at>t) THEN
   RETURN '{"error":"RATE_LIMITED"}'; END IF;
- INSERT INTO dashboard_attention.reach_proposals(sender_domain,channel,security_kind,scope,expires_at)
-  VALUES(d,ch,kind,sc,t+interval '24 hours') RETURNING id INTO pid;
+ INSERT INTO dashboard_attention.reach_proposals(sender_domain,channel,security_kind,scope,created_at,expires_at)
+  VALUES(d,ch,kind,sc,t,t+interval '24 hours') RETURNING id INTO pid;
  RETURN jsonb_build_object('id',pid);
 END $propose_owner$;
 ALTER FUNCTION dashboard_attention.owner_channel_propose(jsonb) OWNER TO dashboard_attention_owner;
