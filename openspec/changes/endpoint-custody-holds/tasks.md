@@ -76,5 +76,18 @@
       nothing. Same SECURITY DEFINER authority; one added UPDATE policy on `fleet_cases`. Installed
       once across the per-schema chains with core_347's yielding installer (catalog-read check,
       polled session lock, short lock timeout, retry on sibling conflict).
+- [x] 2.4b Park and flush (REQ-007 park path, REQ-010 automatic recovery, S5b): an owner-default
+      `send`/`insight` notice with no channel, recipient, entity, attachment or reply prompt whose
+      every configured owner target is held is parked in the butler's `deferred_notifications`
+      (due at once, `custody_park` envelope section naming the held targets; no episode, since
+      `custody_target_held` answers only a boolean) instead of only a `failed` ledger row.
+      An unreadable custody (`eligibility_unknown`) and every non-generic notice are still
+      refused, never parked. No release-time write: the table is per butler schema, out of the
+      public engine's reach, so the flush (`butlers.core.custody_park`) re-reads
+      `custody_target_held`: while every target is held or unreadable the row stays pending;
+      once one is clear it is sent once (row `FOR UPDATE SKIP LOCKED` across revalidation and
+      send) by the owning pipeline with the held-while-lost marker, by the clear target's
+      channel. A re-hold before the flush sends nothing; the ordinary 24-hour expiry applies;
+      a row not exactly the generic shape is cancelled. No migration.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).

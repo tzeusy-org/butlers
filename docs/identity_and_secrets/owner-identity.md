@@ -191,12 +191,15 @@ is not retried. The approval-card handoff records either refusal as a pre-provid
 
 `notify()` with no channel, recipient or entity is an owner-default notice. When the owner's
 Telegram target is held or unreadable, the notice goes to the owner's email if that address is
-provably unheld. When no owner target is provably unheld, it returns
-`endpoint_held`/`eligibility_unknown` and writes a `failed` attention-ledger row with that reason.
-Nothing is sent in that case. A forced channel or recipient is never retargeted; the adapter fence
-refuses it.
-
-Keeping a parked message and flushing it on release belongs to the recovery slice.
+provably unheld. When every configured owner target is held, a generic notice (`send` or
+`insight`, with no attachment or reply prompt) is parked in the butler's `deferred_notifications`
+(`butlers.core.custody_park`) and `notify()` returns `status: deferred`, `code: endpoint_held`.
+The deferred flush leaves the row pending while every target is held or unreadable. Once one is
+clear it sends the notice once, by that target's channel and with a "held while your device was
+lost" marker; a re-hold before the flush sends nothing, and the ordinary 24-hour expiry applies.
+When custody cannot be read (`eligibility_unknown`), or the notice is not generic, nothing is
+parked: `notify()` returns the refusal and writes a `failed` attention-ledger row. Nothing is sent
+in either case. A forced channel or recipient is never retargeted; the adapter fence refuses it.
 
 ### Credential Resolution
 
