@@ -23,14 +23,20 @@ The engine closes cases through one new UPDATE policy on the FORCE-RLS ``public.
 limited to the database owner and ``endpoint_custody:`` cases (and, where another login owns the
 table, UPDATE on it for the database owner), beside core_347's INSERT policy.
 
-Installed once across the per-schema core chains: a run that finds the new body installed does
-nothing. Only the last schema still at core_348 restores core_347's body on downgrade.
+Installed once across the per-schema core chains, as core_347: a run that finds the new body
+installed reads the catalog only; otherwise it installs in a transaction of its own under a short
+lock timeout, rolling back and retrying while a sibling chain holds fleet_cases (the policy DDL
+needs ACCESS EXCLUSIVE, which a chain at core_288 holds while waiting on the custody lock).
+Only the last schema still at core_348 restores core_347's body on downgrade.
 """
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from time import monotonic, sleep
+
+from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
@@ -396,14 +402,17 @@ _CLOSE_POLICY = """DO $$ DECLARE owner_oid oid; db_owner name; BEGIN
 END $$"""
 
 
-def _apply_installed() -> bool:
+def _apply_installed(bind) -> bool:
+    """Whether the core_348 body stands (catalog read only, no lock).
+
+    A later revision that replaces ``custody_engine_apply`` MUST keep ``_MARKER`` in its body
+    (or this check must learn the newer marker), or a lagging chain would reinstall this body.
+    """
     return bool(
-        op.get_bind()
-        .exec_driver_sql(
+        bind.exec_driver_sql(
             "SELECT COALESCE(position('" + _MARKER + "' IN "
             "pg_get_functiondef(to_regprocedure('" + _APPLY_FN + "'))) > 0, false)"
-        )
-        .scalar()
+        ).scalar()
     )
 
 
@@ -438,25 +447,72 @@ def _installation_count() -> int:
     return count
 
 
-def _previous_apply() -> str:
-    """core_347's function body, the single source of the previous definition."""
+def _core_347():
+    """core_347's module: its install lock, sibling-yield test and timeouts are reused."""
     path = Path(__file__).with_name("core_347_custody_command_engine.py")
     spec = importlib.util.spec_from_file_location("_core_347_custody_command_engine", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._APPLY
+    return module
 
 
-def upgrade() -> None:
-    op.execute(_LOCK)
-    if _apply_installed():
-        return
+def _previous_apply() -> str:
+    """core_347's function body, the single source of the previous definition."""
+    return _core_347()._APPLY
+
+
+def _install() -> None:
     op.execute(_ASSUME_OWNER)
     op.execute(_CLOSE_POLICY)
     # CREATE OR REPLACE keeps the owner and every grant core_347 set on the function.
     op.execute(_APPLY)
     op.execute("RESET ROLE")
+
+
+def _install_yielding(previous, connection) -> None:
+    """Install in one explicit transaction that never waits long while holding anything.
+
+    The policy DDL takes ACCESS EXCLUSIVE on ``public.fleet_cases``, which a sibling chain still
+    at core_288 holds while it waits for the custody lock at core_293. A short lock timeout makes
+    this run the one that backs off, rolls back and retries (core_347's installer pattern).
+    """
+    deadline = monotonic() + previous._INSTALL_LOCK_WAIT_SECONDS
+    while True:
+        connection.exec_driver_sql("BEGIN")
+        try:
+            connection.exec_driver_sql(
+                f"SET LOCAL lock_timeout = '{previous._INSTALL_LOCK_TIMEOUT}'"
+            )
+            if _apply_installed(connection):
+                connection.exec_driver_sql("ROLLBACK")
+                return
+            _install()
+        except DBAPIError as error:
+            connection.exec_driver_sql("ROLLBACK")
+            if not previous._yields_to_a_sibling(error) or monotonic() >= deadline:
+                raise
+            sleep(0.2)
+            continue
+        except BaseException:
+            connection.exec_driver_sql("ROLLBACK")
+            raise
+        connection.exec_driver_sql("COMMIT")
+        return
+
+
+def upgrade() -> None:
+    # Every later schema's run lands here: a catalog read only, no lock, no catalog write.
+    if _apply_installed(op.get_bind()):
+        return
+    previous = _core_347()
+    with op.get_context().autocommit_block():
+        connection = op.get_bind()
+        previous._acquire_install_lock(connection)
+        try:
+            _install_yielding(previous, connection)
+        finally:
+            connection.exec_driver_sql(f"SELECT pg_advisory_unlock({previous._INSTALL_LOCK})")
 
 
 def downgrade() -> None:
@@ -465,5 +521,15 @@ def downgrade() -> None:
         return
     op.execute(_ASSUME_OWNER)
     op.execute("DROP POLICY IF EXISTS fleet_cases_custody_engine_close ON public.fleet_cases")
+    # Re-derive the conditional grant: upgrade granted UPDATE only where the database owner does
+    # not own the table (core_347 had granted SELECT and INSERT only).
+    op.execute("""DO $$ DECLARE owner_oid oid; db_owner name; BEGIN
+        SELECT datdba, pg_get_userbyid(datdba) INTO STRICT owner_oid, db_owner FROM pg_database
+            WHERE datname = current_database();
+        IF (SELECT relowner FROM pg_class WHERE oid = 'public.fleet_cases'::regclass)
+           <> owner_oid THEN
+            EXECUTE format('REVOKE UPDATE ON public.fleet_cases FROM %I', db_owner);
+        END IF;
+    END $$""")
     op.execute(_previous_apply())
     op.execute("RESET ROLE")

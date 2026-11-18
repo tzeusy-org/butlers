@@ -73,6 +73,8 @@
       reports `remaining_held`. The command locks every active member's target (sorted) before
       the case row, so concurrent last releases serialize and a member joining mid-command
       refuses `membership_changed`. Ordinary case close never reaches the engine and releases
-      nothing. Same SECURITY DEFINER authority; one added UPDATE policy on `fleet_cases`.
+      nothing. Same SECURITY DEFINER authority; one added UPDATE policy on `fleet_cases`. Installed
+      once across the per-schema chains with core_347's yielding installer (catalog-read check,
+      polled session lock, short lock timeout, retry on sibling conflict).
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
