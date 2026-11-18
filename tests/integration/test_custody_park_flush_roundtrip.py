@@ -92,7 +92,7 @@ def args_channel(args: dict[str, Any]) -> str:
 
 
 def _deliver_fn(pool, calls: list[dict[str, Any]]):
-    deliver = roster_module("switchboard", "tools/notification/deliver.py").deliver
+    deliver = roster_module("switchboard", "tools/notification/deliver").deliver
 
     async def call_fn(endpoint_url: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         calls.append(args)
