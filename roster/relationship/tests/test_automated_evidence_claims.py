@@ -96,6 +96,29 @@ def test_unbound_or_unauthenticated_bounce_claims_nothing(overrides: dict[str, A
     assert claims_for("bounce", evidence, "mailer-daemon@googlemail.com", _RECEIVED) == ()
 
 
+def test_a_co_recipients_signed_dsn_from_another_domain_claims_nothing() -> None:
+    evidence = _bounce(failed_recipients=["alice@x.com"])
+
+    assert claims_for("bounce", evidence, "mailer-daemon@evil.com", _RECEIVED) == ()
+
+
+@pytest.mark.parametrize("sender", ["mailer-daemon@x.com", "mailer-daemon@mx.x.com"])
+def test_an_aligned_domain_dsn_claims_its_own_address(sender: str) -> None:
+    evidence = _bounce(failed_recipients=["alice@x.com"])
+
+    assert claims_for("bounce", evidence, sender, _RECEIVED) == (
+        Claim("alice@x.com", UNDELIVERABLE_EMAIL_PREDICATE, "alice@x.com"),
+    )
+
+
+def test_gmails_own_bouncer_claims_any_failed_address() -> None:
+    evidence = _bounce(failed_recipients=["alice@x.com"])
+
+    assert claims_for("bounce", evidence, "mailer-daemon@googlemail.com", _RECEIVED) == (
+        Claim("alice@x.com", UNDELIVERABLE_EMAIL_PREDICATE, "alice@x.com"),
+    )
+
+
 @pytest.mark.parametrize("flag", ["original_sent", "sender_authenticated"])
 @pytest.mark.parametrize("value", [False, None, "true", 1, "yes"])
 def test_a_forged_dsn_needs_both_the_sent_original_and_gmails_authentication(

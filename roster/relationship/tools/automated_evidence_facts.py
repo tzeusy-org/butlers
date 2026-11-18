@@ -85,6 +85,20 @@ def _address(value: Any) -> str:
     return address if at and local and domain and " " not in address else ""
 
 
+GMAIL_BOUNCER = "mailer-daemon@googlemail.com"
+
+
+def _sender_speaks_for(sender: str, address: str) -> bool:
+    """Gmail's own bouncer, or a sender domain equal to / a parent or child of the address's.
+
+    A co-recipient's own signed DSN must not name someone else's address as undeliverable.
+    """
+    if sender == GMAIL_BOUNCER:
+        return True
+    a, b = sender.rpartition("@")[2], address.rpartition("@")[2]
+    return bool(a) and bool(b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
+
+
 def _checked(evidence: dict[str, Any], key: str) -> bool:
     # A verified check is the JSON literal true, never a truthy string or number.
     return evidence.get(key) is True
@@ -126,7 +140,14 @@ def claims_for(
         failed = evidence.get("failed_recipients")
         if not isinstance(failed, list):
             return ()
-        addresses = sorted({a for a in map(_address, failed[:MAX_FAILED_RECIPIENTS]) if a})
+        bouncer = _address(sender)
+        addresses = sorted(
+            {
+                a
+                for a in map(_address, failed[:MAX_FAILED_RECIPIENTS])
+                if a and _sender_speaks_for(bouncer, a)
+            }
+        )
         return tuple(Claim(a, UNDELIVERABLE_EMAIL_PREDICATE, a) for a in addresses)
 
     return ()

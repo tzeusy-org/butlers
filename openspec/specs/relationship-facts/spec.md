@@ -755,7 +755,9 @@ SHALL write through `relationship_assert_fact()` with `src='automated_evidence_s
   true and the date lies between the receipt date and 180 days after it;
 - `undeliverable-email` with the address on the entity owning each address in
   `failed_recipients`, only when the evidence shows `original_sent` and `sender_authenticated`
-  true.
+  true and the DSN sender is `mailer-daemon@googlemail.com` or its domain equals, or is a parent
+  or child of, the failed address's domain (a co-recipient's own signed DSN naming another
+  address writes nothing).
 
 Both predicates are seeded with `kind='state'`, `object_kind='literal'` and
 `cardinality='multi'` (`rel_044`). Each distinct return date is its own row; a reader SHALL take
