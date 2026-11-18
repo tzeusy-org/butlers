@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from butlers.core.approval_delivery_worker import DeliveryClaim, HandoffResult
+from butlers.core.custody_egress import CustodyEgressRefused
 
 RecoveryOperation = Literal["handoff", "reconcile"]
 RecoveryMode = Literal["single", "burst_digest"]
@@ -223,6 +224,10 @@ class MessengerApprovalHandoffRepository:
             raise RuntimeError("provider preflight result was not persisted")
         try:
             provider_result = await provider_call()
+        except CustodyEgressRefused:
+            # The adapter's custody fence refuses before any provider traffic, so nothing was
+            # sent; this is a pre-provider result, never an ambiguous one.
+            result = HandoffResult("safe_retry", "provider_preflight_failed")
         except Exception:
             result = HandoffResult("ambiguous", "provider_outcome_unknown")
         else:

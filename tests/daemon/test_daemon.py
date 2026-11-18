@@ -1633,6 +1633,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     telegram_module._upload_file = AsyncMock()
     with (
         patch("butlers.modules.telegram.require_permission", new=AsyncMock()),
+        patch("butlers.modules.telegram.require_custody_clear", new=AsyncMock()),
         patch("butlers.modules.telegram.write_audit_entry", new=AsyncMock()),
     ):
         foreign = await fn2(
@@ -2396,6 +2397,7 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
     )
     monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.require_custody_clear", AsyncMock())
     monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
     butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
     daemon, execute = await _start_daemon_with_route_execute(butler_dir)

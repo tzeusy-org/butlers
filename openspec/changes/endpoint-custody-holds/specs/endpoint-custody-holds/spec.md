@@ -78,6 +78,29 @@ Scope: v1-mandatory
 - **WHEN** a hold commits after an operation crossed its fenced provider-start marker
 - **THEN** the operation remains confirmed or ambiguous according to its real outcome and is never described as cancelled before send
 
+### Requirement: Held egress and safe owner fallback
+
+Messenger SHALL refuse provider start through an exact held outgoing account and delivery to a held owner target, including registered module send/reply functions, route.execute, approved execution and scheduler flush. It SHALL derive the actual SMTP/bot/bridge account from its owning configuration/cache metadata, not infer it from the recipient or receiving Gmail endpoint and never expose credentials. Owner-default resolution SHALL choose the next configured unheld verified channel (current supported notify surface Telegram then email) or durably park with endpoint_held/eligibility_unknown. Explicit recipient/channel intents SHALL not silently retarget. Custody lookup failure SHALL remain fail-closed independently of the existing fail-open permissions matrix. A missing binding is unknown, not evidence the account is unheld.
+
+ID: REQ-endpoint-custody-holds-007
+Source: original Messenger refusal/default fallback acceptance; core-notify Role-Based Approval Gating and Default Recipient Resolution; [Observed] daemon.py/default cache and EmailModule SMTP scope
+Scope: v1-mandatory
+
+#### Scenario: Owner fallback uses real unheld account
+
+- **WHEN** Telegram is held and the configured verified email target/account is unheld
+- **THEN** owner-default notice takes email through the actual adapter; explicit Telegram stays refused
+
+#### Scenario: All paths refuse held account
+
+- **WHEN** direct registered email send/reply and Messenger routed send use held cached SMTP account
+- **THEN** each refuses before SMTP start; genuine unheld sends retain normal permission and audit behavior
+
+#### Scenario: No unheld destination
+
+- **WHEN** all supported owner targets are held or unreadable
+- **THEN** a durable custody-parked result or truthful unavailable result is returned with no provider attempt
+
 ### Requirement: Bounded target identity and scope
 
 A custody hold SHALL identify a current exact owner-associated target or the closed complete versioned set of ALL known owner-associated bindings of the proven provider for the original unresolved-affected-account fallback. Canonicalization SHALL reuse the current typed ambiguity-safe identity candidate universe. A receiving bot/mailbox, provider label, account credential scope and OwnTracks device SHALL NOT be interchangeable. Exact affected account unknown SHALL NOT cause a guessed account/device hold: the admitted owner NO SHALL atomically hold the actual complete known provider set under P1 inventory/version locks, or record truthful containment unknown if provider/cohort/completeness is unavailable. Complete empty inventory is explicitly no known target, never all-held success. An owner MAY choose an exact versioned multi-target set. This preserves original A2 fail-wide intent within the actual known owner-associated provider boundary; no new permission or unrelated-provider scope is implied.

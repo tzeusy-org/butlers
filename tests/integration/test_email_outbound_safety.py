@@ -48,6 +48,10 @@ def _available_permission_for_owner_resolution(request, monkeypatch):
         monkeypatch.setattr(
             "butlers.modules.email.require_permission", AsyncMock(return_value=None)
         )
+        # The pool here is a mock; tests/core/test_custody_egress.py covers the custody fence.
+        monkeypatch.setattr(
+            "butlers.modules.email.require_custody_clear", AsyncMock(return_value=None)
+        )
 
 
 # ---------------------------------------------------------------------------
