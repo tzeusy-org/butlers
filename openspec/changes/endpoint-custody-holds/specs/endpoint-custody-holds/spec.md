@@ -241,3 +241,47 @@ Scope: v1-mandatory
 
 - **WHEN** the authenticated owner commits an exact selected lost-device release/replaced generation while another target or security episode remains active
 - **THEN** only the selected recovery disposition and eligible associated case closure occur; a partially recovered same case stays active, unrelated holds/cases stay active and no checklist click can perform the mutation
+
+### Requirement: Security question and bound owner answer
+
+Each durable authenticated switchboard.security_event SHALL have one durable question identity and one bounded notify presentation admission. Protected callback answers use only the private security_answer command branch, never browser/host proof; current source/token/recipient/control/expiry/target checks repeat in the committing transaction. Duplicate observation/consumer retries SHALL reuse it; possible provider-start without confirmation is ambiguous and never blindly re-sent. A publisher-local deterministic outbox SHALL avoid the bus self-fanout exclusion. Unverified events stay quiet and visible as records. Sender verification proves the provider sender only, not compromised-account identity or owner answer authority. A protected no decision SHALL use a server-bound exact target/owner-selected set OR, when affected account is unresolved but provider is proven, the P1 actual closed complete current owner-associated provider set/version. It SHALL open/reuse its canonical case and retain one static recovery-door evidence row. Missing/unproven/incomplete inventory SHALL record containment unknown without dropping the NO/case obligation, guessing receiver identity or reporting partial all-held success. Yes SHALL neither open nor close a case. A dedicated adopted security callback may capture yes/no; generic confirm information cannot authorize custody. Missing consumer/delivery stays visibly unanswered/unavailable rather than calm. No automatic no on timeout.
+
+ID: REQ-endpoint-custody-holds-008
+Source: account-security-perception Typed Security Event/Was-This-You Answer Door and domain-event-bus Self-fanout exclusion; original QC prompt1-3/Ops1-3; proposed protected answer protocol
+Scope: v1-mandatory
+
+#### Scenario: Authenticated alert asks once
+
+- **WHEN** a synthetic first-party authenticated alert is published and the consumer restarts
+- **THEN** the same question and presentation are recovered; no duplicate or ambiguous resend occurs
+
+#### Scenario: Unverified alert is quiet
+
+- **WHEN** an otherwise classified unverified provider event is published
+- **THEN** no interrupting notify is made; the event is still an honest record
+
+#### Scenario: No binds exact target
+
+- **WHEN** an eligible owner answers no for an event with a proven or owner-selected target
+- **THEN** hold/answer/case linkage and static recovery evidence are idempotent; a plain generic confirm cannot do this
+
+#### Scenario: Answer races retain conservative truth
+
+- **WHEN** yes/no or duplicate no requests race
+- **THEN** at most one committed initial decision exists; a retained no/hold is never erased by yes or duplicate retries
+
+#### Scenario: Accepted ingress survives the publish crash gap
+
+- **WHEN** an authenticated alert ingest commits but the publisher crashes before its security event/outbox admission
+- **THEN** source-owned durable reconciliation recovers that exact event/question once without reclassifying from untrusted caller content; replay and duplicate observations retain one question and provider-start ambiguity
+
+#### Scenario: Security callback cannot borrow an approval credential
+
+- **WHEN** a connector supplies apr1/cfm1 or an approval-only credential to the security-answer audience
+- **THEN** no security decision or custody command is admitted; a genuine source-owned csq1 question/verb token with current recipient/source/target/generation proof reaches the protected decision
+
+#### Scenario: Question token requires actual source and current owner
+
+- **WHEN** an expired/revoked/wrong-recipient question token or owner-looking callback is presented
+- **THEN** it is refused independently of caller identity strings; the current enrolled connector, canonical provider update, sent recipient and unheld-owner positive records one answer
+

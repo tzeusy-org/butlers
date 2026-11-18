@@ -131,6 +131,50 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_security_question_cycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Present each authenticated security event's one question and record answered cases.
+
+    bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008. One bounded notify per question with a
+    dashboard link (``DASHBOARD_URL``); never re-sent once claimed. See
+    ``butlers.core.security_questions``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.security_questions import run_security_question_cycle
+    from butlers.credential_store import resolve_owner_telegram_recipient
+
+    # The full delivery result (not the insight wrapper's) so a definite pre-send refusal can be
+    # told from a send that may have started.
+    deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
+
+    async def _notify(message: str) -> dict[str, Any]:
+        recipient = await resolve_owner_telegram_recipient(pool)
+        if not recipient:
+            return {"status": "failed", "error_class": "recipient_unavailable"}
+        return await deliver(
+            pool,
+            source_butler="switchboard",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "recipient": recipient,
+                    "message": message,
+                },
+            },
+        )
+
+    # The link comes from the one dashboard-links helper: without a configured DASHBOARD_URL
+    # there is no link the owner can open, so the question is `unavailable`, never sent.
+    return await run_security_question_cycle(pool, notify=_notify)
+
+
 async def _run_switchboard_fleet_case_lapse_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2465,6 +2509,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
+            "security_question_cycle": _run_switchboard_security_question_cycle_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_retention_pruner_job_handlers("switchboard"),
         },

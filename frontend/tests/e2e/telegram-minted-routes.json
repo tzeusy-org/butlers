@@ -24,6 +24,14 @@
       "phone_walk": "covered"
     },
     {
+      "name": "security question",
+      "pattern": "/security/[0-9a-f-]{36}",
+      "example": "/security/55555555-5555-4555-8555-555555555555",
+      "payload_selector": "button:has-text('Yes, this was me')",
+      "phone_walk": "pending",
+      "phone_walk_owner": "bu-s11n0s.1"
+    },
+    {
       "name": "secrets passport",
       "pattern": "/secrets\\?focus=[A-Za-z0-9%._-]+",
       "example": "/secrets?focus=u%3Agoogle",

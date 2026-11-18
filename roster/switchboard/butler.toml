@@ -171,4 +171,14 @@ timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
 
+# Security question cycle (bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008) -- presents the one
+# "was this you?" question per authenticated account-security event (never re-sent), then records
+# the canonical case and recovery door for each answered "no". Every 2 minutes, off the :03-step
+# domain-event sweep.
+[[butler.schedule]]
+name = "security-question-cycle"
+cron = "1-59/2 * * * *"
+dispatch_mode = "job"
+job_name = "security_question_cycle"
+
 # RFC 0015: core always registers the error relay; no module opt-in is required.

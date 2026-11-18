@@ -38,4 +38,9 @@ export const AXE_SKIP_MANIFEST: AxeSkipEntry[] = [
     reason:
       "The filters pipeline has a dedicated route contract suite, but its editor and server-state permutations still require isolated axe fixtures before joining this sweep.",
   },
+  {
+    path: "/security",
+    reason:
+      "The security question list has a dedicated page suite (SecurityQuestionsPage.test.tsx) covering its states and links, but no isolated axe fixture yet.",
+  },
 ];
