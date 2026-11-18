@@ -129,6 +129,9 @@ other `callback_query` SHALL retain its existing drop behavior.
   SHALL still be acknowledged with a graceful toast rather than left with a
   loading spinner
 
+### Requirement: Owner Reach Command
+The connector SHALL answer an exact `/reach` from the primary owner in a private chat with the revocable break-through clauses, and SHALL let the owner revoke but never create or grant a clause.
+
 #### Scenario: Owner /reach lists and revokes break-through clauses
 - **WHEN** a message whose text is exactly `/reach` arrives in a private chat
   (`chat.id` equals `from.id`) from the primary owner
