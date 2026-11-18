@@ -59,7 +59,7 @@ async def _txn(pool, merchant: str, posted_at: datetime, direction: str = "debit
     )
 
 
-async def _hold_case(pool, *, state: str = "open") -> tuple[str, str]:
+async def _hold_case(pool) -> tuple[str, str]:
     """An episode case carrying the engine's hold evidence; returns (case id, hold id)."""
     case_id = await pool.fetchval(
         "INSERT INTO public.fleet_cases (correlation_key) VALUES ($1) RETURNING id::text",
@@ -75,12 +75,6 @@ async def _hold_case(pool, *, state: str = "open") -> tuple[str, str]:
         {"target_kind": "has-email", "generation": 1, "command_id": str(uuid.uuid4())},
         HELD_FROM,
     )
-    if state == "closed":
-        await pool.execute(
-            "UPDATE public.fleet_cases SET state = 'closed', outcome = 'custody_resolved', "
-            "closed_at = now() WHERE id = $1::uuid",
-            case_id,
-        )
     return case_id, hold_id
 
 
@@ -135,9 +129,33 @@ async def test_a_released_hold_is_bounded_by_its_release_evidence(finance_clone)
         assert row["payload"]["window_end"] == (HELD_FROM + timedelta(hours=2)).isoformat()
 
 
-async def test_a_closed_case_and_an_unrelated_case_get_nothing(finance_clone) -> None:
+async def test_a_quick_hold_and_release_on_a_closed_case_still_gets_its_final_row(
+    finance_clone,
+) -> None:
     async with finance_clone() as pool:
-        closed_id, _ = await _hold_case(pool, state="closed")
+        await _txn(pool, "DURING", HELD_FROM + timedelta(minutes=5))
+        case_id, hold_id = await _hold_case(pool)
+        await pool.execute(
+            "INSERT INTO public.fleet_case_evidence "
+            "(case_id, contributor, kind, ref, payload, contributed_at) "
+            "VALUES ($1::uuid, 'endpoint_custody', 'release', $2, '{}', $3)",
+            case_id,
+            f"{hold_id}:1",
+            HELD_FROM + timedelta(minutes=10),
+        )
+        await pool.execute(
+            "UPDATE public.fleet_cases SET state = 'closed', outcome = 'custody_resolved', "
+            "closed_at = now() WHERE id = $1::uuid",
+            case_id,
+        )
+        await _fj().run_custody_held_window_evidence(pool, now=NOW)
+        (row,) = await _evidence(pool, case_id)
+        assert (row["kind"], row["ref"]) == ("held_window_final", hold_id)
+        assert row["payload"]["transactions"] == 1
+
+
+async def test_an_unrelated_case_gets_nothing(finance_clone) -> None:
+    async with finance_clone() as pool:
         other = await pool.fetchval(
             "INSERT INTO public.fleet_cases (correlation_key) VALUES ('something-else') "
             "RETURNING id::text"
@@ -149,4 +167,4 @@ async def test_a_closed_case_and_an_unrelated_case_get_nothing(finance_clone) ->
         )
         result = await _fj().run_custody_held_window_evidence(pool, now=NOW)
         assert result["holds"] == 0
-        assert await _evidence(pool, closed_id) == [] and await _evidence(pool, other) == []
+        assert await _evidence(pool, other) == []

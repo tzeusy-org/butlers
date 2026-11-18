@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import asyncpg
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -137,6 +136,20 @@ async def test_a_resolved_hold_is_bounded_by_its_release_time(store) -> None:
     assert windows == [(HELD_FROM, released)]
 
 
+async def test_a_resolved_hold_gets_its_own_final_row_beside_the_interim_one(store) -> None:
+    rows, _ = store
+    hold = _hold()
+    await _fj().run_custody_held_window_evidence(_Pool([hold]), now=NOW)
+    released = HELD_FROM + timedelta(hours=1)
+    await _fj().run_custody_held_window_evidence(
+        _Pool([hold | {"resolved_at": released}]), now=NOW + timedelta(hours=1)
+    )
+    kinds = sorted(key[2] for key in rows)
+    assert kinds == ["held_window", "held_window_final"]
+    final = next(v for k, v in rows.items() if k[2] == "held_window_final")
+    assert final["payload"]["window_end"] == released.isoformat()
+
+
 async def test_each_hold_of_an_episode_is_its_own_row(store) -> None:
     rows, _ = store
     case_id = str(uuid.uuid4())
@@ -155,7 +168,7 @@ async def test_a_failing_window_is_counted_and_does_not_stop_the_others(store, m
     async def flaky(conn, *, held_from, window_end):
         if flaky.calls == 0:
             flaky.calls += 1
-            raise asyncpg.PostgresError("synthetic")
+            raise RuntimeError("synthetic")
         return await real(conn, held_from=held_from, window_end=window_end)
 
     flaky.calls = 0  # type: ignore[attr-defined]
@@ -173,6 +186,7 @@ async def test_the_job_reads_only_open_custody_cases_without_finance_evidence() 
         "errors": 0,
     }
     sql = pool.sql[0]
-    assert "c.state <> 'closed'" in sql
+    assert "c.state" not in sql  # a case closed before the first run still gets its final row
     assert "NOT EXISTS" in sql and "f.contributor = 'finance'" in sql
+    assert "held_window_final" in sql
     assert "endpoint\\_custody:%" in sql

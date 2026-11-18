@@ -2309,31 +2309,42 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 _CUSTODY_CONTRIBUTOR = "finance"
-_CUSTODY_EVIDENCE_KIND = "held_window"
-_CUSTODY_BATCH = 50
+_CUSTODY_INTERIM_KIND = "held_window"
+_CUSTODY_FINAL_KIND = "held_window_final"
+_CUSTODY_BATCH = 200
 
 # The durable record of a committed hold is the custody engine's own evidence row on the
 # episode's fleet case (core_347 writes it in the hold's transaction, with ``contributed_at``
 # the hold's commit time). This job reads those rows, so it needs no bus event, no
 # post-commit publisher that a crash could skip, and no session: a hold the engine committed
 # is visible here whichever door (dashboard, host) issued it.
+#
+# Two rows per hold, both keyed by the hold id: ``held_window`` is the open window seen while
+# the hold is still active, and ``held_window_final`` is appended once the hold is released or
+# replaced, covering exactly [held_from, resolution time]. Closed cases are included so a quick
+# hold and release still gets its final row. Ordering rotates hourly so a hold that fails for good
+# cannot starve the ones behind it under the batch cap.
 _CUSTODY_PENDING_HOLDS_SQL = """
 SELECT e.case_id::text AS case_id, e.ref AS hold_ref, e.contributed_at AS held_from,
        e.payload->>'target_kind' AS target_kind,
        (e.payload->>'generation')::bigint AS generation,
-       (SELECT min(r.contributed_at) FROM public.fleet_case_evidence r
-         WHERE r.case_id = e.case_id AND r.contributor = 'endpoint_custody'
-           AND r.kind IN ('release', 'replace')
-           AND r.ref = e.ref || ':' || (e.payload->>'generation')) AS resolved_at
+       r.resolved_at AS resolved_at
 FROM public.fleet_case_evidence e
 JOIN public.fleet_cases c ON c.id = e.case_id
+CROSS JOIN LATERAL (
+    SELECT min(x.contributed_at) AS resolved_at FROM public.fleet_case_evidence x
+    WHERE x.case_id = e.case_id AND x.contributor = 'endpoint_custody'
+      AND x.kind IN ('release', 'replace')
+      AND x.ref = e.ref || ':' || (e.payload->>'generation')
+) r
 WHERE e.contributor = 'endpoint_custody' AND e.kind = 'hold'
-  AND c.correlation_key LIKE 'endpoint\\_custody:%' AND c.state <> 'closed'
+  AND c.correlation_key LIKE 'endpoint\\_custody:%'
   AND NOT EXISTS (
         SELECT 1 FROM public.fleet_case_evidence f
-        WHERE f.case_id = e.case_id AND f.contributor = 'finance'
-          AND f.kind = 'held_window' AND f.ref = e.ref)
-ORDER BY e.contributed_at
+        WHERE f.case_id = e.case_id AND f.contributor = 'finance' AND f.ref = e.ref
+          AND f.kind = CASE WHEN r.resolved_at IS NULL THEN 'held_window'
+                            ELSE 'held_window_final' END)
+ORDER BY md5(e.ref || $2::text)
 LIMIT $1
 """
 
@@ -2404,19 +2415,23 @@ async def run_custody_held_window_evidence(
     """Contribute Finance's held-window evidence to each active custody episode's case.
 
     Deterministic (no LLM session), on Finance's own pool. For every hold the custody engine
-    committed on a still-open ``endpoint_custody:<episode>`` case that has no Finance evidence
-    yet, compute once the exact ``[held_from, window_end]`` transaction counts, first-seen
-    merchants and anomalies (``window_end`` is the hold's release/replace time when resolved,
-    else this run's ``now``) and append one idempotent ``finance``/``held_window`` evidence row
-    keyed by the hold id. The row names the hold's own target kind and generation, so it is
-    attributed to the same proven target and episode by construction, never to a globally open
-    case. A replay finds the row and does nothing. Insufficient baseline data reports
-    ``anomalies: "unknown"``. No merchant names or amounts are written.
+    committed on an ``endpoint_custody:<episode>`` case (open or since closed) compute once the
+    exact ``[held_from, window_end]`` transaction counts, first-seen merchants and anomalies and
+    append one idempotent evidence row keyed by the hold id: ``held_window`` (window to this run's
+    ``now``) while the hold is active, and ``held_window_final`` (window to the release/replace
+    time) once it is resolved. The final row appends beside the interim one; it never rewrites it.
+    Each row names the hold's own target kind and generation, so it is attributed to the same
+    proven target and episode by construction, never to a globally open case. A replay finds the
+    row and does nothing. Insufficient baseline data reports ``anomalies: "unknown"``. No merchant
+    names or amounts are written. A failing hold is logged and skipped; the batch order rotates
+    hourly so it cannot starve later holds.
     """
-    from butlers.core.fleet_cases import FleetCaseError, contribute_evidence
+    from butlers.core.fleet_cases import contribute_evidence
 
     observed_at = now if now is not None else datetime.now(UTC)
-    holds = await db_pool.fetch(_CUSTODY_PENDING_HOLDS_SQL, _CUSTODY_BATCH)
+    holds = await db_pool.fetch(
+        _CUSTODY_PENDING_HOLDS_SQL, _CUSTODY_BATCH, observed_at.strftime("%Y%m%d%H")
+    )
     result = {"holds": len(holds), "contributed": 0, "errors": 0}
     for hold in holds:
         window_end = min(observed_at, hold["resolved_at"] or observed_at)
@@ -2429,7 +2444,7 @@ async def run_custody_held_window_evidence(
                 db_pool,
                 case_id=hold["case_id"],
                 contributor=_CUSTODY_CONTRIBUTOR,
-                kind=_CUSTODY_EVIDENCE_KIND,
+                kind=_CUSTODY_FINAL_KIND if hold["resolved_at"] else _CUSTODY_INTERIM_KIND,
                 ref=hold["hold_ref"],
                 payload={
                     "target_kind": hold["target_kind"],
@@ -2440,8 +2455,10 @@ async def run_custody_held_window_evidence(
                     **figures,
                 },
             )
-        except (asyncpg.PostgresError, FleetCaseError):
-            logger.warning("Finance held-window evidence failed for one custody hold")
+        except Exception:  # one bad hold must not abort the batch
+            logger.warning(
+                "Finance held-window evidence failed for one custody hold", exc_info=True
+            )
             result["errors"] += 1
             continue
         result["contributed"] += int(created)
