@@ -463,8 +463,9 @@ def _previous_apply() -> str:
 
 
 def _install() -> None:
-    op.execute(_ASSUME_OWNER)
+    # The policy needs table ownership: as the executor, like core_347.
     op.execute(_CLOSE_POLICY)
+    op.execute(_ASSUME_OWNER)
     # CREATE OR REPLACE keeps the owner and every grant core_347 set on the function.
     op.execute(_APPLY)
     op.execute("RESET ROLE")
@@ -519,7 +520,6 @@ def downgrade() -> None:
     op.execute(_LOCK)
     if _installation_count() > 1:
         return
-    op.execute(_ASSUME_OWNER)
     op.execute("DROP POLICY IF EXISTS fleet_cases_custody_engine_close ON public.fleet_cases")
     # Re-derive the conditional grant: upgrade granted UPDATE only where the database owner does
     # not own the table (core_347 had granted SELECT and INSERT only).
@@ -531,5 +531,6 @@ def downgrade() -> None:
             EXECUTE format('REVOKE UPDATE ON public.fleet_cases FROM %I', db_owner);
         END IF;
     END $$""")
+    op.execute(_ASSUME_OWNER)
     op.execute(_previous_apply())
     op.execute("RESET ROLE")
