@@ -87,12 +87,25 @@ async def _release(pool, hold_id) -> None:
     await pool.execute("UPDATE public.custody_holds SET released_at = now() WHERE id = $1", hold_id)
 
 
+def args_channel(args: dict[str, Any]) -> str:
+    return args["input"]["context"]["notify_request"]["delivery"]["channel"]
+
+
 def _deliver_fn(pool, calls: list[dict[str, Any]]):
     deliver = roster_module("switchboard", "tools/notification/deliver.py").deliver
 
     async def call_fn(endpoint_url: str, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         calls.append(args)
-        return {"result": {"status": "ok"}}
+        return {
+            "status": "ok",
+            "result": {
+                "notify_response": {
+                    "schema_version": "notify_response.v1",
+                    "status": "ok",
+                    "delivery": {"channel": args_channel(args), "delivery_id": "tg-42"},
+                }
+            },
+        }
 
     async def notify_fn(envelope: dict[str, Any]) -> dict[str, Any]:
         result = await deliver(
