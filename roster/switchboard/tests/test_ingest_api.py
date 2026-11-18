@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import asyncpg
@@ -1128,3 +1128,26 @@ class TestAutomatedKindPersistence:
         )
 
         assert "automated_kind" not in control
+        assert "automated_evidence" not in control
+
+    async def test_automated_evidence_is_stored_typed_under_control(
+        self, switchboard_pool: asyncpg.Pool
+    ) -> None:
+        """bu-s11n0s.14: the connector's bound evidence lands beside its kind, typed only."""
+        evidence = {
+            "original_sent": True,
+            "sender_was_recipient": True,
+            "sender_authenticated": True,
+            # Inside the 180-day window after the envelope's observed_at (now).
+            "away_until": (datetime.now(UTC) + timedelta(days=7)).date().isoformat(),
+        }
+        control = await self._control(
+            switchboard_pool,
+            self._tier2_envelope(
+                "<auto-evidence@example.com>",
+                automated_kind="auto_reply",
+                automated_evidence=evidence,
+            ),
+        )
+
+        assert control["automated_evidence"] == evidence | {"failed_recipients": []}

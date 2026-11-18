@@ -1025,6 +1025,11 @@ async def ingest_v1(
                 else {}
             ),
             **(
+                {"automated_evidence": envelope.control.automated_evidence.model_dump(mode="json")}
+                if envelope.control.automated_evidence is not None
+                else {}
+            ),
+            **(
                 {"payload_type": envelope.control.payload_type}
                 if envelope.control.payload_type
                 else {}
