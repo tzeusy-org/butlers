@@ -328,7 +328,11 @@ def main() -> int:
                         pass
                 selector.select(0.02)
     except Exception as error:
-        print(f"Playwright dependency supervisor failed: {type(error).__name__}", file=sys.stderr)
+        # Every ValueError raised here carries a constant, nonsecret message.
+        print(
+            f"Playwright dependency supervisor failed: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
     finally:
         if child is not None:
             group = child.pid
@@ -376,8 +380,11 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--recovery-child":
         try:
             recovery_child(Path(sys.argv[2]), sys.argv[3])
-        except Exception:
-            print("Playwright private apt configuration refused", file=sys.stderr)
+        except Exception as error:
+            print(
+                f"Playwright private apt configuration refused: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
             raise SystemExit(1) from None
     else:
         raise SystemExit(main())

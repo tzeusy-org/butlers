@@ -644,6 +644,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: TEMP debug apt layout (bu-lm2m7b, remove before merge)
+        run: |
+          sed -n l /etc/apt/apt-mirrors.txt
+          sed -n l /etc/apt/sources.list.d/ubuntu.sources
+          ls -la /etc/apt/sources.list.d/ /etc/apt/sources.list || true
+
       - name: Set up Node 24
         uses: actions/setup-node@v6
         with:
