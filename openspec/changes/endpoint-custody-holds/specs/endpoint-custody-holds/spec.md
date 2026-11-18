@@ -317,3 +317,32 @@ Scope: v1-mandatory
 
 - **WHEN** a routed session is delayed or recovered after the original process restarts and a hold commits
 - **THEN** its owning accepted source row/digest is rehydrated with a new current principal; the actual writer rechecks hold generation, retains report attribution and cannot promote an old DTO or omission to owner/system
+
+
+### Requirement: Situation evidence stays owned and descriptive
+
+One custody episode SHALL correlate the initial manual hold or account-security event, later authenticated security alerts and permitted auth_artifact_observed signals into the existing fleet case rather than invent a situations table. Correlation SHALL require the same proven owner/target/episode, not any globally open case or provider-name coincidence. Finance SHALL compute exact [held_from, observed_now] window counts/anomaly evidence on its own pool with unchanged ordinary anomaly behavior and idempotent attributed contribution; missing/insufficient sources report unknown. An explicitly owner-associated OwnTracks device with an available authorized retained fix SHALL contribute that last-known fix with observed time and age through its owning authorized read projection, not peer-schema SQL. Unknown association/no retained fix stays unknown. Available dashboard owner-device, Home at_home and Health sleeping context MAY be evidence only, retaining source/time/TTL; they cannot answer or prove custody. Evidence corrections append and respect each owning retention policy.
+
+ID: REQ-endpoint-custody-holds-009
+Source: original eco-cross-butler S3-S5 and rot-crisis-disruption S4; REQ-fleet-case-file-004/-005/-008; [Observed] Finance anomaly_scan/OwnTracks/context_bus; auth_artifact owner bu-q7vx1q.20
+Scope: v1-mandatory
+
+#### Scenario: Finance owns exact window
+
+- **WHEN** seeded transactions inside/outside the held interval and first-seen evidence are queried by Finance
+- **THEN** only the exact interval contributes once, and replay observes the same evidence
+
+#### Scenario: Later provider event needs correlation
+
+- **WHEN** a later authenticated event has the same owner-associated target/active episode
+- **THEN** it links to that case; an unrelated owner/provider account does not
+
+#### Scenario: Last fix needs association and age
+
+- **WHEN** the selected target has a proven device binding and retained OwnTracks point
+- **THEN** the protected case read reports that actual fix/time/age; no fix or stale source remains honestly unavailable
+
+#### Scenario: Context does not answer
+
+- **WHEN** home/sleeping/owner-device evidence is present
+- **THEN** the answer remains pending and custody unchanged until the owner acts

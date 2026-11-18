@@ -112,6 +112,21 @@
       across revalidation and send: once, or at least once on a send-then-commit failure. A
       re-hold before the flush sends nothing; the 24-hour expiry writes an `expired` ledger row;
       a row not exactly the generic shape is cancelled.
+- [x] 2.4c Finance held window (REQ-009 Finance half, S5e): the deterministic Finance job
+      `custody-held-window-evidence` (`run_custody_held_window_evidence`, every ten minutes, no
+      session) contributes one idempotent `finance`/`held_window` evidence row per committed
+      hold to the episode's still-open `endpoint_custody:<episode>` case: exact
+      `[held_from, window_end]` transaction, debit, credit and first-seen-merchant counts and
+      the window's anomalies (`unknown` when baselines are insufficient), computed once on
+      Finance's own pool. `window_end` is the hold's release/replace evidence time when
+      resolved, else the run's now. No merchant, amount or identifier is written. The trigger is
+      the engine's own hold evidence on the case, written in the hold's transaction (its
+      `contributed_at` is the hold's `held_from`), not a domain-event publish: a post-commit
+      publisher in the API would miss the host door and a crash between commit and publish, and a
+      bus subscription would wake a session. No migration. Deferred: `auth_artifact_observed`
+      correlation (no producer yet, bu-q7vx1q.20; correlate on the hold's own target kind and
+      `public.custody_target_episode` when it exists) and provider-name correlation for
+      unresolved accounts (bu-s11n0s.81).
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
   - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's

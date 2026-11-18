@@ -1052,6 +1052,18 @@ async def _run_finance_cost_claim_reconciliation_sweep_job(
     return await mod.run_cost_claim_reconciliation_sweep(pool)
 
 
+async def _run_finance_custody_held_window_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's deterministic held-window evidence contribution (bu-s11n0s.1 S5e)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_custody_held_window_evidence(pool)
+
+
 async def _run_finance_anomaly_insight_scan_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2376,6 +2388,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
             "cost_claim_reconciliation_sweep": _run_finance_cost_claim_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
+            "custody_held_window_evidence": _run_finance_custody_held_window_evidence_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
             **_retention_pruner_job_handlers("finance"),

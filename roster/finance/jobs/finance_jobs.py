@@ -2302,3 +2302,147 @@ async def run_monthly_finance_digest(db_pool: asyncpg.Pool) -> dict[str, Any]:
         "Finance monthly digest complete: period=%s status=%s", period_label, result["status"]
     )
     return {"status": result["status"], "period": period_label}
+
+
+# ---------------------------------------------------------------------------
+# run_custody_held_window_evidence (bu-s11n0s.1 S5e, REQ-endpoint-custody-holds-009)
+# ---------------------------------------------------------------------------
+
+_CUSTODY_CONTRIBUTOR = "finance"
+_CUSTODY_EVIDENCE_KIND = "held_window"
+_CUSTODY_BATCH = 50
+
+# The durable record of a committed hold is the custody engine's own evidence row on the
+# episode's fleet case (core_347 writes it in the hold's transaction, with ``contributed_at``
+# the hold's commit time). This job reads those rows, so it needs no bus event, no
+# post-commit publisher that a crash could skip, and no session: a hold the engine committed
+# is visible here whichever door (dashboard, host) issued it.
+_CUSTODY_PENDING_HOLDS_SQL = """
+SELECT e.case_id::text AS case_id, e.ref AS hold_ref, e.contributed_at AS held_from,
+       e.payload->>'target_kind' AS target_kind,
+       (e.payload->>'generation')::bigint AS generation,
+       (SELECT min(r.contributed_at) FROM public.fleet_case_evidence r
+         WHERE r.case_id = e.case_id AND r.contributor = 'endpoint_custody'
+           AND r.kind IN ('release', 'replace')
+           AND r.ref = e.ref || ':' || (e.payload->>'generation')) AS resolved_at
+FROM public.fleet_case_evidence e
+JOIN public.fleet_cases c ON c.id = e.case_id
+WHERE e.contributor = 'endpoint_custody' AND e.kind = 'hold'
+  AND c.correlation_key LIKE 'endpoint\\_custody:%' AND c.state <> 'closed'
+  AND NOT EXISTS (
+        SELECT 1 FROM public.fleet_case_evidence f
+        WHERE f.case_id = e.case_id AND f.contributor = 'finance'
+          AND f.kind = 'held_window' AND f.ref = e.ref)
+ORDER BY e.contributed_at
+LIMIT $1
+"""
+
+
+async def _held_window_figures(
+    conn: Any, *, held_from: datetime, window_end: datetime
+) -> dict[str, Any]:
+    """Exact ``[held_from, window_end]`` counts and anomaly evidence; no merchant or amount."""
+    has_deleted_at = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'transactions' "
+        "AND column_name = 'deleted_at')"
+    )
+    deleted = "AND deleted_at IS NULL" if has_deleted_at else ""
+    counts = await conn.fetchrow(
+        f"""
+        SELECT count(*) AS transactions,
+               count(*) FILTER (WHERE direction = 'debit') AS debits,
+               count(*) FILTER (WHERE direction = 'credit') AS credits
+        FROM transactions
+        WHERE posted_at >= $1 AND posted_at <= $2 {deleted}
+        """,
+        held_from,
+        window_end,
+    )
+    assert counts is not None
+    first_seen = await conn.fetchval(
+        f"""
+        SELECT count(*) FROM (
+            SELECT DISTINCT w.merchant FROM transactions w
+            WHERE w.posted_at >= $1 AND w.posted_at <= $2 AND w.merchant IS NOT NULL
+              {deleted.replace("deleted_at", "w.deleted_at")}
+              AND NOT EXISTS (
+                  SELECT 1 FROM transactions p
+                  WHERE p.merchant = w.merchant AND p.posted_at < $1
+                    {deleted.replace("deleted_at", "p.deleted_at")})
+        ) merchants
+        """,
+        held_from,
+        window_end,
+    )
+    days_back = max(1, int((window_end - held_from).total_seconds() // 86400) + 1)
+    scan = await anomaly_scan(conn, days_back=days_back, sensitivity="medium", now=window_end)
+    if scan.get("status") == "insufficient_data":
+        anomalies: dict[str, Any] | str = "unknown"
+    else:
+        by_type: dict[str, int] = {}
+        for item in scan.get("anomalies", []):
+            posted = item.get("posted_at")
+            if posted is None:
+                continue
+            stamp = datetime.fromisoformat(posted) if isinstance(posted, str) else posted
+            if held_from <= stamp <= window_end:
+                by_type[str(item.get("type"))] = by_type.get(str(item.get("type")), 0) + 1
+        anomalies = {"total": sum(by_type.values()), "by_type": dict(sorted(by_type.items()))}
+    return {
+        "transactions": counts["transactions"],
+        "debits": counts["debits"],
+        "credits": counts["credits"],
+        "first_seen_merchants": first_seen,
+        "anomalies": anomalies,
+    }
+
+
+async def run_custody_held_window_evidence(
+    db_pool: asyncpg.Pool, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Contribute Finance's held-window evidence to each active custody episode's case.
+
+    Deterministic (no LLM session), on Finance's own pool. For every hold the custody engine
+    committed on a still-open ``endpoint_custody:<episode>`` case that has no Finance evidence
+    yet, compute once the exact ``[held_from, window_end]`` transaction counts, first-seen
+    merchants and anomalies (``window_end`` is the hold's release/replace time when resolved,
+    else this run's ``now``) and append one idempotent ``finance``/``held_window`` evidence row
+    keyed by the hold id. The row names the hold's own target kind and generation, so it is
+    attributed to the same proven target and episode by construction, never to a globally open
+    case. A replay finds the row and does nothing. Insufficient baseline data reports
+    ``anomalies: "unknown"``. No merchant names or amounts are written.
+    """
+    from butlers.core.fleet_cases import FleetCaseError, contribute_evidence
+
+    observed_at = now if now is not None else datetime.now(UTC)
+    holds = await db_pool.fetch(_CUSTODY_PENDING_HOLDS_SQL, _CUSTODY_BATCH)
+    result = {"holds": len(holds), "contributed": 0, "errors": 0}
+    for hold in holds:
+        window_end = min(observed_at, hold["resolved_at"] or observed_at)
+        try:
+            async with _finance_scoped_connection(db_pool) as conn:
+                figures = await _held_window_figures(
+                    conn, held_from=hold["held_from"], window_end=window_end
+                )
+            _row, created = await contribute_evidence(
+                db_pool,
+                case_id=hold["case_id"],
+                contributor=_CUSTODY_CONTRIBUTOR,
+                kind=_CUSTODY_EVIDENCE_KIND,
+                ref=hold["hold_ref"],
+                payload={
+                    "target_kind": hold["target_kind"],
+                    "generation": hold["generation"],
+                    "window_start": hold["held_from"].isoformat(),
+                    "window_end": window_end.isoformat(),
+                    "observed_at": observed_at.isoformat(),
+                    **figures,
+                },
+            )
+        except (asyncpg.PostgresError, FleetCaseError):
+            logger.warning("Finance held-window evidence failed for one custody hold")
+            result["errors"] += 1
+            continue
+        result["contributed"] += int(created)
+    return result
