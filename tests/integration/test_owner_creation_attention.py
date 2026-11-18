@@ -1229,9 +1229,7 @@ async def test_an_expired_or_dismissed_proposal_cannot_be_confirmed(attention_en
         await env.service.attention_call("proposal_confirm", env.authority, csrf, id=stale)
     assert expired.value.code == "INVALID_REQUEST"
 
-    dismissed = await env.service.owner_channel_propose(
-        {"security_kind": "new_sign_in"}
-    )
+    dismissed = await env.service.owner_channel_propose({"security_kind": "new_sign_in"})
     await env.service.attention_call("proposal_dismiss", env.authority, csrf, id=dismissed)
     with pytest.raises(AuthError):
         await env.service.attention_call("proposal_confirm", env.authority, csrf, id=dismissed)
@@ -1263,7 +1261,9 @@ async def test_proposals_validate_matchers_and_cap_pending_at_ten(attention_env)
     await env.service.owner_channel_propose({"sender_domain": "s0.example"})
 
 
-async def test_the_proposal_function_is_api_role_only_and_the_table_is_owner_only(attention_env):
+async def test_the_proposal_function_is_api_role_only_and_the_table_is_owner_plus_dump_select(
+    attention_env,
+):
     env = attention_env
     grantees = await env.admin.fetch(
         "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
@@ -1273,13 +1273,19 @@ async def test_the_proposal_function_is_api_role_only_and_the_table_is_owner_onl
     )
     assert {row["g"] for row in grantees} == {"dashboard_attention_owner", "dashboard_auth_api"}
     table_grantees = await env.admin.fetch(
-        "SELECT DISTINCT x.grantee FROM pg_class c CROSS JOIN LATERAL "
+        "SELECT DISTINCT pg_get_userbyid(x.grantee) AS g, x.privilege_type AS p "
+        "FROM pg_class c CROSS JOIN LATERAL "
         "aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) x "
         "WHERE c.oid='dashboard_attention.reach_proposals'::regclass"
     )
-    assert [row["grantee"] for row in table_grantees] == [
-        await env.admin.fetchval("SELECT 'dashboard_attention_owner'::regrole::oid")
-    ]
+    migration_role = await env.admin.fetchval(
+        "SELECT migration_role::text FROM dashboard_attention.bootstrap_configuration"
+    )
+    owner_rows = {r["p"] for r in table_grantees if r["g"] == "dashboard_attention_owner"}
+    others = {(r["g"], r["p"]) for r in table_grantees if r["g"] != "dashboard_attention_owner"}
+    assert owner_rows
+    # Only the migration role may read it (so pg_dump works); no runtime role has any privilege.
+    assert others == {(migration_role, "SELECT")}
     # The connector-facing unauthenticated shape cannot reach the new actions through api().
     for action in ("proposal_list", "proposal_confirm", "proposal_dismiss"):
         with pytest.raises(AuthError) as denied:

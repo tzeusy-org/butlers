@@ -95,6 +95,17 @@ export default function SettingsReachPage() {
         </p>
       </div>
 
+      {proposalsQuery.isError && (
+        <div
+          className="attention-row px-4 py-3 flex items-center justify-between"
+          data-tone="amber"
+          role="alert"
+        >
+          <p className="text-sm">Could not load proposals from Telegram.</p>
+          <InlineActionLink onClick={() => void proposalsQuery.refetch()}>Retry →</InlineActionLink>
+        </div>
+      )}
+
       {proposals.length > 0 && (
         <section aria-labelledby="reach-proposals-heading" className="space-y-2">
           <Eyebrow as="h2" id="reach-proposals-heading">
@@ -107,7 +118,7 @@ export default function SettingsReachPage() {
             <thead className="sr-only">
               <tr>
                 <th scope="col">Who</th>
-                <th scope="col">When</th>
+                <th scope="col">Scope</th>
                 <th scope="col">Expires</th>
                 <th scope="col">Actions</th>
               </tr>

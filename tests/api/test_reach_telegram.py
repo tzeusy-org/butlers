@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -286,3 +287,34 @@ async def test_the_connector_credential_cannot_call_clause_create_or_confirm(mon
             )
             assert response.status_code in {401, 403}, (method, path)
     service.attention_call.assert_not_awaited()
+
+
+async def test_owner_channel_propose_hands_the_sql_a_dict_not_a_json_string():
+    """The pool's jsonb codec encodes the argument; a pre-encoded string would be double-encoded."""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    connection = MagicMock()
+    connection.execute = AsyncMock()
+    connection.fetchval = AsyncMock(return_value={"id": "p1"})
+    connection.transaction = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=False)
+        )
+    )
+
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+
+    pool: Any = SimpleNamespace(acquire=acquire)
+    service = OwnerAuthService(pool, MagicMock())
+    with patch("butlers.api.owner_auth.service.register_jsonb_codec", AsyncMock()) as codec:
+        assert await service.owner_channel_propose({"channel": "email"}) == "p1"
+    codec.assert_awaited_once()
+    call = connection.fetchval.await_args
+    assert call is not None
+    args = call.args
+    assert "owner_channel_propose" in args[0]
+    assert args[1] == {"channel": "email"} and isinstance(args[1], dict)

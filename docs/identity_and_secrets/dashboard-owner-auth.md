@@ -488,8 +488,9 @@ words are parsed at the connector (`core/reach_matchers.py`): `domain:`/a bare d
 channel or kind, and any other word refuses the whole command. Message text is never forwarded.
 The route's `propose` action calls `owner_channel_propose(jsonb)`, a third `dashboard_attention`
 definer (search_path pinned, `EXECUTE` for `dashboard_auth_api` only, revoked from `PUBLIC`) that
-validates the matchers again and writes one row of the owner-only table
-`dashboard_attention.reach_proposals` (no role but the owner has any privilege on it). A proposal
+validates the matchers again and writes one row of the owner-owned table
+`dashboard_attention.reach_proposals` (the only other privilege is SELECT for the migration role, so
+backups work; no runtime role can read or write it). A proposal
 expires after 24 hours; an identical live proposal is the same proposal; at most ten may be pending
 (`RATE_LIMITED` beyond that). The connector replies "Proposed; confirm on the dashboard at
 /settings/reach" and offers no Telegram confirm button.

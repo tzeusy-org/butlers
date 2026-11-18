@@ -6541,7 +6541,7 @@ BEGIN
   END IF;
  END LOOP;
  EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',r);
- EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,public.break_through_clauses TO %I',r);
+ EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,dashboard_attention.reach_proposals,public.break_through_clauses TO %I',r);
  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO %I',r);
 END $finalize$;
 REVOKE ALL ON FUNCTION dashboard_attention.finalize_interface() FROM PUBLIC;
@@ -6849,6 +6849,7 @@ BEGIN
  UPDATE dashboard_attention.final_claims SET revoked=true;
  DELETE FROM dashboard_attention.tickets WHERE task_id IS NULL;
  UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
+ UPDATE dashboard_attention.reach_proposals SET dismissed_at=clock_timestamp() WHERE consumed_at IS NULL AND dismissed_at IS NULL;
  FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
   EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) FROM %I',n);
  END LOOP;
@@ -6861,11 +6862,11 @@ REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
 -- one still-live clause. Neither can create a clause or touch a session; ``api()`` keeps the
 -- cookie session and CSRF proof for every grant. They are created here, before the grant block
 -- finalizes the catalog, so a fresh install (install_interface) and an installed database both
--- reach the same twelve-function interface. CREATE OR REPLACE keeps owner and ACL; idempotent.
+-- reach the same thirteen-function interface. CREATE OR REPLACE keeps owner and ACL; idempotent.
 -- bu-s11n0s.8 S3c-2: the Telegram owner channel may PROPOSE a clause, never create one. A proposal
 -- is matchers only (never message text), expires after 24 hours and means nothing until the
 -- owner confirms it on the dashboard, where the cookie session and CSRF proof of api() create the
--- real clause. The table is owner-only (no other role has any privilege) and is written solely by
+-- real clause. The table belongs to the owner role; the only other privilege is SELECT for the migration role (so pg_dump can back it up). It is written solely by
 -- owner_channel_propose, which validates every matcher and caps pending proposals at ten.
 CREATE TABLE IF NOT EXISTS dashboard_attention.reach_proposals (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

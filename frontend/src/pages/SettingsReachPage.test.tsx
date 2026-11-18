@@ -163,9 +163,15 @@ describe("SettingsReachPage", () => {
     view();
     expect(screen.queryByText("Proposed from Telegram")).toBeNull();
     cleanup();
-    hooks.useReachProposals.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+    hooks.useReachProposals.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
     view();
     expect(screen.queryByText("Proposed from Telegram")).toBeNull();
+    expect(screen.getByText(/Could not load proposals from Telegram/i)).toBeTruthy();
   });
 
   it("confirms a proposal only after the owner confirms in the dialog", () => {
