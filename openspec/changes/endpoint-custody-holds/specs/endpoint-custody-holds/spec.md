@@ -214,3 +214,30 @@ Scope: v1-mandatory
 - **WHEN** the commit response is lost
 - **THEN** the response remains unknown until durable same-command readback proves its outcome
 
+### Requirement: Release and parked recovery do not launder history
+
+Release SHALL restore future eligibility for the selected expected hold generation only, retaining historical holds, demoted content and immutable evidence. Closing a case or replacing a device SHALL not implicitly release another binding, authorize a send or globally release all holds. Every custody-parked item SHALL retain its actual target, origin, hold episode and no-start/ambiguous evidence. A held-while-lost marker SHALL accompany every automatically recovered eligible generic no-start delivery. The original parked-then-flushed outcome SHALL execute automatically for eligible generic no-start notices under the owning current expiry, supersession, exact-target and delivery policy. Existing owning contracts already exclude historical ingress, expired/superseded items, already accepted or ambiguous provider attempts, prepared actions, approval recovery or voice. An explicit protected release or replaced disposition SHALL close only its selected associated lost-device recovery case after ALL target generations assigned to THAT recovery case are released or conclusively marked replaced. If any assigned generation remains held, the same case SHALL stay active with visible partial recovery; a single selected-generation disposition is not sufficient to claim complete case closure; it SHALL NOT implicitly release an unselected binding or close an independently active security episode. Ordinary case close alone never releases custody. Selected closure locks and validates its complete versioned assigned-generation membership before closing; concurrent membership change cannot omit a still-held target or reverse the target-before-case lock order.
+
+ID: REQ-endpoint-custody-holds-010
+Source: original parked-then-flushed marker/release-no-history-demotion clauses; RFC0023/RFC0034 no-resend; bu-luowmj genuine historical owner-record boundary; preserving E-A3
+Scope: v1-mandatory
+
+#### Scenario: Release leaves history intact
+
+- **WHEN** the owner releases a held endpoint
+- **THEN** new eligible messages may be owner-class, old demoted rows/receipts/evidence stay unchanged
+
+#### Scenario: Safe later notice has marker
+
+- **WHEN** a protected release restores an exact target and its generic custody-parked no-start notice remains eligible under the current owning delivery policy
+- **THEN** its real owning transport sends once with the held marker and revalidated target/time
+
+#### Scenario: Unsafe history does not replay
+
+- **WHEN** release sees ambiguous approval, voice, expired/superseded or historical ingress rows
+- **THEN** none is re-enqueued or resent; their owning recovery/owner exact-set contracts remain in force
+
+#### Scenario: Selected replacement preserves other active recovery
+
+- **WHEN** the authenticated owner commits an exact selected lost-device release/replaced generation while another target or security episode remains active
+- **THEN** only the selected recovery disposition and eligible associated case closure occur; a partially recovered same case stays active, unrelated holds/cases stay active and no checklist click can perform the mutation
