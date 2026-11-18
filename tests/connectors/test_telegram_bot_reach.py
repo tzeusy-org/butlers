@@ -182,3 +182,23 @@ async def test_foreign_callbacks_are_not_claimed():
     connector = _connector()
     assert not await connector._maybe_handle_reach_callback(_tap("apr1:foreign"))
     assert not await connector._maybe_handle_reach_callback({"message": {"text": "x"}})
+
+
+async def test_command_in_a_group_chat_falls_through(monkeypatch):
+    _owner(monkeypatch)
+    connector = _connector()
+    assert not await connector._maybe_handle_reach_command(_command(chat=-1001))
+    _post(connector).assert_not_called()
+
+
+async def test_owner_lookup_failure_still_answers_the_callback(monkeypatch):
+    monkeypatch.setattr(
+        telegram_bot,
+        "resolve_owner_channel_via_definer",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    connector = _connector()
+    connector._http_client.post = AsyncMock(return_value=httpx.Response(200, json={"ok": True}))
+    token = mint_reach_revoke_token(uuid4(), chat_id="42", secret=SECRET)
+    assert await connector._maybe_handle_reach_callback(_tap(token))
+    assert [url.rsplit("/", 1)[-1] for url in _urls(connector)] == ["answerCallbackQuery"]

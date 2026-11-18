@@ -1296,6 +1296,9 @@ class TelegramBotConnector:
         chat_id = chat.get("id") if isinstance(chat, dict) else None
         if sender_id is None or chat_id is None:
             return False
+        if str(chat_id) != str(sender_id):
+            # Private chats only: the bot never posts the clause list into a group.
+            return False
         if not await self._is_primary_owner_callback({"from": sender}):
             return False
         secret = self._config.approval_callback_secret
@@ -1360,7 +1363,14 @@ class TelegramBotConnector:
             else None
         )
         if clause_id is not None and sender_id is not None:
-            if await self._is_primary_owner_callback(callback):
+            toast = "Couldn't revoke that right now. Use the dashboard."
+            try:
+                is_owner = await self._is_primary_owner_callback(callback)
+            except Exception:  # noqa: BLE001 -- always answer the callback query
+                logger.warning("Owner lookup failed for /reach callback")
+                is_owner = False
+                toast = "Couldn't check that right now. Use the dashboard."
+            if is_owner:
                 data = await self._post_reach(
                     {
                         "action": "revoke",
@@ -1374,6 +1384,8 @@ class TelegramBotConnector:
                     "revoked": "Revoked.",
                     "unknown_clause": "Already gone.",
                 }.get(status or "", "Couldn't revoke that right now. Use the dashboard.")
+            elif toast.startswith("Couldn't revoke"):
+                toast = ""
         if callback_id:
             await self._answer_callback_query(callback_id, toast)
         return True
