@@ -27,6 +27,11 @@ from butlers.core.channel_reactions import (
     REACTION_IN_PROGRESS,
     REACTION_SUCCESS,
 )
+from butlers.core.custody_egress import (
+    CustodyEgressRefused,
+    require_custody_clear,
+    telegram_chat_target,
+)
 from butlers.core.notify_attachments import (
     CAPTION_LIMIT,
     AttachmentError,
@@ -408,6 +413,9 @@ class TelegramModule(Module):
                 message_id=message_id,
                 reaction=reaction,
             )
+        except CustodyEgressRefused as exc:
+            # A held (or unreadable) chat gets no lifecycle reaction; ingest carries on.
+            logger.info("react_for_ingest: reaction skipped, custody %s", exc.reason)
         except Exception:
             logger.debug(
                 "react_for_ingest: failed to set reaction %r for %s",
@@ -429,6 +437,16 @@ class TelegramModule(Module):
         if self._audit_pool is not None:
             return self._audit_pool
         return getattr(self._db, "pool", None) if self._db is not None else None
+
+    async def _require_custody_clear(self, chat_id: str) -> None:
+        """Refuse before any Telegram traffic when the chat is a held owner target.
+
+        REQ-endpoint-custody-holds-007. The outgoing account is the configured bot, which is
+        not an owner channel fact and so cannot be held; only the recipient chat is checked.
+        Fails closed: an unreadable custody state refuses with ``eligibility_unknown``.
+        """
+        target = telegram_chat_target(chat_id)
+        await require_custody_clear(self._permission_pool(), None if target is None else [target])
 
     async def _send_message(
         self,
@@ -463,6 +481,7 @@ class TelegramModule(Module):
                 server_built=server_built_reply_markup,
             )
             await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            await self._require_custody_clear(chat_id)
             chunks = split_telegram_text(text, inert=render_links_inert)
             lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
             self._chat_locks[chat_id] = (lock, users + 1)
@@ -519,14 +538,17 @@ class TelegramModule(Module):
                 data = {**data, "result": {**data["result"], "message_ids": message_ids}}
 
         except Exception as exc:
-            failure_category = (
-                "telegram_partial_delivery"
-                if isinstance(exc, TelegramPartialDeliveryError)
-                else _telegram_send_failure_category(exc)
-            )
+            if isinstance(exc, CustodyEgressRefused):
+                failure_category = f"custody_{exc.reason}"
+            elif isinstance(exc, TelegramPartialDeliveryError):
+                failure_category = "telegram_partial_delivery"
+            else:
+                failure_category = _telegram_send_failure_category(exc)
             if isinstance(exc, TelegramPartialDeliveryError):
                 audit_summary["provider_message_ids"] = list(exc.message_ids)
-            if isinstance(exc, PermissionUnavailable):
+            if isinstance(exc, PermissionUnavailable) or (
+                isinstance(exc, CustodyEgressRefused) and exc.reason == "eligibility_unknown"
+            ):
                 logger.error("Telegram sendMessage blocked: category=%s", failure_category)
                 # The guard already logged this refusal. An audit retry through the
                 # unavailable pool could expose the raw DB traceback in its fallback log.
@@ -582,6 +604,7 @@ class TelegramModule(Module):
         try:
             specs = validate_attachment_specs(attachments)
             await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+            await self._require_custody_clear(chat_id)
             # origin_butler is the Messenger-verified notify.v1 sender; refs
             # outside its RFC 0016 key prefix (or the connector prefix) refuse.
             resolved = await resolve_attachments(
@@ -639,12 +662,15 @@ class TelegramModule(Module):
                 audit_summary["provider_message_ids"] = message_ids
             else:
                 partial = None
-                failure_category = (
-                    exc.code
-                    if isinstance(exc, AttachmentError)
-                    else _telegram_send_failure_category(exc)
-                )
-            if isinstance(exc, PermissionUnavailable):
+                if isinstance(exc, AttachmentError):
+                    failure_category = exc.code
+                elif isinstance(exc, CustodyEgressRefused):
+                    failure_category = f"custody_{exc.reason}"
+                else:
+                    failure_category = _telegram_send_failure_category(exc)
+            if isinstance(exc, PermissionUnavailable) or (
+                isinstance(exc, CustodyEgressRefused) and exc.reason == "eligibility_unknown"
+            ):
                 logger.error("Telegram file send blocked: category=%s", failure_category)
                 raise
             logger.error(
@@ -804,6 +830,8 @@ class TelegramModule(Module):
     async def _edit_message_text(self, chat_id: str, message_id: int, text: str) -> dict[str, Any]:
         """Edit a sent Telegram message while preserving its current keyboard."""
         await require_permission(self._permission_pool(), self._butler_name, NOTIFY_PERMISSION)
+        # New text into a held chat is new egress; removing a keyboard is not.
+        await self._require_custody_clear(chat_id)
         return await edit_telegram_message_text(
             self._get_client(),
             self._base_url(),
@@ -854,6 +882,8 @@ class TelegramModule(Module):
 
     async def _react_to_message(self, chat_id: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Call Telegram setMessageReaction API with an arbitrary emoji."""
+        # A reaction is a visible signal into the chat, so a held chat gets none.
+        await self._require_custody_clear(chat_id)
         url = f"{self._base_url()}/setMessageReaction"
         client = self._get_client()
         resp = await client.post(

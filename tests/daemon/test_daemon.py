@@ -1633,6 +1633,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     telegram_module._upload_file = AsyncMock()
     with (
         patch("butlers.modules.telegram.require_permission", new=AsyncMock()),
+        patch("butlers.modules.telegram.require_custody_clear", new=AsyncMock()),
         patch("butlers.modules.telegram.write_audit_entry", new=AsyncMock()),
     ):
         foreign = await fn2(
@@ -2396,6 +2397,7 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
     )
     monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.require_custody_clear", AsyncMock())
     monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
     butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
     daemon, execute = await _start_daemon_with_route_execute(butler_dir)
@@ -2448,6 +2450,66 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         assert "message_ids" not in result["error"]
         assert "message_ids" not in result["result"]["notify_response"]["error"]
     assert len(requests) == (2 if known_prefix else 1)
+
+
+@pytest.mark.parametrize(
+    ("reason", "error_class", "retryable"),
+    [
+        ("endpoint_held", "validation_error", False),
+        ("eligibility_unknown", "target_unavailable", True),
+    ],
+)
+async def test_route_execute_maps_custody_refusals_before_provider(
+    tmp_path, monkeypatch, reason, error_class, retryable
+):
+    """REQ-endpoint-custody-holds-007: the real route closure reports each fence refusal."""
+    from types import SimpleNamespace
+
+    from butlers.core.custody_egress import CustodyEgressRefused
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.modules.telegram.require_custody_clear",
+        AsyncMock(side_effect=CustodyEgressRefused(reason)),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
+    butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
+    daemon, execute = await _start_daemon_with_route_execute(butler_dir)
+    telegram = next(m for m in daemon._modules if m.name == "telegram")
+    post = AsyncMock()
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+    result = await execute(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={
+            "prompt": "Deliver.",
+            "context": {
+                "notify_request": {
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "send",
+                        "channel": "telegram",
+                        "message": "hello",
+                        "recipient": "12345",
+                    },
+                }
+            },
+        },
+    )
+    post.assert_not_awaited()
+    assert result["status"] == "error"
+    assert result["error"]["class"] == error_class
+    assert result["error"]["retryable"] is retryable
+    assert reason in result["error"]["message"]
+    assert "12345" not in result["error"]["message"]
+    assert result["transport"]["outcome"] == "not_attempted"
+    assert result["result"]["notify_response"]["error"]["class"] == error_class
 
 
 @pytest.mark.asyncio

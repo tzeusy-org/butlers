@@ -184,6 +184,10 @@ async def test_daemon_gap_job_borrows_an_isolated_store_until_dispatch_finishes(
         "butlers.chronicler.gap_interview_telegram.resolve_owner_chat_id",
         AsyncMock(return_value="synthetic-owner-chat"),
     )
+    # The pool is a mock; tests/chronicler/test_gap_interview_telegram.py covers the fence.
+    monkeypatch.setattr(
+        "butlers.chronicler.gap_interview_telegram.require_custody_clear", AsyncMock()
+    )
     http = MagicMock()
     response = MagicMock(status_code=200)
     response.json.return_value = {"result": {"message_id": 9}}

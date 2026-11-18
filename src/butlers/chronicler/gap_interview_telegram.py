@@ -35,6 +35,11 @@ from butlers.chronicler.gap_interview import (
     TransportResult,
     build_callback_data,
 )
+from butlers.core.custody_egress import (
+    CustodyEgressRefused,
+    require_custody_clear,
+    telegram_chat_target,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +63,15 @@ _BUTTONS_PER_ROW = 3
 class TelegramInlineButtonTransport(GapInterviewTransport):
     """Deliver a gap interview as a Telegram inline-keyboard message."""
 
-    def __init__(self, *, http_client: Any, api_base: str, chat_id: str) -> None:
+    def __init__(
+        self, *, http_client: Any, api_base: str, chat_id: str, custody_pool: Any = None
+    ) -> None:
         self._http = http_client
         self._api_base = api_base.rstrip("/")
         self._chat_id = chat_id
+        # Read for the endpoint custody fence at send time. Without one, custody is unknown
+        # and the question is not sent (REQ-endpoint-custody-holds-007 fails closed).
+        self._custody_pool = custody_pool
 
     def _reply_markup(self, interview: GapInterview) -> dict[str, Any]:
         buttons = [
@@ -75,6 +85,14 @@ class TelegramInlineButtonTransport(GapInterviewTransport):
         return {"inline_keyboard": rows}
 
     async def deliver_interview(self, interview: GapInterview) -> TransportResult:
+        # A held (or unreadable) owner chat gets no question. Not delivered means the
+        # engine does not mark the day asked, so a later run asks once custody clears.
+        target = telegram_chat_target(self._chat_id)
+        try:
+            await require_custody_clear(self._custody_pool, None if target is None else [target])
+        except CustodyEgressRefused as exc:
+            logger.warning("gap interview not sent: custody %s", exc.reason)
+            return TransportResult(delivered=False, detail=f"custody_{exc.reason}")
         payload = {
             "chat_id": self._chat_id,
             "text": interview.decision.question,
@@ -146,7 +164,7 @@ async def build_telegram_transport(
         return None
     api_base = f"https://api.telegram.org/bot{token}"
     return TelegramInlineButtonTransport(
-        http_client=http_client, api_base=api_base, chat_id=chat_id
+        http_client=http_client, api_base=api_base, chat_id=chat_id, custody_pool=pool
     )
 
 

@@ -33,7 +33,35 @@
         amendment made at the cutover.
 - [ ] 2.2 Direct `resolve_contact_by_channel` routing, memory and session-recheck demotion
       (REQ-005, needs the D3 `endpoint_held` amendment).
-- [ ] 2.3 Approved-executor and Messenger egress fences with owner-default fallback (REQ-006
-      executor half, REQ-007).
+- [x] 2.3a Messenger adapter egress fence (slice 4, REQ-007 and the egress half of REQ-006):
+      `butlers.core.custody_egress` asks only `public.custody_target_held` and fails closed (no
+      pool, lookup error, non-boolean answer or unnameable target refuses with
+      `eligibility_unknown`). Fenced paths: email send/reply (recipient and cached bot-scope
+      sending account); Telegram send/reply, files, edit and react (recipient chat as
+      `has-handle telegram:<chat id>`; a refused ingest lifecycle reaction is logged and
+      skipped); the chronicler gap interview, which posts to the owner chat directly (refusal is
+      not delivered, so the day is not marked asked). Registered tools, route.execute delivery
+      commands, approval-card handoff, approved execution and deferred flush reach Messenger's
+      adapters through those methods. Connector replies are guarded by `resolve_owner_triple`
+      (slice 1), not by this fence. Known unfenced: WhatsApp (bu-s11n0s.93) and Google Calendar
+      invitations with `sendUpdates=all` (`modules/calendar/google.py`, outside REQ-007's
+      Messenger scope; its own bead). Route.execute reports `endpoint_held` as a
+      non-retryable policy refusal and `eligibility_unknown` as retryable; the approval-card
+      handoff records the refusal as pre-provider `safe_retry`, never ambiguous.
+- [x] 2.3b Owner-default fallback (slice 4): a notify with no channel, recipient or entity
+      whose owner Telegram target is held or unreadable takes the owner's unheld email; with
+      none provably unheld it returns `endpoint_held`/`eligibility_unknown` with no provider
+      attempt and a durable `failed` attention-ledger row (the truthful unavailable result).
+      A forced channel or recipient never retargets.
+- [ ] 2.3c Deferred from slice 4:
+      - the approved-executor source-eligibility recheck (REQ-006 executor half) needs the
+        P-CUSTODY-1c source protocol, which the RFC 0038 broker supersedes at cutover (bead
+        bu-s11n0s.81);
+      - the WhatsApp bridge account and recipient fence (bu-s11n0s.93), because the module has
+        no database pool or account binding today and its sends are disabled by default
+        (`send_enabled = false`);
+      - message-retaining park and flush on release, which belongs to REQ-010 (task 2.4).
+      The Telegram bot account is not an owner channel fact, so the core_347 engine cannot hold
+      it.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).

@@ -51,14 +51,40 @@ checks owner auth in the function, rather than a Switchboard service call: REQ-0
 dashboard/host control be verified at its owning boundary and forwarded as a protected command. The cheap owner-resolved LOCK and the REQ-001 provider fallback (task
 2.1b) and P-CUSTODY-1c (task 2.1c) wait for the RFC 0038 cutover; P-CUSTODY-1c stays UNDELIVERED.
 
+Slice 4 starts REQ-007, now copied verbatim into the spec, and lands the Messenger egress fence
+with the owner-default fallback (tasks 2.3a and 2.3b):
+
+- `butlers.core.custody_egress`: a fail-closed check over the content-blind
+  `public.custody_target_held` read. It adds no table, role or function.
+- Fenced paths: email send/reply refuses a held recipient or cached sending account; Telegram
+  send/reply, files, edit and react refuse a held recipient chat; the chronicler gap interview,
+  which posts to the owner chat directly, is not delivered. Registered tools, route.execute, the
+  approval-card handoff, approved execution and deferred flush reach Messenger's adapters
+  through those methods. Connector replies stay guarded by `resolve_owner_triple`.
+- Known unfenced: WhatsApp (bu-s11n0s.93) and Google Calendar invitations with
+  `sendUpdates=all`, which are outside REQ-007's Messenger scope and have their own bead.
+- notify's owner default moves from a held or unreadable Telegram target to the owner's unheld
+  email, or returns `endpoint_held`/`eligibility_unknown` with a durable ledger row and no
+  provider attempt.
+
+Messenger delivery and the approvals executor both survive the RFC 0038 cutover (D7 and the
+legacy `pending_actions` rule), so the fence does too, and it adds nothing to classification,
+routing or delegation. The executor-side source recheck waits on P-CUSTODY-1c (task 2.3c).
+
 ## Impact
 
 - Code: `alembic/versions/core/core_293_endpoint_custody_holds.py`,
   `alembic/versions/core/core_347_custody_command_engine.py`,
-  `src/butlers/api/routers/custody.py`, `src/butlers/api/owner_auth/custody_cli.py`.
+  `src/butlers/api/routers/custody.py`, `src/butlers/api/owner_auth/custody_cli.py`,
+  `src/butlers/core/custody_egress.py`, `src/butlers/modules/email.py`,
+  `src/butlers/modules/telegram.py`, `src/butlers/core_tools/_routing.py`,
+  `src/butlers/core_tools/_notifications.py`, `src/butlers/core/approval_delivery_transport.py`,
+  `src/butlers/chronicler/gap_interview_telegram.py`.
 - Tests: `tests/migrations/test_resolve_owner_triple_migration.py`,
   `tests/migrations/test_core_347_custody_command_engine.py`, `tests/api/test_custody_router.py`,
-  `tests/cli/test_custody_cli.py`.
+  `tests/cli/test_custody_cli.py`, `tests/core/test_custody_egress.py`,
+  `tests/migrations/test_custody_egress_fence.py`, `tests/daemon/test_notify_custody_default.py`,
+  `tests/chronicler/test_gap_interview_telegram.py`.
 - Docs: `docs/identity_and_secrets/owner-identity.md`, `docs/modules/approvals.md`,
   `docs/data_and_storage/schema-topology.md`.
 - No security.md, manifesto or RFC amendment: the design's authority amendments stay unadopted.

@@ -127,6 +127,10 @@ async def test_started_module_uses_selected_store_for_the_real_ask(monkeypatch):
         "butlers.chronicler.gap_interview_telegram.resolve_owner_chat_id",
         AsyncMock(return_value="synthetic-owner-chat"),
     )
+    # The pool is a mock; tests/chronicler/test_gap_interview_telegram.py covers the fence.
+    monkeypatch.setattr(
+        "butlers.chronicler.gap_interview_telegram.require_custody_clear", AsyncMock()
+    )
     http = MagicMock()
     response = MagicMock(status_code=200)
     response.json.return_value = {"result": {"message_id": 7}}

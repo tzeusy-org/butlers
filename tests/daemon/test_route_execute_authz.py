@@ -969,6 +969,8 @@ async def test_registered_recovery_enforces_inert_provider_contract(
     )
     if channel == "email":
         request["delivery"]["subject"] = "Review https://example.test"
+        # The SMTP custody fence must name the recipient mailbox; a bare token is unknown.
+        request["delivery"]["recipient"] = "owner-synthetic@example.test"
     output = resolve_self_links(parse_notify_request(request)).model_dump(
         mode="json", exclude_none=True
     )
@@ -1033,7 +1035,7 @@ async def test_registered_recovery_enforces_inert_provider_contract(
             assert payload["parse_mode"] == "HTML"
     elif channel == "email":
         smtp.assert_called_once_with(
-            "owner-synthetic",
+            "owner-synthetic@example.test",
             "[relationship] Review https[:]//example[.]test",
             "Read <b>https[:]//example[.]test</b> [@]reader 😀",
         )

@@ -135,8 +135,48 @@ exists.
 The cheap owner-resolved LOCK (`endpoint_lock`, any surviving owner channel including
 unauthenticated email) and the supported-process source protocol (P-CUSTODY-1c) are not built:
 both wait for the RFC 0038 cutover, which freezes new cross-butler delegation and is expected to
-replace P-CUSTODY-1c with broker assertions. The direct `resolve_contact_by_channel` routing path,
-Messenger egress fallback and the security-question flow are later slices of bu-s11n0s.1.
+replace P-CUSTODY-1c with broker assertions. The direct `resolve_contact_by_channel` routing path
+and the security-question flow are later slices of bu-s11n0s.1.
+
+#### Egress fence and owner-default fallback
+
+Messenger's adapters refuse a send before any provider traffic when an endpoint in it is held
+(`butlers.core.custody_egress`). The check asks only `public.custody_target_held`, so the adapter
+never reads the hold table. The bot itself is not an owner channel fact, so it cannot be held.
+The fenced paths are:
+
+- Email: `EmailModule._send_email` (send and reply) checks the recipient and the cached bot-scope
+  sending account.
+- Telegram: `_send_message` (send and reply), `_send_files`, `_edit_message_text` and
+  `_react_to_message` check the recipient chat as `has-handle telegram:<chat id>`. A refused
+  ingest lifecycle reaction is logged and skipped, so ingest is not interrupted. Removing an
+  inline keyboard carries no content and is not fenced.
+- The chronicler's daily gap interview (`TelegramInlineButtonTransport.deliver_interview`), which
+  posts to the owner's chat directly. A refusal is "not delivered", so the day is not marked asked.
+
+Registered tools, route.execute delivery commands, approval-card handoff, approved execution of a
+parked send and deferred flush reach Messenger's adapters through these methods. Connector replies
+are not fenced here; their owner authority comes from `resolve_owner_triple`, which already refuses
+owner for a held endpoint.
+
+Known unfenced paths: the WhatsApp bridge (bead bu-s11n0s.93; the module has no database pool or
+account binding, and its sends are off by default) and Google Calendar invitations sent with
+`sendUpdates=all` (`modules/calendar/google.py`), which are outside REQ-007's Messenger scope and
+tracked in their own bead.
+
+The fence fails closed and does not share the permissions matrix's handling of a
+failed read: no pool, a lookup error, a non-boolean answer or an unnameable target refuses with
+`eligibility_unknown`, which is safe to retry. A held endpoint refuses with `endpoint_held`, which
+is not retried. The approval-card handoff records either refusal as a pre-provider `safe_retry`.
+
+`notify()` with no channel, recipient or entity is an owner-default notice. When the owner's
+Telegram target is held or unreadable, the notice goes to the owner's email if that address is
+provably unheld. When no owner target is provably unheld, it returns
+`endpoint_held`/`eligibility_unknown` and writes a `failed` attention-ledger row with that reason.
+Nothing is sent in that case. A forced channel or recipient is never retargeted; the adapter fence
+refuses it.
+
+Keeping a parked message and flushing it on release belongs to the recovery slice.
 
 ### Credential Resolution
 

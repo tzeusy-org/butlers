@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -26,6 +26,13 @@ def _interview() -> GapInterview:
     return GapInterview(interview_id="2026-07-02", decision=decision)
 
 
+def _custody_pool(answer=False, *, error=None):
+    """A pool answering only the endpoint custody fence query (False: nothing is held)."""
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=answer, side_effect=error)
+    return pool
+
+
 def _resp(status_code=200, body=None):
     resp = MagicMock()
     resp.status_code = status_code
@@ -38,7 +45,10 @@ async def test_deliver_posts_inline_keyboard_with_cgi_callbacks():
     http = MagicMock()
     http.post = AsyncMock(return_value=_resp())
     transport = TelegramInlineButtonTransport(
-        http_client=http, api_base="https://api.telegram.org/botTOKEN", chat_id="12345"
+        http_client=http,
+        api_base="https://api.telegram.org/botTOKEN",
+        chat_id="12345",
+        custody_pool=_custody_pool(),
     )
 
     result = await transport.deliver_interview(_interview())
@@ -65,7 +75,10 @@ async def test_deliver_reports_not_delivered_on_http_error():
     http = MagicMock()
     http.post = AsyncMock(return_value=_resp(status_code=403, body={"description": "blocked"}))
     transport = TelegramInlineButtonTransport(
-        http_client=http, api_base="https://api.telegram.org/botTOKEN", chat_id="12345"
+        http_client=http,
+        api_base="https://api.telegram.org/botTOKEN",
+        chat_id="12345",
+        custody_pool=_custody_pool(),
     )
     result = await transport.deliver_interview(_interview())
     assert result.delivered is False
@@ -76,10 +89,64 @@ async def test_deliver_reports_not_delivered_on_network_exception():
     http = MagicMock()
     http.post = AsyncMock(side_effect=RuntimeError("boom"))
     transport = TelegramInlineButtonTransport(
-        http_client=http, api_base="https://api.telegram.org/botTOKEN", chat_id="12345"
+        http_client=http,
+        api_base="https://api.telegram.org/botTOKEN",
+        chat_id="12345",
+        custody_pool=_custody_pool(),
     )
     result = await transport.deliver_interview(_interview())
     assert result.delivered is False
+
+
+@pytest.mark.parametrize(
+    ("pool", "detail"),
+    [
+        (_custody_pool(True), "custody_endpoint_held"),
+        (_custody_pool(error=ConnectionError("down")), "custody_eligibility_unknown"),
+        (None, "custody_eligibility_unknown"),
+    ],
+    ids=["held", "lookup-error", "no-pool"],
+)
+async def test_held_or_unreadable_owner_chat_gets_no_question(pool, detail):
+    """REQ-endpoint-custody-holds-007: the gap interview refuses before sendMessage."""
+    http = MagicMock()
+    http.post = AsyncMock(return_value=_resp())
+    transport = TelegramInlineButtonTransport(
+        http_client=http,
+        api_base="https://api.telegram.org/botTOKEN",
+        chat_id="12345",
+        custody_pool=pool,
+    )
+    result = await transport.deliver_interview(_interview())
+    assert (result.delivered, result.detail) == (False, detail)
+    http.post.assert_not_awaited()
+
+
+async def test_refused_interview_does_not_mark_the_day_asked():
+    """Not delivered leaves the day unasked, so a later run asks once custody clears."""
+    from butlers.chronicler.gap_interview import run_gap_interview
+
+    transport = TelegramInlineButtonTransport(
+        http_client=MagicMock(), api_base="x", chat_id="12345", custody_pool=_custody_pool(True)
+    )
+    mark_asked = AsyncMock()
+    with patch(
+        "butlers.chronicler.gap_interview.evaluate_gap_interview",
+        return_value=_interview().decision,
+    ):
+        await run_gap_interview(
+            [],
+            local_date="2026-07-02",
+            day_start_utc=None,
+            day_end_utc=None,
+            tz=None,
+            interview_id="2026-07-02",
+            transport=transport,
+            already_asked=AsyncMock(return_value=False),
+            mark_asked=mark_asked,
+            delivery_allowed=AsyncMock(return_value=True),
+        )
+    mark_asked.assert_not_awaited()
 
 
 async def test_build_transport_none_without_owner_chat(monkeypatch):
@@ -107,7 +174,7 @@ async def test_build_transport_ok(monkeypatch):
     monkeypatch.setattr(mod, "resolve_bot_token", AsyncMock(return_value="TOKEN"))
     http = MagicMock()
     http.post = AsyncMock(return_value=_resp())
-    transport = await build_telegram_transport(MagicMock(), http_client=http)
+    transport = await build_telegram_transport(_custody_pool(), http_client=http)
     assert transport is not None
     result = await transport.deliver_interview(_interview())
     assert result.delivered is True

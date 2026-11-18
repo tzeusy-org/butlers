@@ -18,6 +18,7 @@ from pydantic import Field
 from butlers.config import ButlerType
 from butlers.conversation_identity import telegram_conversation_id
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
+from butlers.core.custody_egress import OwnerDefaultTarget, choose_owner_default_target
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
 from butlers.core.permissions import NOTIFY_PERMISSION, check_permission, denial_message
 from butlers.core.reply_scope import MAX_AWAITS_REPLY_SECONDS, MIN_AWAITS_REPLY_SECONDS
@@ -71,6 +72,39 @@ def _reply_delivery(
             ).isoformat(),
         }
     }
+
+
+async def _owner_default_custody_target(
+    daemon: Any, request_context: Any
+) -> OwnerDefaultTarget | None:
+    """Apply endpoint custody to an owner-default notice (REQ-endpoint-custody-holds-007).
+
+    Returns ``None`` to keep today's Telegram default: no database, no configured Telegram
+    target (the existing missing-chat error stays), or a Telegram target that is provably
+    unheld. Otherwise returns the owner's unheld email, or the refusal reason when no
+    supported owner target is provably unheld.
+    """
+    pool = daemon.db.pool if getattr(daemon, "db", None) is not None else None
+    if pool is None:
+        return None
+    chat_id = await daemon._resolve_default_notify_recipient(
+        channel="telegram", intent="send", recipient=None, request_context=request_context
+    )
+    if not chat_id:
+        return None
+    from butlers.credential_store import resolve_owner_entity_info
+
+    try:
+        owner_email = await resolve_owner_entity_info(pool, "email")
+    except Exception:
+        logger.warning("Owner email lookup failed during custody fallback", exc_info=True)
+        owner_email = None
+    choice = await choose_owner_default_target(
+        pool, telegram_chat_id=chat_id, owner_email=owner_email
+    )
+    if choice.channel == "telegram":
+        return None
+    return choice
 
 
 _REQUEST_CONTEXT_KEYS_HINT = (
@@ -652,8 +686,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             #     a channel always being present.
             # The forced channel is never overridden, so preference is consulted
             # only here, before any channel-dependent validation runs.
+            # Endpoint custody (REQ-endpoint-custody-holds-007): an owner-default notice whose
+            # Telegram target is held or unreadable takes the owner's unheld email instead, or
+            # is refused with a durable ledger row. A forced channel or recipient never retargets;
+            # Messenger's adapter fence refuses those itself.
+            _custody_default_email: str | None = None
+            _custody_default_refusal: str | None = None
             if channel is None:
                 resolved_channel: str | None = None
+                if (
+                    entity_id is None
+                    and recipient is None
+                    and intent in {"send", "insight"}
+                    and not attachments
+                    and awaits_reply_seconds is None
+                ):
+                    _custody_default = await _owner_default_custody_target(daemon, request_context)
+                    if _custody_default is not None:
+                        if _custody_default.refusal is not None:
+                            _custody_default_refusal = _custody_default.refusal
+                        elif _custody_default.channel == "email":
+                            resolved_channel = "email"
+                            _custody_default_email = _custody_default.recipient
                 if entity_id is not None:
                     _resolve_pool = daemon.db.pool if daemon.db is not None else None
                     if _resolve_pool is not None:
@@ -1083,10 +1137,35 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     }
                 resolved_recipient = entity_identifier
             else:
+                if _custody_default_refusal is not None:
+                    # No supported owner target is provably unheld: nothing is parked for
+                    # approval and no provider is attempted; the ledger row is the record.
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason=_custody_default_refusal,
+                        metadata={"retryable": _custody_default_refusal != "endpoint_held"},
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "code": _custody_default_refusal,
+                        "error": (
+                            "No owner channel can take this notice: every configured owner "
+                            "target is under a custody hold or its custody could not be read. "
+                            "Nothing was sent."
+                        ),
+                        "retryable": _custody_default_refusal != "endpoint_held",
+                    }
                 resolved_recipient = await daemon._resolve_default_notify_recipient(
                     channel=channel,
                     intent="send" if intent == "confirm" else intent,
-                    recipient=recipient,
+                    recipient=recipient or _custody_default_email,
                     request_context=request_context,
                 )
 
