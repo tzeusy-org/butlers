@@ -1331,7 +1331,10 @@ async def _decay(env, ask=(), dormant=()) -> dict:
         "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
         json.dumps({"ask": list(ask), "dormant": list(dormant)}),
     )
-    return json.loads(raw)
+    out = json.loads(raw)
+    if isinstance(out.get("asked"), list):
+        out["asked"] = [item["id"] for item in out["asked"]]
+    return out
 
 
 async def _matches(env, channel: str) -> bool:
@@ -1404,8 +1407,8 @@ async def test_decay_functions_are_switchboard_only_and_installed_evaluate_is_re
         "WHERE p.pronamespace='dashboard_attention'::regnamespace "
         "AND p.proname IN ('decay_clauses','decay_apply')"
     )
-    assert {r["g"] for r in grantees} <= {"dashboard_attention_owner", "butler_switchboard_rw"}
-    assert "PUBLIC" not in {r["g"] for r in grantees}
+    # The sweep runs as the Switchboard role: a missing grant would make it fail silently.
+    assert {r["g"] for r in grantees} == {"dashboard_attention_owner", "butler_switchboard_rw"}
     assert await env.admin.fetchval(
         "SELECT NOT has_function_privilege('dashboard_auth_api',"
         "'dashboard_attention.decay_apply(jsonb)','EXECUTE')"
@@ -1423,3 +1426,30 @@ async def test_decay_functions_are_switchboard_only_and_installed_evaluate_is_re
     assert marker in await env.admin.fetchval(
         "SELECT pg_get_functiondef('dashboard_attention.evaluate(jsonb)'::regprocedure)"
     )
+
+
+async def test_the_switchboard_role_can_call_both_decay_functions(attention_env):
+    """The sweep's own role: SET ROLE butler_switchboard_rw, then read and apply."""
+    env = attention_env
+    clause = await env.service.attention_call(
+        "clause_create",
+        env.authority,
+        env.session.data["csrf_token"],
+        channel="email",
+        scope="always",
+    )
+    async with env.admin.transaction():
+        await env.admin.execute("SET LOCAL ROLE butler_switchboard_rw")
+        listed = await env.admin.fetchval("SELECT dashboard_attention.decay_clauses()::text")
+        applied = await env.admin.fetchval(
+            "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
+            '{"ask": [], "dormant": []}',
+        )
+        # ...and it has no way to widen anything: no direct table access, no api() grant.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with env.admin.transaction():
+                await env.admin.fetchval("SELECT count(*) FROM dashboard_attention.clause_decay")
+    import json
+
+    assert [c["id"] for c in json.loads(listed)["clauses"]] == [clause["id"]]
+    assert json.loads(applied) == {"asked": [], "dormant": []}

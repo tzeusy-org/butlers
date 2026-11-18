@@ -237,6 +237,18 @@ describe("SettingsReachPage", () => {
     expect(keepClause.mock.calls[0][0]).toBe("c-1");
   });
 
+  it("says so when the decay state cannot be loaded, so dormant clauses are not shown as active", () => {
+    listing([clause({})]);
+    hooks.useReachDecay.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      refetch: vi.fn(),
+    });
+    view();
+    expect(screen.getByText(/Could not load which clauses are dormant/i)).toBeTruthy();
+  });
+
   it("offers neither Keep nor Revive for an ordinary or kept clause", () => {
     listing([clause({})]);
     decaying([{ clause_id: "c-1", state: "kept" }]);

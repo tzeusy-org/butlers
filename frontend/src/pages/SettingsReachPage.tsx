@@ -122,6 +122,20 @@ export default function SettingsReachPage() {
         </p>
       </div>
 
+      {decayQuery.isError && (
+        <div
+          className="attention-row px-4 py-3 flex items-center justify-between"
+          data-tone="amber"
+          role="alert"
+        >
+          <p className="text-sm">
+            Could not load which clauses are dormant, so the list below may show dormant clauses as
+            active.
+          </p>
+          <InlineActionLink onClick={() => void decayQuery.refetch()}>Retry →</InlineActionLink>
+        </div>
+      )}
+
       {proposalsQuery.isError && (
         <div
           className="attention-row px-4 py-3 flex items-center justify-between"

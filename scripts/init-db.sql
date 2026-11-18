@@ -6899,7 +6899,7 @@ END $decay_list$;
 ALTER FUNCTION dashboard_attention.decay_clauses() OWNER TO dashboard_attention_owner;
 CREATE OR REPLACE FUNCTION dashboard_attention.decay_apply(p jsonb) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $decay_apply$
-DECLARE t timestamptz:=clock_timestamp(); ask uuid[]; dormant uuid[]; asked uuid[]; slept uuid[];
+DECLARE t timestamptz:=clock_timestamp(); ask uuid[]; dormant uuid[]; asked jsonb; slept uuid[];
 BEGIN
  IF p IS NULL OR jsonb_typeof(p)<>'object'
   OR EXISTS(SELECT FROM jsonb_object_keys(p) k WHERE k NOT IN('ask','dormant'))
@@ -6924,8 +6924,8 @@ BEGIN
    AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>t) AND k.created_at<=t-interval '30 days'
   ON CONFLICT (clause_id) DO UPDATE SET state='asked',changed_at=t
    WHERE d.state='kept' AND d.changed_at<=t-interval '30 days'
-  RETURNING d.clause_id) SELECT COALESCE(array_agg(clause_id),'{}') INTO asked FROM w;
- RETURN jsonb_build_object('asked',to_jsonb(asked),'dormant',to_jsonb(slept));
+  RETURNING d.clause_id,d.changed_at) SELECT COALESCE(jsonb_agg(jsonb_build_object('id',clause_id,'at',changed_at)),'[]'::jsonb) INTO asked FROM w;
+ RETURN jsonb_build_object('asked',asked,'dormant',to_jsonb(slept));
 END $decay_apply$;
 ALTER FUNCTION dashboard_attention.decay_apply(jsonb) OWNER TO dashboard_attention_owner;
 REVOKE ALL ON FUNCTION dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM PUBLIC;

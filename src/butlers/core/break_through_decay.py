@@ -22,6 +22,7 @@ change it. Engagement rows are kept 30 days, which is exactly the "unopened" win
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import logging
@@ -146,9 +147,14 @@ async def _stats(pool: Any, ids: Sequence[uuid.UUID], now: datetime) -> dict[uui
     }
 
 
-async def _propose_keep(pool: Any, clause_id: uuid.UUID) -> bool:
-    """Queue the single content-free "keep?" line for a clause; ``False`` if it did not queue."""
-    key = f"switchboard:{KEEP_CATEGORY}:{clause_id}"
+def _keep_key(clause_id: uuid.UUID, asked_at: datetime) -> str:
+    """One line per ask: a clause kept and later unopened again is asked again."""
+    return f"switchboard:{KEEP_CATEGORY}:{clause_id}:{int(asked_at.timestamp() * 1_000_000)}"
+
+
+async def _propose_keep(pool: Any, clause_id: uuid.UUID, asked_at: datetime) -> bool:
+    """Queue the content-free "keep?" line for one ask; ``False`` if it did not queue."""
+    key = _keep_key(clause_id, asked_at)
     if await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key = $1 LIMIT 1", key):
         return True
     broker = importlib.import_module("butlers.tools.switchboard.insight.broker")
@@ -164,43 +170,59 @@ async def _propose_keep(pool: Any, clause_id: uuid.UUID) -> bool:
     return result.get("status") == "accepted"
 
 
-async def sweep(pool: Any, *, now: datetime | None = None) -> Decision:
-    """Run one decay pass. Never raises: decay is best effort and must not fail a delivery job."""
-    now = now or datetime.now(UTC)
+SWEEP_TIMEOUT_S = 5.0
+
+
+async def sweep(
+    pool: Any, *, now: datetime | None = None, timeout_s: float = SWEEP_TIMEOUT_S
+) -> Decision:
+    """Run one decay pass, bounded by ``timeout_s``.
+
+    Never raises: decay is best effort and must not fail or stall the delivery job it runs
+    before. A timeout is a logged skip; the next hourly pass tries again.
+    """
     try:
-        clauses = await _live_clauses(pool)
-        if not clauses:
-            return Decision((), ())
-        decision = decide(clauses, await _stats(pool, [c.id for c in clauses], now), now)
-        applied: dict[str, list[str]] = {"asked": [], "dormant": []}
-        if decision.ask or decision.dormant:
-            applied = (
-                _loads(
-                    await pool.fetchval(
-                        "SELECT dashboard_attention.decay_apply($1::jsonb)",
-                        {
-                            "ask": [str(i) for i in decision.ask],
-                            "dormant": [str(i) for i in decision.dormant],
-                        },
-                    )
-                )
-                or applied
-            )
-        # Newly asked clauses, plus any asked recently whose line never queued.
-        to_propose = {uuid.UUID(str(i)) for i in applied.get("asked", [])}
-        to_propose |= {
-            c.id
-            for c in clauses
-            if c.state == "asked"
-            and c.changed_at is not None
-            and now - c.changed_at < _RETRY_WINDOW
-        }
-        for clause_id in sorted(to_propose, key=str):
-            await _propose_keep(pool, clause_id)
-        return Decision(
-            ask=tuple(uuid.UUID(str(i)) for i in applied.get("asked", [])),
-            dormant=tuple(uuid.UUID(str(i)) for i in applied.get("dormant", [])),
-        )
+        return await asyncio.wait_for(_sweep(pool, now=now), timeout_s)
+    except TimeoutError:
+        logger.warning("break_through_decay_timeout budget_s=%s", timeout_s)
     except Exception as exc:  # noqa: BLE001 -- class only: SQL text is never evidence
         logger.warning("break_through_decay_unavailable error_class=%s", type(exc).__name__)
+    return Decision((), ())
+
+
+async def _sweep(pool: Any, *, now: datetime | None = None) -> Decision:
+    now = now or datetime.now(UTC)
+    clauses = await _live_clauses(pool)
+    if not clauses:
         return Decision((), ())
+    decision = decide(clauses, await _stats(pool, [c.id for c in clauses], now), now)
+    applied: dict[str, Any] = {"asked": [], "dormant": []}
+    if decision.ask or decision.dormant:
+        applied = (
+            _loads(
+                await pool.fetchval(
+                    "SELECT dashboard_attention.decay_apply($1::jsonb)",
+                    {
+                        "ask": [str(i) for i in decision.ask],
+                        "dormant": [str(i) for i in decision.dormant],
+                    },
+                )
+            )
+            or applied
+        )
+    # Each ask is keyed by when it was made: the definer's ``changed_at`` for a new ask, the
+    # stored one for a clause asked recently whose line never queued.
+    asks: dict[uuid.UUID, datetime] = {}
+    for item in applied.get("asked", []):
+        at = _when(item.get("at"))
+        if at is not None:
+            asks[uuid.UUID(str(item["id"]))] = at
+    for c in clauses:
+        if c.state == "asked" and c.changed_at is not None and now - c.changed_at < _RETRY_WINDOW:
+            asks.setdefault(c.id, c.changed_at)
+    for clause_id, asked_at in sorted(asks.items(), key=lambda kv: str(kv[0])):
+        await _propose_keep(pool, clause_id, asked_at)
+    return Decision(
+        ask=tuple(uuid.UUID(str(i["id"])) for i in applied.get("asked", [])),
+        dormant=tuple(uuid.UUID(str(i)) for i in applied.get("dormant", [])),
+    )

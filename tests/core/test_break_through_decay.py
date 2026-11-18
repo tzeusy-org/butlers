@@ -114,7 +114,7 @@ async def test_sweep_hands_the_definer_ids_and_queues_one_content_free_line(monk
     pool = _pool(
         [c],
         [{"clause_id": c.id, "last_hit": NOW - D, "delivered_30": 2, "opened_30": 0}],
-        {"asked": [str(c.id)], "dormant": []},
+        {"asked": [{"id": str(c.id), "at": NOW.isoformat()}], "dormant": []},
     )
     propose = AsyncMock(return_value={"status": "accepted"})
     monkeypatch.setattr(
@@ -127,7 +127,7 @@ async def test_sweep_hands_the_definer_ids_and_queues_one_content_free_line(monk
     assert pool.applied == {"ask": [str(c.id)], "dormant": []}  # a dict: the codec encodes once
     kwargs = propose.await_args.kwargs
     assert kwargs["category"] == decay.KEEP_CATEGORY and kwargs["priority"] < 90
-    assert kwargs["dedup_key"] == f"switchboard:{decay.KEEP_CATEGORY}:{c.id}"
+    assert kwargs["dedup_key"] == decay._keep_key(c.id, NOW)
     # content-free: no sender, address, domain, id or message text
     assert str(c.id) not in kwargs["message"] and "@" not in kwargs["message"]
 
@@ -168,3 +168,63 @@ async def test_sweep_with_no_clauses_touches_nothing():
     pool = _pool([], [], {})
     await decay.sweep(pool, now=NOW)
     pool.fetch.assert_not_awaited()
+
+
+def test_each_ask_has_its_own_key_so_a_kept_clause_is_asked_again():
+    cid = uuid.uuid4()
+    first, second = decay._keep_key(cid, NOW - 40 * D), decay._keep_key(cid, NOW)
+    assert first != second and first.startswith(f"switchboard:{decay.KEEP_CATEGORY}:{cid}:")
+    assert decay._keep_key(cid, NOW) == second  # the same ask always maps to the same line
+
+
+async def test_the_second_ask_after_a_keep_queues_a_new_line(monkeypatch):
+    c = _clause(300, state="kept", changed_days_ago=40)
+    pool = _pool(
+        [c],
+        [{"clause_id": c.id, "last_hit": NOW - D, "delivered_30": 2, "opened_30": 0}],
+        {"asked": [{"id": str(c.id), "at": NOW.isoformat()}], "dormant": []},
+    )
+    # The first ask's line exists; only the new key is looked up and queued.
+    old_key = decay._keep_key(c.id, NOW - 40 * D)
+    seen: list[str] = []
+
+    async def fetchval(sql, *args):
+        if "decay_clauses" in sql:
+            return {
+                "clauses": [
+                    {
+                        "id": str(c.id),
+                        "created_at": c.created_at.isoformat(),
+                        "state": "kept",
+                        "changed_at": c.changed_at.isoformat(),
+                    }
+                ]
+            }
+        if "decay_apply" in sql:
+            return {"asked": [{"id": str(c.id), "at": NOW.isoformat()}], "dormant": []}
+        seen.append(args[0])
+        return "existing" if args[0] == old_key else None
+
+    pool.fetchval = AsyncMock(side_effect=fetchval)
+    propose = AsyncMock(return_value={"status": "accepted"})
+    monkeypatch.setattr(
+        decay.importlib, "import_module", lambda _n: MagicMock(propose_insight_candidate=propose)
+    )
+    await decay.sweep(pool, now=NOW)
+    assert propose.await_args.kwargs["dedup_key"] == decay._keep_key(c.id, NOW)
+    assert decay._keep_key(c.id, NOW) != old_key
+
+
+async def test_a_slow_sweep_is_a_logged_skip_not_a_stall(caplog):
+    import asyncio
+
+    pool = MagicMock()
+
+    async def hang(*_args):
+        await asyncio.sleep(10)
+
+    pool.fetchval = AsyncMock(side_effect=hang)
+    with caplog.at_level("WARNING"):
+        out = await decay.sweep(pool, now=NOW, timeout_s=0.05)
+    assert out == decay.Decision((), ())
+    assert "break_through_decay_timeout" in caplog.text
