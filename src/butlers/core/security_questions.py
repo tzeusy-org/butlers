@@ -181,23 +181,55 @@ async def present_pending(
     return counts
 
 
-async def _send(notify: NotifyFn, message: str) -> tuple[str, str | None, str | None]:
-    """``(state, detail, notification_id)``. Any doubt that a send started is ``ambiguous``."""
+#: Delivery error classes that stop before any provider call (custody fence, policy, bad request).
+_PRE_SEND_ERROR_CLASSES = frozenset(
+    {
+        "endpoint_held",
+        "eligibility_unknown",
+        "recipient_unavailable",
+        "validation_error",
+        "policy_denied",
+    }
+)
+
+
+def classify_delivery(result: Any) -> tuple[str, str | None, str | None]:
+    """``(state, detail, notification_id)`` for one delivery result.
+
+    ``presented`` only on a confirmed send. ``unavailable`` for a failure that provably never
+    reached, or was refused by, the provider (no recipient, custody fence, policy, rejection):
+    nothing can have been delivered, and the owner sees it unanswered. ``ambiguous`` only when a
+    send may have started without confirmation, or when the evidence is missing: never re-sent.
+    """
     from butlers.telegram_api import terminal_telegram_metadata
 
-    try:
-        result = await notify(message)
-    except Exception:
-        logger.warning("security question notify raised", exc_info=True)
-        return "ambiguous", "notify_raised", None
     if not isinstance(result, dict):
         return "ambiguous", "unreadable_result", None
     if result.get("status") == "sent":
         notification_id = result.get("notification_id")
         return "presented", None, str(notification_id) if notification_id else None
     if terminal_telegram_metadata(result):
-        return "unavailable", "provider_rejected", None
+        return "ambiguous", "effect_uncertain", None
+    transport = result.get("transport")
+    outcome = transport.get("outcome") if isinstance(transport, dict) else None
+    if outcome in {"not_attempted", "rejected"}:
+        return "unavailable", str(outcome), None
+    if outcome == "uncertain":
+        return "ambiguous", "transport_uncertain", None
+    error_class = result.get("error_class")
+    if error_class in _PRE_SEND_ERROR_CLASSES:
+        return "unavailable", str(error_class), None
     return "ambiguous", "delivery_unconfirmed", None
+
+
+async def _send(notify: NotifyFn, message: str) -> tuple[str, str | None, str | None]:
+    """Send once; a raise is ``ambiguous`` (the send may have started)."""
+    try:
+        result = await notify(message)
+    except Exception:
+        logger.warning("security question notify raised", exc_info=True)
+        return "ambiguous", "notify_raised", None
+    return classify_delivery(result)
 
 
 async def _transition(pool: Any, event_id: str, old: str, new: str, detail: str) -> bool:

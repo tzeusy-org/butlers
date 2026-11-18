@@ -409,7 +409,7 @@ def _installed(bind) -> bool:
                AND to_regprocedure('public.security_question_dashboard(text, jsonb)') IS NOT NULL
                AND EXISTS (
                     SELECT 1 FROM pg_policy
-                    WHERE polrelid = 'public.security_answers'::regclass
+                    WHERE polrelid = to_regclass('public.security_answers')
                       AND polname = 'security_answers_switchboard'
                )
             """
@@ -491,7 +491,7 @@ def downgrade() -> None:
             RETURN;
         END IF;
         IF NOT pg_has_role(current_user, (SELECT relowner FROM pg_class
-                WHERE oid = 'public.security_questions'::regclass), 'USAGE') THEN
+                WHERE oid = to_regclass('public.security_questions')), 'USAGE') THEN
             RAISE EXCEPTION 'core_349 downgrade refused: only the maintenance owner can prove '
                 'no security question exists' USING ERRCODE = '42501';
         END IF;

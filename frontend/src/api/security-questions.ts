@@ -65,3 +65,21 @@ export async function answerSecurityQuestion(
 export function answerWasRefused(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409;
 }
+
+export interface SecurityQuestionSummary {
+  event_id: string;
+  provider: string;
+  kind: string;
+  presentation: SecurityQuestion["presentation"];
+  admitted_at: string;
+  answer: "yes" | "no" | null;
+  case_recorded: boolean;
+}
+
+/** The most recent questions, newest first; the page filters what is still unanswered. */
+export async function listSecurityQuestions(): Promise<SecurityQuestionSummary[]> {
+  const response = await apiFetch<Envelope<{ questions: SecurityQuestionSummary[] }>>(
+    "/custody/security-questions",
+  );
+  return response.data.questions;
+}

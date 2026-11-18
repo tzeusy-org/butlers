@@ -101,7 +101,7 @@
         `security_question_cycle` from the stored event); one bounded notify with a dashboard link
         that is claimed before the send and never re-sent (a doubtful send ends `ambiguous`);
         unverified events get no question. The owner answers on the protected dashboard
-        (`/security/:eventId`, `/api/custody/security-questions`): `yes` changes nothing, `no`
+        (`/security/:eventId`, `/api/custody/security-questions`; the `/security` list shows every unanswered question, including `unavailable` and `ambiguous` deliveries, and is in the navigation): `yes` changes nothing, `no`
         binds owner-selected exact targets through `custody_dashboard` in one transaction with the
         recorded answer, and the cycle then opens the canonical case and recovery-door evidence
         through `record_security_answer`. A retained `no` is never erased; no automatic `no`.
@@ -110,4 +110,6 @@
         with `containment unknown`, and source-owned reconciliation of an ingest that committed
         before the publisher crashed (the cycle recovers a published event only). Not built: the
         S5g owner-surface page (only the questions needed to answer); an owner whose Telegram
-        recipient is held gets an `unavailable`/`ambiguous` question, not the email fallback.
+        recipient is held gets an `unavailable` question (no provider attempt, listed unanswered),
+        not the email fallback. A send that may have started without confirmation is `ambiguous`
+        and never re-sent.

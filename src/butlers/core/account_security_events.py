@@ -8,8 +8,10 @@ header.
 
 Slices landed: the event publish (:func:`publish_security_event`) and the
 owner-answer door (:func:`record_security_answer`: ``yes`` is a no-op, ``no``
-opens a fleet case carrying the provider recovery door). The interactive
-"was this you?" prompt that calls :func:`record_security_answer` is deferred.
+opens a fleet case carrying the provider recovery door). The "was this you?" question is
+``butlers.core.security_questions`` (bu-s11n0s.1 S5c): an authenticated event is admitted to its
+outbox here, the owner answers on the dashboard, and the scheduled cycle calls
+:func:`record_security_answer` for each committed ``no``. The Telegram callback is deferred.
 """
 
 from __future__ import annotations

@@ -142,17 +142,38 @@ async def _run_switchboard_security_question_cycle_job(
     ``butlers.core.security_questions``.
     """
     del job_args
-    from butlers.core.security_questions import run_security_question_cycle
-    from butlers.startup_guard import _default_dashboard_url
+    import importlib
+    import os
 
-    deliver_to_owner = _build_switchboard_insight_notify_fn(pool)
+    from butlers.core.security_questions import run_security_question_cycle
+    from butlers.credential_store import resolve_owner_telegram_recipient
+
+    # The full delivery result (not the insight wrapper's) so a definite pre-send refusal can be
+    # told from a send that may have started.
+    deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
 
     async def _notify(message: str) -> dict[str, Any]:
-        # The owner's Telegram chat through the Switchboard's own delivery path.
-        return await deliver_to_owner(message, {"channel": "telegram"})
+        recipient = await resolve_owner_telegram_recipient(pool)
+        if not recipient:
+            return {"status": "failed", "error_class": "recipient_unavailable"}
+        return await deliver(
+            pool,
+            source_butler="switchboard",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "recipient": recipient,
+                    "message": message,
+                },
+            },
+        )
 
+    # An explicit DASHBOARD_URL only: without one there is no link the owner can open.
     return await run_security_question_cycle(
-        pool, notify=_notify, dashboard_url=_default_dashboard_url()
+        pool, notify=_notify, dashboard_url=os.environ.get("DASHBOARD_URL")
     )
 
 

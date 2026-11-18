@@ -82,12 +82,51 @@ async def test_a_raising_send_is_ambiguous_and_not_retried() -> None:
     notify.assert_awaited_once()
 
 
-async def test_an_unconfirmed_failure_is_ambiguous_a_terminal_one_unavailable() -> None:
-    unconfirmed = await sq._send(AsyncMock(return_value={"status": "failed", "error": "x"}), "m")
-    assert unconfirmed[0] == "ambiguous"
-    with patch("butlers.telegram_api.terminal_telegram_metadata", return_value={"terminal": True}):
-        terminal = await sq._send(AsyncMock(return_value={"status": "failed"}), "m")
-    assert terminal[0] == "unavailable"
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "failed", "error_class": "recipient_unavailable"},
+        {"status": "failed", "error_class": "endpoint_held"},
+        {"status": "failed", "error_class": "eligibility_unknown"},
+        {"status": "failed", "error_class": "validation_error"},
+        {"status": "failed", "transport": {"outcome": "not_attempted"}},
+        {"status": "failed", "transport": {"outcome": "rejected"}},
+    ],
+)
+def test_a_definite_pre_send_failure_is_unavailable(result) -> None:
+    """Nothing can have been delivered: visibly unanswered, not ambiguous."""
+    assert sq.classify_delivery(result)[0] == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "failed", "transport": {"outcome": "uncertain"}},
+        {"status": "failed", "telegram_effect_uncertain": True},
+        {"status": "failed", "partial_delivery": True},
+        {"status": "failed", "error": "something unknown"},
+        {"status": "failed", "error_class": "route_error"},
+        "not a dict",
+    ],
+)
+def test_a_possible_send_or_missing_evidence_is_ambiguous(result) -> None:
+    assert sq.classify_delivery(result)[0] == "ambiguous"
+
+
+def test_a_confirmed_send_is_presented_with_its_notification() -> None:
+    assert sq.classify_delivery({"status": "sent", "notification_id": "n1"}) == (
+        "presented",
+        None,
+        "n1",
+    )
+
+
+async def test_a_held_telegram_refusal_marks_the_question_unavailable() -> None:
+    pool = _pool([_row()])
+    notify = AsyncMock(return_value={"status": "failed", "error_class": "endpoint_held"})
+    counts = await sq.present_pending(pool, notify=notify, dashboard_url=URL)
+    assert counts == {"presented": 0, "unavailable": 1, "ambiguous": 0}
+    assert pool.execute.await_args.args[2] == "unavailable"
 
 
 async def test_no_dashboard_link_is_unavailable_without_a_send() -> None:

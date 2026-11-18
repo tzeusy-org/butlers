@@ -67,6 +67,7 @@ const MealsPage = shellPage('/health/meals')
 const ResearchPage = shellPage('/health/research')
 const ApprovalsPage = shellPage('/approvals')
 const DecisionSetPage = shellPage('/decision-sets/:setId')
+const SecurityQuestionsPage = shellPage('/security')
 const SecurityQuestionPage = shellPage('/security/:eventId')
 const SecretsPage = shellPage('/secrets')
 const EducationPage = shellPage('/education')
@@ -110,6 +111,7 @@ export const routes: RouteObject[] = [
         { path: '/approvals', element: routeElement(<ApprovalsPage />) },
         { path: '/approvals/:id', element: routeElement(<ApprovalsPage />) },
         { path: '/decision-sets/:setId', element: routeElement(<DecisionSetPage />) },
+        { path: '/security', element: routeElement(<SecurityQuestionsPage />) },
         { path: '/security/:eventId', element: routeElement(<SecurityQuestionPage />) },
         {
           path: '/calendar',

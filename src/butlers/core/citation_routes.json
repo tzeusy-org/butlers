@@ -47,6 +47,7 @@
     {"path": "/memory/episodes/:episodeId", "parameters": {"episodeId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
     {"path": "/approvals/:id", "parameters": {"id": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
     {"path": "/decision-sets/:setId", "parameters": {"setId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
+    {"path": "/security"},
     {"path": "/security/:eventId", "parameters": {"eventId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
     {
       "path": "/chat/:conversationId",
