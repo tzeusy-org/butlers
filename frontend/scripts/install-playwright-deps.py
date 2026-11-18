@@ -34,6 +34,7 @@ MAX_FILE_BYTES = 65536
 MAX_SOURCE_FILES = 64
 MAX_CONFIG_BYTES = 1048576
 MIRROR_URI = "mirror+file:/etc/apt/apt-mirrors.txt"
+SECURITY_URI = "http://security.ubuntu.com/ubuntu"
 MIRRORS = (
     "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
     "https://archive.ubuntu.com/ubuntu/\tpriority:2",
@@ -102,8 +103,13 @@ def ubuntu_sources(content: bytes, mirror: Path) -> bytes:
             fields[key] = value.strip()
         if not fields:  # Preserve standalone comment paragraphs verbatim.
             continue
+        # EC2-hosted runners keep cloud-init's direct security stanza (job
+        # 134605438801); it is preserved unrewritten, never counted as mirrored.
+        direct_security = (
+            fields.get("uris") == SECURITY_URI and fields.get("suites") == "noble-security"
+        )
         if (
-            fields.get("uris") != MIRROR_URI
+            (fields.get("uris") != MIRROR_URI and not direct_security)
             or fields.get("signed-by") != "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
             or not set(fields.get("types", "").split()) <= {"deb", "deb-src"}
             or "deb" not in fields.get("types", "").split()
@@ -116,7 +122,8 @@ def ubuntu_sources(content: bytes, mirror: Path) -> bytes:
             or fields.get("enabled", "yes") != "yes"
         ):
             raise ValueError("unsupported Ubuntu source/trust/layout")
-        replacements += 1
+        if not direct_security:
+            replacements += 1
     transformed, count = re.subn(
         r"(?im)^(URIs:[ \t]*)" + re.escape(MIRROR_URI) + r"([ \t]*)(?=\n|$)",
         lambda match: match[1] + "mirror+file:" + str(mirror) + match[2],

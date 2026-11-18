@@ -24,6 +24,8 @@ import yaml
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Real hosted-runner apt layouts, captured with `sed -n l` (bu-lm2m7b).
+APT_FIXTURES = REPO_ROOT / "tests/fixtures/playwright_apt"
 
 # (mode, installer calls, cache probes, exit) for each synthetic boundary scenario.
 INSTALLER_MODES = [
@@ -105,6 +107,7 @@ def _exercise_apt_recovery(root: Path) -> None:
     source = (REPO_ROOT / "frontend/scripts/install-playwright-deps.py").read_text()
     for case in [
         "valid",
+        "valid-azure",
         "valid-ec2",
         "late-override",
         "binary-override",
@@ -122,6 +125,11 @@ def _exercise_apt_recovery(root: Path) -> None:
         "runner-ec2-lookalike",
         "runner-ec2-scheme",
         "runner-ec2-region",
+        "ec2-security-suite",
+        "ec2-security-host",
+        "ec2-security-scheme",
+        "ec2-security-trust",
+        "ec2-security-only",
         "missing-official",
         "duplicate-uris",
         "multiline-uris",
@@ -162,10 +170,45 @@ def _exercise_apt_recovery(root: Path) -> None:
             mirrors.write_text(
                 mirrors.read_text().replace("https://archive.ubuntu.com/ubuntu/", bad)
             )
-        elif case == "valid-ec2" or case.startswith("runner-"):
+        elif case == "valid-azure":
+            ubuntu.write_bytes((APT_FIXTURES / "azure-ubuntu.sources").read_bytes())
+            before[ubuntu] = ubuntu.read_bytes()
+        elif case == "valid-ec2" or case.startswith("ec2-"):
+            # Real EC2-hosted runner layout (job 134605438801): a region-local
+            # mirror and cloud-init's direct noble-security stanza.
+            mirrors.write_bytes((APT_FIXTURES / "ec2-apt-mirrors.txt").read_bytes())
+            content = (APT_FIXTURES / "ec2-ubuntu.sources").read_text()
+            security = "URIs: http://security.ubuntu.com/ubuntu\nSuites: noble-security\n"
+            assert content.count(security) == 1
+            content = content.replace(
+                security,
+                {
+                    "valid-ec2": security,
+                    "ec2-security-suite": security.replace(
+                        "noble-security", "noble-security noble-updates"
+                    ),
+                    "ec2-security-host": security.replace(
+                        "security.ubuntu.com", "security.ubuntu.com.evil.invalid"
+                    ),
+                    "ec2-security-scheme": security.replace("http://", "https://"),
+                    "ec2-security-trust": security,
+                    "ec2-security-only": security,
+                }[case],
+            )
+            if case == "ec2-security-trust":
+                head, tail = content.rsplit("ubuntu-archive-keyring.gpg", 1)
+                content = head + "other.gpg" + tail
+            elif case == "ec2-security-only":
+                content = content.replace(
+                    "URIs: mirror+file:/etc/apt/apt-mirrors.txt",
+                    "URIs: http://security.ubuntu.com/ubuntu",
+                )
+            ubuntu.write_text(content)
+            before[mirrors] = mirrors.read_bytes()
+            before[ubuntu] = ubuntu.read_bytes()
+        elif case.startswith("runner-"):
             # EC2-hosted runners (job 134584776492) carry a cloud-local first line.
             runner = {
-                "valid-ec2": "http://us-east-2.ec2.archive.ubuntu.com/ubuntu/",
                 "runner-unknown": "http://mirror.example.invalid/ubuntu/",
                 "runner-ec2-lookalike": "http://us-east-2.ec2.archive.ubuntu.com.evil.invalid/ubuntu/",
                 "runner-ec2-scheme": "https://us-east-2.ec2.archive.ubuntu.com/ubuntu/",
@@ -202,7 +245,14 @@ def _exercise_apt_recovery(root: Path) -> None:
             release.write_text('ID=ubuntu\nVERSION_ID="22.04"\nVERSION_CODENAME=jammy\n')
         overlay = directory / "owned"
         overlay.mkdir(mode=0o700)
-        if case not in {"valid", "valid-ec2", "late-override", "binary-override", "state-override"}:
+        if case not in {
+            "valid",
+            "valid-azure",
+            "valid-ec2",
+            "late-override",
+            "binary-override",
+            "state-override",
+        }:
             with pytest.raises((ValueError, OSError)):
                 namespace["prepare_recovery"](overlay)
             continue
