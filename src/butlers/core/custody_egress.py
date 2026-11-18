@@ -9,13 +9,20 @@ error, a malformed answer or a target that cannot be named all refuse with
 ``eligibility_unknown``. A missing binding is unknown, not evidence the target is unheld.
 
 Telegram targets are the ``has-handle`` form ``telegram:<chat id>`` the identity reconciler
-writes for a Telegram user id; email targets are ``has-email`` addresses. The digest function
-normalizes both, so spelling and case do not matter.
+writes for a Telegram user id; email targets are ``has-email`` addresses; WhatsApp targets are
+the JID handle forms and ``has-phone`` spellings (:func:`whatsapp_targets`). The digest function
+normalizes case and phone punctuation.
+
+Known limitation: a hold placed only on a username-form Telegram fact (``telegram:alice``) does
+not fence sends addressed by chat id. The adapters know only the numeric chat id, and learning
+the username would cost a ``getChat`` call; the fix belongs in a database-side check that
+relates a held handle fact to its owner's chat-id fact.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from email.utils import getaddresses
@@ -69,6 +76,50 @@ def email_targets(addresses: Iterable[str | None]) -> list[tuple[str, str]] | No
             return None
         targets.extend(("has-email", addr) for addr in parsed)
     return targets
+
+
+_WHATSAPP_JID_RE = re.compile(r"^(\d+)(?::\d+)?@(s\.whatsapp\.net|lid)$")
+_PHONE_SUFFIX_DIGITS = 8
+
+
+def phone_targets(digits: str) -> list[tuple[str, str]] | None:
+    """``has-phone`` targets for a number, or ``None`` when it is too short to name one.
+
+    The digest is over a held fact's digits, so a hold on any spelling that is a suffix of
+    ``digits`` with at least eight digits (``6587650123``, ``87650123``) is matched. A held
+    spelling with extra leading digits (``006587650123``, a trunk ``0``) is not.
+    """
+    if not digits.isdigit() or len(digits) < _PHONE_SUFFIX_DIGITS:
+        return None
+    return [("has-phone", digits[i:]) for i in range(len(digits) - _PHONE_SUFFIX_DIGITS + 1)]
+
+
+def whatsapp_targets(recipient: str | None) -> list[tuple[str, str]] | None:
+    """Targets for a WhatsApp recipient (JID or phone), or ``None`` when it names nothing.
+
+    An individual JID is matched as the ``has-handle`` JID forms the identity resolver uses and,
+    on ``s.whatsapp.net``, as the phone it carries. Any other JID (a group) is matched as its
+    exact handle; a bare phone number as its ``has-phone`` spellings and its JID.
+    """
+    value = recipient.strip().lower() if isinstance(recipient, str) else ""
+    if not value:
+        return None
+    if "@" in value:
+        match = _WHATSAPP_JID_RE.fullmatch(value)
+        if match is None:
+            return [("has-handle", value)]
+        digits, service = match.groups()
+        targets = [("has-handle", value), ("has-handle", f"{digits}@{service}")]
+        if service == "s.whatsapp.net":
+            phones = phone_targets(digits)
+            if phones is None:
+                return None
+            targets.extend(phones)
+        return list(dict.fromkeys(targets))
+    phones = phone_targets(re.sub(r"\D", "", value))
+    if phones is None:
+        return None
+    return [("has-handle", f"{phones[0][1]}@s.whatsapp.net"), *phones]
 
 
 async def custody_targets_held(pool: Any, targets: Sequence[tuple[str, str]]) -> bool:
@@ -152,6 +203,8 @@ __all__ = [
     "choose_owner_default_target",
     "custody_targets_held",
     "email_targets",
+    "phone_targets",
     "require_custody_clear",
     "telegram_chat_target",
+    "whatsapp_targets",
 ]

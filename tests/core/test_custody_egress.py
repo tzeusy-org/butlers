@@ -19,8 +19,10 @@ from butlers.core.custody_egress import (
     choose_owner_default_target,
     custody_targets_held,
     email_targets,
+    phone_targets,
     require_custody_clear,
     telegram_chat_target,
+    whatsapp_targets,
 )
 from butlers.modules.email import EmailConfig, EmailModule
 from butlers.modules.telegram import REACTION_IN_PROGRESS, TelegramConfig, TelegramModule
@@ -92,6 +94,39 @@ async def test_unreadable_custody_fails_closed(pool, targets) -> None:
         await require_custody_clear(pool, targets)
     assert refused.value.reason == "eligibility_unknown"
     assert refused.value.retryable is True
+
+
+def test_whatsapp_targets_cover_jid_forms_and_phone_suffixes() -> None:
+    targets = whatsapp_targets(" 6587650123:4@S.WhatsApp.net ")
+    assert targets is not None
+    assert targets[:2] == [
+        ("has-handle", "6587650123:4@s.whatsapp.net"),
+        ("has-handle", "6587650123@s.whatsapp.net"),
+    ]
+    assert ("has-phone", "6587650123") in targets
+    assert ("has-phone", "87650123") in targets
+    assert ("has-phone", "7650123") not in targets  # under eight digits names no phone
+
+
+def test_whatsapp_targets_for_bare_phone_lid_and_group() -> None:
+    assert phone_targets("6587650123") == [
+        ("has-phone", "6587650123"),
+        ("has-phone", "587650123"),
+        ("has-phone", "87650123"),
+    ]
+    assert whatsapp_targets("+65 8765 0123") == [
+        ("has-handle", "6587650123@s.whatsapp.net"),
+        ("has-phone", "6587650123"),
+        ("has-phone", "587650123"),
+        ("has-phone", "87650123"),
+    ]
+    assert whatsapp_targets("123456789@lid") == [("has-handle", "123456789@lid")]
+    assert whatsapp_targets("120363@g.us") == [("has-handle", "120363@g.us")]
+
+
+@pytest.mark.parametrize("recipient", [None, "", "  ", "+123", "123@s.whatsapp.net"])
+def test_whatsapp_targets_unnameable_recipient_is_none(recipient) -> None:
+    assert whatsapp_targets(recipient) is None
 
 
 async def test_a_non_boolean_answer_is_unknown() -> None:

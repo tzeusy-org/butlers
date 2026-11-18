@@ -151,6 +151,14 @@ The fenced paths are:
   `_react_to_message` check the recipient chat as `has-handle telegram:<chat id>`. A refused
   ingest lifecycle reaction is logged and skipped, so ingest is not interrupted. Removing an
   inline keyboard carries no content and is not fenced.
+- The informational confirm edit (`telegram_confirms.messenger_confirm_delivery`'s `edit`) asks
+  the Telegram module's fence before `editMessageText`.
+- WhatsApp: `WhatsAppModule._send_message` and `_reply_to_message` check the recipient and the
+  bridge's own account. A recipient JID is matched as its `has-handle` JID forms and, on
+  `s.whatsapp.net`, as `has-phone` for every suffix of its number with at least eight digits; a
+  bare number is matched the same way. The account is the phone the bridge reports in `/status`;
+  when the bridge reports none, the send refuses (`eligibility_unknown`). The module reads custody
+  through the butler pool it receives at startup.
 - The chronicler's daily gap interview (`TelegramInlineButtonTransport.deliver_interview`), which
   posts to the owner's chat directly. A refusal is "not delivered", so the day is not marked asked.
 
@@ -159,10 +167,17 @@ parked send and deferred flush reach Messenger's adapters through these methods.
 are not fenced here; their owner authority comes from `resolve_owner_triple`, which already refuses
 owner for a held endpoint.
 
-Known unfenced paths: the WhatsApp bridge (bead bu-s11n0s.93; the module has no database pool or
-account binding, and its sends are off by default) and Google Calendar invitations sent with
-`sendUpdates=all` (`modules/calendar/google.py`), which are outside REQ-007's Messenger scope and
-tracked in their own bead.
+Known unfenced paths and limits:
+
+- Google Calendar invitations sent with `sendUpdates=all` (`modules/calendar/google.py`), outside
+  REQ-007's Messenger scope (bead bu-s11n0s.94).
+- A hold placed only on a username-form Telegram fact (`telegram:alice`) does not fence sends,
+  which are addressed by chat id. The adapters know only the chat id, and learning the username
+  would cost a `getChat` call; relating a held handle to its owner's chat-id fact belongs in a
+  database-side check.
+- A held phone spelling with extra leading digits (`006587650123`, a trunk `0`) is not matched,
+  because the fence compares digests of suffixes of the recipient's number. `resolve_owner_triple`
+  uses the wider trailing-eight-digit class (core_296).
 
 The fence fails closed and does not share the permissions matrix's handling of a
 failed read: no pool, a lookup error, a non-boolean answer or an unnameable target refuses with

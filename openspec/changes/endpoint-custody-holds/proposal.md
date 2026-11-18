@@ -61,8 +61,11 @@ with the owner-default fallback (tasks 2.3a and 2.3b):
   which posts to the owner chat directly, is not delivered. Registered tools, route.execute, the
   approval-card handoff, approved execution and deferred flush reach Messenger's adapters
   through those methods. Connector replies stay guarded by `resolve_owner_triple`.
-- Known unfenced: WhatsApp (bu-s11n0s.93) and Google Calendar invitations with
-  `sendUpdates=all`, which are outside REQ-007's Messenger scope and have their own bead.
+- Follow-up bu-s11n0s.93 fences the informational confirm edit and WhatsApp send/reply
+  (recipient JID/phone and the bridge account phone; unknown fails closed).
+- Known unfenced: Google Calendar invitations with `sendUpdates=all`, which are outside
+  REQ-007's Messenger scope (bu-s11n0s.94). Username-form Telegram holds do not fence chat-id
+  sends (documented limitation).
 - notify's owner default moves from a held or unreadable Telegram target to the owner's unheld
   email, or returns `endpoint_held`/`eligibility_unknown` with a durable ledger row and no
   provider attempt.

@@ -43,9 +43,14 @@
       not delivered, so the day is not marked asked). Registered tools, route.execute delivery
       commands, approval-card handoff, approved execution and deferred flush reach Messenger's
       adapters through those methods. Connector replies are guarded by `resolve_owner_triple`
-      (slice 1), not by this fence. Known unfenced: WhatsApp (bu-s11n0s.93) and Google Calendar
-      invitations with `sendUpdates=all` (`modules/calendar/google.py`, outside REQ-007's
-      Messenger scope; its own bead). Route.execute reports `endpoint_held` as a
+      (slice 1), not by this fence. Since bu-s11n0s.93 the informational confirm edit and
+      WhatsApp send/reply are fenced too: WhatsApp checks the recipient (JID handle forms and
+      `has-phone` suffixes of at least eight digits) and the bridge account phone from
+      `/status`, refusing `eligibility_unknown` when either cannot be named. Known unfenced:
+      Google Calendar invitations with `sendUpdates=all` (`modules/calendar/google.py`, outside
+      REQ-007's Messenger scope; bu-s11n0s.94). Known limits: a hold only on a username-form
+      Telegram fact does not fence chat-id sends, and a held phone spelling with extra leading
+      digits is not matched by the WhatsApp suffix check. Route.execute reports `endpoint_held` as a
       non-retryable policy refusal and `eligibility_unknown` as retryable; the approval-card
       handoff records the refusal as pre-provider `safe_retry`, never ambiguous.
 - [x] 2.3b Owner-default fallback (slice 4): a notify with no channel, recipient or entity
@@ -57,9 +62,6 @@
       - the approved-executor source-eligibility recheck (REQ-006 executor half) needs the
         P-CUSTODY-1c source protocol, which the RFC 0038 broker supersedes at cutover (bead
         bu-s11n0s.81);
-      - the WhatsApp bridge account and recipient fence (bu-s11n0s.93), because the module has
-        no database pool or account binding today and its sends are disabled by default
-        (`send_enabled = false`);
       - message-retaining park and flush on release, which belongs to REQ-010 (task 2.4).
       The Telegram bot account is not an owner channel fact, so the core_347 engine cannot hold
       it.

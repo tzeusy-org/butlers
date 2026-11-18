@@ -26,6 +26,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from butlers.core.custody_egress import (
+    phone_targets,
+    require_custody_clear,
+    whatsapp_targets,
+)
 from butlers.modules.base import Module
 from butlers.whatsapp_bridge_client import DEFAULT_SHARED_BRIDGE_SOCKET, BridgeClient
 
@@ -117,6 +122,9 @@ class WhatsAppModule(Module):
 
     def __init__(self) -> None:
         self._config: WhatsAppConfig = WhatsAppConfig()
+        # The butler's pool, read only by the endpoint custody fence. Without one every send
+        # refuses with eligibility_unknown.
+        self._pool: Any = None
 
     name = "whatsapp"
 
@@ -178,6 +186,7 @@ class WhatsAppModule(Module):
         self._config = (
             config if isinstance(config, WhatsAppConfig) else WhatsAppConfig(**(config or {}))
         )
+        self._pool = getattr(db, "pool", None) if db is not None else None
         if self._config.send_tools:
             logger.info(
                 "WhatsApp module: send tools registered; routing to connector-owned bridge at %s "
@@ -190,22 +199,43 @@ class WhatsAppModule(Module):
     # Implementation helpers
     # ------------------------------------------------------------------
 
-    async def _check_bridge_ready(self) -> str | None:
-        """Probe the connector-owned bridge ``/status``.
+    async def _require_custody_clear(self, recipient: str) -> str | None:
+        """Probe the bridge, then refuse before ``/send`` if custody forbids this send.
 
-        Returns ``None`` when the bridge is reachable and its WhatsApp link is
-        live, or an actionable error string otherwise. The module holds no
-        BridgeSubprocessManager, so liveness is read from the connector's bridge
-        over the shared socket rather than from a locally-owned process.
+        REQ-endpoint-custody-holds-007. Returns the bridge's actionable error when it is not
+        ready. Otherwise checks the recipient and the bridge's own account, whose phone the
+        bridge reports in ``/status`` (the connector learns its endpoint identity the same way).
+        An unreported account phone, a recipient that names no endpoint or an unreadable
+        custody state raises ``CustodyEgressRefused("eligibility_unknown")``.
         """
+        error, account_phone = await self._bridge_status()
+        if error is not None:
+            return error
+        recipient_targets = whatsapp_targets(recipient)
+        account_targets = phone_targets(account_phone) if account_phone else None
+        targets = (
+            None
+            if recipient_targets is None or account_targets is None
+            else [*recipient_targets, *account_targets]
+        )
+        await require_custody_clear(self._pool, targets)
+        return None
 
+    async def _bridge_status(self) -> tuple[str | None, str | None]:
+        """``(error, account phone digits)`` from the connector-owned bridge ``/status``.
+
+        The error is ``None`` when the bridge is reachable and its WhatsApp link is live, or an
+        actionable message otherwise. The module holds no BridgeSubprocessManager, so liveness
+        is read from the connector's bridge over the shared socket.
+        """
         try:
             status = await BridgeClient(self._config.bridge_socket).request_json("GET", "/status")
         except Exception:
             return (
                 f"WhatsApp bridge is not reachable at {self._config.bridge_socket}. "
                 "The whatsapp_user_client connector owns the bridge — ensure it is running "
-                "and the shared socket volume is mounted."
+                "and the shared socket volume is mounted.",
+                None,
             )
 
         # connected/logged_in are the bridge's authoritative liveness fields
@@ -215,13 +245,20 @@ class WhatsAppModule(Module):
             state = status.get("state") or "unknown"
             return (
                 f"WhatsApp bridge is not connected (state={state}). Re-pairing may be "
-                "required — open the dashboard WhatsApp settings."
+                "required — open the dashboard WhatsApp settings.",
+                None,
             )
-        return None
+        phone = status.get("phone")
+        digits = "".join(ch for ch in phone if ch.isdigit()) if isinstance(phone, str) else ""
+        return None, digits or None
 
     async def _send_message(self, *, recipient: str, text: str) -> dict:
-        """POST /send to the connector-owned bridge to deliver a WhatsApp message."""
-        error = await self._check_bridge_ready()
+        """POST /send to the connector-owned bridge to deliver a WhatsApp message.
+
+        Every WhatsApp send path ends here or in :meth:`_reply_to_message`: the registered
+        tools, route.execute delivery and owner control, and the approval-card handoff.
+        """
+        error = await self._require_custody_clear(recipient)
         if error is not None:
             return {"error": error}
 
@@ -237,7 +274,7 @@ class WhatsAppModule(Module):
 
     async def _reply_to_message(self, *, chat_jid: str, message_id: str, text: str) -> dict:
         """POST /send with reply_to field to the connector-owned bridge."""
-        error = await self._check_bridge_ready()
+        error = await self._require_custody_clear(chat_jid)
         if error is not None:
             return {"error": error}
 

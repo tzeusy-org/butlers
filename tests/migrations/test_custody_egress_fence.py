@@ -21,6 +21,7 @@ from butlers.core.custody_egress import (
     CustodyEgressRefused,
     choose_owner_default_target,
     require_custody_clear,
+    whatsapp_targets,
 )
 from butlers.db import Database
 from butlers.modules.email import EmailConfig, EmailModule
@@ -123,6 +124,30 @@ async def test_runtime_role_fence_refuses_held_targets_until_release(
     await _release(owner_pool, tg_hold)
     await _release(owner_pool, email_hold)
     await require_custody_clear(messenger_pool, [("has-handle", chat), ("has-email", mailbox)])
+
+
+async def test_whatsapp_targets_match_formatted_and_local_phone_holds(
+    owner_pool: asyncpg.Pool, messenger_pool: asyncpg.Pool
+) -> None:
+    """bu-s11n0s.93: a held phone in any punctuation, full or local, fences the JID send."""
+    local = f"{uuid.uuid4().int % 10**8:08d}"
+    full = f"65{local}"
+    jid = f"{full}@s.whatsapp.net"
+    formatted_hold = await _hold(owner_pool, "has-phone", f"+65 {local[:4]}-{local[4:]}")
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await require_custody_clear(messenger_pool, whatsapp_targets(jid))
+    await _release(owner_pool, formatted_hold)
+    await require_custody_clear(messenger_pool, whatsapp_targets(jid))
+
+    local_hold = await _hold(owner_pool, "has-phone", local)
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await require_custody_clear(messenger_pool, whatsapp_targets(f"+{full}"))
+    await _release(owner_pool, local_hold)
+
+    jid_hold = await _hold(owner_pool, "has-handle", jid.upper())
+    with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+        await require_custody_clear(messenger_pool, whatsapp_targets(f"{full}:3@s.whatsapp.net"))
+    await _release(owner_pool, jid_hold)
 
 
 async def test_closed_pool_fails_closed(custody_db_url: str) -> None:

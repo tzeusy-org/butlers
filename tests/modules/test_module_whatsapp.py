@@ -15,7 +15,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -249,6 +249,8 @@ class TestBridgeOwnership:
             return {"message_id": "wamid.1"}
 
         _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
+        # Routing only; the custody fence has its own tests (TestCustodyEgressFence).
+        monkeypatch.setattr("butlers.modules.whatsapp.require_custody_clear", AsyncMock())
 
         module = WhatsAppModule()
         mcp = FastMCP("providers8-whatsapp-tools")
@@ -328,3 +330,114 @@ class TestBridgeOwnership:
 
         assert "not reachable" in result["error"]
         assert "connector" in result["error"]
+
+
+OWNER_JID = "6587650123@s.whatsapp.net"
+BRIDGE_PHONE = "6591110000"
+
+
+class FakeCustodyPool:
+    """Answers the custody fence query from held targets; records every lookup."""
+
+    def __init__(self, held=(), *, error: bool = False) -> None:
+        self.held = set(held)
+        self.error = error
+        self.lookups: list[list[tuple[str, str]]] = []
+
+    async def fetchval(self, sql, predicates, objects):
+        assert "public.custody_target_held" in sql
+        targets = list(zip(predicates, objects, strict=True))
+        self.lookups.append(targets)
+        if self.error:
+            raise ConnectionError("database unavailable")
+        return any(target in self.held for target in targets)
+
+
+class TestCustodyEgressFence:
+    """bu-s11n0s.93, REQ-endpoint-custody-holds-007: every WhatsApp send asks custody first."""
+
+    async def _module(self, monkeypatch, pool, *, bridge_phone=BRIDGE_PHONE):
+        posted: list[dict] = []
+
+        async def _fake_get(sock: str, path: str) -> dict:
+            status = {"connected": True, "logged_in": True, "state": "connected"}
+            if bridge_phone is not None:
+                status["phone"] = bridge_phone
+            return status
+
+        async def _fake_post(sock: str, path: str, body: dict) -> dict:
+            posted.append(body)
+            return {"message_id": "wamid.1"}
+
+        _patch_bridge_requests(monkeypatch, _fake_get, _fake_post)
+        module = WhatsAppModule()
+        await module.on_startup(
+            config={"send_tools": True, "send_enabled": True},
+            db=None if pool is None else MagicMock(pool=pool),
+        )
+        return module, posted
+
+    @pytest.mark.parametrize(
+        "held",
+        [
+            ("has-handle", OWNER_JID),
+            ("has-phone", "6587650123"),
+            # A held local spelling is a suffix of the JID's number.
+            ("has-phone", "87650123"),
+        ],
+        ids=["jid-handle", "full-phone", "local-phone"],
+    )
+    async def test_held_recipient_refuses_send_and_reply_before_bridge(
+        self, monkeypatch, held
+    ) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(monkeypatch, FakeCustodyPool({held}))
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient=OWNER_JID, text="hi")
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._reply_to_message(chat_jid=OWNER_JID, message_id="m", text="re")
+        assert posted == []
+
+    async def test_held_bridge_account_refuses_every_send(self, monkeypatch) -> None:
+        """The bridge's own account (owner's number, from /status) held refuses all sends."""
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        pool = FakeCustodyPool({("has-phone", BRIDGE_PHONE)})
+        module, posted = await self._module(monkeypatch, pool)
+        with pytest.raises(CustodyEgressRefused, match="endpoint_held"):
+            await module._send_message(recipient="6512345678@s.whatsapp.net", text="hi")
+        assert posted == []
+        assert ("has-phone", BRIDGE_PHONE) in pool.lookups[0]
+
+    @pytest.mark.parametrize(
+        ("pool", "bridge_phone", "recipient"),
+        [
+            (FakeCustodyPool(error=True), BRIDGE_PHONE, OWNER_JID),
+            (None, BRIDGE_PHONE, OWNER_JID),
+            (FakeCustodyPool(), None, OWNER_JID),
+            (FakeCustodyPool(), BRIDGE_PHONE, "+123"),
+        ],
+        ids=["lookup-error", "no-pool", "unreported-account", "unnameable-recipient"],
+    )
+    async def test_unknown_custody_fails_closed(
+        self, monkeypatch, pool, bridge_phone, recipient
+    ) -> None:
+        from butlers.core.custody_egress import CustodyEgressRefused
+
+        module, posted = await self._module(monkeypatch, pool, bridge_phone=bridge_phone)
+        with pytest.raises(CustodyEgressRefused, match="eligibility_unknown"):
+            await module._send_message(recipient=recipient, text="hi")
+        assert posted == []
+
+    async def test_unheld_send_and_reply_reach_the_bridge(self, monkeypatch) -> None:
+        pool = FakeCustodyPool({("has-phone", "6599999999")})
+        module, posted = await self._module(monkeypatch, pool)
+        assert await module._send_message(recipient="+65 8765 0123", text="hi") == {
+            "message_id": "wamid.1"
+        }
+        assert await module._reply_to_message(chat_jid=OWNER_JID, message_id="m", text="re") == {
+            "message_id": "wamid.1"
+        }
+        assert [body["recipient"] for body in posted] == ["+65 8765 0123", OWNER_JID]
+        assert ("has-handle", OWNER_JID) in pool.lookups[0]
