@@ -261,6 +261,40 @@ class TestNotifyEntityIdResolution:
         )
         assert result == "someone@example.com"
 
+    async def test_email_resolution_skips_an_undeliverable_address(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        """An address with an active undeliverable-email fact loses to a live one (S2c)."""
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        entity_id = await _seed_entity(
+            booted,
+            [
+                ("has-email", "Old@Example.com"),
+                ("has-email", "new@example.com"),
+                ("undeliverable-email", "old@example.com"),
+            ],
+        )
+
+        result = await booted.daemon._resolve_entity_channel_identifier(
+            entity_id=entity_id, channel="email"
+        )
+        assert result == "new@example.com"
+
+    async def test_email_resolution_with_only_dead_addresses_raises(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        from butlers.entity_facts_channels import NoLiveEmailAddressError
+
+        booted = await _relationship_butler(booted_daemon, tmp_path)
+        entity_id = await _seed_entity(
+            booted, [("has-email", "gone@example.com"), ("undeliverable-email", "gone@example.com")]
+        )
+
+        with pytest.raises(NoLiveEmailAddressError):
+            await booted.daemon._resolve_entity_channel_identifier(
+                entity_id=entity_id, channel="email"
+            )
+
     async def test_unknown_channel_returns_none(self, shared_booted_daemon) -> None:
         """Returns None immediately for channels with no known predicate mapping."""
         booted = await shared_booted_daemon()
@@ -429,6 +463,33 @@ class TestNotifyMissingIdentifierAndOwner:
         metadata = json.loads(failed_ledger_rows[0]["metadata"])
         assert metadata == {"entity_id": str(entity_id), "retryable": False}
         assert "Hello contact" not in failed_ledger_rows[0]["metadata"]
+
+    async def test_no_live_address_is_surfaced_and_nothing_is_sent(
+        self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every address bounced: notify() returns no_live_address, no park, no send (S2c)."""
+        booted = await _fresh(booted_daemon, tmp_path)
+        daemon = booted.daemon
+        notify_fn = await _notify_fn(booted)
+        client = _use_client(monkeypatch, daemon, _make_mock_client())
+        entity_id = uuid.UUID("00000000-0000-0000-0000-000000000032")
+
+        from butlers.entity_facts_channels import NoLiveEmailAddressError
+
+        with patch.object(
+            daemon,
+            "_resolve_entity_channel_identifier",
+            new=AsyncMock(side_effect=NoLiveEmailAddressError(str(entity_id))),
+        ):
+            result = await notify_fn(channel="email", message="Hello contact", entity_id=entity_id)
+
+        assert result["status"] == "error"
+        assert result["code"] == "no_live_address"
+        assert result["retryable"] is False
+        assert "pending_action_id" not in result
+        client.call_tool.assert_not_awaited()
+        rows = await _ledger_rows(booted)
+        assert [r["reason"] for r in rows] == ["no_live_address"]
 
     async def test_missing_identifier_parks_and_owner_fallback(
         self, booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

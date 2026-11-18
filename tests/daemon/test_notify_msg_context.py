@@ -360,3 +360,71 @@ class TestCheckEmailRecipientMsgContextPassthrough:
             )
 
         mock_get_ctx.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Dead-address avoidance (bu-s11n0s.14 S2c)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEntityChannelIdentifierDeadAddresses:
+    async def test_email_query_excludes_undeliverable_addresses(self) -> None:
+        from butlers.daemon import ButlerDaemon
+
+        pool, conn = _make_mock_pool_with_entity_facts(facts_value="live@example.com")
+        daemon = _make_daemon_with_pool(pool)
+
+        result = await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=_ENTITY_ID, channel="email"
+        )
+
+        assert result == "live@example.com"
+        query = conn.fetchrow.await_args_list[0].args[0]
+        assert "NOT EXISTS" in query
+        assert "'undeliverable-email'" in query
+        assert "dead.validity = 'active'" in query
+
+    async def test_other_channels_are_not_filtered(self) -> None:
+        from butlers.daemon import ButlerDaemon
+
+        pool, conn = _make_mock_pool_with_entity_facts(facts_value="telegram:42")
+        daemon = _make_daemon_with_pool(pool)
+
+        await ButlerDaemon._resolve_entity_channel_identifier(
+            daemon, entity_id=_ENTITY_ID, channel="telegram"
+        )
+
+        assert all("undeliverable-email" not in c.args[0] for c in conn.fetchrow.await_args_list)
+
+    async def test_addresses_all_dead_raises_instead_of_returning_none(self) -> None:
+        from butlers.daemon import ButlerDaemon
+        from butlers.entity_facts_channels import NoLiveEmailAddressError
+
+        conn = AsyncMock()
+
+        async def fetchrow(query: str, *args):
+            # The live-address query finds nothing; the existence probe finds a has-email row.
+            return None if "NOT EXISTS" in query else {"present": 1}
+
+        conn.fetchrow = AsyncMock(side_effect=fetchrow)
+        pool = AsyncMock()
+        pool.acquire = lambda: AsyncCtx(conn)
+        daemon = _make_daemon_with_pool(pool)
+
+        with pytest.raises(NoLiveEmailAddressError):
+            await ButlerDaemon._resolve_entity_channel_identifier(
+                daemon, entity_id=_ENTITY_ID, channel="email"
+            )
+
+    async def test_no_addresses_at_all_is_still_none(self) -> None:
+        from butlers.daemon import ButlerDaemon
+
+        pool, _ = _make_mock_pool_with_entity_facts(facts_value=None)
+        daemon = _make_daemon_with_pool(pool)
+
+        assert (
+            await ButlerDaemon._resolve_entity_channel_identifier(
+                daemon, entity_id=_ENTITY_ID, channel="email"
+            )
+            is None
+        )

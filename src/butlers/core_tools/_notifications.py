@@ -29,6 +29,7 @@ from butlers.core_tools._base import (
     NotifyRequestContextInput,
     ToolContext,
 )
+from butlers.entity_facts_channels import NoLiveEmailAddressError
 
 logger = logging.getLogger(__name__)
 
@@ -871,11 +872,37 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 )
                 if posture_refusal is not None:
                     return posture_refusal
-                entity_identifier = await daemon._resolve_entity_channel_identifier(
-                    entity_id=entity_id,
-                    channel=channel,
-                    msg_context=msg_context,
-                )
+                try:
+                    entity_identifier = await daemon._resolve_entity_channel_identifier(
+                        entity_id=entity_id,
+                        channel=channel,
+                        msg_context=msg_context,
+                    )
+                except NoLiveEmailAddressError:
+                    # Every address bounced permanently: nothing is parked or sent, and the
+                    # owner is told why instead of a silent "missing identifier" card.
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason="no_live_address",
+                        metadata={"entity_id": str(entity_id), "retryable": False},
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "code": "no_live_address",
+                        "error": (
+                            f"No live email address for entity {entity_id}: every address on "
+                            "file bounced permanently. Nothing was queued, parked or sent. "
+                            "Ask the owner for a new address."
+                        ),
+                        "retryable": False,
+                    }
                 if entity_identifier is None:
                     # No matching entity_facts triple — validate the dossier, then park only when
                     # this butler has a durable approval-parking implementation.

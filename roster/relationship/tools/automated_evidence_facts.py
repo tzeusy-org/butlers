@@ -24,8 +24,8 @@ Replay is a no-op: the fact identity is ``(subject, predicate, object)`` and the
 fixed, so the central writer reports ``unchanged``. That is what lets each run overlap the last
 checkpoint by an hour to catch rows committed late.
 
-Reading these facts (nudge deferral, Messenger's live-address preference, the owner's door to
-replace a dead address) is slice S2c and not built here.
+Reading these facts is slice S2c: ``tools/away_until.py`` for nudge deferral and
+``ButlerDaemon._resolve_entity_channel_identifier`` for dead-address avoidance. Not built here.
 """
 
 from __future__ import annotations
