@@ -116,7 +116,10 @@ async def test_command_from_non_owner_or_non_primary_falls_through(monkeypatch):
         _post(connector).assert_not_called()
 
 
-@pytest.mark.parametrize("text", ["/reach add bank.example", "reach", "/reachx", "hello /reach"])
+@pytest.mark.parametrize(
+    "text",
+    ["reach", "/reachx", "/reach addx bank.example", "/reach list", "hello /reach add a.example"],
+)
 async def test_only_the_exact_command_is_intercepted(monkeypatch, text):
     _owner(monkeypatch)
     connector = _connector()
@@ -202,3 +205,86 @@ async def test_owner_lookup_failure_still_answers_the_callback(monkeypatch):
     token = mint_reach_revoke_token(uuid4(), chat_id="42", secret=SECRET)
     assert await connector._maybe_handle_reach_callback(_tap(token))
     assert [url.rsplit("/", 1)[-1] for url in _urls(connector)] == ["answerCallbackQuery"]
+
+
+async def test_owner_add_posts_a_proposal_of_matchers_only_and_confirms_on_the_dashboard(
+    monkeypatch,
+):
+    _owner(monkeypatch)
+    connector = _connector()
+    connector._http_client.post = AsyncMock(
+        side_effect=[
+            httpx.Response(200, json={"data": {"status": "proposed"}}),
+            httpx.Response(200, json={"ok": True}),
+        ]
+    )
+    command = _command("/reach add domain:Bank.Example channel:email scope:always")
+    assert await connector._maybe_handle_reach_command(command)
+    first, second = _post(connector).call_args_list
+    assert first.args[0] == "http://dashboard/api/attention/reach/telegram"
+    assert first.kwargs["json"] == {
+        "action": "propose",
+        "sender_id": "42",
+        "chat_id": "42",
+        "sender_domain": "bank.example",
+        "channel": "email",
+        "scope": "always",
+    }
+    assert second.args[0].endswith("/sendMessage")
+    assert second.kwargs["json"]["text"] == "Proposed; confirm on the dashboard at /settings/reach"
+    assert "reply_markup" not in second.kwargs["json"]  # no Telegram confirm button
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/reach add",
+        "/reach add scope:always",
+        "/reach add please let everything through",
+        "/reach add domain:bank.example extra words here too",
+        "/reach add channel:sms",
+        "/reach add domain:a.example domain:b.example",
+        "/reach add person@bank.example",
+        "/reach add kind:nope",
+    ],
+)
+async def test_unparseable_add_is_answered_with_usage_and_proposes_nothing(monkeypatch, text):
+    _owner(monkeypatch)
+    connector = _connector()
+    assert await connector._maybe_handle_reach_command(_command(text))
+    assert [url.rsplit("/", 1)[-1] for url in _urls(connector)] == ["sendMessage"]
+    assert "/reach add" in _post(connector).call_args.kwargs["json"]["text"]
+
+
+async def test_add_from_non_owner_non_primary_or_group_falls_through(monkeypatch):
+    for kwargs, command in (
+        ({"known": False}, _command("/reach add domain:bank.example")),
+        ({"primary": False}, _command("/reach add domain:bank.example")),
+        ({}, _command("/reach add domain:bank.example", chat=-1001)),
+    ):
+        _owner(monkeypatch, **kwargs)
+        connector = _connector()
+        assert not await connector._maybe_handle_reach_command(command)
+        _post(connector).assert_not_called()
+
+
+async def test_owner_add_never_reaches_ingest(monkeypatch):
+    _owner(monkeypatch)
+    connector = _connector()
+    connector._normalize_to_ingest_v1 = AsyncMock()
+    await connector._process_update({"update_id": 1, **_command("/reach add domain:bank.example")})
+    connector._normalize_to_ingest_v1.assert_not_called()
+
+
+async def test_add_status_replies_cover_rate_limit_and_unavailable(monkeypatch):
+    _owner(monkeypatch)
+    for response, expected in (
+        (httpx.Response(200, json={"data": {"status": "too_many_pending"}}), "Too many"),
+        (httpx.Response(503, json={}), "couldn't record"),
+    ):
+        connector = _connector()
+        connector._http_client.post = AsyncMock(
+            side_effect=[response, httpx.Response(200, json={"ok": True})]
+        )
+        assert await connector._maybe_handle_reach_command(_command("/reach add channel:email"))
+        assert expected in _post(connector).call_args_list[1].kwargs["json"]["text"]

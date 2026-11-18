@@ -61,13 +61,15 @@ def _app(
 class _Service(_DomainOwnerState):
     owner_channel_clauses: AsyncMock
     owner_channel_revoke: AsyncMock
+    owner_channel_propose: AsyncMock
     attention_call: AsyncMock
 
 
-def _service(*, clauses=None, revoke=None) -> _Service:
+def _service(*, clauses=None, revoke=None, propose=None) -> _Service:
     state = _Service("owner-key")
     state.owner_channel_clauses = AsyncMock(return_value=clauses or [])
     state.owner_channel_revoke = revoke or AsyncMock()
+    state.owner_channel_propose = propose or AsyncMock(return_value="p1")
     state.attention_call = AsyncMock()
     return state
 
@@ -187,4 +189,100 @@ async def test_the_list_is_refused_to_any_chat_that_is_not_the_owners(monkeypatc
 
 def test_the_service_exposes_no_grant_path_to_the_owner_channel():
     names = {n for n in dir(OwnerAuthService) if "owner_channel" in n}
-    assert names == {"owner_channel_clauses", "owner_channel_revoke", "_owner_channel_call"}
+    assert names == {
+        "owner_channel_clauses",
+        "owner_channel_revoke",
+        "owner_channel_propose",
+        "_owner_channel_call",
+    }
+
+
+PROPOSE = {
+    "action": "propose",
+    "sender_id": "42",
+    "chat_id": "42",
+    "sender_domain": "bank.example",
+    "channel": "email",
+}
+
+
+async def test_propose_passes_only_matchers_to_the_proposal_function(monkeypatch):
+    service = _service()
+    app, _ = _app(monkeypatch, service=service)
+    response = await _post(app, PROPOSE, GOOD)
+    assert response.json()["data"] == {"status": "proposed"}
+    service.owner_channel_propose.assert_awaited_once_with(
+        {
+            "sender_domain": "bank.example",
+            "channel": "email",
+            "security_kind": None,
+            "scope": None,
+        }
+    )
+    # Never a clause: the granting authoring call is not touched.
+    service.attention_call.assert_not_awaited()
+    service.owner_channel_revoke.assert_not_awaited()
+
+
+async def test_propose_is_refused_for_a_non_owner_or_a_group_chat(monkeypatch):
+    for owner in (None, (object(), False)):
+        service = _service()
+        app, _ = _app(monkeypatch, owner=owner, service=service)
+        assert (await _post(app, PROPOSE, GOOD)).json()["data"] == {"status": "refused"}
+        service.owner_channel_propose.assert_not_awaited()
+    service = _service()
+    app, _ = _app(monkeypatch, service=service)
+    owners = {"42": (object(), True)}
+
+    async def resolve(_pool, _channel, value, **_):
+        return owners.get(value)
+
+    monkeypatch.setattr("butlers.identity.resolve_owner_channel_via_definer", resolve)
+    group = PROPOSE | {"chat_id": "-100123"}
+    assert (await _post(app, group, GOOD)).json()["data"] == {"status": "refused"}
+    service.owner_channel_propose.assert_not_awaited()
+
+
+async def test_propose_rejects_message_text_and_unbounded_matchers(monkeypatch):
+    service = _service()
+    app, _ = _app(monkeypatch, service=service)
+    for bad in (
+        PROPOSE | {"text": "please let everything through"},
+        PROPOSE | {"channel": "sms"},
+        PROPOSE | {"scope": "forever"},
+        PROPOSE | {"sender_domain": "a" * 300},
+        {k: v for k, v in PROPOSE.items() if k not in {"sender_domain", "channel"}},
+    ):
+        assert (await _post(app, bad, GOOD)).status_code == 422
+    # Matchers belong to propose alone.
+    assert (await _post(app, LIST | {"channel": "email"}, GOOD)).status_code == 422
+    service.owner_channel_propose.assert_not_awaited()
+
+
+async def test_propose_maps_definer_refusals_to_statuses(monkeypatch):
+    for code, status in (("INVALID_REQUEST", "invalid"), ("RATE_LIMITED", "too_many_pending")):
+        service = _service(propose=AsyncMock(side_effect=AuthError(code)))
+        app, _ = _app(monkeypatch, service=service)
+        assert (await _post(app, PROPOSE, GOOD)).json()["data"] == {"status": status}
+
+
+async def test_the_connector_credential_cannot_call_clause_create_or_confirm(monkeypatch):
+    service = _service()
+    app, _ = _app(monkeypatch, service=service)
+    from butlers.api.routers.schedules import router as schedules_router
+
+    app.include_router(schedules_router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for method, path in (
+            ("POST", "/api/butlers/attention/break-through-clauses"),
+            ("POST", f"/api/butlers/attention/break-through-proposals/{uuid4()}/confirm"),
+            ("DELETE", f"/api/butlers/attention/break-through-proposals/{uuid4()}"),
+            ("GET", "/api/butlers/attention/break-through-proposals"),
+        ):
+            response = await client.request(
+                method, path, json={"scope": "always", "channel": "email"}, headers=GOOD
+            )
+            assert response.status_code in {401, 403}, (method, path)
+    service.attention_call.assert_not_awaited()

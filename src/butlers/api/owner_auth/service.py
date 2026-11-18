@@ -112,7 +112,15 @@ class OwnerAuthService:
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
         """Closed cookie-only authoring surface, independent of D13 factor kinds."""
-        if action not in {"issue", "clause_create", "clause_revoke", "clause_list"}:
+        if action not in {
+            "issue",
+            "clause_create",
+            "clause_revoke",
+            "clause_list",
+            "proposal_list",
+            "proposal_confirm",
+            "proposal_dismiss",
+        }:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:
             raise AuthError("FORBIDDEN")
@@ -150,6 +158,18 @@ class OwnerAuthService:
         await self._owner_channel_call(
             "SELECT dashboard_attention.owner_channel_revoke($1::uuid)", clause_id
         )
+
+    async def owner_channel_propose(self, matchers: dict[str, str | None]) -> str:
+        """Record a PENDING clause proposal from the verified Telegram owner channel.
+
+        Matchers only, validated again inside the definer. A proposal grants nothing until the
+        owner confirms it on the dashboard; there is no clause-creating path from this channel.
+        Raises ``AuthError("INVALID_REQUEST")`` or ``AuthError("RATE_LIMITED")``.
+        """
+        result = await self._owner_channel_call(
+            "SELECT dashboard_attention.owner_channel_propose($1::jsonb)", json.dumps(matchers)
+        )
+        return str(result["id"])
 
     async def _owner_channel_call(self, sql: str, *args: Any) -> dict:
         if self.pool is None:

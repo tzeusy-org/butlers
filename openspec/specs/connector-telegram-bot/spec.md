@@ -147,6 +147,21 @@ The connector SHALL answer an exact `/reach` from the primary owner in a private
 - **AND** `/reach` from a non-owner or from a group chat SHALL fall through
   unanswered as an ordinary message
 
+#### Scenario: Owner /reach add records a pending proposal only
+- **WHEN** a message `/reach add <matcher>` arrives in a private chat from the
+  primary owner, where the matcher words are `domain:`/a bare domain,
+  `channel:`, `kind:` and `scope:` drawn from the closed clause sets
+- **THEN** the connector SHALL NOT ingest the message or invoke a model, SHALL
+  forward only the parsed matchers (never message text) to
+  `POST /api/attention/reach/telegram`, and SHALL reply "Proposed; confirm on
+  the dashboard at /settings/reach" with no confirm button
+- **AND** an unparseable command (no matcher, an unknown or repeated field, an
+  out-of-set value, free text) SHALL be answered with usage and SHALL propose
+  nothing
+- **AND** from a non-owner, a non-primary sender or a group chat the command
+  SHALL fall through as an ordinary message
+- **AND** no Telegram path SHALL create a clause
+
 ### Requirement: Lifecycle Reactions
 Lifecycle reactions SHALL be applied downstream by the pipeline (via `core/channel_reactions.py` and the Messenger butler's telegram tools), not by this transport-only connector. The connector SHALL neither send nor track reactions. The emoji mapping below documents the cross-component behavior for reference.
 

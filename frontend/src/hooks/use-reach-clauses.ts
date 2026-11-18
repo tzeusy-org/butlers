@@ -2,7 +2,13 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { listReachClauses, revokeReachClause } from "@/api/reach.ts";
+import {
+  confirmReachProposal,
+  dismissReachProposal,
+  listReachClauses,
+  listReachProposals,
+  revokeReachClause,
+} from "@/api/reach.ts";
 
 const KEY = ["reach-clauses"] as const;
 
@@ -17,5 +23,34 @@ export function useRevokeReachClause() {
   return useMutation({
     mutationFn: (id: string) => revokeReachClause(id),
     onSettled: () => queryClient.invalidateQueries({ queryKey: KEY }),
+  });
+}
+
+const PROPOSALS_KEY = ["reach-proposals"] as const;
+
+export function useReachProposals() {
+  return useQuery({ queryKey: PROPOSALS_KEY, queryFn: listReachProposals, staleTime: 15_000 });
+}
+
+// Confirm creates a standing interrupt right, so it is HONEST-PENDING: no optimistic update. It
+// refetches both lists on settle (success or failure), since a confirm can fail because the
+// proposal expired or was already consumed.
+export function useConfirmReachProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => confirmReachProposal(id),
+    onSettled: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: PROPOSALS_KEY }),
+        queryClient.invalidateQueries({ queryKey: KEY }),
+      ]),
+  });
+}
+
+export function useDismissReachProposal() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => dismissReachProposal(id),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: PROPOSALS_KEY }),
   });
 }

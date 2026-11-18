@@ -479,8 +479,32 @@ sets `revoked_at` on one still-live clause and does nothing else. `dashboard_att
 unchanged: `clause_create` and `issue` still require the cookie session and CSRF proof. Revoke
 buttons carry `rch1:<clause uuid>:<16 hex>` tokens (`core/reach_tokens.py`) bound to the chat they
 were listed in. The two functions are created in the privileged bootstrap ahead of the grant
-block, so installed and fresh databases both end with the twelve-function interface that
-`finalize_interface` checks.
+block, so installed and fresh databases both end with the interface that `finalize_interface`
+checks.
+
+`/reach add <matcher>` (S3c-2) lets the owner channel *propose* a clause but never create one. The
+words are parsed at the connector (`core/reach_matchers.py`): `domain:`/a bare domain, `channel:`,
+`kind:` and `scope:`, each from the same closed sets as a stored clause, at least one of domain,
+channel or kind, and any other word refuses the whole command. Message text is never forwarded.
+The route's `propose` action calls `owner_channel_propose(jsonb)`, a third `dashboard_attention`
+definer (search_path pinned, `EXECUTE` for `dashboard_auth_api` only, revoked from `PUBLIC`) that
+validates the matchers again and writes one row of the owner-only table
+`dashboard_attention.reach_proposals` (no role but the owner has any privilege on it). A proposal
+expires after 24 hours; an identical live proposal is the same proposal; at most ten may be pending
+(`RATE_LIMITED` beyond that). The connector replies "Proposed; confirm on the dashboard at
+/settings/reach" and offers no Telegram confirm button.
+
+Confirmation is dashboard-only. `dashboard_attention.api` gains `proposal_list` (a read, session
+but no CSRF, like `clause_list`), `proposal_confirm` and `proposal_dismiss` (session and CSRF like
+every other grant), exposed as `GET /api/butlers/attention/break-through-proposals`,
+`POST .../{id}/confirm` and `DELETE .../{id}`. `proposal_confirm` locks the row, refuses a
+consumed, dismissed or expired proposal, inserts the clause through the same store as
+`clause_create` and marks the proposal consumed in one transaction, so a double confirm creates no
+second clause. The `/settings/reach` page lists pending proposals with Confirm (behind a
+`ConfirmDialog`, no optimistic update, refetch on settle) and Dismiss. An installed `api()` gains
+the actions from the `ATTENTION_PROPOSAL_REFRESH` block of `scripts/init-db.sql`. The connector
+credential reaches none of these routes. The interface is now thirteen functions and six tables;
+`scripts/pg_restore.sh` `owner_attention_intact` counts both, lists the new definer and the table.
 
 Privileged bootstrap stages the separate `dashboard_attention` fixed interface
 before the untouched D13 block. Ordinary `core_278` invokes its checked installer

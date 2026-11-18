@@ -6386,7 +6386,7 @@ BEGIN
   RAISE EXCEPTION 'untrusted attention bootstrap namespace'; END IF;
  IF EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='dashboard_attention'
-  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims')
+  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims','reach_proposals')
   AND NOT(c.relkind='r' AND c.relowner=CASE WHEN c.oid=to_regclass('dashboard_attention.bootstrap_configuration')
    THEN current_user::regrole ELSE 'dashboard_attention_owner'::regrole END)) THEN
   RAISE EXCEPTION 'untrusted attention bootstrap table'; END IF;
@@ -6441,7 +6441,8 @@ BEGIN
   ('dashboard_attention.stamps','namespace,task_id,operation,definition_digest,created_at'),
   ('dashboard_attention.candidate_causes','candidate_id,definition_digest,origin,created_at'),
   ('dashboard_attention.final_claims','namespace,task_id,original_next_run_at,definition_digest,revoked'),
-  ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by')
+  ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by'),
+  ('dashboard_attention.reach_proposals','id,sender_domain,channel,security_kind,scope,created_at,expires_at,consumed_at,dismissed_at,clause_id')
  ) expected(relation,columns) LOOP
   IF NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass(item.relation)
    AND c.relkind='r' AND c.relowner=owner_oid
@@ -6476,7 +6477,8 @@ BEGIN
   ('dashboard_attention.remember(uuid,jsonb)','boolean'),
   ('dashboard_attention.candidate_origin(uuid)','jsonb'),
   ('dashboard_attention.owner_channel_list()','jsonb'),
-  ('dashboard_attention.owner_channel_revoke(uuid)','jsonb')
+  ('dashboard_attention.owner_channel_revoke(uuid)','jsonb'),
+  ('dashboard_attention.owner_channel_propose(jsonb)','jsonb')
  ) expected(signature,result) LOOP
   IF NOT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure(item.signature)
    AND p.proowner=owner_oid AND p.prosecdef AND p.prorettype=item.result::regtype
@@ -6490,7 +6492,7 @@ BEGIN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %s',item.signature,grantee_name);
   END LOOP;
  END LOOP;
- IF 12<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
+ IF 13<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
   RAISE EXCEPTION 'unexpected attention function'; END IF;
  REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
  IF to_regclass('public.insight_candidates') IS NOT NULL THEN
@@ -6512,8 +6514,8 @@ BEGIN
  GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.api(text,jsonb) FROM PUBLIC;
  GRANT EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb) TO dashboard_auth_api;
- REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM PUBLIC;
- GRANT EXECUTE ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) FROM PUBLIC;
+ GRANT EXECUTE ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid),
   dashboard_attention.definition_digest(text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb)
   FROM PUBLIC,dashboard_auth_api;
@@ -6695,7 +6697,7 @@ BEGIN
  CREATE FUNCTION dashboard_attention.api(action text,p jsonb) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $api$
  DECLARE s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
-  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid;
+  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid; pr dashboard_attention.reach_proposals%ROWTYPE;
  BEGIN
   SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
   t:=clock_timestamp();
@@ -6706,7 +6708,7 @@ BEGIN
   IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
    OR se.session_epoch<>s.session_epoch
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
-  IF action<>'clause_list' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
+  IF action NOT IN('clause_list','proposal_list') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
    WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
    THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
@@ -6746,6 +6748,25 @@ BEGIN
     'created_at',k.created_at) ORDER BY k.created_at DESC)
     FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
      ORDER BY created_at DESC LIMIT 200) k),'[]'::jsonb));
+  ELSIF action='proposal_list' THEN
+   RETURN jsonb_build_object('proposals',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+    'sender_domain',k.sender_domain,'channel',k.channel,'security_kind',k.security_kind,
+    'scope',k.scope,'created_at',k.created_at,'expires_at',k.expires_at) ORDER BY k.created_at DESC)
+    FROM (SELECT * FROM dashboard_attention.reach_proposals WHERE consumed_at IS NULL
+     AND dismissed_at IS NULL AND expires_at>t ORDER BY created_at DESC LIMIT 50) k),'[]'::jsonb));
+  ELSIF action='proposal_confirm' THEN
+   SELECT * INTO pr FROM dashboard_attention.reach_proposals WHERE id=(p->>'id')::uuid FOR UPDATE;
+   IF NOT FOUND OR pr.consumed_at IS NOT NULL OR pr.dismissed_at IS NOT NULL OR pr.expires_at<=t
+    THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   INSERT INTO public.break_through_clauses(sender_domain,channel,security_kind,scope)
+    VALUES(pr.sender_domain,pr.channel,pr.security_kind,pr.scope) RETURNING id INTO c;
+   UPDATE dashboard_attention.reach_proposals SET consumed_at=t,clause_id=c WHERE id=pr.id;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='proposal_dismiss' THEN
+   UPDATE dashboard_attention.reach_proposals SET dismissed_at=t WHERE id=(p->>'id')::uuid
+    AND consumed_at IS NULL AND dismissed_at IS NULL RETURNING id INTO c;
+   IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   RETURN jsonb_build_object('id',c);
   END IF;
   RETURN '{"error":"INVALID_REQUEST"}';
  END $api$;
@@ -6829,7 +6850,7 @@ BEGIN
  DELETE FROM dashboard_attention.tickets WHERE task_id IS NULL;
  UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
  FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
-  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM %I',n);
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) FROM %I',n);
  END LOOP;
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
@@ -6841,6 +6862,57 @@ REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
 -- cookie session and CSRF proof for every grant. They are created here, before the grant block
 -- finalizes the catalog, so a fresh install (install_interface) and an installed database both
 -- reach the same twelve-function interface. CREATE OR REPLACE keeps owner and ACL; idempotent.
+-- bu-s11n0s.8 S3c-2: the Telegram owner channel may PROPOSE a clause, never create one. A proposal
+-- is matchers only (never message text), expires after 24 hours and means nothing until the
+-- owner confirms it on the dashboard, where the cookie session and CSRF proof of api() create the
+-- real clause. The table is owner-only (no other role has any privilege) and is written solely by
+-- owner_channel_propose, which validates every matcher and caps pending proposals at ten.
+CREATE TABLE IF NOT EXISTS dashboard_attention.reach_proposals (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ sender_domain text, channel text, security_kind text,
+ scope text NOT NULL CHECK(scope IN('always','quiet_hours_only')),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ expires_at timestamptz NOT NULL,
+ consumed_at timestamptz, dismissed_at timestamptz, clause_id uuid,
+ CHECK(num_nonnulls(sender_domain,channel,security_kind)>0),
+ CHECK(sender_domain IS NULL OR (sender_domain=lower(sender_domain)
+  AND length(sender_domain)<=253 AND sender_domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$')),
+ CHECK(channel IS NULL OR channel IN('telegram','email','whatsapp','dashboard')),
+ CHECK(security_kind IS NULL OR security_kind IN('new_sign_in','password_changed','mfa_changed','recovery_changed','deletion_scheduled'))
+);
+ALTER TABLE dashboard_attention.reach_proposals OWNER TO dashboard_attention_owner;
+REVOKE ALL ON TABLE dashboard_attention.reach_proposals FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_propose(p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $propose_owner$
+DECLARE d text; ch text; kind text; sc text; pid uuid; t timestamptz:=clock_timestamp(); k text;
+BEGIN
+ IF p IS NULL OR jsonb_typeof(p)<>'object' THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ FOR k IN SELECT jsonb_object_keys(p) LOOP
+  IF k NOT IN('sender_domain','channel','security_kind','scope')
+   OR jsonb_typeof(p->k) NOT IN('string','null') THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ END LOOP;
+ d:=lower(p->>'sender_domain'); ch:=p->>'channel'; kind:=p->>'security_kind';
+ sc:=COALESCE(p->>'scope','quiet_hours_only');
+ IF num_nonnulls(d,ch,kind)=0
+  OR (d IS NOT NULL AND (length(d)>253 OR d !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'))
+  OR (ch IS NOT NULL AND ch NOT IN('telegram','email','whatsapp','dashboard'))
+  OR (kind IS NOT NULL AND kind NOT IN('new_sign_in','password_changed','mfa_changed','recovery_changed','deletion_scheduled'))
+  OR sc NOT IN('always','quiet_hours_only') THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ -- An identical live proposal is the same proposal: repeating the command is harmless.
+ SELECT id INTO pid FROM dashboard_attention.reach_proposals
+  WHERE consumed_at IS NULL AND dismissed_at IS NULL AND expires_at>t AND scope=sc
+   AND sender_domain IS NOT DISTINCT FROM d AND channel IS NOT DISTINCT FROM ch
+   AND security_kind IS NOT DISTINCT FROM kind LIMIT 1;
+ IF pid IS NOT NULL THEN RETURN jsonb_build_object('id',pid); END IF;
+ IF 10<=(SELECT count(*) FROM dashboard_attention.reach_proposals
+  WHERE consumed_at IS NULL AND dismissed_at IS NULL AND expires_at>t) THEN
+  RETURN '{"error":"RATE_LIMITED"}'; END IF;
+ INSERT INTO dashboard_attention.reach_proposals(sender_domain,channel,security_kind,scope,expires_at)
+  VALUES(d,ch,kind,sc,t+interval '24 hours') RETURNING id INTO pid;
+ RETURN jsonb_build_object('id',pid);
+END $propose_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_propose(jsonb) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_propose(jsonb) FROM PUBLIC;
 CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_list() RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $list_owner$
 BEGIN
@@ -6898,6 +6970,30 @@ BEGIN
  END IF;
 END $attention_api_refresh$;
 -- ATTENTION_API_REFRESH_END
+
+-- ATTENTION_PROPOSAL_REFRESH_BEGIN
+-- bu-s11n0s.8 S3c-2: dashboard_attention.api gains proposal_list (read only, no CSRF like
+-- clause_list), proposal_confirm and proposal_dismiss (session + CSRF as for every grant).
+-- An installed api() is rewritten in place, replacing exactly the CSRF guard, the declaration
+-- line and the tail. Idempotent: a rewritten body no longer carries the old text.
+DO $attention_proposal_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ old_csrf constant text := E'  IF action<>''clause_list'' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ new_csrf constant text := E'  IF action NOT IN(''clause_list'',''proposal_list'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ old_decl constant text := E'  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid;\n BEGIN';
+ new_decl constant text := E'  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid; pr dashboard_attention.reach_proposals%ROWTYPE;\n BEGIN';
+ old_tail constant text := E'     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  ELSIF action=''proposal_list'' THEN\n   RETURN jsonb_build_object(''proposals'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''id'',k.id,\n    ''sender_domain'',k.sender_domain,''channel'',k.channel,''security_kind'',k.security_kind,\n    ''scope'',k.scope,''created_at'',k.created_at,''expires_at'',k.expires_at) ORDER BY k.created_at DESC)\n    FROM (SELECT * FROM dashboard_attention.reach_proposals WHERE consumed_at IS NULL\n     AND dismissed_at IS NULL AND expires_at>t ORDER BY created_at DESC LIMIT 50) k),''[]''::jsonb));\n  ELSIF action=''proposal_confirm'' THEN\n   SELECT * INTO pr FROM dashboard_attention.reach_proposals WHERE id=(p->>''id'')::uuid FOR UPDATE;\n   IF NOT FOUND OR pr.consumed_at IS NOT NULL OR pr.dismissed_at IS NOT NULL OR pr.expires_at<=t\n    THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   INSERT INTO public.break_through_clauses(sender_domain,channel,security_kind,scope)\n    VALUES(pr.sender_domain,pr.channel,pr.security_kind,pr.scope) RETURNING id INTO c;\n   UPDATE dashboard_attention.reach_proposals SET consumed_at=t,clause_id=c WHERE id=pr.id;\n   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''proposal_dismiss'' THEN\n   UPDATE dashboard_attention.reach_proposals SET dismissed_at=t WHERE id=(p->>''id'')::uuid\n    AND consumed_at IS NULL AND dismissed_at IS NULL RETURNING id INTO c;\n   IF c IS NULL THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+BEGIN
+ IF f IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_decl IN definition) > 0
+   AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(replace(definition, old_csrf, new_csrf), old_decl, new_decl), old_tail, new_tail);
+  END IF;
+ END IF;
+END $attention_proposal_refresh$;
+-- ATTENTION_PROPOSAL_REFRESH_END
 
 -- ATTENTION_DIGEST_REFRESH_BEGIN
 -- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery
