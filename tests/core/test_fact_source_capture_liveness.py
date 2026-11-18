@@ -391,3 +391,51 @@ async def test_initial_snapshot_shares_driver_budget_and_preserves_cleanup(monke
     assert report.authority == "owner"
     assert pool.row["request_context"]["_fact_source_report"] == report.to_record()
     assert issuer._reports[inbox] == report
+
+
+@pytest.mark.parametrize(
+    ("custody", "expected"),
+    [("endpoint_held", "third_party"), (None, "owner")],
+    ids=["held-or-unreadable", "unheld"],
+)
+async def test_owner_reached_through_a_held_endpoint_freezes_third_party(
+    monkeypatch, custody, expected
+):
+    """REQ-endpoint-custody-holds-005: the frozen report keeps the owner entity but drops
+    owner authority, so Relationship holds the claim instead of auto-confirming it."""
+    pool = SourcePool()
+    issuer = FactSourceContextRegistry(pool)
+    calls: list[tuple] = []
+
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(entity_id=pool.entity_id, roles=["owner"])
+
+    async def reason(*args):
+        calls.append(args)
+        return custody
+
+    issuer.resolve_identity = resolve
+    monkeypatch.setattr("butlers.core.custody_ingress.owner_source_custody_reason", reason)
+    async with asyncio.timeout(1):
+        report = await issuer.capture_accepted_report(uuid.uuid4(), pool.entity_id)
+    assert report == FactWriteContext(expected, pool.entity_id, pool.created_at, pool.entity_id)
+    assert calls == [(pool, "email", "a@example.test")]
+
+
+async def test_a_custody_read_that_times_out_freezes_third_party(monkeypatch):
+    pool = SourcePool()
+    issuer = FactSourceContextRegistry(pool)
+
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(entity_id=pool.entity_id, roles=["owner"])
+
+    async def hang(*_args):
+        await asyncio.Event().wait()
+
+    issuer.resolve_identity = resolve
+    monkeypatch.setattr(fact_authority, "_CAPTURE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("butlers.core.custody_ingress.owner_source_custody_reason", hang)
+    async with asyncio.timeout(2):
+        report = await issuer.capture_accepted_report(uuid.uuid4(), pool.entity_id)
+    assert report.authority == "third_party"
+    assert report.original_entity_id == pool.entity_id

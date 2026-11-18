@@ -12,6 +12,10 @@ an owner-origin assertion whose principal or admitting channel is the
 dashboard, with no sender entity, yields `owner_device`; a `third_party` origin
 yields `third_party`; an `obligation` or `staffer` origin, and a write with no
 assertion (a deterministic job or service-plane caller), yields `system`. A
+`third_party` write whose sender is the owner entity reached through a held or
+unreadable-custody endpoint (REQ-endpoint-custody-holds-005) SHALL keep the owner
+entity for attribution and store the closed custody reason `endpoint_held` as
+provenance, never as a sixth authority value. A
 write made under an exposed assertion SHALL additionally be stamped tainted,
 every read that returns an episode, fact or rule SHALL return its authority and
 taint stamp, and Profile Facts SHALL admit only untainted owner-class facts. A

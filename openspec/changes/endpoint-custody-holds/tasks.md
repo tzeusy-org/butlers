@@ -39,7 +39,12 @@
         Switchboard identity step checks custody for an owner-looking sender over the owner
         definer's typed candidates (`butlers.core.custody_ingress`, fail closed) and carries
         `source_sender_custody` in the route envelope; memory stamping, owner-ingress
-        engagement and break-through (narrow only) honour it. Approval admission already goes
+        engagement and break-through (narrow only) honour it. The other owner-authority stores
+        honour it too: the Relationship accepted-source report
+        (`FactSourceContextRegistry.capture_accepted_report` freezes `third_party` with the
+        owner entity kept, so an identity claim is held, never auto-confirmed), the Finance
+        expected-signal producer (`runtime_signal_source`, and so subscriptions'
+        `_writer_is_owner`) and the routed prompt preamble, which marks the endpoint held. Approval admission already goes
         through the custody-aware definer. Discretion weighting is unchanged: it grants no
         authority, and demoting it could drop held-chat content REQ-005 keeps as a report.
         The generalist-lead-focused-delegation MODIFIED REQ-module-memory-013 carries the same

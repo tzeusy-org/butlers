@@ -95,6 +95,9 @@ async def runtime_signal_source(pool: Any) -> FinanceSignalSource | None:
     entity_id = context.get("source_entity_id")
     if not isinstance(entity_id, str) or not entity_id.strip():
         return None
+    if context.get("source_custody") == "endpoint_held":
+        # REQ-endpoint-custody-holds-005: a held or unreadable owner endpoint is no owner signal.
+        return None
     try:
         is_owner = await pool.fetchval(
             "SELECT EXISTS (SELECT 1 FROM public.entities "

@@ -85,6 +85,9 @@ REQ-module-memory-013 (task 2.2a):
 - Memory stamps such a session `third_party` with `custody_reason = endpoint_held` in row
   metadata, so its content is an attributed report that cannot steer. Release changes no stored
   row.
+- The other owner-authority stores honour it: the Relationship accepted-source report freezes
+  `third_party` (an identity claim is held, not auto-confirmed), Finance's expected-signal
+  producer gives no owner signal, and the routed prompt preamble marks the endpoint held.
 - Owner-ingress engagement skips it; break-through resolves it to no entity (narrow only).
 
 This is a security fix inside the frozen classify-and-route path (RFC 0038 "Freeze" admits
@@ -105,7 +108,8 @@ the memory scenario is carried in the generalist change's REQ-module-memory-013.
   `roster/switchboard/tools/insight/engagement.py`, `src/butlers/modules/pipeline.py`,
   `src/butlers/core_tools/_switchboard.py`, `src/butlers/switchboard_wiring.py`,
   `src/butlers/core/break_through.py`, `src/butlers/modules/memory/content_authority.py`,
-  `src/butlers/modules/memory/storage.py`.
+  `src/butlers/modules/memory/storage.py`, `src/butlers/core/fact_authority.py`,
+  `roster/finance/tools/expected_signals.py`.
 - Specs: this change's endpoint-custody-holds spec and a MODIFIED REQ-module-memory-013 (D3);
   the same scenario is carried in generalist-lead-focused-delegation's REQ-module-memory-013.
 - Tests: `tests/migrations/test_resolve_owner_triple_migration.py`,
@@ -114,7 +118,11 @@ the memory scenario is carried in the generalist change's REQ-module-memory-013.
   `tests/migrations/test_custody_egress_fence.py`, `tests/daemon/test_notify_custody_default.py`,
   `tests/chronicler/test_gap_interview_telegram.py`, `tests/core/test_custody_ingress.py`,
   `tests/modules/memory/test_content_authority.py`,
-  `roster/switchboard/tests/test_owner_ingress_engagement.py`.
+  `roster/switchboard/tests/test_owner_ingress_engagement.py`,
+  `tests/core/test_fact_source_capture_liveness.py`,
+  `tests/integration/test_relationship_fact_content_authority.py`,
+  `roster/finance/tests/test_expected_signals.py`,
+  `tests/daemon/test_route_execute_async_dispatch.py`.
 - Docs: `docs/identity_and_secrets/owner-identity.md`, `docs/modules/approvals.md`,
   `docs/data_and_storage/schema-topology.md`, `docs/modules/memory.md`.
 - No security.md, manifesto or RFC amendment: the design's authority amendments stay unadopted.
