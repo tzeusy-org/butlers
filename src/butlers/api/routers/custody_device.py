@@ -37,7 +37,8 @@ router = APIRouter(
 )
 
 _CASE_SQL = (
-    "SELECT id::text AS id, state FROM public.fleet_cases WHERE correlation_key = $1 LIMIT 1"
+    "SELECT id::text AS id, state FROM public.fleet_cases WHERE correlation_key = $1 "
+    "ORDER BY (state <> 'closed') DESC, opened_at DESC, id DESC LIMIT 1"
 )
 _ENDPOINT_SQL = (
     "SELECT 1 FROM connector_registry WHERE connector_type = 'owntracks' "
@@ -133,7 +134,9 @@ async def bind_device(episode_id: uuid.UUID, body: DeviceBinding, request: Reque
 
 
 @router.get("/{episode_id}/device", response_model=ApiResponse[dict[str, Any]])
-async def read_device(episode_id: uuid.UUID, db: Db) -> Any:
+async def read_device(episode_id: uuid.UUID, request: Request, db: Db) -> Any:
+    if getattr(getattr(request.state, "owner_authority", None), "method", None) != "cookie":
+        return _error(403, "CUSTODY_FORBIDDEN", "Owner cookie authentication required.")
     pool = db.pool("switchboard")
     case = await _open_case(pool, episode_id)
     if case is None:

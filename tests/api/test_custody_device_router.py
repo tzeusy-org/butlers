@@ -170,3 +170,13 @@ def test_the_read_returns_the_judged_evidence_and_marks_it_evidence_only() -> No
     data = _client(pool).get(f"/api/custody/episodes/{EPISODE}/device").json()["data"]
     assert data["bound"] is True and data["evidence_only"] is True
     assert data["last_fix"]["status"] == "known"
+
+
+def test_the_case_lookup_prefers_the_active_case_over_a_lapsed_one() -> None:
+    sql = custody_device._CASE_SQL
+    assert "ORDER BY (state <> 'closed') DESC, opened_at DESC" in sql
+
+
+def test_reading_the_device_needs_cookie_authority() -> None:
+    url = f"/api/custody/episodes/{EPISODE}/device"
+    assert _client(_pool(), method="api_key").get(url).status_code == 403
