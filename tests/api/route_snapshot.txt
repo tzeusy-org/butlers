@@ -162,6 +162,7 @@ OP GET /api/custody/episodes/{episode_id}/device/candidates 2a2301381f17
 OP GET /api/custody/holds 638eb60aa6c8
 OP GET /api/custody/security-questions b3437a49d8c4
 OP GET /api/custody/security-questions/{event_id} 99af24912899
+OP GET /api/custody/targets 6bb272c17ef1
 OP GET /api/dashboard/briefing f41083e3f0c0
 OP GET /api/data/export/download/{export_id} 5669ed0c101b
 OP GET /api/decision-sets/{set_id} b41b7c8a201c
@@ -868,6 +869,7 @@ ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/device/candidates' name=l
 ROUTE APIRoute GET '/api/custody/holds' name=list_holds op=list_holds_api_custody_holds_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions' name=list_security_questions op=list_security_questions_api_custody_security_questions_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions/{event_id}' name=read_security_question op=read_security_question_api_custody_security_questions__event_id__get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/targets' name=list_targets op=list_targets_api_custody_targets_get tags=custody schema=True
 ROUTE APIRoute GET '/api/dashboard/briefing' name=get_dashboard_briefing op=get_dashboard_briefing_api_dashboard_briefing_get tags=dashboard-briefing schema=True
 ROUTE APIRoute GET '/api/data/export/download/{export_id}' name=download_export op=download_export_api_data_export_download__export_id__get tags=data-ops schema=True
 ROUTE APIRoute GET '/api/decision-sets/{set_id}' name=get_decision_set op=get_decision_set_api_decision_sets__set_id__get tags=decision-sets schema=True

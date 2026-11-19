@@ -65,6 +65,36 @@ export async function disposeHold(
   return response.data;
 }
 
+export type HoldReason = "lost" | "stolen" | "replaced" | "disowned_access";
+
+export interface CustodyTarget {
+  fact_id: string;
+  kind: "has-email" | "has-handle" | "has-phone";
+  /** Masked hint, never the whole identifier. */
+  hint: string;
+  held: boolean;
+}
+
+/** The owner's own channels as masked hints, for a manual hold. */
+export async function listCustodyTargets(): Promise<CustodyTarget[]> {
+  const response = await apiFetch<Envelope<{ candidates: CustodyTarget[] }>>("/custody/targets");
+  return response.data.candidates;
+}
+
+/** Hold the owner-selected channels. The server decides nothing else: it takes only fact ids it listed. */
+export async function holdChannels(request: {
+  command_id: string;
+  fact_ids: string[];
+  reason: HoldReason;
+}): Promise<{ outcome: string }> {
+  const response = await apiFetch<Envelope<{ outcome: string }>>("/custody/holds", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  return response.data;
+}
+
 export async function getCustodyCase(episodeId: string): Promise<CustodyCase> {
   const response = await apiFetch<Envelope<CustodyCase>>(
     `/custody/episodes/${encodeURIComponent(episodeId)}/case`,

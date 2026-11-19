@@ -2,8 +2,9 @@ import { Link } from "react-router";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { disposeHold, listCustodyHolds } from "@/api/custody.ts";
-import type { CustodyHold } from "@/api/custody.ts";
+import { disposeHold, holdChannels, listCustodyHolds, listCustodyTargets } from "@/api/custody.ts";
+import type { CustodyHold, HoldReason } from "@/api/custody.ts";
+import { ApiError } from "@/api/client.ts";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
 
@@ -11,9 +12,9 @@ import { Time } from "@/components/ui/time";
 // CustodyPage — route /custody
 //
 // The owner's endpoint holds: what is held (a kind of channel, never an address), since when and
-// why, with release and replace. A failed read is "unavailable", never "nothing held": an outage
-// must not look like clear. Holding a channel starts from a security question (/security) or the
-// host command, where the owner's own channels are listed with masked hints.
+// why, with release and replace, and a "Hold a channel" action over the owner's own channels
+// (masked hints; the page posts back only the fact ids the server listed). A failed read is
+// "unavailable", never "nothing held": an outage must not look like clear.
 // ---------------------------------------------------------------------------
 
 const TARGET: Record<string, string> = {
@@ -85,6 +86,143 @@ function HoldRow({ hold }: { hold: CustodyHold }) {
   );
 }
 
+const REASONS: { value: HoldReason; label: string }[] = [
+  { value: "disowned_access", label: "Someone else may have access" },
+  { value: "stolen", label: "Stolen" },
+  { value: "lost", label: "Lost" },
+  { value: "replaced", label: "Replaced" },
+];
+
+const KIND_LABEL: Record<string, string> = {
+  "has-email": "Email",
+  "has-handle": "Messaging handle",
+  "has-phone": "Phone",
+};
+
+function HoldAChannel() {
+  const queryClient = useQueryClient();
+  const targets = useQuery({ queryKey: ["custody-targets"], queryFn: listCustodyTargets, retry: false });
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
+  const [reason, setReason] = useState<HoldReason>("lost");
+  const [confirming, setConfirming] = useState(false);
+  // One command id per page view, so a repeated click or a retry is the same command.
+  const [commandId] = useState(() => crypto.randomUUID());
+  const hold = useMutation({
+    mutationFn: () => holdChannels({ command_id: commandId, fact_ids: [...ticked], reason }),
+    gcTime: 0,
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["custody-holds"] });
+      void queryClient.invalidateQueries({ queryKey: ["custody-targets"] });
+    },
+  });
+  const refused = hold.error instanceof ApiError && hold.error.status === 409;
+  const unknown = hold.error !== null && !refused;
+  const toggle = (id: string) => {
+    const next = new Set(ticked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setTicked(next);
+    setConfirming(false);
+  };
+  if (targets.isLoading) return <p role="status">Loading your channels…</p>;
+  if (targets.isError || !targets.data) {
+    return (
+      <section className="space-y-2" aria-labelledby="hold-heading">
+        <h2 id="hold-heading" className="font-medium">
+          Hold a channel
+        </h2>
+        <p role="alert" className="text-sm">
+          Your channels could not be loaded, so nothing can be held from here. Nothing was changed.
+        </p>
+        <Button variant="outline" onClick={() => void targets.refetch()}>
+          Retry
+        </Button>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-3" aria-labelledby="hold-heading">
+      <h2 id="hold-heading" className="font-medium">
+        Hold a channel
+      </h2>
+      <p className="text-sm text-muted-foreground">
+        A held channel stops sending until you release it. Pick only the channels that may be
+        compromised.
+      </p>
+      {targets.data.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No owner channels are on file to hold.</p>
+      ) : (
+        <fieldset className="space-y-2">
+          <legend className="sr-only">Channels to hold</legend>
+          {targets.data.map((target) => (
+            <label key={target.fact_id} className="flex min-h-11 items-center gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={ticked.has(target.fact_id)}
+                disabled={target.held}
+                onChange={() => toggle(target.fact_id)}
+              />
+              <span>
+                {KIND_LABEL[target.kind] ?? "Channel"} {target.hint}
+                {target.held ? " (already held)" : ""}
+              </span>
+            </label>
+          ))}
+          <label className="flex items-center gap-3 text-sm">
+            Why
+            <select
+              value={reason}
+              onChange={(event) => setReason(event.target.value as HoldReason)}
+              className="min-h-11 rounded border px-2"
+            >
+              {REASONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </fieldset>
+      )}
+      {!confirming ? (
+        <Button variant="destructive" disabled={ticked.size === 0} onClick={() => setConfirming(true)}>
+          Hold the ticked channels
+        </Button>
+      ) : (
+        <div className="space-y-2">
+          <p className="text-sm">
+            Hold {ticked.size} channel{ticked.size === 1 ? "" : "s"}? Sends through them stop until
+            you release.
+          </p>
+          <div className="flex flex-wrap gap-3">
+            <Button variant="destructive" disabled={hold.isPending} onClick={() => hold.mutate()}>
+              Confirm hold
+            </Button>
+            <Button variant="outline" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      {hold.isSuccess && (
+        <p role="status" className="text-sm">
+          The ticked channels are held.
+        </p>
+      )}
+      {refused && (
+        <p role="alert" className="text-sm">
+          Those channels could not be held. Nothing was changed; check the selection.
+        </p>
+      )}
+      {unknown && (
+        <p role="alert" className="text-sm">
+          The hold may not have been saved. Reload this page to see whether it was.
+        </p>
+      )}
+    </section>
+  );
+}
+
 export default function CustodyPage() {
   const query = useQuery({ queryKey: ["custody-holds"], queryFn: listCustodyHolds, retry: false });
   if (query.isLoading) return <p role="status">Loading holds…</p>;
@@ -113,10 +251,7 @@ export default function CustodyPage() {
           ))}
         </ul>
       )}
-      <p className="text-sm text-muted-foreground">
-        To hold a channel, answer <Link to="/security" className="underline">a security question</Link>{" "}
-        or use the host command.
-      </p>
+      <HoldAChannel />
     </div>
   );
 }

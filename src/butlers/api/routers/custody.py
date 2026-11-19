@@ -91,6 +91,12 @@ async def list_holds(request: Request) -> Any:
     return await _custody(request, "list", {})
 
 
+@router.get("/targets", response_model=ApiResponse[dict[str, Any]])
+async def list_targets(request: Request) -> Any:
+    """The owner's own channels as masked hints and fact ids, for a manual hold."""
+    return await _custody(request, "list", {}, call="custody_candidates_call", writes=frozenset())
+
+
 @router.post("/holds", response_model=ApiResponse[dict[str, Any]])
 async def hold(body: HoldRequest, request: Request) -> Any:
     return await _custody(request, "hold", body.model_dump(mode="json"))
