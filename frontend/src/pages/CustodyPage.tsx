@@ -156,11 +156,14 @@ function HoldAChannel() {
       void queryClient.invalidateQueries({ queryKey: ["custody-targets"] });
     },
   });
-  const refused = hold.error instanceof ApiError && hold.error.status === 409;
+  const refusal =
+    hold.error instanceof ApiError && hold.error.status === 409
+      ? hold.error
+      : null;
+  const refused = refusal !== null;
   const conflict =
-    refused &&
-    (hold.error.detail as { reason?: string } | undefined)?.reason ===
-      "command_conflict";
+    (refusal?.detail as { reason?: string } | undefined)?.reason ===
+    "command_conflict";
   const unknown = hold.error !== null && !refused;
   const toggle = (id: string) => {
     const next = new Set(ticked);

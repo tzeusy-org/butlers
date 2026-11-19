@@ -232,43 +232,49 @@ def _exists(dbs) -> bool:
 
 
 def test_the_last_schema_stepping_down_to_351_drops_the_function(dbs) -> None:
-    """Two schema chains at core_352 share one function; only the last one leaving drops it."""
-    versions = {"first_chain": "core_352", "second_chain": "core_352"}
+    """Two schema chains at core_352 share one function; only the last one leaving drops it.
+
+    The migrated database already holds two ``alembic_version`` tables (``public`` for core and
+    ``relationship`` for its chain); the test points both at core_352 and restores them after.
+    """
     with dbs["admin"].begin() as c:
-        # Every real core chain reads as already stepped down, so only the two below count.
-        for schema in (
+        schemas = (
             c.execute(
                 text(
                     "SELECT n.nspname FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace "
-                    "WHERE t.relname = 'alembic_version' AND t.relkind IN ('r', 'p')"
+                    "WHERE t.relname = 'alembic_version' AND t.relkind IN ('r', 'p') "
+                    "AND left(n.nspname, 3) <> 'pg_' AND n.nspname <> 'information_schema' "
+                    "ORDER BY n.nspname"
                 )
             )
             .scalars()
             .all()
-        ):
-            c.execute(
-                text(
-                    f"UPDATE \"{schema}\".alembic_version SET version_num = 'core_351' "
-                    "WHERE version_num ~ '^core_'"
-                )
-            )
-        for schema, version in versions.items():
-            c.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
-            c.execute(
-                text(
-                    f'CREATE TABLE IF NOT EXISTS "{schema}".alembic_version '
-                    "(version_num varchar(32) NOT NULL)"
-                )
-            )
-            c.execute(text(f'DELETE FROM "{schema}".alembic_version'))
-            c.execute(text(f"INSERT INTO \"{schema}\".alembic_version VALUES ('{version}')"))
-    assert _exists(dbs)
-    _step(dbs, "downgrade")  # first leaves while second is still at 352: the function stays
-    assert _exists(dbs)
-    with dbs["admin"].begin() as c:
-        c.execute(text("UPDATE first_chain.alembic_version SET version_num = 'core_351'"))
-    _step(dbs, "downgrade")  # second is the last one still at 352: the function goes
-    assert not _exists(dbs)
-    with dbs["admin"].begin() as c:
-        c.execute(text("DROP SCHEMA first_chain CASCADE"))
-        c.execute(text("DROP SCHEMA second_chain CASCADE"))
+        )
+        assert len(schemas) >= 2
+        saved = {
+            schema: c.execute(text(f'SELECT version_num FROM "{schema}".alembic_version')).all()
+            for schema in schemas
+        }
+    first, second = schemas[0], schemas[1]
+
+    def point(schema: str, version: str) -> None:
+        with dbs["admin"].begin() as c:
+            c.execute(text(f"UPDATE \"{schema}\".alembic_version SET version_num = '{version}'"))
+
+    try:
+        for schema in schemas:
+            point(schema, "core_352" if schema in (first, second) else "core_351")
+        assert _exists(dbs)
+        _step(dbs, "downgrade")  # first leaves while second is still at 352: the function stays
+        assert _exists(dbs)
+        point(first, "core_351")
+        _step(dbs, "downgrade")  # second is the last one still at 352: the function goes
+        assert not _exists(dbs)
+    finally:
+        with dbs["admin"].begin() as c:
+            for schema, rows in saved.items():
+                c.execute(text(f'DELETE FROM "{schema}".alembic_version'))
+                for (version,) in rows:
+                    c.execute(
+                        text(f'INSERT INTO "{schema}".alembic_version VALUES (:v)'), {"v": version}
+                    )
