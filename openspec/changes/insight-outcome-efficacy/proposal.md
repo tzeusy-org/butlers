@@ -47,6 +47,17 @@ to RFC 0011 as RFC 0038 keeps it ("Remains; candidates carry taint"). It is dete
 route, session, delegation or model-reachable tool, and changes no delivery, so it is conforming
 text under the recorded owner decision for conforming doctrine and spec text.
 
+Beyond the adopted design, the requirement adds conservative refinements that only ever exclude
+an observation or settle it as unknown, never count it in an arm:
+
+- three excluded exposures the design does not name: `held_custody` (delivery refused by an
+  endpoint custody hold), `held_unverified` (the premise could not be checked at send) and
+  `failed` (the transport gave up);
+- the SHALL line that a custody-refused delivery is `held_custody`, never a holdout, because a
+  lost-device window says nothing about the owner's attention;
+- a probe flip first observed after the window closed is never `resolved`: it is `persisted`
+  when a check at or after the window end saw the premise holding, otherwise `unmeasurable`.
+
 ## Impact
 
 - Code: `alembic/versions/core/core_353_insight_outcomes.py`,

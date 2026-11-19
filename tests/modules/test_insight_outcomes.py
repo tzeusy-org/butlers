@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.core.custody_egress import CustodyEgressRefused
 from butlers.core.insight_premise import owner_condition_premise, probe_premise
 from butlers.tools.switchboard.insight import broker, outcomes
 
@@ -51,6 +52,13 @@ def test_exposure_names_what_reached_the_owner(status, metadata, delivery_ref, c
     assert exposure in outcomes.EXPOSURES
 
 
+def test_the_custody_pattern_matches_the_transport_refusal_with_an_escaped_wildcard():
+    # The ledger reason carries CustodyEgressRefused's own message; `_` is a LIKE wildcard.
+    assert outcomes._CUSTODY_HELD in str(CustodyEgressRefused("endpoint_held"))
+    assert outcomes._CUSTODY_HELD not in str(CustodyEgressRefused("eligibility_unknown"))
+    assert outcomes._CUSTODY_HELD_LIKE == "%endpoint\\_held%"
+
+
 def test_the_arms_are_disjoint_and_custody_is_never_a_holdout():
     assert not outcomes.TREATED_EXPOSURES & outcomes.HOLDOUT_EXPOSURES
     assert not (outcomes.TREATED_EXPOSURES | outcomes.HOLDOUT_EXPOSURES) & (
@@ -75,13 +83,16 @@ def _sweep_pool(row: dict, reading) -> tuple[MagicMock, AsyncMock]:
     return pool, conn
 
 
-def _open_row(*, window_end: datetime, unknown_checks: int = 0) -> dict:
+def _open_row(
+    *, window_end: datetime, unknown_checks: int = 0, last_checked_at: datetime | None = None
+) -> dict:
     return {
         "candidate_id": uuid.uuid4(),
         "premise": '{"kind": "probe", "butler": "finance", "probe": "bill_still_pending"}',
         "proposed_at": window_end - outcomes.OBSERVATION_WINDOW,
         "window_end": window_end,
         "unknown_checks": unknown_checks,
+        "last_checked_at": last_checked_at,
     }
 
 
@@ -94,27 +105,53 @@ def _settled(conn: AsyncMock):
 
 
 @pytest.mark.parametrize(
-    ("reading", "window_open", "unknown_checks", "expected"),
+    ("reading", "window_open", "unknown_checks", "expected", "last_check"),
     [
-        (("holds", None, None, None), True, 0, None),
-        (("holds", None, None, None), False, 0, ("persisted", None, None, None)),
+        (("holds", None, None, None), True, 0, None, None),
+        (("holds", None, None, None), False, 0, ("persisted", None, None, None), None),
         (
             ("resolved", _NOW, "observed_by", "unspecified"),
             True,
             0,
             ("resolved", _NOW, "observed_by", "unspecified"),
+            None,
         ),
-        (("unknown", None, None, None), True, 0, None),
-        (("unknown", None, None, None), True, 2, ("unmeasurable", None, None, None)),
-        (("unknown", None, None, None), False, 0, ("unmeasurable", None, None, None)),
+        (("unknown", None, None, None), True, 0, None, None),
+        (("unknown", None, None, None), True, 2, ("unmeasurable", None, None, None), None),
+        (("unknown", None, None, None), False, 0, ("unmeasurable", None, None, None), None),
+        # A probe flip seen only after the window closed is never `resolved` (#5917 F1): the
+        # flip may straddle the window end (late sweep, outage, backlog), so it is unknowable...
+        (
+            ("resolved", _NOW, "observed_by", "unspecified"),
+            False,
+            0,
+            ("unmeasurable", None, None, None),
+            _NOW - timedelta(days=1),
+        ),
+        (
+            ("resolved", _NOW, "observed_by", "unspecified"),
+            False,
+            0,
+            ("unmeasurable", None, None, None),
+            None,
+        ),
+        # ...unless a check at or after the window end already saw it holding.
+        (
+            ("resolved", _NOW, "observed_by", "unspecified"),
+            False,
+            0,
+            ("persisted", None, None, None),
+            _NOW - timedelta(seconds=1),
+        ),
     ],
 )
 async def test_sweep_settles_once_and_never_calls_unknown_ineffective(
-    monkeypatch, reading, window_open, unknown_checks, expected
+    monkeypatch, reading, window_open, unknown_checks, expected, last_check
 ):
     window_end = _NOW + timedelta(days=1) if window_open else _NOW - timedelta(seconds=1)
     pool, conn = _sweep_pool(
-        _open_row(window_end=window_end, unknown_checks=unknown_checks), reading
+        _open_row(window_end=window_end, unknown_checks=unknown_checks, last_checked_at=last_check),
+        reading,
     )
     monkeypatch.setattr(outcomes, "read_premise", AsyncMock(return_value=reading))
 
@@ -339,11 +376,8 @@ class TestInsightOutcomeLedger:
             premise=probe_premise("finance", "bill_still_pending", {"bill_id": "not-a-uuid"}),
             now=now,
         )
-        refused = {
-            "status": "error",
-            "error": "Delivery refused before provider start: an endpoint in this send is under "
-            "an owner custody hold (endpoint_held).",
-        }
+        # The transport's own refusal text, as the broker's failed ledger row carries it.
+        refused = {"status": "error", "error": str(CustodyEgressRefused("endpoint_held"))}
         for attempt in range(3):
             await broker.delivery_cycle(
                 outcome_pool,

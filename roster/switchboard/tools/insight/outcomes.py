@@ -59,7 +59,10 @@ EXPOSURES = TREATED_EXPOSURES | HOLDOUT_EXPOSURES | EXCLUDED_EXPOSURES
 
 _TERMINAL = ("delivered", "expired", "filtered", "withdrawn")
 _SHADOWING = frozenset({"dedup", "cooldown"})
+#: The refusal reason CustodyEgressRefused names in its message, which the broker's failed
+#: ledger row carries; ``_`` is a LIKE wildcard, so the pattern escapes it.
 _CUSTODY_HELD = "endpoint_held"
+_CUSTODY_HELD_LIKE = "%" + _CUSTODY_HELD.replace("_", "\\_") + "%"
 
 
 def _obj(value: Any) -> dict[str, Any]:
@@ -145,10 +148,10 @@ async def enroll_terminal_candidates(
             SELECT DISTINCT notification_ref FROM public.attention_ledger
             WHERE source = 'insight' AND outcome = 'failed'
               AND notification_ref = ANY($1::text[])
-              AND reason LIKE '%' || $2 || '%'
+              AND reason LIKE $2
             """,
             [str(i) for i in ids],
-            _CUSTODY_HELD,
+            _CUSTODY_HELD_LIKE,
         )
     }
     added = 0
@@ -261,7 +264,7 @@ async def sweep_outcomes(
             rows = await conn.fetch(
                 """
                 SELECT candidate_id, premise::text AS premise, proposed_at, window_end,
-                       unknown_checks
+                       unknown_checks, last_checked_at
                 FROM public.insight_outcomes
                 WHERE outcome IS NULL
                 ORDER BY window_end
@@ -282,6 +285,16 @@ async def sweep_outcomes(
                 if state == "resolved" and resolved_at is not None:
                     if precision == "exact" and resolved_at > row["window_end"]:
                         outcome = "persisted"  # resolved, but only after the window closed
+                    elif precision == "observed_by" and resolved_at > row["window_end"]:
+                        # The probe only says it flipped since the last check. Never resolved
+                        # past the window: a flip after a check that already saw the closed
+                        # window holding is persisted; a flip that may straddle the window end
+                        # (a late sweep, an outage, a backlog) has no knowable side.
+                        last = row["last_checked_at"]
+                        if last is not None and last >= row["window_end"]:
+                            outcome = "persisted"
+                        else:
+                            outcome = "unmeasurable"
                     else:
                         outcome = "resolved"
                 elif state == "holds":
