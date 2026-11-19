@@ -249,6 +249,9 @@ ticking a step is browser-local progress and never releases a hold or answers a 
 A failed read renders unavailable, never clear. The case page also offers "Your device": the owner
 picks one registered OwnTracks endpoint (`GET .../device/candidates`, then `PUT .../device`) and sees
 the server-judged last fix as a place and an age; it is context only and never answers a question.
+"Hold a channel" on the same page lists the owner's own channels as masked hints (`GET
+/api/custody/targets`, the content-blind `public.custody_candidates_dashboard`, core_352) and posts only
+the fact ids the owner ticks to the hold API after a confirmation step.
 
 The fence fails closed and does not share the permissions matrix's handling of a
 failed read: no pool, a lookup error, a non-boolean answer or an unnameable target refuses with
