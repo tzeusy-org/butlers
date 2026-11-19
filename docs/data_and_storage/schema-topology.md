@@ -78,6 +78,8 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   them, from a current dashboard owner session or the host. Since core_348 a release or replace
   also closes the episode's fleet case once every generation of that episode is resolved, and
   core_349 adds the content-blind `public.custody_target_episode` read beside `custody_target_held`.
+  core_351 adds `public.custody_case_held(correlation_key)`, a boolean the fleet-case lapse sweep
+  uses so an `endpoint_custody:` case never lapses while its episode still has an unreleased hold.
   See
   [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
 - **`public.security_questions`** and **`public.security_answers`** -- One durable "was this

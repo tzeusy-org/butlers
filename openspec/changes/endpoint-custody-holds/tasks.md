@@ -166,6 +166,15 @@
       candidate read outside a security question; today the hold starts from `/security` or the
       host command) and the device-binding control for `PUT /api/custody/episodes/{id}/device`
       (#5911, TODO until it merges).
+- [x] 2.4e No lapse while held (REQ-010 closure half, bu-s11n0s.1.1, core_351): the fleet-case
+      lapse sweep skips an `endpoint_custody:<episode>` case while any hold of that episode is
+      unreleased, so a quiet hold older than seven days is never closed `lapsed` and a later
+      release never opens a second case under the same key. The sweep's role cannot read
+      `custody_holds`; it asks the content-blind `public.custody_case_held(correlation_key)`
+      (boolean only, granted like `custody_target_held`). The exemption is chosen over opening
+      the case at posture `active`: posture is mutable by Switchboard's ordinary
+      `propose_posture`, so a later silent/routine proposal would reopen the hole, while the
+      exemption follows the hold itself. A custody case with no unreleased hold lapses normally.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
   - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's
