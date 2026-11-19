@@ -122,7 +122,7 @@ def summarize(
             summary[name] = {"total": value.get("total")}  # counts only, not the type breakdown
         elif _scalar(value) and name in payload:
             summary[name] = value
-    if (contributor, kind) == ("chronicler", "device_last_fix"):
+    if kind == "device_last_fix":  # the kind is unique to the device-fix contributor
         return _stale_device_fix(summary, now or datetime.now(UTC))
     return summary
 
