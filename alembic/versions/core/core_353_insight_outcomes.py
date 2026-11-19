@@ -1,7 +1,7 @@
 """Insight outcome ledger and class-efficacy table, observe-only (bu-s11n0s.15 S1).
 
 Revision ID: core_353
-Revises: core_350 (rechain onto core_352 once #5914 and #5915 land)
+Revises: core_352
 Create Date: 2026-11-19 00:00:00.000000
 
 openspec change ``insight-outcome-efficacy``, REQ-proactive-insight-engine-037. Did a premised
@@ -39,7 +39,7 @@ from alembic import op
 from butlers.db_authority.roles import butler_roles
 
 revision = "core_353"
-down_revision = "core_350"
+down_revision = "core_352"
 branch_labels = None
 depends_on = None
 

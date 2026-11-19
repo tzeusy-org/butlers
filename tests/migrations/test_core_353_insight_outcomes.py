@@ -53,7 +53,7 @@ def test_tables_are_fenced_to_switchboard_and_round_trip(postgres_container) -> 
                 assert row.relforcerowsecurity is False
                 assert row.owned is True  # the executor that runs migrations and backups
                 assert (row.sb, row.other, row.sb_del, row.policies) == (True, False, False, 1)
-        command.downgrade(config, "core_350")
+        command.downgrade(config, "core_352")
         with engine.connect() as c:
             assert c.execute(_PRESENT).scalar() is False
         command.downgrade(config, "core_349")  # already gone: tolerated
