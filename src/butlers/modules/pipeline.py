@@ -3135,7 +3135,12 @@ class MessagePipeline:
                                         and identity_result.is_owner
                                         and not isinstance(captured_custody, CustodyUnread)
                                     ):
-                                        mark_owner_custody(identity_result, captured_custody)
+                                        # Keep the stricter verdict: held if either read
+                                        # (capture's or the batch's own) says held.
+                                        mark_owner_custody(
+                                            identity_result,
+                                            captured_custody or identity_result.custody_reason,
+                                        )
                                 else:
                                     from butlers.tools.switchboard.identity.inject import (
                                         resolve_and_inject_identity,

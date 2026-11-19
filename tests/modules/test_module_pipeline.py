@@ -5181,3 +5181,80 @@ async def test_process_routes_scrubbed_text_and_withholds_it_on_detector_failure
     assert all("482913" not in prompt for prompt in prompts)
     assert "[auth-code withheld" in prompts[0]
     assert "[content withheld]" in prompts[1]
+
+
+@pytest.mark.parametrize(
+    ("captured", "batch", "expected"),
+    [
+        (None, "endpoint_held", "endpoint_held"),
+        ("endpoint_held", None, "endpoint_held"),
+        (None, None, None),
+    ],
+    ids=["batch-fresher-held", "capture-held", "both-unheld"],
+)
+async def test_decomposition_owner_keeps_the_stricter_custody_verdict(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+    captured: str | None,
+    batch: str | None,
+    expected: str | None,
+):
+    """Slice 3b review: capture's "unheld" never overwrites a fresher batch "held"."""
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
+
+    owner_entity = uuid4()
+    messages = [
+        {
+            "message_id": "m1",
+            "sender_identity": "111@s.whatsapp.net",
+            "sender": "Owner",
+            "sender_entity_id": str(owner_entity),
+            "text": "hello",
+        }
+    ]
+    primary = IdentityResolutionResult(
+        preamble="[Source: Owner, via whatsapp_jid]",
+        entity_id=owner_entity,
+        is_owner=True,
+    )
+    from butlers.core.custody_ingress import mark_owner_custody
+
+    mark_owner_custody(primary, batch)
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="[]", success=True, tool_calls=[])
+
+    issuer = MagicMock()
+    issuer.capture_accepted_report = AsyncMock()
+    issuer.captured_custody = MagicMock(return_value=captured)
+    pipeline = MessagePipeline(
+        MagicMock(), dispatch, source_butler="switchboard", enable_identity_resolution=True
+    )
+    pipeline._load_decomp_conversation_messages = AsyncMock(  # type: ignore[attr-defined]
+        return_value=messages
+    )
+    pipeline._resolve_decomp_speakers = AsyncMock(  # type: ignore[attr-defined]
+        return_value=(messages, {"111@s.whatsapp.net": primary})
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    with (
+        unregistered_identity_source(),
+        patch.object(fact_authority, "_source_registry", issuer),
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+    ):
+        await pipeline.process(
+            "conversation batch",
+            tool_args={
+                "source_channel": "whatsapp_user_client",
+                "source_id": "111@s.whatsapp.net",
+                "request_context": {"payload_type": "conversation_history"},
+            },
+            message_inbox_id="00000000-0000-0000-0000-000000000097",
+        )
+
+    context = pipeline._set_routing_context.call_args.kwargs
+    assert context["source_custody"] == expected
+    assert ("endpoint custody held" in context["identity_preamble"]) is (expected is not None)

@@ -28,7 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
-from butlers.core.custody_ingress import UNREAD, CustodyUnread
+from butlers.core.custody_ingress import UNREAD, CustodyUnread, custody_recheck_context
 
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
@@ -656,8 +656,8 @@ class _Invocation:
     source_request: uuid.UUID | None
     deadline: float
     attention_origin: AttentionOrigin | None = None
-    # A routing context that names a sender entity, and a pool to recheck its endpoint's
-    # custody at each write (REQ-endpoint-custody-holds-005, slice 3b).
+    # The recheck's projection of a sender-naming routing context, and a pool to recheck its
+    # endpoint's custody at each write (REQ-endpoint-custody-holds-005, slice 3b).
     custody_context: Mapping[str, Any] | None = None
     custody_pool: Any = None
 
@@ -776,9 +776,7 @@ async def register_invocation(
         _pipeline_source.get(),
         time.monotonic() + 3600,
         attention_origin,
-        dict(routing_context)
-        if isinstance(routing_context, Mapping) and routing_context.get("source_entity_id")
-        else None,
+        custody_recheck_context(routing_context),
         custody_pool,
     )
     return token

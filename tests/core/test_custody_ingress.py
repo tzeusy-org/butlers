@@ -263,16 +263,23 @@ async def test_report_recheck_skips_non_owner_and_unrouted_reports() -> None:
     assert pool.lookups == []
 
 
-async def test_register_invocation_keeps_only_a_sender_naming_context() -> None:
+async def test_register_invocation_keeps_only_the_recheck_projection() -> None:
+    """Review: a long-lived invocation keeps only what the recheck reads, not the context."""
     from butlers.core import fact_authority
 
     pool = object()
+    rich = {
+        **_owner_session(source_custody="endpoint_held"),
+        "conceptual_message": {"excerpts": ["private text"]},
+        "identity_preamble": "[Source: Owner]",
+        "request_context": {"source_channel": "telegram_bot", "source_thread_identity": "t"},
+    }
     named = await fact_authority.register_invocation(
         "relationship",
         "s1",
         source_endpoint=None,
         routed=True,
-        routing_context=_owner_session(),
+        routing_context=rich,
         custody_pool=pool,
     )
     bare = await fact_authority.register_invocation(
@@ -284,7 +291,11 @@ async def test_register_invocation_keeps_only_a_sender_naming_context() -> None:
         custody_pool=pool,
     )
     try:
-        assert fact_authority._invocations[named].custody_context == _owner_session()
+        assert fact_authority._invocations[named].custody_context == {
+            "source_custody": "endpoint_held",
+            "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+            "request_context": {"source_channel": "telegram_bot"},
+        }
         assert fact_authority._invocations[named].custody_pool is pool
         assert fact_authority._invocations[bare].custody_context is None
     finally:
@@ -313,3 +324,36 @@ def test_mark_owner_custody_keeps_the_marker_in_step() -> None:
     assert result.preamble.count("endpoint custody held") == 1
     mark_owner_custody(result, None)
     assert result.preamble == "[Source: Owner, via telegram]"
+
+
+class HangingPool:
+    """A custody read that never answers."""
+
+    async def fetchval(self, *_args, **_kwargs):
+        import asyncio
+
+        await asyncio.Event().wait()
+
+
+async def test_a_write_time_custody_read_that_times_out_is_held(monkeypatch) -> None:
+    """Review: both write-time rechecks are bounded, and a timeout counts as held."""
+    import asyncio
+
+    from butlers.core import custody_ingress
+    from butlers.core.fact_authority import FactWriteContext, current_invocation_report
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    monkeypatch.setattr(custody_ingress, "WRITE_RECHECK_TIMEOUT_SECONDS", 0.05)
+    pool = HangingPool()
+
+    async def _owner(_pool):
+        return OWNER_ID
+
+    monkeypatch.setattr("butlers.modules.memory.content_authority.fetch_owner_entity_id", _owner)
+    async with asyncio.timeout(2):
+        memory = await resolve_content_authority(pool, _owner_session())
+        report = await current_invocation_report(
+            _invocation(FactWriteContext("owner", OWNER_ID), _owner_session(), pool)
+        )
+    assert (memory.authority, memory.reason) == ("third_party", "endpoint_held")
+    assert report.authority == "third_party"
