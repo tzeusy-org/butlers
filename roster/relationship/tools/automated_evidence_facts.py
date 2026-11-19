@@ -24,6 +24,14 @@ Replay is a no-op: the fact identity is ``(subject, predicate, object)`` and the
 fixed, so the central writer reports ``unchanged``. That is what lets each run overlap the last
 checkpoint by an hour to catch rows committed late.
 
+A dead address that comes back to life clears itself (bu-s11n0s.90). The same run asks the inbox,
+through the injected :data:`SenderReader`, for the newest inbound email whose sender is exactly that
+address (normalised the way the fact was keyed: stripped, lower-cased) and retracts an active
+``undeliverable-email`` fact when that message was received after the fact's own ``observed_at``.
+The retraction carries an evidence line citing that inbox row. An address with a later message is
+also not re-marked from a replayed older bounce, so the clear is idempotent and never flaps. No
+new table or cross-butler path: the read is the same ``switchboard.message_inbox`` SELECT.
+
 Reading these facts is slice S2c: ``tools/away_until.py`` for nudge deferral and
 ``ButlerDaemon._resolve_entity_channel_identifier`` for dead-address avoidance. Not built here.
 """
@@ -41,7 +49,12 @@ import asyncpg
 from butlers.core.state import state_get, state_set
 from butlers.identity import resolve_contacts_by_channel_bulk
 
-from .relationship_assert_fact import AssertOutcome, relationship_assert_fact
+from .fact_evidence import EvidencePacket
+from .relationship_assert_fact import (
+    AssertOutcome,
+    relationship_assert_fact,
+    retract_state_fact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +79,23 @@ _FACT_CONF = 1.0
 #: ``id``, ``received_at``, ``sender``, ``automated_kind`` and ``automated_evidence``. The
 #: Relationship job module supplies it, beside ``interaction_sync``'s read of the same table.
 InboxReader = Callable[[datetime], Awaitable[Sequence[Mapping[str, Any]]]]
+
+
+#: Newest inbound email per exact sender address among ``addresses``, received after ``since``.
+#: Maps each address (stripped, lower-cased) to ``(inbox row id, received_at)``; an address with no
+#: such message is absent. The Relationship job module supplies it, beside :data:`InboxReader`.
+SenderReader = Callable[[Sequence[str], datetime], Awaitable[Mapping[str, tuple[Any, datetime]]]]
+
+#: Active dead-address facts checked for a revival per run, oldest observation first.
+_MAX_DEAD_FACTS = 1000
+
+_ACTIVE_DEAD_FACTS_SQL = """
+SELECT id, subject, object, observed_at
+FROM   relationship.entity_facts
+WHERE  predicate = 'undeliverable-email' AND validity = 'active'
+ORDER  BY observed_at, id
+LIMIT  $1
+"""
 
 
 @dataclass(frozen=True)
@@ -172,8 +202,59 @@ async def _scan_start(pool: asyncpg.Pool, now: datetime) -> tuple[datetime, int]
     return min(max(checkpoint - _OVERLAP, floor), now), 0
 
 
-async def sync(pool: asyncpg.Pool, *, read_inbox: InboxReader) -> dict[str, Any]:
-    """Write away-until and dead-address facts from bound automated email evidence."""
+async def _clear_revived(
+    pool: asyncpg.Pool,
+    facts: Sequence[Mapping[str, Any]],
+    latest: Mapping[str, tuple[Any, datetime]],
+) -> tuple[int, int]:
+    """Retract each dead-address fact whose address wrote after the fact. Returns (cleared, errors).
+
+    Idempotent: the UPDATE is guarded on ``validity = 'active'``, so a repeat finds nothing.
+    """
+    cleared = errors = 0
+    for fact in facts:
+        seen = latest.get(_address(fact["object"]))
+        if seen is None or not seen[1] > fact["observed_at"]:
+            continue
+        inbox_id, received_at = seen
+        try:
+            retracted = await retract_state_fact(
+                pool,
+                fact["subject"],
+                UNDELIVERABLE_EMAIL_PREDICATE,
+                fact["object"],
+                observed_before=received_at,
+                packet=EvidencePacket(
+                    items=(
+                        {
+                            "type": "text",
+                            "ref": f"switchboard.message_inbox:{inbox_id}",
+                            "note": (
+                                "A later inbound message arrived from this exact address, "
+                                "so it is deliverable again"
+                            ),
+                        },
+                    ),
+                    src=SOURCE,
+                    origin="direct",
+                ),
+            )
+            if retracted is None:
+                continue
+            cleared += 1
+        except Exception:
+            logger.exception("automated_evidence_sync: dead-address clear failed")
+            errors += 1
+    return cleared, errors
+
+
+async def sync(
+    pool: asyncpg.Pool, *, read_inbox: InboxReader, read_senders: SenderReader | None = None
+) -> dict[str, Any]:
+    """Write away-until and dead-address facts from bound automated email evidence.
+
+    With ``read_senders`` it also retracts a dead-address fact once its address writes again.
+    """
     now = datetime.now(UTC)
     start, errors = await _scan_start(pool, now)
     stats: dict[str, Any] = {
@@ -185,6 +266,8 @@ async def sync(pool: asyncpg.Pool, *, read_inbox: InboxReader) -> dict[str, Any]
         "skipped_unbound": 0,
         "skipped_unresolved": 0,
         "skipped_owner": 0,
+        "skipped_revived": 0,
+        "cleared": 0,
         "errors": errors,
     }
 
@@ -213,7 +296,51 @@ async def sync(pool: asyncpg.Pool, *, read_inbox: InboxReader) -> dict[str, Any]
         stats["errors"] += 1
         return stats
 
+    dead_facts: Sequence[Mapping[str, Any]] = ()
+    latest: Mapping[str, tuple[Any, datetime]] | None = None
+    if read_senders is not None:
+        try:
+            dead_facts = await pool.fetch(_ACTIVE_DEAD_FACTS_SQL, _MAX_DEAD_FACTS)
+            watched = {
+                a
+                for a in (
+                    *(_address(f["object"]) for f in dead_facts),
+                    *(
+                        c.address
+                        for _r, c in planned
+                        if c.predicate == UNDELIVERABLE_EMAIL_PREDICATE
+                    ),
+                )
+                if a
+            }
+            since = min(
+                (
+                    *(f["observed_at"] for f in dead_facts),
+                    *(
+                        r["received_at"]
+                        for r, c in planned
+                        if c.predicate == UNDELIVERABLE_EMAIL_PREDICATE
+                    ),
+                ),
+                default=None,
+            )
+            if watched and since is not None:
+                latest = await read_senders(sorted(watched), since)
+            else:
+                latest = {}
+        except Exception:
+            logger.exception("automated_evidence_sync: revival read failed")
+            stats["errors"] += 1
+
     for row, claim in planned:
+        if claim.predicate == UNDELIVERABLE_EMAIL_PREDICATE and read_senders is not None:
+            if latest is None:
+                # The revival read failed: a dead mark is not safe to write. The checkpoint holds.
+                continue
+            seen = latest.get(claim.address)
+            if seen is not None and seen[1] > row["received_at"]:
+                stats["skipped_revived"] += 1
+                continue
         contact = resolved.get((_EMAIL_CHANNEL, claim.address))
         if contact is None or contact.entity_id is None:
             stats["skipped_unresolved"] += 1
@@ -262,6 +389,10 @@ async def sync(pool: asyncpg.Pool, *, read_inbox: InboxReader) -> dict[str, Any]
                 row["id"],
             )
             stats["errors"] += 1
+
+    if latest and dead_facts:
+        stats["cleared"], clear_errors = await _clear_revived(pool, dead_facts, latest)
+        stats["errors"] += clear_errors
 
     if stats["errors"] == 0:
         try:

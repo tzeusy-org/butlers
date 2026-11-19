@@ -63,6 +63,10 @@ _INVENTORY: dict[tuple[str, str], str] = {
     (_WRITER, "retract_contact_info_fact._retract"): (
         "SPO retraction: one occurrence or refuse; no FK column write, no entity lock"
     ),
+    (_WRITER, "retract_state_fact._retract"): (
+        "state-fact retraction (dead address revived): one occurrence or refuse, guarded on the "
+        "observation instant; evidence appended in the same transaction"
+    ),
     (_WRITER, "_supersede_active_prefers_channel"): "prefers-channel: fenced singleton only",
     ("src/butlers/owner_bootstrap.py", "_seed_owner_telegram_handle"): (
         "owner bootstrap: insert-only unknown default, no sibling"

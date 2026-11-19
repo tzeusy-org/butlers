@@ -263,10 +263,13 @@ Two consumers read these facts, with no session and no cross-butler read:
   another live one. When every address is dead it returns `no_live_address` and neither sends nor
   parks an approval.
 
-Not built (follow-ups): clearing an `undeliverable-email` fact when a later inbound message from
-the same address is observed (today the fact holds until retracted; it needs an address-keyed read
-of `switchboard.message_inbox` that Relationship's role does not have beside the entity-keyed
-interaction rows), and the owner's door to replace a dead address.
+Revival: the same `automated_evidence_sync` run asks `switchboard.message_inbox` (the same table and
+grant it already reads) for the newest inbound email from each dead address, stripped and
+lower-cased as the fact was keyed, and retracts the `undeliverable-email` fact when that message
+arrived after the fact's `observed_at`, citing the inbox row. An address with such a message is not
+re-marked from an older bounce. The message's authenticity is not checked here.
+
+Not built (follow-ups): the owner's door to replace a dead address.
 
 ## Owner-chat commitment candidates
 

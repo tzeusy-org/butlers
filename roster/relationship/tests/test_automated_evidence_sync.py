@@ -228,3 +228,81 @@ async def test_owner_and_unknown_senders_write_nothing(interaction_sync_pool):
             "SELECT count(*) FROM relationship.pending_actions WHERE tool_name LIKE '%fact%'"
         )
         assert parked == 0
+
+
+async def _bounce_for(pool, address: str, *, hours_ago: int) -> None:
+    await _insert_automated_email(
+        pool,
+        sender="mailer-daemon@googlemail.com",
+        kind="bounce",
+        evidence=_bounce_evidence(address),
+        received_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+    )
+
+
+async def _plain_inbound(pool, sender: str, *, hours_ago: int) -> uuid.UUID:
+    return await insert_message(
+        pool,
+        received_at=datetime.now(UTC) - timedelta(hours=hours_ago),
+        request_context={"source_sender_identity": sender, "source_channel": "email"},
+        direction="inbound",
+        raw_payload={"control": {"policy_tier": "full"}},
+    )
+
+
+async def test_a_later_inbound_message_from_the_address_clears_the_dead_fact(
+    interaction_sync_pool,
+):
+    from butlers.core.state import state_set
+
+    async with interaction_sync_pool() as pool:
+        await _person_with_email(pool, "bob@example.test")
+        await _bounce_for(pool, "bob@example.test", hours_ago=5)
+        first = await _jobs.run_automated_evidence_sync(pool)
+        assert first["errors"] == 0
+        assert len(await _active(pool, _DEAD)) == 1
+
+        # The same address, written differently, mails again after the bounce.
+        message = await _plain_inbound(pool, " Bob@Example.TEST ", hours_ago=2)
+        await state_set(pool, _facts.STATE_KEY, (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        second = await _jobs.run_automated_evidence_sync(pool)
+
+        assert second["errors"] == 0 and second["cleared"] == 1
+        assert await _active(pool, _DEAD) == []
+        fact = await pool.fetchrow(
+            "SELECT id, validity FROM relationship.entity_facts WHERE predicate = $1", _DEAD
+        )
+        assert fact["validity"] == "retracted"
+        refs = await pool.fetch(
+            "SELECT ref FROM relationship.fact_evidence WHERE fact_id = $1 ORDER BY seq",
+            fact["id"],
+        )
+        assert f"switchboard.message_inbox:{message}" in [r["ref"] for r in refs]
+
+        # Replay: the old bounce is read again but is neither re-marked nor re-cleared.
+        await state_set(pool, _facts.STATE_KEY, (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        third = await _jobs.run_automated_evidence_sync(pool)
+        assert third["errors"] == 0 and third["cleared"] == 0
+        assert third["skipped_revived"] == 1
+        assert await _active(pool, _DEAD) == []
+        total = await pool.fetchval(
+            "SELECT count(*) FROM relationship.entity_facts WHERE predicate = $1", _DEAD
+        )
+        assert total == 1
+
+
+async def test_an_earlier_message_or_another_address_leaves_the_dead_fact(interaction_sync_pool):
+    from butlers.core.state import state_set
+
+    async with interaction_sync_pool() as pool:
+        await _person_with_email(pool, "bob@example.test")
+        await _bounce_for(pool, "bob@example.test", hours_ago=3)
+        await _plain_inbound(pool, "bob@example.test", hours_ago=6)  # before the bounce
+        await _plain_inbound(pool, "bobby@example.test", hours_ago=1)  # a different address
+        await _plain_inbound(pool, "bob@example.test.evil.test", hours_ago=1)  # not the address
+        await _jobs.run_automated_evidence_sync(pool)
+        await state_set(pool, _facts.STATE_KEY, (datetime.now(UTC) - timedelta(days=1)).isoformat())
+        result = await _jobs.run_automated_evidence_sync(pool)
+
+        assert result["errors"] == 0 and result["cleared"] == 0
+        assert len(await _active(pool, _DEAD)) == 1
