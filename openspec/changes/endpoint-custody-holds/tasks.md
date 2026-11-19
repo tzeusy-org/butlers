@@ -171,10 +171,11 @@
       `public.custody_candidates_dashboard` (core_352; the same candidate universe and masking as
       a security question; `dashboard_auth_api` only, current cookie session checked in its own
       transaction, no table). The page lists kind and masked hint, disables an already-held
-      channel, and posts only the ticked fact ids with a reason and a page-minted command id to
+      channel, and posts only the ticked fact ids with a reason and a command id (new after every definite
+      outcome; kept only for an identical retry after an unknown one) to
       the existing hold API after a confirmation step. A failed read says the channels could not
       be loaded and offers no hold; empty says none are on file. The device-binding control for
-      `PUT /api/custody/episodes/{id}/device` waits for #5911 to merge.
+      `PUT /api/custody/episodes/{id}/device` is 2.4i.
 - [x] 2.4h No lapse while held (REQ-010 closure half, bu-s11n0s.1.1, core_351): the fleet-case
       lapse sweep skips an `endpoint_custody:<episode>` case while any hold of that episode is
       unreleased, so a quiet hold older than seven days is never closed `lapsed` and a later
