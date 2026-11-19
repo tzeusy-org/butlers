@@ -24,7 +24,7 @@ EPISODE = uuid.uuid4()
 AT = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
 
 
-def _client(pool, *, owner: bool = True) -> TestClient:
+def _client(pool, *, owner: bool = True, method: str = "cookie") -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[deps.get_db] = lambda: SimpleNamespace(pool=lambda name: pool)
@@ -32,7 +32,7 @@ def _client(pool, *, owner: bool = True) -> TestClient:
     @app.middleware("http")
     async def _state(request, call_next):
         if owner:
-            request.state.owner_authority = object()
+            request.state.owner_authority = SimpleNamespace(method=method)
         return await call_next(request)
 
     return TestClient(app)
@@ -62,7 +62,7 @@ def test_the_device_fix_keeps_place_and_age_never_coordinates_or_the_endpoint() 
         "place": "Home",
         "fix_at": "x",
         "age_seconds_at_observation": 60,
-        "fresh_until": "y",
+        "fresh_until": "2099-01-01T00:00:00+00:00",
         "lat": 1.3,
         "lon": 103.8,
         "endpoint_identity": "owntracks:o:p",
@@ -117,3 +117,39 @@ def test_a_missing_episode_is_404_and_an_unauthenticated_caller_is_401() -> None
         .status_code
         == 401
     )
+
+
+def test_a_device_fix_past_its_freshness_window_reads_unknown_stale_and_drops_the_place() -> None:
+    payload = {
+        "status": "known",
+        "place": "Home",
+        "fix_at": "2026-11-19T01:00:00+00:00",
+        "fresh_until": "2026-11-19T07:00:00+00:00",
+        "observed_at": "2026-11-19T01:05:00+00:00",
+        "age_seconds_at_observation": 300,
+    }
+    stale = summarize("chronicler", "device_last_fix", payload, now=AT)
+    assert stale == {
+        "status": "unknown",
+        "reason": "stale",
+        "stale_fix_at": "2026-11-19T01:00:00+00:00",
+        "observed_at": "2026-11-19T01:05:00+00:00",
+    }
+    fresh = summarize(
+        "chronicler",
+        "device_last_fix",
+        payload | {"fresh_until": "2026-11-19T20:00:00+00:00"},
+        now=AT,
+    )
+    assert fresh["status"] == "known" and fresh["place"] == "Home"
+
+
+def test_the_case_lookup_prefers_the_active_case_over_a_lapsed_one() -> None:
+    from butlers.api.routers.custody_case import _CASE_SQL
+
+    assert "ORDER BY (state <> 'closed') DESC, opened_at DESC" in _CASE_SQL
+
+
+def test_reading_the_case_needs_cookie_authority() -> None:
+    url = f"/api/custody/episodes/{EPISODE}/case"
+    assert _client(_pool(None, []), method="api_key").get(url).status_code == 403

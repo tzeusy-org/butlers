@@ -6,16 +6,18 @@ case (the engine's hold evidence, Finance's held window, the Chronicler's device
 allow-listed scalar fields of each summary leave: no merchant, amount, endpoint identity, hold
 identifier, coordinate or free text. A contributor or kind this module does not know contributes
 its kind and time only. The read says nothing about whether anything is safe; the page shows
-unavailable when this read fails (REQ-endpoint-custody-holds-011).
+unavailable when this read fails (REQ-endpoint-custody-holds-011). The route is an allow-listed
+projection over ``public.fleet_case_evidence``, not a copy of it, and it needs cookie authority.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from starlette.responses import JSONResponse
 
 from butlers.api.deps import Db
@@ -32,7 +34,8 @@ _LIMIT = 100
 
 _CASE_SQL = (
     "SELECT id::text AS id, state, outcome, opened_at, closed_at FROM public.fleet_cases "
-    "WHERE correlation_key = $1 LIMIT 1"
+    "WHERE correlation_key = $1 "
+    "ORDER BY (state <> 'closed') DESC, opened_at DESC, id DESC LIMIT 1"
 )
 _EVIDENCE_SQL = (
     "SELECT contributor, kind, payload, contributed_at FROM public.fleet_case_evidence "
@@ -84,8 +87,26 @@ def _scalar(value: Any) -> bool:
     return value is None or isinstance(value, str | int | float | bool)
 
 
-def summarize(contributor: str, kind: str, payload: Any) -> dict[str, Any]:
-    """The allow-listed, scalar-only summary of one evidence row. Pure."""
+def _stale_device_fix(summary: dict[str, Any], now: datetime) -> dict[str, Any]:
+    """A device reading past its freshness window reads unknown, with the old time kept apart."""
+    until = summary.get("fresh_until")
+    fix_at = summary.get("fix_at")
+    if summary.get("status") != "known" or not isinstance(until, str):
+        return summary
+    if now <= datetime.fromisoformat(until):
+        return summary
+    return {
+        "status": "unknown",
+        "reason": "stale",
+        "stale_fix_at": fix_at,
+        "observed_at": summary.get("observed_at"),
+    }
+
+
+def summarize(
+    contributor: str, kind: str, payload: Any, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """The allow-listed, scalar-only summary of one evidence row, judged for freshness now. Pure."""
     fields = _SUMMARY_FIELDS.get((contributor, kind), ())
     if isinstance(payload, str):
         try:
@@ -101,22 +122,27 @@ def summarize(contributor: str, kind: str, payload: Any) -> dict[str, Any]:
             summary[name] = {"total": value.get("total")}  # counts only, not the type breakdown
         elif _scalar(value) and name in payload:
             summary[name] = value
+    if (contributor, kind) == ("chronicler", "device_last_fix"):
+        return _stale_device_fix(summary, now or datetime.now(UTC))
     return summary
 
 
 @router.get("/{episode_id}/case", response_model=ApiResponse[dict[str, Any]])
-async def read_case(episode_id: uuid.UUID, db: Db) -> Any:
+async def read_case(episode_id: uuid.UUID, request: Request, db: Db) -> Any:
+    if getattr(getattr(request.state, "owner_authority", None), "method", None) != "cookie":
+        return _error(403, "CUSTODY_FORBIDDEN", "Owner cookie authentication required.")
     pool = db.pool("switchboard")
     case = await pool.fetchrow(_CASE_SQL, f"endpoint_custody:{episode_id}")
     if case is None:
         return _error(404, "CUSTODY_EPISODE_NOT_FOUND", "No such custody episode.")
     rows = await pool.fetch(_EVIDENCE_SQL, case["id"], _LIMIT)
+    now = datetime.now(UTC)
     evidence = [
         {
             "contributor": row["contributor"],
             "kind": row["kind"],
             "contributed_at": row["contributed_at"].isoformat(),
-            "summary": summarize(row["contributor"], row["kind"], row["payload"]),
+            "summary": summarize(row["contributor"], row["kind"], row["payload"], now=now),
         }
         for row in rows
     ]

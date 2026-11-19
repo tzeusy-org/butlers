@@ -102,7 +102,7 @@ describe("CustodyCasePage", () => {
           contributor: "chronicler",
           kind: "device_last_fix",
           contributed_at: "2030-01-01T02:00:00Z",
-          summary: { status: "known", place: "Home", fresh_until: "2000-01-01T00:00:00Z" },
+          summary: { status: "unknown", reason: "stale", stale_fix_at: "2000-01-01T00:00:00Z" },
         },
       ],
     };
@@ -110,6 +110,8 @@ describe("CustodyCasePage", () => {
     await screen.findByText(/Finance: Held window so far/);
     expect(screen.getByText(/Owner device: Last known device fix/)).toBeTruthy();
     expect(screen.getByText(/gone stale and is unknown now/)).toBeTruthy();
+    expect(screen.queryByText("Home")).toBeNull();
+    expect(screen.queryByText("known")).toBeNull();
     expect(screen.getByText("transactions")).toBeTruthy();
   });
 

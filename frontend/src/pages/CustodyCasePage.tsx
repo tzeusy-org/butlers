@@ -158,10 +158,11 @@ function formatValue(value: unknown): string {
 
 function Evidence({ item, now }: { item: CaseEvidence; now: number }) {
   const fix = item.contributor === "chronicler" && item.kind === "device_last_fix";
+  // The server already reads a stale fix as unknown; this also covers a view left open past it.
   const stale =
     fix &&
-    typeof item.summary.fresh_until === "string" &&
-    now > Date.parse(item.summary.fresh_until);
+    (item.summary.reason === "stale" ||
+      (typeof item.summary.fresh_until === "string" && now > Date.parse(item.summary.fresh_until)));
   const entries = Object.entries(item.summary).filter(([name]) => name !== "fresh_until");
   return (
     <li className="space-y-1 rounded border p-3 text-sm">

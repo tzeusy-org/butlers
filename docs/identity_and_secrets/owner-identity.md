@@ -225,7 +225,8 @@ hint, and releases or replaces one after a confirmation (the generation the owne
 page-minted command id; the server rechecks session, CSRF and generation). `/custody/:episodeId`
 shows the lost-device recovery checklist (SIM/carrier and account sign-out steps and the provider
 recovery doors), what the case's contributors have found (allow-listed scalar summaries from
-`GET /api/custody/episodes/{id}/case`) and the holds in the case. The checklist is instructions;
+`GET /api/custody/episodes/{id}/case`, an allow-listed projection over `public.fleet_case_evidence`
+that judges a device reading's freshness on the server) and the holds in the case. The checklist is instructions;
 ticking a step is browser-local progress and never releases a hold or answers a security question.
 A failed read renders unavailable, never clear.
 
