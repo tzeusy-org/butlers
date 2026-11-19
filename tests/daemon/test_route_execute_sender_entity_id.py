@@ -34,6 +34,7 @@ from butlers.testing.daemon import write_butler_config
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
+_SECOND_REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee01"
 
 
 def _reset_otel_global_state():
@@ -60,9 +61,10 @@ def _base_request_context(
     *,
     source_sender_entity_id: str | None = None,
     source_sender_custody: str | None = None,
+    request_id: str = _REQUEST_ID,
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
-        "request_id": _REQUEST_ID,
+        "request_id": request_id,
         "received_at": "2026-03-10T00:00:00Z",
         "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard",
@@ -195,10 +197,13 @@ class TestRouteExecuteSenderEntityIdInjection:
             source_sender_custody="endpoint_held",
         )
         await booted.runtime.wait_for_invocations(1)
+        # A distinct request: reusing the first id is deduplicated once its session succeeds,
+        # which raced the first session's completion and flaked (bu-s11n0s.1).
         await _route(
             booted,
             {"prompt": "Remember that rule.", "context": {"source_custody": "cleared"}},
             source_sender_entity_id=sender_entity_id,
+            request_id=_SECOND_REQUEST_ID,
         )
         await booted.runtime.wait_for_invocations(2)
 
