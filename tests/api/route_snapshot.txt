@@ -157,6 +157,7 @@ OP GET /api/conversations/messages/search 19e9f0cdb7f0
 OP GET /api/conversations/{conversation_id} 617a3a919a5f
 OP GET /api/custody/commands/{command_id} 0f99146a52ef
 OP GET /api/custody/episodes/{episode_id}/device 153f52d7efdd
+OP GET /api/custody/episodes/{episode_id}/case eb3e94dbf497
 OP GET /api/custody/holds 638eb60aa6c8
 OP GET /api/custody/security-questions b3437a49d8c4
 OP GET /api/custody/security-questions/{event_id} 99af24912899
@@ -861,6 +862,7 @@ ROUTE APIRoute GET '/api/conversations/messages/search' name=search_messages op=
 ROUTE APIRoute GET '/api/conversations/{conversation_id}' name=get_conversation_by_id op=get_conversation_by_id_api_conversations__conversation_id__get tags=conversations schema=True
 ROUTE APIRoute GET '/api/custody/commands/{command_id}' name=read_command op=read_command_api_custody_commands__command_id__get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/device' name=read_device op=read_device_api_custody_episodes__episode_id__device_get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/case' name=read_case op=read_case_api_custody_episodes__episode_id__case_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/holds' name=list_holds op=list_holds_api_custody_holds_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions' name=list_security_questions op=list_security_questions_api_custody_security_questions_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions/{event_id}' name=read_security_question op=read_security_question_api_custody_security_questions__event_id__get tags=custody schema=True

@@ -101,6 +101,8 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/memory/episodes/:episodeId": SNAPSHOT("Episode detail"),
   "/approvals/:id": SNAPSHOT("Approval detail"),
   "/decision-sets/:setId": SNAPSHOT("Decision set"),
+  "/custody": SNAPSHOT("Endpoint holds"),
+  "/custody/:episodeId": SNAPSHOT("Custody case"),
   "/security": SNAPSHOT("Security questions"),
   "/security/:eventId": SNAPSHOT("Security question"),
   "/ingestion/connectors/:connectorType/:endpointIdentity": SNAPSHOT("Connector detail"),

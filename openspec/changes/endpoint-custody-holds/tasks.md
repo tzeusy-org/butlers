@@ -152,6 +152,20 @@
       the newest row judged for freshness now, marked `evidence_only`; nothing here answers the
       security question. Deferred: city/country locality (no coordinate-free locality source
       yet) and the owner control UI (S5g).
+- [x] 2.4f Owner custody pages (REQ-011, first half, S5g): `/custody` lists the active holds
+      (a kind of channel, never an address or hint) with release and replace (confirmation, the
+      generation the owner saw, a page-minted command id; the server rechecks session, CSRF and
+      generation). `/custody/:episodeId` shows the static SIM/carrier and account-sign-out
+      checklist with the provider recovery doors (instructions only; ticks are browser-local
+      descriptive progress and post nothing), the case's evidence rendered generically from
+      `GET /api/custody/episodes/{id}/case` (allow-listed scalar summaries per contributor and
+      kind: the engine's hold evidence, Finance's held window, the device last fix; a stale
+      reading shows unknown), the holds in the case, and links to `/security`. Loading, empty,
+      partial and unavailable are distinct; a failed read never renders clear. Not here, tracked
+      for the next slice: the manual "hold a channel" control (it needs a masked owner-channel
+      candidate read outside a security question; today the hold starts from `/security` or the
+      host command) and the device-binding control for `PUT /api/custody/episodes/{id}/device`
+      (#5911, TODO until it merges).
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
   - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's
