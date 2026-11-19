@@ -765,8 +765,12 @@ the most recently observed active `away-until` row. The job SHALL re-check every
 condition rather than trust the row, SHALL resolve an address with the shared channel resolver,
 and SHALL write nothing for an address that resolves to no entity, to more than one entity, or to
 the owner. A resolution fault SHALL fail the run without advancing its checkpoint. Each fact
-cites its inbox row as evidence and copies no text of the automated message. Reading these facts
-is `REQ-relationship-facts-014`; the owner's door to replace a dead address is not built.
+cites its inbox row as evidence and copies no text of the automated message. The same job SHALL
+retract an active `undeliverable-email` fact, citing the inbox row as evidence, when a later
+inbound email from exactly that address (compared stripped and lower-cased) was received after the
+fact's own `observed_at`, and SHALL NOT re-mark an address from an older bounce once such a message
+exists. Reading these facts is `REQ-relationship-facts-014`; the owner's door to replace a dead
+address is not built.
 
 ID: REQ-relationship-facts-013
 Source: bu-s11n0s.14 acceptance criteria and design constraint (bind to sent mail, check sender authentication, delays never dead); RFC 0038 deterministic-handler check
@@ -790,12 +794,17 @@ Scope: v1-mandatory
 - **WHEN** the address resolves to two entities, to no entity, or to the owner
 - **THEN** no fact SHALL be written and no approval SHALL be parked
 
+#### Scenario: A later inbound message clears the dead address
+- **WHEN** an active `undeliverable-email` fact exists and an inbound email from exactly that address is received after the fact's `observed_at`
+- **THEN** the job SHALL retract the fact with that inbox row as evidence, and a replay SHALL clear nothing and write no new fact
+- **AND** a message received before the fact, or from a different address, SHALL leave the fact active
+
 ### Requirement: Away-until and undeliverable-email facts change what is sent
 Two readers consume the facts of `REQ-relationship-facts-013`, both deterministic and neither adding a cross-butler read or delegation path.
 
 The weekly `relationship-maintenance` job SHALL defer a contact whose current away-until date is today or later. The current away-until date is the most recently observed active `away-until` fact whose date is not before today, with today taken in the owner's timezone; a past date SHALL NOT defer. A deferred contact SHALL be left out of that run and reconsidered by the first run after the date, so the nudge is deferred to the day after the return date. When deferral removes every overdue contact the job SHALL send neither a suggestion nor the all-clear. A failed read of the facts SHALL fail the run without sending.
 
-`notify()` with an `entity_id` and the email channel SHALL skip an address that carries an active `undeliverable-email` fact for the same address (compared case-insensitively) and SHALL deliver to another live address when one exists. When the entity has email addresses and every one is undeliverable, `notify()` SHALL return a non-retryable `no_live_address` error, record one failed attention-ledger row, and neither send nor park an approval. An entity with no email address at all keeps the existing missing-identifier path. An undeliverable-email fact stays in force until it is retracted; clearing it on a later inbound message from the same address is a recorded follow-up, not behaviour.
+`notify()` with an `entity_id` and the email channel SHALL skip an address that carries an active `undeliverable-email` fact for the same address (compared case-insensitively) and SHALL deliver to another live address when one exists. When the entity has email addresses and every one is undeliverable, `notify()` SHALL return a non-retryable `no_live_address` error, record one failed attention-ledger row, and neither send nor park an approval. An entity with no email address at all keeps the existing missing-identifier path. An undeliverable-email fact stays in force until it is retracted, which a later inbound message from the same address does (`REQ-relationship-facts-013`).
 
 ID: REQ-relationship-facts-014
 Source: bu-s11n0s.14 acceptance criteria (producer deferral to until_date+1) and design (Messenger prefers a live address); RFC 0038 deterministic-handler check

@@ -1819,6 +1819,25 @@ ORDER  BY received_at, id
 """
 
 
+# Newest inbound email per exact sender address (bu-s11n0s.90): the same table, the same SELECT
+# grant. The sender is stripped and lower-cased the way the dead-address fact was keyed.
+_LATEST_INBOUND_BY_SENDER_SQL = """
+SELECT DISTINCT ON (sender) sender, id, received_at
+FROM (
+    SELECT lower(btrim(request_context ->> 'source_sender_identity')) AS sender,
+           id,
+           received_at
+    FROM   switchboard.message_inbox
+    WHERE  direction = 'inbound'
+      AND  received_at > $1
+      AND  request_context ->> 'source_channel' = 'email'
+      AND  lower(btrim(request_context ->> 'source_sender_identity')) = ANY($2::text[])
+      AND  COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') <> 'bounce'
+) latest
+ORDER  BY sender, received_at DESC, id DESC
+"""
+
+
 async def run_automated_evidence_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Away-until and dead-address facts from bound Gmail auto-replies and bounces.
 
@@ -1833,7 +1852,13 @@ async def run_automated_evidence_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     async def read_inbox(since: datetime) -> list[asyncpg.Record]:
         return await db_pool.fetch(_AUTOMATED_EVIDENCE_INBOX_SQL, since)
 
-    return await facts.sync(db_pool, read_inbox=read_inbox)
+    async def read_senders(
+        addresses: list[str], since: datetime
+    ) -> dict[str, tuple[Any, datetime]]:
+        rows = await db_pool.fetch(_LATEST_INBOUND_BY_SENDER_SQL, since, list(addresses))
+        return {row["sender"]: (row["id"], row["received_at"]) for row in rows}
+
+    return await facts.sync(db_pool, read_inbox=read_inbox, read_senders=read_senders)
 
 
 # ---------------------------------------------------------------------------

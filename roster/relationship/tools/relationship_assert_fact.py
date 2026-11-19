@@ -2291,6 +2291,66 @@ async def retract_contact_info_fact(
             return await _retract(acquired_conn)
 
 
+async def retract_state_fact(
+    pool: asyncpg.Pool,
+    subject: uuid.UUID,
+    predicate: str,
+    object: str,
+    *,
+    observed_before: datetime,
+    packet: EvidencePacket | None = None,
+    conn: asyncpg.Connection | None = None,
+) -> uuid.UUID | None:
+    """Retract the one active ``(subject, predicate, object)`` fact observed before an instant.
+
+    The ``observed_before`` guard keeps a retraction from reaching a fact re-observed after the
+    evidence that justified it. *packet* (when given) is appended to the retracted fact's evidence
+    ledger in the same transaction. Returns the retracted id, or ``None`` when no matching active
+    fact exists (a repeat is a no-op). Like :func:`retract_contact_info_fact`, more than one active
+    occurrence refuses with ``temporal_occurrence_ambiguous`` before any write.
+    """
+
+    async def _retract(c: Any) -> uuid.UUID | None:
+        matches = await c.fetch(
+            """
+            SELECT id FROM relationship.entity_facts
+            WHERE subject = $1 AND predicate = $2 AND object = $3
+              AND validity = 'active' AND observed_at < $4
+            FOR UPDATE
+            """,
+            subject,
+            predicate,
+            object,
+            observed_before,
+        )
+        if len(matches) > 1:
+            raise TemporalError(
+                OCCURRENCE_AMBIGUOUS,
+                f"{len(matches)} active effective occurrences match this fact; "
+                "retract one by fact id.",
+            )
+        if not matches:
+            return None
+        fact_id = await c.fetchval(
+            """
+            UPDATE relationship.entity_facts
+            SET validity = 'retracted', updated_at = now()
+            WHERE id = $1 AND validity = 'active'
+            RETURNING id
+            """,
+            matches[0]["id"],
+        )
+        if fact_id is not None and packet is not None:
+            await persist_evidence(c, fact_id=fact_id, packet=packet)
+        return fact_id
+
+    if conn is not None:
+        return await _retract(conn)
+    async with pool.acquire() as acquired_conn:
+        async with acquired_conn.transaction():
+            return await _retract(acquired_conn)
+
+
 # ---------------------------------------------------------------------------
 # prefers-channel — single-valued preferred-outbound-channel predicate
 # ---------------------------------------------------------------------------
