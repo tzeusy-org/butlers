@@ -27,6 +27,7 @@ fix change nothing. No LLM session.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -50,22 +51,28 @@ BINDING_KIND = "device_binding"
 POINT_SOURCE = "owntracks.points"
 # A last fix older than this when observed reads as unknown (stale), not as a current location.
 FRESH_FOR = timedelta(hours=6)
+# An unchanged status and place is rewritten only once the last row is this close to going stale.
+REFRESH_MARGIN = timedelta(hours=3)
 _BATCH = 50
 
 _BINDINGS_SQL = """
-SELECT DISTINCT ON (c.id) c.id::text AS case_id, b.ref AS endpoint_identity
+SELECT DISTINCT ON (c.id) c.id::text AS case_id,
+       b.payload ->> 'endpoint_identity' AS endpoint_identity
 FROM public.fleet_cases c
 JOIN public.fleet_case_evidence b ON b.case_id = c.id
 WHERE c.correlation_key LIKE 'endpoint\\_custody:%' AND c.state <> 'closed'
   AND b.contributor = 'custody_owner' AND b.kind = 'device_binding'
+  AND b.payload ->> 'endpoint_identity' IS NOT NULL
 ORDER BY c.id, b.contributed_at DESC, b.id DESC
 LIMIT $1
 """
 
-# Retained, live, policy-accepted, non-restricted fixes only; the newest by device time.
+# Retained, live, policy-accepted, non-restricted fixes only, as the owner's corrections leave
+# them (the corrected views: a correction that restricts or tombstones a fix hides it here too),
+# the newest by device time.
 _LAST_FIX_SQL = f"""
 SELECT occurred_at
-FROM point_events
+FROM v_point_events_corrected
 WHERE source_name = '{POINT_SOURCE}' AND event_type = 'location'
   AND tombstone_at IS NULL AND privacy <> 'restricted'
   AND payload ->> 'endpoint_identity' = $1
@@ -74,9 +81,16 @@ ORDER BY occurred_at DESC
 LIMIT 1
 """
 
+_LATEST_ROW_SQL = """
+SELECT payload FROM public.fleet_case_evidence
+WHERE case_id = $1::uuid AND contributor = 'chronicler' AND kind = 'device_last_fix'
+  AND ref LIKE $2 ESCAPE '\\'
+ORDER BY contributed_at DESC, id DESC LIMIT 1
+"""
+
 _PLACE_SQL = f"""
 SELECT payload ->> 'label' AS label
-FROM episodes
+FROM v_episodes_corrected
 WHERE source_name = '{PLACE_SOURCE}' AND episode_type = '{EPISODE_TYPE_PLACE}'
   AND tombstone_at IS NULL AND privacy <> 'restricted'
   AND payload ->> 'endpoint_identity' = $1
@@ -109,6 +123,25 @@ def evidence_ref(endpoint_identity: str, fix_at: datetime | None) -> str:
     return f"{endpoint_identity}:{int(fix_at.timestamp()) if fix_at else 'none'}"
 
 
+async def _redundant(pool: Any, case_id: str, endpoint: str, new: dict[str, Any]) -> bool:
+    """A new fix that changes neither status nor place, while the last row is still comfortably
+    fresh, adds nothing but one more permanent fix time, so it is not written."""
+    like = endpoint.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + ":%"
+    last = await pool.fetchval(_LATEST_ROW_SQL, case_id, like)
+    if isinstance(last, str):
+        last = json.loads(last)
+    if not last or (last.get("status"), last.get("place"), last.get("reason")) != (
+        new.get("status"),
+        new.get("place"),
+        new.get("reason"),
+    ):
+        return False
+    if new.get("status") != "known":
+        return True  # the same unknown reading is already on the case
+    margin = datetime.fromisoformat(new["observed_at"]) + REFRESH_MARGIN
+    return datetime.fromisoformat(last["fresh_until"]) > margin
+
+
 async def run_custody_device_fix_evidence(
     db_pool: asyncpg.Pool, *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -124,13 +157,16 @@ async def run_custody_device_fix_evidence(
             if fix_at is not None and observed_at - fix_at <= FRESH_FOR:
                 label = await db_pool.fetchval(_PLACE_SQL, endpoint, fix_at)
                 place = label if label and label != PLACE_UNKNOWN_LABEL else None
+            payload = fix_evidence(fix_at=fix_at, place=place, observed_at=observed_at)
+            if await _redundant(db_pool, binding["case_id"], endpoint, payload):
+                continue
             _row, created = await contribute_evidence(
                 db_pool,
                 case_id=binding["case_id"],
                 contributor=CONTRIBUTOR,
                 kind=EVIDENCE_KIND,
                 ref=evidence_ref(endpoint, fix_at),
-                payload=fix_evidence(fix_at=fix_at, place=place, observed_at=observed_at),
+                payload=payload,
             )
         except (asyncpg.PostgresError, FleetCaseError):
             logger.warning("Custody device-fix evidence failed for one binding")

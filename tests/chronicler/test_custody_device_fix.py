@@ -54,8 +54,8 @@ def test_the_evidence_ref_names_the_endpoint_and_exact_fix() -> None:
 
 
 class _Pool:
-    def __init__(self, bindings, fix=FIX, place="Home") -> None:
-        self.bindings, self.fix, self.place = bindings, fix, place
+    def __init__(self, bindings, fix=FIX, place="Home", last=None) -> None:
+        self.bindings, self.fix, self.place, self.last = bindings, fix, place, last
         self.sql: list[str] = []
 
     async def fetch(self, sql: str, *args: Any):
@@ -64,6 +64,8 @@ class _Pool:
 
     async def fetchval(self, sql: str, *args: Any):
         self.sql.append(sql)
+        if "fleet_case_evidence" in sql:
+            return self.last
         return self.fix if "point_events" in sql else self.place
 
 
@@ -130,8 +132,32 @@ async def test_no_binding_means_nothing_is_read_or_written(rows) -> None:
 
 
 def test_the_queries_read_only_retained_live_non_outlier_fixes() -> None:
+    assert "v_point_events_corrected" in job._LAST_FIX_SQL  # owner corrections apply
+    assert "v_episodes_corrected" in job._PLACE_SQL
     assert "tombstone_at IS NULL" in job._LAST_FIX_SQL
     assert "privacy <> 'restricted'" in job._LAST_FIX_SQL
     assert "trail_outlier" in job._LAST_FIX_SQL
     assert "lat" not in job._LAST_FIX_SQL.replace("place", "") and "lon" not in job._PLACE_SQL
     assert "c.state <> 'closed'" in job._BINDINGS_SQL
+
+
+def _row(**kw):
+    return job.fix_evidence(fix_at=FIX, place=kw.get("place", "Home"), observed_at=NOW)
+
+
+async def test_a_new_fix_with_the_same_status_and_place_while_fresh_writes_nothing(rows) -> None:
+    binding = {"case_id": str(uuid.uuid4()), "endpoint_identity": ENDPOINT}
+    newer = FIX + timedelta(minutes=20)
+    result = await job.run_custody_device_fix_evidence(
+        _Pool([binding], fix=newer, last=_row()), now=NOW + timedelta(minutes=30)
+    )
+    assert result["contributed"] == 0 and rows == {}
+
+
+async def test_a_changed_place_or_a_nearly_stale_row_is_written(rows) -> None:
+    binding = {"case_id": str(uuid.uuid4()), "endpoint_identity": ENDPOINT}
+    moved = _Pool([binding], fix=FIX + timedelta(minutes=20), place="Work", last=_row())
+    assert (await job.run_custody_device_fix_evidence(moved, now=NOW))["contributed"] == 1
+    near_stale = NOW + job.FRESH_FOR - job.REFRESH_MARGIN + timedelta(minutes=1)
+    later = _Pool([binding], fix=near_stale - timedelta(minutes=5), last=_row())
+    assert (await job.run_custody_device_fix_evidence(later, now=near_stale))["contributed"] == 1

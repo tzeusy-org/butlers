@@ -939,3 +939,6 @@ appends one `chronicler`/`device_last_fix` evidence row per exact fix: fix time,
 window (six hours) and the named place, never coordinates or accuracy. Stale or no fix reads unknown.
 It is attributed context only and never answers the security question
 (`butlers.chronicler.custody_device_fix`).
+Named places come from the owner's own labels (owner place registry entries and the owner's own
+OwnTracks region names); nothing is geocoded or inferred. Fixes are read through the corrected views, so
+an owner correction that restricts or tombstones a fix hides it here too.

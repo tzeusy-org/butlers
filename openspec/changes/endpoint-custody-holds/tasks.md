@@ -136,7 +136,7 @@
       no session; Chronicler owns the OwnTracks projection) contributes one `chronicler`/
       `device_last_fix` evidence row per exact fix of the newest binding: fix time, age at
       observation, `fresh_until` (six hours) and the named place (owner place registry or
-      OwnTracks region, else null). Retained, live, non-restricted, non-outlier fixes only. A
+      OwnTracks region, else null). Retained, live, non-restricted, non-outlier fixes only, read through the owner-corrected views. Each selection is its own evidence row (newest wins, so A then B then A leaves A); an unchanged status and place is not rewritten while the last row is still fresh. A
       stale fix, or none, reads unknown (`stale_fix_at` kept apart); coordinates and accuracy
       never leave the Chronicler. `GET /api/custody/episodes/{id}/device` reads the binding and
       the newest row judged for freshness now, marked `evidence_only`; nothing here answers the

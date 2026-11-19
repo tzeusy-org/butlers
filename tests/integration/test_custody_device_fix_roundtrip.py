@@ -54,26 +54,31 @@ async def chron(db, fresh_db):
     return pool
 
 
+async def _bind(pool, case_id: str, endpoint: str) -> None:
+    await pool.execute(
+        "INSERT INTO public.fleet_case_evidence (case_id, contributor, kind, ref, payload) "
+        "VALUES ($1::uuid, 'custody_owner', 'device_binding', $2, $3)",
+        case_id,
+        f"selection:{uuid.uuid4()}",
+        {"endpoint_identity": endpoint, "selected_by": "owner", "authority": "cookie"},
+    )
+
+
 async def _case(pool, endpoint: str | None = DEVICE) -> str:
     case_id = await pool.fetchval(
         "INSERT INTO public.fleet_cases (correlation_key) VALUES ($1) RETURNING id::text",
         f"endpoint_custody:{uuid.uuid4()}",
     )
     if endpoint:
-        await pool.execute(
-            "INSERT INTO public.fleet_case_evidence (case_id, contributor, kind, ref, payload) "
-            "VALUES ($1::uuid, 'custody_owner', 'device_binding', $2, '{}')",
-            case_id,
-            endpoint,
-        )
+        await _bind(pool, case_id, endpoint)
     return case_id
 
 
-async def _fix(pool, endpoint: str, at: datetime, **extra) -> None:
+async def _fix(pool, endpoint: str, at: datetime, **extra) -> str:
     payload = {"endpoint_identity": endpoint, "lat": 1.3, "lon": 103.8} | extra.pop("payload", {})
-    await pool.execute(
+    return await pool.fetchval(
         "INSERT INTO point_events (source_name, source_ref, event_type, occurred_at, payload, "
-        "tombstone_at) VALUES ('owntracks.points', $1, 'location', $2, $3, $4)",
+        "tombstone_at) VALUES ('owntracks.points', $1, 'location', $2, $3, $4) RETURNING id::text",
         str(uuid.uuid4()),
         at,
         payload,
@@ -144,3 +149,40 @@ async def test_an_unbound_episode_gets_nothing(chron) -> None:
     await _fix(pool, DEVICE, NOW - timedelta(minutes=1))
     result = await job.run_custody_device_fix_evidence(pool, now=NOW)
     assert result["bindings"] == 0 and await _evidence(pool, case_id) == []
+
+
+async def test_rebinding_a_then_b_then_a_leaves_a_effective(chron) -> None:
+    pool = chron
+    case_id = await _case(pool, endpoint=None)
+    for endpoint in (DEVICE, OTHER, DEVICE):
+        await _bind(pool, case_id, endpoint)
+    await _fix(pool, DEVICE, NOW - timedelta(minutes=3))
+    await _fix(pool, OTHER, NOW - timedelta(minutes=1))
+    await job.run_custody_device_fix_evidence(pool, now=NOW)
+    (row,) = await _evidence(pool, case_id)
+    assert row["ref"].startswith(f"{DEVICE}:")
+
+
+async def test_an_owner_correction_hides_the_newest_fix(chron) -> None:
+    pool = chron
+    case_id = await _case(pool)
+    older = NOW - timedelta(minutes=40)
+    newest = NOW - timedelta(minutes=5)
+    await _fix(pool, DEVICE, older)
+    newest_id = await _fix(pool, DEVICE, newest)
+    await pool.execute(
+        "INSERT INTO overrides (target_kind, target_id, corrected_privacy) "
+        "VALUES ('point_event', $1::uuid, 'restricted')",
+        newest_id,
+    )
+    await job.run_custody_device_fix_evidence(pool, now=NOW)
+    (row,) = await _evidence(pool, case_id)
+    assert row["ref"] == job.evidence_ref(DEVICE, older)  # fell back to the previous fix
+    await pool.execute(
+        "INSERT INTO overrides (target_kind, target_id, corrected_tombstone_at) "
+        "SELECT 'point_event', id, now() FROM point_events WHERE payload ->> 'endpoint_identity' = $1",
+        DEVICE,
+    )
+    await job.run_custody_device_fix_evidence(pool, now=NOW + timedelta(minutes=1))
+    refs = {r["ref"] for r in await _evidence(pool, case_id)}
+    assert job.evidence_ref(DEVICE, None) in refs  # every fix corrected away: honest no_fix

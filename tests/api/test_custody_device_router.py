@@ -22,7 +22,7 @@ CASE = str(uuid.uuid4())
 NOW = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
 
 
-def _client(pool, *, owner: bool = True) -> TestClient:
+def _client(pool, *, owner: bool = True, method: str = "cookie") -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[deps.get_db] = lambda: SimpleNamespace(pool=lambda name: pool)
@@ -30,7 +30,7 @@ def _client(pool, *, owner: bool = True) -> TestClient:
     @app.middleware("http")
     async def _state(request, call_next):
         if owner:
-            request.state.owner_authority = object()
+            request.state.owner_authority = SimpleNamespace(method=method)
         return await call_next(request)
 
     return TestClient(app)
@@ -39,7 +39,7 @@ def _client(pool, *, owner: bool = True) -> TestClient:
 def _pool(**kw):
     pool = SimpleNamespace(fetchrow=AsyncMock(), fetchval=AsyncMock())
     pool.fetchrow.return_value = kw.get("case", {"id": CASE, "state": "open"})
-    pool.fetchval.side_effect = kw.get("vals", [1])
+    pool.fetchval.side_effect = kw.get("vals", [1, None])
     return pool
 
 
@@ -51,12 +51,51 @@ def test_the_owner_binds_a_registered_device_as_case_evidence(monkeypatch) -> No
     )
     assert response.status_code == 200 and response.json()["data"]["bound"] is True
     kwargs = contribute.await_args.kwargs
-    assert (kwargs["contributor"], kwargs["kind"], kwargs["ref"]) == (
-        "custody_owner",
-        "device_binding",
-        "owntracks:o:p",
-    )
+    assert (kwargs["contributor"], kwargs["kind"]) == ("custody_owner", "device_binding")
+    assert kwargs["ref"].startswith("selection:")
+    assert kwargs["payload"] == {
+        "endpoint_identity": "owntracks:o:p",
+        "selected_by": "owner",
+        "authority": "cookie",
+    }
     assert kwargs["case_id"] == CASE
+
+
+def test_selecting_a_then_b_then_a_writes_three_distinct_selections(monkeypatch) -> None:
+    contribute = AsyncMock(return_value=({}, True))
+    monkeypatch.setattr(custody_device, "contribute_evidence", contribute)
+    url = f"/api/custody/episodes/{EPISODE}/device"
+    current = [None, "a", "b"]  # the effective binding before each selection
+    for endpoint, before in zip(("a", "b", "a"), current, strict=True):
+        client = _client(_pool(vals=[1, before]))
+        assert client.put(url, json={"endpoint_identity": endpoint}).status_code == 200
+    refs = [call.kwargs["ref"] for call in contribute.await_args_list]
+    assert len(set(refs)) == 3
+    assert [call.kwargs["payload"]["endpoint_identity"] for call in contribute.await_args_list] == [
+        "a",
+        "b",
+        "a",
+    ]
+
+
+def test_selecting_the_current_device_again_writes_nothing(monkeypatch) -> None:
+    contribute = AsyncMock()
+    monkeypatch.setattr(custody_device, "contribute_evidence", contribute)
+    response = _client(_pool(vals=[1, "a"])).put(
+        f"/api/custody/episodes/{EPISODE}/device", json={"endpoint_identity": "a"}
+    )
+    assert response.json()["data"] == {"bound": True, "newly_recorded": False}
+    contribute.assert_not_awaited()
+
+
+def test_a_non_cookie_authority_cannot_bind(monkeypatch) -> None:
+    contribute = AsyncMock()
+    monkeypatch.setattr(custody_device, "contribute_evidence", contribute)
+    response = _client(_pool(), method="api_key").put(
+        f"/api/custody/episodes/{EPISODE}/device", json={"endpoint_identity": "a"}
+    )
+    assert response.status_code == 403
+    contribute.assert_not_awaited()
 
 
 def test_an_unregistered_device_is_refused(monkeypatch) -> None:
