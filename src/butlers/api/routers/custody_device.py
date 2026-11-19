@@ -103,7 +103,8 @@ async def _open_case(pool: Any, episode_id: uuid.UUID) -> dict[str, Any] | None:
 @router.put("/{episode_id}/device", response_model=ApiResponse[dict[str, Any]])
 async def bind_device(episode_id: uuid.UUID, body: DeviceBinding, request: Request, db: Db) -> Any:
     authority = getattr(request.state, "owner_authority", None)
-    if getattr(authority, "method", None) != "cookie":
+    method = getattr(authority, "method", None)
+    if method != "cookie":
         return _error(403, "CUSTODY_FORBIDDEN", "Owner cookie authentication required.")
     pool = db.pool("switchboard")
     case = await _open_case(pool, episode_id)
@@ -125,7 +126,7 @@ async def bind_device(episode_id: uuid.UUID, body: DeviceBinding, request: Reque
         payload={
             "endpoint_identity": body.endpoint_identity,
             "selected_by": "owner",
-            "authority": authority.method,
+            "authority": method,
         },
     )
     return ApiResponse[dict[str, Any]](data={"bound": True, "newly_recorded": created})
