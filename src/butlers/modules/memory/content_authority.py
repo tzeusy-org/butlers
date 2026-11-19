@@ -245,7 +245,15 @@ async def resolve_content_authority(
     if not routing_context:
         return ContentAuthority(SYSTEM)
     owner_entity_id = await fetch_owner_entity_id(pool)
-    return classify_routing_context(routing_context, owner_entity_id)
+    authority = classify_routing_context(routing_context, owner_entity_id)
+    if authority.authority == OWNER:
+        # REQ-endpoint-custody-holds-005 write-time recheck: a hold that committed after
+        # ingress demotes this write too. Fails closed (no endpoint, unreadable custody).
+        from butlers.core.custody_ingress import routing_context_custody_reason
+
+        if await routing_context_custody_reason(pool, routing_context) is not None:
+            return ContentAuthority(THIRD_PARTY, authority.entity_id, ENDPOINT_HELD)
+    return authority
 
 
 def successor_authority(

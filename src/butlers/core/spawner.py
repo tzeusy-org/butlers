@@ -2584,6 +2584,8 @@ class Spawner:
                     runtime_session_id,
                     source_endpoint=self._config.switchboard_url,
                     routed=trigger_source in {"route", "classification"},
+                    routing_context=routing_context,
+                    custody_pool=self._pool,
                 )
                 mcp_servers = {
                     self._config.name: {

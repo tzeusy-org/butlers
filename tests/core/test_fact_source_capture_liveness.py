@@ -417,9 +417,12 @@ async def test_owner_reached_through_a_held_endpoint_freezes_third_party(
     issuer.resolve_identity = resolve
     monkeypatch.setattr("butlers.core.custody_ingress.owner_source_custody_reason", reason)
     async with asyncio.timeout(1):
-        report = await issuer.capture_accepted_report(uuid.uuid4(), pool.entity_id)
+        inbox = uuid.uuid4()
+        report = await issuer.capture_accepted_report(inbox, pool.entity_id)
     assert report == FactWriteContext(expected, pool.entity_id, pool.created_at, pool.entity_id)
     assert calls == [(pool, "email", "a@example.test")]
+    # The identity step reuses this one read instead of asking again (slice 3b).
+    assert issuer.captured_custody(inbox) == custody
 
 
 async def test_a_custody_read_that_times_out_freezes_third_party(monkeypatch):
@@ -436,6 +439,28 @@ async def test_a_custody_read_that_times_out_freezes_third_party(monkeypatch):
     monkeypatch.setattr(fact_authority, "_CAPTURE_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr("butlers.core.custody_ingress.owner_source_custody_reason", hang)
     async with asyncio.timeout(2):
-        report = await issuer.capture_accepted_report(uuid.uuid4(), pool.entity_id)
+        inbox = uuid.uuid4()
+        report = await issuer.capture_accepted_report(inbox, pool.entity_id)
     assert report.authority == "third_party"
     assert report.original_entity_id == pool.entity_id
+    assert issuer.captured_custody(inbox) == "endpoint_held"  # shared, so identity agrees
+
+
+async def test_a_non_owner_capture_reads_no_custody_to_share(monkeypatch):
+    from butlers.core.custody_ingress import UNREAD
+
+    pool = SourcePool()
+    issuer = FactSourceContextRegistry(pool)
+
+    async def resolve(*args, **kwargs):
+        return SimpleNamespace(entity_id=pool.entity_id, roles=[])
+
+    async def refuse(*_args):
+        raise AssertionError("a non-owner sender needs no custody read")
+
+    issuer.resolve_identity = resolve
+    monkeypatch.setattr("butlers.core.custody_ingress.owner_source_custody_reason", refuse)
+    inbox = uuid.uuid4()
+    async with asyncio.timeout(1):
+        await issuer.capture_accepted_report(inbox, pool.entity_id)
+    assert issuer.captured_custody(inbox) is UNREAD

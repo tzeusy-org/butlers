@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from opentelemetry import metrics
@@ -34,6 +34,7 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.util._once import Once
 
 from butlers.core import fact_authority
+from butlers.core.custody_ingress import UNREAD
 from butlers.modules.pipeline import (
     MessagePipeline,
     PipelineConfig,
@@ -591,6 +592,7 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
         channel_value="sender-1",
         display_name=None,
         notify_owner_fn=None,
+        owner_custody=UNREAD,  # capture read no custody verdict for this sender
     )
     pipeline._resolve_decomp_speakers.assert_not_awaited()
     pipeline._assert_sender_channel_fact.assert_not_awaited()
@@ -614,6 +616,54 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
     assert warning.stack_info is None
     assert sentinel not in caplog.text
     assert sentinel not in repr([record.__dict__ for record in caplog.records])
+
+
+async def test_identity_step_reuses_the_capture_custody_read(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
+    """Slice 3b: the frozen report and the route envelope share one custody read."""
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="Routed to health.", tool_calls=[_route_call("health")])
+
+    owner = IdentityResolutionResult(
+        preamble="[Source: Owner, via telegram_bot]",
+        entity_id=uuid4(),
+        is_owner=True,
+        custody_reason="endpoint_held",
+    )
+    resolver = AsyncMock(return_value=owner)
+    issuer = MagicMock()
+    issuer.capture_accepted_report = AsyncMock()
+    issuer.captured_custody = MagicMock(return_value="endpoint_held")
+    pipeline = MessagePipeline(
+        MagicMock(), dispatch, source_butler="switchboard", enable_identity_resolution=True
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
+    inbox = "00000000-0000-0000-0000-000000000098"
+    with (
+        unregistered_identity_source(),
+        patch.object(fact_authority, "_source_registry", issuer),
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(identity_inject, "resolve_and_inject_identity", resolver),
+    ):
+        await pipeline.process(
+            "hello",
+            tool_args={"source_channel": "telegram_bot", "source_id": "sender-1"},
+            message_inbox_id=inbox,
+        )
+
+    issuer.captured_custody.assert_called_once_with(UUID(inbox))
+    assert resolver.await_args.kwargs["owner_custody"] == "endpoint_held"
+    context = pipeline._set_routing_context.call_args.kwargs
+    assert context["source_custody"] == "endpoint_held"
+    assert context["source_endpoint"] == {"channel": "telegram_bot", "identity": "sender-1"}
 
 
 @pytest.mark.parametrize(

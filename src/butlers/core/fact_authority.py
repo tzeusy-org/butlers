@@ -16,7 +16,8 @@ import json
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import wraps
 from typing import Any
@@ -27,6 +28,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
+from butlers.core.custody_ingress import UNREAD, CustodyUnread
 
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
@@ -196,6 +198,8 @@ class FactSourceContextRegistry:
         self._claims: dict[str, _SourceClaim] = {}
         self._reports: dict[uuid.UUID, FactWriteContext] = {}
         self._source_digests: dict[uuid.UUID, str] = {}
+        # The one custody verdict capture read per accepted source, for the identity step.
+        self._custody_reasons: dict[uuid.UUID, str | None] = {}
 
     async def resolve_identities(self, channel_type: str, values: list[str]) -> dict[str, Any]:
         """Call the fixed owning-role MCP resolver at an admitted registry target.
@@ -340,6 +344,7 @@ class FactSourceContextRegistry:
         # keeps attribution but not owner authority. Asked before the inbox lock, like the
         # lookup above. The dashboard has its own owner admission below and is not an endpoint.
         custody_held = False
+        custody_read = False
         if (
             resolved is not None
             and "owner" in (getattr(resolved, "roles", None) or ())
@@ -347,6 +352,7 @@ class FactSourceContextRegistry:
         ):
             from butlers.core.custody_ingress import owner_source_custody_reason
 
+            custody_read = True
             try:
                 async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
                     custody_held = (
@@ -453,7 +459,13 @@ class FactSourceContextRegistry:
                 )
         self._reports[inbox_id] = report
         self._source_digests[inbox_id] = accepted_source_digest(row)
+        if custody_read:
+            self._custody_reasons[inbox_id] = "endpoint_held" if custody_held else None
         return report
+
+    def captured_custody(self, inbox_id: uuid.UUID) -> str | None | CustodyUnread:
+        """The custody verdict capture read for this source, or ``UNREAD`` if it read none."""
+        return self._custody_reasons.get(inbox_id, UNREAD)
 
     def issue(self, request_id: uuid.UUID, target: str) -> str:
         report = self._reports.get(request_id)
@@ -644,6 +656,10 @@ class _Invocation:
     source_request: uuid.UUID | None
     deadline: float
     attention_origin: AttentionOrigin | None = None
+    # A routing context that names a sender entity, and a pool to recheck its endpoint's
+    # custody at each write (REQ-endpoint-custody-holds-005, slice 3b).
+    custody_context: Mapping[str, Any] | None = None
+    custody_pool: Any = None
 
 
 # The registries hold private producer objects, not copies from public routing
@@ -722,6 +738,8 @@ async def register_invocation(
     *,
     source_endpoint: str | None,
     routed: bool,
+    routing_context: Mapping[str, Any] | None = None,
+    custody_pool: Any = None,
 ) -> str:
     report = _current_report.get()
     attention_origin = _current_origin.get()
@@ -758,6 +776,10 @@ async def register_invocation(
         _pipeline_source.get(),
         time.monotonic() + 3600,
         attention_origin,
+        dict(routing_context)
+        if isinstance(routing_context, Mapping) and routing_context.get("source_entity_id")
+        else None,
+        custody_pool,
     )
     return token
 
@@ -774,6 +796,23 @@ def resolve_invocation(token: str | None, target: str) -> _Invocation | None:
     return None
 
 
+async def current_invocation_report(invocation: _Invocation) -> FactWriteContext:
+    """The invocation's report, rechecked at write time for endpoint custody.
+
+    An owner report from a routed sender keeps its attribution but is demoted to
+    ``third_party`` when that sender's endpoint is now held or its custody is unreadable, so
+    a hold that commits after the report froze still demotes later writes in the session.
+    """
+    report = invocation.report
+    if report.authority != "owner" or invocation.custody_context is None:
+        return report
+    from butlers.core.custody_ingress import routing_context_custody_reason
+
+    if await routing_context_custody_reason(invocation.custody_pool, invocation.custody_context):
+        return replace(report, authority="third_party")
+    return report
+
+
 def accepted_source_scope(operation: Any) -> Any:
     @wraps(operation)
     async def isolated(*args: Any, **kwargs: Any) -> Any:
@@ -787,6 +826,7 @@ def accepted_source_scope(operation: Any) -> Any:
             _current_origin.reset(origin_token)
             if source_id is not None and _source_registry is not None:
                 _source_registry._reports.pop(source_id, None)
+                _source_registry._custody_reasons.pop(source_id, None)
                 _source_registry._source_digests.pop(source_id, None)
 
     return isolated

@@ -90,6 +90,13 @@ REQ-module-memory-013 (task 2.2a):
   producer gives no owner signal, and the routed prompt preamble marks the endpoint held.
 - Owner-ingress engagement skips it; break-through resolves it to no entity (narrow only).
 
+Slice 3b adds the write-time recheck (task 2.2b). A routing context that names a sender entity
+also names that sender's source endpoint, and both owner-authority writers ask custody again
+before using owner authority: memory before stamping `owner`, and the Relationship report on
+each MCP request. A hold that commits after ingress therefore demotes later writes in an
+already-admitted session. A missing endpoint or unreadable custody fails closed. Ingress also
+shares one custody read between the accepted-source capture and the identity step.
+
 This is a security fix inside the frozen classify-and-route path (RFC 0038 "Freeze" admits
 security fixes). At cutover owner origin comes from owner-channel authorization, which
 `resolve_owner_triple` already refuses for a held endpoint, so the Switchboard part is superseded;
@@ -109,7 +116,8 @@ the memory scenario is carried in the generalist change's REQ-module-memory-013.
   `src/butlers/core_tools/_switchboard.py`, `src/butlers/switchboard_wiring.py`,
   `src/butlers/core/break_through.py`, `src/butlers/modules/memory/content_authority.py`,
   `src/butlers/modules/memory/storage.py`, `src/butlers/core/fact_authority.py`,
-  `roster/finance/tools/expected_signals.py`.
+  `roster/finance/tools/expected_signals.py`, `src/butlers/core/spawner.py`,
+  `src/butlers/guards.py`.
 - Specs: this change's endpoint-custody-holds spec and a MODIFIED REQ-module-memory-013 (D3);
   the same scenario is carried in generalist-lead-focused-delegation's REQ-module-memory-013.
 - Tests: `tests/migrations/test_resolve_owner_triple_migration.py`,
@@ -122,7 +130,9 @@ the memory scenario is carried in the generalist change's REQ-module-memory-013.
   `tests/core/test_fact_source_capture_liveness.py`,
   `tests/integration/test_relationship_fact_content_authority.py`,
   `roster/finance/tests/test_expected_signals.py`,
-  `tests/daemon/test_route_execute_async_dispatch.py`.
+  `tests/daemon/test_route_execute_async_dispatch.py`,
+  `tests/daemon/test_route_execute_sender_entity_id.py`,
+  `tests/daemon/test_mcp_runtime_session_guard.py`, `tests/modules/test_module_pipeline.py`.
 - Docs: `docs/identity_and_secrets/owner-identity.md`, `docs/modules/approvals.md`,
   `docs/data_and_storage/schema-topology.md`, `docs/modules/memory.md`.
 - No security.md, manifesto or RFC amendment: the design's authority amendments stay unadopted.

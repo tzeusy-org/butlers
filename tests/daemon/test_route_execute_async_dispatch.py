@@ -1248,3 +1248,5 @@ async def test_recovery_carries_only_the_envelope_custody_flag(custody, expected
     assert len(seen) == 1 and seen[0] is not None
     assert seen[0]["source_entity_id"] == "00000000-0000-0000-0000-000000000001"
     assert seen[0].get("source_custody") == expected
+    # Recovery keeps the endpoint the write-time custody recheck reads (slice 3b).
+    assert seen[0]["source_endpoint"] == {"channel": "telegram_bot", "identity": "health"}
