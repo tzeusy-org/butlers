@@ -93,6 +93,12 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   kind, masked hint, held flag) for a manual custody hold (core_352; same candidate universe and
   masking as a security question). `dashboard_auth_api` only, current cookie session checked in
   its own transaction; no table.
+- **`public.insight_outcomes`** and **`public.insight_class_efficacy`** -- The observe-only
+  insight outcome ledger (core_353, bu-s11n0s.15): one row per terminal premised insight
+  candidate with what reached the owner (its exposure) and, once, whether its premise resolved,
+  when and how precisely; and the per-class verdict rollup a later slice computes. Keyed by
+  candidate id with no foreign key, so it outlives the candidate retention pruner. Switchboard
+  only, fenced by row level security.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

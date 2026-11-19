@@ -333,6 +333,27 @@ async def _run_switchboard_insight_delivery_cycle_job(
     )
 
 
+async def _run_switchboard_insight_outcome_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Enroll terminal premised insights and record whether their premise resolved.
+
+    bu-s11n0s.15 S1, observe-only: writes only ``public.insight_outcomes`` and never changes
+    delivery. See ``butlers.tools.switchboard.insight.outcomes``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.finance_warning_control import lookup_owner
+
+    outcomes = importlib.import_module("butlers.tools.switchboard.insight.outcomes")
+    owner = lookup_owner(pool)
+    return await outcomes.run_insight_outcome_sweep(
+        pool, finance_warning_reader=owner.read if owner is not None else None
+    )
+
+
 async def _run_switchboard_insight_urgent_subcycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2528,6 +2549,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "insight_timed_subcycle": _run_switchboard_insight_timed_subcycle_job,
+            "insight_outcome_sweep": _run_switchboard_insight_outcome_sweep_job,
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,

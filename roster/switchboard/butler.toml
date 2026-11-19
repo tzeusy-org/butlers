@@ -101,6 +101,17 @@ cron = "30 * * * *"
 dispatch_mode = "job"
 job_name = "insight_urgent_subcycle"
 
+# Insight outcome sweep (bu-s11n0s.15 S1) -- observe-only: enrolls terminal premised insight
+# candidates with what reached the owner, then records once whether each premise resolved, when
+# and how precisely. Never changes delivery. Daily at 05:52 UTC, before the 06:15 delivery
+# window, off the eligibility (*/5), security-question (odd minutes) and :53 domain-event ticks.
+[[butler.schedule]]
+name = "insight-outcome-sweep"
+cron = "52 5 * * *"
+timezone = "Etc/UTC"
+dispatch_mode = "job"
+job_name = "insight_outcome_sweep"
+
 # Commitment escalation tick (bu-n1evl, RFC 0026 §6-§9) — advances the L0-L3
 # escalation clock for commitment-class owner_conditions, shortens the grace of
 # deadline-bearing commitments, surfaces L1+ commitments at confidence >= 0.8
