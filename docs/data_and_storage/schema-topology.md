@@ -90,7 +90,7 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   `public.custody_dashboard` in the same transaction. Row level security; Switchboard has one
   policy and no other runtime role has a grant.
 - **`public.custody_candidates_dashboard`** -- Content-blind read of the owner's own channels (fact id,
-  kind, masked hint, held flag) for a manual custody hold (core_351; same candidate universe and
+  kind, masked hint, held flag) for a manual custody hold (core_352; same candidate universe and
   masking as a security question). `dashboard_auth_api` only, current cookie session checked in
   its own transaction; no table.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the

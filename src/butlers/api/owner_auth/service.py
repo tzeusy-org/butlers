@@ -149,7 +149,7 @@ class OwnerAuthService:
     async def custody_candidates_call(
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
-        """The owner's own channels as masked hints (core_351); the definer rechecks the session."""
+        """The owner's own channels as masked hints (core_352); the definer rechecks the session."""
         del csrf  # a read carries no CSRF token
         if action != "list" or values:
             raise AuthError("INVALID_REQUEST")

@@ -1,4 +1,4 @@
-"""core_351 owner-channel candidate read on migrated PostgreSQL (bu-s11n0s.1 S5h).
+"""core_352 owner-channel candidate read on migrated PostgreSQL (bu-s11n0s.1 S5h).
 
 REQ-endpoint-custody-holds-011: a manual hold names owner-selected fact ids the server listed. The
 read is content-blind (kind, masked hint, held flag), gated to ``dashboard_auth_api`` and a current

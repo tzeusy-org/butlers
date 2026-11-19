@@ -168,7 +168,7 @@
       (#5911; S5i, 2.4i).
 - [x] 2.4g Manual hold from `/custody` (REQ-011, S5h): `GET /api/custody/targets` reads the
       owner's own channels through the content-blind definer
-      `public.custody_candidates_dashboard` (core_351; the same candidate universe and masking as
+      `public.custody_candidates_dashboard` (core_352; the same candidate universe and masking as
       a security question; `dashboard_auth_api` only, current cookie session checked in its own
       transaction, no table). The page lists kind and masked hint, disables an already-held
       channel, and posts only the ticked fact ids with a reason and a page-minted command id to

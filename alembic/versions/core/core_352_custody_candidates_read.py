@@ -1,7 +1,7 @@
 """Owner-channel candidate read for a manual custody hold (S5h).
 
-Revision ID: core_351
-Revises: core_350
+Revision ID: core_352
+Revises: core_351
 Create Date: 2026-11-19 12:00:00.000000
 
 openspec change ``endpoint-custody-holds``, REQ-endpoint-custody-holds-011 (bu-s11n0s.1 slice
@@ -19,7 +19,7 @@ token, as the question reads in core_350. A request carries nothing else. No new
 Installed once across the per-schema core chains, as core_350: a run that finds the function
 installed reads the catalog only; otherwise it leaves the chain's open transaction, takes a polled
 session lock and installs in one transaction of its own under a short lock timeout, retrying while
-a sibling chain holds a catalog row it needs. Only the last schema still at core_351 drops it.
+a sibling chain holds a catalog row it needs. Only the last schema still at core_352 drops it.
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
-revision = "core_351"
-down_revision = "core_350"
+revision = "core_352"
+down_revision = "core_351"
 branch_labels = None
 depends_on = None
 
-_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_351:custody-candidates', 0))"
-_INSTALL_LOCK = 351_20261119
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_352:custody-candidates', 0))"
+_INSTALL_LOCK = 352_20261119
 _INSTALL_LOCK_WAIT_SECONDS = 300
 _INSTALL_LOCK_TIMEOUT = "100ms"
 _API = "dashboard_auth_api"
@@ -129,14 +129,14 @@ def _fence() -> None:
     op.execute(f"REVOKE ALL ON FUNCTION {_SIGNATURE} FROM PUBLIC")
     op.execute(f"""DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_API}') THEN
-            RAISE EXCEPTION 'core_351 requires the {_API} role from core_240';
+            RAISE EXCEPTION 'core_352 requires the {_API} role from core_240';
         END IF;
     END $$""")
     op.execute(f"GRANT EXECUTE ON FUNCTION {_SIGNATURE} TO {_API}")
 
 
 def _installation_count() -> int:
-    """Count schema-local core chains still at core_351 or later."""
+    """Count schema-local core chains still at core_352 or later."""
     bind = op.get_bind()
     schemas = bind.exec_driver_sql(
         """
