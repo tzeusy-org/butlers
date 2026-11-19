@@ -285,6 +285,36 @@ class CalendarResponseCoordinator:
             raw, event_id=target["provider_event_id"], account_email=account["email"]
         )
 
+    async def _require_response_mail_unheld(
+        self, target: dict[str, Any], send_updates: str, *, sender: str | None
+    ) -> None:
+        """Custody-fence the mail a response makes Google send, before the start marker.
+
+        With ``sendUpdates`` other than ``none`` Google emails the organizer from the owner's
+        account (bu-s11n0s.94). The bound sending account (``sender``) is checked with the
+        recipients. A held or unreadable recipient fails the command with a closed
+        ``response_custody_*`` reason; nothing has started, so nothing is uncertain.
+        """
+        from butlers.core.custody_egress import CustodyEgressRefused
+        from butlers.modules.calendar.custody import (
+            google_resource_recipients,
+            require_calendar_mail_custody_clear,
+            sends_mail,
+        )
+
+        if not sends_mail(send_updates):
+            return
+        provider = self.module._require_provider()
+        raw = await provider.get_response_event(
+            calendar_id=target["calendar_id"], event_id=target["provider_event_id"]
+        )
+        try:
+            await require_calendar_mail_custody_clear(
+                self.pool, send_updates, [sender, *google_resource_recipients(raw)]
+            )
+        except CustodyEgressRefused as exc:
+            raise CalendarResponseError(f"response_custody_{exc.reason}") from None
+
     def _args(self, command_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
         args = dict(payload["command"]["arguments"])
         args.update(_command_id=str(command_id), _command_digest=payload["digest"])
@@ -605,6 +635,9 @@ class CalendarResponseCoordinator:
             if current.to_dict() != command["before"]:
                 raise CalendarResponseError("response_version_changed")
             provider = self.module._require_provider()
+            await self._require_response_mail_unheld(
+                target, command["arguments"]["send_updates"], sender=account["email"]
+            )
             token = await provider.prepare_response_write()
             replay = await self._claim(command_id, payload)
             if replay is not None:

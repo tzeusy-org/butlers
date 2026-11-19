@@ -184,6 +184,11 @@
       A failed device read says unavailable (not "no device"), a failed candidate read is distinct
       from none registered, and the binding never answers a security question. The `PUT` is
       idempotent on the current binding, so no command id is minted. No migration.
+- [x] 2.4j Calendar mail (REQ-007, bu-s11n0s.94): a Google Calendar write with `sendUpdates`
+      `all` or `externalOnly` (add or remove guests, delete, recurrence change, invitation
+      response) checks the organizer and every guest as `has-email` before provider start and
+      refuses the whole write when one is held or custody is unreadable, never downgrading it to
+      `none`. A write that sends no mail is not fenced.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
   - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's

@@ -80,7 +80,7 @@ Scope: v1-mandatory
 
 ### Requirement: Held egress and safe owner fallback
 
-Messenger SHALL refuse provider start through an exact held outgoing account and delivery to a held owner target, including registered module send/reply functions, route.execute, approved execution and scheduler flush. It SHALL derive the actual SMTP/bot/bridge account from its owning configuration/cache metadata, not infer it from the recipient or receiving Gmail endpoint and never expose credentials. Owner-default resolution SHALL choose the next configured unheld verified channel (current supported notify surface Telegram then email) or durably park with endpoint_held/eligibility_unknown. Explicit recipient/channel intents SHALL not silently retarget. Custody lookup failure SHALL remain fail-closed independently of the existing fail-open permissions matrix. A missing binding is unknown, not evidence the account is unheld.
+Messenger SHALL refuse provider start through an exact held outgoing account and delivery to a held owner target, including registered module send/reply functions, route.execute, approved execution and scheduler flush. It SHALL derive the actual SMTP/bot/bridge account from its owning configuration/cache metadata, not infer it from the recipient or receiving Gmail endpoint and never expose credentials. Owner-default resolution SHALL choose the next configured unheld verified channel (current supported notify surface Telegram then email) or durably park with endpoint_held/eligibility_unknown. Explicit recipient/channel intents SHALL not silently retarget. Custody lookup failure SHALL remain fail-closed independently of the existing fail-open permissions matrix. A missing binding is unknown, not evidence the account is unheld. A calendar write that makes the provider email its organizer or guests from the owner's account SHALL be refused before provider start when any of those addresses is a held owner target or custody cannot be read; it SHALL NOT be silently downgraded to a write that sends no mail. A calendar write that sends no mail is not an egress to those addresses.
 
 ID: REQ-endpoint-custody-holds-007
 Source: original Messenger refusal/default fallback acceptance; core-notify Role-Based Approval Gating and Default Recipient Resolution; [Observed] daemon.py/default cache and EmailModule SMTP scope
@@ -100,6 +100,11 @@ Scope: v1-mandatory
 
 - **WHEN** all supported owner targets are held or unreadable
 - **THEN** a durable custody-parked result or truthful unavailable result is returned with no provider attempt
+
+#### Scenario: Calendar invite mail to a held address
+
+- **WHEN** a calendar write would make Google email an organizer or guest address that is a held owner target, or custody cannot be read
+- **THEN** the write is refused before provider start with `endpoint_held` or `eligibility_unknown`, and the same write with no provider mail proceeds unfenced
 
 ### Requirement: Bounded target identity and scope
 

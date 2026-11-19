@@ -102,12 +102,20 @@ security fixes). At cutover owner origin comes from owner-channel authorization,
 `resolve_owner_triple` already refuses for a held endpoint, so the Switchboard part is superseded;
 the memory scenario is carried in the generalist change's REQ-module-memory-013.
 
+Calendar mail (bu-s11n0s.94): Google emails a calendar event's organizer and guests from the
+owner's account when a write sets `sendUpdates` to `all` or `externalOnly`, an egress REQ-007's
+Messenger list did not name. The spec is silent on it, so REQ-007 takes the conservative reading
+as conforming text: such a write fails held or unknown before provider start and is never
+silently downgraded to a silent write, matching "explicit intents SHALL not silently retarget".
+
 ## Impact
 
 - Code: `alembic/versions/core/core_293_endpoint_custody_holds.py`,
   `alembic/versions/core/core_347_custody_command_engine.py`,
   `src/butlers/api/routers/custody.py`, `src/butlers/api/owner_auth/custody_cli.py`,
   `src/butlers/core/custody_egress.py`, `src/butlers/modules/email.py`,
+  `src/butlers/modules/calendar/custody.py`, `src/butlers/modules/calendar/google.py`,
+  `src/butlers/modules/calendar_response.py`,
   `src/butlers/modules/telegram.py`, `src/butlers/core_tools/_routing.py`,
   `src/butlers/core_tools/_notifications.py`, `src/butlers/core/approval_delivery_transport.py`,
   `src/butlers/chronicler/gap_interview_telegram.py`, `src/butlers/core/custody_ingress.py`,
