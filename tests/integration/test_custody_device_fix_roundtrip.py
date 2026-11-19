@@ -8,6 +8,7 @@ CI-only.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -28,14 +29,23 @@ DEVICE = "owntracks:owner:phone"
 OTHER = "owntracks:owner:tablet"
 
 
-@pytest.fixture
-async def pool(db):
-    pool = await db(
+def _chronicler_url(fresh_db) -> str:
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = fresh_db(
         "core",
         "chronicler",
         schemas={"core": "chronicler", "chronicler": "chronicler"},
-        schema="chronicler",
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
+
+
+@pytest.fixture
+async def chron(db, fresh_db):
+    url = await asyncio.to_thread(_chronicler_url, fresh_db)
+    pool = await db.open(url, schema="chronicler")
     for source in ("owntracks.points", "owntracks.place_cluster"):
         await pool.execute(
             "INSERT INTO source_adapter_state (source_name, chronicler_compatibility) "
@@ -93,7 +103,8 @@ async def _evidence(pool, case_id: str):
     )
 
 
-async def test_the_bound_device_reports_its_own_fix_age_and_named_place(pool) -> None:
+async def test_the_bound_device_reports_its_own_fix_age_and_named_place(chron) -> None:
+    pool = chron
     case_id = await _case(pool)
     fix = NOW - timedelta(minutes=20)
     await _fix(pool, OTHER, NOW - timedelta(minutes=1))  # a wrong device never answers
@@ -112,7 +123,8 @@ async def test_the_bound_device_reports_its_own_fix_age_and_named_place(pool) ->
     assert again["contributed"] == 0
 
 
-async def test_stale_tombstoned_outlier_and_missing_fixes_read_unknown(pool) -> None:
+async def test_stale_tombstoned_outlier_and_missing_fixes_read_unknown(chron) -> None:
+    pool = chron
     stale_case = await _case(pool)
     await _fix(pool, DEVICE, NOW - job.FRESH_FOR - timedelta(hours=1))
     await job.run_custody_device_fix_evidence(pool, now=NOW)
@@ -129,7 +141,8 @@ async def test_stale_tombstoned_outlier_and_missing_fixes_read_unknown(pool) -> 
     assert "no_fix" in str(gone["payload"])
 
 
-async def test_an_unbound_episode_gets_nothing(pool) -> None:
+async def test_an_unbound_episode_gets_nothing(chron) -> None:
+    pool = chron
     case_id = await _case(pool, endpoint=None)
     await _fix(pool, DEVICE, NOW - timedelta(minutes=1))
     result = await job.run_custody_device_fix_evidence(pool, now=NOW)
