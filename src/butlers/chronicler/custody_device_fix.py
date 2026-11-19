@@ -2,8 +2,8 @@
 
 bu-s11n0s.1 S5f, REQ-endpoint-custody-holds-009. The owner binds one OwnTracks endpoint to a
 custody episode (``public.fleet_case_evidence``, contributor ``custody_owner``, kind
-``device_binding``, ref = the endpoint identity; written by
-``PUT /api/custody/episodes/{id}/device``).
+``device_binding``, ref = ``selection:<uuid>`` with the endpoint identity in the payload; written
+by ``PUT /api/custody/episodes/{id}/device``).
 This deterministic Chronicler job, which owns the OwnTracks projection (``point_events`` and
 ``place_cluster`` episodes in its own schema), contributes for each open episode's newest binding
 one
