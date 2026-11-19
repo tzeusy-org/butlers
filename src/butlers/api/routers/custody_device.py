@@ -44,6 +44,10 @@ _ENDPOINT_SQL = (
     "SELECT 1 FROM connector_registry WHERE connector_type = 'owntracks' "
     "AND endpoint_identity = $1 AND deleted_at IS NULL AND archived_at IS NULL"
 )
+_DEVICES_SQL = (
+    "SELECT endpoint_identity FROM connector_registry WHERE connector_type = 'owntracks' "
+    "AND deleted_at IS NULL AND archived_at IS NULL ORDER BY endpoint_identity LIMIT 100"
+)
 _BINDING_SQL = (
     "SELECT payload ->> 'endpoint_identity' FROM public.fleet_case_evidence "
     "WHERE case_id = $1::uuid AND contributor = $2 "
@@ -153,7 +157,22 @@ async def read_device(episode_id: uuid.UUID, request: Request, db: Db) -> Any:
     return ApiResponse[dict[str, Any]](
         data={
             "bound": True,
+            "endpoint_identity": endpoint,
             "last_fix": judge_fix(payload, now=datetime.now(UTC)),
             "evidence_only": True,
         }
+    )
+
+
+@router.get("/{episode_id}/device/candidates", response_model=ApiResponse[dict[str, Any]])
+async def list_device_candidates(episode_id: uuid.UUID, request: Request, db: Db) -> Any:
+    """The registered OwnTracks endpoints the owner may pick, named as ``PUT`` accepts them."""
+    if getattr(getattr(request.state, "owner_authority", None), "method", None) != "cookie":
+        return _error(403, "CUSTODY_FORBIDDEN", "Owner cookie authentication required.")
+    pool = db.pool("switchboard")
+    if await _open_case(pool, episode_id) is None:
+        return _error(404, "CUSTODY_EPISODE_NOT_FOUND", "No such custody episode.")
+    rows = await pool.fetch(_DEVICES_SQL)
+    return ApiResponse[dict[str, Any]](
+        data={"devices": [{"endpoint_identity": r["endpoint_identity"]} for r in rows]}
     )

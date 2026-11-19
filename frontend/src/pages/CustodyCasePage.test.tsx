@@ -5,7 +5,13 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router";
 
@@ -18,14 +24,36 @@ const server = vi.hoisted(() => ({
   failCase: false,
   failHolds: false,
   posts: 0,
+  device: { bound: false, last_fix: null } as unknown,
+  devices: [] as string[],
+  failDevice: false,
+  failDevices: false,
+  puts: [] as unknown[],
 }));
 
 vi.mock("@/api/client.ts", async () => {
-  const actual = await vi.importActual<typeof import("@/api/client.ts")>("@/api/client.ts");
+  const actual =
+    await vi.importActual<typeof import("@/api/client.ts")>("@/api/client.ts");
   return {
     ...actual,
     apiFetch: vi.fn(async (path: string, init?: { method?: string }) => {
       if (init?.method === "POST") server.posts += 1;
+      if (path.includes("/device/candidates")) {
+        if (server.failDevices) throw new actual.ApiError("x", "no", 503);
+        return {
+          data: {
+            devices: server.devices.map((d) => ({ endpoint_identity: d })),
+          },
+        };
+      }
+      if (path.endsWith("/device")) {
+        if (init?.method === "PUT") {
+          server.puts.push(JSON.parse((init as { body: string }).body));
+          return { data: { bound: true } };
+        }
+        if (server.failDevice) throw new actual.ApiError("x", "no", 503);
+        return { data: server.device };
+      }
       if (path.includes("/case")) {
         if (server.failCase) throw new actual.ApiError("x", "no", 503);
         return { data: server.caseBody };
@@ -37,7 +65,9 @@ vi.mock("@/api/client.ts", async () => {
 });
 
 function renderPage() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/custody/${EPISODE}`]}>
@@ -64,6 +94,11 @@ beforeEach(() => {
   server.failCase = false;
   server.failHolds = false;
   server.posts = 0;
+  server.device = { bound: false, last_fix: null };
+  server.devices = [];
+  server.failDevice = false;
+  server.failDevices = false;
+  server.puts = [];
   window.localStorage.clear();
 });
 afterEach(cleanup);
@@ -73,11 +108,17 @@ describe("CustodyCasePage", () => {
     renderPage();
     await screen.findByText(/Nothing recorded yet/);
     expect(screen.getByText(/suspend or lock the SIM/)).toBeTruthy();
-    expect(screen.getByText(/Sign the lost device out of your Google account/)).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Apple account recovery" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Security questions" }).getAttribute("href")).toBe(
-      "/security",
-    );
+    expect(
+      screen.getByText(/Sign the lost device out of your Google account/),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Apple account recovery" }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("link", { name: "Security questions" })
+        .getAttribute("href"),
+    ).toBe("/security");
   });
 
   it("ticking a step is descriptive progress only: it posts nothing", async () => {
@@ -102,13 +143,19 @@ describe("CustodyCasePage", () => {
           contributor: "chronicler",
           kind: "device_last_fix",
           contributed_at: "2030-01-01T02:00:00Z",
-          summary: { status: "unknown", reason: "stale", stale_fix_at: "2000-01-01T00:00:00Z" },
+          summary: {
+            status: "unknown",
+            reason: "stale",
+            stale_fix_at: "2000-01-01T00:00:00Z",
+          },
         },
       ],
     };
     renderPage();
     await screen.findByText(/Finance: Held window so far/);
-    expect(screen.getByText(/Owner device: Last known device fix/)).toBeTruthy();
+    expect(
+      screen.getByText(/Owner device: Last known device fix/),
+    ).toBeTruthy();
     expect(screen.getByText(/gone stale and is unknown now/)).toBeTruthy();
     expect(screen.queryByText("Home")).toBeNull();
     expect(screen.queryByText("known")).toBeNull();
@@ -128,5 +175,78 @@ describe("CustodyCasePage", () => {
     await screen.findByText(/Nothing recorded yet/);
     await screen.findByText(/Holds are unavailable/);
     expect(screen.queryByText(/currently held/)).toBeNull();
+  });
+
+  describe("your device", () => {
+    it("offers the registered devices and puts only the chosen endpoint", async () => {
+      server.devices = ["owntracks:o:phone", "owntracks:o:tablet"];
+      renderPage();
+      await screen.findByText(/No device is chosen for this case yet/);
+      const button = await screen.findByRole("button", {
+        name: "Use this device",
+      });
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.change(screen.getByLabelText("Device"), {
+        target: { value: "owntracks:o:tablet" },
+      });
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(server.puts).toEqual([
+          { endpoint_identity: "owntracks:o:tablet" },
+        ]),
+      );
+      await screen.findByText("Device chosen.");
+    });
+
+    it("shows the current binding with a judged fix: a place and an age, or unknown", async () => {
+      server.device = {
+        bound: true,
+        endpoint_identity: "owntracks:o:phone",
+        last_fix: { status: "known", age_seconds: 600, place: "Home" },
+      };
+      renderPage();
+      await screen.findByText("owntracks:o:phone");
+      await screen.findByText(/Last seen 10 minutes ago near Home/);
+      cleanup();
+      server.device = {
+        bound: true,
+        endpoint_identity: "owntracks:o:phone",
+        last_fix: { status: "unknown", reason: "stale" },
+      };
+      renderPage();
+      await screen.findByText(
+        /Location unknown\. The last fix is too old to trust/,
+      );
+    });
+
+    it("says unavailable, not no device, when the device read fails", async () => {
+      server.failDevice = true;
+      renderPage();
+      await screen.findByText(/The device is unavailable/);
+      expect(screen.queryByText(/No device is chosen/)).toBeNull();
+    });
+
+    it("says the devices could not be loaded apart from none registered", async () => {
+      server.failDevices = true;
+      renderPage();
+      await screen.findByText(/Your devices could not be loaded/);
+      expect(
+        screen.queryByText(/No OwnTracks devices are registered/),
+      ).toBeNull();
+      cleanup();
+      server.failDevices = false;
+      renderPage();
+      await screen.findByText(/No OwnTracks devices are registered/);
+    });
+
+    it("offers no choice on a closed case", async () => {
+      server.caseBody = { ...baseCase, state: "closed" };
+      renderPage();
+      await screen.findByText(/No device is chosen for this case yet/);
+      await screen.findByText(/Case closed/);
+      expect(
+        screen.queryByRole("button", { name: "Use this device" }),
+      ).toBeNull();
+    });
   });
 });
