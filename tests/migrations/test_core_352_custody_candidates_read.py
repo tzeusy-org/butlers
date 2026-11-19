@@ -8,10 +8,14 @@ cookie session, and uses the same candidate universe and masking as a security q
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import uuid
+from pathlib import Path
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 
 from butlers.db_authority.roles import runtime_roles
@@ -203,3 +207,68 @@ def test_a_bad_session_or_extra_field_is_refused(dbs) -> None:
             {"p": json.dumps(wrong_origin | session(dbs))},
         ).scalar_one()
     assert (raw if isinstance(raw, dict) else json.loads(raw)) == {"error": "FORBIDDEN"}
+
+
+def _migration():
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "alembic/versions/core/core_352_custody_candidates_read.py"
+    )
+    spec = importlib.util.spec_from_file_location("_core352_downgrade", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _step(dbs, operation: str) -> None:
+    with dbs["admin"].begin() as c, Operations.context(MigrationContext.configure(c)):
+        getattr(_migration(), operation)()
+
+
+def _exists(dbs) -> bool:
+    with dbs["admin"].connect() as c:
+        return c.execute(text(f"SELECT to_regprocedure('{FN}') IS NOT NULL")).scalar_one()
+
+
+def test_the_last_schema_stepping_down_to_351_drops_the_function(dbs) -> None:
+    """Two schema chains at core_352 share one function; only the last one leaving drops it."""
+    versions = {"first_chain": "core_352", "second_chain": "core_352"}
+    with dbs["admin"].begin() as c:
+        # Every real core chain reads as already stepped down, so only the two below count.
+        for schema in (
+            c.execute(
+                text(
+                    "SELECT n.nspname FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace "
+                    "WHERE t.relname = 'alembic_version' AND t.relkind IN ('r', 'p')"
+                )
+            )
+            .scalars()
+            .all()
+        ):
+            c.execute(
+                text(
+                    f"UPDATE \"{schema}\".alembic_version SET version_num = 'core_351' "
+                    "WHERE version_num ~ '^core_'"
+                )
+            )
+        for schema, version in versions.items():
+            c.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+            c.execute(
+                text(
+                    f'CREATE TABLE IF NOT EXISTS "{schema}".alembic_version '
+                    "(version_num varchar(32) NOT NULL)"
+                )
+            )
+            c.execute(text(f'DELETE FROM "{schema}".alembic_version'))
+            c.execute(text(f"INSERT INTO \"{schema}\".alembic_version VALUES ('{version}')"))
+    assert _exists(dbs)
+    _step(dbs, "downgrade")  # first leaves while second is still at 352: the function stays
+    assert _exists(dbs)
+    with dbs["admin"].begin() as c:
+        c.execute(text("UPDATE first_chain.alembic_version SET version_num = 'core_351'"))
+    _step(dbs, "downgrade")  # second is the last one still at 352: the function goes
+    assert not _exists(dbs)
+    with dbs["admin"].begin() as c:
+        c.execute(text("DROP SCHEMA first_chain CASCADE"))
+        c.execute(text("DROP SCHEMA second_chain CASCADE"))

@@ -157,7 +157,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 351
+                    THEN substring(version_num FROM 6)::integer >= 352
                     ELSE false END
             )
             """
