@@ -71,6 +71,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.home_person_mappings", "router"),
     ("butlers.api.routers.vendor_doors", "router"),
     ("butlers.api.routers.custody", "router"),
+    ("butlers.api.routers.custody_device", "router"),
     ("butlers.api.routers.spotify", "router"),
     ("butlers.api.routers.google_health", "router"),
     ("butlers.api.routers.steam", "router"),

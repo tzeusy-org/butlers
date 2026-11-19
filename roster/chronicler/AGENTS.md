@@ -929,3 +929,16 @@ calendar is synced too. Butler-written events count as the owner's. The view pub
   back at the place → stray dropped; elsewhere → the stay ends at the held fix.
 - Address hash contract with Relationship: hex `sha256(text.strip())` (UTF-8);
   `test_anchors.py` pins a shared vector.
+
+## Custody device last fix (bu-s11n0s.1 S5f)
+
+`chronicler_custody_device_fix_evidence` (every 10 minutes, deterministic, no session) reads the
+owner-bound OwnTracks endpoint of each open `endpoint_custody:<episode>` fleet case
+(`custody_owner`/`device_binding` evidence, written by `PUT /api/custody/episodes/{id}/device`) and
+appends one `chronicler`/`device_last_fix` evidence row per exact fix: fix time, age, freshness
+window (six hours) and the named place, never coordinates or accuracy. Stale or no fix reads unknown.
+It is attributed context only and never answers the security question
+(`butlers.chronicler.custody_device_fix`).
+Named places come from the owner's own labels (owner place registry entries and the owner's own
+OwnTracks region names); nothing is geocoded or inferred. Fixes are read through the corrected views, so
+an owner correction that restricts or tombstones a fix hides it here too.

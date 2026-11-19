@@ -1916,6 +1916,17 @@ async def _run_chronicler_location_retention_job(
     return await run_scheduled_location_retention(pool, job_args)
 
 
+async def _run_chronicler_custody_device_fix_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Contribute the owner-bound device's last-fix evidence to custody cases (bu-s11n0s.1 S5f)."""
+    del job_args
+    from butlers.chronicler.custody_device_fix import run_custody_device_fix_evidence
+
+    return await run_custody_device_fix_evidence(pool)
+
+
 async def _run_chronicler_project_sessions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2452,6 +2463,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_location_retention": _run_chronicler_location_retention_job,
+            "chronicler_custody_device_fix_evidence": (
+                _run_chronicler_custody_device_fix_evidence_job
+            ),
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,

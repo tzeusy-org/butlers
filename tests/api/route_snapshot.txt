@@ -156,6 +156,7 @@ OP GET /api/contacts/search 6f76391e4e72
 OP GET /api/conversations/messages/search 19e9f0cdb7f0
 OP GET /api/conversations/{conversation_id} 617a3a919a5f
 OP GET /api/custody/commands/{command_id} 0f99146a52ef
+OP GET /api/custody/episodes/{episode_id}/device 153f52d7efdd
 OP GET /api/custody/holds 638eb60aa6c8
 OP GET /api/custody/security-questions b3437a49d8c4
 OP GET /api/custody/security-questions/{event_id} 99af24912899
@@ -665,6 +666,7 @@ OP PUT /api/butlers/{name}/state/{key} 4d87b05ca5e7
 OP PUT /api/calendar/workspace/primary a9007685c24b
 OP PUT /api/chronicler/location-retention 47c5de2e80db
 OP PUT /api/cli-auth/{provider}/api-key ab21c009e83a
+OP PUT /api/custody/episodes/{episode_id}/device 581b34c89073
 OP PUT /api/education/mind-maps/{mind_map_id}/status 8e9578f3bc34
 OP PUT /api/general/projects/{project_id}/charter 7a07ef974e12
 OP PUT /api/health/conditions/{condition_id} 3dcc83c67daa
@@ -858,6 +860,7 @@ ROUTE APIRoute GET '/api/contacts/search' name=search_contacts op=search_contact
 ROUTE APIRoute GET '/api/conversations/messages/search' name=search_messages op=search_messages_api_conversations_messages_search_get tags=conversations schema=True
 ROUTE APIRoute GET '/api/conversations/{conversation_id}' name=get_conversation_by_id op=get_conversation_by_id_api_conversations__conversation_id__get tags=conversations schema=True
 ROUTE APIRoute GET '/api/custody/commands/{command_id}' name=read_command op=read_command_api_custody_commands__command_id__get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/device' name=read_device op=read_device_api_custody_episodes__episode_id__device_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/holds' name=list_holds op=list_holds_api_custody_holds_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions' name=list_security_questions op=list_security_questions_api_custody_security_questions_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/security-questions/{event_id}' name=read_security_question op=read_security_question_api_custody_security_questions__event_id__get tags=custody schema=True
@@ -1352,6 +1355,7 @@ ROUTE APIRoute PUT '/api/butlers/{name}/state/{key:path}' name=set_state op=set_
 ROUTE APIRoute PUT '/api/calendar/workspace/primary' name=set_primary_calendar op=set_primary_calendar_api_calendar_workspace_primary_put tags=calendar,workspace schema=True
 ROUTE APIRoute PUT '/api/chronicler/location-retention' name=put_location_retention op=put_location_retention_api_chronicler_location_retention_put tags=chronicler schema=True
 ROUTE APIRoute PUT '/api/cli-auth/{provider}/api-key' name=save_api_key op=save_api_key_api_cli_auth__provider__api_key_put tags=cli-auth schema=True
+ROUTE APIRoute PUT '/api/custody/episodes/{episode_id}/device' name=bind_device op=bind_device_api_custody_episodes__episode_id__device_put tags=custody schema=True
 ROUTE APIRoute PUT '/api/education/mind-maps/{mind_map_id}/status' name=update_mind_map_status op=update_mind_map_status_api_education_mind_maps__mind_map_id__status_put tags=education schema=True
 ROUTE APIRoute PUT '/api/general/projects/{project_id}/charter' name=edit_project_charter op=edit_project_charter_api_general_projects__project_id__charter_put tags=general schema=True
 ROUTE APIRoute PUT '/api/health/conditions/{condition_id}' name=update_condition op=update_condition_api_health_conditions__condition_id__put tags=health schema=True
@@ -1957,6 +1961,7 @@ SCHEMA DepartureWatchEntry e901eea5e5b5
 SCHEMA DepartureWatchUpsertRequest 1b8273dd4e85
 SCHEMA DeploymentFacts d79f34698b3e
 SCHEMA DeploymentRecord 725a97940466
+SCHEMA DeviceBinding 827009035a55
 SCHEMA DeviceInventoryEntry ba18e6e70f99
 SCHEMA DeviceInventoryResponse d82d743561ce
 SCHEMA DevicePaginationMeta f6ea1c7fd744
