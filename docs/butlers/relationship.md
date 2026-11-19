@@ -267,7 +267,11 @@ Revival: the same `automated_evidence_sync` run asks `switchboard.message_inbox`
 grant it already reads) for the newest inbound email from each dead address, stripped and
 lower-cased as the fact was keyed, and retracts the `undeliverable-email` fact when that message
 arrived after the fact's `observed_at`, citing the inbox row. An address with such a message is not
-re-marked from an older bounce. The message's authenticity is not checked here.
+re-marked from an older bounce, and a message older than the newest bounce read in the same run
+clears nothing. Only marks this job wrote (`src='automated_evidence_sync'`) are cleared, so an
+owner- or tool-asserted mark survives. After the first run, the inbox read reaches back only to the
+last fully successful revival pass (minus the one-hour overlap). The message's authenticity is not
+checked here.
 
 Not built (follow-ups): the owner's door to replace a dead address.
 

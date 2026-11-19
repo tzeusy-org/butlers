@@ -306,3 +306,44 @@ async def test_an_earlier_message_or_another_address_leaves_the_dead_fact(intera
 
         assert result["errors"] == 0 and result["cleared"] == 0
         assert len(await _active(pool, _DEAD)) == 1
+
+
+async def test_an_asserted_dead_mark_from_another_source_survives_a_later_message(
+    interaction_sync_pool,
+):
+    writer = roster_module("relationship", "tools/relationship_assert_fact")
+    async with interaction_sync_pool() as pool:
+        bob = await _person_with_email(pool, "bob@example.test")
+        await writer.relationship_assert_fact(
+            pool,
+            bob,
+            _DEAD,
+            "bob@example.test",
+            src="owner_note",
+            observed_at=datetime.now(UTC) - timedelta(days=3),
+        )
+        await _plain_inbound(pool, "bob@example.test", hours_ago=1)
+
+        result = await _jobs.run_automated_evidence_sync(pool)
+
+        assert result["errors"] == 0 and result["cleared"] == 0
+        assert await _active(pool, _DEAD) == [(bob, "bob@example.test")]
+
+
+async def test_a_bounce_newer_than_the_message_in_one_window_keeps_the_mark(
+    interaction_sync_pool,
+):
+    async with interaction_sync_pool() as pool:
+        bob = await _person_with_email(pool, "bob@example.test")
+        from butlers.core.state import state_set
+
+        await _bounce_for(pool, "bob@example.test", hours_ago=30)  # bounce1 leads to the fact
+        assert (await _jobs.run_automated_evidence_sync(pool))["errors"] == 0
+        await _plain_inbound(pool, "bob@example.test", hours_ago=20)  # a message
+        await _bounce_for(pool, "bob@example.test", hours_ago=10)  # bounce2, the newest
+        await state_set(pool, _facts.STATE_KEY, (datetime.now(UTC) - timedelta(days=2)).isoformat())
+
+        result = await _jobs.run_automated_evidence_sync(pool)
+
+        assert result["errors"] == 0 and result["cleared"] == 0
+        assert await _active(pool, _DEAD) == [(bob, "bob@example.test")]

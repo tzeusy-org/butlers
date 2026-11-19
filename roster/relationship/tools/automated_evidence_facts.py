@@ -63,6 +63,8 @@ UNDELIVERABLE_EMAIL_PREDICATE = "undeliverable-email"
 #: Server-set ``src`` for every fact this job writes.
 SOURCE = "automated_evidence_sync"
 STATE_KEY = "automated_evidence_sync.last_scan_at"
+#: Last run whose revival read and clears all succeeded; bounds the next run's inbox read.
+REVIVAL_STATE_KEY = "automated_evidence_sync.last_revival_scan_at"
 
 #: Same bound as ``interaction_sync``: an outage never triggers an unbounded backfill.
 MAX_WINDOW_DAYS = 30
@@ -86,13 +88,15 @@ InboxReader = Callable[[datetime], Awaitable[Sequence[Mapping[str, Any]]]]
 #: such message is absent. The Relationship job module supplies it, beside :data:`InboxReader`.
 SenderReader = Callable[[Sequence[str], datetime], Awaitable[Mapping[str, tuple[Any, datetime]]]]
 
+#: Only marks this job wrote are cleared: an owner- or tool-asserted mark must survive an
+#: unauthenticated inbound message.
 #: Active dead-address facts checked for a revival per run, oldest observation first.
 _MAX_DEAD_FACTS = 1000
 
 _ACTIVE_DEAD_FACTS_SQL = """
 SELECT id, subject, object, observed_at
 FROM   relationship.entity_facts
-WHERE  predicate = 'undeliverable-email' AND validity = 'active'
+WHERE  predicate = 'undeliverable-email' AND validity = 'active' AND src = $2
 ORDER  BY observed_at, id
 LIMIT  $1
 """
@@ -202,19 +206,38 @@ async def _scan_start(pool: asyncpg.Pool, now: datetime) -> tuple[datetime, int]
     return min(max(checkpoint - _OVERLAP, floor), now), 0
 
 
+async def _revival_checkpoint(pool: asyncpg.Pool) -> datetime | None:
+    try:
+        raw = await state_get(pool, REVIVAL_STATE_KEY)
+        if raw is None:
+            return None
+        value = datetime.fromisoformat(str(raw))
+    except Exception:
+        logger.warning("automated_evidence_sync: revival checkpoint unreadable; reading in full")
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 async def _clear_revived(
     pool: asyncpg.Pool,
     facts: Sequence[Mapping[str, Any]],
     latest: Mapping[str, tuple[Any, datetime]],
+    newest_bounce: Mapping[str, datetime] | None = None,
 ) -> tuple[int, int]:
     """Retract each dead-address fact whose address wrote after the fact. Returns (cleared, errors).
+
+    "After the fact" means after the newer of the fact's ``observed_at`` and the newest bounce this
+    run read for the address: a replayed bounce reports ``unchanged`` and keeps the old
+    ``observed_at``, so a message that sits between two bounces must not clear the newer one.
 
     Idempotent: the UPDATE is guarded on ``validity = 'active'``, so a repeat finds nothing.
     """
     cleared = errors = 0
     for fact in facts:
-        seen = latest.get(_address(fact["object"]))
-        if seen is None or not seen[1] > fact["observed_at"]:
+        address = _address(fact["object"])
+        seen = latest.get(address)
+        floor = max(fact["observed_at"], (newest_bounce or {}).get(address, fact["observed_at"]))
+        if seen is None or not seen[1] > floor:
             continue
         inbox_id, received_at = seen
         try:
@@ -300,7 +323,7 @@ async def sync(
     latest: Mapping[str, tuple[Any, datetime]] | None = None
     if read_senders is not None:
         try:
-            dead_facts = await pool.fetch(_ACTIVE_DEAD_FACTS_SQL, _MAX_DEAD_FACTS)
+            dead_facts = await pool.fetch(_ACTIVE_DEAD_FACTS_SQL, _MAX_DEAD_FACTS, SOURCE)
             watched = {
                 a
                 for a in (
@@ -313,9 +336,16 @@ async def sync(
                 )
                 if a
             }
+            # Only mail that arrived since the last fully successful revival pass can change an
+            # existing fact's answer; with no such pass on record (the first run after deploy, or
+            # after a failure) the read reaches back to the oldest dead mark.
+            revival_since = await _revival_checkpoint(pool)
+            oldest_dead = min((f["observed_at"] for f in dead_facts), default=None)
+            if oldest_dead is not None and revival_since is not None:
+                oldest_dead = max(oldest_dead, revival_since - _OVERLAP)
             since = min(
                 (
-                    *(f["observed_at"] for f in dead_facts),
+                    *((oldest_dead,) if oldest_dead is not None else ()),
                     *(
                         r["received_at"]
                         for r, c in planned
@@ -391,11 +421,21 @@ async def sync(
             stats["errors"] += 1
 
     if latest and dead_facts:
-        stats["cleared"], clear_errors = await _clear_revived(pool, dead_facts, latest)
+        newest_bounce: dict[str, datetime] = {}
+        for row, claim in planned:
+            if claim.predicate == UNDELIVERABLE_EMAIL_PREDICATE:
+                newest_bounce[claim.address] = max(
+                    row["received_at"], newest_bounce.get(claim.address, row["received_at"])
+                )
+        stats["cleared"], clear_errors = await _clear_revived(
+            pool, dead_facts, latest, newest_bounce
+        )
         stats["errors"] += clear_errors
 
     if stats["errors"] == 0:
         try:
+            if latest is not None and len(dead_facts) < _MAX_DEAD_FACTS:
+                await state_set(pool, REVIVAL_STATE_KEY, now.isoformat())
             await state_set(pool, STATE_KEY, now.isoformat())
         except Exception:
             logger.warning("automated_evidence_sync: checkpoint write failed", exc_info=True)
