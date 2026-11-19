@@ -52,6 +52,8 @@ async def test_the_service_call_is_cookie_only_and_sends_only_the_session() -> N
     assert "custody_candidates_dashboard" in sql and action == "list"
     assert values == {"session_digest": "d" * 64}
     with pytest.raises(AuthError):
-        await service.custody_candidates_call("list", Authority(method="api_key", expires_at=None), "")
+        await service.custody_candidates_call(
+            "list", Authority(method="api_key", expires_at=None), ""
+        )
     with pytest.raises(AuthError):
         await service.custody_candidates_call("hold", cookie, "csrf")
