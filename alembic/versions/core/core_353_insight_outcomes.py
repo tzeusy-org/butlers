@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS public.insight_outcomes (
         CHECK ((exposure IN ('delivered', 'coalesced')) = (exposed_at IS NOT NULL)),
     CONSTRAINT insight_outcomes_settled CHECK ((outcome IS NULL) = (settled_at IS NULL)),
     CONSTRAINT insight_outcomes_resolution CHECK (
-        (outcome = 'resolved') IS NOT DISTINCT FROM (
+        (outcome IS NOT DISTINCT FROM 'resolved') = (
             resolved_at IS NOT NULL AND resolved_precision IS NOT NULL
             AND resolution_reason IS NOT NULL
         )
