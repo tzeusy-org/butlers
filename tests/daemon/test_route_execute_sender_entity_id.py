@@ -173,6 +173,8 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert ctx is not None
         assert isinstance(ctx, dict)
         assert ctx.get("source_entity_id") == sender_entity_id
+        # The named sender's endpoint rides along for the write-time custody recheck.
+        assert ctx.get("source_endpoint") == {"channel": "telegram_bot", "identity": "owner"}
 
     async def test_held_owner_custody_flag_reaches_routing_ctx_only_from_the_envelope(
         self, booted_daemon, tmp_path: Path

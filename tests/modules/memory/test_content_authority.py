@@ -54,6 +54,8 @@ def _routed(sender: uuid.UUID | None, channel: str = "telegram") -> dict:
     ctx: dict = {"request_context": {"source_channel": channel}}
     if sender is not None:
         ctx["source_entity_id"] = str(sender)
+        # Route producers name the sender's endpoint for the write-time custody recheck.
+        ctx["source_endpoint"] = {"channel": channel, "identity": "111"}
     return ctx
 
 
@@ -209,7 +211,13 @@ async def test_store_rule_catalogs_only_owner_class_rules(sender, cataloged) -> 
     engine.embed.return_value = [0.1] * 384
     engine.model_name = "test-model"
     try:
-        with patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert:
+        with (
+            patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert,
+            patch(  # the owner's endpoint is unheld
+                "butlers.core.custody_ingress.custody_targets_held",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
             await storage.store_rule(
                 pool,
                 "Always pay invoices from X",

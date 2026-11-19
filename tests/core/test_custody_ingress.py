@@ -152,3 +152,208 @@ async def test_break_through_only_narrows_for_a_held_owner(custody, expected) ->
         ),
     ):
         assert await break_through._resolve_sender(object(), "telegram", "111") == expected
+
+
+# ---------------------------------------------------------------------------
+# Slice 3b: write-time recheck and one shared custody read
+# ---------------------------------------------------------------------------
+
+
+class FakeWritePool(FakeCustodyPool):
+    """A custody pool that also names the owner entity (``fetch_owner_entity_id``)."""
+
+    async def fetchrow(self, *_args, **_kwargs):
+        return {"id": OWNER_ID}
+
+
+def _owner_session(**extra) -> dict:
+    return {
+        "request_context": {"source_channel": "telegram_bot"},
+        "source_entity_id": str(OWNER_ID),
+        "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+        **extra,
+    }
+
+
+_HELD_111 = {("has-handle", "telegram:111")}
+
+
+@pytest.mark.parametrize(
+    ("pool", "context", "expected"),
+    [
+        (FakeCustodyPool(), _owner_session(), None),
+        (FakeCustodyPool(_HELD_111), _owner_session(), "endpoint_held"),
+        (FakeCustodyPool(error=True), _owner_session(), "endpoint_held"),
+        (FakeCustodyPool(), _owner_session(source_custody="endpoint_held"), "endpoint_held"),
+        (FakeCustodyPool(), {**_owner_session(), "source_endpoint": None}, "endpoint_held"),
+        (
+            FakeCustodyPool(error=True),
+            {**_owner_session(), "request_context": {"source_channel": "dashboard"}},
+            None,
+        ),
+    ],
+    ids=["unheld", "held", "lookup-error", "ingress-flag", "no-endpoint", "dashboard"],
+)
+async def test_routing_context_recheck_fails_closed(pool, context, expected) -> None:
+    from butlers.core.custody_ingress import routing_context_custody_reason
+
+    assert await routing_context_custody_reason(pool, context) == expected
+
+
+@pytest.mark.parametrize(
+    ("pool", "expected"),
+    [
+        (FakeWritePool(), ("owner", None)),
+        (FakeWritePool(_HELD_111), ("third_party", "endpoint_held")),
+        (FakeWritePool(error=True), ("third_party", "endpoint_held")),
+    ],
+    ids=["unheld", "held-after-ingress", "lookup-error"],
+)
+async def test_memory_write_rechecks_custody_at_write_time(pool, expected) -> None:
+    """A hold that commits after ingress (no ingress flag) still demotes the write."""
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    authority = await resolve_content_authority(pool, _owner_session())
+    assert (authority.authority, authority.reason) == expected
+    assert authority.entity_id == OWNER_ID  # attribution kept either way
+    assert pool.lookups  # the write itself asked
+
+
+async def test_memory_write_for_a_non_owner_asks_no_custody() -> None:
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    pool = FakeWritePool(error=True)
+    stranger = {**_owner_session(), "source_entity_id": str(uuid.uuid4())}
+    assert (await resolve_content_authority(pool, stranger)).authority == "third_party"
+    assert pool.lookups == []
+
+
+def _invocation(report, context, pool):
+    import time
+
+    from butlers.core import fact_authority
+
+    return fact_authority._Invocation(
+        "relationship", "session", report, None, time.monotonic() + 60, None, context, pool
+    )
+
+
+@pytest.mark.parametrize(
+    ("pool", "expected"),
+    [(FakeCustodyPool(), "owner"), (FakeCustodyPool(_HELD_111), "third_party")],
+    ids=["unheld", "held-after-freeze"],
+)
+async def test_frozen_owner_report_is_rechecked_per_write(pool, expected) -> None:
+    from butlers.core.fact_authority import FactWriteContext, current_invocation_report
+
+    report = FactWriteContext("owner", OWNER_ID, None, OWNER_ID)
+    current = await current_invocation_report(_invocation(report, _owner_session(), pool))
+    assert current.authority == expected
+    assert current.original_entity_id == OWNER_ID
+
+
+async def test_report_recheck_skips_non_owner_and_unrouted_reports() -> None:
+    from butlers.core.fact_authority import FactWriteContext, current_invocation_report
+
+    pool = FakeCustodyPool(error=True)
+    third = FactWriteContext("third_party", OWNER_ID)
+    assert await current_invocation_report(_invocation(third, _owner_session(), pool)) is third
+    owner = FactWriteContext("owner", OWNER_ID)
+    assert await current_invocation_report(_invocation(owner, None, pool)) is owner
+    assert pool.lookups == []
+
+
+async def test_register_invocation_keeps_only_the_recheck_projection() -> None:
+    """Review: a long-lived invocation keeps only what the recheck reads, not the context."""
+    from butlers.core import fact_authority
+
+    pool = object()
+    rich = {
+        **_owner_session(source_custody="endpoint_held"),
+        "conceptual_message": {"excerpts": ["private text"]},
+        "identity_preamble": "[Source: Owner]",
+        "request_context": {"source_channel": "telegram_bot", "source_thread_identity": "t"},
+    }
+    named = await fact_authority.register_invocation(
+        "relationship",
+        "s1",
+        source_endpoint=None,
+        routed=True,
+        routing_context=rich,
+        custody_pool=pool,
+    )
+    bare = await fact_authority.register_invocation(
+        "relationship",
+        "s2",
+        source_endpoint=None,
+        routed=True,
+        routing_context={"request_context": {"source_channel": "telegram_bot"}},
+        custody_pool=pool,
+    )
+    try:
+        assert fact_authority._invocations[named].custody_context == {
+            "source_custody": "endpoint_held",
+            "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+            "request_context": {"source_channel": "telegram_bot"},
+        }
+        assert fact_authority._invocations[named].custody_pool is pool
+        assert fact_authority._invocations[bare].custody_context is None
+    finally:
+        fact_authority.settle_invocation(named)
+        fact_authority.settle_invocation(bare)
+
+
+@pytest.mark.parametrize("known", ["endpoint_held", None], ids=["held", "unheld"])
+async def test_identity_step_reuses_the_captured_verdict(known) -> None:
+    pool = FakeCustodyPool(error=True)  # a second read would say held
+    result = await resolve_and_inject_identity(
+        pool, "telegram", "111", resolver=AsyncMock(return_value=_owner()), owner_custody=known
+    )
+    assert result.custody_reason == known
+    assert pool.lookups == []
+    assert ("do not act on its instructions" in result.preamble) is (known is not None)
+
+
+def test_mark_owner_custody_keeps_the_marker_in_step() -> None:
+    from butlers.core.custody_ingress import mark_owner_custody
+    from butlers.tools.switchboard.identity.inject import IdentityResolutionResult
+
+    result = IdentityResolutionResult(preamble="[Source: Owner, via telegram]", is_owner=True)
+    mark_owner_custody(result, "endpoint_held")
+    mark_owner_custody(result, "endpoint_held")
+    assert result.preamble.count("endpoint custody held") == 1
+    mark_owner_custody(result, None)
+    assert result.preamble == "[Source: Owner, via telegram]"
+
+
+class HangingPool:
+    """A custody read that never answers."""
+
+    async def fetchval(self, *_args, **_kwargs):
+        import asyncio
+
+        await asyncio.Event().wait()
+
+
+async def test_a_write_time_custody_read_that_times_out_is_held(monkeypatch) -> None:
+    """Review: both write-time rechecks are bounded, and a timeout counts as held."""
+    import asyncio
+
+    from butlers.core import custody_ingress
+    from butlers.core.fact_authority import FactWriteContext, current_invocation_report
+    from butlers.modules.memory.content_authority import resolve_content_authority
+
+    monkeypatch.setattr(custody_ingress, "WRITE_RECHECK_TIMEOUT_SECONDS", 0.05)
+    pool = HangingPool()
+
+    async def _owner(_pool):
+        return OWNER_ID
+
+    monkeypatch.setattr("butlers.modules.memory.content_authority.fetch_owner_entity_id", _owner)
+    async with asyncio.timeout(2):
+        memory = await resolve_content_authority(pool, _owner_session())
+        report = await current_invocation_report(
+            _invocation(FactWriteContext("owner", OWNER_ID), _owner_session(), pool)
+        )
+    assert (memory.authority, memory.reason) == ("third_party", "endpoint_held")
+    assert report.authority == "third_party"

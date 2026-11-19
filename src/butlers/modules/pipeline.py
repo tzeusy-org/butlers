@@ -25,6 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.connector_catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
+from butlers.core.custody_ingress import (
+    UNREAD,
+    CustodyUnread,
+    mark_owner_custody,
+    source_endpoint_record,
+)
 from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
@@ -1296,6 +1302,7 @@ class MessagePipeline:
         source_contact_id: str | None = None,
         source_entity_id: str | None = None,
         source_custody: str | None = None,
+        source_endpoint: dict[str, str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         dashboard_context: dict[str, Any] | None = None,
     ) -> None:
@@ -1315,20 +1322,24 @@ class MessagePipeline:
         the dashboard confirm-loop works regardless of what the classification
         LLM chose to write into its own ``prompt``/``context`` arguments.
         """
-        _routing_ctx_var.set(
-            {
-                "source_metadata": source_metadata,
-                "request_context": request_context,
-                "request_id": request_id,
-                "identity_preamble": identity_preamble,
-                "source_contact_id": source_contact_id,
-                "source_entity_id": source_entity_id,
-                # Server-side custody read only (REQ-endpoint-custody-holds-005).
-                "source_custody": source_custody,
-                "attachments": attachments,
-                "dashboard_context": dashboard_context,
-            }
-        )
+        context: dict[str, Any] = {
+            "source_metadata": source_metadata,
+            "request_context": request_context,
+            "request_id": request_id,
+            "identity_preamble": identity_preamble,
+            "source_contact_id": source_contact_id,
+            "source_entity_id": source_entity_id,
+            # Server-side custody read only (REQ-endpoint-custody-holds-005).
+            "source_custody": source_custody,
+            "attachments": attachments,
+            "dashboard_context": dashboard_context,
+        }
+        if source_entity_id and source_endpoint is not None:
+            # The write-time custody recheck names this sender's endpoint (slice 3b).
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY
+
+            context[SOURCE_ENDPOINT_KEY] = source_endpoint
+        _routing_ctx_var.set(context)
 
     def _clear_routing_context(self) -> None:
         """Clear the per-task routing context via ContextVar after runtime spawn."""
@@ -3101,6 +3112,13 @@ class MessagePipeline:
                         ):
                             try:
                                 identity_result: IdentityResolutionResult | None = None
+                                # Reuse the accepted-source capture's custody read, so the
+                                # frozen report and the route envelope cannot disagree.
+                                captured_custody = (
+                                    issuer.captured_custody(UUID(str(message_inbox_id)))
+                                    if issuer is not None and message_inbox_id is not None
+                                    else UNREAD
+                                )
                                 if _decomp_messages is not None:
                                     (
                                         _decomp_messages,
@@ -3112,6 +3130,17 @@ class MessagePipeline:
                                     primary_sender = self._string_or_none(args.get("source_id"))
                                     if primary_sender is not None:
                                         identity_result = batch_resolutions.get(primary_sender)
+                                    if (
+                                        identity_result is not None
+                                        and identity_result.is_owner
+                                        and not isinstance(captured_custody, CustodyUnread)
+                                    ):
+                                        # Keep the stricter verdict: held if either read
+                                        # (capture's or the batch's own) says held.
+                                        mark_owner_custody(
+                                            identity_result,
+                                            captured_custody or identity_result.custody_reason,
+                                        )
                                 else:
                                     from butlers.tools.switchboard.identity.inject import (
                                         resolve_and_inject_identity,
@@ -3127,6 +3156,7 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            owner_custody=captured_custody,
                                             **(
                                                 {"resolver": issuer.resolve_identity}
                                                 if issuer is not None
@@ -3260,6 +3290,10 @@ class MessagePipeline:
                         source_contact_id=source_contact_id,
                         source_entity_id=source_entity_id,
                         source_custody=source_custody,
+                        source_endpoint=source_endpoint_record(
+                            source,
+                            source_metadata.get("source_id") or source_metadata.get("identity"),
+                        ),
                         attachments=attachments,
                         dashboard_context=dashboard_context,
                     )

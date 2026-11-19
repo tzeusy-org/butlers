@@ -192,6 +192,20 @@ through the custody-aware definer. Discretion weighting is unchanged: it grants 
 demoting it could drop held-chat content that REQ-005 keeps as a report. This is a pre-cutover
 fix; at cutover owner origin comes from owner-channel authorization through the same definer.
 
+The ingress read is shared: `capture_accepted_report` records its verdict per accepted source and
+the identity step reuses it (`owner_custody`), so the frozen report and the route envelope cannot
+disagree.
+
+Writes recheck custody too (slice 3b). A routing context that names a sender entity also names
+that sender's endpoint as `source_endpoint` (`{"channel", "identity"}`), set only by the
+Switchboard pipeline, `route.execute` and inbox recovery. Memory's `resolve_content_authority`
+asks `routing_context_custody_reason` before stamping `owner`. The Relationship report is rechecked
+on every MCP request of the session (`current_invocation_report`, called from the runtime session
+guard). A hold that commits after ingress, or after the report froze, therefore demotes the next
+write to `third_party` with the owner entity kept. A context that names a sender but no endpoint,
+or whose custody cannot be read, fails closed. The dashboard is not an endpoint and is not
+rechecked.
+
 Known unfenced paths and limits:
 
 - Google Calendar invitations sent with `sendUpdates=all` (`modules/calendar/google.py`), outside

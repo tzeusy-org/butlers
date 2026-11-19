@@ -814,7 +814,15 @@ def _writing_as(writer: str) -> Iterator[None]:
             yield
     elif writer == "routed_owner":  # An ordinary owner session: no broker, the live path.
         session_id = str(uuid.uuid4())
-        set_runtime_session_routing_context(session_id, {"source_entity_id": str(_ENTITY)})
+        # Route producers name the sender's endpoint for the write-time custody recheck
+        # (REQ-endpoint-custody-holds-005); with no hold on it the session stays owner.
+        set_runtime_session_routing_context(
+            session_id,
+            {
+                "source_entity_id": str(_ENTITY),
+                "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+            },
+        )
         token = set_current_runtime_session_id(session_id)
         try:
             yield

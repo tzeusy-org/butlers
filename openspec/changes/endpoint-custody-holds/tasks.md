@@ -49,7 +49,17 @@
         authority, and demoting it could drop held-chat content REQ-005 keeps as a report.
         The generalist-lead-focused-delegation MODIFIED REQ-module-memory-013 carries the same
         scenario; whichever change archives later must keep the other's text.
-  - [ ] 2.2b Write-time custody recheck for a session admitted before the hold.
+  - [x] 2.2b Write-time custody recheck for a session admitted before the hold (slice 3b).
+        A routing context that names a sender entity also names its source endpoint
+        (`source_endpoint`, set only by the server-side route producers: the Switchboard
+        pipeline, `route.execute` and inbox recovery). Memory's `resolve_content_authority`
+        rechecks it before stamping `owner`; the Relationship report is rechecked on each MCP
+        request (`current_invocation_report`, from the invocation's routing context), so a
+        hold that commits after ingress or after the report froze demotes later writes to
+        `third_party` with the owner entity kept. A missing endpoint or unreadable custody
+        fails closed; the dashboard is not an endpoint. Ingress shares one custody read:
+        `capture_accepted_report` records its verdict and the identity step reuses it
+        (`owner_custody`), so the frozen report and the route envelope cannot disagree.
   - [ ] 2.2c Server-owned canonical source binding and recovery rehydration (REQ-005
         P-CUSTODY-1c half): deferred to bu-s11n0s.81 (RFC 0038 broker).
 - [x] 2.3a Messenger adapter egress fence (slice 4, REQ-007 and the egress half of REQ-006):

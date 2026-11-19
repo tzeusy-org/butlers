@@ -75,7 +75,10 @@ A session routed from the owner through a held or unreadable-custody endpoint
 `authority_entity_id` and `custody_reason: endpoint_held` in the row's metadata. Its
 rules are held and its facts render as reports; releasing the hold changes no stored
 row. Only Switchboard's server-side custody read sets the routing flag
-(`source_custody`, carried as `source_sender_custody` in the route envelope).
+(`source_custody`, carried as `source_sender_custody` in the route envelope). The write
+itself also rechecks: before stamping `owner`, `resolve_content_authority` reads the
+custody of the session's `source_endpoint`, so a hold that commits after ingress demotes
+the write. A sender-naming context with no endpoint, or unreadable custody, demotes too.
 
 Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
 partition (`owner`, `owner_device`), a `system` partition and a non-owner

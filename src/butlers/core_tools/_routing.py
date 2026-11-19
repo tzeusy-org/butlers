@@ -1248,6 +1248,16 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         # sender's endpoint held or unreadable. Only the validated envelope field sets it.
         if parsed_route.request_context.source_sender_custody == "endpoint_held":
             _route_internal_context["source_custody"] = "endpoint_held"
+        # A named sender entity carries its source endpoint for the write-time custody recheck.
+        if parsed_route.request_context.source_sender_entity_id:
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            _source_endpoint = source_endpoint_record(
+                parsed_route.request_context.source_channel,
+                parsed_route.request_context.source_sender_identity,
+            )
+            if _source_endpoint is not None:
+                _route_internal_context[SOURCE_ENDPOINT_KEY] = _source_endpoint
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )
