@@ -105,6 +105,13 @@ async def _resolve_sender(
     contact = await resolve_contact_by_channel(pool, channel, sender)
     if contact is None:
         return None, None
+    if "owner" in (getattr(contact, "roles", None) or ()):
+        # Narrow only (REQ-endpoint-custody-holds-005): a held or unreadable owner endpoint
+        # resolves to no entity, so an owner-entity clause cannot break quiet hours for it.
+        from butlers.core.custody_ingress import owner_source_custody_reason
+
+        if await owner_source_custody_reason(pool, channel, sender) is not None:
+            return None, None
     # An unidentified sender's placeholder name embeds its address: never a display name.
     return contact.entity_id, None if contact.is_unidentified else contact.name
 

@@ -85,9 +85,16 @@ async def test_owner_message_gets_owner_preamble():
     """Owner message produces [Source: Owner, via telegram] preamble."""
     pool = AsyncMock()
 
-    with patch(
-        "butlers.tools.switchboard.identity.inject.resolve_contact_by_channel",
-        new=AsyncMock(return_value=_resolved_owner()),
+    with (
+        patch(
+            "butlers.tools.switchboard.identity.inject.resolve_contact_by_channel",
+            new=AsyncMock(return_value=_resolved_owner()),
+        ),
+        # An unheld owner endpoint; the held marker is covered in test_custody_ingress.
+        patch(
+            "butlers.core.custody_ingress.owner_source_custody_reason",
+            new=AsyncMock(return_value=None),
+        ),
     ):
         result = await resolve_and_inject_identity(pool, "telegram", "12345")
 

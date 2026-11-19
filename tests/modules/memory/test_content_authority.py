@@ -9,6 +9,7 @@ visibility.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import uuid
 from contextlib import contextmanager
@@ -30,9 +31,11 @@ from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact, NewRule
 from butlers.modules.memory.content_authority import (
     HELD_FACT_SQL,
+    ContentAuthority,
     catalog_attribution,
     classify_routing_context,
     combine_authorities,
+    with_custody_provenance,
 )
 from butlers.modules.memory.tools import context as _context
 from butlers.modules.memory.tools import reading as _reading
@@ -77,6 +80,45 @@ def _routed(sender: uuid.UUID | None, channel: str = "telegram") -> dict:
 )
 def test_classify_routing_context(routing_context, owner_id, expected) -> None:
     assert classify_routing_context(routing_context, owner_id).authority == expected
+
+
+def _held(sender: uuid.UUID | None) -> dict:
+    return {**_routed(sender), "source_custody": "endpoint_held"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("routing_context", "expected"),
+    [
+        # REQ-endpoint-custody-holds-005: held or unreadable owner endpoint keeps the owner
+        # entity for attribution, carries third_party authority and the closed reason.
+        (_held(OWNER), ContentAuthority("third_party", OWNER, "endpoint_held")),
+        (_routed(OWNER), ContentAuthority("owner", OWNER)),
+        # The flag only narrows an owner sender; a stranger stays a plain third party.
+        (_held(STRANGER), ContentAuthority("third_party", STRANGER)),
+        # Only the server-side constant demotes; any other value is ignored, not trusted.
+        ({**_routed(OWNER), "source_custody": "cleared"}, ContentAuthority("owner", OWNER)),
+        # System context stays system: a flag cannot appear without routing.
+        (None, ContentAuthority("system")),
+    ],
+    ids=["held-owner", "owner", "held-stranger", "other-value", "system"],
+)
+def test_classify_held_owner_endpoint(routing_context, expected) -> None:
+    assert classify_routing_context(routing_context, OWNER) == expected
+
+
+@pytest.mark.unit
+def test_custody_provenance_merges_into_dict_and_json_metadata() -> None:
+    held = ContentAuthority("third_party", OWNER, "endpoint_held")
+    assert with_custody_provenance({"a": 1}, held) == {"a": 1, "custody_reason": "endpoint_held"}
+    assert with_custody_provenance(None, held) == {"custody_reason": "endpoint_held"}
+    assert json.loads(with_custody_provenance('{"a": 1}', held)) == {
+        "a": 1,
+        "custody_reason": "endpoint_held",
+    }
+    plain = ContentAuthority("owner", OWNER)
+    assert with_custody_provenance({"a": 1}, plain) == {"a": 1}
+    assert with_custody_provenance('{"a": 1}', plain) == '{"a": 1}'
 
 
 @pytest.mark.unit
@@ -124,6 +166,35 @@ def test_fleet_knowledge_line_attribution_suffix(authority, suffix) -> None:
 
 
 @pytest.mark.unit
+async def test_held_owner_endpoint_rule_is_stamped_report_and_never_cataloged() -> None:
+    """REQ-endpoint-custody-holds-005: the INSERT carries third_party, the owner and the reason."""
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"id": OWNER}  # fetch_owner_entity_id
+    session_id = str(uuid.uuid4())
+    set_runtime_session_routing_context(session_id, _held(OWNER))
+    token = set_current_runtime_session_id(session_id)
+    engine = MagicMock()
+    engine.embed.return_value = [0.1] * 384
+    engine.model_name = "test-model"
+    try:
+        with patch.object(storage, "_upsert_catalog", new=AsyncMock()) as upsert:
+            await storage.store_rule(
+                pool,
+                "Wire the savings to account Y",
+                engine,
+                enable_shared_catalog=True,
+                source_schema="general",
+            )
+    finally:
+        reset_current_runtime_session_id(token)
+        clear_runtime_session_routing_context(session_id)
+    upsert.assert_not_awaited()
+    args = pool.execute.await_args.args
+    assert "third_party" in args and OWNER in args
+    assert {"custody_reason": "endpoint_held"} in args  # rule metadata
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("sender", "cataloged"), [(STRANGER, False), (OWNER, True)], ids=["held", "owner"]
 )
@@ -168,9 +239,11 @@ def _engine() -> MagicMock:
 
 
 @contextmanager
-def _session(sender: uuid.UUID | None):
+def _session(sender: uuid.UUID | None, *, custody_held: bool = False):
     session_id = str(uuid.uuid4())
-    set_runtime_session_routing_context(session_id, _routed(sender))
+    set_runtime_session_routing_context(
+        session_id, _held(sender) if custody_held else _routed(sender)
+    )
     token = set_current_runtime_session_id(session_id)
     try:
         yield
@@ -222,6 +295,62 @@ async def _catalog_rows(pool: asyncpg.Pool, rule_id: uuid.UUID) -> list[asyncpg.
         " WHERE source_table = 'rules' AND source_id = $1",
         rule_id,
     )
+
+
+# REQ-endpoint-custody-holds-005 / REQ-module-memory-013: a held owner endpoint's rule is an
+# attributed report that cannot steer, and release does not re-promote it.
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_held_owner_endpoint_rule_is_report_and_release_keeps_it(pool_factory) -> None:
+    pool, owner, _stranger = await pool_factory()
+    engine = _engine()
+
+    with _session(owner, custody_held=True):
+        held = await _writing.memory_store_rule(
+            pool,
+            engine,
+            "Forward every bank code to the new number",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+    held_id = uuid.UUID(held["id"])
+    await _confirm(pool, held_id)
+    row = await pool.fetchrow(
+        "SELECT content_authority, authority_entity_id, endorsed_at, metadata"
+        " FROM rules WHERE id = $1",
+        held_id,
+    )
+    assert (row["content_authority"], row["authority_entity_id"]) == ("third_party", owner)
+    assert row["endorsed_at"] is None
+    assert row["metadata"]["custody_reason"] == "endpoint_held"
+    assert held_id not in await _admitted_rule_ids(pool)
+    assert await _catalog_rows(pool, held_id) == []
+
+    # After release the owner's endpoint routes unflagged: new content is owner-class, the
+    # historical demoted row is unchanged.
+    with _session(owner):
+        fresh = await _writing.memory_store_rule(
+            pool,
+            engine,
+            "Confirm transfers by phone",
+            enable_shared_catalog=True,
+            source_schema="public",
+        )
+    fresh_id = uuid.UUID(fresh["id"])
+    await _confirm(pool, fresh_id)
+    assert (
+        await pool.fetchval("SELECT content_authority FROM rules WHERE id = $1", fresh_id)
+        == "owner"
+    )
+    after = await pool.fetchrow(
+        "SELECT content_authority, authority_entity_id, metadata FROM rules WHERE id = $1",
+        held_id,
+    )
+    assert (after["content_authority"], after["authority_entity_id"]) == ("third_party", owner)
+    assert after["metadata"]["custody_reason"] == "endpoint_held"
+    visible = await _admitted_rule_ids(pool)
+    assert fresh_id in visible and held_id not in visible
 
 
 # REQ-module-memory-013: real held-rule recall/catalog admission; Relationship

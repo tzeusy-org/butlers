@@ -12,6 +12,10 @@ an owner-origin assertion whose principal or admitting channel is the
 dashboard, with no sender entity, yields `owner_device`; a `third_party` origin
 yields `third_party`; an `obligation` or `staffer` origin, and a write with no
 assertion (a deterministic job or service-plane caller), yields `system`. A
+`third_party` write whose sender is the owner entity reached through a held or
+unreadable-custody endpoint (REQ-endpoint-custody-holds-005) SHALL keep the owner
+entity for attribution and store the closed custody reason `endpoint_held` as
+provenance, never as a sixth authority value. A
 write made under an exposed assertion SHALL additionally be stamped tainted,
 every read that returns an episode, fact or rule SHALL return its authority and
 taint stamp, and Profile Facts SHALL admit only untainted owner-class facts. A
@@ -94,8 +98,17 @@ resolve to the unknown label (`{world}`, all six categories)
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
-Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract; RFC 0038 D4, D6, D7, D15
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract; RFC 0038 D4, D6, D7, D15; REQ-endpoint-custody-holds-005
 Scope: v1-mandatory
+
+#### Scenario: A held owner endpoint stores an attributed report
+
+- **WHEN** owner-channel authorization refuses owner origin because the sender's endpoint is
+  held or its custody is unreadable (REQ-endpoint-custody-holds-005), and the goal stores an
+  episode or a rule
+- **THEN** the row SHALL carry `content_authority = 'third_party'` with the owner entity kept for
+  attribution and `custody_reason = 'endpoint_held'` in its metadata, never a sixth authority
+- **AND** the rule SHALL be held, and a later release SHALL NOT change the stored row
 
 #### Scenario: A third-party routed session cannot create standing guidance
 

@@ -78,6 +78,40 @@ class ContentAuthority:
 
     authority: str
     entity_id: uuid.UUID | None = None
+    #: Closed custody reason, today only ``endpoint_held`` (REQ-endpoint-custody-holds-005):
+    #: the sender is the owner entity but its source endpoint was held or unreadable. It is
+    #: stored as provenance (``metadata.custody_reason``), never as a sixth authority value.
+    reason: str | None = None
+
+
+ENDPOINT_HELD = "endpoint_held"
+CUSTODY_REASON_KEY = "custody_reason"
+
+
+def with_custody_provenance(meta: Any, authority: ContentAuthority | None) -> Any:
+    """``meta`` plus ``custody_reason`` when ``authority`` carries one; same type back.
+
+    Accepts the dict or JSON-string metadata the writers pass; anything else is returned
+    unchanged so a writer never fails on provenance alone.
+    """
+    reason = getattr(authority, "reason", None)
+    if reason is None:
+        return meta
+    if isinstance(meta, str):
+        import json
+
+        try:
+            loaded = json.loads(meta) if meta else {}
+        except ValueError:
+            return meta
+        if not isinstance(loaded, dict):
+            return meta
+        return json.dumps({**loaded, CUSTODY_REASON_KEY: reason})
+    if meta is None:
+        return {CUSTODY_REASON_KEY: reason}
+    if isinstance(meta, Mapping):
+        return {**meta, CUSTODY_REASON_KEY: reason}
+    return meta
 
 
 class AuthorityStampError(RuntimeError):
@@ -164,6 +198,10 @@ def classify_routing_context(
     sender = _parse_uuid(routing_context.get("source_entity_id"))
     if sender is not None:
         if owner_entity_id is not None and sender == owner_entity_id:
+            # A held or unreadable owner endpoint keeps attribution, not authority
+            # (REQ-endpoint-custody-holds-005). Only server-side custody reads set the key.
+            if routing_context.get("source_custody") == ENDPOINT_HELD:
+                return ContentAuthority(THIRD_PARTY, sender, ENDPOINT_HELD)
             return ContentAuthority(OWNER, sender)
         return ContentAuthority(THIRD_PARTY, sender)
 

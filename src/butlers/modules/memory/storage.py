@@ -43,6 +43,7 @@ from butlers.modules.memory.content_authority import (
     resolve_content_authority,
     successor_authority,
     validate_authority,
+    with_custody_provenance,
 )
 
 logger = logging.getLogger(__name__)
@@ -1348,7 +1349,7 @@ async def _insert_episode_record(
         search_text,
         importance,
         expires_at,
-        meta_json,
+        with_custody_provenance(meta_json, authority),
         tenant_id,
         request_id,
         retention_class,
@@ -1402,7 +1403,7 @@ async def _update_episode_record(
         search_text,
         importance,
         expires_at,
-        meta_json,
+        with_custody_provenance(meta_json, authority),
         request_id,
         retention_class,
         sensitivity,
@@ -1609,7 +1610,7 @@ async def _insert_fact_record(
         scope,
         now,
         tags_json,
-        meta_json,
+        with_custody_provenance(meta_json, authority),
         entity_id,
         object_entity_id,
         fact_valid_at,
@@ -2610,7 +2611,7 @@ async def store_rule(
         source_butler,
         now,
         tags_json,
-        meta_json,
+        with_custody_provenance(meta_json, authority),
         tenant_id,
         request_id,
         retention_class,

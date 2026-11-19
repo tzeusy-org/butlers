@@ -471,6 +471,8 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         sender_entity_id = parsed.request_context.source_sender_entity_id
         if isinstance(sender_entity_id, str) and sender_entity_id.strip():
             recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
+            if parsed.request_context.source_sender_custody == "endpoint_held":
+                recovered_routing_context["source_custody"] = "endpoint_held"
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):

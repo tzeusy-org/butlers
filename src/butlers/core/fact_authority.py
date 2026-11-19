@@ -336,6 +336,24 @@ class FactSourceContextRegistry:
             except TimeoutError:
                 # Preserve unresolved attribution, never infer owner authority.
                 resolved = None
+        # REQ-endpoint-custody-holds-005: an owner reached through a held or unreadable endpoint
+        # keeps attribution but not owner authority. Asked before the inbox lock, like the
+        # lookup above. The dashboard has its own owner admission below and is not an endpoint.
+        custody_held = False
+        if (
+            resolved is not None
+            and "owner" in (getattr(resolved, "roles", None) or ())
+            and channel != "dashboard"
+        ):
+            from butlers.core.custody_ingress import owner_source_custody_reason
+
+            try:
+                async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
+                    custody_held = (
+                        await owner_source_custody_reason(self.pool, channel, sender) is not None
+                    )
+            except TimeoutError:
+                custody_held = True
 
         async with (
             asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS),
@@ -373,7 +391,12 @@ class FactSourceContextRegistry:
                         actual_entity_id,
                     )
                 authority = "mixed" if mixed else "third_party"
-                if not mixed and entity is not None and "owner" in (entity["roles"] or []):
+                if (
+                    not mixed
+                    and not custody_held
+                    and entity is not None
+                    and "owner" in (entity["roles"] or [])
+                ):
                     authority = "owner"
                 report = FactWriteContext(
                     authority,

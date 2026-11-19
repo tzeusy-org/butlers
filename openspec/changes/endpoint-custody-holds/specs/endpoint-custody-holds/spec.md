@@ -285,3 +285,35 @@ Scope: v1-mandatory
 - **WHEN** an expired/revoked/wrong-recipient question token or owner-looking callback is presented
 - **THEN** it is refused independently of caller identity strings; the current enrolled connector, canonical provider update, sent recipient and unheld-owner positive records one answer
 
+### Requirement: Current ingress and report-only content
+
+A held or unreadable-custody owner sender SHALL not carry current owner authority in inbound routing, engagement/owner-rollup, approval admission or content stamping. Preserve canonical identity attribution without creating a temporary duplicate owner. Every routed steering write SHALL carry complete server-owned canonical source binding and recheck current custody generation; old session roles are not enough. Held content SHALL use adopted third_party authority plus a separate closed endpoint_held reason, remain report-only and absent from steering/profile/catalog paths unless an independent eligible owner explicitly endorses it. Consolidation SHALL preserve weakest authority and existing owner-dominant behavior. Release SHALL never retroactively re-promote these historical rows. Scheduled system contexts remain system; caller omissions cannot manufacture that status. The original owner_endpoint_held literal is an explicit D3 amendment.
+
+ID: REQ-endpoint-custody-holds-005
+Source: original owner_endpoint_held versus THIRD_PARTY clauses; module-memory Content authority and steering-class admission; security.md Identity Resolution; explicit proposed D3 current-hold exception
+Scope: v1-mandatory
+
+#### Scenario: Held chat remains attributed report
+
+- **WHEN** a held owner chat delivers ordinary content
+- **THEN** its source is preserved, current authority is third_party, and its unendorsed rule cannot steer
+
+#### Scenario: Session admitted before hold rechecks
+
+- **WHEN** a paused real writer resumes after the hold commits
+- **THEN** its current write cannot use cached owner authority
+
+#### Scenario: Historical report remains report
+
+- **WHEN** the hold is released and new content is owner-admitted
+- **THEN** new content may receive owner authority but old demoted rows are unchanged
+
+#### Scenario: Independent endorsement is not source restoration
+
+- **WHEN** an unheld eligible owner explicitly endorses a retained held rule
+- **THEN** the ordinary atomic endorsement contract applies; no source-history guessing occurs
+
+#### Scenario: Recovery rehydrates source facts without restoring old authority
+
+- **WHEN** a routed session is delayed or recovered after the original process restarts and a hold commits
+- **THEN** its owning accepted source row/digest is rehydrated with a new current principal; the actual writer rechecks hold generation, retains report attribution and cannot promote an old DTO or omission to owner/system

@@ -59,6 +59,7 @@ def otel_provider(monkeypatch: pytest.MonkeyPatch):
 def _base_request_context(
     *,
     source_sender_entity_id: str | None = None,
+    source_sender_custody: str | None = None,
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
         "request_id": _REQUEST_ID,
@@ -70,6 +71,8 @@ def _base_request_context(
     }
     if source_sender_entity_id is not None:
         ctx["source_sender_entity_id"] = source_sender_entity_id
+    if source_sender_custody is not None:
+        ctx["source_sender_custody"] = source_sender_custody
     return ctx
 
 
@@ -170,6 +173,37 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert ctx is not None
         assert isinstance(ctx, dict)
         assert ctx.get("source_entity_id") == sender_entity_id
+
+    async def test_held_owner_custody_flag_reaches_routing_ctx_only_from_the_envelope(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        """REQ-endpoint-custody-holds-005: the validated envelope field sets source_custody;
+        prompt context cannot set it."""
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        sender_entity_id = "550e8400-e29b-41d4-a716-446655440000"
+        captured_routing_ctx: list[Any] = []
+        # One scripted reply per invocation: an unscripted run falls back to the default reply.
+        capture = _capture_routing_ctx(captured_routing_ctx)
+        booted.runtime.script(capture, capture)
+
+        await _route(
+            booted,
+            {"prompt": "Remember this rule."},
+            source_sender_entity_id=sender_entity_id,
+            source_sender_custody="endpoint_held",
+        )
+        await booted.runtime.wait_for_invocations(1)
+        await _route(
+            booted,
+            {"prompt": "Remember that rule.", "context": {"source_custody": "cleared"}},
+            source_sender_entity_id=sender_entity_id,
+        )
+        await booted.runtime.wait_for_invocations(2)
+
+        held, plain = captured_routing_ctx
+        assert held["source_custody"] == "endpoint_held"
+        assert held["source_entity_id"] == sender_entity_id
+        assert "source_custody" not in plain
 
     async def test_no_sender_entity_id_leaves_routing_ctx_unset(
         self, booted_daemon, tmp_path: Path

@@ -32,7 +32,26 @@
         be replaced by RFC 0038 broker assertions and control-plane admission, with the REQ-002
         amendment made at the cutover.
 - [ ] 2.2 Direct `resolve_contact_by_channel` routing, memory and session-recheck demotion
-      (REQ-005, needs the D3 `endpoint_held` amendment).
+      (REQ-005, with the D3 `endpoint_held` amendment).
+  - [x] 2.2a Ingress demotion (slice 3a): REQ-005 copied verbatim; REQ-module-memory-013
+        MODIFIED (a held or unreadable owner endpoint yields `third_party` with the owner
+        entity kept and `custody_reason = endpoint_held` in metadata; no sixth value). The
+        Switchboard identity step checks custody for an owner-looking sender over the owner
+        definer's typed candidates (`butlers.core.custody_ingress`, fail closed) and carries
+        `source_sender_custody` in the route envelope; memory stamping, owner-ingress
+        engagement and break-through (narrow only) honour it. The other owner-authority stores
+        honour it too: the Relationship accepted-source report
+        (`FactSourceContextRegistry.capture_accepted_report` freezes `third_party` with the
+        owner entity kept, so an identity claim is held, never auto-confirmed), the Finance
+        expected-signal producer (`runtime_signal_source`, and so subscriptions'
+        `_writer_is_owner`) and the routed prompt preamble, which marks the endpoint held. Approval admission already goes
+        through the custody-aware definer. Discretion weighting is unchanged: it grants no
+        authority, and demoting it could drop held-chat content REQ-005 keeps as a report.
+        The generalist-lead-focused-delegation MODIFIED REQ-module-memory-013 carries the same
+        scenario; whichever change archives later must keep the other's text.
+  - [ ] 2.2b Write-time custody recheck for a session admitted before the hold.
+  - [ ] 2.2c Server-owned canonical source binding and recovery rehydration (REQ-005
+        P-CUSTODY-1c half): deferred to bu-s11n0s.81 (RFC 0038 broker).
 - [x] 2.3a Messenger adapter egress fence (slice 4, REQ-007 and the egress half of REQ-006):
       `butlers.core.custody_egress` asks only `public.custody_target_held` and fails closed (no
       pool, lookup error, non-boolean answer or unnameable target refuses with
