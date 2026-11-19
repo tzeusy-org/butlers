@@ -242,6 +242,11 @@ Scope: v1-mandatory
 - **WHEN** the authenticated owner commits an exact selected lost-device release/replaced generation while another target or security episode remains active
 - **THEN** only the selected recovery disposition and eligible associated case closure occur; a partially recovered same case stays active, unrelated holds/cases stay active and no checklist click can perform the mutation
 
+#### Scenario: Quiet hold never lapses its case
+
+- **WHEN** the fleet-case lapse sweep runs over a stale silent or routine endpoint_custody case whose episode still has an unreleased hold
+- **THEN** the case stays open; it closes only through the release or replace of its last held generation, and a custody case with no unreleased hold lapses like any other case
+
 ### Requirement: Security question and bound owner answer
 
 Each durable authenticated switchboard.security_event SHALL have one durable question identity and one bounded notify presentation admission. Protected callback answers use only the private security_answer command branch, never browser/host proof; current source/token/recipient/control/expiry/target checks repeat in the committing transaction. Duplicate observation/consumer retries SHALL reuse it; possible provider-start without confirmation is ambiguous and never blindly re-sent. A publisher-local deterministic outbox SHALL avoid the bus self-fanout exclusion. Unverified events stay quiet and visible as records. Sender verification proves the provider sender only, not compromised-account identity or owner answer authority. A protected no decision SHALL use a server-bound exact target/owner-selected set OR, when affected account is unresolved but provider is proven, the P1 actual closed complete current owner-associated provider set/version. It SHALL open/reuse its canonical case and retain one static recovery-door evidence row. Missing/unproven/incomplete inventory SHALL record containment unknown without dropping the NO/case obligation, guessing receiver identity or reporting partial all-held success. Yes SHALL neither open nor close a case. A dedicated adopted security callback may capture yes/no; generic confirm information cannot authorize custody. Missing consumer/delivery stays visibly unanswered/unavailable rather than calm. No automatic no on timeout.

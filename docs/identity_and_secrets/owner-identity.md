@@ -125,8 +125,12 @@ command returns the stored result with `replayed: true`, and reusing its id for 
 is refused (`command_conflict`). A lost acknowledgement is read back by command id
 (`GET /api/custody/commands/{id}`, `butlers custody status`); `unknown_command` means it never
 committed. Concurrent commands serialize on the singleton, then on sorted per-target advisory
-locks; two holds of one target converge on one episode and case. Release does not close the case:
-closing a lost-device recovery case belongs to the later recovery slice.
+locks; two holds of one target converge on one episode and case. Since core_348 the release or
+replace that resolves an episode's last held generation closes its case (`custody_resolved`); a
+partial recovery leaves it open. The case never lapses while a hold is active: the fleet-case
+lapse sweep skips an `endpoint_custody:` case whose episode still has an unreleased hold, asked
+through the content-blind `public.custody_case_held` (core_351), because a lost device can stay
+quiet far longer than the seven-day lapse window.
 
 Receipts follow the hold posture: row level security with no policy, owned by the database owner,
 no runtime grant (`butlers.db_authority.grants`). The core_347 downgrade refuses while any receipt
