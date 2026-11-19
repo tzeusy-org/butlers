@@ -224,6 +224,18 @@ When custody cannot be read (`eligibility_unknown`), or the notice is not generi
 parked: `notify()` returns the refusal and writes a `failed` attention-ledger row. Nothing is sent
 in either case. A forced channel or recipient is never retargeted; the adapter fence refuses it.
 
+#### Held-window evidence
+
+Finance's deterministic `custody-held-window-evidence` job (every ten minutes, no session) reads
+the custody engine's own hold evidence on each open `endpoint_custody:<episode>` fleet case and
+appends one idempotent `finance`/`held_window` evidence row per hold, and a `held_window_final` row once the hold is released or replaced (also when the case has already closed): exact `[held_from,
+window_end]` transaction, debit, credit and first-seen-merchant counts and the window's anomalies
+(`unknown` when baselines are insufficient). `window_end` is the hold's release or replace time
+when resolved, else the run's time. The row carries counts only, never a merchant, amount or
+identifier, and is computed once; a replay changes nothing. Correlating later
+authenticated security alerts and `auth_artifact_observed` signals into the case, and provider-name
+correlation for unresolved accounts, are deferred to bu-s11n0s.81.
+
 ### Credential Resolution
 
 Module startup code resolves credentials from the owner entity's `entity_info`:
