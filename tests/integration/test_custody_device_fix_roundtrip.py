@@ -9,7 +9,6 @@ CI-only.
 from __future__ import annotations
 
 import asyncio
-import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -74,10 +73,10 @@ async def _fix(pool, endpoint: str, at: datetime, **extra) -> None:
     payload = {"endpoint_identity": endpoint, "lat": 1.3, "lon": 103.8} | extra.pop("payload", {})
     await pool.execute(
         "INSERT INTO point_events (source_name, source_ref, event_type, occurred_at, payload, "
-        "tombstone_at) VALUES ('owntracks.points', $1, 'location', $2, $3::jsonb, $4)",
+        "tombstone_at) VALUES ('owntracks.points', $1, 'location', $2, $3, $4)",
         str(uuid.uuid4()),
         at,
-        json.dumps(payload),
+        payload,
         extra.get("tombstone_at"),
     )
 
@@ -85,13 +84,11 @@ async def _fix(pool, endpoint: str, at: datetime, **extra) -> None:
 async def _place(pool, endpoint: str, start: datetime, end: datetime, label: str) -> None:
     await pool.execute(
         "INSERT INTO episodes (source_name, source_ref, episode_type, start_at, end_at, payload) "
-        "VALUES ('owntracks.place_cluster', $1, 'place_episode', $2, $3, $4::jsonb)",
+        "VALUES ('owntracks.place_cluster', $1, 'place_episode', $2, $3, $4)",
         str(uuid.uuid4()),
         start,
         end,
-        json.dumps(
-            {"endpoint_identity": endpoint, "label": label, "label_source": "owner_reference"}
-        ),
+        {"endpoint_identity": endpoint, "label": label, "label_source": "owner_reference"},
     )
 
 
@@ -114,7 +111,7 @@ async def test_the_bound_device_reports_its_own_fix_age_and_named_place(chron) -
     result = await job.run_custody_device_fix_evidence(pool, now=NOW)
     assert result == {"bindings": 1, "contributed": 1, "errors": 0}
     (row,) = await _evidence(pool, case_id)
-    payload = json.loads(row["payload"]) if isinstance(row["payload"], str) else row["payload"]
+    payload = row["payload"]
     assert row["ref"] == job.evidence_ref(DEVICE, fix)
     assert (payload["status"], payload["place"]) == ("known", "Home")
     assert payload["age_seconds_at_observation"] == 1200
