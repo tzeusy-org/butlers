@@ -29,11 +29,17 @@ Slice 1 (this change, observe-only, no delivery change):
 - A daily deterministic `insight_outcome_sweep` Switchboard job at 05:52 UTC, before the 06:15
   delivery window.
 
+Slice 2 (observe-only, no delivery change):
+
+- After each sweep, the job rolls settled rows up into `public.insight_class_efficacy` per class
+  and priority band (effective, self_resolving, ignored, unmeasured; at least five per arm,
+  compared only within one band, labelled observational).
+- `GET /api/attention/efficacy` returns the latest row per class and band with the degraded
+  envelope, and the Trust Console's attention-ledger panel lists the rows. No model-reachable tool
+  (RFC 0038 regroom).
+
 ## Deferred
 
-- Slice 2: the verdict rollup (effective, self_resolving, ignored, unmeasured; at least five per
-  arm, compared only within one priority band) and `GET /api/attention/efficacy` with a degraded
-  envelope, plus attention-ledger panel rows. No model-reachable tool (RFC 0038 regroom).
 - Slice 3: an owner opt-in `outcome_shaping` setting under which a measured verdict overrides the
   click proxy; priority at or above the urgent threshold is never shaped. Needs an owner decision.
 - Slice 4: one digest line per class transition with keep/quiet doors.
@@ -58,10 +64,20 @@ an observation or settle it as unknown, never count it in an arm:
 - a probe flip first observed after the window closed is never `resolved`: it is `persisted`
   when a check at or after the window end saw the premise holding, otherwise `unmeasurable`.
 
+The adopted design names the verdicts, the five-per-arm floor and the priority bands but not the
+cut points. Slice 2 picks them and keeps them in code constants, not spec text: `effective` needs
+a 20-point resolve-rate gap or, at a comparable rate, a treated median at most half the holdout's;
+`self_resolving` needs a comparable rate and a holdout rate of at least 60%; the rollup reads 90
+days of settled rows. They only label an observation and change no delivery.
+
 ## Impact
 
 - Code: `alembic/versions/core/core_353_insight_outcomes.py`,
   `roster/switchboard/tools/insight/outcomes.py`, `src/butlers/scheduled_jobs.py`,
   `roster/switchboard/butler.toml`, `src/butlers/db_authority/grants.py`.
 - Docs: `docs/data_and_storage/schema-topology.md`, `docs/operations/data-retention.md`.
-- Specs: `proactive-insight-engine` gains one requirement.
+- Slice 2 code: `roster/switchboard/tools/insight/outcomes.py` (`compute_class_efficacy`),
+  `src/butlers/api/routers/attention_ledger.py`, `src/butlers/api/models/attention_ledger.py`,
+  `frontend/src/components/approvals/attention-ledger-panel.tsx`; docs
+  `docs/butlers/switchboard.md`.
+- Specs: `proactive-insight-engine` gains two requirements.

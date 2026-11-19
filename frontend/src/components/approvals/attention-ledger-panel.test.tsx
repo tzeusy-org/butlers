@@ -13,22 +13,33 @@
  * - Empty window (no rows) renders the calm empty-state copy
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { AttentionLedgerSummaryResponse } from "@/api/index.ts";
+import type { AttentionLedgerSummaryResponse, InsightEfficacyResponse } from "@/api/index.ts";
 
 vi.mock("@/api/index.ts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/index.ts")>();
   return {
     ...actual,
     getAttentionLedgerSummary: vi.fn(),
+    getInsightEfficacy: vi.fn(),
   };
 });
 
-import { getAttentionLedgerSummary } from "@/api/index.ts";
+import { getAttentionLedgerSummary, getInsightEfficacy } from "@/api/index.ts";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
+
+function efficacyResponse(
+  overrides: Partial<InsightEfficacyResponse> = {},
+): InsightEfficacyResponse {
+  return { data: [], observational: true, source_available: true, ...overrides };
+}
+
+beforeEach(() => {
+  vi.mocked(getInsightEfficacy).mockResolvedValue(efficacyResponse());
+});
 
 afterEach(() => {
   cleanup();
@@ -296,5 +307,63 @@ describe("AttentionLedgerPanel -- degraded envelope", () => {
     });
     expect(screen.queryByTestId("attention-ledger-source-unavailable")).toBeNull();
     expect(screen.queryByTestId("attention-ledger-flagged-banner")).toBeNull();
+  });
+});
+
+describe("AttentionLedgerPanel -- insight efficacy rows (bu-s11n0s.15 S2)", () => {
+  it("renders each class's arms and verdict, labelled observational", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(summaryResponse());
+    vi.mocked(getInsightEfficacy).mockResolvedValue(
+      efficacyResponse({
+        data: [
+          {
+            origin_butler: "finance",
+            category: "bill-due",
+            priority_band: "normal",
+            bucket_date: "2026-11-19",
+            n_treated: 6,
+            n_holdout: 5,
+            treated_resolved: 6,
+            holdout_resolved: 5,
+            treated_median_resolve_s: 43200,
+            holdout_median_resolve_s: 64800,
+            verdict: "self_resolving",
+            evidence: { observational: true },
+            computed_at: "2026-11-19T05:52:00Z",
+          },
+        ],
+      }),
+    );
+
+    renderPanel();
+
+    const row = await screen.findByTestId("insight-efficacy-row");
+    expect(within(row).getByRole("rowheader").textContent).toBe("finance · bill-due");
+    expect(within(row).getByText("6/6 · 12h")).toBeTruthy();
+    expect(within(row).getByText("5/5 · 18h")).toBeTruthy();
+    expect(within(row).getByText("self-resolving")).toBeTruthy();
+    expect(screen.getByText(/observational/i)).toBeTruthy();
+  });
+
+  it("renders the unavailable note, not the calm empty copy, when the pool is unreachable", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(summaryResponse());
+    vi.mocked(getInsightEfficacy).mockResolvedValue(efficacyResponse({ source_available: false }));
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("insight-efficacy-source-unavailable")).toBeTruthy();
+    });
+    expect(screen.queryByText(/No insight outcomes have been measured yet/i)).toBeNull();
+  });
+
+  it("renders the calm empty copy when nothing has been measured", async () => {
+    vi.mocked(getAttentionLedgerSummary).mockResolvedValue(summaryResponse());
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(screen.getByText(/No insight outcomes have been measured yet/i)).toBeTruthy();
+    });
   });
 });

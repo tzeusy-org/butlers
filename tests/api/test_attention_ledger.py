@@ -341,3 +341,111 @@ async def test_summary_endpoint_end_to_end_surfaces_flagged_source(app):
     body = resp.json()
     assert body["flagged_sources"] == ["secrets_lifecycle"]
     assert body["by_source"][0]["suppressed_never_delivered"] is True
+
+
+# ---------------------------------------------------------------------------
+# GET /api/attention/efficacy -- observational verdicts (bu-s11n0s.15 S2)
+# ---------------------------------------------------------------------------
+
+
+def _efficacy_row(**overrides: object) -> dict:
+    from datetime import date, datetime
+
+    base = {
+        "origin_butler": "finance",
+        "category": "bill_due",
+        "priority_band": "normal",
+        "bucket_date": date(2026, 11, 19),
+        "n_treated": 6,
+        "n_holdout": 5,
+        "treated_resolved": 6,
+        "holdout_resolved": 5,
+        "treated_median_resolve_s": 40000.0,
+        "holdout_median_resolve_s": 41000.0,
+        "verdict": "self_resolving",
+        "evidence": {"observational": True, "min_per_arm": 5},
+        "computed_at": datetime(2026, 11, 19, 5, 52, tzinfo=UTC),
+    }
+    base.update(overrides)
+    return base
+
+
+async def test_efficacy_flags_source_unavailable_when_pool_unreachable(app):
+    app.dependency_overrides[get_db] = _make_unavailable_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/attention/efficacy")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"data": [], "observational": True, "source_available": False}
+
+
+async def test_efficacy_missing_table_is_a_truthful_empty_not_unavailable(app):
+    class _UndefinedTableError(Exception):
+        pass
+
+    _UndefinedTableError.__name__ = "UndefinedTableError"
+    mock_db, pool = _make_available_db()
+    pool.fetch = AsyncMock(side_effect=_UndefinedTableError("relation does not exist"))
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/attention/efficacy")
+
+    assert resp.status_code == 200
+    assert resp.json()["source_available"] is True
+    assert resp.json()["data"] == []
+
+
+async def test_efficacy_genuine_failure_raises_rather_than_rendering_calm():
+    from butlers.api.routers.attention_ledger import get_insight_efficacy
+
+    mock_db, pool = _make_available_db()
+    pool.fetch = AsyncMock(side_effect=ConnectionError("dropped"))
+
+    with pytest.raises(ConnectionError):
+        await get_insight_efficacy(origin_butler=None, category=None, db=mock_db)
+
+
+async def test_efficacy_returns_latest_verdict_per_class_with_filters(app):
+    mock_db, pool = _make_available_db()
+    pool.fetch = AsyncMock(return_value=[_efficacy_row()])
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(
+            "/api/attention/efficacy", params={"origin_butler": "finance", "category": "bill_due"}
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observational"] is True
+    assert body["source_available"] is True
+    [row] = body["data"]
+    assert row["verdict"] == "self_resolving"
+    assert (row["n_treated"], row["n_holdout"]) == (6, 5)
+    assert row["evidence"]["observational"] is True
+    sql, *args = pool.fetch.await_args.args
+    assert "DISTINCT ON (origin_butler, category, priority_band)" in sql
+    assert "bucket_date DESC" in sql
+    assert "origin_butler = $1" in sql and "category = $2" in sql
+    assert args == ["finance", "bill_due"]
+
+
+async def test_efficacy_without_filters_has_no_where_clause():
+    from butlers.api.routers.attention_ledger import get_insight_efficacy
+
+    mock_db, pool = _make_available_db()
+    result = await get_insight_efficacy(origin_butler=None, category=None, db=mock_db)
+
+    assert result.data == []
+    sql, *args = pool.fetch.await_args.args
+    assert "WHERE" not in sql
+    assert args == []

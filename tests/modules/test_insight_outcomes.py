@@ -67,6 +67,76 @@ def test_the_arms_are_disjoint_and_custody_is_never_a_holdout():
     assert {"held_custody", "shadowed"} <= outcomes.EXCLUDED_EXPOSURES
 
 
+# --------------------------------------------------------------------------- efficacy verdicts
+
+
+@pytest.mark.parametrize(
+    ("priority", "band"),
+    [(1, "low"), (49, "low"), (50, "normal"), (89, "normal"), (90, "urgent"), (100, "urgent")],
+)
+def test_priority_bands_split_at_the_urgent_threshold(priority, band):
+    assert outcomes.priority_band(priority) == band
+
+
+_DAY = 86400.0
+
+
+@pytest.mark.parametrize(
+    ("arms", "medians", "verdict"),
+    [
+        # The bead's happy path: 11 bills, paid within a day either way.
+        ((6, 6, 5, 5), (_DAY, _DAY), "self_resolving"),
+        # Too few in one arm: unmeasured, never a guess.
+        ((6, 6, 4, 4), (_DAY, _DAY), "unmeasured"),
+        ((4, 1, 9, 0), (_DAY, None), "unmeasured"),
+        # Being told resolves it clearly more often.
+        ((10, 8, 10, 3), (_DAY, _DAY), "effective"),
+        # About as often, but at most half as slowly.
+        ((10, 9, 10, 9), (_DAY, 3 * _DAY), "effective"),
+        # About as often and only a little faster: it resolves anyway.
+        ((10, 9, 10, 9), (_DAY, 1.5 * _DAY), "self_resolving"),
+        # Told or not, the premise mostly persists.
+        ((10, 1, 10, 1), (_DAY, _DAY), "ignored"),
+        ((5, 0, 5, 0), (None, None), "ignored"),
+        # Holdouts resolve more than the treated arm and mostly on their own.
+        ((10, 6, 10, 9), (_DAY, _DAY), "self_resolving"),
+    ],
+)
+def test_a_verdict_compares_the_two_arms(arms, medians, verdict):
+    n_treated, treated_resolved, n_holdout, holdout_resolved = arms
+    assert (
+        outcomes.decide_verdict(
+            n_treated=n_treated,
+            treated_resolved=treated_resolved,
+            n_holdout=n_holdout,
+            holdout_resolved=holdout_resolved,
+            treated_median_s=medians[0],
+            holdout_median_s=medians[1],
+        )
+        == verdict
+    )
+
+
+async def test_a_skipped_sweep_skips_the_rollup(monkeypatch):
+    rollup = AsyncMock(return_value=3)
+    monkeypatch.setattr(outcomes, "enroll_terminal_candidates", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        outcomes, "sweep_outcomes", AsyncMock(return_value={"skipped": "sweep_in_progress"})
+    )
+    monkeypatch.setattr(outcomes, "compute_class_efficacy", rollup)
+    now = datetime(2026, 11, 19, 5, 52, tzinfo=UTC)
+
+    result = await outcomes.run_insight_outcome_sweep(MagicMock(), now=now)
+
+    assert result["skipped"] == "sweep_in_progress"
+    rollup.assert_not_awaited()
+
+    monkeypatch.setattr(outcomes, "sweep_outcomes", AsyncMock(return_value={"checked": 1}))
+    result = await outcomes.run_insight_outcome_sweep(MagicMock(), now=now)
+    assert result["efficacy_rows"] == 3
+    rollup.assert_awaited_once()
+
+
 # --------------------------------------------------------------------------- sweep settle rules
 
 
@@ -409,3 +479,64 @@ class TestInsightOutcomeLedger:
             assert row["relforcerowsecurity"] is False
             assert row["finance_reads"] is False
             assert row["sb_inserts"] is True
+
+    async def test_settled_outcomes_roll_up_into_a_banded_observational_verdict(self, outcome_pool):
+        now = datetime(2026, 11, 19, 5, 52, tzinfo=UTC)
+        proposed = now - timedelta(days=20)
+        # A category no other test writes, so a shared database cannot thin or pad the arms.
+        category = f"bill-due-{uuid.uuid4().hex[:8]}"
+        rows = (
+            # 6 delivered and 5 held by budget, all paid within a day: self-resolving.
+            [("delivered", 70, "resolved", 0.5)] * 6
+            + [("held_budget", 70, "resolved", 0.8)] * 5
+            # Excluded exposures and unmeasurable rows count in neither arm.
+            + [("shadowed", 70, "resolved", 0.1), ("held_budget", 70, "unmeasurable", None)]
+            # One urgent treated row: its own band, too thin to judge.
+            + [("delivered", 95, "persisted", None)]
+        )
+        for exposure, priority, outcome, days in rows:
+            resolved = outcome == "resolved"
+            await outcome_pool.execute(
+                """
+                INSERT INTO public.insight_outcomes (
+                    candidate_id, origin_butler, category, dedup_family, priority, premise,
+                    exposure, proposed_at, exposed_at, window_end, outcome, resolved_at,
+                    resolved_precision, resolution_reason, settled_at
+                ) VALUES ($1, 'finance', $12, 'finance:' || $12::text, $2, '{"k": 1}', $3,
+                          $4, $5, $6, $7, $8, $9, $10, $11)
+                """,
+                uuid.uuid4(),
+                priority,
+                exposure,
+                proposed,
+                proposed if exposure == "delivered" else None,
+                proposed + outcomes.OBSERVATION_WINDOW,
+                outcome,
+                proposed + timedelta(days=days) if resolved else None,
+                "observed_by" if resolved else None,
+                "unspecified" if resolved else None,
+                now - timedelta(days=1),
+                category,
+            )
+
+        assert await outcomes.compute_class_efficacy(outcome_pool, now=now) >= 2
+        # A rerun the same day replaces the day's rows rather than adding to them.
+        await outcomes.compute_class_efficacy(outcome_pool, now=now)
+        efficacy = {
+            row["priority_band"]: dict(row)
+            for row in await outcome_pool.fetch(
+                "SELECT * FROM public.insight_class_efficacy WHERE category = $1", category
+            )
+        }
+        assert set(efficacy) == {"normal", "urgent"}
+        normal = efficacy["normal"]
+        assert (normal["n_treated"], normal["treated_resolved"]) == (6, 6)
+        assert (normal["n_holdout"], normal["holdout_resolved"]) == (5, 5)
+        assert normal["treated_median_resolve_s"] == pytest.approx(0.5 * 86400)
+        assert normal["holdout_median_resolve_s"] == pytest.approx(0.8 * 86400)
+        assert normal["verdict"] == "self_resolving"
+        assert normal["bucket_date"] == now.date()
+        assert normal["evidence"]["observational"] is True
+        assert normal["evidence"]["holdout_unmeasurable"] == 1
+        assert efficacy["urgent"]["verdict"] == "unmeasured"
+        assert efficacy["urgent"]["n_treated"] == 1

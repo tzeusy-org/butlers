@@ -17,18 +17,25 @@
  * vocabulary, which means "the data source is unreachable," not "a source
  * is actively failing to deliver." This is a genuine finding, not a
  * degraded-infra signal, so it must not be dismissible as calm.
+ *
+ * Below it, the insight efficacy rows (`GET /api/attention/efficacy`,
+ * bu-s11n0s.15 S2): per class and priority band, how often a premise
+ * resolved when the insight was delivered versus naturally held back.
+ * Observational and observe-only; it shapes nothing.
  */
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getAttentionLedgerSummary } from "@/api/index.ts";
-import type { AttentionSourceSummary } from "@/api/index.ts";
+import { getAttentionLedgerSummary, getInsightEfficacy } from "@/api/index.ts";
+import type { AttentionSourceSummary, InsightClassEfficacy } from "@/api/index.ts";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
+import { formatDurationCompact } from "@/lib/format-duration";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";
 
 const Q = {
   summary: () => ["attention-ledger", "summary"] as const,
+  efficacy: () => ["attention-ledger", "efficacy"] as const,
 };
 
 function fmtTs(iso: string | null) {
@@ -123,6 +130,117 @@ function SourceRow({ summary }: { summary: AttentionSourceSummary }) {
       </td>
       <td className="px-1 py-2 text-right align-middle text-muted-foreground">{summary.total}</td>
     </tr>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Insight efficacy rows (bu-s11n0s.15 S2) -- observational, observe-only
+// ---------------------------------------------------------------------------
+
+const VERDICT_LABEL: Record<InsightClassEfficacy["verdict"], string> = {
+  effective: "effective",
+  self_resolving: "self-resolving",
+  ignored: "ignored",
+  unmeasured: "unmeasured",
+};
+
+function fmtMedian(seconds: number | null) {
+  return seconds == null ? "—" : formatDurationCompact(seconds * 1000);
+}
+
+function arm(resolved: number, n: number, median: number | null) {
+  return `${resolved}/${n} · ${fmtMedian(median)}`;
+}
+
+function EfficacySection() {
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: Q.efficacy(),
+    queryFn: () => getInsightEfficacy(),
+  });
+  // isError renders through QueryBoundary below, never as this empty list.
+  const rows: InsightClassEfficacy[] = data ? data.data : [];
+  const sourceUnavailable = data?.source_available === false;
+
+  return (
+    <div className="mt-6" data-testid="insight-efficacy-section">
+      <div className="text-sm text-muted-foreground">
+        Insight efficacy · observational: delivered vs. naturally held, resolved/n · median time to
+        resolve
+      </div>
+      <div className="mt-2">
+        <QueryBoundary
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          isEmpty={rows.length === 0 && !sourceUnavailable}
+          onRetry={() => void refetch()}
+          sourceLabel="insight efficacy"
+          loadingFallback={<div className="font-mono text-sm text-muted-foreground">loading…</div>}
+          emptyFallback={
+            <div className="font-mono text-sm text-muted-foreground">
+              No insight outcomes have been measured yet.
+            </div>
+          }
+        >
+          {sourceUnavailable && (
+            <div
+              role="alert"
+              data-testid="insight-efficacy-source-unavailable"
+              className="mb-3 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-3 py-2 text-xs font-medium text-[var(--amber-text)]"
+            >
+              Insight efficacy: unavailable
+            </div>
+          )}
+          <table className="w-full table-fixed border-collapse font-mono text-xs">
+            <caption className="sr-only">Insight efficacy per class and priority band</caption>
+            <thead className="text-[10px] uppercase tracking-widest text-muted-foreground">
+              <tr>
+                <th scope="col" className="pb-1 pr-2 text-left font-normal">Class</th>
+                <th scope="col" className="px-1 pb-1 text-left font-normal">Band</th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal">Delivered</th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal">Held</th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal">Verdict</th>
+                <th scope="col" className="px-1 pb-1 text-right font-normal">Computed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={`${r.origin_butler}/${r.category}/${r.priority_band}`}
+                  data-testid="insight-efficacy-row"
+                  className="border-t border-border/50 first:border-t-0"
+                >
+                  <th
+                    scope="row"
+                    className="max-w-0 truncate py-2 pr-2 text-left font-medium text-foreground"
+                  >
+                    {r.origin_butler} · {r.category}
+                  </th>
+                  <td className="px-1 py-2 text-muted-foreground">{r.priority_band}</td>
+                  <td className="px-1 py-2 text-right text-foreground">
+                    {arm(r.treated_resolved, r.n_treated, r.treated_median_resolve_s)}
+                  </td>
+                  <td className="px-1 py-2 text-right text-foreground">
+                    {arm(r.holdout_resolved, r.n_holdout, r.holdout_median_resolve_s)}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-1 py-2 text-right",
+                      r.verdict === "unmeasured" ? "text-muted-foreground" : "text-foreground",
+                    )}
+                  >
+                    {VERDICT_LABEL[r.verdict] ?? r.verdict}
+                  </td>
+                  <td className="px-1 py-2 text-right text-muted-foreground">
+                    {fmtTs(r.computed_at)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </QueryBoundary>
+      </div>
+    </div>
   );
 }
 
@@ -240,6 +358,8 @@ export function AttentionLedgerPanel() {
           </table>
         </QueryBoundary>
       </div>
+
+      <EfficacySection />
     </div>
   );
 }

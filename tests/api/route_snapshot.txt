@@ -66,6 +66,7 @@ OP GET /api/approvals/rules/{rule_id} e39a35df4106
 OP GET /api/approvals/suggestions ea3cd64bc04f
 OP GET /api/approvals/unroutable fac3df93a6f6
 OP GET /api/approvals/{action_id} f6a907041e31
+OP GET /api/attention/efficacy c067fefaea0a
 OP GET /api/attention/ledger 764b316021fa
 OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
@@ -773,6 +774,7 @@ ROUTE APIRoute GET '/api/approvals/rules/{rule_id}' name=get_rule op=get_rule_ap
 ROUTE APIRoute GET '/api/approvals/suggestions' name=list_suggestions op=list_suggestions_api_approvals_suggestions_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/unroutable' name=list_unroutable_attention op=list_unroutable_attention_api_approvals_unroutable_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/{action_id}' name=get_approval_detail op=get_approval_detail_api_approvals__action_id__get tags=approvals schema=True
+ROUTE APIRoute GET '/api/attention/efficacy' name=get_insight_efficacy op=get_insight_efficacy_api_attention_efficacy_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger' name=list_attention_ledger op=list_attention_ledger_api_attention_ledger_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger/summary' name=get_attention_ledger_summary op=get_attention_ledger_summary_api_attention_ledger_summary_get tags=attention schema=True
 ROUTE APIRoute GET '/api/audit-log' name=list_audit_log op=list_audit_log_api_audit_log_get tags=audit schema=True
@@ -2110,7 +2112,9 @@ SCHEMA IngestionRuleUpdate 52a10546f841
 SCHEMA IngestionWindowRollup aaeac75b7973
 SCHEMA InitialFact 908283087ff5
 SCHEMA InsightCandidate f49db833cb9a
+SCHEMA InsightClassEfficacy 61230de9a392
 SCHEMA InsightDeliveryState 535cd9056b06
+SCHEMA InsightEfficacyResponse 56b3e4fb1b29
 SCHEMA InsightFeedbackResponse 7fe3d006ae3b
 SCHEMA InstanceFacts 11804c344f34
 SCHEMA InventoryData 2041d66eaff0

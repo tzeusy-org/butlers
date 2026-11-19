@@ -610,6 +610,36 @@ export interface AttentionLedgerSummaryResponse {
   source_available?: boolean;
 }
 
+/**
+ * One insight class's latest verdict (bu-s11n0s.15 S2). Natural arms, not a
+ * controlled trial: treated = delivered/coalesced, holdout = held by budget or
+ * context, compared only within one priority band.
+ */
+export interface InsightClassEfficacy {
+  origin_butler: string;
+  category: string;
+  priority_band: "low" | "normal" | "urgent";
+  bucket_date: string;
+  n_treated: number;
+  n_holdout: number;
+  treated_resolved: number;
+  holdout_resolved: number;
+  treated_median_resolve_s: number | null;
+  holdout_median_resolve_s: number | null;
+  verdict: "effective" | "self_resolving" | "ignored" | "unmeasured";
+  evidence: Record<string, unknown>;
+  computed_at: string;
+}
+
+/** Response for GET /api/attention/efficacy. */
+export interface InsightEfficacyResponse {
+  data: InsightClassEfficacy[];
+  /** Always true: the verdicts are observational. */
+  observational: boolean;
+  /** False when the Switchboard pool was unreachable -- an empty list is then not "no verdicts". */
+  source_available?: boolean;
+}
+
 /** Query parameters for GET /api/attention/ledger/summary. */
 export interface AttentionLedgerSummaryParams {
   since?: string;

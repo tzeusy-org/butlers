@@ -35,6 +35,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.attention_ledger import URGENT_PRIORITY_THRESHOLD
 from butlers.core.insight_premise import PREMISE_KIND_OWNER_CONDITION, PREMISE_KIND_PROBE
 
 from .broker import dedup_family
@@ -341,15 +342,190 @@ async def sweep_outcomes(
     return counts
 
 
+#: Settled rows per arm a class needs before it gets a verdict other than ``unmeasured``.
+MIN_PER_ARM = 5
+#: Settled rows are rolled up when proposed within this many days of the run.
+EFFICACY_LOOKBACK = timedelta(days=90)
+#: Resolve-rate gap (treated minus holdout) that reads as the nudge mattering.
+EFFECTIVE_RATE_GAP = 0.2
+#: Holdout resolve rate at or above which a class resolves on its own.
+SELF_RESOLVING_RATE = 0.6
+#: A treated median at or under this share of the holdout median reads as faster.
+FASTER_MEDIAN_SHARE = 0.5
+VERDICTS = ("effective", "self_resolving", "ignored", "unmeasured")
+PRIORITY_BANDS = ("low", "normal", "urgent")
+_NORMAL_PRIORITY_FLOOR = 50
+
+
+def priority_band(priority: int) -> str:
+    """Strata compared only within themselves: low under 50, urgent at the urgent threshold."""
+    if priority >= URGENT_PRIORITY_THRESHOLD:
+        return "urgent"
+    return "normal" if priority >= _NORMAL_PRIORITY_FLOOR else "low"
+
+
+def decide_verdict(
+    *,
+    n_treated: int,
+    treated_resolved: int,
+    n_holdout: int,
+    holdout_resolved: int,
+    treated_median_s: float | None,
+    holdout_median_s: float | None,
+) -> str:
+    """One class's observational verdict from its two arms' settled counts.
+
+    Fewer than :data:`MIN_PER_ARM` measured rows in either arm is ``unmeasured``. Otherwise:
+    ``effective`` when the treated arm resolves clearly more often, or about as often but at
+    most half as slowly; ``self_resolving`` when the holdout resolves about as often and mostly
+    resolves anyway; ``ignored`` when being told did not move a premise that mostly persists.
+    """
+    if n_treated < MIN_PER_ARM or n_holdout < MIN_PER_ARM:
+        return "unmeasured"
+    treated_rate = treated_resolved / n_treated
+    holdout_rate = holdout_resolved / n_holdout
+    if treated_rate - holdout_rate >= EFFECTIVE_RATE_GAP:
+        return "effective"
+    comparable = abs(treated_rate - holdout_rate) < EFFECTIVE_RATE_GAP
+    if (
+        comparable
+        and treated_resolved > 0
+        and treated_median_s is not None
+        and holdout_median_s is not None
+        and treated_median_s <= holdout_median_s * FASTER_MEDIAN_SHARE
+    ):
+        return "effective"
+    if holdout_rate >= SELF_RESOLVING_RATE:
+        return "self_resolving"
+    return "ignored"
+
+
+async def compute_class_efficacy(pool: asyncpg.Pool, *, now: datetime | None = None) -> int:
+    """Roll settled outcomes up into today's per-class, per-band verdict rows.
+
+    Observational only: the arms are natural (a holdout is what the budget or the owner's
+    context happened to hold back), so a verdict is a correlation inside one priority band, not
+    a controlled effect. ``unmeasurable`` rows count in neither arm and are reported in the
+    evidence. Time to resolve runs from ``proposed_at`` in both arms, because a holdout has no
+    exposure time. Upserted on (class, band, bucket date), so a rerun the same day replaces the
+    day's row and an earlier day's row stays as it was. Returns the rows written.
+    """
+    if now is None:
+        now = datetime.now(UTC)
+    rows = await pool.fetch(
+        """
+        SELECT origin_butler, category,
+               CASE WHEN priority >= $3 THEN 'urgent'
+                    WHEN priority >= $4 THEN 'normal' ELSE 'low' END AS band,
+               count(*) FILTER (WHERE arm = 'treated' AND outcome <> 'unmeasurable')
+                   AS n_treated,
+               count(*) FILTER (WHERE arm = 'holdout' AND outcome <> 'unmeasurable')
+                   AS n_holdout,
+               count(*) FILTER (WHERE arm = 'treated' AND outcome = 'resolved')
+                   AS treated_resolved,
+               count(*) FILTER (WHERE arm = 'holdout' AND outcome = 'resolved')
+                   AS holdout_resolved,
+               count(*) FILTER (WHERE arm = 'treated' AND outcome = 'unmeasurable')
+                   AS treated_unmeasurable,
+               count(*) FILTER (WHERE arm = 'holdout' AND outcome = 'unmeasurable')
+                   AS holdout_unmeasurable,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s)
+                   FILTER (WHERE arm = 'treated' AND outcome = 'resolved')
+                   AS treated_median_s,
+               percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s)
+                   FILTER (WHERE arm = 'holdout' AND outcome = 'resolved')
+                   AS holdout_median_s
+        FROM (
+            SELECT origin_butler, category, priority, outcome,
+                   CASE WHEN exposure = ANY($5::text[]) THEN 'treated' ELSE 'holdout' END
+                       AS arm,
+                   extract(epoch FROM resolved_at - proposed_at)::double precision
+                       AS resolve_s
+            FROM public.insight_outcomes
+            WHERE outcome IS NOT NULL
+              AND proposed_at >= $1 AND proposed_at <= $2
+              AND (exposure = ANY($5::text[]) OR exposure = ANY($6::text[]))
+        ) settled
+        GROUP BY origin_butler, category, band
+        """,
+        now - EFFICACY_LOOKBACK,
+        now,
+        URGENT_PRIORITY_THRESHOLD,
+        _NORMAL_PRIORITY_FLOOR,
+        sorted(TREATED_EXPOSURES),
+        sorted(HOLDOUT_EXPOSURES),
+    )
+    bucket = now.astimezone(UTC).date()
+    written = 0
+    async with pool.acquire() as conn, conn.transaction():
+        for row in rows:
+            verdict = decide_verdict(
+                n_treated=row["n_treated"],
+                treated_resolved=row["treated_resolved"],
+                n_holdout=row["n_holdout"],
+                holdout_resolved=row["holdout_resolved"],
+                treated_median_s=row["treated_median_s"],
+                holdout_median_s=row["holdout_median_s"],
+            )
+            evidence = {
+                "observational": True,
+                "min_per_arm": MIN_PER_ARM,
+                "lookback_days": EFFICACY_LOOKBACK.days,
+                "treated_unmeasurable": row["treated_unmeasurable"],
+                "holdout_unmeasurable": row["holdout_unmeasurable"],
+                "treated_exposures": sorted(TREATED_EXPOSURES),
+                "holdout_exposures": sorted(HOLDOUT_EXPOSURES),
+            }
+            await conn.execute(
+                """
+                INSERT INTO public.insight_class_efficacy (
+                    origin_butler, category, priority_band, bucket_date, n_treated, n_holdout,
+                    treated_resolved, holdout_resolved, treated_median_resolve_s,
+                    holdout_median_resolve_s, verdict, evidence, computed_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13)
+                ON CONFLICT (origin_butler, category, priority_band, bucket_date) DO UPDATE SET
+                    n_treated = EXCLUDED.n_treated, n_holdout = EXCLUDED.n_holdout,
+                    treated_resolved = EXCLUDED.treated_resolved,
+                    holdout_resolved = EXCLUDED.holdout_resolved,
+                    treated_median_resolve_s = EXCLUDED.treated_median_resolve_s,
+                    holdout_median_resolve_s = EXCLUDED.holdout_median_resolve_s,
+                    verdict = EXCLUDED.verdict, evidence = EXCLUDED.evidence,
+                    computed_at = EXCLUDED.computed_at
+                """,
+                row["origin_butler"],
+                row["category"],
+                row["band"],
+                bucket,
+                row["n_treated"],
+                row["n_holdout"],
+                row["treated_resolved"],
+                row["holdout_resolved"],
+                row["treated_median_s"],
+                row["holdout_median_s"],
+                verdict,
+                json.dumps(evidence),
+                now,
+            )
+            written += 1
+    return written
+
+
 async def run_insight_outcome_sweep(
     pool: asyncpg.Pool,
     *,
     now: datetime | None = None,
     finance_warning_reader: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> dict[str, Any]:
-    """The daily job: enroll newly terminal candidates, then settle open rows."""
+    """The daily job: enroll newly terminal candidates, settle open rows, then roll up verdicts.
+
+    A sweep that raises leaves the previous efficacy rows in force (the rollup never runs), and
+    a sweep skipped by a concurrent run skips the rollup too; that run writes it.
+    """
     if now is None:
         now = datetime.now(UTC)
     enrolled = await enroll_terminal_candidates(pool, now=now)
     swept = await sweep_outcomes(pool, now=now, finance_warning_reader=finance_warning_reader)
-    return {"enrolled": enrolled, **swept}
+    if "skipped" in swept:
+        return {"enrolled": enrolled, **swept}
+    efficacy = await compute_class_efficacy(pool, now=now)
+    return {"enrolled": enrolled, **swept, "efficacy_rows": efficacy}
