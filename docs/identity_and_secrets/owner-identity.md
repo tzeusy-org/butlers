@@ -218,6 +218,18 @@ Known unfenced paths and limits:
   it (a trunk-`0` local form such as `087650123` against `6587650123`), is not matched. core_296's
   suffix rule does not match either.
 
+#### Owner custody pages
+
+`/custody` lists the active holds as a kind of channel with the time and reason, never an address or
+hint, and releases or replaces one after a confirmation (the generation the owner saw plus a
+page-minted command id; the server rechecks session, CSRF and generation). `/custody/:episodeId`
+shows the lost-device recovery checklist (SIM/carrier and account sign-out steps and the provider
+recovery doors), what the case's contributors have found (allow-listed scalar summaries from
+`GET /api/custody/episodes/{id}/case`, an allow-listed projection over `public.fleet_case_evidence`
+that judges a device reading's freshness on the server) and the holds in the case. The checklist is instructions;
+ticking a step is browser-local progress and never releases a hold or answers a security question.
+A failed read renders unavailable, never clear.
+
 The fence fails closed and does not share the permissions matrix's handling of a
 failed read: no pool, a lookup error, a non-boolean answer or an unnameable target refuses with
 `eligibility_unknown`, which is safe to retry. A held endpoint refuses with `endpoint_held`, which

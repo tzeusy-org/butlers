@@ -346,3 +346,33 @@ Scope: v1-mandatory
 
 - **WHEN** home/sleeping/owner-device evidence is present
 - **THEN** the answer remains pending and custody unchanged until the owner acts
+
+### Requirement: Safe owner surface and documentation
+
+The protected dashboard SHALL list unanswered authenticated security questions and current custody status with loading, empty, partial and unavailable distinction, expose eligible yes/no/hold/release controls, and deep-link to actual Timeline/event/case readers. An API/query failure SHALL not render clear. Unverified records have no interrupting or mutation affordance. Mutation actors come from current authenticated owner proof, never request fields; CSRF/current-session/expected-generation defenses apply. Ordinary surfaces emit only bounded states/counts/times/opaque safe references: no raw bearer/provider content, credentials, contact identity, precise location, exception tails or arbitrary correlation labels. Sensitive evidence is read only through its existing authorized owning projection, not copied into the opener/public bus. Same-change documentation/spec/RFC/manifesto amendments SHALL record preserving engineering decisions and apply concrete new gated authority policies only after their exact adoption; source-only shaping/merge is not deployment evidence.
+The protected owning case surface SHALL provide the original lost-device recovery checklist with owner-followed SIM/carrier and account-sign-out steps and the static authenticated recovery doors. These are instructions for the owner, not executed carrier/provider actions, and contain no credential, precise location or raw account data in ordinary projections. Checklist completion is descriptive and never answers a security question, releases custody, approves an action or authorizes provider traffic. Protected release/replaced disposition and its bounded case closure remain separate explicit acts.
+
+ID: REQ-endpoint-custody-holds-011
+Source: original Ops list/answer/opener/Timeline/outage/documentation completeness; dashboard-ingestion-dispatch-console Data States and Robustness; response-conventions; security/manifesto amendment proposals
+Scope: v1-mandatory
+
+#### Scenario: Outage is not clear
+
+- **WHEN** security-question or custody API fails
+- **THEN** the opener renders unavailable/retry with no all-clear or stale control authority
+
+#### Scenario: Unverified has no answer button
+
+- **WHEN** an unverified alert is listed
+- **THEN** it stays quiet record-only
+
+#### Scenario: Private sentinels remain protected
+
+- **WHEN** synthetic code/link/account/location/error values are planted beside legitimate safe counts
+- **THEN** ordinary opener/log/metric/bus outputs omit them while the positive safe result remains visible
+
+#### Scenario: Recovery checklist and case disposition remain real
+
+- **WHEN** an admitted lost-device hold creates its recovery case
+- **THEN** the protected owning case surface renders the SIM/carrier and account-sign-out checklist and its actual recovery doors; checking a step changes descriptive progress only
+- **AND** protected release or replaced closes that lost-device recovery episode only after the exact selected generation disposition, while an unselected active hold or independent security episode stays active
