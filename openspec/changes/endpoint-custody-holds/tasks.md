@@ -165,7 +165,7 @@
       for the next slice: the manual "hold a channel" control (it needs a masked owner-channel
       candidate read outside a security question; today the hold starts from `/security` or the
       host command) and the device-binding control for `PUT /api/custody/episodes/{id}/device`
-      (#5911, TODO until it merges).
+      (#5911; S5i, 2.4i).
 - [x] 2.4h No lapse while held (REQ-010 closure half, bu-s11n0s.1.1, core_351): the fleet-case
       lapse sweep skips an `endpoint_custody:<episode>` case while any hold of that episode is
       unreleased, so a quiet hold older than seven days is never closed `lapsed` and a later
@@ -175,6 +175,15 @@
       the case at posture `active`: posture is mutable by Switchboard's ordinary
       `propose_posture`, so a later silent/routine proposal would reopen the hole, while the
       exemption follows the hold itself. A custody case with no unreleased hold lapses normally.
+- [x] 2.4i Device binding control (REQ-009/-011, S5i): `/custody/:episodeId` shows "Your device":
+      the owner picks one registered OwnTracks endpoint from
+      `GET /api/custody/episodes/{id}/device/candidates` (the endpoint names as the `PUT` accepts
+      them, cookie-only, 404 for an unknown episode) and `PUT .../device` records it; the panel
+      shows the current binding and the server-judged last fix from `GET .../device` (a place and
+      an age, or unknown with a reason; never coordinates). Offered only while the case is open.
+      A failed device read says unavailable (not "no device"), a failed candidate read is distinct
+      from none registered, and the binding never answers a security question. The `PUT` is
+      idempotent on the current binding, so no command id is minted. No migration.
 - [ ] 2.4 Security question and bound answer, Finance and recovery evidence, release and parked
       recovery, protected owner surface (REQ-008 to -011).
   - [x] 2.4c Security question, dashboard half (S5c, core_350, REQ-008): Switchboard's

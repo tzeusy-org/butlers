@@ -180,3 +180,23 @@ def test_the_case_lookup_prefers_the_active_case_over_a_lapsed_one() -> None:
 def test_reading_the_device_needs_cookie_authority() -> None:
     url = f"/api/custody/episodes/{EPISODE}/device"
     assert _client(_pool(), method="api_key").get(url).status_code == 403
+
+
+def test_the_picker_lists_registered_owntracks_endpoints_for_the_owner_only() -> None:
+    pool = _pool()
+    pool.fetch = AsyncMock(return_value=[{"endpoint_identity": "owntracks:o:p"}])
+    url = f"/api/custody/episodes/{EPISODE}/device/candidates"
+    data = _client(pool).get(url).json()["data"]
+    assert data == {"devices": [{"endpoint_identity": "owntracks:o:p"}]}
+    assert _client(pool, method="bearer").get(url).status_code == 403
+    assert _client(pool, owner=False).get(url).status_code in (401, 403)
+    missing = _pool(case=None)
+    missing.fetch = AsyncMock()
+    assert _client(missing).get(url).status_code == 404
+    missing.fetch.assert_not_awaited()
+
+
+def test_the_read_names_the_current_binding() -> None:
+    pool = _pool(vals=["owntracks:o:p", None])
+    data = _client(pool).get(f"/api/custody/episodes/{EPISODE}/device").json()["data"]
+    assert data["endpoint_identity"] == "owntracks:o:p" and data["bound"] is True

@@ -6,6 +6,7 @@ import { getCustodyCase, listCustodyHolds } from "@/api/custody.ts";
 import type { CaseEvidence } from "@/api/custody.ts";
 import { Button } from "@/components/ui/button";
 import { Time } from "@/components/ui/time";
+import { CustodyDevicePanel } from "@/pages/CustodyDevicePanel.tsx";
 
 // ---------------------------------------------------------------------------
 // CustodyCasePage — route /custody/:episodeId
@@ -22,7 +23,8 @@ const CHECKLIST: { id: string; title: string; detail: string }[] = [
   {
     id: "sim-lock",
     title: "Call your carrier and suspend or lock the SIM",
-    detail: "Ask them to block the line and to flag it against SIM swap and number port-out.",
+    detail:
+      "Ask them to block the line and to flag it against SIM swap and number port-out.",
   },
   {
     id: "sim-replace",
@@ -32,7 +34,8 @@ const CHECKLIST: { id: string; title: string; detail: string }[] = [
   {
     id: "signout-google",
     title: "Sign the lost device out of your Google account",
-    detail: "Review devices and recent security activity, then change the password if unsure.",
+    detail:
+      "Review devices and recent security activity, then change the password if unsure.",
   },
   {
     id: "signout-microsoft",
@@ -47,13 +50,20 @@ const CHECKLIST: { id: string; title: string; detail: string }[] = [
   {
     id: "signout-messaging",
     title: "End messaging sessions on the lost device",
-    detail: "Use linked devices in Telegram and WhatsApp on a device you trust.",
+    detail:
+      "Use linked devices in Telegram and WhatsApp on a device you trust.",
   },
 ];
 
 const DOORS: { label: string; href: string }[] = [
-  { label: "Google account activity", href: "https://myaccount.google.com/notification/recovery" },
-  { label: "Microsoft account activity", href: "https://account.live.com/Activity" },
+  {
+    label: "Google account activity",
+    href: "https://myaccount.google.com/notification/recovery",
+  },
+  {
+    label: "Microsoft account activity",
+    href: "https://account.live.com/Activity",
+  },
   { label: "Apple account recovery", href: "https://iforgot.apple.com/" },
 ];
 
@@ -76,7 +86,9 @@ function loadTicks(key: string): Set<string> {
   try {
     const raw = window.localStorage.getItem(key);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : []);
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter((v) => typeof v === "string") : [],
+    );
   } catch {
     return new Set();
   }
@@ -106,8 +118,8 @@ function Checklist({ episodeId }: { episodeId: string }) {
         Recovery checklist
       </h2>
       <p className="text-sm text-muted-foreground">
-        Steps for you to follow. Ticking one only tracks your progress here; it does not release
-        anything or answer a security question.
+        Steps for you to follow. Ticking one only tracks your progress here; it
+        does not release anything or answer a security question.
       </p>
       <ul className="space-y-2">
         {CHECKLIST.map((step) => (
@@ -133,7 +145,12 @@ function Checklist({ episodeId }: { episodeId: string }) {
       <ul className="space-y-1 text-sm">
         {DOORS.map((door) => (
           <li key={door.href}>
-            <a href={door.href} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+            <a
+              href={door.href}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2"
+            >
               {door.label}
             </a>
           </li>
@@ -157,17 +174,22 @@ function formatValue(value: unknown): string {
 }
 
 function Evidence({ item, now }: { item: CaseEvidence; now: number }) {
-  const fix = item.contributor === "chronicler" && item.kind === "device_last_fix";
+  const fix =
+    item.contributor === "chronicler" && item.kind === "device_last_fix";
   // The server already reads a stale fix as unknown; this also covers a view left open past it.
   const stale =
     fix &&
     (item.summary.reason === "stale" ||
-      (typeof item.summary.fresh_until === "string" && now > Date.parse(item.summary.fresh_until)));
-  const entries = Object.entries(item.summary).filter(([name]) => name !== "fresh_until");
+      (typeof item.summary.fresh_until === "string" &&
+        now > Date.parse(item.summary.fresh_until)));
+  const entries = Object.entries(item.summary).filter(
+    ([name]) => name !== "fresh_until",
+  );
   return (
     <li className="space-y-1 rounded border p-3 text-sm">
       <p className="font-medium">
-        {CONTRIBUTOR[item.contributor] ?? "Another source"}: {KIND[item.kind] ?? "Evidence"}
+        {CONTRIBUTOR[item.contributor] ?? "Another source"}:{" "}
+        {KIND[item.kind] ?? "Evidence"}
       </p>
       <p className="text-muted-foreground">
         Recorded <Time value={item.contributed_at} mode="absolute" />
@@ -194,10 +216,16 @@ export default function CustodyCasePage() {
     queryFn: () => getCustodyCase(episodeId),
     retry: false,
   });
-  const holdsQuery = useQuery({ queryKey: ["custody-holds"], queryFn: listCustodyHolds, retry: false });
+  const holdsQuery = useQuery({
+    queryKey: ["custody-holds"],
+    queryFn: listCustodyHolds,
+    retry: false,
+  });
   // The time this view was opened; a reading past its freshness window reads unknown from then.
   const [now] = useState(() => Date.now());
-  const holds = holdsQuery.data?.filter((hold) => hold.episode_id === episodeId);
+  const holds = holdsQuery.data?.filter(
+    (hold) => hold.episode_id === episodeId,
+  );
   return (
     <div className="space-y-5">
       <h1 className="text-lg font-semibold">Lost-device recovery case</h1>
@@ -211,6 +239,10 @@ export default function CustodyCasePage() {
         </Link>
       </p>
       <Checklist episodeId={episodeId} />
+      <CustodyDevicePanel
+        episodeId={episodeId}
+        open={caseQuery.data !== undefined && caseQuery.data.state !== "closed"}
+      />
       <section className="space-y-2" aria-labelledby="holds-heading">
         <h2 id="holds-heading" className="font-medium">
           Holds in this case
@@ -222,10 +254,16 @@ export default function CustodyCasePage() {
             Holds are unavailable. This is not an all-clear.
           </p>
         ) : !holds || holds.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No channel in this case is currently held.</p>
+          <p className="text-sm text-muted-foreground">
+            No channel in this case is currently held.
+          </p>
         ) : (
           <p className="text-sm">
-            {holds.length} held. Release or replace them on <Link to="/custody" className="underline">the holds page</Link>.
+            {holds.length} held. Release or replace them on{" "}
+            <Link to="/custody" className="underline">
+              the holds page
+            </Link>
+            .
           </p>
         )}
       </section>
@@ -251,10 +289,14 @@ export default function CustodyCasePage() {
           <>
             <p className="text-sm">
               Case {caseQuery.data.state}
-              {caseQuery.data.outcome ? ` (${caseQuery.data.outcome.replace(/_/g, " ")})` : ""}
+              {caseQuery.data.outcome
+                ? ` (${caseQuery.data.outcome.replace(/_/g, " ")})`
+                : ""}
             </p>
             {caseQuery.data.evidence.length === 0 ? (
-              <p className="text-sm text-muted-foreground">Nothing recorded yet.</p>
+              <p className="text-sm text-muted-foreground">
+                Nothing recorded yet.
+              </p>
             ) : (
               <ul className="space-y-2">
                 {caseQuery.data.evidence.map((item) => (
@@ -267,7 +309,9 @@ export default function CustodyCasePage() {
               </ul>
             )}
             {caseQuery.data.truncated && (
-              <p className="text-sm text-muted-foreground">Showing the newest entries only.</p>
+              <p className="text-sm text-muted-foreground">
+                Showing the newest entries only.
+              </p>
             )}
           </>
         )}

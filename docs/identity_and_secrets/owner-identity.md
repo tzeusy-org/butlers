@@ -232,7 +232,9 @@ recovery doors), what the case's contributors have found (allow-listed scalar su
 `GET /api/custody/episodes/{id}/case`, an allow-listed projection over `public.fleet_case_evidence`
 that judges a device reading's freshness on the server) and the holds in the case. The checklist is instructions;
 ticking a step is browser-local progress and never releases a hold or answers a security question.
-A failed read renders unavailable, never clear.
+A failed read renders unavailable, never clear. The case page also offers "Your device": the owner
+picks one registered OwnTracks endpoint (`GET .../device/candidates`, then `PUT .../device`) and sees
+the server-judged last fix as a place and an age; it is context only and never answers a question.
 
 The fence fails closed and does not share the permissions matrix's handling of a
 failed read: no pool, a lookup error, a non-boolean answer or an unnameable target refuses with
