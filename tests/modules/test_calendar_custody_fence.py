@@ -52,14 +52,20 @@ def _asked_emails(pool: MagicMock) -> list[str]:
     return list(objects)
 
 
-def _provider(pool) -> _GoogleProvider:
-    return _GoogleProvider(
-        CalendarConfig(provider="google", timezone="UTC"),
+_SENDER = "sender@example.com"
+
+
+def _provider(pool, *, account: str | None = None, real_sender: bool = False) -> _GoogleProvider:
+    provider = _GoogleProvider(
+        CalendarConfig(provider="google", timezone="UTC", account=account),
         _GoogleOAuthCredentials(
             client_id="client-id", client_secret="client-secret", refresh_token="refresh-token"
         ),
         pool=pool,
     )
+    if not real_sender:
+        provider._sender_account_email = AsyncMock(return_value=_SENDER)
+    return provider
 
 
 def _event(*guests: str) -> CalendarEvent:
@@ -146,7 +152,12 @@ async def test_adding_a_held_guest_with_invites_refuses_before_the_patch():
 
     assert refused.value.reason == "endpoint_held"
     provider._request_google_json.assert_not_awaited()
-    assert _asked_emails(pool) == ["owner@example.com", "friend@example.com", _HELD_GUEST]
+    assert _asked_emails(pool) == [
+        _SENDER,
+        "owner@example.com",
+        "friend@example.com",
+        _HELD_GUEST,
+    ]
 
 
 async def test_adding_an_unheld_guest_with_invites_still_writes():
@@ -166,6 +177,44 @@ async def test_adding_an_unheld_guest_with_invites_still_writes():
     call = provider._request_google_json.await_args
     assert call is not None
     assert call.kwargs["params"] == {"sendUpdates": "all"}
+
+
+async def test_a_group_calendar_write_checks_the_configured_sending_account(monkeypatch):
+    # A secondary or group calendar's organizer is its calendar id, never the owner's
+    # address: the sending account comes from configuration (REQ-endpoint-custody-holds-007).
+    lookup = AsyncMock(return_value=SimpleNamespace(email="owner@example.com"))
+    monkeypatch.setattr("butlers.google_account_registry.get_google_account", lookup)
+    pool = _custody_pool(True)
+    provider = _provider(pool, account="owner@example.com", real_sender=True)
+    group = _event("friend@example.com").model_copy(
+        update={"organizer": "c_abc123@group.calendar.google.com"}
+    )
+    provider.get_event = AsyncMock(return_value=group)
+    provider._request_google_json = AsyncMock(return_value=_UPDATED)
+
+    with pytest.raises(CustodyEgressRefused) as refused:
+        await provider.add_attendees(
+            calendar_id="c_abc123@group.calendar.google.com",
+            event_id="event",
+            attendees=["colleague@example.com"],
+            send_updates="all",
+        )
+
+    assert refused.value.reason == "endpoint_held"
+    lookup.assert_awaited_once_with(pool, "owner@example.com")
+    assert _asked_emails(pool)[0] == "owner@example.com"
+    provider._request_google_json.assert_not_awaited()
+
+    # An unresolvable sending account is unknown, never evidence it is unheld.
+    lookup.side_effect = RuntimeError("registry down")
+    with pytest.raises(CustodyEgressRefused) as refused:
+        await provider.add_attendees(
+            calendar_id="c_abc123@group.calendar.google.com",
+            event_id="event",
+            attendees=["colleague@example.com"],
+            send_updates="all",
+        )
+    assert refused.value.reason == "eligibility_unknown"
 
 
 async def test_a_silent_attendee_write_never_asks_custody():
@@ -253,7 +302,7 @@ async def test_a_response_mailing_a_held_organizer_fails_closed_before_start():
     coordinator, read = _coordinator(_custody_pool(True), _INVITE)
 
     with pytest.raises(CalendarResponseError) as refused:
-        await coordinator._require_response_mail_unheld(_TARGET, "all")
+        await coordinator._require_response_mail_unheld(_TARGET, "all", sender=_SENDER)
 
     assert refused.value.code == "response_custody_endpoint_held"
     read.assert_awaited_once_with(calendar_id="primary", event_id="event")
@@ -262,6 +311,6 @@ async def test_a_response_mailing_a_held_organizer_fails_closed_before_start():
 async def test_a_silent_response_reads_nothing():
     coordinator, read = _coordinator(_custody_pool(True), _INVITE)
 
-    await coordinator._require_response_mail_unheld(_TARGET, "none")
+    await coordinator._require_response_mail_unheld(_TARGET, "none", sender=_SENDER)
 
     read.assert_not_awaited()

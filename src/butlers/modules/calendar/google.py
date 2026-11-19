@@ -627,8 +627,36 @@ class _GoogleProvider(CalendarProvider):
         existing = await self.get_event(calendar_id=calendar_id, event_id=event_id)
         if existing is None:
             return
+        await self._require_mail_unheld(send_updates, _event_mail_recipients(existing))
+
+    async def _sender_account_email(self) -> str | None:
+        """The configured OAuth account's email, the account Google sends the mail from.
+
+        REQ-endpoint-custody-holds-007 derives the outgoing account from configuration, never
+        from the event: a secondary or group calendar's organizer is its
+        ``@group.calendar.google.com`` id, not the owner's address. ``None`` when the registry
+        cannot name it, which the fence reads as unknown.
+        """
+        from butlers.google_account_registry import get_google_account
+
+        if self._pool is None:
+            return None
+        try:
+            account = await get_google_account(self._pool, self._config.account)
+        except Exception:
+            logger.warning("Calendar mail custody: the sending Google account is unresolved")
+            return None
+        return account.email or None
+
+    async def _require_mail_unheld(self, send_updates: str | None, recipients: list[str]) -> None:
+        """Fence a mail-sending write on its recipients plus the sending account.
+
+        A write that names no recipient mails no one, so it asks nothing.
+        """
+        if not sends_mail(send_updates) or not recipients:
+            return
         await require_calendar_mail_custody_clear(
-            self._pool, send_updates, _event_mail_recipients(existing)
+            self._pool, send_updates, [await self._sender_account_email(), *recipients]
         )
 
     async def delete_event(
@@ -783,8 +811,7 @@ class _GoogleProvider(CalendarProvider):
                 existing_emails_lower.add(email.lower())
 
         # Google mails the organizer and every guest, the new ones included.
-        await require_calendar_mail_custody_clear(
-            self._pool,
+        await self._require_mail_unheld(
             send_updates,
             [*_event_mail_recipients(existing), *(a.email for a in merged_attendees)],
         )
@@ -841,9 +868,7 @@ class _GoogleProvider(CalendarProvider):
         ]
 
         # Google mails the removed guests a cancellation and the rest an update.
-        await require_calendar_mail_custody_clear(
-            self._pool, send_updates, _event_mail_recipients(existing)
-        )
+        await self._require_mail_unheld(send_updates, _event_mail_recipients(existing))
         google_attendees = _attendee_info_list_to_google(remaining_attendees)
         normalized_calendar_id = quote(calendar_id, safe="")
         encoded_event_id = quote(normalized_event_id, safe="")

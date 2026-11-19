@@ -286,12 +286,13 @@ class CalendarResponseCoordinator:
         )
 
     async def _require_response_mail_unheld(
-        self, target: dict[str, Any], send_updates: str
+        self, target: dict[str, Any], send_updates: str, *, sender: str | None
     ) -> None:
         """Custody-fence the mail a response makes Google send, before the start marker.
 
         With ``sendUpdates`` other than ``none`` Google emails the organizer from the owner's
-        account (bu-s11n0s.94). A held or unreadable recipient fails the command with a closed
+        account (bu-s11n0s.94). The bound sending account (``sender``) is checked with the
+        recipients. A held or unreadable recipient fails the command with a closed
         ``response_custody_*`` reason; nothing has started, so nothing is uncertain.
         """
         from butlers.core.custody_egress import CustodyEgressRefused
@@ -309,7 +310,7 @@ class CalendarResponseCoordinator:
         )
         try:
             await require_calendar_mail_custody_clear(
-                self.pool, send_updates, google_resource_recipients(raw)
+                self.pool, send_updates, [sender, *google_resource_recipients(raw)]
             )
         except CustodyEgressRefused as exc:
             raise CalendarResponseError(f"response_custody_{exc.reason}") from None
@@ -634,7 +635,9 @@ class CalendarResponseCoordinator:
             if current.to_dict() != command["before"]:
                 raise CalendarResponseError("response_version_changed")
             provider = self.module._require_provider()
-            await self._require_response_mail_unheld(target, command["arguments"]["send_updates"])
+            await self._require_response_mail_unheld(
+                target, command["arguments"]["send_updates"], sender=account["email"]
+            )
             token = await provider.prepare_response_write()
             replay = await self._claim(command_id, payload)
             if replay is not None:
