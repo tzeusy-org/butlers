@@ -128,7 +128,7 @@ correction with nothing left to correct never waits forever.
 **No pruner (bu-s11n0s.15 S1); no owner retention decision yet**
 
 One small row per terminal premise-bound insight candidate (its exposure and premise outcome, no
-message text), plus one verdict row per class, priority band and day once the rollup lands. No
+message text), plus one verdict row per class, priority band and day the sweep job runs. No
 foreign key to `insight_candidates`, so the evidence outlives the candidate pruner; nothing
 deletes either table. Volume is bounded by premised insights, the same order as
 `insight_amendments`.

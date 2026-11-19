@@ -997,6 +997,7 @@ export function escalateNotification(
 import type {
   AttentionLedgerSummaryParams,
   AttentionLedgerSummaryResponse,
+  InsightEfficacyResponse,
 } from "./types.ts";
 
 /**
@@ -1017,6 +1018,14 @@ export function getAttentionLedgerSummary(
   const qs = sp.toString();
   const path = qs ? `/attention/ledger/summary?${qs}` : "/attention/ledger/summary";
   return apiFetch<AttentionLedgerSummaryResponse>(path);
+}
+
+/**
+ * Fetch the latest observational verdict per insight class and priority band
+ * (bu-s11n0s.15 S2). Observe-only: nothing shapes delivery from it.
+ */
+export function getInsightEfficacy(): Promise<InsightEfficacyResponse> {
+  return apiFetch<InsightEfficacyResponse>("/attention/efficacy");
 }
 
 // ---------------------------------------------------------------------------

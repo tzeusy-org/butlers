@@ -9,9 +9,14 @@
 - [x] 1.3 Daily `insight_outcome_sweep` job (`dispatch_mode = "job"`, 05:52 UTC).
 - [x] 1.4 Spec delta, schema topology and data retention docs.
 
-## 2. Deferred slices
+## 2. Slice 2: efficacy verdicts, observe-only (bu-s11n0s.15 S2)
 
-- [ ] 2.1 Slice 2: verdict rollup and `GET /api/attention/efficacy` (degraded envelope), panel rows.
-- [ ] 2.2 Slice 3: owner opt-in `outcome_shaping` (owner decision first).
-- [ ] 2.3 Slice 4: owner digest lines with keep/quiet doors.
-- [ ] 2.4 Slice 5: retire the 60-minute engagement mark per covered category.
+- [x] 2.1 Slice 2: verdict rollup and `GET /api/attention/efficacy` (degraded envelope), panel rows,
+      and the reading caveats (biased holdout selection, a shorter treated window after a delay)
+      in `docs/butlers/switchboard.md`.
+
+## 3. Deferred slices
+
+- [ ] 3.1 Slice 3: owner opt-in `outcome_shaping` (owner decision first).
+- [ ] 3.2 Slice 4: owner digest lines with keep/quiet doors.
+- [ ] 3.3 Slice 5: retire the 60-minute engagement mark per covered category.

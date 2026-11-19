@@ -96,7 +96,8 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.insight_outcomes`** and **`public.insight_class_efficacy`** -- The observe-only
   insight outcome ledger (core_353, bu-s11n0s.15): one row per terminal premised insight
   candidate with what reached the owner (its exposure) and, once, whether its premise resolved,
-  when and how precisely; and the per-class verdict rollup a later slice computes. Keyed by
+  when and how precisely; and the per-class, per-priority-band daily verdict rollup the same
+  sweep job writes (bu-s11n0s.15 S2, observational, read by `GET /api/attention/efficacy`). Keyed by
   candidate id with no foreign key, so it outlives the candidate retention pruner. Switchboard
   only, fenced by row level security.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the

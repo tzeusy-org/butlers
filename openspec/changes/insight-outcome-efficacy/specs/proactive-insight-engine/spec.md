@@ -22,3 +22,26 @@ Switchboard SHALL enroll every terminal premise-bound insight candidate, while i
 
 - **WHEN** a candidate's delivery is refused by an endpoint custody hold and its probe premise cannot be read
 - **THEN** its exposure is `held_custody` and, after three unknown reads, its outcome is `unmeasurable`
+
+### Requirement: Premise-Outcome Efficacy
+
+ID: REQ-proactive-insight-engine-038
+Source: bu-s11n0s.15 adopted design (2026-10-16 regroom), slice 2; RFC 0011 as kept by RFC 0038
+Scope: v1-mandatory
+
+After each sweep, Switchboard SHALL roll settled ledger rows up into `public.insight_class_efficacy`, one row per origin butler, category, priority band and day, comparing the treated arm (`delivered`, `coalesced`) with the natural holdout (`held_budget`, `held_context`) only within one priority band: `low` below 50, `normal` from 50, and `urgent` at or above the urgent threshold. Each row SHALL carry both arms' measured counts, resolved counts and median time to resolve from `proposed_at`; excluded exposures and `unmeasurable` outcomes SHALL count in neither arm. A class with fewer than five measured rows in either arm SHALL be `unmeasured`; otherwise its verdict SHALL be one of `effective`, `self_resolving` or `ignored`, and its evidence SHALL label it observational. A sweep that fails or yields to a concurrent run SHALL leave the previous rows in force. `GET /api/attention/efficacy` SHALL return the latest row per class and band with the degraded envelope: `source_available: false` when the Switchboard pool is unreachable, never an empty calm list. No verdict SHALL change what the broker delivers in this slice.
+
+#### Scenario: A self-resolving class
+
+- **WHEN** six delivered and five budget-held candidates of one class in one band all resolve within a day
+- **THEN** the class's row reads `self_resolving` with 6 of 6 treated and 5 of 5 held resolved, and its evidence says it is observational
+
+#### Scenario: Too few to judge
+
+- **WHEN** a class has fewer than five measured rows in either arm
+- **THEN** its verdict is `unmeasured`
+
+#### Scenario: Efficacy source unreachable
+
+- **WHEN** the dashboard API cannot reach the Switchboard pool
+- **THEN** `GET /api/attention/efficacy` returns no rows with `source_available: false`
