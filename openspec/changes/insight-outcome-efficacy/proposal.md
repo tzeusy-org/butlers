@@ -67,8 +67,9 @@ an observation or settle it as unknown, never count it in an arm:
 The adopted design names the verdicts, the five-per-arm floor and the priority bands but not the
 cut points. Slice 2 picks them and keeps them in code constants, not spec text: `effective` needs
 a 20-point resolve-rate gap or, at a comparable rate, a treated median at most half the holdout's;
-`self_resolving` needs a comparable rate and a holdout rate of at least 60%; the rollup reads 90
-days of settled rows. They only label an observation and change no delivery.
+`self_resolving` needs a holdout rate of at least 60% with the treated arm not resolving clearly
+more often (or clearly faster); the rollup reads 90 days of settled rows. They only label an
+observation and change no delivery.
 
 ## Impact
 

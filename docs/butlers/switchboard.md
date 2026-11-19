@@ -19,8 +19,9 @@ priority band (`low` under 50, `normal`, `urgent` at 90 and above) and day. Trea
 `delivered`/`coalesced`; the holdout is `held_budget`/`held_context`; `unmeasurable` rows count in
 neither arm. Under five measured rows in either arm the verdict is `unmeasured`. Otherwise it is
 `effective` when the treated arm resolves at least 20 points more often, or about as often at no
-more than half the holdout's median time; `self_resolving` when the holdout resolves about as
-often and at least 60% of the time; else `ignored`. `GET /api/attention/efficacy` returns the
+more than half the holdout's median time; `self_resolving` when the holdout resolves at least 60%
+of the time and the treated arm does not resolve clearly more often (or clearly faster); else
+`ignored`. `GET /api/attention/efficacy` returns the
 latest row per class and band, and the Trust Console's attention-ledger panel lists them. Nothing
 reads the verdicts to shape delivery yet.
 

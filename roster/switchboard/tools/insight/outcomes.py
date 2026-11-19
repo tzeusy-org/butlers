@@ -377,8 +377,9 @@ def decide_verdict(
 
     Fewer than :data:`MIN_PER_ARM` measured rows in either arm is ``unmeasured``. Otherwise:
     ``effective`` when the treated arm resolves clearly more often, or about as often but at
-    most half as slowly; ``self_resolving`` when the holdout resolves about as often and mostly
-    resolves anyway; ``ignored`` when being told did not move a premise that mostly persists.
+    most half as slowly; ``self_resolving`` when the holdout resolves at least 60% of the time
+    and the treated arm does not resolve clearly more often (or clearly faster); ``ignored``
+    when being told did not move a premise that mostly persists.
     """
     if n_treated < MIN_PER_ARM or n_holdout < MIN_PER_ARM:
         return "unmeasured"
