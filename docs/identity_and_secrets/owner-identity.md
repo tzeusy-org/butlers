@@ -170,6 +170,16 @@ The fenced paths are:
   through the butler pool it receives at startup.
 - The chronicler's daily gap interview (`TelegramInlineButtonTransport.deliver_interview`), which
   posts to the owner's chat directly. A refusal is "not delivered", so the day is not marked asked.
+- Google Calendar mail (bu-s11n0s.94, `butlers.modules.calendar.custody`). A calendar write with
+  `sendUpdates` `all` or `externalOnly` makes Google email the event's organizer and guests from
+  the owner's account, outside Messenger. `add_attendees`, `remove_attendees`, `delete_event`,
+  `set_recurrence` and the invitation response check every one of those addresses as `has-email`
+  first (delete and recurrence read the event's current guests, the response reads its
+  organizer). A held address refuses the whole write (`endpoint_held`), and unreadable custody or
+  an address that names no mailbox refuses it too (`eligibility_unknown`); the write is never
+  silently downgraded to `sendUpdates=none`. An invitation response records the refusal as the
+  closed failure `response_custody_<reason>` before its start marker. A write with `none`, or
+  with the flag omitted (Google sends nothing by default), reaches no endpoint and is not fenced.
 
 Registered tools, route.execute delivery commands, approval-card handoff, approved execution of a
 parked send and deferred flush reach Messenger's adapters through these methods. Connector replies

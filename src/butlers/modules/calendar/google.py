@@ -28,6 +28,7 @@ from .constants import (
     RATE_LIMIT_RETRY_STATUS_CODES,
     logger,
 )
+from .custody import require_calendar_mail_custody_clear, sends_mail
 from .errors import (
     CalendarAuthError,
     CalendarRequestError,
@@ -613,6 +614,23 @@ class _GoogleProvider(CalendarProvider):
             )
         return event
 
+    async def _require_existing_guests_unheld(
+        self, *, calendar_id: str, event_id: str, send_updates: str | None
+    ) -> None:
+        """Fence a mail-sending write on an event's current organizer and guests.
+
+        Reads the event only when the write would make Google send mail. A missing event sends
+        no mail, so it passes.
+        """
+        if not sends_mail(send_updates):
+            return
+        existing = await self.get_event(calendar_id=calendar_id, event_id=event_id)
+        if existing is None:
+            return
+        await require_calendar_mail_custody_clear(
+            self._pool, send_updates, _event_mail_recipients(existing)
+        )
+
     async def delete_event(
         self,
         *,
@@ -644,6 +662,9 @@ class _GoogleProvider(CalendarProvider):
             normalized_send_updates = send_updates.strip()
             if normalized_send_updates:
                 params = {"sendUpdates": normalized_send_updates}
+        await self._require_existing_guests_unheld(
+            calendar_id=calendar_id, event_id=normalized_event_id, send_updates=send_updates
+        )
 
         response = await self._request_with_bearer(
             method="DELETE",
@@ -698,6 +719,9 @@ class _GoogleProvider(CalendarProvider):
         params: dict[str, Any] | None = None
         if send_updates is not None and send_updates.strip():
             params = {"sendUpdates": send_updates.strip()}
+        await self._require_existing_guests_unheld(
+            calendar_id=calendar_id, event_id=normalized_event_id, send_updates=send_updates
+        )
         response_payload = await self._request_google_json(
             "PATCH",
             f"/calendars/{normalized_calendar_id}/events/{encoded_event_id}",
@@ -758,6 +782,12 @@ class _GoogleProvider(CalendarProvider):
                 )
                 existing_emails_lower.add(email.lower())
 
+        # Google mails the organizer and every guest, the new ones included.
+        await require_calendar_mail_custody_clear(
+            self._pool,
+            send_updates,
+            [*_event_mail_recipients(existing), *(a.email for a in merged_attendees)],
+        )
         google_attendees = _attendee_info_list_to_google(merged_attendees)
         normalized_calendar_id = quote(calendar_id, safe="")
         encoded_event_id = quote(normalized_event_id, safe="")
@@ -810,6 +840,10 @@ class _GoogleProvider(CalendarProvider):
             a for a in existing.attendees if a.email.lower() not in emails_to_remove_lower
         ]
 
+        # Google mails the removed guests a cancellation and the rest an update.
+        await require_calendar_mail_custody_clear(
+            self._pool, send_updates, _event_mail_recipients(existing)
+        )
         google_attendees = _attendee_info_list_to_google(remaining_attendees)
         normalized_calendar_id = quote(calendar_id, safe="")
         encoded_event_id = quote(normalized_event_id, safe="")
@@ -1049,3 +1083,10 @@ class _GoogleProvider(CalendarProvider):
     async def shutdown(self) -> None:
         if self._owns_http_client:
             await self._http_client.aclose()
+
+
+def _event_mail_recipients(event: CalendarEvent) -> list[str]:
+    """The organizer and guest addresses Google may mail about *event*."""
+    recipients = [event.organizer] if event.organizer else []
+    recipients.extend(attendee.email for attendee in event.attendees)
+    return recipients
