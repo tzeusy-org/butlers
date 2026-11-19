@@ -166,7 +166,7 @@
       candidate read outside a security question; today the hold starts from `/security` or the
       host command) and the device-binding control for `PUT /api/custody/episodes/{id}/device`
       (#5911, TODO until it merges).
-- [x] 2.4e No lapse while held (REQ-010 closure half, bu-s11n0s.1.1, core_351): the fleet-case
+- [x] 2.4g No lapse while held (REQ-010 closure half, bu-s11n0s.1.1, core_351): the fleet-case
       lapse sweep skips an `endpoint_custody:<episode>` case while any hold of that episode is
       unreleased, so a quiet hold older than seven days is never closed `lapsed` and a later
       release never opens a second case under the same key. The sweep's role cannot read
