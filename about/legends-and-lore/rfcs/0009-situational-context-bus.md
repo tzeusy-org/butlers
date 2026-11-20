@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-03-25
 **Proposed amendment (bu-dhloi1.17):** The response-building integration example under How Butlers Use Context, plus the Owner Attention Policy Sleep Producer, Context Preamble, Bound Owner Context Mutation and Bounded Suppression Read Failures clauses below, are reviewable replacement text, pending independent conformance review and exact-text owner adoption. The existing RFC remains accepted outside this pending amendment; this draft does not authorize implementation or activation.
-Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (the context bus is a named v1 capability).
+Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Ships](../../heart-and-soul/v1.md#what-v1-ships) (the context bus is a named v1 capability).
 
 ## Summary
 
