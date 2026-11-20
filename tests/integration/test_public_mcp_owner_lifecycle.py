@@ -434,6 +434,13 @@ def test_operator_managed_pg_stat_statements_is_admitted_and_locked_down(copied)
         # from a role without one is an error, so its revoke loops must skip them.
         _run(topology, program)
         assert _scalar(projection, _STAT_GRANTS) == 0
+        # A grant to a projection role passes the preflight but is stripped by the lockdown.
+        run_sql(
+            "GRANT SELECT ON public.pg_stat_statements TO mcp_public_ro",
+            "GRANT EXECUTE ON FUNCTION public.pg_stat_statements(boolean) TO mcp_public_ro",
+        )
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
 
         applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
         # A member granted to any other role is refused before mutation.

@@ -1018,10 +1018,11 @@ _TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspn
 
 
 # CNPG manages pg_stat_statements whenever the cluster sets a ``pg_stat_statements.*``
-# parameter: it creates the extension in public of every database, butlers_public included,
-# whenever the instance starts (bu-y66o00.60). The preflight admits that extension and its
-# members, and nothing else of it: the extension and each member must belong to a superuser,
-# no member may be SECURITY DEFINER, and a member's ACL may name only its owner or PUBLIC.
+# parameter: it creates the extension, when missing, in public of every database,
+# butlers_public included (bu-y66o00.60). The preflight admits that extension and its
+# members: the extension and each member must belong to a superuser, no member may be
+# SECURITY DEFINER, and a member's ACL may name only its owner, PUBLIC, or a projection role
+# the generic ACL guard already admits.
 # Membership cannot be forged: ALTER EXTENSION ADD needs the extension's (superuser) owner.
 # ``_stat_statements_lockdown`` then revokes every member from everyone but its owner.
 def _stat_statements_member(catalog: str, oid: str, owner: str) -> str:
