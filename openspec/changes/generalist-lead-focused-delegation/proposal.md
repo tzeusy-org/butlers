@@ -37,7 +37,7 @@ is the design.
 
 ## What Changes
 
-- Every reasoning session becomes a lead or depth-1 child invocation of an
+- Every lead and child reasoning session becomes an invocation of an
   admitted goal. Switchboard, moved into its own process, hosts admission, the
   goal ledger, the goal runner and the capability broker. Message
   classification and route dispatch are removed. Engineering executors,
@@ -50,6 +50,12 @@ is the design.
   third-party content, including through tainted stored records, gates
   consequential effects. Domains verify a single-use, audience-bound,
   broker-signed assertion before any model-reachable handler runs.
+- Brokered web research (RFC 0038 D20, adopted 2026-10-20) runs in a separate research
+  profile within the goal, with provider-hosted search only, no broker grant,
+  provider-only egress, exposure-selected live/cached mode, budget reservations
+  and third-party results. The owner adopted the D20 amendment at PR #4540
+  head bd206499 on 2026-10-20 at 14:31Z (`bu-cs33zx`), with P1 = A and P2 = A;
+  separate owner merge-enqueue approval remains required.
 - Budgets, effect ledger, approvals, Stop and fenced recovery are goal-level.
 - Two owner rules bind every goal: communication with anyone other than the
   owner needs owner approval (per event or by an owner-created standing rule),
@@ -124,7 +130,16 @@ Doctrine (`about/heart-and-soul/`, with a D19 pointer in
 (supersession headers), v1 scope and success criteria, the dashboard (rebuilt
 around goals and regions by the D19 change), Switchboard's manifesto at
 cutover, every domain butler's session spawning, every LLM-presentable tool's
-metadata, deployment (session host, `butlers-control` and the second
+metadata, deployment (session host, the adopted D20 research host,
+`butlers-control` and the second
 process-bound deployment control key), and calendar writes that invite
 non-owner attendees, which become approval-gated. No runtime code changes in
 this change's documentation stage.
+
+D20 excludes browser automation, computer use, logged-in browsing, forms, web
+writes, purchases, runtime fetch tools, new general public-internet egress and
+research on non-Codex runtimes in version 1. The separate owner decision
+bu-6qaju2.2 is closed (2026-10-15), answer B: reuse the existing Codex
+ChatGPT-subscription login. Actual credential provisioning or use and live
+research proof retain their existing conditions; default-off dark build and
+switch-release gates remain.
