@@ -94,6 +94,15 @@ and `search` trigram match) and `mcp_ext.similarity_op(text, text)` (the `%` ope
 recheck the `search` trigram index scan runs as the reader). The step refuses any other state
 before creating anything.
 
+The one other extension the step admits is `pg_stat_statements` in `public` (bu-y66o00.60).
+CNPG creates it in every database, `butlers_public` included, whenever the cluster sets a
+`pg_stat_statements.*` parameter and an instance starts. The step accepts it only if the
+extension and each of its members belong to a superuser, no member is SECURITY DEFINER, and no
+member is granted to a role outside PUBLIC, its owner and the projection roles. It then
+revokes every member from everyone but its owner, as the superuser, and refuses if any grant
+remains. Anything else in `public` other than tables, indexes
+and sequences is still refused.
+
 Search indexes (bu-y66o00.53). No index can match an expression over a view's `fields` jsonb,
 so a search source too costly to scan declares search columns in
 `butlers.knowledge_read.search_index`. Today only `chronicler.episodes_public` does:

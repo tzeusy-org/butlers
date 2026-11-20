@@ -384,6 +384,85 @@ def test_search_indexes_are_owned_idempotent_rebuilt_and_the_only_admitted_extra
     assert [r[0] for r in indexes()] == [r[0] for r in first]
 
 
+_STAT_GRANTS = """SELECT count(*) FROM pg_depend d
+    JOIN pg_extension x ON x.oid=d.refobjid AND x.extname='pg_stat_statements'
+    LEFT JOIN pg_class c ON d.classid='pg_class'::regclass AND c.oid=d.objid
+    LEFT JOIN pg_proc p ON d.classid='pg_proc'::regclass AND p.oid=d.objid
+    WHERE d.refclassid='pg_extension'::regclass AND d.deptype='e'
+      AND ((c.oid IS NOT NULL AND EXISTS(SELECT 1 FROM aclexplode(c.relacl) a
+                WHERE a.grantee<>c.relowner))
+        OR (p.oid IS NOT NULL AND (p.proacl IS NULL OR EXISTS(
+                SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee<>p.proowner))))"""
+
+
+def test_operator_managed_pg_stat_statements_is_admitted_and_locked_down(copied):
+    """bu-y66o00.60: CNPG creates pg_stat_statements in public of every database.
+
+    The owner step admits that superuser-owned extension, revokes each member from everyone
+    but its owner, and stays idempotent once the projection owner holds no privilege on
+    them. Anything else planted in public, or a member granted to another role, is still
+    refused before mutation.
+    """
+    topology, projection, manifest = copied
+    program = render_owner_program(manifest)
+
+    def run_sql(*statements, role=None):
+        with projection.begin() as conn:
+            if role:
+                conn.exec_driver_sql(f"SET LOCAL ROLE {role}")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    stranger = f"mcp_stranger_{uuid.uuid4().hex[:8]}"
+    try:
+        # As the superuser, the way the operator creates it: the script grants its views to
+        # PUBLIC and leaves its query functions PUBLIC-executable.
+        run_sql("CREATE EXTENSION pg_stat_statements WITH SCHEMA public")
+        assert _scalar(projection, _STAT_GRANTS) > 0
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
+        assert not _scalar(
+            projection,
+            "SELECT has_table_privilege('mcp_public_ro', 'public.pg_stat_statements', 'SELECT')",
+        )
+        assert not _scalar(
+            projection,
+            "SELECT has_function_privilege('mcp_public_ro', "
+            "'public.pg_stat_statements(boolean)', 'EXECUTE')",
+        )
+        # Rerun: the projection owner now holds no privilege on any member, and a REVOKE
+        # from a role without one is an error, so its revoke loops must skip them.
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
+
+        applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+        # A member granted to any other role is refused before mutation.
+        run_sql(f"CREATE ROLE {stranger} NOLOGIN")
+        run_sql(f"GRANT SELECT ON public.pg_stat_statements TO {stranger}")
+        refused = _run(topology, program, success=False)
+        assert b"foreign projection ACL refused" in refused.output
+        run_sql(f"REVOKE ALL ON public.pg_stat_statements FROM {stranger}")
+        # A non-member in public is refused as before, even beside the admitted extension.
+        run_sql("CREATE VIEW public.mcp_planted AS SELECT 1 AS one", role="mcp_projection_owner")
+        refused = _run(topology, program, success=False)
+        assert b"projection public schema object refused" in refused.output
+        run_sql("DROP VIEW public.mcp_planted")
+        run_sql(
+            "CREATE FUNCTION public.mcp_planted() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+            role="mcp_projection_owner",
+        )
+        refused = _run(topology, program, success=False)
+        assert b"projection public schema object refused" in refused.output
+        run_sql("DROP FUNCTION public.mcp_planted()")
+        assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == (applied)
+        _run(topology, program)
+    finally:
+        run_sql("DROP VIEW IF EXISTS public.mcp_planted")
+        run_sql("DROP FUNCTION IF EXISTS public.mcp_planted()")
+        run_sql("DROP EXTENSION IF EXISTS pg_stat_statements")
+        run_sql(f"DROP ROLE IF EXISTS {stranger}")
+
+
 def _states(kind):
     full = load_manifest()
     account = next(t for t in full.tables if t.source == "finance.accounts")

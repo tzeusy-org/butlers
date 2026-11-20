@@ -1017,6 +1017,29 @@ _TRGM_SAFE = f"""NOT EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspn
         WHERE n.nspname='mcp_ext')"""
 
 
+# CNPG manages pg_stat_statements whenever the cluster sets a ``pg_stat_statements.*``
+# parameter: it creates the extension in public of every database, butlers_public included,
+# whenever the instance starts (bu-y66o00.60). The preflight admits that extension and its
+# members, and nothing else of it: the extension and each member must belong to a superuser,
+# no member may be SECURITY DEFINER, and a member's ACL may name only its owner or PUBLIC.
+# Membership cannot be forged: ALTER EXTENSION ADD needs the extension's (superuser) owner.
+# ``_stat_statements_lockdown`` then revokes every member from everyone but its owner.
+def _stat_statements_member(catalog: str, oid: str, owner: str) -> str:
+    return f"""({_SUPERUSER.format(owner)} AND EXISTS(SELECT 1 FROM pg_catalog.pg_depend d
+            JOIN pg_catalog.pg_extension x ON x.oid=d.refobjid
+            JOIN pg_catalog.pg_namespace xn ON xn.oid=x.extnamespace
+        WHERE d.classid='pg_catalog.{catalog}'::regclass AND d.objid={oid}
+          AND d.refclassid='pg_catalog.pg_extension'::regclass AND d.deptype='e'
+          AND x.extname='pg_stat_statements' AND xn.nspname='public'
+          AND {_SUPERUSER.format("x.extowner")}))"""
+
+
+_STAT_REL = _stat_statements_member("pg_class", "c.oid", "c.relowner")
+_STAT_PROC = (
+    "(NOT p.prosecdef AND " + _stat_statements_member("pg_proc", "p.oid", "p.proowner") + ")"
+)
+
+
 def _subscriber_preflight() -> str:
     return _do(
         """
@@ -1025,12 +1048,13 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_db_role_setting s
         WHERE datname=current_database())) THEN
     RAISE EXCEPTION 'projection database setting refused'; END IF;
 -- public holds the replicated public.* source tables; anything that could shadow a catalog
--- name, or run code, is refused.
+-- name, or run code, is refused, except the operator-managed pg_stat_statements members.
 IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n
         ON n.oid=c.relnamespace WHERE n.nspname='public'
-        AND (c.relkind NOT IN ('r','p','i','I','S','t') OR c.relname LIKE 'pg\\_%'))
+        AND (c.relkind NOT IN ('r','p','i','I','S','t') OR c.relname LIKE 'pg\\_%')
+        AND NOT __STAT_REL__)
    OR EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n
-        ON n.oid=p.pronamespace WHERE n.nspname='public') THEN
+        ON n.oid=p.pronamespace WHERE n.nspname='public' AND NOT __STAT_PROC__) THEN
     RAISE EXCEPTION 'projection public schema object refused'; END IF;
 IF current_database()<>'butlers_public' OR NOT EXISTS(SELECT 1 FROM
         pg_catalog.pg_database
@@ -1089,7 +1113,8 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
     AND n.nspname<>'information_schema' AND a.grantee NOT IN
 
         (0, 'mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole,
-        'mcp_proposals_reader'::regrole))
+        'mcp_proposals_reader'::regrole)
+    AND NOT (a.grantee=c.relowner AND __STAT_REL__))
    OR EXISTS(SELECT 1 FROM pg_catalog.pg_namespace n, LATERAL aclexplode(n.nspacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
     AND n.nspname<>'mcp_ext'
@@ -1110,7 +1135,8 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
     LATERAL aclexplode(p.proacl) a
     WHERE left(n.nspname, 3)<>'pg_' AND n.nspname NOT IN ('information_schema', 'mcp_ext')
     AND a.grantee NOT IN
-        ('mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole))
+        ('mcp_projection_owner'::regrole, 'mcp_public_ro'::regrole)
+    AND NOT (a.grantee IN (0, p.proowner) AND __STAT_PROC__))
         THEN
     RAISE EXCEPTION 'foreign projection ACL refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c, LATERAL aclexplode(c.relacl) a
@@ -1139,13 +1165,15 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON
         p.proowner='mcp_projection_owner'::regrole
         AND ((n.nspname='mcp_read' AND p.proname='replication_as_of')
              OR (n.nspname='mcp_inbox' AND p.proname='cap_proposals')))
-    AND n.nspname<>'mcp_ext')
+    AND n.nspname<>'mcp_ext' AND NOT __STAT_PROC__)
         THEN
     RAISE EXCEPTION 'foreign projection function refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_catalog.pg_extension x JOIN pg_catalog.pg_namespace n
         ON n.oid=x.extnamespace
     WHERE NOT (x.extname='plpgsql' AND n.nspname='pg_catalog')
-      AND NOT (x.extname='pg_trgm' AND n.nspname='mcp_ext')) THEN
+      AND NOT (x.extname='pg_trgm' AND n.nspname='mcp_ext')
+      AND NOT (x.extname='pg_stat_statements' AND n.nspname='public'
+               AND __STAT_OWNER__)) THEN
     RAISE EXCEPTION 'foreign projection extension refused'; END IF;
 IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
         n.oid=c.relnamespace
@@ -1153,6 +1181,85 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON
         NULL)) THEN
     RAISE EXCEPTION 'read view kind/options refused'; END IF;
 """.replace("__TRGM_SAFE__", _TRGM_SAFE)
+        .replace("__STAT_REL__", _STAT_REL)
+        .replace("__STAT_PROC__", _STAT_PROC)
+        .replace("__STAT_OWNER__", _SUPERUSER.format("x.extowner"))
+    )
+
+
+# Every relation or function that belongs to pg_stat_statements, in any schema.
+_STAT_MEMBERS = """SELECT d.classid, d.objid FROM pg_catalog.pg_depend d
+        JOIN pg_catalog.pg_extension x ON x.oid=d.refobjid
+    WHERE d.refclassid='pg_catalog.pg_extension'::regclass AND d.deptype='e'
+      AND x.extname='pg_stat_statements'
+      AND d.classid IN ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_proc'::regclass)"""
+
+
+def _not_stat_member(catalog: str, oid: str) -> str:
+    return f"""NOT EXISTS(SELECT 1 FROM ({_STAT_MEMBERS}) m
+            WHERE m.classid='pg_catalog.{catalog}'::regclass AND m.objid={oid})"""
+
+
+def _revoke_schema_objects(schema: str, grantees: str, *, routines: bool = True) -> str:
+    """PL/pgSQL revoking every relation (and routine) in ``schema`` from ``grantees``.
+
+    It runs object by object as the projection owner, in place of ``REVOKE ... ON ALL ...
+    IN SCHEMA``, so that it can skip the superuser-owned pg_stat_statements members: a
+    REVOKE by a role that holds no privilege on an object is an error, not a no-op.
+    ``_stat_statements_lockdown`` revokes those members as the superuser. Needs a
+    ``member record`` variable.
+    """
+    sql = f"""FOR member IN SELECT c.oid, c.relkind FROM pg_catalog.pg_class c
+            JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname={schema} AND c.relkind IN ('r','p','v','m','f','S')
+          AND {_not_stat_member("pg_class", "c.oid")} LOOP
+        EXECUTE format('REVOKE ALL ON %s %s FROM {grantees}',
+            CASE member.relkind WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END,
+            member.oid::regclass);
+    END LOOP;
+"""
+    if routines:
+        sql += f"""FOR member IN SELECT p.oid FROM pg_catalog.pg_proc p
+            JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname={schema} AND {_not_stat_member("pg_proc", "p.oid")} LOOP
+        EXECUTE format('REVOKE ALL ON ROUTINE %s FROM {grantees}', member.oid::regprocedure);
+    END LOOP;
+"""
+    return sql
+
+
+def _stat_statements_lockdown() -> str:
+    """Revoke the operator-managed pg_stat_statements members from everyone but their owner.
+
+    Run as the superuser, since the members belong to it. The extension's own script grants
+    SELECT on its views to PUBLIC, and its query functions are executable by PUBLIC by
+    default. CNPG recreates the extension only when it is missing, so the revoke holds
+    until a drop and recreate, and every owner step repeats it. A member left with any other
+    grantee, or with a default (NULL, PUBLIC-executable) function ACL, is refused.
+    """
+    revoke = "PUBLIC, mcp_projection_owner, mcp_public_ro, mcp_proposals_reader"
+    return _do(
+        f"""FOR item IN {_STAT_MEMBERS} LOOP
+        IF item.classid='pg_catalog.pg_class'::regclass THEN
+            EXECUTE format('REVOKE ALL ON TABLE %s FROM {revoke}', item.objid::regclass);
+        ELSE
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM {revoke}',
+                item.objid::regprocedure);
+        END IF;
+    END LOOP;
+"""
+        + _raise_unless(
+            f"""NOT EXISTS(SELECT 1 FROM ({_STAT_MEMBERS}) m
+        JOIN pg_catalog.pg_class c ON m.classid='pg_catalog.pg_class'::regclass
+            AND c.oid=m.objid,
+        LATERAL aclexplode(c.relacl) a WHERE a.grantee<>c.relowner)
+    AND NOT EXISTS(SELECT 1 FROM ({_STAT_MEMBERS}) m
+        JOIN pg_catalog.pg_proc p ON m.classid='pg_catalog.pg_proc'::regclass
+            AND p.oid=m.objid
+        WHERE p.proacl IS NULL OR EXISTS(SELECT 1 FROM aclexplode(p.proacl) a
+            WHERE a.grantee<>p.proowner))""",
+            "projection pg_stat_statements grants refused",
+        )
     )
 
 
@@ -1564,7 +1671,8 @@ AS $fresh$ SELECT pg_catalog.max(latest_end_time) FROM
         + _conditional_view("mcp_read.manifest_applied", metadata)
     )
     # Revoke first, across every subscriber schema, including old removed sources.
-    sql += _do("""FOR item IN SELECT nspname FROM pg_namespace
+    sql += _do(
+        """FOR item IN SELECT nspname FROM pg_namespace
         WHERE left(nspname, 3)<>'pg_' AND nspname<>'information_schema'
           AND nspname<>'mcp_ext'
         LOOP
@@ -1572,35 +1680,25 @@ AS $fresh$ SELECT pg_catalog.max(latest_end_time) FROM
 
         format('REVOKE ALL ON SCHEMA %I FROM PUBLIC,mcp_public_ro,mcp_proposals_reader',
         item.nspname);
-        EXECUTE
-
-        format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM '
-               'PUBLIC,mcp_public_ro,mcp_proposals_reader',
-        item.nspname);
-        EXECUTE
-
-        format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM '
-               'PUBLIC,mcp_public_ro,mcp_proposals_reader',
-        item.nspname);
-        EXECUTE
-
-        format('REVOKE ALL ON ALL FUNCTIONS IN SCHEMA %I FROM '
-               'PUBLIC,mcp_public_ro,mcp_proposals_reader',
-        item.nspname);
+"""
+        + _revoke_schema_objects("item.nspname", "PUBLIC,mcp_public_ro,mcp_proposals_reader")
+        + f"""
         FOR attribute IN SELECT c.relname, a.attname FROM pg_class c JOIN
         pg_namespace n ON
         n.oid=c.relnamespace
             JOIN pg_attribute a ON a.attrelid=c.oid WHERE
         n.nspname=item.nspname
             AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND a.attnum>0 AND
-        NOT a.attisdropped LOOP
+        NOT a.attisdropped AND {_not_stat_member("pg_class", "c.oid")} LOOP
             EXECUTE
 
         format('REVOKE ALL (%I) ON TABLE %I.%I FROM PUBLIC,mcp_public_ro,mcp_proposals_reader',
 
                 attribute.attname, item.nspname, attribute.relname);
         END LOOP;
-    END LOOP;""")
+    END LOOP;""",
+        declare=" member record;",
+    )
     sql += """REVOKE CONNECT, TEMPORARY ON DATABASE butlers_public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT CONNECT ON DATABASE butlers_public TO mcp_public_ro,
@@ -1949,8 +2047,12 @@ DROP SUBSCRIPTION butlers_public_sub;
     for schema in sorted({p.table.source.split(".")[0] for p in plans}):
         sql += f"""REVOKE ALL ON SCHEMA {quote(schema)} FROM PUBLIC, mcp_public_ro,
         mcp_proposals_reader;\n"""
-        sql += f"""REVOKE ALL ON ALL TABLES IN SCHEMA {quote(schema)} FROM
-        PUBLIC,mcp_public_ro,mcp_proposals_reader;\n"""
+        sql += _do(
+            _revoke_schema_objects(
+                literal(schema), "PUBLIC,mcp_public_ro,mcp_proposals_reader", routines=False
+            ),
+            declare=" member record;",
+        )
     sql += "-- PUBLIC_MCP_SUBSCRIBER_DDL_COMPLETE\n"
     sql += "RESET ROLE;\n" + _do(
         _raise_unless(
@@ -1959,6 +2061,7 @@ DROP SUBSCRIPTION butlers_public_sub;
         )
     )
     sql += _trigram_extension()
+    sql += _stat_statements_lockdown()
     sql += _search_indexes(plans)
     sql += """SELECT EXISTS(SELECT 1 FROM pg_subscription WHERE
         subname='butlers_public_sub' AND
