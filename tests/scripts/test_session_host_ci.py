@@ -485,6 +485,26 @@ def test_a_wrong_download_is_never_retried_into_acceptance(host, monkeypatch):
     assert not any("apparmor_parser" in args for args in state["calls"])
 
 
+def test_the_download_names_an_explicit_user_agent(host, monkeypatch):
+    """bu-y3g99h: archive.ubuntu.com (now behind Cloudflare) answers urllib's default
+    ``Python-urllib/x.y`` User-Agent with 403 since 2026-11-20 while curl gets 200; a 403 is a
+    definite answer, so every check-unit shard refused. The request must name its own agent."""
+    state, root, package, _ = host
+    requests = []
+
+    def urlopen(request, *args, **kwargs):
+        requests.append(request)
+        return io.BytesIO(package)
+
+    monkeypatch.setattr(ci.urllib.request, "urlopen", urlopen)
+    ci.prepare(root)
+    (request,) = requests
+    assert isinstance(request, ci.urllib.request.Request)
+    assert request.full_url == ci.PACKAGE_URL
+    agent = request.get_header("User-agent")
+    assert agent and not agent.startswith("Python-urllib")
+
+
 def _http_error(code):
     import urllib.error
 
