@@ -297,6 +297,14 @@ async def outcome_pool(db):
         "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
         "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
     )
+    # core_160 seeds quiet hours 23-08 Asia/Singapore (15:00-00:00 UTC). These tests
+    # drive delivery_cycle with the live clock, so inside that window every candidate
+    # was held and the ledger read held_context instead of delivered (bu-gfi2kd).
+    # Quiet hours are not under test here: clear them.
+    await pool.execute(
+        "UPDATE public.approvals_policy "
+        "SET quiet_start_hour = NULL, quiet_end_hour = NULL WHERE id = 1"
+    )
     return pool
 
 
