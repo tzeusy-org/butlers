@@ -130,7 +130,7 @@ def _port(where: str, value: Any, *, minimum: int = 1) -> int:
 
 
 def _protocol(where: str, value: Any) -> str:
-    if value not in _PROTOCOLS:
+    if not isinstance(value, str) or value not in _PROTOCOLS:
         raise ProfileError(f"{where}: protocol must be one of {sorted(_PROTOCOLS)}")
     return value
 
@@ -180,8 +180,24 @@ def _external(where: str, value: Any) -> ExternalHost:
     text = _text(where, value)
     host, sep, port_text = text.rpartition(":")
     # isdigit alone admits Unicode digits; a leading zero would not be the exact port.
-    if not sep or not (port_text.isascii() and port_text.isdigit()) or port_text[0] == "0":
+    if (
+        not sep
+        or len(port_text) > 5
+        or not (port_text.isascii() and port_text.isdigit())
+        or port_text.startswith("0")
+    ):
         raise ProfileError(f"{where}: {text!r} must be hostname:port")
+    return _external_host(where, host, int(port_text))
+
+
+def _rendered_external(where: str, value: Any) -> ExternalHost:
+    entry = _table(where, value)
+    _keys(where, entry, frozenset({"host", "port"}))
+    return _external_host(where, entry.get("host"), entry.get("port"))
+
+
+def _external_host(where: str, host_value: Any, port_value: Any) -> ExternalHost:
+    host = _text(f"{where}.host", host_value)
     labels = host.split(".")
     if (
         host != host.lower()
@@ -196,7 +212,7 @@ def _external(where: str, value: Any) -> ExternalHost:
         )
     if host == "localhost" or any(host.endswith(suffix) for suffix in _PRIVATE_SUFFIXES):
         raise ProfileError(f"{where}: {host!r} names a private, cluster or tailnet destination")
-    return ExternalHost(host=host, port=_port(where, int(port_text)))
+    return ExternalHost(host=host, port=_port(f"{where}.port", port_value))
 
 
 def _dynamic(where: str, value: Any) -> DynamicSource:
@@ -225,7 +241,7 @@ def _parsed[T](
     return _unique(path, [parse(f"{path}[{i}]", entry) for i, entry in enumerate(entries)])
 
 
-def _workload(name: str, value: Any) -> WorkloadProfile:
+def _workload(name: str, value: Any, *, rendered: bool) -> WorkloadProfile:
     where = f"workloads.{_name(f'workloads.{name}', name)}"
     table = _table(where, value)
     _keys(where, table, _WORKLOAD_KEYS)
@@ -233,11 +249,11 @@ def _workload(name: str, value: Any) -> WorkloadProfile:
     if held is not None:
         held = _text(f"{where}.held", held)
         declared = sorted(set(table) & _ROUTE_KEYS)
-        if declared:
+        if declared and not rendered:
             raise ProfileError(f"{where}: a held workload admits nothing, but declares {declared}")
     internal = _parsed(where, table, "internal", _internal)
     sites = _parsed(where, table, "sites", _site)
-    external = _parsed(where, table, "external", _external)
+    external = _parsed(where, table, "external", _rendered_external if rendered else _external)
     dynamic = _parsed(where, table, "dynamic", _dynamic)
     gateway_port = table.get("gateway_port")
     if external and gateway_port is None:
@@ -246,6 +262,8 @@ def _workload(name: str, value: Any) -> WorkloadProfile:
         if not external:
             raise ProfileError(f"{where}: gateway_port without external hosts")
         gateway_port = _port(f"{where}.gateway_port", gateway_port, minimum=1024)
+    if held is not None and (gateway_port is not None or internal or sites or external):
+        raise ProfileError(f"{where}: a held workload admits nothing")
     return WorkloadProfile(
         name=name,
         summary=_text(f"{where}.summary", table.get("summary")),
@@ -264,7 +282,21 @@ def parse_profiles(text: str) -> EgressProfiles:
         document = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ProfileError(f"not valid TOML: {exc}") from exc
-    _keys("<root>", document, frozenset({"schema", "workloads"}))
+    return _profile_document(document, rendered=False)
+
+
+def validate_rendered_profiles(document: object) -> EgressProfiles:
+    """Apply the source profile rules to the gateway's decoded JSON configuration."""
+    return _profile_document(document, rendered=True)
+
+
+def _profile_document(value: object, *, rendered: bool) -> EgressProfiles:
+    document = _table("<root>", value)
+    keys = {"schema", "workloads"}
+    if rendered:
+        keys.add("generated_from")
+        _text("generated_from", document.get("generated_from"))
+    _keys("<root>", document, frozenset(keys))
     if document.get("schema") != SCHEMA:
         raise ProfileError(f"schema must be {SCHEMA!r}")
     tables = _table("workloads", document.get("workloads"))
@@ -272,7 +304,7 @@ def parse_profiles(text: str) -> EgressProfiles:
         raise ProfileError("workloads: at least one profile is required")
     if GATEWAY_COMPONENT in tables:
         raise ProfileError(f"workloads.{GATEWAY_COMPONENT}: the gateway is not a profiled workload")
-    workloads = {name: _workload(name, value) for name, value in tables.items()}
+    workloads = {name: _workload(name, table, rendered=rendered) for name, table in tables.items()}
     for profile in workloads.values():
         for peer in profile.internal:
             if peer.component == GATEWAY_COMPONENT:

@@ -46,6 +46,50 @@ def test_routes_come_from_the_rendered_profiles_and_skip_held_or_internal_only_w
 
 
 @pytest.mark.parametrize(
+    ("document", "error"),
+    [
+        pytest.param(None, "could not read egress gateway profile configuration", id="missing"),
+        pytest.param("{", "egress gateway profile configuration is malformed", id="malformed-json"),
+        pytest.param(
+            '{"schema": "butlers-egress-profiles/v1", "generated_from": "fixture", '
+            '"workloads": {"frontend": {"summary": "fixture", "summary": "fixture"}}}',
+            "egress gateway profile configuration is invalid",
+            id="duplicate-keys",
+        ),
+        pytest.param(
+            '{"schema": "butlers-egress-profiles/v1", "generated_from": "fixture", '
+            '"workloads": {}}',
+            "egress gateway profile configuration is invalid",
+            id="empty-workload-inventory",
+        ),
+    ],
+)
+def test_gateway_refuses_missing_or_invalid_config_before_listening(
+    document, error, tmp_path, monkeypatch, caplog
+):
+    path = tmp_path / "profiles.json"
+    if document is not None:
+        path.write_text(document, encoding="utf-8")
+
+    async def serve(*_args):
+        pytest.fail("invalid profile configuration reached listener startup")
+
+    monkeypatch.setattr(gateway, "serve", serve)
+
+    assert gateway.main(["--profiles", str(path)]) == 1
+    assert caplog.messages == [error]
+
+
+def test_rendered_profiles_require_the_same_host_port_types_as_the_source():
+    document = json.loads(RENDERED_PATH.read_text(encoding="utf-8"))
+    host = document["workloads"]["connector-gmail"]["external"][0]
+    host["port"] = str(host["port"])
+
+    with pytest.raises(ValueError, match=r"connector-gmail\.external\[0\]\.port"):
+        routes_from_rendered(document)
+
+
+@pytest.mark.parametrize(
     ("address", "admitted"),
     [
         ("10.0.0.1", False),
