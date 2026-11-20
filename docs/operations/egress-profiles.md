@@ -112,6 +112,11 @@ default 2, no service-account token), a Service with one port per profiled workl
 the profile rendering mounted from a ConfigMap (a checksum annotation rolls the pods on
 change).
 
+The gateway validates the mounted JSON against the same workload and route rules as
+the TOML source. A missing or invalid file, including repeated JSON keys, causes
+startup to fail before it opens workload or readiness ports. The startup error
+reports whether reading, decoding or validation failed, and omits the file contents.
+
 - **Identity is the port.** Only the workload's pods may reach its dedicated listener.
   No header can claim a different workload. CONNECT and opaque upgraded TCP are refused.
 - **Request execution:** an explicit internal HTTP/1.1 hop targets

@@ -20,11 +20,10 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import h11
 
-from butlers.egress.profiles import RENDERED_PATH, SCHEMA
+from butlers.egress.profiles import RENDERED_PATH, ProfileError, validate_rendered_profiles
 
 AUDIT_LOGGER = "butlers.egress.audit"
 HEALTH_PORT = 3100
@@ -79,19 +78,17 @@ class Route:
     destinations: frozenset[tuple[str, int]]
 
 
-def routes_from_rendered(document: Mapping[str, Any]) -> dict[int, Route]:
+def routes_from_rendered(document: object) -> dict[int, Route]:
     """Gateway routes, keyed by listening port, from the rendered profile JSON."""
-    if document.get("schema") != SCHEMA:
-        raise ValueError(f"rendered profiles must be {SCHEMA}")
     routes: dict[int, Route] = {}
-    for name, profile in document["workloads"].items():
-        port = profile.get("gateway_port")
-        if profile.get("held") or port is None:
+    for profile in validate_rendered_profiles(document).workloads.values():
+        port = profile.gateway_port
+        if port is None:
             continue
-        destinations = frozenset((e["host"], int(e["port"])) for e in profile["external"])
-        if port in routes or port == HEALTH_PORT or not destinations:
-            raise ValueError(f"gateway port {port} for {name} is invalid or reused")
-        routes[port] = Route(workload=name, port=port, destinations=destinations)
+        if port == HEALTH_PORT:
+            raise ProfileError("the gateway health port cannot serve a workload")
+        destinations = frozenset((host.host, host.port) for host in profile.external)
+        routes[port] = Route(workload=profile.name, port=port, destinations=destinations)
     return routes
 
 
@@ -605,15 +602,34 @@ async def serve(routes: Mapping[int, Route], host: str = "0.0.0.0") -> None:
     await asyncio.gather(*(server.serve_forever() for server in servers))
 
 
+def _profile_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ProfileError("duplicate profile keys")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Serve the shared egress gateway.")
     parser.add_argument("--profiles", type=Path, default=RENDERED_PATH)
     parser.add_argument("--host", default="0.0.0.0")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    routes = routes_from_rendered(json.loads(args.profiles.read_text(encoding="utf-8")))
-    asyncio.run(serve(routes, args.host))
-    return 0
+    try:
+        document = json.loads(
+            args.profiles.read_text(encoding="utf-8"), object_pairs_hook=_profile_object
+        )
+        routes = routes_from_rendered(document)
+    except OSError:
+        log.error("could not read egress gateway profile configuration")
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        log.error("egress gateway profile configuration is malformed")
+    except ValueError:
+        log.error("egress gateway profile configuration is invalid")
+    else:
+        asyncio.run(serve(routes, args.host))
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
