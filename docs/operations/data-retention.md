@@ -123,6 +123,18 @@ correction with nothing left to correct never waits forever.
 
 ---
 
+### `public.insight_outcomes` / `insight_class_efficacy`
+
+**No pruner (bu-s11n0s.15 S1); no owner retention decision yet**
+
+One small row per terminal premise-bound insight candidate (its exposure and premise outcome, no
+message text), plus one verdict row per class, priority band and day the sweep job runs. No
+foreign key to `insight_candidates`, so the evidence outlives the candidate pruner; nothing
+deletes either table. Volume is bounded by premised insights, the same order as
+`insight_amendments`.
+
+---
+
 ### `public.insight_engagement` / `insight_cooldowns`
 
 **Decision: BOUNDED BY INSIGHT LIFECYCLE**

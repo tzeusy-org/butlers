@@ -202,6 +202,10 @@ async def _tick_deferred_notification_pass(
     # or transitioned here, and every status write below repeats the ``pending`` guard so a
     # row reserved after the due-fetch is left as the protocol set it
     # (strict-owner-telegram-wake-recovery: Fenced Wake-Recovery Cohorts).
+    # Custody-parked rows expire first, so each gets its ledger row (bu-s11n0s.1 S5b).
+    from butlers.core.custody_park import expire_custody_parked
+
+    await expire_custody_parked(pool, now)
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(
         """
@@ -243,7 +247,15 @@ async def _tick_deferred_notification_pass(
             envelope = _json.loads(envelope)
         parsed_rows.append({**dict(row), "envelope": envelope})
 
-    delivered = 0
+    # Custody-parked owner notices (bu-s11n0s.1 S5b) revalidate their held targets and send
+    # once under a row lock; they are never grouped, digested or sent by the loop below.
+    from butlers.core.custody_park import PARK_KEY, flush_custody_parked
+
+    parked_rows = [
+        r for r in parsed_rows if isinstance(r["envelope"], dict) and PARK_KEY in r["envelope"]
+    ]
+    parsed_rows = [r for r in parsed_rows if r not in parked_rows]
+    delivered = await flush_custody_parked(pool, now, parked_rows, notify_fn) if parked_rows else 0
     for group in _group_due_deferred_notifications(parsed_rows):
         if len(group) == 1:
             row = group[0]

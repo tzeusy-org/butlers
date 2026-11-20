@@ -29,6 +29,9 @@ def messenger_confirm_delivery(service, telegram, *, allowed):
         await require_permission(
             telegram._permission_pool(), telegram._butler_name, NOTIFY_PERMISSION
         )
+        # New text into a held chat is egress (REQ-endpoint-custody-holds-007); refuses before
+        # editMessageText, failing closed when custody cannot be read.
+        await telegram._require_custody_clear(row["recipient_chat"])
         # One literal edit removes the keyboard atomically. A lost successful edit
         # can be retried: Telegram's exact already-current receipt is idempotent.
         response = await telegram._get_client().post(

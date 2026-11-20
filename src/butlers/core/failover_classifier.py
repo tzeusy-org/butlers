@@ -262,6 +262,13 @@ _EMPTY_RESPONSE_MARKERS: tuple[str, ...] = (
     "no result, tool calls, token usage, or stderr",
 )
 
+# Substrings matched (lowercased) against the exception message to detect a
+# provider rejecting a ``--resume`` handle it does not know (expired, never
+# persisted, or from another host). The CLI rejects the handle before any turn
+# runs, so the failure is about the handle, not the model: eligible, so the
+# spawner's resume branch evicts the handle and retries cold (bu-089bjy).
+_STALE_RESUME_MARKERS: tuple[str, ...] = ("no conversation found with session id",)
+
 # Substrings matched (lowercased) against the exception message to detect
 # MCP discovery / transport failures that are pre-invocation.
 _MCP_DISCOVERY_MARKERS: tuple[str, ...] = (
@@ -450,6 +457,15 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 reason="adapter_reported_tool_work: process_info.is_pre_tool_call=False; "
                 "tools ran before the failure, retry suppressed to prevent duplicate "
                 "side effects",
+            )
+
+        # Rejected provider resume handle: a handle fault before any turn ran.
+        if _matches_any(exc_msg, _STALE_RESUME_MARKERS):
+            logger.debug("Failover eligible: RuntimeError — provider rejected resume handle")
+            return FailoverDecision(
+                eligible=True,
+                reason="stale_resume_handle: provider rejected the resume session id "
+                "before any turn ran",
             )
 
         # Runtime config / registration errors

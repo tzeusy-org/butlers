@@ -587,6 +587,16 @@ class TestRunLapseSweep:
         assert set(postures) == LAPSE_ELIGIBLE_POSTURES
         assert cutoff == self._NOW - DEFAULT_LAPSE_STALENESS_WINDOW
 
+    async def test_skips_custody_cases_whose_episode_is_still_held(self) -> None:
+        # bu-s11n0s.1.1: a quiet hold must not lapse; the content-blind definer
+        # answers for the sweep's role, which cannot read custody_holds.
+        pool = _pool(fetch=[])
+        await run_lapse_sweep(pool, now=self._NOW)
+
+        sql = " ".join(pool.fetch.call_args.args[0].split())
+        assert "AND public.custody_case_held(c.correlation_key) IS NOT TRUE" in sql
+        assert "custody_holds" not in sql
+
     async def test_honors_an_explicit_staleness_window(self) -> None:
         pool = _pool(fetch=[])
         window = DEFAULT_LAPSE_STALENESS_WINDOW / 2

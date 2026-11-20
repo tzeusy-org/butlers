@@ -759,6 +759,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             rc["source_sender_contact_id"] = _src_contact_id
         if _src_entity_id:
             rc["source_sender_entity_id"] = _src_entity_id
+            # Held or unreadable owner endpoint (REQ-endpoint-custody-holds-005); only the
+            # pipeline's server-side custody read sets it, never the classifier's arguments.
+            if routing_ctx.get("source_custody") == "endpoint_held":
+                rc["source_sender_custody"] = "endpoint_held"
 
         envelope: dict[str, Any] = {
             "schema_version": "route.v1",

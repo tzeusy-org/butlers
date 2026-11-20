@@ -1003,6 +1003,38 @@ async def test_family_gate_and_stored_gap_authority(env):
     assert owner_positive.fact_id and owner_positive.outcome is not AssertOutcome.pending_approval
 
 
+# REQ-endpoint-custody-holds-005: an owner reached through a held endpoint freezes a third_party
+# report, so its identity claim about someone else is a held candidate, not an owner assertion.
+async def test_held_owner_endpoint_report_cannot_confirm_an_identity_fact(env):
+    address = f"{env.owner}@example.test"
+    hold = await env.admin.fetchval(
+        "INSERT INTO public.custody_holds (owner_entity_id, target_kind, target_digest, "
+        "generation, episode_id, reason, source_command_id) VALUES ($1, 'has-email', "
+        "public.custody_target_digest('has-email', $2), 1, gen_random_uuid(), 'lost', "
+        "gen_random_uuid()) RETURNING id",
+        env.owner,
+        address,
+    )
+    try:
+        report = await _report(env, env.owner, "third_party")
+        assert report.original_entity_id == env.owner  # attribution kept
+        chloe = await _person(env, name="Synthetic Chloe")
+        claim = await _assert(env, chloe, "has-phone", "+6580001234", report, conf=0.99)
+        row = await env.admin.fetchrow(
+            "SELECT validity, verified, content_authority FROM relationship.entity_facts "
+            "WHERE id=$1",
+            claim.fact_id,
+        )
+        assert row["validity"] == "candidate" and not row["verified"]
+        assert row["content_authority"] == "third_party"
+    finally:
+        await env.admin.execute(
+            "UPDATE public.custody_holds SET released_at = now() WHERE id = $1", hold
+        )
+    # After release the same endpoint reports as the owner again.
+    assert (await _report(env, env.owner, "owner")).authority == "owner"
+
+
 # REQ-relationship-facts-002: ordinary writer versus temporal legacy-index
 # refusal and packet preservation; no held G/index cutover delivery is claimed.
 # REQ-relationship-facts-005: actual executor lineage and frozen replay arguments.

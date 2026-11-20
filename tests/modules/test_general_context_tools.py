@@ -51,8 +51,16 @@ def bound_owner_invocation(monkeypatch):
     )
     token = capture.set_current_runtime_session_id("context-owner-test")
     unbound = capture.set_current_runtime_session_locator_unbound(False)
+    # The owner's endpoint is named (slice 3b write-time recheck) and unheld.
+    monkeypatch.setattr(
+        "butlers.core.custody_ingress.custody_targets_held", AsyncMock(return_value=False)
+    )
     capture.set_runtime_session_routing_context(
-        "context-owner-test", {"source_entity_id": str(owner)}
+        "context-owner-test",
+        {
+            "source_entity_id": str(owner),
+            "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+        },
     )
     yield
     capture.clear_runtime_session_routing_context("context-owner-test")

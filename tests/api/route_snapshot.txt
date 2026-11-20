@@ -66,6 +66,7 @@ OP GET /api/approvals/rules/{rule_id} e39a35df4106
 OP GET /api/approvals/suggestions ea3cd64bc04f
 OP GET /api/approvals/unroutable fac3df93a6f6
 OP GET /api/approvals/{action_id} f6a907041e31
+OP GET /api/attention/efficacy c067fefaea0a
 OP GET /api/attention/ledger 764b316021fa
 OP GET /api/attention/ledger/summary 91b80a1320ec
 OP GET /api/audit-log 1fa5758d7c96
@@ -156,7 +157,13 @@ OP GET /api/contacts/search 6f76391e4e72
 OP GET /api/conversations/messages/search 19e9f0cdb7f0
 OP GET /api/conversations/{conversation_id} 617a3a919a5f
 OP GET /api/custody/commands/{command_id} 0f99146a52ef
+OP GET /api/custody/episodes/{episode_id}/case eb3e94dbf497
+OP GET /api/custody/episodes/{episode_id}/device 153f52d7efdd
+OP GET /api/custody/episodes/{episode_id}/device/candidates 2a2301381f17
 OP GET /api/custody/holds 638eb60aa6c8
+OP GET /api/custody/security-questions b3437a49d8c4
+OP GET /api/custody/security-questions/{event_id} 99af24912899
+OP GET /api/custody/targets 6bb272c17ef1
 OP GET /api/dashboard/briefing f41083e3f0c0
 OP GET /api/data/export/download/{export_id} 5669ed0c101b
 OP GET /api/decision-sets/{set_id} b41b7c8a201c
@@ -529,6 +536,7 @@ OP POST /api/connectors/whatsapp/pair/start b67b234f192b
 OP POST /api/custody/holds 3187cd52fdea
 OP POST /api/custody/holds/{hold_id}/release 95b0f4369e03
 OP POST /api/custody/holds/{hold_id}/replace 8faccf475bcf
+OP POST /api/custody/security-questions/{event_id}/answer 201d133928d9
 OP POST /api/data/export ef7048daaa86
 OP POST /api/decision-sets/{set_id}/decision fe17f9b5cafe
 OP POST /api/domain-events/deliveries/{delivery_id}/replay b5bac8bd9638
@@ -662,6 +670,7 @@ OP PUT /api/butlers/{name}/state/{key} 4d87b05ca5e7
 OP PUT /api/calendar/workspace/primary a9007685c24b
 OP PUT /api/chronicler/location-retention 47c5de2e80db
 OP PUT /api/cli-auth/{provider}/api-key ab21c009e83a
+OP PUT /api/custody/episodes/{episode_id}/device 581b34c89073
 OP PUT /api/education/mind-maps/{mind_map_id}/status 8e9578f3bc34
 OP PUT /api/general/projects/{project_id}/charter 7a07ef974e12
 OP PUT /api/health/conditions/{condition_id} 3dcc83c67daa
@@ -765,6 +774,7 @@ ROUTE APIRoute GET '/api/approvals/rules/{rule_id}' name=get_rule op=get_rule_ap
 ROUTE APIRoute GET '/api/approvals/suggestions' name=list_suggestions op=list_suggestions_api_approvals_suggestions_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/unroutable' name=list_unroutable_attention op=list_unroutable_attention_api_approvals_unroutable_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/{action_id}' name=get_approval_detail op=get_approval_detail_api_approvals__action_id__get tags=approvals schema=True
+ROUTE APIRoute GET '/api/attention/efficacy' name=get_insight_efficacy op=get_insight_efficacy_api_attention_efficacy_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger' name=list_attention_ledger op=list_attention_ledger_api_attention_ledger_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger/summary' name=get_attention_ledger_summary op=get_attention_ledger_summary_api_attention_ledger_summary_get tags=attention schema=True
 ROUTE APIRoute GET '/api/audit-log' name=list_audit_log op=list_audit_log_api_audit_log_get tags=audit schema=True
@@ -855,7 +865,13 @@ ROUTE APIRoute GET '/api/contacts/search' name=search_contacts op=search_contact
 ROUTE APIRoute GET '/api/conversations/messages/search' name=search_messages op=search_messages_api_conversations_messages_search_get tags=conversations schema=True
 ROUTE APIRoute GET '/api/conversations/{conversation_id}' name=get_conversation_by_id op=get_conversation_by_id_api_conversations__conversation_id__get tags=conversations schema=True
 ROUTE APIRoute GET '/api/custody/commands/{command_id}' name=read_command op=read_command_api_custody_commands__command_id__get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/case' name=read_case op=read_case_api_custody_episodes__episode_id__case_get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/device' name=read_device op=read_device_api_custody_episodes__episode_id__device_get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/episodes/{episode_id}/device/candidates' name=list_device_candidates op=list_device_candidates_api_custody_episodes__episode_id__device_candidates_get tags=custody schema=True
 ROUTE APIRoute GET '/api/custody/holds' name=list_holds op=list_holds_api_custody_holds_get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/security-questions' name=list_security_questions op=list_security_questions_api_custody_security_questions_get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/security-questions/{event_id}' name=read_security_question op=read_security_question_api_custody_security_questions__event_id__get tags=custody schema=True
+ROUTE APIRoute GET '/api/custody/targets' name=list_targets op=list_targets_api_custody_targets_get tags=custody schema=True
 ROUTE APIRoute GET '/api/dashboard/briefing' name=get_dashboard_briefing op=get_dashboard_briefing_api_dashboard_briefing_get tags=dashboard-briefing schema=True
 ROUTE APIRoute GET '/api/data/export/download/{export_id}' name=download_export op=download_export_api_data_export_download__export_id__get tags=data-ops schema=True
 ROUTE APIRoute GET '/api/decision-sets/{set_id}' name=get_decision_set op=get_decision_set_api_decision_sets__set_id__get tags=decision-sets schema=True
@@ -1217,6 +1233,7 @@ ROUTE APIRoute POST '/api/connectors/whatsapp/pair/start' name=start_whatsapp_pa
 ROUTE APIRoute POST '/api/custody/holds' name=hold op=hold_api_custody_holds_post tags=custody schema=True
 ROUTE APIRoute POST '/api/custody/holds/{hold_id}/release' name=release op=release_api_custody_holds__hold_id__release_post tags=custody schema=True
 ROUTE APIRoute POST '/api/custody/holds/{hold_id}/replace' name=replace op=replace_api_custody_holds__hold_id__replace_post tags=custody schema=True
+ROUTE APIRoute POST '/api/custody/security-questions/{event_id}/answer' name=answer_security_question op=answer_security_question_api_custody_security_questions__event_id__answer_post tags=custody schema=True
 ROUTE APIRoute POST '/api/data/export' name=export_data op=export_data_api_data_export_post tags=data-ops schema=True
 ROUTE APIRoute POST '/api/decision-sets/{set_id}/decision' name=decide_decision_set op=decide_decision_set_api_decision_sets__set_id__decision_post tags=decision-sets schema=True
 ROUTE APIRoute POST '/api/domain-events/deliveries/{delivery_id}/replay' name=replay_domain_event_delivery op=replay_domain_event_delivery_api_domain_events_deliveries__delivery_id__replay_post tags=domain-events schema=True
@@ -1346,6 +1363,7 @@ ROUTE APIRoute PUT '/api/butlers/{name}/state/{key:path}' name=set_state op=set_
 ROUTE APIRoute PUT '/api/calendar/workspace/primary' name=set_primary_calendar op=set_primary_calendar_api_calendar_workspace_primary_put tags=calendar,workspace schema=True
 ROUTE APIRoute PUT '/api/chronicler/location-retention' name=put_location_retention op=put_location_retention_api_chronicler_location_retention_put tags=chronicler schema=True
 ROUTE APIRoute PUT '/api/cli-auth/{provider}/api-key' name=save_api_key op=save_api_key_api_cli_auth__provider__api_key_put tags=cli-auth schema=True
+ROUTE APIRoute PUT '/api/custody/episodes/{episode_id}/device' name=bind_device op=bind_device_api_custody_episodes__episode_id__device_put tags=custody schema=True
 ROUTE APIRoute PUT '/api/education/mind-maps/{mind_map_id}/status' name=update_mind_map_status op=update_mind_map_status_api_education_mind_maps__mind_map_id__status_put tags=education schema=True
 ROUTE APIRoute PUT '/api/general/projects/{project_id}/charter' name=edit_project_charter op=edit_project_charter_api_general_projects__project_id__charter_put tags=general schema=True
 ROUTE APIRoute PUT '/api/health/conditions/{condition_id}' name=update_condition op=update_condition_api_health_conditions__condition_id__put tags=health schema=True
@@ -1951,6 +1969,7 @@ SCHEMA DepartureWatchEntry e901eea5e5b5
 SCHEMA DepartureWatchUpsertRequest 1b8273dd4e85
 SCHEMA DeploymentFacts d79f34698b3e
 SCHEMA DeploymentRecord 725a97940466
+SCHEMA DeviceBinding 827009035a55
 SCHEMA DeviceInventoryEntry ba18e6e70f99
 SCHEMA DeviceInventoryResponse d82d743561ce
 SCHEMA DevicePaginationMeta f6ea1c7fd744
@@ -2093,7 +2112,9 @@ SCHEMA IngestionRuleUpdate 52a10546f841
 SCHEMA IngestionWindowRollup aaeac75b7973
 SCHEMA InitialFact 908283087ff5
 SCHEMA InsightCandidate f49db833cb9a
+SCHEMA InsightClassEfficacy 61230de9a392
 SCHEMA InsightDeliveryState 535cd9056b06
+SCHEMA InsightEfficacyResponse 56b3e4fb1b29
 SCHEMA InsightFeedbackResponse 7fe3d006ae3b
 SCHEMA InstanceFacts 11804c344f34
 SCHEMA InventoryData 2041d66eaff0
@@ -2422,6 +2443,7 @@ SCHEMA SearchResult 7226bd28b6da
 SCHEMA SearchResultEntry da59ff7b83ea
 SCHEMA SecretEntry fc2b8f514ec6
 SCHEMA SecretUpsertRequest 05f74416a03c
+SCHEMA SecurityAnswerRequest 69914f513727
 SCHEMA SendCodeRequest 6bd3ed644976
 SCHEMA SendCodeResponse 6b9acd5a651a
 SCHEMA SenderContactResolution 66fe97efea9c

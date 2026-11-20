@@ -81,6 +81,13 @@ cron = "0 21 * * *"
 dispatch_mode = "job"
 job_name = "anomaly_insight_scan"
 
+# bu-s11n0s.1 S5e: deterministic (no session) held-window evidence for endpoint custody cases.
+[[butler.schedule]]
+name = "custody-held-window-evidence"
+cron = "*/10 * * * *"
+dispatch_mode = "job"
+job_name = "custody_held_window_evidence"
+
 [[butler.schedule]]
 name = "monthly-finance-digest"
 cron = "0 9 1 * *"

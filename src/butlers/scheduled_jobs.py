@@ -131,6 +131,50 @@ async def _run_switchboard_domain_event_reconciliation_sweep_job(
     return await run_domain_event_reconciliation_sweep(pool)
 
 
+async def _run_switchboard_security_question_cycle_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Present each authenticated security event's one question and record answered cases.
+
+    bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008. One bounded notify per question with a
+    dashboard link (``DASHBOARD_URL``); never re-sent once claimed. See
+    ``butlers.core.security_questions``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.security_questions import run_security_question_cycle
+    from butlers.credential_store import resolve_owner_telegram_recipient
+
+    # The full delivery result (not the insight wrapper's) so a definite pre-send refusal can be
+    # told from a send that may have started.
+    deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
+
+    async def _notify(message: str) -> dict[str, Any]:
+        recipient = await resolve_owner_telegram_recipient(pool)
+        if not recipient:
+            return {"status": "failed", "error_class": "recipient_unavailable"}
+        return await deliver(
+            pool,
+            source_butler="switchboard",
+            notify_request={
+                "schema_version": "notify.v1",
+                "origin_butler": "switchboard",
+                "delivery": {
+                    "intent": "send",
+                    "channel": "telegram",
+                    "recipient": recipient,
+                    "message": message,
+                },
+            },
+        )
+
+    # The link comes from the one dashboard-links helper: without a configured DASHBOARD_URL
+    # there is no link the owner can open, so the question is `unavailable`, never sent.
+    return await run_security_question_cycle(pool, notify=_notify)
+
+
 async def _run_switchboard_fleet_case_lapse_sweep_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -286,6 +330,27 @@ async def _run_switchboard_insight_delivery_cycle_job(
         **({"finance_warning_reader": owner.read} if owner is not None else {}),
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
+    )
+
+
+async def _run_switchboard_insight_outcome_sweep_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Enroll terminal premised insights and record whether their premise resolved.
+
+    bu-s11n0s.15 S1, observe-only: writes only ``public.insight_outcomes`` and never changes
+    delivery. See ``butlers.tools.switchboard.insight.outcomes``.
+    """
+    del job_args
+    import importlib
+
+    from butlers.core.finance_warning_control import lookup_owner
+
+    outcomes = importlib.import_module("butlers.tools.switchboard.insight.outcomes")
+    owner = lookup_owner(pool)
+    return await outcomes.run_insight_outcome_sweep(
+        pool, finance_warning_reader=owner.read if owner is not None else None
     )
 
 
@@ -1006,6 +1071,18 @@ async def _run_finance_cost_claim_reconciliation_sweep_job(
 
     mod = load_roster_jobs("finance")
     return await mod.run_cost_claim_reconciliation_sweep(pool)
+
+
+async def _run_finance_custody_held_window_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Finance's deterministic held-window evidence contribution (bu-s11n0s.1 S5e)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("finance")
+    return await mod.run_custody_held_window_evidence(pool)
 
 
 async def _run_finance_anomaly_insight_scan_job(
@@ -1860,6 +1937,17 @@ async def _run_chronicler_location_retention_job(
     return await run_scheduled_location_retention(pool, job_args)
 
 
+async def _run_chronicler_custody_device_fix_evidence_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Contribute the owner-bound device's last-fix evidence to custody cases (bu-s11n0s.1 S5f)."""
+    del job_args
+    from butlers.chronicler.custody_device_fix import run_custody_device_fix_evidence
+
+    return await run_custody_device_fix_evidence(pool)
+
+
 async def _run_chronicler_project_sessions_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2332,6 +2420,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "bill_reconciliation_sweep": _run_finance_bill_reconciliation_sweep_job,
             "cost_claim_reconciliation_sweep": _run_finance_cost_claim_reconciliation_sweep_job,
             "anomaly_insight_scan": _run_finance_anomaly_insight_scan_job,
+            "custody_held_window_evidence": _run_finance_custody_held_window_evidence_job,
             "monthly_finance_digest": _run_finance_monthly_finance_digest_job,
             "simplefin_sync": _run_finance_simplefin_sync_job,
             **_retention_pruner_job_handlers("finance"),
@@ -2395,6 +2484,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_location_retention": _run_chronicler_location_retention_job,
+            "chronicler_custody_device_fix_evidence": (
+                _run_chronicler_custody_device_fix_evidence_job
+            ),
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
@@ -2457,6 +2549,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "insight_timed_subcycle": _run_switchboard_insight_timed_subcycle_job,
+            "insight_outcome_sweep": _run_switchboard_insight_outcome_sweep_job,
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
@@ -2465,6 +2558,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),
             "fleet_case_lapse_sweep": _run_switchboard_fleet_case_lapse_sweep_job,
+            "security_question_cycle": _run_switchboard_security_question_cycle_job,
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             **_retention_pruner_job_handlers("switchboard"),
         },

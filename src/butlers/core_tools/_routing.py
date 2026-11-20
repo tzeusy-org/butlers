@@ -47,6 +47,7 @@ from butlers.core.approved_delivery import (
     bind_verified_approved_delivery,
     reset_verified_approved_delivery,
 )
+from butlers.core.custody_egress import CustodyEgressRefused
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.notify_attachments import AttachmentError, redact_attachment_content
@@ -1243,6 +1244,20 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         _route_internal_context["request_context"] = {
             "source_channel": parsed_route.request_context.source_channel
         }
+        # REQ-endpoint-custody-holds-005: Switchboard's custody read found the owner-looking
+        # sender's endpoint held or unreadable. Only the validated envelope field sets it.
+        if parsed_route.request_context.source_sender_custody == "endpoint_held":
+            _route_internal_context["source_custody"] = "endpoint_held"
+        # A named sender entity carries its source endpoint for the write-time custody recheck.
+        if parsed_route.request_context.source_sender_entity_id:
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            _source_endpoint = source_endpoint_record(
+                parsed_route.request_context.source_channel,
+                parsed_route.request_context.source_sender_identity,
+            )
+            if _source_endpoint is not None:
+                _route_internal_context[SOURCE_ENDPOINT_KEY] = _source_endpoint
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )
@@ -2270,6 +2285,28 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     retryable=False,
                     partial_delivery=True,
                     message_ids=exc.message_ids,
+                ),
+            )
+        except CustodyEgressRefused as exc:
+            # The adapter refused before provider traffic (REQ-endpoint-custody-holds-007). A
+            # held endpoint stays refused until a protected release; an unreadable custody
+            # state is safe to retry after recovery. The message names no target.
+            error_class = (
+                "validation_error" if exc.reason == "endpoint_held" else "target_unavailable"
+            )
+            error_message = str(exc)
+            return _route_error_response(
+                context_payload=route_context,
+                error_class=error_class,
+                message=error_message,
+                retryable=exc.retryable,
+                transport=POLICY_DENIED,
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class=error_class,
+                    message=error_message,
+                    retryable=exc.retryable,
                 ),
             )
         except PermissionUnavailable:

@@ -100,16 +100,18 @@ def test_adapter_registry_and_base_class() -> None:
         assert getattr(runtimes_module, cls.__name__) is cls
 
 
-def test_supports_resume_defaults_false_except_claude() -> None:
-    """Only ClaudeCodeAdapter opts into the resume extension point (bu-ep4ks.8).
+def test_supports_resume_defaults_false() -> None:
+    """No in-tree adapter opts into the resume extension point (bu-ep4ks.8).
+
+    Claude opted out in bu-089bjy: its ``--no-session-persistence`` leaves no
+    transcript for ``--resume`` to load.
 
     Callers must gate ``resume_session_id`` on this flag rather than assuming
     every adapter accepts the kwarg -- the other adapters' ``invoke()``
     signatures do not declare it at all.
     """
-    for cls in (CodexAdapter, GeminiAdapter, OpenCodeAdapter, ApiAdapter):
+    for cls in (ClaudeCodeAdapter, CodexAdapter, GeminiAdapter, OpenCodeAdapter, ApiAdapter):
         assert cls.supports_resume is False, cls.__name__
-    assert ClaudeCodeAdapter.supports_resume is True
 
 
 # ---------------------------------------------------------------------------

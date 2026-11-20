@@ -215,14 +215,16 @@ class _McpRuntimeSessionGuard:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
         from butlers.core.attention_urgency import _current_origin
 
-        attention_token = _current_origin.set(
-            binding.attention_origin if binding is not None else None
-        )
-        report_token = fact_authority._current_report.set(
-            binding.report
+        # Each request rechecks a routed owner report's endpoint custody (slice 3b).
+        report = (
+            await fact_authority.current_invocation_report(binding)
             if binding is not None
             else fact_authority.FactWriteContext("third_party")
         )
+        attention_token = _current_origin.set(
+            binding.attention_origin if binding is not None else None
+        )
+        report_token = fact_authority._current_report.set(report)
         source_token = fact_authority._incoming_source.set(
             self._header_value(scope.get("headers"), fact_authority.SOURCE_HEADER.encode())
         )

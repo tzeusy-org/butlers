@@ -1176,3 +1176,77 @@ async def test_recovered_route_preserves_live_trigger_inputs(
         context["request_context"]["source_channel"] == source_channel
         for _, context in (live, recovered)
     )
+
+
+@pytest.mark.parametrize(
+    ("custody", "expected"),
+    [("endpoint_held", "endpoint_held"), (None, None)],
+    ids=["held", "unheld"],
+)
+async def test_recovery_carries_only_the_envelope_custody_flag(custody, expected) -> None:
+    """REQ-endpoint-custody-holds-005: a recovered route keeps the held-endpoint flag."""
+    from types import SimpleNamespace
+
+    from butlers.core.routing_context import _routing_ctx_var
+    from butlers.switchboard_wiring import recover_route_inbox
+
+    pool = AsyncMock()
+    row_id = uuid.UUID("66666666-6666-4666-8666-666666666666")
+    processing_claim_id = uuid.uuid4()
+    seen: list[dict[str, Any] | None] = []
+    trigger = _make_trigger_mock()
+    result = trigger.return_value
+
+    async def _capture(**_kwargs):
+        seen.append(_routing_ctx_var.get())
+        return result
+
+    trigger.side_effect = _capture
+    daemon = SimpleNamespace(
+        config=SimpleNamespace(name="health"),
+        spawner=SimpleNamespace(trigger=trigger),
+    )
+    request_context = _route_request_context()
+    request_context["source_sender_entity_id"] = "00000000-0000-0000-0000-000000000001"
+    if custody is not None:
+        request_context["source_sender_custody"] = custody
+    envelope = {
+        "schema_version": "route.v1",
+        "request_context": request_context,
+        "input": {"prompt": "Note this."},
+    }
+
+    async def _recover_once(*_args, dispatch_fn, **_kwargs):
+        await dispatch_fn(
+            row_id=row_id,
+            route_envelope=envelope,
+            processing_claim_id=processing_claim_id,
+            recovery_from_processing=False,
+        )
+        return 1
+
+    with (
+        patch("butlers.switchboard_wiring.route_inbox_recovery_sweep", _recover_once),
+        patch(
+            "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_errored",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.switchboard_wiring.route_inbox_mark_processed",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        await recover_route_inbox(daemon, pool)
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert seen[0]["source_entity_id"] == "00000000-0000-0000-0000-000000000001"
+    assert seen[0].get("source_custody") == expected
+    # Recovery keeps the endpoint the write-time custody recheck reads (slice 3b).
+    assert seen[0]["source_endpoint"] == {"channel": "telegram_bot", "identity": "health"}

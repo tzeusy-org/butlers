@@ -75,8 +75,31 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   and the immutable receipts of the protected hold, release and replace commands that write them
   (core_347). In `public` because every owner-only definer consumer checks holds. Row level
   security with no policy and no runtime grant: only the database owner's definers read or write
-  them, from a current dashboard owner session or the host. See
+  them, from a current dashboard owner session or the host. Since core_348 a release or replace
+  also closes the episode's fleet case once every generation of that episode is resolved, and
+  core_349 adds the content-blind `public.custody_target_episode` read beside `custody_target_held`.
+  core_351 adds `public.custody_case_held(correlation_key)`, a boolean the fleet-case lapse sweep
+  uses so an `endpoint_custody:` case never lapses while its episode still has an unreleased hold.
+  See
   [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds).
+- **`public.security_questions`** and **`public.security_answers`** -- One durable "was this
+  you?" question per authenticated `switchboard.security_event` (core_350): Switchboard's
+  publisher-local outbox (the only writer of questions, walking a one-way presentation state) and
+  the owner's answer, written only by the definer `public.security_question_dashboard` from a
+  current dashboard session and CSRF. A `no` binds owner-selected exact targets through
+  `public.custody_dashboard` in the same transaction. Row level security; Switchboard has one
+  policy and no other runtime role has a grant.
+- **`public.custody_candidates_dashboard`** -- Content-blind read of the owner's own channels (fact id,
+  kind, masked hint, held flag) for a manual custody hold (core_352; same candidate universe and
+  masking as a security question). `dashboard_auth_api` only, current cookie session checked in
+  its own transaction; no table.
+- **`public.insight_outcomes`** and **`public.insight_class_efficacy`** -- The observe-only
+  insight outcome ledger (core_353, bu-s11n0s.15): one row per terminal premised insight
+  candidate with what reached the owner (its exposure) and, once, whether its premise resolved,
+  when and how precisely; and the per-class, per-priority-band daily verdict rollup the same
+  sweep job writes (bu-s11n0s.15 S2, observational, read by `GET /api/attention/efficacy`). Keyed by
+  candidate id with no foreign key, so it outlives the candidate retention pruner. Switchboard
+  only, fenced by row level security.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

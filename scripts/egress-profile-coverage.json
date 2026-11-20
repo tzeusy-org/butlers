@@ -5904,7 +5904,7 @@
       "sha256": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c"
     },
     "roster/chronicler/butler.toml": {
-      "sha256": "28578272986da1356f2edc3e61c0b45fa85c4fa1e440cb6311e1a991084e369e"
+      "sha256": "b1da1c953b0df9952a3ce4761f0bab217f8736271bb51dc47680772527dbf245"
     },
     "roster/concierge/butler.toml": {
       "sha256": "dfb76df841bd011cdb0df4a7c58b0969c6de1de156ab04ab2c6bd8b5d77c4278"
@@ -5913,7 +5913,7 @@
       "sha256": "5d1c0c1c7247985fbaebed2bdf169da7c89883ab4b3650bcfb7184646e2c2565"
     },
     "roster/finance/butler.toml": {
-      "sha256": "27e21f98735e68b89cb3833418df5747bf25fa28bd9e05c9a5f13cc5b7d85018"
+      "sha256": "a430f29838e36f307616be5270a8dceae43debb85f34a87f327952165f9f00b7"
     },
     "roster/general/butler.toml": {
       "sha256": "f0946a126d7d2e42b2585fb0c2f2ae8ffa867056b59a724d81aa32dabcb69fe5"
@@ -5937,7 +5937,7 @@
       "sha256": "66714932ce019bff227a28f7b017ae55be9216acb7f80ee1ef6ed4a2b68420b0"
     },
     "roster/switchboard/butler.toml": {
-      "sha256": "32aa27e2069b9af076099b992a268e2052bd1ec5c7f60a5338d0622ea2af9c6d"
+      "sha256": "ec5930f44ffc53ab68e496ce031e2f220248f43cc6b547b83a2c4cd0642f1b3e"
     },
     "roster/travel/butler.toml": {
       "sha256": "7acadf31e6a30e5a1007f0c0a64cfc8c97aa58a1dea5aafd3042707078c54fcc"

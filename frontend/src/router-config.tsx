@@ -67,6 +67,10 @@ const MealsPage = shellPage('/health/meals')
 const ResearchPage = shellPage('/health/research')
 const ApprovalsPage = shellPage('/approvals')
 const DecisionSetPage = shellPage('/decision-sets/:setId')
+const CustodyPage = shellPage('/custody')
+const CustodyCasePage = shellPage('/custody/:episodeId')
+const SecurityQuestionsPage = shellPage('/security')
+const SecurityQuestionPage = shellPage('/security/:eventId')
 const SecretsPage = shellPage('/secrets')
 const EducationPage = shellPage('/education')
 const EntitiesIndexPage = shellPage('/entities/index')
@@ -109,6 +113,10 @@ export const routes: RouteObject[] = [
         { path: '/approvals', element: routeElement(<ApprovalsPage />) },
         { path: '/approvals/:id', element: routeElement(<ApprovalsPage />) },
         { path: '/decision-sets/:setId', element: routeElement(<DecisionSetPage />) },
+        { path: '/custody', element: routeElement(<CustodyPage />) },
+        { path: '/custody/:episodeId', element: routeElement(<CustodyCasePage />) },
+        { path: '/security', element: routeElement(<SecurityQuestionsPage />) },
+        { path: '/security/:eventId', element: routeElement(<SecurityQuestionPage />) },
         {
           path: '/calendar',
           element: routeElement(<CalendarWorkspacePage />),

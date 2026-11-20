@@ -37,6 +37,7 @@ from uuid import UUID
 
 import asyncpg
 
+from butlers.core.custody_ingress import UNREAD, CustodyUnread, mark_owner_custody
 from butlers.identity import (
     ResolvedContact,
     build_identity_preamble,
@@ -101,6 +102,11 @@ class IdentityResolutionResult:
     display_name:
         Canonical display name for a known sender, or ``None`` when no
         authoritative human-readable name is available.
+    custody_reason:
+        ``"endpoint_held"`` when the sender resolved to the owner through an endpoint that is
+        held or whose custody could not be read (REQ-endpoint-custody-holds-005). The entity
+        stays the owner for attribution; the routed session carries no owner authority.
+        Set only by this module from the server-side custody read.
     """
 
     preamble: str = ""
@@ -113,6 +119,32 @@ class IdentityResolutionResult:
     new_unknown_sender: bool = False
     channel_value: str | None = None
     display_name: str | None = None
+    custody_reason: str | None = None
+
+
+async def _with_owner_custody(
+    pool: asyncpg.Pool,
+    result: IdentityResolutionResult,
+    channel_type: str,
+    channel_value: str,
+    known: str | None | CustodyUnread = UNREAD,
+) -> IdentityResolutionResult:
+    """Stamp an owner-looking result whose source endpoint is held or unreadable.
+
+    ``known`` is a verdict already read for this message (the accepted-source capture), so
+    the two owner-authority producers share one read and cannot disagree.
+    """
+    if not result.is_owner:
+        return result
+    from butlers.core.custody_ingress import owner_source_custody_reason
+
+    reason = (
+        await owner_source_custody_reason(pool, channel_type, channel_value)
+        if isinstance(known, CustodyUnread)
+        else known
+    )
+    mark_owner_custody(result, reason)
+    return result
 
 
 async def resolve_and_inject_identity(
@@ -125,6 +157,7 @@ async def resolve_and_inject_identity(
     state_pool: asyncpg.Pool | None = None,
     resolver: Any = None,
     subject: str | None = None,
+    owner_custody: str | None | CustodyUnread = UNREAD,
 ) -> IdentityResolutionResult:
     """Resolve sender identity and build the preamble for the routed prompt.
 
@@ -159,6 +192,9 @@ async def resolve_and_inject_identity(
         Optional separate pool for the Switchboard-local ``state`` KV store
         (for the atomic notification claim). When ``None``, the ``pool``
         argument is also used for the claim.
+    owner_custody:
+        A custody verdict this message's accepted-source capture already read, reused
+        instead of a second read when the sender resolves to the owner.
 
     Returns
     -------
@@ -175,7 +211,13 @@ async def resolve_and_inject_identity(
     )
 
     if resolved is not None:
-        return _result_from_resolved_contact(resolved, channel_type)
+        return await _with_owner_custody(
+            pool,
+            _result_from_resolved_contact(resolved, channel_type),
+            channel_type,
+            channel_value,
+            owner_custody,
+        )
 
     return await _inject_unknown_identity(
         pool,
@@ -363,9 +405,11 @@ async def resolve_sender_identities(
     for channel_value in distinct_values:
         resolved = bulk_results[(identity_channel, channel_value)]
         if resolved is not None:
-            results[channel_value] = _result_from_resolved_contact(
-                resolved,
+            results[channel_value] = await _with_owner_custody(
+                pool,
+                _result_from_resolved_contact(resolved, channel_type),
                 channel_type,
+                channel_value,
             )
             continue
 

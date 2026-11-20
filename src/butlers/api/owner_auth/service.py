@@ -146,6 +146,35 @@ class OwnerAuthService:
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
 
+    async def custody_candidates_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """The owner's own channels as masked hints (core_352); the definer rechecks the session."""
+        del csrf  # a read carries no CSRF token
+        if action != "list" or values:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.custody_candidates_dashboard($1,$2::jsonb)",
+            action,
+            {"session_digest": authority.session_digest},
+        )
+
+    async def security_question_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Security questions (core_350); the definer rechecks session and CSRF at commit."""
+        if action not in {"get", "list", "answer"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.security_question_dashboard($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
     async def owner_channel_clauses(self) -> list[dict]:
         """The unrevoked clauses for the verified Telegram owner channel (read only)."""
         result = await self._owner_channel_call("SELECT dashboard_attention.owner_channel_list()")

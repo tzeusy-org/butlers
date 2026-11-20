@@ -6306,7 +6306,8 @@ async def test_google_calendar_snapshot_precondition_refuses_concurrent_change(
         current_etag = '"snapshot-b"' if changed_after_fetch else '"snapshot-a"'
         if "If-Match" in headers and headers["If-Match"] != current_etag:
             return httpx.Response(412, json={"error": {"message": "Precondition failed"}})
-        writes.append(arguments["method"])
+        if arguments["method"] != "GET":  # the mail-custody read of a guestless event
+            writes.append(arguments["method"])
         return httpx.Response(
             200,
             json={

@@ -34,6 +34,7 @@ from butlers.testing.daemon import write_butler_config
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee00"
+_SECOND_REQUEST_ID = "018f6f4e-5b3b-7b2d-9c2f-aabbccddee01"
 
 
 def _reset_otel_global_state():
@@ -59,9 +60,11 @@ def otel_provider(monkeypatch: pytest.MonkeyPatch):
 def _base_request_context(
     *,
     source_sender_entity_id: str | None = None,
+    source_sender_custody: str | None = None,
+    request_id: str = _REQUEST_ID,
 ) -> dict[str, Any]:
     ctx: dict[str, Any] = {
-        "request_id": _REQUEST_ID,
+        "request_id": request_id,
         "received_at": "2026-03-10T00:00:00Z",
         "source_channel": "telegram_bot",
         "source_endpoint_identity": "switchboard",
@@ -70,6 +73,8 @@ def _base_request_context(
     }
     if source_sender_entity_id is not None:
         ctx["source_sender_entity_id"] = source_sender_entity_id
+    if source_sender_custody is not None:
+        ctx["source_sender_custody"] = source_sender_custody
     return ctx
 
 
@@ -170,6 +175,42 @@ class TestRouteExecuteSenderEntityIdInjection:
         assert ctx is not None
         assert isinstance(ctx, dict)
         assert ctx.get("source_entity_id") == sender_entity_id
+        # The named sender's endpoint rides along for the write-time custody recheck.
+        assert ctx.get("source_endpoint") == {"channel": "telegram_bot", "identity": "owner"}
+
+    async def test_held_owner_custody_flag_reaches_routing_ctx_only_from_the_envelope(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        """REQ-endpoint-custody-holds-005: the validated envelope field sets source_custody;
+        prompt context cannot set it."""
+        booted = await booted_daemon(write_butler_config(tmp_path))
+        sender_entity_id = "550e8400-e29b-41d4-a716-446655440000"
+        captured_routing_ctx: list[Any] = []
+        # One scripted reply per invocation: an unscripted run falls back to the default reply.
+        capture = _capture_routing_ctx(captured_routing_ctx)
+        booted.runtime.script(capture, capture)
+
+        await _route(
+            booted,
+            {"prompt": "Remember this rule."},
+            source_sender_entity_id=sender_entity_id,
+            source_sender_custody="endpoint_held",
+        )
+        await booted.runtime.wait_for_invocations(1)
+        # A distinct request: reusing the first id is deduplicated once its session succeeds,
+        # which raced the first session's completion and flaked (bu-s11n0s.1).
+        await _route(
+            booted,
+            {"prompt": "Remember that rule.", "context": {"source_custody": "cleared"}},
+            source_sender_entity_id=sender_entity_id,
+            request_id=_SECOND_REQUEST_ID,
+        )
+        await booted.runtime.wait_for_invocations(2)
+
+        held, plain = captured_routing_ctx
+        assert held["source_custody"] == "endpoint_held"
+        assert held["source_entity_id"] == sender_entity_id
+        assert "source_custody" not in plain
 
     async def test_no_sender_entity_id_leaves_routing_ctx_unset(
         self, booted_daemon, tmp_path: Path

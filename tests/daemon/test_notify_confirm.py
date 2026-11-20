@@ -39,6 +39,8 @@ def notification(monkeypatch):
         ("butlers.core_tools._notifications", "get_suppressing_context", None),
         ("butlers.core_tools._notifications", "record_attention_event", None),
         ("butlers.fleet_events", "publish_fleet_event", None),
+        # No owner endpoint is held here; tests/core/test_custody_egress.py covers the fallback.
+        ("butlers.core_tools._notifications", "_owner_default_custody_target", None),
     ):
         mock = AsyncMock(return_value=value)
         monkeypatch.setattr(f"{module}.{name}", mock)

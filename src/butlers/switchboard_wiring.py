@@ -476,6 +476,16 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         sender_entity_id = parsed.request_context.source_sender_entity_id
         if isinstance(sender_entity_id, str) and sender_entity_id.strip():
             recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
+            if parsed.request_context.source_sender_custody == "endpoint_held":
+                recovered_routing_context["source_custody"] = "endpoint_held"
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            recovered_endpoint = source_endpoint_record(
+                parsed.request_context.source_channel,
+                parsed.request_context.source_sender_identity,
+            )
+            if recovered_endpoint is not None:
+                recovered_routing_context[SOURCE_ENDPOINT_KEY] = recovered_endpoint
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):

@@ -69,6 +69,7 @@ async def test_finance_insight_scan_handler_dispatches_roster_job(monkeypatch) -
         ("bill-reconciliation-sweep", "run_bill_reconciliation_sweep"),
         ("cost-claim-reconciliation-sweep", "run_cost_claim_reconciliation_sweep"),
         ("anomaly-insight-scan", "run_anomaly_insight_scan"),
+        ("custody-held-window-evidence", "run_custody_held_window_evidence"),
         ("monthly-finance-digest", "run_monthly_finance_digest"),
     ],
 )
@@ -164,6 +165,7 @@ async def test_finance_simplefin_handler_dispatches_roster_job(monkeypatch) -> N
         ("bill_reconciliation_sweep", "run_bill_reconciliation_sweep"),
         ("cost_claim_reconciliation_sweep", "run_cost_claim_reconciliation_sweep"),
         ("anomaly_insight_scan", "run_anomaly_insight_scan"),
+        ("custody_held_window_evidence", "run_custody_held_window_evidence"),
         ("monthly_finance_digest", "run_monthly_finance_digest"),
     ],
 )

@@ -255,10 +255,18 @@ async def test_memory_authority_reads_lineage_not_the_routing_context():
     from butlers.modules.memory.storage import _stamp_authority
 
     owner = uuid.uuid4()
-    routed_owner = {"source_entity_id": str(owner)}
-    with patch(
-        "butlers.modules.memory.content_authority.fetch_owner_entity_id",
-        AsyncMock(return_value=owner),
+    routed_owner = {
+        "source_entity_id": str(owner),
+        "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+    }
+    with (
+        patch(
+            "butlers.modules.memory.content_authority.fetch_owner_entity_id",
+            AsyncMock(return_value=owner),
+        ),
+        patch(  # the owner's endpoint is unheld (slice 3b write-time recheck)
+            "butlers.core.custody_ingress.custody_targets_held", AsyncMock(return_value=False)
+        ),
     ):
         assert (await resolve_content_authority(None, routed_owner)).authority == "owner"
         with lineage_scope(_lineage(exposed=True)):
