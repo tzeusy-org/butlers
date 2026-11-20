@@ -30,6 +30,9 @@ _LIMIT = 2 * 1024 * 1024
 _DOWNLOAD_ATTEMPTS = 3
 _DOWNLOAD_TIMEOUT = 20
 _DOWNLOAD_BACKOFF = (3, 6)
+# archive.ubuntu.com's CDN answers urllib's default ``Python-urllib/x.y`` agent with 403
+# (observed from hosted runners and locally, 2026-11-20); a named agent is served (bu-y3g99h).
+_USER_AGENT = "butlers-session-host-ci/1"
 _PAYLOAD = b"""#include <fcntl.h>
 #include <unistd.h>
 int main(void) {
@@ -176,7 +179,8 @@ def fetch_package() -> bytes:
     """
     for attempt in range(_DOWNLOAD_ATTEMPTS):
         try:
-            with urllib.request.urlopen(PACKAGE_URL, timeout=_DOWNLOAD_TIMEOUT) as response:
+            request = urllib.request.Request(PACKAGE_URL, headers={"User-Agent": _USER_AGENT})
+            with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT) as response:
                 return response.read(_LIMIT + 1)
         except Exception as error:
             if not _transient(error):
