@@ -1184,12 +1184,14 @@ answers are the single named exception.
 Every other model use SHALL run within an admitted goal: as a lead or child
 invocation, or solely as D20's broker-accepted, runner-launched research
 subcall. Research stays within the calling goal's authority, exposure and
-budget accounting; it is not an additional outside-goal kind, a new admission path
-or a child and receives no invocation token, grant or MCP tools. Adding a kind to this list requires
-an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
-dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
-pending OpenSpec change that adds a model path must be re-scoped as goals or
-as a named kind here before approval. D20 supplies no exception for those paths.
+budget accounting; it is not an additional outside-goal kind, a new admission
+path or a child and receives no invocation token, grant or MCP tools. Adding a
+kind to the outside-goal list requires an RFC amendment.
+`define-dashboard-fast-answer-runtime` is re-scoped to the dashboard
+fast-answer kind above (`bu-u5euwb.28`) before approval. Any other pending
+OpenSpec change that adds a model path must still be re-scoped as goals or as a
+named outside-goal kind here before approval. D20 supplies no exception for
+those paths.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -1235,8 +1237,8 @@ no-resume rule makes a goal-level concern.
 **Adopted amendment (2026-10-20):** the owner adopted the D20 text at PR #4540
 head `bd206499` with P1 = A (cached for exposed callers) and P2 = A
 (third-party goals never research), recorded on `bu-cs33zx` at 14:31Z.
-Separate owner merge-enqueue approval remains required. No runtime or
-credential use is authorized by this amendment.
+The owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). No
+runtime or credential use is authorized by this amendment.
 
 **Research host.** Research runs on a separate container (Compose) or pod
 (Kubernetes), apart from the session host, `butlers-up` and `butlers-control`,
@@ -1367,8 +1369,8 @@ program's default-off switch. No ingress, schedule or live dashboard is wired
 by this amendment. The switch release `bu-enbrs2` remains blocked on the broker
 capability `bu-6qaju2.4` and the existing cutover evidence. P1 adopts cached
 under exposure and live otherwise; P2 adopts excluding third-party goals
-(owner adoption 2026-10-20, `bu-cs33zx`). The finished PR still requires its
-separate owner merge-enqueue approval. Adoption does not launch research or
+(owner adoption 2026-10-20, `bu-cs33zx`). The owner pre-authorized merge
+enqueue on 2026-11-08 (`bu-6qaju2.1`). Adoption does not launch research or
 release the switch.
 
 ### Details settled during the dark build
@@ -1557,7 +1559,7 @@ built.
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
 | 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
-| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); separate owner merge-enqueue approval remains required. |
+| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); the owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). |
 
 ### Author-detail confirmation
 
