@@ -40,7 +40,8 @@ SECURITY_CASE_PREFIX = "account_security:"
 _SUBJECT_PREFIX = "Subject:"
 
 
-def _subject_from_normalized_text(normalized_text: str | None) -> str:
+def subject_from_normalized_text(normalized_text: str | None) -> str:
+    """An email's subject from its ingest ``normalized_text`` (``Subject: ...`` line 1)."""
     first_line = (normalized_text or "").split("\n", 1)[0].strip()
     if not first_line.startswith(_SUBJECT_PREFIX):
         return ""
@@ -79,7 +80,7 @@ def classify_ingest_record(
     auth_results = _auth_results_from_raw(raw)
     return classify_account_security(
         sender_address,
-        _subject_from_normalized_text(normalized_text),
+        subject_from_normalized_text(normalized_text),
         headers={"Authentication-Results": auth_results} if auth_results else None,
     )
 

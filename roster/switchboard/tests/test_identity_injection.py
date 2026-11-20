@@ -61,6 +61,9 @@ async def _resolve_unknown(
     *,
     notify_owner_fn: AsyncMock | None = None,
     display_name: str | None = "Chloe L",
+    channel: str = "telegram",
+    channel_value: str = "12345",
+    subject: str | None = None,
 ) -> object:
     with (
         patch(
@@ -74,11 +77,19 @@ async def _resolve_unknown(
     ):
         return await resolve_and_inject_identity(
             pool,
-            "telegram",
-            "12345",
+            channel,
+            channel_value,
             display_name=display_name,
             notify_owner_fn=notify_owner_fn,
+            subject=subject,
         )
+
+
+def _notice(notify_owner_fn: AsyncMock) -> str:
+    """The one owner notice the callback was awaited with."""
+    call = notify_owner_fn.await_args
+    assert call is not None
+    return call.args[0]
 
 
 async def test_owner_message_gets_owner_preamble():
@@ -141,8 +152,15 @@ async def test_unknown_sender_creates_entity_only_identity_context():
     pool.fetchrow.assert_not_awaited()
 
 
-async def test_unknown_sender_claims_once_and_notifies_with_safe_entity_review_link():
-    """The first durable claimant gets one content-free entity-review notification."""
+async def test_unknown_sender_claims_once_and_notifies_with_name_address_and_entity_link(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The first durable claimant gets one owner notice naming the sender (bu-g0nsbw).
+
+    Owner-only Telegram shows the display name and the raw address, and links to
+    the transitory entity; it never carries the inbound message body.
+    """
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example")
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value={"key": "identity:unknown_notified:telegram:12345"})
     notify_owner_fn = AsyncMock()
@@ -156,12 +174,10 @@ async def test_unknown_sender_claims_once_and_notifies_with_safe_entity_review_l
     assert result.new_unknown_sender is True
     notify_owner_fn.assert_awaited_once()
     message = notify_owner_fn.await_args.args[0]
-    assert "Chloe L" in message
-    assert "telegram" in message
-    assert "/entities/index?state=unidentified" in message
-    assert "12345" not in message
+    assert message.splitlines()[0] == "New sender on telegram: Chloe L <12345>"
+    assert f"https://dash.example/entities/{_TEMP_ENTITY_ID}" in message
+    assert "Subject:" not in message  # no subject was supplied
     assert "/contacts" not in message
-    assert str(_TEMP_ENTITY_ID) not in message
     assert "inbound message body" not in message
 
     sql, state_key = pool.fetchrow.await_args.args
@@ -169,6 +185,91 @@ async def test_unknown_sender_claims_once_and_notifies_with_safe_entity_review_l
     assert "ON CONFLICT (key) DO NOTHING" in sql
     assert "RETURNING key" in sql
     assert state_key == "identity:unknown_notified:telegram:12345"
+
+
+async def test_unknown_email_sender_notice_shows_name_address_and_subject(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An unknown email sender's notice reads 'Name <address>' plus the subject line."""
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example/")
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value={"key": "k"})
+    notify_owner_fn = AsyncMock()
+
+    await _resolve_unknown(
+        pool,
+        notify_owner_fn=notify_owner_fn,
+        display_name="Chloe L",
+        channel="email",
+        channel_value="chloe@x.com",
+        subject="  Re:\n dinner ",
+    )
+
+    assert _notice(notify_owner_fn).splitlines() == [
+        "New sender on email: Chloe L <chloe@x.com>",
+        "Subject: Re: dinner",
+        f"Open: https://dash.example/entities/{_TEMP_ENTITY_ID}",
+    ]
+
+
+async def test_unknown_sender_notice_neutralises_and_bounds_untrusted_fields(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Name, address and subject are sender-controlled: no planted link or formatting.
+
+    The owner's Telegram renders the notice's Markdown and escapes HTML itself, so
+    the rendered card must show the text literally with no sender-chosen link target.
+    """
+    from butlers.telegram_text import split_telegram_text
+
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example")
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value={"key": "k"})
+    notify_owner_fn = AsyncMock()
+
+    await _resolve_unknown(
+        pool,
+        notify_owner_fn=notify_owner_fn,
+        display_name="<b>Boss</b> [Bank](https://evil.example) **now**",
+        channel="email",
+        channel_value="a@x.com",
+        subject="`x`" + "y" * 500,
+    )
+
+    message = _notice(notify_owner_fn)
+    rendered = split_telegram_text(message)[0].html
+    assert 'href="https://evil.example"' not in rendered
+    assert "<b>" not in rendered and "<i>" not in rendered and "<code>" not in rendered
+    assert "&lt;b&gt;Boss&lt;/b&gt;" in rendered  # shown literally, never double-escaped
+    assert message.splitlines()[0] == (
+        "New sender on email: <b>Boss</b> (Bank)(https://evil.example) now <a@x.com>"
+    )
+    subject_line = message.splitlines()[1]
+    assert subject_line.startswith("Subject: xy")
+    assert len(subject_line) <= len("Subject: ") + 200
+
+
+async def test_unknown_sender_notice_without_name_or_dashboard_url_still_names_address(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """No display name shows the bare address; no DASHBOARD_URL sends no link."""
+    monkeypatch.delenv("DASHBOARD_URL", raising=False)
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value={"key": "k"})
+    notify_owner_fn = AsyncMock()
+
+    await _resolve_unknown(
+        pool,
+        notify_owner_fn=notify_owner_fn,
+        display_name=None,
+        channel="email",
+        channel_value="chloe@x.com",
+    )
+
+    assert _notice(notify_owner_fn).splitlines() == [
+        "New sender on email: chloe@x.com",
+        "Review it in Unidentified Entities on the dashboard.",
+    ]
 
 
 async def test_repeated_unknown_sender_losing_claim_does_not_notify_again():

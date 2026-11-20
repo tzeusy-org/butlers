@@ -32,6 +32,17 @@ Registered deterministic sources, all built by the canonical switch only:
 | Source | Built by | Values | Sink effect |
 | --- | --- | --- | --- |
 | `relationship.commitment_candidate` | `relationship_confirm_sources(pool)` (`confirm_authority.py`) | `track`, `done`, `ignore`; no timeout value | One Relationship transaction: candidate disposition, `create_commitment` on Track (skipped when the fingerprint is already active), and a receipt in `relationship.commitment_candidate_receipts` |
+| `switchboard.unknown_sender` | `switchboard_confirm_sources(pool)` (`confirm_authority.py`) | `add_contact`, `ignore`; no timeout value | One Switchboard transaction under the entity row lock: Add clears `metadata.unidentified`; Ignore sets `metadata.archived_at` and, for an email address, adds one global `sender_address` skip rule; a receipt in the Switchboard `state` table keyed by `confirm_id` |
+
+The owner's confirm recipient for both sources comes from
+`butlers.core.confirm_recipient.owner_recipient_reader`.
+
+The unknown-sender card shows the same lines as the live plain-text notice
+(sender name and raw address, subject, Open link; see
+[identity model](../concepts/identity-model.md#owner-notification-for-surfaced-unknown-senders)).
+Its snapshot lives in the Switchboard `state` table under
+`identity:unknown_card:<entity_id>`, written once before the first request. Until
+composition, the owner gets the plain-text notice. bu-6hszs3 tracks the switch-over.
 
 The owner-chat candidate card is the owner's own promise, quoted, with the counterparty's name
 and any deadline. Its prompt comes only from the card snapshot persisted on the candidate, so a

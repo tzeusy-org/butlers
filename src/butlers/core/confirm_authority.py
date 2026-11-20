@@ -44,16 +44,31 @@ class ConfirmSource:
 #: The registered deterministic sources, by name. The canonical switch builds each with
 #: its owning daemon's pool and passes the result as ``sources``; nothing else may.
 COMMITMENT_CANDIDATE_SOURCE = "relationship.commitment_candidate"
+UNKNOWN_SENDER_SOURCE = "switchboard.unknown_sender"
 
 
 def relationship_confirm_sources(pool) -> dict[str, ConfirmSource]:
     """Relationship's registered sources (REQ-commitment-lifecycle-013), built on its pool."""
+    from butlers.core.confirm_recipient import owner_recipient_reader
     from butlers.roster_imports import roster_module
 
     cards = roster_module("relationship", "tools/commitment_candidate_cards")
     return {
         COMMITMENT_CANDIDATE_SOURCE: cards.build_source(
-            pool, owner_recipient=cards.owner_recipient_reader(pool)
+            pool, owner_recipient=owner_recipient_reader(pool)
+        )
+    }
+
+
+def switchboard_confirm_sources(pool) -> dict[str, ConfirmSource]:
+    """Switchboard's registered sources (the unknown-sender card), built on its pool."""
+    from butlers.core.confirm_recipient import owner_recipient_reader
+    from butlers.roster_imports import roster_module
+
+    cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+    return {
+        UNKNOWN_SENDER_SOURCE: cards.build_source(
+            pool, owner_recipient=owner_recipient_reader(pool)
         )
     }
 

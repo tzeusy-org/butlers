@@ -3142,6 +3142,9 @@ class MessagePipeline:
                                             captured_custody or identity_result.custody_reason,
                                         )
                                 else:
+                                    from butlers.core.account_security_events import (
+                                        subject_from_normalized_text,
+                                    )
                                     from butlers.tools.switchboard.identity.inject import (
                                         resolve_and_inject_identity,
                                     )
@@ -3156,6 +3159,13 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            # Only an email's subject line, never the
+                                            # body, reaches the unknown-sender notice.
+                                            subject=(
+                                                subject_from_normalized_text(message_text) or None
+                                                if source == "email"
+                                                else None
+                                            ),
                                             owner_custody=captured_custody,
                                             **(
                                                 {"resolver": issuer.resolve_identity}

@@ -10,6 +10,13 @@ entity-identity owner-notification boundary. That callback SHALL use the
 standard `notify.v1` Switchboard-to-Messenger delivery path, not a direct
 connector or contacts-table path.
 
+The Switchboard SHALL carry a single sender's connector-supplied display name
+(`sender.display_name`, e.g. an email's `From:` display name) into identity
+resolution, and for email SHALL pass the subject line of the normalized text,
+never the body, so the owner-only notification can show the display name, raw
+address and subject that `entity-identity` requires. Batch speaker labels are
+neutral or untrusted source labels and SHALL NOT be used as display names.
+
 The projected rows are derived Relationship-owned triples, not a second canonical store. Resolution MUST preserve current eligibility, normalization and complete live-entity ambiguity and MUST NOT use private-schema direct/view/definer reads. Missing, ambiguous or unavailable projection MUST confer no owner authority and MUST retain existing unresolved-sender admission, transitory reservation and durable notification failure semantics.
 
 ID: REQ-switchboard-identity-004
@@ -54,6 +61,15 @@ Scope: v1-mandatory
 - **AND** the path MUST receive a non-null owner-notification callback
 - **AND** an unknown-sender notification from that callback MUST use the
   `notify.v1` Switchboard-to-Messenger delivery path
+
+#### Scenario: Unknown email sender's name and subject reach the owner notice
+
+- **WHEN** an email from `chloe@x.com` with `sender.display_name = 'Chloe L'`
+  and subject `Re: dinner` misses reverse lookup
+- **THEN** identity resolution MUST receive display name `Chloe L` and subject
+  `Re: dinner`
+- **AND** the owner notification MUST read `Chloe L <chloe@x.com>` with that
+  subject and MUST NOT include the message body
 
 #### Scenario: Email message identity resolution
 
