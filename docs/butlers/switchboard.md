@@ -22,8 +22,33 @@ neither arm. Under five measured rows in either arm the verdict is `unmeasured`.
 more than half the holdout's median time; `self_resolving` when the holdout resolves at least 60%
 of the time and the treated arm does not resolve clearly more often (or clearly faster); else
 `ignored`. `GET /api/attention/efficacy` returns the
-latest row per class and band, and the Trust Console's attention-ledger panel lists them. Nothing
-reads the verdicts to shape delivery yet.
+latest row per class and band, and the Trust Console's attention-ledger panel lists them. By
+default (`outcome_shaping = observe`) nothing reads the verdicts to shape delivery.
+
+### Shaping on the owner's say-so
+
+`insight_settings.outcome_shaping` is `observe` (the default) or `shape`. Nothing in the
+repository writes it: turning `shape` on is an owner act, taken directly on the settings row, and
+setting it back to `observe` restores the unshaped broker at the next cycle. Under `shape`, a
+routine delivery cycle reads each candidate's latest verdict in its priority band and:
+
+- makes a `self_resolving` class **digest-only**: its candidates are never sent standalone, take
+  no delivery slot, ride only a delivery already going out, and otherwise stay pending (and so
+  expire as natural holdouts, which keeps the measurement honest);
+- gives an `effective` class the baseline weight instead of the click proxy's;
+- cites the counts in `category_budget_reasons`;
+- never shapes the urgent band, the `break_through` category, the urgent-only sub-cycle, or a
+  verdict older than 14 days.
+
+A `useful` reply on the class after its demotion began restores it until the verdict changes; a
+`never` reply still mutes. A class that becomes `self_resolving`, or `ignored` with no feedback in
+30 days, is announced once, as one line riding a delivery (counts included, with the useful "keep"
+and mute "quiet" doors on one of the class's delivered candidates), at most once per class per 30
+days. A delivery whose class has a fresh measured verdict in its own band gets no engagement row,
+so the 60-minute any-message mark, the category weight and the 14-day auto-off rate never count
+it (urgent-band, unpremised and unmeasured deliveries keep the proxy). Riders take no daily send
+slot. Per-class state (`shaping_state`) records the verdict
+seen, since when, and when the owner was last told.
 
 Read a verdict as a correlation, not an effect:
 
