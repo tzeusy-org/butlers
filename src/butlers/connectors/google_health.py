@@ -1863,7 +1863,7 @@ class GoogleHealthConnector:
                     state.next_poll_monotonic = time.monotonic() + delay
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
-                except GoogleHealthForbiddenError as exc:
+                except GoogleHealthForbiddenError:
                     # 403 is an access/authorisation problem (OAuth test-mode,
                     # restricted-scope allowlist, or API not enabled) — NOT a
                     # transient or credential failure.  Mark the source API as
@@ -1873,10 +1873,9 @@ class GoogleHealthConnector:
                     self._source_api_error_message = "api_forbidden"
                     logger.warning(
                         "GoogleHealthConnector: 403 Forbidden account=%s resource=%s "
-                        "(OAuth test-mode / scope allowlist / API access) — %s",
+                        "(OAuth test-mode / scope allowlist / API access)",
                         ctx.email,
                         state.bundle.resource,
-                        exc,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1897,14 +1896,18 @@ class GoogleHealthConnector:
                     continue
                 except GoogleHealthSourcePreconditionError as exc:
                     self._last_source_api_ok = False
-                    self._source_api_error_message = exc.reason.lower()
+                    reason = (
+                        "account_not_linked"
+                        if exc.reason.lower() == "account_not_linked"
+                        else "failed_precondition"
+                    )
+                    self._source_api_error_message = reason
                     logger.warning(
                         "GoogleHealthConnector: source precondition failed "
-                        "account=%s resource=%s reason=%s redirect_uri=%s",
+                        "account=%s resource=%s reason=%s",
                         ctx.email,
                         state.bundle.resource,
-                        exc.reason,
-                        exc.redirect_uri,
+                        reason,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1938,7 +1941,7 @@ class GoogleHealthConnector:
                         ctx.email,
                         state.bundle.resource,
                         state.consecutive_failures,
-                        exc,
+                        state.last_error,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1991,7 +1994,12 @@ class GoogleHealthConnector:
     ) -> None:
         """Extend this resource's failure streak and publish it as an alertable gauge."""
         state.consecutive_failures += 1
-        state.last_error = str(exc)
+        if isinstance(exc, httpx.HTTPStatusError):
+            state.last_error = f"HTTP {exc.response.status_code}"
+        elif isinstance(exc, GoogleHealthPollIncompleteError):
+            state.last_error = "poll_incomplete"
+        else:
+            state.last_error = "source_api_unreachable"
         state.last_error_at = datetime.now(UTC)
         google_health_resource_consecutive_failures.labels(
             endpoint_identity=ctx.endpoint_identity,

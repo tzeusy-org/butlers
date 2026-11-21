@@ -31,6 +31,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+import butlers.connectors.google_health as google_health_module
 from butlers.connectors.google_health import (
     GOOGLE_HEALTH_SCOPES,
     RESOURCE_BUNDLES,
@@ -175,8 +176,16 @@ async def test_client_429_raises_rate_limit_error_with_retry_after() -> None:
 
 
 @pytest.mark.asyncio
-async def test_client_429_without_retry_after_signals_backoff() -> None:
-    responses = [httpx.Response(429, json={})]
+@pytest.mark.parametrize(
+    "retry_after",
+    [None, "-1", "NaN", "Infinity"],
+    ids=["missing", "negative", "nan", "infinite"],
+)
+async def test_client_429_without_usable_retry_after_signals_backoff(
+    retry_after: str | None,
+) -> None:
+    headers = {} if retry_after is None else {"Retry-After": retry_after}
+    responses = [httpx.Response(429, headers=headers, json={})]
     transport = _StubTransport(responses)
     http = httpx.AsyncClient(transport=transport, base_url="https://health.googleapis.com/v4")
     fetcher = AsyncMock(return_value="token")
@@ -2146,6 +2155,97 @@ async def test_main_loop_tracks_per_resource_consecutive_failures(
     # documented behavior) — this is precisely why per-resource tracking above
     # is necessary for honest observability.
     assert connector._last_source_api_ok is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_status", "provider_reason", "reason", "warning_summary", "last_error"),
+    [
+        (502, None, "source_api_unreachable", "HTTP 502", "HTTP 502"),
+        (403, None, "api_forbidden", "403 Forbidden", None),
+        (400, "ACCOUNT_NOT_LINKED", "account_not_linked", "reason=account_not_linked", None),
+        (400, "synthetic-reason-marker", "failed_precondition", "reason=failed_precondition", None),
+    ],
+)
+async def test_poll_failure_diagnostics_omit_provider_data(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    provider_status: int,
+    provider_reason: str | None,
+    reason: str,
+    warning_summary: str,
+    last_error: str | None,
+) -> None:
+    connector, ctx = _make_connector_with_account()
+    key = (ctx.account_id, "weight")
+    state = connector._resources[key]
+    connector._resources = {key: state}
+    state.last_cursor = "2026-04-24T00:00:00Z"
+    state.backfill_done = True
+    page_token = "synthetic-continuation-marker"
+    response_body = "synthetic-provider-body-marker"
+    received_tokens: list[str | None] = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/weight/dataPoints:reconcile")
+        received_tokens.append(request.url.params.get("pageToken"))
+        if received_tokens == [None]:
+            return httpx.Response(200, json={"dataPoints": [], "nextPageToken": page_token})
+        connector._shutdown_event.set()
+        if provider_reason is None:
+            return httpx.Response(provider_status, text=response_body)
+        return httpx.Response(
+            provider_status,
+            json={
+                "error": {
+                    "status": "FAILED_PRECONDITION",
+                    "message": response_body,
+                    "details": [
+                        {
+                            "reason": provider_reason,
+                            "metadata": {
+                                "redirect_uri": f"https://provider.test/connect?state={response_body}"
+                            },
+                        }
+                    ],
+                }
+            },
+        )
+
+    monkeypatch.setattr(connector, "_get_access_token", AsyncMock(return_value="fixture-token"))
+    monkeypatch.setattr(google_health_module, "make_health_socket", MagicMock())
+    monkeypatch.setattr(google_health_module, "Thread", MagicMock())
+    connector._start_health_server()
+    assert connector._health_server is not None
+    connector._running = True
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(provider)) as source,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=connector._health_server.config.app),
+            base_url="http://health.test",
+        ) as health_client,
+    ):
+        connector._http_client = source
+        await connector._main_loop()
+        response = await health_client.get("/health")
+
+    assert received_tokens == [None, page_token]
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["error"] == reason
+    resource = body["resources_by_account"][ctx.email]["weight"]
+    assert resource["last_cursor"] == "2026-04-24T00:00:00Z"
+    assert resource["consecutive_failures"] == (1 if provider_status == 502 else 0)
+    assert page_token not in response.text
+    assert page_token not in caplog.text
+    assert response_body not in caplog.text
+    assert response_body not in response.text
+    assert "synthetic-reason-marker" not in caplog.text
+    assert "synthetic-reason-marker" not in response.text
+    assert resource["last_error"] == last_error
+    assert warning_summary in caplog.text
 
 
 @pytest.mark.asyncio
