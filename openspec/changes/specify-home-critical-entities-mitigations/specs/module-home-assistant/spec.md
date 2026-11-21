@@ -2,12 +2,12 @@
 
 ### Requirement: Owner-only critical-entity registry
 
-This requirement takes effect only when the owner adopts RFC 0028 Amendment 1; until then it is proposed and binds nothing.
+This requirement takes effect under RFC 0028 Amendment 1, adopted by the owner on 2026-11-21.
 
 The Home module SHALL keep a registry of critical entities in `home.critical_entities`, one row per explicit entity id with an owner label and the adding actor and time. The registry SHALL be written only through owner-authenticated dashboard routes. No MCP tool, model session, goal, capability grant, standing rule or job SHALL add or remove an entry, and membership SHALL NOT be inferred from a Home Assistant label, area, device class, attribute or `friendly_name`. The owner label SHALL be display text only. A refused write SHALL store nothing and answer with one fixed content-blind code. Every add and remove SHALL be audited by entity id and actor. Removing an entry SHALL NOT release an action already parked as critical.
 
 ID: REQ-module-home-assistant-001
-Source: RFC 0028 Amendment 1 (proposed, owner adoption required); bu-jv1moa.6; bu-jv1moa.33
+Source: RFC 0028 Amendment 1 (adopted 2026-11-21); bu-jv1moa.6; bu-jv1moa.33
 Scope: v1-mandatory
 
 #### Scenario: Only the owner changes the registry
@@ -32,12 +32,12 @@ Scope: v1-mandatory
 
 ### Requirement: Calls on critical entities always park and fail closed
 
-This requirement takes effect only when the owner adopts RFC 0028 Amendment 1; until then it is proposed and binds nothing.
+This requirement takes effect under RFC 0028 Amendment 1, adopted by the owner on 2026-11-21.
 
 `ha_call_service` SHALL read the critical registry during each evaluation, without a cache that outlives the call. A call that names a critical entity SHALL have an effective risk of at least `consequential` and SHALL park before any Home Assistant request, whatever its base class. A call names a critical entity when its explicit target includes one. While the registry is non-empty, a call SHALL also be treated as naming a critical entity when: its target is not an explicit entity list; it is an indirect actuator (`scene.turn_on`, `script.turn_on`, any `script.<name>` service, `automation.trigger`, any `homeassistant` service that is not `safe`, or any `(domain, service)` pair absent from the RFC 0028 risk map, such as `button.press`, `input_button.press` or `automation.turn_on`); or a target entity is a group or helper whose member list, read from the entity's `entity_id` attribute and followed through nested groups, contains a critical entity. Any target absent from the module's entity cache, and any group or helper whose membership cannot be read (a malformed member list, a cycle, or nesting deeper than 8), SHALL be treated as naming a critical entity. If the registry cannot be read, every call SHALL be treated as naming a critical entity. A critical park SHALL NOT be approved by a standing rule, decision-memory or autonomy suggestion, or RFC 0038 capability grant; each SHALL need its own owner approval of the stored call. The capability broker SHALL classify a goal call naming a critical entity as `consequential` and SHALL classify it as `unknown` when the registry cannot be read. The park reason SHALL carry the fixed category `critical_entity` and no label or value. `safe` read services SHALL NOT be promoted. Home Assistant automations that fire on their own triggers do not pass through `ha_call_service` and SHALL NOT be described as covered; a helper that wraps an entity without exposing its membership is covered only when the owner marks the helper itself critical.
 
 ID: REQ-module-home-assistant-002
-Source: RFC 0028 Amendment 1 (proposed, owner adoption required); bu-svqpzo.12; RFC 0038; bu-jv1moa.33
+Source: RFC 0028 Amendment 1 (adopted 2026-11-21); bu-svqpzo.12; RFC 0038; bu-jv1moa.33
 Scope: v1-mandatory
 
 #### Scenario: A reversible call on a critical entity parks
@@ -89,12 +89,12 @@ Scope: v1-mandatory
 
 ### Requirement: Pre-call state and target binding for critical calls and mitigations
 
-This requirement takes effect only when the owner adopts RFC 0028 Amendment 1; until then it is proposed and binds nothing.
+This requirement takes effect under RFC 0028 Amendment 1, adopted by the owner on 2026-11-21.
 
 Before the receipt claim of an approved replay that names a critical entity under REQ-module-home-assistant-002, of any approved replay while the registry cannot be read, and of every safety mitigation, Home SHALL require an explicit entity target with no data-carried selector, SHALL read every target entity live from Home Assistant rather than from its cache, and SHALL require the read set to equal the stored target set. A failed read, a missing entity, a state of `unavailable` or `unknown`, a partial read set, or a read that finished more than 10 seconds before the receipt claim SHALL send no request and write no receipt; the approval SHALL stay `approved` and one approval event SHALL record a content-blind reason (`pre_state_unavailable`, `pre_state_stale` or `target_unbound`). Otherwise the pre-call state SHALL be stored on the receipt as `pre_state`.
 
 ID: REQ-module-home-assistant-003
-Source: RFC 0028 Amendment 1 (proposed, owner adoption required); RFC 0028 receipts; bu-jv1moa.2 (stored-call digest); bu-jv1moa.33
+Source: RFC 0028 Amendment 1 (adopted 2026-11-21); RFC 0028 receipts; bu-jv1moa.2 (stored-call digest); bu-jv1moa.33
 Scope: v1-mandatory
 
 #### Scenario: Stale or missing state sends nothing
@@ -120,12 +120,12 @@ Scope: v1-mandatory
 
 ### Requirement: Already-satisfied calls send nothing and claim no effect
 
-This requirement takes effect only when the owner adopts RFC 0028 Amendment 1; until then it is proposed and binds nothing.
+This requirement takes effect under RFC 0028 Amendment 1, adopted by the owner on 2026-11-21.
 
 When the pre-call state of a call under REQ-module-home-assistant-003 already meets the call's declared post-condition, Home SHALL send no request and SHALL write a receipt that settles directly to `already_satisfied` with `pre_state` and without `observed_state`. `already_satisfied` SHALL NOT be `succeeded` and SHALL NOT be rendered as an effect Home produced; no resolver or card SHALL report it as success. A service with no declared post-condition verifier SHALL NOT settle `already_satisfied`. `already_satisfied` SHALL be terminal for its approval: a later replay of the same approval SHALL return that receipt's outcome without a request, the same way a `succeeded` receipt is replayed, and SHALL NOT be treated as a possible effect that needs attention. After a request is sent, `succeeded` SHALL still require a matching live read-back, and a mismatched or unreadable read-back SHALL settle `unverified`.
 
 ID: REQ-module-home-assistant-004
-Source: RFC 0028 Amendment 1 (proposed, owner adoption required); RFC 0028 receipts; bu-jv1moa.33
+Source: RFC 0028 Amendment 1 (adopted 2026-11-21); RFC 0028 receipts; bu-jv1moa.33
 Scope: v1-mandatory
 
 #### Scenario: A closed valve is not closed again

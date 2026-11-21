@@ -218,10 +218,9 @@ consequential physical action that waits for the owner. They share a condition i
 the alert never waits on, depends on or reports a mitigation; a mitigation never runs because an
 alert was sent; and missing approval or missing sensor evidence never becomes success.
 
-## Proposed RFC 0028 Amendment 1 (OWNER ADOPTION REQUIRED, NOT ADOPTED)
+## RFC 0028 Amendment 1 (ADOPTED 2026-11-21, copied verbatim into the RFC)
 
-The text below is proposed exact wording for `about/legends-and-lore/rfcs/0028-home-physical-actuation-contract.md`.
-It is not in the RFC and binds nothing until the owner adopts it verbatim or as edited.
+Adopted by the owner on 2026-11-21 (questionnaire item `home-critical-entities-amendment`, bu-jv1moa.121). The authoritative text now lives in `about/legends-and-lore/rfcs/0028-home-physical-actuation-contract.md`; the proposal copy below is kept for provenance and its Status line is superseded.
 
 > ## Amendment 1: Critical entities and approved safety mitigations
 >
@@ -266,19 +265,19 @@ It is not in the RFC and binds nothing until the owner adopts it verbatim or as 
 
 ## Owner gates
 
-Not adopted, not written as requirements:
-- **G7 (new). Adopt Amendment 1** above, verbatim or edited. Until then REQ-module-home-assistant-001
-  to 004 and REQ-home-deterministic-jobs-013 to 015 are proposed only and no implementation bead may
-  start. This includes the `already_satisfied` outcome and the 10-second bound in item 4.
-  Sub-question G7a: is the stated limit of item 2a acceptable (HA-side automations on their own
-  triggers, and helpers that hide membership, are not covered unless the owner marks the helper),
-  or does the owner want a further step, such as refusing to mark an entity critical while an HA
-  automation targets it? This change does not add one.
+- **G7 (adopted 2026-11-21). Amendment 1** above was adopted verbatim by the owner, including the
+  `already_satisfied` outcome and the 10-second bound in item 4. REQ-module-home-assistant-001
+  to 004 and REQ-home-deterministic-jobs-013 to 015 now bind, and implementation beads may start.
+  G7a: the owner accepted the stated limit of item 2a (HA-side automations on their own
+  triggers, and helpers that hide membership, are not covered unless the owner marks the helper);
+  no further step is added.
 
 Every requirement in this change except the departure-fix part of REQ-home-deterministic-jobs-015
-says in its text that it takes effect only on adoption. The trace format allows only
-`v1-mandatory`, `v1-reserved` or `post-v1` as Scope, so `v1-mandatory` there means "mandatory once
-adopted", not "in force".
+says in its text that it takes effect under Amendment 1, now adopted. Marking any entity critical
+remains an owner act at the dashboard. The trace format allows only `v1-mandatory`, `v1-reserved`
+or `post-v1` as Scope.
+
+Still open:
 - **G3 (existing, overlaps).** Safety consumers while away. Two points here touch it and are not
   decided: whether a high-priority safety alert may carry the mitigation pointer, and whether a
   mitigation may ever run faster than a dashboard approval (for example tapless while away). This
