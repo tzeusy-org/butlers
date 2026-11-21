@@ -13,6 +13,7 @@ from parallel feature branches.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime
@@ -746,6 +747,9 @@ class _FakeGoogle:
         self.sheet_write_status = 200
         self.folders_by_name: dict[str, str] = {}  # default-folder lookups by name
         self.sheet_write_body: dict = {}
+        self.export_body = b"%PDF-1.7 exported"
+        self.export_status = 200
+        self.export_error = ""
         self._n = 0
 
     def add(self, file_id: str, mime: str, **meta) -> None:
@@ -761,6 +765,10 @@ class _FakeGoogle:
     @property
     def writes(self) -> list[httpx.Request]:
         return [r for r in self.requests if r.method != "GET" and "/tokeninfo" not in r.url.path]
+
+    @property
+    def exports(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.url.path.endswith("/export")]
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -784,6 +792,15 @@ class _FakeGoogle:
             self._n += 1
             return httpx.Response(
                 200, json={"id": f"new-sheet-{self._n}", "name": "S", "webViewLink": "https://s"}
+            )
+        if path.startswith("/drive/v3/files/") and path.endswith("/export"):
+            if self.export_status != 200:
+                return httpx.Response(
+                    self.export_status,
+                    json={"error": {"errors": [{"reason": self.export_error}]}},
+                )
+            return httpx.Response(
+                200, content=self.export_body, headers={"Content-Type": query["mimeType"]}
             )
         if path.startswith("/drive/v3/files/"):
             file_id = path.rsplit("/", 1)[-1]
@@ -848,7 +865,7 @@ class _Token:
         return "tok"
 
 
-def _native_module(fake: _FakeGoogle, *, pool=None):
+def _native_module(fake: _FakeGoogle, *, pool=None, blob_store=None):
     from butlers.modules.google_drive import _DriveHTTPClient
 
     module = GoogleDriveModule()
@@ -859,6 +876,7 @@ def _native_module(fake: _FakeGoogle, *, pool=None):
         http, _Token(), SimpleNamespace(client_id="c", client_secret="s", refresh_token="r")
     )
     module._db = SimpleNamespace(pool=pool) if pool is not None else None
+    module._blob_store = blob_store
     return module
 
 
@@ -1167,3 +1185,184 @@ class TestNativeDocsAndSheets:
         assert result["status"] == "target_shared"
         assert result["reach"] == {"anyone:reader": 1}
         assert fake.writes == []
+
+
+# ---------------------------------------------------------------------------
+# PDF export of Butlers-made files, delivered to the owner on Telegram [bu-jv1moa.5 S1]
+# ---------------------------------------------------------------------------
+
+_MARK = {"butlers_created_by": "home"}
+
+
+class _MemoryBlobStore:
+    """An in-memory blob store that mints refs under the butler prefix, like S3BlobStore."""
+
+    scheme = "s3"
+    bucket = "butlers"
+
+    def __init__(self) -> None:
+        self.blobs: dict[str, bytes] = {}
+        self.types: dict[str, str] = {}
+
+    async def put(self, data: bytes, *, content_type: str, filename: str | None = None) -> str:
+        ref = f"s3://butlers/home/2026/11/22/{uuid.uuid4().hex}.pdf"
+        self.blobs[ref] = data
+        self.types[ref] = content_type
+        return ref
+
+    async def get(self, storage_ref: str) -> bytes:
+        return self.blobs[storage_ref]
+
+
+class TestExportFile:
+    async def test_exports_a_butlers_made_doc_to_one_blob(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("doc-1", _DOC_MIME, name="Weekly brief", appProperties=_MARK)
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_export_file("doc-1")
+        assert result["status"] == "ok"
+        assert result["media_type"] == "application/pdf"
+        assert result["filename"] == "Weekly brief.pdf"
+        assert result["size_bytes"] == len(fake.export_body)
+        assert store.blobs == {result["storage_ref"]: fake.export_body}
+        assert fake.exports[0].url.params["mimeType"] == "application/pdf"
+        assert result["sha256"] == hashlib.sha256(fake.export_body).hexdigest()
+
+    async def test_a_sheet_exports_too(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("sheet-1", _SHEET_MIME, name="Money 2026", appProperties=_MARK)
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            assert (await module._drive_export_file("sheet-1"))["status"] == "ok"
+
+    async def test_a_file_butlers_did_not_create_is_refused_without_exporting(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("doc-1", _DOC_MIME, name="Owner's own")
+        fake.add("doc-2", _DOC_MIME, name="Other butler", appProperties={"butlers_created_by": "x"})
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            first = await module._drive_export_file("doc-1")
+            second = await module._drive_export_file("doc-2")
+        assert first["status"] == second["status"] == "not_created_by_butlers"
+        assert fake.exports == [] and store.blobs == {}
+
+    async def test_a_shared_file_is_refused(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add(
+            "doc-1",
+            _DOC_MIME,
+            appProperties=_MARK,
+            permissions=[_OWN_GRANT, {"type": "anyone", "role": "reader"}],
+        )
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_export_file("doc-1")
+        assert result["status"] == "target_shared"
+        assert fake.exports == [] and store.blobs == {}
+
+    async def test_only_docs_and_sheets_and_only_pdf(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("folder-2", _FOLDER_MIME, appProperties=_MARK)
+        fake.add("doc-1", _DOC_MIME, appProperties=_MARK)
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            wrong = await module._drive_export_file("folder-2")
+            fmt = await module._drive_export_file("doc-1", format="docx")
+        assert wrong["status"] == "wrong_type" and fmt["status"] == "invalid"
+        assert fake.exports == [] and store.blobs == {}
+
+    @pytest.mark.parametrize("how", ["body", "drive_refusal"])
+    async def test_an_export_over_10_mb_is_too_large_and_leaves_no_blob(self, how) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("doc-1", _DOC_MIME, appProperties=_MARK)
+        if how == "body":
+            fake.export_body = b"x" * (10 * 1024 * 1024 + 1)
+        else:
+            fake.export_status, fake.export_error = 403, "exportSizeLimitExceeded"
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_export_file("doc-1")
+        assert result["status"] == "too_large"
+        assert store.blobs == {}
+
+    async def test_a_failed_export_leaves_no_blob(self) -> None:
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("doc-1", _DOC_MIME, appProperties=_MARK)
+        fake.export_status, fake.export_error = 500, "backendError"
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_export_file("doc-1")
+        assert result["status"] == "error" and store.blobs == {}
+
+    async def test_a_replayed_effect_returns_the_first_ref_without_a_second_drive_call(
+        self,
+    ) -> None:
+        fake, store, pool = _FakeGoogle(), _MemoryBlobStore(), _FakeReceiptPool()
+        fake.add("doc-1", _DOC_MIME, appProperties=_MARK)
+        module = _native_module(fake, pool=pool, blob_store=store)
+        effect = uuid.uuid4()
+        with lineage_scope(_lineage(exposed=False, effect=effect)):
+            first = await module._drive_export_file("doc-1")
+            requests_after_first = len(fake.requests)
+            second = await module._drive_export_file("doc-1")
+        assert second["storage_ref"] == first["storage_ref"] and second["replayed"] is True
+        assert len(fake.requests) == requests_after_first
+        assert len(fake.exports) == 1 and len(store.blobs) == 1
+
+    async def test_without_blob_storage_nothing_is_exported(self) -> None:
+        fake = _FakeGoogle()
+        fake.add("doc-1", _DOC_MIME, appProperties=_MARK)
+        module = _native_module(fake, blob_store=None)
+        with lineage_scope(_lineage(exposed=False)):
+            result = await module._drive_export_file("doc-1")
+        assert result["status"] == "error"
+        assert fake.requests == []
+
+    async def test_the_ref_is_delivered_to_the_owner_as_a_telegram_document(self) -> None:
+        """Real seam: the storage_ref the tool returns goes through notify's Telegram path."""
+        from butlers.modules.telegram import TelegramModule
+
+        fake, store = _FakeGoogle(), _MemoryBlobStore()
+        fake.add("doc-1", _DOC_MIME, name="Weekly brief", appProperties=_MARK)
+        module = _native_module(fake, blob_store=store)
+        with lineage_scope(_lineage(exposed=False)):
+            exported = await module._drive_export_file("doc-1")
+
+        telegram = TelegramModule()
+        telegram._blob_store = store
+        calls: list[dict] = []
+
+        async def post(url, *, json=None, data=None, files=None):
+            calls.append({"method": url.rsplit("/", 1)[1], "files": files, "data": data})
+            return httpx.Response(
+                200,
+                request=httpx.Request("POST", url),
+                json={"ok": True, "result": {"message_id": 1}},
+            )
+
+        with (
+            patch.object(telegram, "_get_client", return_value=MagicMock(post=post)),
+            patch.object(telegram, "_base_url", return_value="https://telegram.test"),
+            patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+            patch("butlers.modules.telegram.require_permission", AsyncMock(return_value=None)),
+            patch("butlers.modules.telegram.require_custody_clear", AsyncMock(return_value=None)),
+        ):
+            await telegram._send_files(
+                "123",
+                "",
+                [
+                    {
+                        "filename": exported["filename"],
+                        "media_type": exported["media_type"],
+                        "storage_ref": exported["storage_ref"],
+                        "sha256": exported["sha256"],
+                        "size_bytes": exported["size_bytes"],
+                    }
+                ],
+                origin_butler="home",
+            )
+        assert [c["method"] for c in calls] == ["sendDocument"]
+        assert calls[0]["files"] == {
+            "document": ("Weekly brief.pdf", fake.export_body, "application/pdf")
+        }

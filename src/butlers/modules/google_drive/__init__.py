@@ -466,6 +466,7 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         self._credentials_ok: bool = False
         self._butler_name: str = "butler"
         self._db: Any | None = None
+        self._blob_store: Any | None = None
         self._approval_enqueuer: Callable[[str, dict[str, Any], str], Awaitable[str]] | None = None
         # In-memory folder cache: (butler_name, account_email) -> folder_id
         self._folder_cache: dict[tuple[str, str], str] = {}
@@ -634,6 +635,7 @@ class GoogleDriveModule(NativeDocsMixin, Module):
                     "drive_update_sheet_range": ToolMeta(
                         arg_sensitivities={"file_id": True, "a1_range": True, "rows": True}
                     ),
+                    "drive_export_file": ToolMeta(arg_sensitivities={"file_id": True}),
                 }
             )
         return meta
@@ -666,8 +668,9 @@ class GoogleDriveModule(NativeDocsMixin, Module):
         credential_store:
             CredentialStore for OAuth credential resolution.
         blob_store:
-            Unused by this module.
+            The butler's blob store. ``drive_export_file`` stores its export here.
         """
+        self._blob_store = blob_store
         self._config = (
             config if isinstance(config, GoogleDriveConfig) else GoogleDriveConfig(**(config or {}))
         )
@@ -1746,3 +1749,23 @@ class GoogleDriveModule(NativeDocsMixin, Module):
             return await module._drive_update_sheet_range(
                 file_id=file_id, a1_range=a1_range, rows=rows
             )
+
+        @mcp.tool(name="drive_export_file")
+        async def drive_export_file(file_id: str, format: str = "pdf") -> dict[str, Any]:
+            """Export a Google Doc or Sheet this butler created to a PDF blob.
+
+            Refuses a file this butler did not create (``not_created_by_butlers``) and any
+            owner-shared file (``target_shared``). The PDF is stored as a blob and returned as a
+            ``storage_ref`` with its size and sha256; send it to the owner with
+            ``notify(attachments=[...])`` passing those values. An export over 10 MB returns
+            ``too_large`` and stores nothing. The content is untrusted-origin.
+
+            Args:
+                file_id: The Butlers-made Doc or Sheet's Drive file id.
+                format: ``pdf`` (the only format today).
+
+            Returns:
+                ``{"status": "ok", "storage_ref": ..., "filename": ..., "media_type": ...,
+                "size_bytes": ..., "sha256": ...}`` or a refusal status.
+            """
+            return await module._drive_export_file(file_id=file_id, format=format)

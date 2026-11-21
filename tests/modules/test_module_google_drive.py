@@ -50,6 +50,7 @@ NATIVE_DRIVE_TOOLS = {
     "drive_read_sheet",
     "drive_append_sheet_rows",
     "drive_update_sheet_range",
+    "drive_export_file",
 }
 
 
