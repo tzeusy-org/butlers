@@ -53,8 +53,8 @@ INSTALL_HINT = "make install-lint-tools"
 # Explicit safety bounds, not calibrated performance claims.
 DOWNLOAD_TIMEOUT_S = 60.0
 TOOL_TIMEOUT_S = 300.0
-MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
-MAX_BINARY_BYTES = 128 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
+MAX_BINARY_BYTES = 256 * 1024 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 # gitleaks exits 1 on its own fatal errors, so findings get a distinct status.
@@ -111,7 +111,12 @@ def load_pins(path: Path = PINS_PATH) -> dict[str, dict]:
         for asset in pin["assets"].values():
             digest = asset.get("sha256", "") if isinstance(asset, dict) else ""
             url = asset.get("url", "") if isinstance(asset, dict) else ""
-            if len(digest) != 64 or not url.startswith("https://github.com/"):
+            member = asset.get("member") if isinstance(asset, dict) else None
+            if (
+                len(digest) != 64
+                or not url.startswith("https://github.com/")
+                or not (member is None or isinstance(member, str))
+            ):
                 raise ToolError(f"malformed asset pin for {name}")
     return tools
 
@@ -178,15 +183,20 @@ def verify_digest(data: bytes, expected_sha256: str) -> None:
         raise ToolError(f"sha256 mismatch: expected {expected_sha256}, got {actual}")
 
 
-def extract_binary(archive: bytes, binary: str) -> bytes:
-    """The single top-level regular file ``binary`` from a .tar.gz, refusing anything else."""
+def extract_binary(archive: bytes, binary: str, member_path: str | None = None) -> bytes:
+    """The single regular file ``binary`` from a .tar.gz, refusing anything else.
+
+    The file is top-level unless the pin names its exact in-archive path (``member_path``,
+    for archives that wrap everything in one versioned directory). No other member is read.
+    """
+    wanted = PurePosixPath(member_path or binary)
+    if wanted.name != binary or wanted.is_absolute() or ".." in wanted.parts:
+        raise ToolError(f"unsafe archive member path for {binary}")
     try:
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
-            matches = [
-                m for m in tar.getmembers() if PurePosixPath(m.name) == PurePosixPath(binary)
-            ]
+            matches = [m for m in tar.getmembers() if PurePosixPath(m.name) == wanted]
             if len(matches) != 1 or not matches[0].isreg():
-                raise ToolError(f"archive has no single regular top-level {binary}")
+                raise ToolError(f"archive has no single regular {wanted} for {binary}")
             member = matches[0]
             if member.size > MAX_BINARY_BYTES:
                 raise ToolError(f"{binary} exceeds {MAX_BINARY_BYTES} bytes")
@@ -243,7 +253,7 @@ def install(names: list[str] | None = None) -> None:
         if asset is None:
             raise ToolError(f"{name} has no pinned asset for {key}")
         archive = download(asset["url"], asset["sha256"])
-        publish(name, pin, key, extract_binary(archive, pin["binary"]))
+        publish(name, pin, key, extract_binary(archive, pin["binary"], asset.get("member")))
         installed_binary(name, pins)
         print(f"{name} {pin['version']}: installed ({key}, sha256 verified)")
 

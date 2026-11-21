@@ -270,6 +270,18 @@ def test_install_refuses_unverified_or_unsafe_archives(
             lint_tools.extract_binary(archive, "actionlint")
             pytest.fail(f"accepted a {label} archive")
 
+    # A pin that names an exact in-archive path (promtool ships in a versioned directory) reads
+    # only that member; the path must end in the binary and stay inside the archive.
+    wrapped = _tar_gz(_file("prom-1.0/promtool", b"tool"), _file("prom-1.0/prometheus", b"other"))
+    assert lint_tools.extract_binary(wrapped, "promtool", "prom-1.0/promtool") == b"tool"
+    for bad_member in ("prom-1.0/prometheus", "../prom-1.0/promtool", "/prom-1.0/promtool"):
+        with pytest.raises(lint_tools.ToolError):
+            lint_tools.extract_binary(wrapped, "promtool", bad_member)
+    with pytest.raises(lint_tools.ToolError):  # a nested file is not top-level without its pin
+        lint_tools.extract_binary(wrapped, "promtool")
+    for tool in ("gitleaks", "actionlint", "promtool"):
+        assert tool in lint_tools.load_pins()
+
     # Exercise the actual installer and download digest check with disposable
     # release bytes; a restored cache is advisory, never installation authority.
     pins = lint_tools.load_pins()
