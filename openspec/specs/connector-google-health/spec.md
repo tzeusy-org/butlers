@@ -246,8 +246,13 @@ metrics.
 #### Scenario: 429 response handling
 
 - **WHEN** the Google Health API returns HTTP 429
-- **THEN** the connector SHALL honour any `Retry-After` header
-- **AND** SHALL fall back to exponential backoff with jitter if no such header is returned
+- **THEN** the connector SHALL honour a finite, nonnegative `Retry-After` delay expressed in seconds
+- **AND** SHALL NOT advance the cursor for the failed request
+
+#### Scenario: 429 response lacks a usable retry delay
+
+- **WHEN** the Google Health API returns HTTP 429 with a missing or unreadable `Retry-After` delay, a negative number, or a non-finite number
+- **THEN** the connector SHALL use exponential backoff with jitter
 - **AND** SHALL NOT advance the cursor for the failed request
 
 #### Scenario: Rate-limit header capture
