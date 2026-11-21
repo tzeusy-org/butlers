@@ -292,6 +292,20 @@ opens are specified in
   rule, suggestion, grant or system actor gets `not_run` / `critical_needs_owner_approval` before
   any receipt or request. The capability broker classifies a goal call naming a critical entity
   `consequential` and every Home call `unknown` when its registry reader fails or is absent.
+- **Pre-call state (bu-jv1moa.123, REQ-003 and -004).** An approved replay of a critical call, or of
+  any call while the registry is unreadable, first reads every target live from Home Assistant
+  (`GET /api/states/<entity>`, never the cache; at most 10 seconds old at the receipt claim). A
+  non-explicit target is `target_unbound`; a failed or `unavailable`/`unknown` read or a partial
+  read set is `pre_state_unavailable`; an older read is `pre_state_stale`. Each sends nothing,
+  writes no receipt, leaves the approval `approved` (`approved_not_run`) and the executor records
+  one approval event naming only the reason; the same approval may replay later. A successful read
+  is stored on the receipt as `pre_state` (`home_011`). If it already meets the declared
+  post-condition the receipt settles directly to `already_satisfied`: nothing is sent, no effect is
+  claimed, it is terminal and a later replay returns it without a request or attention. A call
+  with no verifier, or carrying `data` the verifier does not read (a light's brightness), is never
+  `already_satisfied` and takes the normal attempt. The status resolver still reads an
+  `already_satisfied` receipt as `unknown` (never success) until the REQ-home-deterministic-jobs-011
+  delta, which waits for `specify-home-departure-fixes-arrival` to be archived.
 - **Dashboard.** Home, Devices, Critical entities (`HomeCriticalEntitiesPanel`) lists, marks and
   unmarks entities, says that unmarking never releases a call already waiting for approval, states
   the coverage limit below, and shows a failed read as degraded, never as an empty registry.
@@ -299,8 +313,7 @@ opens are specified in
   changes made outside Butlers never pass through `ha_call_service`. A helper that wraps an entity
   without exposing its membership is covered only when the owner marks the helper itself critical.
 
-Pre-call state, `already_satisfied` and safety mitigations are not built, and the safety sentinel
-stays read-only.
+Safety mitigations are not built, and the safety sentinel stays read-only.
 
 ## Proposed realtime feature specifications
 
