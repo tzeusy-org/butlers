@@ -385,7 +385,7 @@ Scope: v1-mandatory
 - **AND** no domain's `CLAUDE.md` or memory context is injected; the lead retrieves them through `guidance.load`, `context.search` and domain read capabilities
 
 #### Scenario: Interactive response mode
-- **WHEN** a goal's input carries a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram_bot`, `email`)
+- **WHEN** a goal's input carries a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram_bot`, `whatsapp`)
 - **THEN** the lead engages interactive response mode as defined in the lead policy
 - **AND** selects from response styles: React (emoji only), Affirm (acknowledgment), Follow-up (clarifying question), Answer (substantive response), or React+Reply (emoji + response)
 
