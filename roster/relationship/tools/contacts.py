@@ -254,7 +254,7 @@ async def _ensure_entity(
         result = await entity_create(
             pool,
             canonical_name,
-            entity_type,
+            cast(Any, entity_type),  # validated at runtime by entity_create (ValueError)
             aliases=aliases,
         )
         return result["entity_id"]

@@ -645,7 +645,7 @@ describe("layoutHalo", () => {
 
   it("covers HALO_ARC_ORDER exactly once each in a full response", () => {
     const layout = layoutHalo(
-      haloResponse({ organization: 1, place: 1, other: 1 }),
+      haloResponse({ organization: 1, place: 1, animal: 1, other: 1 }),
     );
     expect(layout.arcs.map((a) => a.entityType)).toEqual([...HALO_ARC_ORDER]);
   });

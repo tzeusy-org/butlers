@@ -23,7 +23,7 @@ CREATE TABLE public.entities (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT chk_entities_entity_type CHECK (
-        entity_type IN ('person', 'organization', 'place', 'other')
+        entity_type IN ('person', 'organization', 'place', 'animal', 'other')
     ),
     CONSTRAINT uq_entities_canonical_type
         UNIQUE (canonical_name, entity_type)
@@ -39,6 +39,14 @@ CREATE TABLE public.entities (
 **Implementation note (search_path):** The memory module tools (`entity_create`, `entity_get`, `entity_update`, `entity_merge`, `entity_resolve`) address the table as `entities` (unqualified), relying on the session's `search_path` which sets the butler's own schema first, then `public`. For butlers using the memory module (which do not have their own `entities` table post-`core_014`), the unqualified name resolves to `public.entities` via search_path. The `core_014` migration copies all butler-local entities data into `public.entities` as part of the migration.
 
 **Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `public.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
+
+**Entity types (core_355):** the taxonomy is `person`, `organization`, `place`, `animal`, `other`. `animal` was added by owner decision (bu-s11n0s.13) so a pet is a first-class dependent entity rather than an `other` with a role convention. Every code site that enumerates the types (memory tool `VALID_ENTITY_TYPES` and `Literal`s, the memory module `memory_entity_create` schema, the dashboard `PATCH /api/memory/entities/{id}` validator) and the `chk_entities_entity_type` CHECK MUST list the same five values. A dependent animal is an entity only: it is never a principal or a user.
+
+#### Scenario: Animal entity type accepted
+
+- **WHEN** an entity is created or updated with `entity_type = 'animal'`
+- **THEN** the write MUST succeed in the memory tools, the dashboard API and the database CHECK
+- **AND** a value outside the five types MUST still be rejected
 
 #### Scenario: Entities accessible from any butler schema
 
@@ -73,7 +81,7 @@ butlers.
 
 The canonical data model hierarchy SHALL be **Entity → Contact → Contact Details**.
 
-- **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, or place is an entity.
+- **Entity** (`public.entities`) is the top-level identity anchor. Facts, relationships, and knowledge graph edges attach to entities. Every known person, organization, place, or animal (a pet or other dependent animal) is an entity.
 - **Contact** (`public.contacts`) is a child of entity. A CRM record with name fields, linked to exactly one entity via `entity_id`. Created when reachable contact details (phone, email, address) are known.
 - **Contact Details** (`public.contact_info`, addresses, etc.) attach to contacts.
 

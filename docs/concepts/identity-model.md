@@ -18,7 +18,7 @@ The entity table is the anchor for identity. Each row represents a known person 
 
 - **`id`** (UUID) --- primary key; the authoritative identity key
 - **`canonical_name`** --- display name
-- **`entity_type`** --- typically `"person"`
+- **`entity_type`** --- typically `"person"`; one of `person`, `organization`, `place`, `animal`, `other`
 - **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`); the authoritative source of truth for identity roles
 - **`aliases`** (TEXT[]) --- alternative names
 - **`metadata`** (JSONB) --- extensible metadata; temporary entities carry `{"unidentified": true}`
