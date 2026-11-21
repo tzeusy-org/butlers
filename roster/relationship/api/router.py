@@ -52,6 +52,7 @@ _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 
 # Load local models module
 _models_module = roster_module("relationship", "api/models", api_source=__file__)
+care_duties = roster_module("relationship", "tools/care_duties")
 
 Group = _models_module.Group
 GroupListResponse = _models_module.GroupListResponse
@@ -144,6 +145,13 @@ RemoveGroupLabelResponse = _models_module.RemoveGroupLabelResponse
 GroupLabelsResponse = _models_module.GroupLabelsResponse
 GroupMember = _models_module.GroupMember
 GroupMembersResponse = _models_module.GroupMembersResponse
+CareDuty = _models_module.CareDuty
+CareDutyListResponse = _models_module.CareDutyListResponse
+CreateCareDutyRequest = _models_module.CreateCareDutyRequest
+SetCareDutyCarrierRequest = _models_module.SetCareDutyCarrierRequest
+AssignCareOccurrenceRequest = _models_module.AssignCareOccurrenceRequest
+CareOccurrence = _models_module.CareOccurrence
+CareOccurrenceListResponse = _models_module.CareOccurrenceListResponse
 
 logger = logging.getLogger(__name__)
 
@@ -7476,3 +7484,114 @@ async def read_identity_fact_decision(
     if row is None:
         raise HTTPException(404, detail={"code": "decision_unknown"})
     return {**dict(row), "replayed": True}
+
+
+# ---------------------------------------------------------------------------
+# Care duties (bu-s11n0s.13 S1): owner-declared, owner-private, never contacts anyone
+# ---------------------------------------------------------------------------
+
+
+def _care_error(exc: Exception) -> HTTPException:
+    """Map a ``CareDutyError`` to 404 (unknown id) or 422 with a stable code."""
+    code = getattr(exc, "code", "invalid")
+    status = 404 if code == "not_found" else 422
+    return HTTPException(status_code=status, detail={"code": code, "message": str(exc)})
+
+
+@router.get("/care/duties", response_model=CareDutyListResponse)
+async def list_care_duties(
+    *,
+    db: Db,
+    include_retired: bool = Query(False),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """List declared care duties. Owner-only: a duty names people who never consented."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    rows = await care_duties.list_duties(pool, include_retired=include_retired, limit=limit)
+    return CareDutyListResponse(duties=[CareDuty(**row) for row in rows])
+
+
+@router.get("/care/occurrences", response_model=CareOccurrenceListResponse)
+async def list_care_occurrences(
+    *,
+    db: Db,
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    limit: int = Query(200, ge=1, le=500),
+):
+    """List occurrences the owner recorded in ``[start, end)`` (default: the next 14 days).
+
+    This never expands a rule and never reports coverage; the coverage job is deferred.
+    """
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    window_start = start or datetime.now(UTC)
+    window_end = end or window_start + timedelta(days=14)
+    if window_end <= window_start:
+        raise HTTPException(
+            status_code=422, detail={"code": "invalid_window", "message": "end must follow start"}
+        )
+    rows = await care_duties.list_occurrences(pool, start=window_start, end=window_end, limit=limit)
+    return CareOccurrenceListResponse(occurrences=[CareOccurrence(**row) for row in rows])
+
+
+@router.post("/care/duties", response_model=CareDuty, status_code=201)
+async def create_care_duty(body: CreateCareDutyRequest, *, db: Db):
+    """Declare a care duty for a dependent entity."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.create_duty(pool, **body.model_dump())
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)
+
+
+@router.put("/care/duties/{duty_id}/carrier", response_model=CareDuty)
+async def set_care_duty_carrier(duty_id: UUID, body: SetCareDutyCarrierRequest, *, db: Db):
+    """Name (or clear) who is assumed to carry a duty by default."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.set_default_carrier(pool, duty_id, body.carrier_entity_id)
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)
+
+
+@router.put("/care/duties/{duty_id}/occurrences", response_model=CareOccurrence)
+async def assign_care_occurrence(duty_id: UUID, body: AssignCareOccurrenceRequest, *, db: Db):
+    """Record the owner's carer for one occurrence; idempotent per (duty, start)."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.assign_occurrence(
+            pool,
+            duty_id,
+            body.occurrence_start,
+            carrier_entity_id=body.carrier_entity_id,
+            state=body.state,
+            reason=body.reason,
+        )
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareOccurrence(**row)
+
+
+@router.post("/care/duties/{duty_id}/retire", response_model=CareDuty)
+async def retire_care_duty(duty_id: UUID, *, db: Db):
+    """Retire a duty without deleting its history."""
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    try:
+        row = await care_duties.retire_duty(pool, duty_id)
+    except care_duties.CareDutyError as exc:
+        raise _care_error(exc) from exc
+    return CareDuty(**row)

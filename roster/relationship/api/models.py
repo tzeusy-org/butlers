@@ -1890,3 +1890,76 @@ class CandidateFact(ContactFact):
 
 class CandidateFactsResponse(BaseModel):
     facts: list[CandidateFact]
+
+
+# ---------------------------------------------------------------------------
+# Care duties (bu-s11n0s.13 S1): owner-declared duties for dependents
+# ---------------------------------------------------------------------------
+
+
+class CareDuty(BaseModel):
+    """One declared care duty. The subject and carer are entities, never users."""
+
+    id: UUID
+    subject_entity_id: UUID
+    title: str
+    kind: Literal["calendar_anchored", "completion_anchored"]
+    rrule: str | None = None
+    interval_days: int | None = None
+    anchor_at: datetime
+    window_minutes: int
+    lead_time_hours: int
+    default_carrier_entity_id: UUID | None = None
+    retired_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CareDutyListResponse(BaseModel):
+    duties: list[CareDuty]
+
+
+class CreateCareDutyRequest(BaseModel):
+    """Request body for POST /care/duties."""
+
+    subject_entity_id: UUID
+    title: str = Field(min_length=1, max_length=120)
+    kind: Literal["calendar_anchored", "completion_anchored"]
+    rrule: str | None = Field(default=None, max_length=500)
+    interval_days: int | None = Field(default=None, ge=1, le=3650)
+    anchor_at: datetime
+    window_minutes: int = Field(default=0, ge=0, le=1440)
+    lead_time_hours: int = Field(default=24, ge=0, le=720)
+    default_carrier_entity_id: UUID | None = None
+
+
+class SetCareDutyCarrierRequest(BaseModel):
+    """Request body for PUT /care/duties/{id}/carrier; ``null`` clears the default carer."""
+
+    carrier_entity_id: UUID | None = None
+
+
+class AssignCareOccurrenceRequest(BaseModel):
+    """Request body for PUT /care/duties/{id}/occurrences: the owner's carer for one start."""
+
+    occurrence_start: datetime
+    carrier_entity_id: UUID
+    state: Literal["assumed", "confirmed"] = "confirmed"
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class CareOccurrence(BaseModel):
+    """A recorded occurrence. S1 lists only what the owner recorded and never infers coverage."""
+
+    id: UUID
+    duty_id: UUID
+    occurrence_start: datetime
+    carrier_entity_id: UUID | None = None
+    state: Literal["assumed", "confirmed", "at_risk", "uncovered", "done", "missed", "unknown"]
+    reason: str | None = None
+    title: str | None = None
+    subject_entity_id: UUID | None = None
+
+
+class CareOccurrenceListResponse(BaseModel):
+    occurrences: list[CareOccurrence]
