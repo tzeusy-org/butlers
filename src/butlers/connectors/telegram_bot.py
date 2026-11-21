@@ -789,30 +789,41 @@ class TelegramBotConnector:
             },
         )
 
+        base_backoff = self._config.poll_interval_s
         while self._running:
             try:
                 await self._poll_once()
 
-                # Successful poll — reset backoff
                 self._consecutive_failures = 0
-                sleep_s = self._config.poll_interval_s
+                base_backoff = self._config.poll_interval_s
+                sleep_s = base_backoff
 
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 self._consecutive_failures += 1
-                logger.exception(
+                error_type = get_error_type(exc)
+                if error_type not in {
+                    "http_error",
+                    "timeout",
+                    "connection_error",
+                    "parse_error",
+                    "validation_error",
+                }:
+                    error_type = "unexpected_error"
+                # HTTP exceptions can contain the bot token in the request URL.
+                logger.error(
                     "Error polling Telegram updates",
                     extra={
                         "endpoint_identity": self._config.endpoint_identity,
                         "consecutive_failures": self._consecutive_failures,
+                        "error_type": error_type,
                     },
                 )
-                # Exponential backoff with ±10% jitter, capped at 60s
-                base_backoff = self._config.poll_interval_s * (2**self._consecutive_failures)
-                capped_backoff = min(base_backoff, 60.0)
-                jitter = capped_backoff * 0.1 * (2 * random.random() - 1)
-                sleep_s = capped_backoff + jitter
+                # Saturate each doubling before adding the existing ±10% jitter.
+                base_backoff = min(base_backoff * 2, 60.0)
+                jitter = base_backoff * 0.1 * (2 * random.random() - 1)
+                sleep_s = base_backoff + jitter
 
             await asyncio.sleep(sleep_s)
 
