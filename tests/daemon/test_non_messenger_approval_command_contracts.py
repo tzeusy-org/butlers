@@ -224,6 +224,37 @@ async def test_approved_connector_disconnect_executes_exact_switchboard_command(
     assert lifecycle_pool.rows[("gmail", "owner@example.com")]["deleted_at"] == "now"
 
 
+async def test_approved_unknown_sender_ignore_executes_exact_switchboard_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The parked Ignore card replays its exact call through the Switchboard handler."""
+    from butlers.roster_imports import roster_module
+
+    unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+    calls: list[dict[str, Any]] = []
+
+    async def ignore(_pool: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"status": "applied", "outcome": "ignored", "rule": "created"}
+
+    monkeypatch.setattr(unknown_sender_cards, "ignore_unknown_sender", ignore)
+    _, approvals, approval_db, _ = await _switchboard_approval_daemon()
+    args = {
+        "entity_id": str(uuid.uuid4()),
+        "channel": "email",
+        "address": "chloe@x.com",
+        "display_name": None,
+    }
+    action_id = approval_db._insert_action(
+        tool_name="identity_ignore_unknown_sender", tool_args=args, status="pending"
+    )
+
+    result = await approvals._approve_action(str(action_id), actor=_human_actor())
+
+    assert result["status"] == "executed"
+    assert calls == [args]
+
+
 async def test_approved_memory_reclassification_executes_exact_relationship_command() -> None:
     """Curation's parked fact operation updates only the approved active fact."""
     fact_id = uuid.uuid4()
@@ -502,6 +533,7 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         "calendar_update_event",  # the replan undo card (REPLAN_UNDO_COMMAND)
         "connector_disconnect",
         "connector_rotate_token",
+        "identity_ignore_unknown_sender",  # unknown-sender Ignore card (bu-p7glz9)
         "memory_reclassify",
     }
     assert {item.name for item in NON_MESSENGER_PRODUCER_INVENTORY} == expected_inventory

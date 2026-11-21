@@ -1276,6 +1276,7 @@ class MessagePipeline:
         enable_ingress_dedupe: bool = False,
         enable_identity_resolution: bool = False,
         notify_owner_fn: Callable[..., Coroutine] | None = None,
+        unknown_sender_card_fn: Callable[..., Coroutine] | None = None,
         classification_timeout_s: int | None = None,
         local_tool_server_provider: Callable[[], Any] | None = None,
         credential_store: Any | None = None,
@@ -1288,6 +1289,7 @@ class MessagePipeline:
         self._enable_ingress_dedupe = enable_ingress_dedupe
         self._enable_identity_resolution = enable_identity_resolution
         self._notify_owner_fn = notify_owner_fn
+        self._unknown_sender_card_fn = unknown_sender_card_fn
         self._classification_timeout_s = classification_timeout_s
         self._local_tool_server_provider = local_tool_server_provider
         self._credential_store = credential_store
@@ -1454,6 +1456,7 @@ class MessagePipeline:
             source_channel,
             channel_values,
             notify_owner_fn=self._notify_owner_fn,
+            unknown_sender_card_fn=self._unknown_sender_card_fn,
             **(
                 {"resolver": issuer.resolve_identity, "bulk_resolver": issuer.resolve_identities}
                 if issuer is not None
@@ -3159,6 +3162,7 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            unknown_sender_card_fn=self._unknown_sender_card_fn,
                                             # Only an email's subject line, never the
                                             # body, reaches the unknown-sender notice.
                                             subject=(

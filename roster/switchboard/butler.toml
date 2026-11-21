@@ -42,7 +42,7 @@ groups = ["core", "entity"]
 enable_ingress_dedupe = true
 
 [modules.switchboard]
-groups = ["routing", "lifecycle"]
+groups = ["routing", "lifecycle", "identity"]
 
 [modules.approvals]
 groups = ["actions"]
@@ -52,6 +52,10 @@ default_risk_tier = "medium"
 
 [modules.approvals.gated_tools.connector_disconnect]
 risk_tier = "high"
+
+# The pre-cutover unknown-sender Ignore card (bu-p7glz9): parked at identity ingress.
+[modules.approvals.gated_tools.identity_ignore_unknown_sender]
+risk_tier = "low"
 
 [modules.insight_broker]
 

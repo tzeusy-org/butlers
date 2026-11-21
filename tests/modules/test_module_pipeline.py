@@ -255,6 +255,7 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
         "whatsapp_user_client",
         ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
         notify_owner_fn=None,
+        unknown_sender_card_fn=None,
     )
     pipeline._assert_sender_channel_fact.assert_awaited_once_with(
         entity_id=unknown_entity,
@@ -281,6 +282,7 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
             "whatsapp_user_client",
             ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
             notify_owner_fn=None,
+            unknown_sender_card_fn=None,
             resolver=issuer.resolve_identity,
             bulk_resolver=issuer.resolve_identities,
         )
@@ -592,6 +594,7 @@ async def test_single_sender_identity_failure_warns_content_blind_and_routes_wit
         channel_value="sender-1",
         display_name=None,
         notify_owner_fn=None,
+        unknown_sender_card_fn=None,
         subject=None,
         owner_custody=UNREAD,  # capture read no custody verdict for this sender
     )
