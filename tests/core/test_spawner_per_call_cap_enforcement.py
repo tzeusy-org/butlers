@@ -30,11 +30,13 @@ from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
+    SPEND_RULES_UNAVAILABLE_REASON,
     BreakerState,
     CeilingStatus,
     QuotaStatus,
     SpendRoutingResult,
 )
+from butlers.core.permissions import PermissionStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -257,6 +259,73 @@ class TestSpawnerPerCallCapEnforcement:
             ).trigger("hello", "tick", max_token_budget=100_000)
 
         mock_est.assert_not_called()
+        assert result.success is True
+        assert adapter.invoke_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# Unreadable spend rules fail closed (bu-svqpzo.15)
+#
+# The real apply_spend_routing_rules runs against a pool whose rules read fails: the dispatch
+# is refused (a rule's per-call cap may exist and cannot be applied), with its own reason.
+# A readable empty rule set is unconstrained and dispatches.
+# ---------------------------------------------------------------------------
+
+
+def _enter_resolution_patches(stack: ExitStack) -> None:
+    """Catalog resolution, quota and ceiling allowed; the rules function itself is real."""
+    for target, value in (
+        ("resolve_model_with_effective_tier", _catalog_resolution()),
+        ("check_token_quota", _quota_allowed()),
+        ("check_monthly_ceiling", _ceiling_unset()),
+        ("check_permission", PermissionStatus(allowed=True)),
+    ):
+        stack.enter_context(
+            patch(f"butlers.core.spawner.{target}", new_callable=AsyncMock, return_value=value)
+        )
+
+
+@pytest.mark.real_gate_state
+class TestSpawnerSpendRulesUnavailable:
+    async def test_an_unreadable_rule_set_refuses_the_dispatch(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(side_effect=OSError("connection refused"))
+        adapter = _MockAdapter(result_text="should not run")
+
+        with ExitStack() as stack:
+            _enter_resolution_patches(stack)
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
+        assert result.success is False
+        assert result.error == SPEND_RULES_UNAVAILABLE_REASON
+        assert "per-call spend cap exceeded" not in result.error.lower()
+        assert adapter.invoke_calls == 0
+        refusals = [
+            call.args
+            for call in [*mock_pool.execute.await_args_list, *mock_pool.fetchval.await_args_list]
+            if len(call.args) >= 6 and call.args[5] == SPEND_RULES_UNAVAILABLE_REASON
+        ]
+        assert len(refusals) == 1
+        assert refusals[0][4] == "quota_skip"
+
+    async def test_a_readable_empty_rule_set_still_dispatches(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(return_value=[])
+        adapter = _MockAdapter(result_text="session output")
+
+        with ExitStack() as stack:
+            _enter_session_patches(stack)
+            _enter_resolution_patches(stack)
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
         assert result.success is True
         assert adapter.invoke_calls == 1
 

@@ -54,7 +54,9 @@ from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
     CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     Complexity,
+    SpendRulesUnavailable,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
@@ -225,9 +227,13 @@ def _bounded(value: str) -> str:
 
 
 async def _resolve(
-    pool: asyncpg.Pool, spec: CallSpec
+    pool: asyncpg.Pool, spec: CallSpec, sink: AttemptSink
 ) -> tuple[Candidate, str, dict | None, str | None]:
-    """The first candidate, its effective tier, the base receipt and any selection reason."""
+    """The first candidate, its effective tier, the base receipt and any selection reason.
+
+    Raises :class:`SpendRulesUnavailable` after recording a ``quota_skip`` row when the spend
+    rules cannot be read: a rule may carry an owner-set cap, so the call is refused (bu-svqpzo.15).
+    """
     receipts: list[Any] = []
     exact: dict[str, Any] = {"allow_tier_fallthrough": False} if spec.exact_tier else {}
     resolved = await resolve_model_with_effective_tier(
@@ -285,6 +291,27 @@ async def _resolve(
                 else:
                     selection_reason = "spend_rule_override"
                     candidate = rerouted
+        except SpendRulesUnavailable as refusal:
+            logger.warning("%s blocked: %s", spec.caller, refusal)
+            await sink.attempt(
+                catalog_entry_id=candidate.catalog_entry_id,
+                butler=spec.butler_name,
+                outcome="quota_skip",
+                attempt_index=0,
+                failure_reason=SPEND_RULES_UNAVAILABLE_REASON,
+                purpose_lane=spec.purpose_lane,
+                produce_fleet_halt=False,
+                resolution_receipt=project_resolution_receipt(
+                    base_receipt,
+                    catalog_entry_id=candidate.catalog_entry_id,
+                    runtime_type=candidate.runtime_type,
+                    model_id=candidate.model_id,
+                    effective_tier=effective_tier,
+                    attempt_index=0,
+                    selection_reason=None,
+                ),
+            )
+            raise
         except Exception:
             logger.warning(
                 "%s: spend routing-rule evaluation failed for butler=%s; keeping tier-resolved "
@@ -414,7 +441,7 @@ async def call_model(
     an ineligible failure, or a ``RuntimeError`` whose message starts with
     ``same_tier_failover_exhausted`` once candidates, relaunches or attempt slots run out.
     """
-    candidate, effective_tier, base_receipt, selection_reason = await _resolve(pool, spec)
+    candidate, effective_tier, base_receipt, selection_reason = await _resolve(pool, spec, sink)
     receipt = project_resolution_receipt(
         base_receipt,
         catalog_entry_id=candidate.catalog_entry_id,

@@ -1,7 +1,7 @@
 """Readable permission, quota and ceiling state for tests that drive a mock pool.
 
-The pre-dispatch gates fail closed (bu-svqpzo.3): a pool that cannot answer the permission,
-quota or ceiling read refuses the dispatch. Most Spawner and model-call tests hand the code a
+The pre-dispatch gates fail closed (bu-svqpzo.3, bu-svqpzo.15): a pool that cannot answer the
+permission, quota, ceiling or spend-rule read refuses the dispatch. Most Spawner and model-call tests hand the code a
 bare mock pool and want the gates out of the way, so this autouse fixture (imported into the
 ``conftest.py`` of the directories that need it) gives them the readable, unrestricted answer.
 
@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.model_routing import CeilingStatus, QuotaStatus
+from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
 from butlers.core.permissions import PermissionStatus
 
 _TARGETS = (
@@ -26,6 +26,13 @@ _TARGETS = (
     ),
     ("check_monthly_ceiling", CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)),
 )
+
+
+async def _no_spend_rules(pool, butler_name, tier, resolved, **kwargs):
+    """An empty, readable spend-rule set (bu-svqpzo.15): the tier-resolved model, no cap."""
+    return SpendRoutingResult(resolved=resolved)
+
+
 _MODULES = (
     "butlers.core.spawner",
     "butlers.core.model_call",
@@ -48,6 +55,11 @@ def readable_gate_state(request: pytest.FixtureRequest):
                 continue
             if hasattr(module_obj, name):
                 patches.append(patch(f"{module}.{name}", AsyncMock(return_value=answer)))
+        module_obj = __import__(module, fromlist=["apply_spend_routing_rules"])
+        if hasattr(module_obj, "apply_spend_routing_rules"):
+            patches.append(
+                patch(f"{module}.apply_spend_routing_rules", AsyncMock(side_effect=_no_spend_rules))
+            )
     for active in patches:
         active.start()
     try:
