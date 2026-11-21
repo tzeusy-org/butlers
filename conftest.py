@@ -211,6 +211,26 @@ def _fake_embedding_engine(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _quiet_hours_live_clock_tripwire(monkeypatch):
+    """Fail a test whose outcome depends on the hour it runs (bu-gfi2kd).
+
+    See ``butlers.testing.quiet_hours_tripwire`` for the shape and its limits.
+    """
+    from butlers.core import approvals_policy
+    from butlers.testing.quiet_hours_tripwire import checked_policy_local_now, failure_message
+
+    violations: list[str] = []
+    monkeypatch.setattr(
+        approvals_policy,
+        "_policy_local_now",
+        checked_policy_local_now(approvals_policy._policy_local_now, violations),
+    )
+    yield
+    if violations:
+        pytest.fail(failure_message(violations), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
 def _restore_approval_hook_runtimes():
     """Keep pool-scoped approvals runtimes hermetic between tests."""
     import butlers.core.approvals_hooks as _hooks
