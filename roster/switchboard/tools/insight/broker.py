@@ -108,7 +108,9 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             id INTEGER PRIMARY KEY DEFAULT 1,
             verbosity TEXT NOT NULL DEFAULT 'minimal',
             custom_budget INTEGER,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            outcome_shaping TEXT NOT NULL DEFAULT 'observe',
+            shaping_state JSONB NOT NULL DEFAULT '{}'::jsonb
         )
     """)
     await pool.execute("""
@@ -946,7 +948,9 @@ async def check_and_update_engagement(
 
     Called on each Switchboard ingress request: if the user sends any message
     to any butler within 60 minutes of an insight's delivered_at, the insight
-    is considered engaged.
+    is considered engaged. Under the owner's ``outcome_shaping=shape`` setting a class the
+    outcome signal measures (``shaping.covered_classes``) is skipped here: only an explicit
+    ``useful`` reply marks it engaged (bu-s11n0s.15 S5). Unpremised classes keep the proxy.
 
     Parameters
     ----------
@@ -966,6 +970,16 @@ async def check_and_update_engagement(
         now = datetime.now(UTC)
     window_start = now - timedelta(minutes=window_minutes)
 
+    # bu-s11n0s.15 S5: under the owner's outcome_shaping=shape, a class the outcome signal
+    # measures is no longer marked by the any-message proxy; only an explicit useful reply is.
+    from . import shaping
+
+    covered: list[tuple[str, str]] = []
+    if await shaping.shaping_mode(pool) == shaping.MODE_SHAPE:
+        try:
+            covered = await shaping.covered_classes(pool, now=now)
+        except Exception:
+            logger.warning("insight engagement: coverage unreadable; marking all", exc_info=True)
     result = await pool.execute(
         """
         UPDATE insight_engagement
@@ -973,9 +987,16 @@ async def check_and_update_engagement(
         WHERE engaged = FALSE
           AND delivered_at >= $1
           AND delivered_at <= $2
+          AND NOT EXISTS (
+              SELECT 1 FROM unnest($3::text[], $4::text[]) AS covered(origin_butler, category)
+              WHERE covered.origin_butler = insight_engagement.origin_butler
+                AND covered.category = insight_engagement.category
+          )
         """,
         window_start,
         now,
+        [origin for origin, _ in covered],
+        [category for _, category in covered],
     )
     # asyncpg returns "UPDATE N" string
     count_str = result.split()[-1] if result else "0"
@@ -1196,6 +1217,11 @@ async def check_total_disengagement_auto_off(
             logger.exception("insight-delivery-cycle: failed to deliver auto-off notification")
 
     return True
+
+
+def _is_digest_only(plan: Any, candidate: dict[str, Any]) -> bool:
+    shaped = plan.by_candidate.get(str(candidate["id"]))
+    return shaped is not None and shaped.digest_only
 
 
 def _format_standalone(candidate: dict[str, Any]) -> str:
@@ -2967,8 +2993,20 @@ async def delivery_cycle(
         category: decision["reason"] for category, decision in weights.items()
     }
 
+    # bu-s11n0s.15 S3: under the owner's outcome_shaping=shape a measured verdict steers this
+    # routine cycle. Never the urgent-only sub-cycle, never the urgent band.
+    from . import shaping
+
+    plan = shaping.ShapingPlan()
+    if not urgent_only and settings.get("outcome_shaping") == shaping.MODE_SHAPE:
+        plan = await shaping.plan_shaping(pool, candidates, settings, now=now)
+        result["category_budget_reasons"].update(plan.category_reasons())
+
     def _selection_key(candidate: dict[str, Any]) -> tuple[float, int, datetime, datetime]:
         weight = float(weights.get(candidate["category"], {"weight": 1.0})["weight"])
+        shaped = plan.by_candidate.get(str(candidate["id"]))
+        if shaped is not None and shaped.weight is not None:
+            weight = shaped.weight
         deadline = candidate["expires_at"]
         expires_before_next = deadline <= now + _NEXT_REGULAR_CYCLE
         return (
@@ -2979,9 +3017,15 @@ async def delivery_cycle(
         )
 
     candidates.sort(key=_selection_key)
-    selected = candidates[:effective_budget]
+    # A digest-only class never takes a slot and never goes out standalone: it rides a
+    # delivery that is already going out, and otherwise stays pending (a natural holdout).
+    standalone = [c for c in candidates if not _is_digest_only(plan, c)]
+    selected = standalone[:effective_budget]
+    riders = [c for c in candidates if _is_digest_only(plan, c)] if selected else []
+    counted_ids = [str(c["id"]) for c in selected]
+    selected = selected + riders
     selected_ids = [str(c["id"]) for c in selected]
-    unselected_ids = [str(c["id"]) for c in candidates[effective_budget:]]
+    unselected_ids = [str(c["id"]) for c in candidates if str(c["id"]) not in set(selected_ids)]
     if unselected_ids:
         await pool.execute(
             """
@@ -3049,6 +3093,12 @@ async def delivery_cycle(
     if fold_lines:
         delivery_message = "\n\n".join([delivery_message, *(line for _, line in fold_lines)])
 
+    # bu-s11n0s.15 S4: a class change is told once, riding this delivery with the existing
+    # useful (keep) and mute (quiet) doors on one of the class's delivered candidates.
+    notices = shaping.build_notices(plan, selected, now=now)
+    if notices:
+        delivery_message = "\n\n".join([delivery_message, *(n.text for n in notices)])
+
     result["delivery_message"] = delivery_message
 
     # Compute delivery channel: majority vote from candidates that specify one.
@@ -3083,6 +3133,17 @@ async def delivery_cycle(
             for insight_id in selected_ids
         ],
     }
+    if notices:
+        notify_metadata["shaping_notices"] = [
+            {
+                "insight_id": n.insight_id,
+                "category": n.category,
+                "verdict": n.verdict,
+                "keep": f"/api/switchboard/insights/{n.insight_id}/useful",
+                "quiet": f"/api/switchboard/insights/{n.insight_id}/mute",
+            }
+            for n in notices
+        ]
 
     try:
         final_policy = await get_approvals_policy_quiet_hours(pool)
@@ -3162,7 +3223,7 @@ async def delivery_cycle(
     # lock so a timed send that landed since step 5 cannot be overspent.
     async def _timed_budget_check(conn: asyncpg.Connection) -> str | None:
         spare = configured_budget - await sends_today(conn, now=now, lane="timed")
-        return "budget_raced" if len(selected_ids) > spare else None
+        return "budget_raced" if len(counted_ids) > spare else None
 
     claim_id, claim_refusal = await claim_for_delivery(
         pool,
@@ -3268,6 +3329,7 @@ async def delivery_cycle(
                     )
 
         result["delivered"] = selected_ids
+        await shaping.record_notices(pool, notices, now=now)
 
         # Attention ledger: one row per delivered candidate. Deliberately
         # outside the bookkeeping transaction above — record_attention_event

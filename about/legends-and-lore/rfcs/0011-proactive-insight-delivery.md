@@ -281,6 +281,8 @@ Engagement is detected from owner-authored ingress only (see Engagement Tracking
 
 **Category-local weights.** Each category's last ten attributed deliveries derive a weight of baseline, 0.75, or 0.5, which scales only that category's candidate ordering. A lower Health weight can change Health's rank, never the number of Finance slots available under the configured cap. A later useful verdict or that category's own later engagement can restore its baseline; another category cannot. Explicit useful, not-now, and never feedback (REST and MCP) is owner-attributed, bounded, and reversible at the family boundary.
 
+**Measured outcomes (owner opt-in).** The owner-only `insight_settings.outcome_shaping` setting is `observe` (the default: verdicts are computed and shown, delivery is unchanged) or `shape`; nothing but the owner sets it. Under `shape`, a fresh measured verdict (see the `insight_class_efficacy` rollup, REQ-proactive-insight-engine-038) shapes a class within its priority band: `self_resolving` makes the class digest-only, so its candidates never go out standalone, take no slot and ride a delivery already going out; `effective` overrides the click-proxy weight with the baseline. The urgent band, the break-through category and a verdict older than 14 days are never shaped, no model is involved, and nothing is withheld deliberately. A `useful` verdict after a demotion began restores the class; `never` still mutes. Each class change the owner is told about (`self_resolving`, or `ignored` with no feedback) is one line riding a delivery, citing the counts, with the useful and mute doors, at most once per class per 30 days.
+
 **Auto-off on total disengagement.** The engagement rate is computed over a rolling 14-day window:
 
 ```
@@ -394,6 +396,8 @@ Engagement detection is a side effect of the Switchboard's existing ingress proc
 3. This query uses the `idx_insight_engagement_window` index and is bounded to at most 60 minutes of rows. It does not scan the full table.
 4. The engagement check does not delay or block ingress processing. It runs as a lightweight post-acceptance side effect.
 
+Under the owner's `outcome_shaping=shape`, step 2 skips a class the outcome signal measures (a fresh non-urgent verdict other than `unmeasured`): only an explicit useful verdict marks it engaged. Unpremised classes keep this proxy.
+
 The engagement signal is intentionally rough — "any owner message within 60 minutes" is an imprecise proxy for "the user found the insight useful." Over-engineering engagement tracking (click tracking, read receipts, sentiment analysis) would add complexity for marginal accuracy gain. The 14-day rolling window smooths out noise from false positives.
 
 ## Integration
@@ -430,3 +434,4 @@ Each amendment is folded into the Design sections above; this log records when t
 - **Amendment 6 (2026-07-19) — Consolidated Owner Attention Policy.** `public.approvals_policy` became the single quiet-hours authority; `insight_settings` lost its quiet-hour columns (see Quiet Hours and Owner Attention Policy). Change: `openspec/changes/consolidate-owner-attention-policy`.
 - **Amendment 7 (2026-09-16) — Reversible Per-Category Insight Shaping.** Replaced the aggregate adaptive-budget reduction with category-local weights and made expiry transactional with its ledger row (see Adaptive Delivery Shaping; Delivery Cycle Execution). Change: `openspec/changes/insight-feedback-expiry`.
 - **Amendment 8 (2026-11-14) — Timed Lane and Shared Delivery Claim.** Added the dark timed lane, with its delivery window and holds, and the claim every delivery worker takes before sending. The claim closes a double send between overlapping cycles (see Timed Lane; Urgent Sub-Cycle). Change: `openspec/changes/insight-timed-lane`.
+- **Amendment 9 (2026-11-21) — Measured-Outcome Shaping, Owner Opt-In.** Under the owner-only `outcome_shaping=shape` setting (default `observe`), a measured class verdict makes a self-resolving class digest-only or restores an effective one to the baseline weight, the owner is told once per class change, and the 60-minute proxy is retired for measured classes (see Adaptive Delivery Shaping; Engagement Tracking Contract). Change: `openspec/changes/insight-outcome-efficacy`.

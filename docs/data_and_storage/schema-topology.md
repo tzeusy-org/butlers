@@ -100,6 +100,10 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   sweep job writes (bu-s11n0s.15 S2, observational, read by `GET /api/attention/efficacy`). Keyed by
   candidate id with no foreign key, so it outlives the candidate retention pruner. Switchboard
   only, fenced by row level security.
+- **`public.insight_settings.outcome_shaping` / `shaping_state`** -- The owner-only shaping
+  switch (`observe` default, `shape`) and the per-class state that keeps a class change to one
+  announcement per 30 days (core_354, bu-s11n0s.15 S3-S5). Columns on the existing settings row;
+  no new table or grant.
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

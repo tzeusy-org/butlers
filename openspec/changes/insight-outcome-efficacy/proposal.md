@@ -38,17 +38,39 @@ Slice 2 (observe-only, no delivery change):
   envelope, and the Trust Console's attention-ledger panel lists the rows. No model-reachable tool
   (RFC 0038 regroom).
 
+Slices 3-5 (owner decision 2026-11-21, `insight-outcome-shaping` = A; shaping only under the
+owner-only `outcome_shaping=shape`, default `observe`):
+
+- `core_354` adds `insight_settings.outcome_shaping` (`observe` | `shape`) and `shaping_state`
+  (per class: the verdict seen, since when, and when the owner was last told). Nothing in the
+  repository writes `outcome_shaping`; turning `shape` on is an owner act.
+- `shaping.py`: under `shape` a routine cycle makes a fresh `self_resolving` class digest-only
+  (never standalone, no slot, it rides a delivery already going out or stays pending), restores the
+  baseline weight of an `effective` class over the click proxy, and cites the counts in
+  `category_budget_reasons`. Never the urgent band, the break-through category or the urgent-only
+  sub-cycle; a verdict older than 14 days lapses; a `useful` reply after the demotion began
+  restores the class.
+- One line per class change (`self_resolving`, or `ignored` with no feedback), at most once per
+  30 days, riding a delivery, with the existing useful (keep) and mute (quiet) doors.
+- The 60-minute any-message engagement mark skips classes with a fresh measured verdict.
+
 ## Deferred
 
-- Slice 3: an owner opt-in `outcome_shaping` setting under which a measured verdict overrides the
-  click proxy; priority at or above the urgent threshold is never shaped. Needs an owner decision.
-- Slice 4: one digest line per class transition with keep/quiet doors.
-- Slice 5: retire the 60-minute any-message engagement mark for categories the outcome signal
-  covers.
+- None. Setting `outcome_shaping` to `shape` in any environment stays an owner act.
 
 ## Conformance
 
-The added requirement conforms to the bead's adopted design (bu-s11n0s.15 regroom, 2026-10-16) and
+Requirement 039 (slices 3-5) conforms to the owner's recorded boundary of 2026-11-21: a
+`self_resolving` verdict demotes a class to digest-only and an `effective` one overrides the click
+proxy only under the owner-only `outcome_shaping=shape`, the urgent band is never shaped, each
+class change is one digest line per 30 days citing counts with keep/quiet replies, and the proxy
+is retired only for covered classes. It adds no route, session, delegation, model or
+model-reachable tool, so it stays inside RFC 0038's frozen classify-and-route (fixes only). Choices
+the boundary leaves open, kept conservative: a verdict older than 14 days lapses; digest-only means
+"rides an existing delivery, never its own, never a slot"; the break-through category is exempt;
+`keep` is the existing `useful` verb and `quiet` the existing `never` verb.
+
+The first two requirements conform to the bead's adopted design (bu-s11n0s.15 regroom, 2026-10-16) and
 to RFC 0011 as RFC 0038 keeps it ("Remains; candidates carry taint"). It is deterministic, adds no
 route, session, delegation or model-reachable tool, and changes no delivery, so it is conforming
 text under the recorded owner decision for conforming doctrine and spec text.
@@ -81,4 +103,7 @@ observation and change no delivery.
   `src/butlers/api/routers/attention_ledger.py`, `src/butlers/api/models/attention_ledger.py`,
   `frontend/src/components/approvals/attention-ledger-panel.tsx`; docs
   `docs/butlers/switchboard.md`.
-- Specs: `proactive-insight-engine` gains two requirements.
+- Slices 3-5 code: `alembic/versions/core/core_354_insight_outcome_shaping.py`,
+  `roster/switchboard/tools/insight/shaping.py`, `roster/switchboard/tools/insight/broker.py`
+  (`delivery_cycle`, `check_and_update_engagement`); RFC 0011 amendment 9.
+- Specs: `proactive-insight-engine` gains three requirements.

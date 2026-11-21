@@ -15,8 +15,11 @@
       and the reading caveats (biased holdout selection, a shorter treated window after a delay)
       in `docs/butlers/switchboard.md`.
 
-## 3. Deferred slices
+## 3. Slices 3-5: owner opt-in shaping (bu-s11n0s.15)
 
-- [ ] 3.1 Slice 3: owner opt-in `outcome_shaping` (owner decision first).
-- [ ] 3.2 Slice 4: owner digest lines with keep/quiet doors.
-- [ ] 3.3 Slice 5: retire the 60-minute engagement mark per covered category.
+- [x] 3.1 Slice 3: `core_354` `outcome_shaping` (default `observe`, owner-only) and `shaping_state`;
+      under `shape`, self-resolving classes are digest-only and effective classes override the
+      click proxy; never the urgent band.
+- [x] 3.2 Slice 4: one line per class change, at most once per 30 days, with the useful and mute doors.
+- [x] 3.3 Slice 5: the 60-minute engagement mark skips classes with a fresh measured verdict.
+- [x] 3.4 Spec requirement 039, RFC 0011 amendment 9, Switchboard and schema docs.

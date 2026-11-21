@@ -45,3 +45,36 @@ After each sweep, Switchboard SHALL roll settled ledger rows up into `public.ins
 
 - **WHEN** the dashboard API cannot reach the Switchboard pool
 - **THEN** `GET /api/attention/efficacy` returns no rows with `source_available: false`
+
+### Requirement: Premise-Outcome Shaping
+
+ID: REQ-proactive-insight-engine-039
+Source: bu-s11n0s.15 slices 3-5; owner decision 2026-11-21 (`insight-outcome-shaping` = A); RFC 0011 as kept by RFC 0038
+Scope: v1-mandatory
+
+`public.insight_settings.outcome_shaping` SHALL be `observe` (the default) or `shape`, SHALL be written by the owner alone (no agent, tool, route or job writes it), and under `observe` delivery SHALL be exactly what it would be without any verdict. Under `shape`, a routine delivery cycle SHALL read each pending candidate's latest class verdict within its priority band, ignoring a verdict computed more than 14 days ago, and SHALL: make a `self_resolving` class digest-only, so its candidates are never sent standalone, take no delivery slot, ride only a delivery already going out and otherwise stay pending; and replace the click-proxy weight of an `effective` class with the baseline weight. The `category_budget_reasons` of such a cycle SHALL cite the verdict's counts. A candidate whose priority is at or above the urgent threshold, the break-through category, and the urgent-only sub-cycle SHALL never be shaped. A `useful` verdict on the class decided after its current verdict began SHALL restore it, and a `never` verdict SHALL still mute it. Under `shape`, a delivery that carries a candidate of a class newly `self_resolving`, or newly `ignored` with no owner feedback on it in 30 days, SHALL carry one line citing the counts, with the existing useful and mute doors on one delivered candidate of the class, and SHALL NOT say it again about that class within 30 days; the line SHALL be recorded only after the delivery succeeded. Under `shape`, the 60-minute any-message engagement mark SHALL skip a class that has a fresh non-urgent verdict other than `unmeasured`, so only an explicit useful verdict marks it engaged; an unpremised class keeps the proxy. No model SHALL be involved and nothing SHALL be withheld deliberately.
+
+#### Scenario: Observe changes nothing
+
+- **WHEN** a class is `self_resolving` and `outcome_shaping` is `observe`
+- **THEN** its candidate is delivered standalone exactly as before and no class state is written
+
+#### Scenario: A self-resolving class folds into the digest
+
+- **WHEN** `outcome_shaping` is `shape`, a class is `self_resolving` and a bill candidate of the class is pending alone
+- **THEN** it is not sent, stays pending, and `category_budget_reasons` cites the counts
+
+#### Scenario: It rides a delivery already going out
+
+- **WHEN** another candidate is selected in the same cycle
+- **THEN** the class's candidate is a line of that digest, one line tells the owner once with keep and quiet doors, and a later cycle within 30 days does not repeat it
+
+#### Scenario: The urgent band is never shaped
+
+- **WHEN** a candidate has priority at or above the urgent threshold and its band's verdict is `self_resolving`
+- **THEN** it is delivered as it would be unshaped
+
+#### Scenario: Keep restores
+
+- **WHEN** the owner replies useful on the class after it was demoted
+- **THEN** its next candidate is delivered standalone again
