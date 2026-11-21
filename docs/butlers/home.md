@@ -269,8 +269,15 @@ Owner-marked critical entities that always park, a fail-closed registry, pre-cal
 `already_satisfied` no-op, and per-item safety mitigations parked when a `home:safety` condition
 opens are specified in
 [specify-home-critical-entities-mitigations](../../openspec/changes/specify-home-critical-entities-mitigations/proposal.md)
-(bu-jv1moa.33). Nothing is built: the change depends on an RFC 0028 amendment that the owner has
-not adopted, and until then no entity is critical and the safety sentinel stays read-only.
+(bu-jv1moa.33). The owner adopted RFC 0028 Amendment 1 on 2026-11-21. Built so far
+(bu-jv1moa.122, REQ-module-home-assistant-001): the registry `home.critical_entities` (home_010)
+and the owner-only `GET/PUT /api/home/critical-entities` and
+`DELETE /api/home/critical-entities/{entity_id}`. Each add, relabel and removal writes one audit
+row naming the entity id and the authenticated actor in the write's own transaction, never the owner
+label, and the registry is never written by a tool, session, goal, rule or job. Marking an entity
+critical is an owner act at the dashboard; nothing seeds it, and an empty registry changes
+nothing. Pre-call state, `already_satisfied` and safety mitigations are not built, and the safety
+sentinel stays read-only.
 
 ## Proposed realtime feature specifications
 

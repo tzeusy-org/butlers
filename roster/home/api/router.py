@@ -78,6 +78,8 @@ DepartureWatchEntry = _models.DepartureWatchEntry
 DepartureWatchUpsertRequest = _models.DepartureWatchUpsertRequest
 DepartureFixEntry = _models.DepartureFixEntry
 DepartureFixUpsertRequest = _models.DepartureFixUpsertRequest
+CriticalEntityEntry = _models.CriticalEntityEntry
+CriticalEntityUpsertRequest = _models.CriticalEntityUpsertRequest
 OwnerPlaceInput = _models.OwnerPlaceInput
 OwnerPlaceUpdate = _models.OwnerPlaceUpdate
 OwnerPlaceResponse = _models.OwnerPlaceResponse
@@ -1820,6 +1822,184 @@ async def delete_departure_fix(
             raise _PlaceRefusal(*_FIX_NOT_FOUND)
 
     return await _fix_write(db, request, "delete", write)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/critical-entities: the owner's critical-entity registry (bu-jv1moa.122)
+# ---------------------------------------------------------------------------
+#
+# REQ-module-home-assistant-001 (RFC 0028 Amendment 1).  Owner-only (decided D7: never by a tool,
+# session, goal, rule or job) and content-blind: the handlers read their own bodies, the generic
+# audit middleware skips this subtree, and every refusal is one fixed code.  Each add, relabel and
+# remove writes one audit row, in the write's own transaction, naming the entity id and the
+# authenticated actor and never the owner label.  Marking an entity critical parks and calls
+# nothing by itself; the Home module reads this table on every ha_call_service evaluation.
+
+_CRITICAL_MAX_BODY_BYTES = 1_024
+_CRITICAL_INVALID = (422, "INVALID_REQUEST", "Critical-entity request is invalid.")
+_CRITICAL_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 1 KiB.")
+_CRITICAL_NOT_FOUND = (404, "NOT_FOUND", "No such critical entity.")
+_CRITICAL_UNAVAILABLE = (
+    503,
+    "CRITICAL_ENTITIES_UNAVAILABLE",
+    "The critical-entity registry is unavailable.",
+)
+_CRITICAL_ENTITY = re.compile(r"\A[a-z0-9_]+\.[a-z0-9_]+\Z", re.ASCII)
+_CRITICAL_COLUMNS = "entity_id, owner_label, added_by, added_at"
+
+
+def _critical_entry(row: Any) -> CriticalEntityEntry:
+    added_at = row["added_at"]
+    return CriticalEntityEntry(
+        entity_id=row["entity_id"],
+        owner_label=row["owner_label"],
+        added_by=row["added_by"],
+        added_at=added_at.isoformat() if added_at else None,
+    )
+
+
+async def _audit_critical(connection: Any, operation: str, entity_id: str) -> None:
+    """One allowlisted audit row: operation, entity id and the actor; never the owner label."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        f"home_critical_entity_{operation}",
+        target=entity_id,
+        metadata={"operation": operation, "entity_id": entity_id, "outcome": "applied"},
+        result="success",
+    )
+
+
+async def _audit_critical_refusal(
+    db: Any, request: Request, operation: str, outcome: str, status_code: int
+) -> None:
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation=f"critical_entity_{operation}",
+        method=request.method,
+        path="/api/home/critical-entities",
+        body={"outcome": outcome},
+        response_status=status_code,
+        result="refused",
+        request=request,
+    )
+
+
+async def _critical_write(
+    db: Any, request: Request, operation: str, prepare: Any, write: Any
+) -> Any:
+    """Parse, then write and audit in one transaction; map every refusal to a fixed code."""
+    try:
+        if db is None:
+            raise _PlaceRefusal(*_CRITICAL_UNAVAILABLE)
+        subject = await prepare()
+        pool = db.pool(BUTLER_DB)
+        async with pool.acquire() as connection, audit_transaction(connection):
+            return await write(connection, subject)
+    except _PlaceRefusal as refusal:
+        await _audit_critical_refusal(
+            db, request, operation, refusal.code.lower(), refusal.status_code
+        )
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("critical-entity write failed: database unavailable")
+        await _audit_critical_refusal(db, request, operation, "unavailable", 503)
+        return _place_error(_CRITICAL_UNAVAILABLE)
+
+
+@router.get(
+    "/critical-entities",
+    response_model=list[CriticalEntityEntry],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_critical_entities(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """The entities the owner marked critical, by id."""
+    if db is None:
+        return _place_error(_CRITICAL_UNAVAILABLE)
+    try:
+        rows = await db.pool(BUTLER_DB).fetch(
+            f"SELECT {_CRITICAL_COLUMNS} FROM critical_entities ORDER BY entity_id"
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("critical-entity read failed: database unavailable")
+        return _place_error(_CRITICAL_UNAVAILABLE)
+    return JSONResponse(
+        content=[_critical_entry(row).model_dump(mode="json") for row in rows],
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/critical-entities",
+    response_model=CriticalEntityEntry,
+    responses={422: {"model": ErrorResponse}},
+)
+async def put_critical_entity(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Mark one explicit entity critical (or relabel it); nothing is parked or run."""
+
+    async def prepare() -> Any:
+        return await _read_private_body(
+            request,
+            CriticalEntityUpsertRequest,
+            max_bytes=_CRITICAL_MAX_BODY_BYTES,
+            invalid=_CRITICAL_INVALID,
+            too_large=_CRITICAL_TOO_LARGE,
+        )
+
+    async def write(connection: Any, body: Any) -> JSONResponse:
+        row = await connection.fetchrow(
+            "INSERT INTO critical_entities (entity_id, owner_label, added_by) "
+            "VALUES ($1, $2, $3) "
+            "ON CONFLICT (entity_id) DO UPDATE SET owner_label = EXCLUDED.owner_label "
+            f"RETURNING {_CRITICAL_COLUMNS}, (xmax = 0) AS inserted",
+            body.entity_id,
+            body.owner_label,
+            authenticated_principal(),
+        )
+        await _audit_critical(connection, "add" if row["inserted"] else "relabel", body.entity_id)
+        return JSONResponse(
+            content=_critical_entry(row).model_dump(mode="json"),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    return await _critical_write(db, request, "put", prepare, write)
+
+
+@router.delete("/critical-entities/{entity_id}", status_code=204, response_model=None)
+async def delete_critical_entity(
+    request: Request,
+    entity_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Unmark an entity.  An approval already parked as critical keeps its park."""
+
+    async def prepare() -> str:
+        if not _CRITICAL_ENTITY.match(entity_id) or len(entity_id) > 255:
+            raise _PlaceRefusal(*_CRITICAL_NOT_FOUND)
+        return entity_id
+
+    async def write(connection: Any, entity: str) -> Response:
+        removed = await connection.fetchrow(
+            "DELETE FROM critical_entities WHERE entity_id = $1 RETURNING entity_id", entity
+        )
+        if removed is None:
+            raise _PlaceRefusal(*_CRITICAL_NOT_FOUND)
+        await _audit_critical(connection, "remove", entity)
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
+
+    return await _critical_write(db, request, "delete", prepare, write)
 
 
 # ---------------------------------------------------------------------------
