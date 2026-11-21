@@ -34,7 +34,10 @@ def test_the_setting_defaults_to_observe_rejects_other_values_and_round_trips(
     try:
         with engine.begin() as c:
             assert [r[0] for r in c.execute(_COLUMNS)] == ["outcome_shaping", "shaping_state"]
-            c.execute(text("INSERT INTO public.insight_settings (id) VALUES (1)"))
+            # The singleton row is seeded by earlier revisions; make sure it exists either way.
+            c.execute(
+                text("INSERT INTO public.insight_settings (id) VALUES (1) ON CONFLICT DO NOTHING")
+            )
             row = c.execute(
                 text("SELECT outcome_shaping, shaping_state FROM public.insight_settings")
             ).one()

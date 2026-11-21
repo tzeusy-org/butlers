@@ -315,7 +315,7 @@ async def _store_state(pool: asyncpg.Pool, key: str, state: Mapping[str, Any]) -
     try:
         await pool.execute(
             "UPDATE insight_settings SET shaping_state = "
-            "COALESCE(shaping_state, '{}'::jsonb) || jsonb_build_object($1::text, $2::jsonb) "
+            "COALESCE(shaping_state, '{}'::jsonb) || jsonb_build_object($1::text, $2::text::jsonb) "
             "WHERE id = 1",
             key,
             json.dumps(dict(state)),

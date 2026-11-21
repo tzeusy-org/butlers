@@ -180,6 +180,17 @@ async def test_a_keep_reply_in_the_feedback_ledger_restores_the_class():
     assert plan.by_candidate == {}
 
 
+async def test_class_state_is_written_as_text_so_it_survives_any_jsonb_codec():
+    # The Switchboard pool may carry a json codec; a pre-encoded string bound to a bare ::jsonb
+    # would then be stored as a JSON string and read back as no state at all.
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    await shaping._store_state(pool, "k", {"verdict": "ignored"})
+    sql = pool.execute.await_args.args[0]
+    assert "$2::text::jsonb" in sql
+    assert isinstance(pool.execute.await_args.args[2], str)
+
+
 # --------------------------------------------------------------------------- the notice
 
 
