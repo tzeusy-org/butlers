@@ -108,7 +108,9 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             id INTEGER PRIMARY KEY DEFAULT 1,
             verbosity TEXT NOT NULL DEFAULT 'minimal',
             custom_budget INTEGER,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            outcome_shaping TEXT NOT NULL DEFAULT 'observe',
+            shaping_state JSONB NOT NULL DEFAULT '{}'::jsonb
         )
     """)
     await pool.execute("""
@@ -946,7 +948,9 @@ async def check_and_update_engagement(
 
     Called on each Switchboard ingress request: if the user sends any message
     to any butler within 60 minutes of an insight's delivered_at, the insight
-    is considered engaged.
+    is considered engaged. Under the owner's ``outcome_shaping=shape`` a delivery the outcome
+    signal covers never gets an engagement row (``ShapingPlan.proxy_retired``), so this proxy
+    never sees it (bu-s11n0s.15 S5); unpremised and unmeasured classes keep it.
 
     Parameters
     ----------
@@ -1196,6 +1200,11 @@ async def check_total_disengagement_auto_off(
             logger.exception("insight-delivery-cycle: failed to deliver auto-off notification")
 
     return True
+
+
+def _is_digest_only(plan: Any, candidate: dict[str, Any]) -> bool:
+    shaped = plan.by_candidate.get(str(candidate["id"]))
+    return shaped is not None and shaped.digest_only
 
 
 def _format_standalone(candidate: dict[str, Any]) -> str:
@@ -2521,7 +2530,8 @@ async def sends_today(
         SELECT count(*) FROM insight_candidates
         WHERE ($3::text IS NULL OR lane = $3)
           AND (
-            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2)
+            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2
+             AND COALESCE(metadata ->> 'digest_fold', '') <> 'true')
             OR (status = 'pending' AND claim_id IS NOT NULL)
           )
         """,
@@ -2967,8 +2977,20 @@ async def delivery_cycle(
         category: decision["reason"] for category, decision in weights.items()
     }
 
+    # bu-s11n0s.15 S3: under the owner's outcome_shaping=shape a measured verdict steers this
+    # routine cycle. Never the urgent-only sub-cycle, never the urgent band.
+    from . import shaping
+
+    plan = shaping.ShapingPlan()
+    if not urgent_only and settings.get("outcome_shaping") == shaping.MODE_SHAPE:
+        plan = await shaping.plan_shaping(pool, candidates, settings, now=now)
+        result["category_budget_reasons"].update(plan.category_reasons())
+
     def _selection_key(candidate: dict[str, Any]) -> tuple[float, int, datetime, datetime]:
         weight = float(weights.get(candidate["category"], {"weight": 1.0})["weight"])
+        shaped = plan.by_candidate.get(str(candidate["id"]))
+        if shaped is not None and shaped.weight is not None:
+            weight = shaped.weight
         deadline = candidate["expires_at"]
         expires_before_next = deadline <= now + _NEXT_REGULAR_CYCLE
         return (
@@ -2979,9 +3001,15 @@ async def delivery_cycle(
         )
 
     candidates.sort(key=_selection_key)
-    selected = candidates[:effective_budget]
+    # A digest-only class never takes a slot and never goes out standalone: it rides a
+    # delivery that is already going out, and otherwise stays pending (a natural holdout).
+    standalone = [c for c in candidates if not _is_digest_only(plan, c)]
+    selected = standalone[:effective_budget]
+    riders = [c for c in candidates if _is_digest_only(plan, c)] if selected else []
+    counted_ids = [str(c["id"]) for c in selected]
+    selected = selected + riders
     selected_ids = [str(c["id"]) for c in selected]
-    unselected_ids = [str(c["id"]) for c in candidates[effective_budget:]]
+    unselected_ids = [str(c["id"]) for c in candidates if str(c["id"]) not in set(selected_ids)]
     if unselected_ids:
         await pool.execute(
             """
@@ -3049,6 +3077,12 @@ async def delivery_cycle(
     if fold_lines:
         delivery_message = "\n\n".join([delivery_message, *(line for _, line in fold_lines)])
 
+    # bu-s11n0s.15 S4: a class change is told once, riding this delivery with the existing
+    # useful (keep) and mute (quiet) doors on one of the class's delivered candidates.
+    notices = shaping.build_notices(plan, selected, now=now)
+    if notices:
+        delivery_message = "\n\n".join([delivery_message, *(n.text for n in notices)])
+
     result["delivery_message"] = delivery_message
 
     # Compute delivery channel: majority vote from candidates that specify one.
@@ -3083,6 +3117,17 @@ async def delivery_cycle(
             for insight_id in selected_ids
         ],
     }
+    if notices:
+        notify_metadata["shaping_notices"] = [
+            {
+                "insight_id": n.insight_id,
+                "category": n.category,
+                "verdict": n.verdict,
+                "keep": f"/api/switchboard/insights/{n.insight_id}/useful",
+                "quiet": f"/api/switchboard/insights/{n.insight_id}/mute",
+            }
+            for n in notices
+        ]
 
     try:
         final_policy = await get_approvals_policy_quiet_hours(pool)
@@ -3162,7 +3207,7 @@ async def delivery_cycle(
     # lock so a timed send that landed since step 5 cannot be overspent.
     async def _timed_budget_check(conn: asyncpg.Connection) -> str | None:
         spare = configured_budget - await sends_today(conn, now=now, lane="timed")
-        return "budget_raced" if len(selected_ids) > spare else None
+        return "budget_raced" if len(counted_ids) > spare else None
 
     claim_id, claim_refusal = await claim_for_delivery(
         pool,
@@ -3230,7 +3275,21 @@ async def delivery_cycle(
                 await record_cooldowns(conn, selected, now=now)
 
                 # Step 9: Record engagement
-                await record_engagement_rows(conn, selected, delivered_at=delivered_at)
+                # bu-s11n0s.15 S5: deliveries the outcome signal covers have no proxy row.
+                await record_engagement_rows(
+                    conn,
+                    [c for c in selected if not plan.proxy_retired(c)],
+                    delivered_at=delivered_at,
+                )
+                # A rider took no slot: stamp it so the daily send count skips it.
+                if riders:
+                    await conn.execute(
+                        "UPDATE insight_candidates SET metadata = "
+                        "COALESCE(metadata, '{}'::jsonb) || '{\"digest_fold\": true}'::jsonb "
+                        "WHERE id = ANY($1::uuid[]) AND claim_id = $2",
+                        [str(c["id"]) for c in riders],
+                        claim_id,
+                    )
 
                 # bu-q7vx1q.5: persist where each candidate landed (so a later
                 # premise resolution can amend it in place) and retire the
@@ -3268,6 +3327,7 @@ async def delivery_cycle(
                     )
 
         result["delivered"] = selected_ids
+        await shaping.record_notices(pool, notices, now=now)
 
         # Attention ledger: one row per delivered candidate. Deliberately
         # outside the bookkeeping transaction above — record_attention_event
