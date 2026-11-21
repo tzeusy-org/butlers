@@ -35,6 +35,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
 | 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
 | 24 (Chronicler regeneration) | 2026-11-21 | 15 | bu-uhbhzq | [2026-11-21-chronicler-pursuit.md](2026-11-21-chronicler-pursuit.md) |
+| 25 (QA self-healing) | 2026-11-21 | 15 | bu-ejow5p | [2026-11-21-qa-self-healing-pursuit.md](2026-11-21-qa-self-healing-pursuit.md) |
 
 ## Tier history
 
@@ -506,3 +507,25 @@ Deferred by the fifteen-move cap and listed in [the dossier](2026-11-21-chronicl
 wearable full fidelity, place entities, co-presence, retrieval surfaces, Finance purchases as
 evidence, the Telegram consent split, phone senses and historical imports. The artifact report
 is private to the owner; complete structured Beads fields hold the packets.
+
+### 25 (QA self-healing) (2026-11-21) · epic bu-ejow5p
+
+Scoped QA lens with live dev-stack debugging; planning only. Gate bu-l34qcx was released by the owner on 2026-11-22 with every recommended option adopted; per-move resolutions are in the bead notes. Moves are deltas to run 19 (bu-6a9xxw), which shipped nothing between the runs.
+
+1. Evict the QA write token from investigator-reachable storage and state containment honestly (bu-ejow5p.1)
+2. Proposal-ready rung: investigate each fingerprint once, seal and keep the patch, record it as unpublished (bu-ejow5p.2)
+3. Breaker v2: execution failures only, evaluated per patrol, names its cause, probes itself back (bu-ejow5p.3)
+4. Canonical finding identity and code-preserving anonymization so one defect is one fingerprint (bu-ejow5p.4)
+5. Engineering-executor launch profile and model ladder: no borrowed persona, memory or discretion tier (bu-ejow5p.5)
+6. Honest QA surface: publication gate as a standing condition, funnel and days-since-last-fix (bu-ejow5p.6)
+7. Owner-as-publisher Fix Inbox: export a retained patch, bind the owner's PR back to the attempt (bu-ejow5p.7)
+8. Heal the healer: remediation-loop liveness conditions, cause-bound resets, prerequisite-stall watchdog (bu-ejow5p.8)
+9. Tracked-defect linkage: a finding tied to a bead or PR is not re-investigated until its fix deploys (bu-ejow5p.9)
+10. QA-to-fleet handoff: structure-only outbox, read-only transport, coordinator intake, loop closure from git and deployments (bu-ejow5p.10)
+11. Per-attempt credential-free Kubernetes Job investigator with an executable isolation verifier (bu-ejow5p.11)
+12. Dedicated qa-publisher workload with a real provider, follow-up identity and a repository-derived restore fence (bu-ejow5p.12)
+13. Dispatcher-assembled evidence bundle with cited-evidence validation (bu-ejow5p.13)
+14. Dispatcher-executed red/green verification receipt on a prebuilt test environment (bu-ejow5p.14)
+15. Per-failure-class trust ladder: durable rungs, automatic demotion, owner step-up promotion, steward-rung RFC draft (bu-ejow5p.15)
+
+Discovery-coverage and impact-ranking ideas were deferred until finding identity is fixed; see the dossier's dropped list.
