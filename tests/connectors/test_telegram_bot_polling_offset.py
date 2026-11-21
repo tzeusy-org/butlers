@@ -8,12 +8,14 @@ fetched again, and the heartbeat checkpoint must never run ahead of handling.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
+from butlers.connectors import telegram_bot
 from butlers.connectors.filtered_event_buffer import ParkNotDurableError
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
 from butlers.ingestion_policy import PolicyDecision
@@ -49,7 +51,7 @@ class _FakeTelegram:
         return httpx.Response(200, json={"ok": True, "result": batch}, request=request)
 
 
-def _connector(telegram: _FakeTelegram) -> TelegramBotConnector:
+def _connector(telegram: Callable[[httpx.Request], httpx.Response]) -> TelegramBotConnector:
     config = TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:41100/sse",
         provider="telegram",
@@ -185,3 +187,56 @@ async def test_unparkable_poison_update_holds_the_offset_until_it_is_parked() ->
     await connector._poll_once()
     assert connector._last_update_id == 12
     assert [row[8] for row in pool.written] == ["error"]
+
+
+@pytest.mark.parametrize("failures", [1, 1025], ids=["first-error", "extended-outage"])
+async def test_polling_recovers_and_keeps_credentials_out_of_retry_logs(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failures: int
+) -> None:
+    attempts = 0
+    sleeps = []
+
+    def get_updates(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        assert request.url.path == "/bottest-token/getUpdates"
+        assert request.url.params["offset"] == "43"
+        if attempts == failures + 1:
+            return httpx.Response(200, json={"ok": True, "result": []})
+        return httpx.Response(503)
+
+    connector = _connector(get_updates)
+    connector._last_update_id = 42
+    monkeypatch.setattr(connector, "_load_checkpoint", AsyncMock())
+    monkeypatch.setattr(connector, "_start_health_server", MagicMock())
+    monkeypatch.setattr(connector, "_start_heartbeat", MagicMock())
+    monkeypatch.setattr(connector, "_start_owner_delivery_sweep", MagicMock())
+    monkeypatch.setattr(telegram_bot, "wait_for_switchboard_ready", AsyncMock())
+    monkeypatch.setattr(telegram_bot.random, "random", lambda: 0.75)
+
+    async def record_sleep(delay: float) -> None:
+        sleeps.append(delay)
+        if len(sleeps) == failures + 2:
+            connector._running = False
+
+    monkeypatch.setattr(telegram_bot.asyncio, "sleep", record_sleep)
+    async with connector._http_client:
+        await connector.start_polling()
+
+    startup_delays = [2, 4, 8, 16, 32, 60]
+    expected_delays = startup_delays[:failures] + [60] * max(0, failures - len(startup_delays))
+    assert sleeps == pytest.approx([delay * 1.05 for delay in expected_delays] + [1, 2.1])
+    assert attempts == failures + 2
+    assert connector._last_update_id == 42
+    assert connector._consecutive_failures == 1
+
+    assert "test-token" not in caplog.text
+    retry_logs = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "Error polling Telegram updates"
+    ]
+    assert len(retry_logs) == failures + 1
+    assert all(
+        record.error_type == "http_error" and record.exc_info is None for record in retry_logs
+    )
