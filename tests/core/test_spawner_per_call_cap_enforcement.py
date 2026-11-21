@@ -36,6 +36,7 @@ from butlers.core.model_routing import (
     QuotaStatus,
     SpendRoutingResult,
 )
+from butlers.core.permissions import PermissionStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
@@ -277,12 +278,14 @@ def _enter_resolution_patches(stack: ExitStack) -> None:
         ("resolve_model_with_effective_tier", _catalog_resolution()),
         ("check_token_quota", _quota_allowed()),
         ("check_monthly_ceiling", _ceiling_unset()),
+        ("check_permission", PermissionStatus(allowed=True)),
     ):
         stack.enter_context(
             patch(f"butlers.core.spawner.{target}", new_callable=AsyncMock, return_value=value)
         )
 
 
+@pytest.mark.real_gate_state
 class TestSpawnerSpendRulesUnavailable:
     async def test_an_unreadable_rule_set_refuses_the_dispatch(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
