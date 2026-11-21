@@ -3695,6 +3695,27 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         categories=ALL_CATEGORIES,
     ),
+    # PDF export of a Butlers-made Doc or Sheet into a blob (bu-jv1moa.5). Same `record` basis as
+    # the native writes: the module refuses any file not created by this butler or shared with
+    # anyone, so the bytes stay owner-private. Delivery is a separate notify(attachments) call to
+    # the owner, which carries its own descriptor.
+    *_declare(
+        "google_drive",
+        "files",
+        "drive_export_file",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("file_id",),
+        selection_bound={"file_id": False},
+        safety_args=("file_id", "format"),
+        idempotency="key_required",
+        owner_authority=False,
+        read_stores=("google_drive_effect_receipts",),
+        write_stores=("google_drive_effect_receipts",),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
     *_declare(
         "google_health",
         "health",
@@ -10921,6 +10942,7 @@ STORE_WRITERS = MappingProxyType(
                 "drive_append_sheet_rows",
                 "drive_create_doc",
                 "drive_create_sheet",
+                "drive_export_file",
                 "drive_update_doc",
                 "drive_update_sheet_range",
             ),
@@ -10931,6 +10953,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._drive_create_doc",
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._drive_update_doc",
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._drive_create_sheet",
+                "butlers.modules.google_drive.native_tools.NativeDocsMixin._drive_export_file",
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._sheet_write",
             ),
             external_writers=True,
@@ -11567,6 +11590,7 @@ STORE_WRITERS = MappingProxyType(
                 "drive_create_doc",
                 "drive_create_sheet",
                 "drive_append_sheet_rows",
+                "drive_export_file",
             ),
             native_writers=(
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._receipt_store",

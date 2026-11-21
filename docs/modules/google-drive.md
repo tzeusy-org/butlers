@@ -1,7 +1,7 @@
 # Google Drive
 
 The module reads, writes and organises files in the owner's Drive under `butlers/{butler_name}/`.
-It registers seven tools today and, after the RFC 0038 switch, six native Docs and Sheets tools.
+It registers seven tools today and, after the RFC 0038 switch, seven native tools: six Docs and Sheets tools and a PDF export.
 
 ## Mutation approval
 
@@ -47,6 +47,7 @@ the capability catalog from whichever domain loads this module (Home and Health 
 | `drive_read_sheet(file_id, a1_range)` | read | none |
 | `drive_append_sheet_rows(file_id, rows, a1_range)` | record | `effect_id` receipt |
 | `drive_update_sheet_range(file_id, a1_range, rows)` | record | by content |
+| `drive_export_file(file_id, format)` | record | `effect_id` receipt |
 
 ### The owner-private rule
 
@@ -77,6 +78,17 @@ New files carry `appProperties {"butlers_created_by": "<butler_name>"}` (private
 client). `drive_update_doc` replaces only Docs with this butler's mark (`not_created_by_butlers`
 otherwise). Sheet writes may target any owner-private sheet; every native file keeps Drive revision
 history and each write returns the pre-write `version`.
+
+### PDF export
+
+`drive_export_file(file_id, format="pdf")` exports a Doc or Sheet **this butler created** (same
+`butlers_created_by` mark as `drive_update_doc`) and that is owner-private, so it never reads an
+arbitrary Drive file into a blob. The PDF is stored through the butler's blob store and the tool
+returns `storage_ref`, `filename`, `media_type`, `size_bytes` and `sha256`. An export over 10 MB
+(or one Drive refuses as too large) returns `too_large` and stores nothing; a replayed `effect_id`
+returns the first `storage_ref`. The tool does not send anything: to deliver, call
+`notify(attachments=[{storage_ref, filename, media_type, sha256, size_bytes}])`, which sends it to
+the owner on Telegram as a document. Only PDF today; XLSX, DOCX and CSV are a later slice.
 
 ### Limits and prerequisites
 

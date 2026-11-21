@@ -8,8 +8,10 @@ reclassify them (docs/modules/google-drive.md).
 
 from __future__ import annotations
 
+import hashlib
 import json as _json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -39,6 +41,10 @@ _DOC_MIME = "application/vnd.google-apps.document"
 _SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 _UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
 _RESULT_FIELDS = "id,name,webViewLink,mimeType,version"
+_PDF_MIME = "application/pdf"
+# Drive's own export ceiling is 10 MB; the same cap applies to what Butlers keeps as a blob.
+EXPORT_MAX_BYTES = 10 * 1024 * 1024
+EXPORT_FORMATS = {"pdf": _PDF_MIME}
 
 NATIVE_TOOL_NAMES = (
     "drive_create_doc",
@@ -47,6 +53,7 @@ NATIVE_TOOL_NAMES = (
     "drive_read_sheet",
     "drive_append_sheet_rows",
     "drive_update_sheet_range",
+    "drive_export_file",
 )
 
 PostWriteHook = Callable[[str, str, dict[str, Any]], Awaitable[None]]
@@ -71,6 +78,7 @@ class NativeDocsMixin:
     _http_client: Any
     _db: Any
     _butler_name: str
+    _blob_store: Any = None
 
     _owner_email_cache: str | None = None
     _import_formats: dict[str, list[str]] | None = None
@@ -125,7 +133,7 @@ class NativeDocsMixin:
         return self._owner_email_cache
 
     async def _private_target(
-        self, target_id: str, *, mime: str
+        self, target_id: str, *, mime: str | tuple[str, ...]
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Read ``target_id`` and return ``(metadata, refusal)``; exactly one is set."""
         response = await self._client.get(
@@ -145,7 +153,8 @@ class NativeDocsMixin:
         private, reach = evaluate_reach(meta, owner)
         if not private:
             return None, {"status": "target_shared", "reach": reach}
-        if meta.get("mimeType") != mime:
+        allowed = (mime,) if isinstance(mime, str) else mime
+        if meta.get("mimeType") not in allowed:
             return None, {"status": "wrong_type", "mime_type": meta.get("mimeType")}
         return meta, None
 
@@ -599,3 +608,63 @@ class NativeDocsMixin:
         return await self._sheet_write(
             "drive_update_sheet_range", file_id, a1_range, rows, append=False
         )
+
+    # -- Export ----------------------------------------------------------------------
+
+    @staticmethod
+    def _export_filename(name: str | None, extension: str) -> str:
+        cleaned = re.sub(r"[/\\\x00-\x1f\x7f]+", " ", name or "").strip(" .") or "export"
+        return f"{cleaned[:120]}.{extension}"
+
+    async def _drive_export_file(self, file_id: str, format: str = "pdf") -> dict[str, Any]:
+        """Export a Butlers-made Doc or Sheet to a blob the owner can be sent.
+
+        Refuses any file this butler did not create and any owner-shared file, like the write
+        tools, so an export never reads arbitrary Drive content into a blob. The blob holds the
+        rendering Google produced; delivery is a separate ``notify(attachments=...)`` call to
+        the owner.
+        """
+        if self._client is None:
+            return self._not_configured_error()  # type: ignore[attr-defined]
+        media_type = EXPORT_FORMATS.get(format)
+        if media_type is None:
+            return {"status": "invalid", "error": "format must be one of: pdf"}
+        if self._blob_store is None:
+            return _error("Blob storage is not configured; nothing was exported")
+        try:
+            if (replay := await self._replayed("drive_export_file")) is not None:
+                return replay
+            meta, refusal = await self._private_target(file_id, mime=(_DOC_MIME, _SHEET_MIME))
+            if refusal is not None:
+                return refusal
+            assert meta is not None
+            if (meta.get("appProperties") or {}).get(CREATED_BY_PROPERTY) != self._butler_name:
+                return {"status": "not_created_by_butlers"}
+            response = await self._client.get(
+                f"files/{file_id}/export",
+                params={"mimeType": media_type, "supportsAllDrives": "true"},
+            )
+            if response.status_code == 403 and "exportSizeLimitExceeded" in response.text:
+                return {"status": "too_large"}
+            if response.status_code != 200:
+                return _error(f"Export failed (HTTP {response.status_code})")
+            data = response.content
+            if len(data) > EXPORT_MAX_BYTES:
+                return {"status": "too_large"}
+            filename = self._export_filename(meta.get("name"), format)
+            storage_ref = await self._blob_store.put(
+                data, content_type=media_type, filename=filename
+            )
+            result: dict[str, Any] = {
+                "status": "ok",
+                "file_id": file_id,
+                "storage_ref": storage_ref,
+                "filename": filename,
+                "media_type": media_type,
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+            return await self._finish("drive_export_file", file_id, result)
+        except Exception as exc:
+            logger.error("drive_export_file failed: %s", exc, exc_info=True)
+            return _error(str(exc))

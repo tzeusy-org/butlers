@@ -260,7 +260,7 @@ and Sheets tools.
 
 #### Scenario: Tool inventory with the switch on
 - **WHEN** `register_tools(mcp, config, db)` is called with the switch on
-- **THEN** the 7 tools and `drive_create_doc`, `drive_update_doc`, `drive_create_sheet`, `drive_read_sheet`, `drive_append_sheet_rows`, `drive_update_sheet_range` SHALL be registered
+- **THEN** the 7 tools and `drive_create_doc`, `drive_update_doc`, `drive_create_sheet`, `drive_read_sheet`, `drive_append_sheet_rows`, `drive_update_sheet_range`, `drive_export_file` SHALL be registered
 
 ### Requirement: Tool Metadata for Approval Sensitivity
 
@@ -437,7 +437,7 @@ Scope: v1-mandatory
 
 ### Requirement: Effect Replay Receipts
 
-`drive_create_doc`, `drive_create_sheet` and `drive_append_sheet_rows` are `key_required`: the
+`drive_create_doc`, `drive_create_sheet`, `drive_append_sheet_rows` and `drive_export_file` are `key_required`: the
 broker's `effect_id` is the key. A repeated `effect_id` SHALL return the receipt stored in
 `google_drive_effect_receipts` without calling Google. When a keyed call cannot read the receipt
 store, it SHALL write nothing. `drive_update_doc` and `drive_update_sheet_range` are idempotent by
@@ -453,8 +453,8 @@ Scope: v1-mandatory
 
 ### Requirement: Catalog Metadata and Classification Rule
 
-All six tools SHALL declare `output_sensitivity` sensitive, `output_trust` untrusted,
-`owner_authority` false and empty `recipient_params`. The five write tools SHALL be effect class
+All seven tools SHALL declare `output_sensitivity` sensitive, `output_trust` untrusted,
+`owner_authority` false and empty `recipient_params`. The six write tools (including `drive_export_file`) SHALL be effect class
 `record` and `drive_read_sheet` `read`. The write tools are `record` only because
 Requirement "Owner-Private Target Guard" refuses any target carrying a non-owner permission;
 `drive_write_file` and `drive_create_folder` remain `communicate` because they can write into
@@ -468,3 +468,43 @@ Scope: v1-mandatory
 #### Scenario: Registered only after the switch
 - **WHEN** the RFC 0038 domain switch is off
 - **THEN** exactly the seven original tools SHALL be registered and no native-tool metadata declared
+
+### Requirement: MCP Tool — drive_export_file
+
+`drive_export_file(file_id, format="pdf")` SHALL export a Google Doc or Sheet this butler created
+(`appProperties.butlers_created_by` equal to the butler name) to a PDF, store it through the
+butler's blob store and return `{"status": "ok", "storage_ref", "filename", "media_type",
+"size_bytes", "sha256"}`. A file without this butler's mark SHALL be refused
+(`not_created_by_butlers`), an owner-shared file SHALL be refused (`target_shared`, per the
+Owner-Private Target Guard) and a file that is not a Doc or Sheet SHALL return `wrong_type`; none
+of these SHALL call the export endpoint or store a blob. A format other than `pdf` SHALL return
+`invalid`. An export over 10 MB, or one Drive refuses as too large, SHALL return `too_large` and
+store no blob; a failed export SHALL store no blob. With no blob store the tool SHALL return an
+error before any Drive call. The tool is `key_required`: a repeated `effect_id` SHALL return the
+first `storage_ref` without a second Drive call. The tool SHALL NOT send anything: delivery to the
+owner is a separate `notify(attachments=[...])` call that pins the returned `sha256` and
+`size_bytes`. Its content is untrusted-origin.
+
+ID: REQ-module-google-drive-008
+Source: bu-jv1moa.5 S1; RFC 0038 D4; bu-kqme7f.1; bu-z0b0ah.2
+Scope: v1-mandatory
+
+#### Scenario: Export of a Butlers-made Doc
+- **WHEN** the owner's butler exports a Doc it created
+- **THEN** exactly one PDF blob SHALL be stored and its `storage_ref` returned with size and sha256
+
+#### Scenario: Not Butlers-made
+- **WHEN** the file has no `butlers_created_by` mark for this butler
+- **THEN** the tool SHALL return `not_created_by_butlers` and store nothing
+
+#### Scenario: Over the cap
+- **WHEN** the export exceeds 10 MB
+- **THEN** the tool SHALL return `too_large` and no blob SHALL exist
+
+#### Scenario: Replay
+- **WHEN** a second call carries the same `effect_id`
+- **THEN** it SHALL return the first `storage_ref` and send no request to Google
+
+#### Scenario: Delivered to the owner
+- **WHEN** the returned `storage_ref` is passed to `notify(attachments=[...])`
+- **THEN** Telegram SHALL receive it as a document through the existing owner-only delivery path
