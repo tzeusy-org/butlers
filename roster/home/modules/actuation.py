@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import enum
+import logging
 import math
 import re
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ActuationRisk(enum.StrEnum):
@@ -152,18 +157,38 @@ class EffectiveActuationRisk:
     reasons: tuple[str, ...] = ()
     data_keys: tuple[str, ...] = ()
     omitted_key_count: int = 0
+    critical: bool = False
 
     @property
     def approval_reason(self) -> str | None:
         """Bounded owner-visible categories, without values or arbitrary key text."""
         if not self.reasons:
             return None
-        reason = "reversible call promoted: " + ", ".join(self.reasons)
+        prefix = (
+            "reversible call promoted"
+            if self.base is ActuationRisk.REVERSIBLE
+            else f"{self.base.value} call parked"
+        )
+        reason = f"{prefix}: " + ", ".join(self.reasons)
         if self.data_keys:
             reason += "; data keys: " + ", ".join(self.data_keys)
         if self.omitted_key_count:
             reason += f"; omitted data keys: {self.omitted_key_count}"
         return reason
+
+    def as_critical(self) -> EffectiveActuationRisk:
+        """At least ``consequential`` with the fixed ``critical_entity`` category.
+
+        A ``protected`` call stays ``protected``; a ``safe`` read is never promoted
+        (REQ-module-home-assistant-002).
+        """
+        if self.base is ActuationRisk.SAFE:
+            return self
+        risk = self.risk if self.risk.requires_approval else ActuationRisk.CONSEQUENTIAL
+        reasons = (
+            self.reasons if CRITICAL_REASON in self.reasons else (*self.reasons, CRITICAL_REASON)
+        )
+        return replace(self, risk=risk, reasons=reasons, critical=True)
 
 
 def _bounded_number(value: Any, low: float, high: float, *, integer: bool = False) -> bool:
@@ -259,6 +284,128 @@ def effective_actuation_risk(
     )
 
 
+# ---------------------------------------------------------------------------
+# Critical entities (REQ-module-home-assistant-001/002, RFC 0028 Amendment 1)
+# ---------------------------------------------------------------------------
+
+#: The fixed park-reason category for a critical call. It never carries a label or a value.
+CRITICAL_REASON = "critical_entity"
+#: Nesting deeper than this (or a cycle, or an unreadable member list) counts as critical.
+MAX_GROUP_DEPTH = 8
+_INDIRECT_PAIRS = frozenset(
+    {("scene", "turn_on"), ("script", "turn_on"), ("automation", "trigger")}
+)
+
+#: Reads a target's cached attributes; ``None`` means the entity is absent from Home's cache.
+AttributeLookup = Callable[[str], Mapping[str, Any] | None]
+
+
+def is_indirect_actuator(domain: str, service: str) -> bool:
+    """A call Home cannot see through: it may move entities the call does not name.
+
+    ``scene.turn_on``, ``script.turn_on``, any ``script.<name>``, ``automation.trigger``, every
+    ``homeassistant`` service that is not ``safe``, and any pair this map does not list (so
+    ``button.press`` and anything new fail closed instead of being enumerated).
+    """
+    pair = (domain, service)
+    if classify_actuation(domain, service) is ActuationRisk.SAFE:
+        return False
+    return (
+        domain == "script"
+        or pair in _INDIRECT_PAIRS
+        or domain == "homeassistant"
+        or pair not in _RISK_MAP
+    )
+
+
+def _group_members(attributes: Mapping[str, Any]) -> list[str] | None:
+    """The member ids of a group's ``entity_id`` attribute, or ``None`` if it is unreadable."""
+    members = attributes["entity_id"]
+    if (
+        not isinstance(members, list)
+        or not members
+        or not all(isinstance(m, str) and _EXPLICIT_ENTITY_RE.fullmatch(m) for m in members)
+    ):
+        return None
+    return list(members)
+
+
+def _reaches_critical(
+    entity_id: str,
+    registry: frozenset[str],
+    attributes: AttributeLookup,
+    depth: int,
+    trail: tuple[str, ...],
+) -> bool:
+    if entity_id in registry:
+        return True
+    if depth > MAX_GROUP_DEPTH or entity_id in trail:
+        return True  # nesting too deep, or a cycle: Home cannot tell what it would move
+    cached = attributes(entity_id)
+    if cached is None:
+        return True  # absent from the cache: Home cannot tell whether it is a group
+    if "entity_id" not in cached:
+        return False  # an ordinary entity, not a group
+    members = _group_members(cached)
+    if members is None:
+        return True  # malformed member list
+    return any(
+        _reaches_critical(member, registry, attributes, depth + 1, (*trail, entity_id))
+        for member in members
+    )
+
+
+def names_critical_entity(
+    domain: str,
+    service: str,
+    target: dict[str, Any] | None,
+    data: dict[str, Any] | None,
+    *,
+    registry: frozenset[str] | None,
+    attributes: AttributeLookup,
+) -> bool:
+    """Whether a call must be treated as naming a critical entity.
+
+    ``registry`` is the owner's critical set, or ``None`` when it could not be read, which
+    fails closed: every call except a ``safe`` read names a critical entity. With an empty
+    registry nothing changes. Otherwise a call is critical when it is an indirect actuator,
+    when its target is not an explicit entity list, or when a target is critical itself, is
+    missing from ``attributes``, or is a group whose members (followed through nested groups)
+    are critical or cannot be read. ``attributes`` is the module's cache, not a fresh read.
+    """
+    if classify_actuation(domain, service) is ActuationRisk.SAFE:
+        return False
+    if registry is None:
+        return True
+    if not registry:
+        return False
+    if is_indirect_actuator(domain, service):
+        return True
+    entities = target_entity_ids(target)
+    if not entities or DATA_TARGET_SELECTORS.intersection(data or {}):
+        return True
+    return any(_reaches_critical(entity, registry, attributes, 0, ()) for entity in entities)
+
+
+async def read_critical_registry(pool: Any, *, deadline: float = 2.0) -> frozenset[str] | None:
+    """The owner's critical entity ids, read now; ``None`` when they cannot be read.
+
+    A missing table, a query error, a timeout or an unexpected row shape is "unreadable", never
+    "empty": the caller treats every call as naming a critical entity.
+    """
+    try:
+        rows = await asyncio.wait_for(
+            pool.fetch("SELECT entity_id FROM critical_entities"), deadline
+        )
+        entity_ids = [row["entity_id"] for row in rows]
+        if not all(type(entity_id) is str for entity_id in entity_ids):
+            return None
+        return frozenset(entity_ids)
+    except Exception:  # noqa: BLE001 - any failure to read the registry fails closed.
+        logger.warning("home.critical_entities unreadable; treating every call as critical")
+        return None
+
+
 def rollback_hint(
     domain: str,
     service: str,
@@ -333,11 +480,17 @@ def verify_post_condition(
 
 
 __all__ = [
+    "CRITICAL_REASON",
+    "MAX_GROUP_DEPTH",
     "ActuationRisk",
+    "AttributeLookup",
     "Verification",
     "EffectiveActuationRisk",
     "DATA_TARGET_SELECTORS",
     "effective_actuation_risk",
+    "is_indirect_actuator",
+    "names_critical_entity",
+    "read_critical_registry",
     "snapshot_actuation_arguments",
     "classify_actuation",
     "rollback_hint",

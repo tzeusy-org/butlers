@@ -816,6 +816,7 @@ class TestToolBehaviors:
         client = MagicMock()
         client.post = AsyncMock()
         pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=[])
         pool.execute = AsyncMock(side_effect=RuntimeError("receipt store unavailable"))
         db = MagicMock()
         db.pool = pool
@@ -1028,7 +1029,9 @@ class TestHASourceHealthRecording:
 
 
 # Argument-aware actuation cohorts exercise the registered tool, not a classifier stub.
-async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
+async def _registered_actuation(
+    mock_mcp, monkeypatch, args, *, units=None, registry=(), cache=None
+):
     from butlers.modules._roster_home import CachedEntity
 
     module = HomeAssistantModule()
@@ -1036,6 +1039,11 @@ async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
     pool.execute = AsyncMock(return_value="UPDATE 1")
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetchval = AsyncMock(return_value=None)  # not a departure fix: the replay gate passes
+    # An empty critical registry changes nothing; an Exception makes it unreadable.
+    if isinstance(registry, Exception):
+        pool.fetch = AsyncMock(side_effect=registry)
+    else:
+        pool.fetch = AsyncMock(return_value=[{"entity_id": entity_id} for entity_id in registry])
     db = MagicMock()
     db.pool = pool
     await module.register_tools(mock_mcp, {}, db, "home")
@@ -1058,6 +1066,10 @@ async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
     for entity_id, unit in (units or {}).items():
         module._entity_cache[entity_id] = CachedEntity(
             entity_id=entity_id, state="on", attributes={"temperature_unit": unit}
+        )
+    for entity_id, attributes in (cache or {}).items():
+        module._entity_cache[entity_id] = CachedEntity(
+            entity_id=entity_id, state="on", attributes=attributes
         )
     park = AsyncMock()
     audit = AsyncMock()
@@ -1793,3 +1805,195 @@ async def test_ws_malformed_frame_withholds_content_and_keeps_valid_delivery(
     ha_module._dispatch_ws_message.assert_awaited_once_with({"type": "pong"})
     assert secret not in caplog.text
     assert any("invalid" in r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Critical entities: the registry gate in _call_service (bu-jv1moa.122,
+# REQ-module-home-assistant-002, RFC 0028 Amendment 1)
+# ---------------------------------------------------------------------------
+
+
+def _light(entity_id="light.fixture", service="turn_on", data=None):
+    return {
+        "domain": entity_id.split(".")[0],
+        "service": service,
+        "target": {"entity_id": entity_id},
+        "data": data,
+    }
+
+
+def _assert_parked_critical(case, args, result, *, risk="consequential"):
+    assert result["status"] == "pending_approval"
+    assert result["risk"] == risk
+    case.client.post.assert_not_awaited()
+    case.client.get.assert_not_awaited()
+    case.pool.execute.assert_not_awaited()
+    assert case.park.await_count == 1
+    stored = case.park.await_args.kwargs
+    assert stored["tool_args"] == args
+    assert "critical_entity" in stored["why"]
+
+
+async def test_a_reversible_call_on_a_critical_entity_parks_and_others_still_run(
+    mock_mcp, monkeypatch
+):
+    critical = _light("light.freezer_lamp")
+    case = await _registered_actuation(
+        mock_mcp, monkeypatch, critical, registry=["light.freezer_lamp"]
+    )
+    result = await case.tool(**critical)
+    _assert_parked_critical(case, critical, result)
+    assert "freezer_lamp" not in case.park.await_args.kwargs["why"]
+
+    ordinary = _light("light.fixture")
+    case = await _registered_actuation(
+        mock_mcp,
+        monkeypatch,
+        ordinary,
+        registry=["light.freezer_lamp"],
+        cache={"light.fixture": {}},
+    )
+    _assert_automatic(case, ordinary, await case.tool(**ordinary), "non_critical_light")
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"domain": "light", "service": "turn_off", "target": {"area_id": "kitchen"}, "data": None},
+        {"domain": "light", "service": "turn_off", "target": {"entity_id": "all"}, "data": None},
+        {"domain": "scene", "service": "turn_on", "target": {"entity_id": "scene.x"}, "data": None},
+        {"domain": "script", "service": "night", "target": None, "data": None},
+        {
+            "domain": "automation",
+            "service": "trigger",
+            "target": {"entity_id": "automation.x"},
+            "data": None,
+        },
+        {
+            "domain": "homeassistant",
+            "service": "turn_off",
+            "target": {"entity_id": "light.fixture"},
+            "data": None,
+        },
+        {
+            "domain": "button",
+            "service": "press",
+            "target": {"entity_id": "button.x"},
+            "data": None,
+        },
+    ],
+    ids=["area", "all", "scene", "script", "automation", "homeassistant", "button"],
+)
+async def test_broad_and_indirect_calls_park_as_critical_while_the_registry_is_non_empty(
+    mock_mcp, monkeypatch, args
+):
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["switch.freezer"])
+    result = await case.tool(**args)
+    assert result["status"] == "pending_approval"
+    assert "critical_entity" in case.park.await_args.kwargs["why"]
+    case.client.post.assert_not_awaited()
+
+
+async def test_a_group_with_a_critical_member_parks_and_an_unrelated_group_runs(
+    mock_mcp, monkeypatch
+):
+    cache = {
+        "switch.bad_group": {"entity_id": ["switch.lamp", "switch.freezer"]},
+        "switch.good_group": {"entity_id": ["switch.lamp", "switch.fan_plug"]},
+        "switch.lamp": {},
+        "switch.fan_plug": {},
+        "switch.freezer": {},
+    }
+    bad = _light("switch.bad_group", "turn_off")
+    case = await _registered_actuation(
+        mock_mcp, monkeypatch, bad, registry=["switch.freezer"], cache=cache
+    )
+    _assert_parked_critical(case, bad, await case.tool(**bad))
+
+    good = _light("switch.good_group", "turn_off")
+    case = await _registered_actuation(
+        mock_mcp, monkeypatch, good, registry=["switch.freezer"], cache=cache
+    )
+    _assert_automatic(case, good, await case.tool(**good), "unrelated_group")
+
+
+async def test_an_entity_missing_from_the_cache_parks_while_the_registry_is_non_empty(
+    mock_mcp, monkeypatch
+):
+    args = _light("light.unseen")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["switch.freezer"])
+    _assert_parked_critical(case, args, await case.tool(**args))
+
+
+@pytest.mark.parametrize(
+    "failure", [asyncpg.UndefinedTableError("critical_entities"), TimeoutError(), OSError("down")]
+)
+async def test_an_unreadable_registry_parks_a_reversible_call(mock_mcp, monkeypatch, failure):
+    args = _light()
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=failure)
+    _assert_parked_critical(case, args, await case.tool(**args))
+
+
+async def test_a_safe_read_is_not_promoted_even_when_the_registry_is_unreadable(
+    mock_mcp, monkeypatch
+):
+    args = {
+        "domain": "homeassistant",
+        "service": "update_entity",
+        "target": {"entity_id": "light.fixture"},
+        "data": None,
+    }
+    for registry in (["light.fixture"], RuntimeError("down")):
+        case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=registry)
+        result = await case.tool(**args)
+        assert result["risk"] == "safe"
+        assert result["status"] != "pending_approval"
+        case.park.assert_not_awaited()
+
+
+async def _replay(case, args, actor):
+    task = asyncio.current_task()
+    context = ApprovalExecutionContext(
+        action_id=uuid.uuid4(),
+        session_id=None,
+        actor=actor,
+        tool_name="ha_call_service",
+        tool_args_digest=approval_tool_args_digest(args),
+        authorized_task=task,
+    )
+    token = set_approval_execution_context(context)
+    try:
+        return await case.tool(**args)
+    finally:
+        reset_approval_execution_context(token)
+
+
+@pytest.mark.parametrize("actor", ["rule:7", "system:approval_gate", "system:capability_broker"])
+async def test_no_shortcut_approves_a_critical_call(mock_mcp, monkeypatch, actor):
+    args = _light("light.freezer_lamp")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    result = await _replay(case, args, actor)
+
+    assert result["status"] == "not_run"
+    assert result["reason"] == "critical_needs_owner_approval"
+    case.client.post.assert_not_awaited()
+    case.pool.execute.assert_not_awaited()
+    case.park.assert_not_awaited()
+
+
+async def test_the_owner_approval_of_the_stored_critical_call_runs_it_once(mock_mcp, monkeypatch):
+    args = _light("light.freezer_lamp")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "succeeded"
+    case.client.post.assert_awaited_once()
+
+
+async def test_an_ordinary_call_still_runs_on_a_rule_approval(mock_mcp, monkeypatch):
+    args = _light("light.fixture")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["switch.freezer"])
+    case.module._entity_cache["light.fixture"] = MagicMock(attributes={})
+    result = await _replay(case, args, "rule:7")
+
+    assert result["status"] == "succeeded"
