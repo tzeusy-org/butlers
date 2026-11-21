@@ -47,6 +47,7 @@ Usage::
 from __future__ import annotations
 
 import logging
+import math
 import random
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -388,8 +389,8 @@ def _parse_retry_after(raw: str | None) -> float | None:
     """Parse a ``Retry-After`` header into a float seconds value.
 
     Google Health returns either an integer number of seconds or an
-    HTTP-date. For the HTTP-date case we do not try to convert; returning
-    ``None`` signals the caller to fall back to exponential backoff.
+    HTTP-date. Unsupported HTTP-dates and invalid delays return ``None``,
+    so the caller falls back to exponential backoff.
     """
     if raw is None:
         return None
@@ -397,9 +398,10 @@ def _parse_retry_after(raw: str | None) -> float | None:
     if not stripped:
         return None
     try:
-        return float(stripped)
+        delay = float(stripped)
     except ValueError:
         return None
+    return delay if math.isfinite(delay) and delay >= 0 else None
 
 
 def _parse_source_precondition(
