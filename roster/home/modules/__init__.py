@@ -53,6 +53,8 @@ from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registra
 from .actuation import (
     CRITICAL_REASON,
     DATA_TARGET_SELECTORS,
+    MAX_GROUP_DEPTH,
+    MAX_GROUP_READS,
     PRE_STATE_MAX_AGE_SECONDS,
     SETTLED_WITHOUT_ATTENTION,
     ActuationRisk,
@@ -2492,6 +2494,60 @@ class HomeAssistantModule(Module):
         if not str(updated).endswith(" 1"):
             raise RuntimeError(f"Actuation receipt {attempt_id} could not be settled")
 
+    async def _read_live_state(self, client: Any, entity_id: str) -> dict[str, Any]:
+        response = await client.get(f"/api/states/{quote(entity_id, safe='.')}")
+        response.raise_for_status()
+        state = response.json()
+        return {
+            "state": state.get("state"),
+            "attributes": state.get("attributes") or {},
+            "last_updated": state.get("last_updated"),
+        }
+
+    async def _read_group_leaves(
+        self,
+        client: Any,
+        members: Any,
+        depth: int,
+        trail: tuple[str, ...],
+        budget: list[int],
+    ) -> dict[str, dict[str, Any]] | None:
+        """Live states of a group's leaf members through nested groups, or ``None``.
+
+        ``None`` (the group cannot be verified) on a malformed member list, a cycle, nesting past
+        ``MAX_GROUP_DEPTH`` or more than ``MAX_GROUP_READS`` reads. A member whose own read fails
+        is kept as ``{"error": ...}``: it never matches a post-condition.
+        """
+        if (
+            not isinstance(members, list)
+            or not members
+            or depth > MAX_GROUP_DEPTH
+            or not all(isinstance(m, str) and _ENTITY_ID_RE.match(m) for m in members)
+        ):
+            return None
+        leaves: dict[str, dict[str, Any]] = {}
+        for member in dict.fromkeys(members):
+            if member in trail:
+                return None
+            budget[0] -= 1
+            if budget[0] < 0:
+                return None
+            try:
+                state = await self._read_live_state(client, member)
+            except Exception as exc:
+                leaves[member] = {"error": str(exc)}
+                continue
+            if "entity_id" in state["attributes"]:
+                nested = await self._read_group_leaves(
+                    client, state["attributes"]["entity_id"], depth + 1, (*trail, member), budget
+                )
+                if nested is None:
+                    return None
+                leaves.update(nested)
+            else:
+                leaves[member] = state
+        return leaves
+
     async def _observe_target_states(
         self, target: dict[str, Any] | None
     ) -> dict[str, dict[str, Any]]:
@@ -2499,16 +2555,19 @@ class HomeAssistantModule(Module):
         observed: dict[str, dict[str, Any]] = {}
         for entity_id in target_entity_ids(target):
             try:
-                response = await client.get(f"/api/states/{quote(entity_id, safe='.')}")
-                response.raise_for_status()
-                state = response.json()
-                observed[entity_id] = {
-                    "state": state.get("state"),
-                    "attributes": state.get("attributes") or {},
-                    "last_updated": state.get("last_updated"),
-                }
+                observed[entity_id] = await self._read_live_state(client, entity_id)
             except Exception as exc:
                 observed[entity_id] = {"error": str(exc)}
+                continue
+            attributes = observed[entity_id]["attributes"]
+            if "entity_id" in attributes:
+                leaves = await self._read_group_leaves(
+                    client, attributes["entity_id"], 1, (entity_id,), [MAX_GROUP_READS]
+                )
+                if leaves is None:
+                    observed[entity_id]["members_unreadable"] = True
+                else:
+                    observed[entity_id]["members"] = leaves
         return observed
 
     async def _emit_actuation_event(

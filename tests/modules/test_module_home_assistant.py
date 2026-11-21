@@ -2279,3 +2279,129 @@ async def test_a_group_target_is_never_already_satisfied_from_its_aggregate_stat
 
     assert result["status"] != "already_satisfied"
     case.client.post.assert_awaited_once()
+
+
+def _group_states(states):
+    """Serve ``GET /api/states/<id>`` from {entity_id: (state, attributes) | Exception}."""
+
+    async def get(path):
+        entity_id = path.removeprefix("/api/states/")
+        item = states[entity_id]
+        if isinstance(item, Exception):
+            raise item
+        response = MagicMock()
+        response.json.return_value = {
+            "state": item[0],
+            "attributes": item[1],
+            "last_updated": "2026-11-21T00:00:00Z",
+        }
+        return response
+
+    return AsyncMock(side_effect=get)
+
+
+async def _turn_on_group(mock_mcp, monkeypatch, states):
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.group"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    case.client.get = _group_states(states)
+    return await case.tool(**args)
+
+
+_GROUP = ("on", {"entity_id": ["light.a", "light.b"]})
+
+
+async def test_a_group_succeeds_only_when_every_member_satisfies_the_post_condition(
+    mock_mcp, monkeypatch
+):
+    result = await _turn_on_group(
+        mock_mcp,
+        monkeypatch,
+        {"light.group": _GROUP, "light.a": ("on", {}), "light.b": ("on", {})},
+    )
+
+    assert result["status"] == "succeeded"
+    assert "attention_required" not in result
+    members = result["observed_state"]["light.group"]["members"]
+    assert set(members) == {"light.a", "light.b"}
+
+
+async def test_a_half_on_group_is_unverified_never_succeeded(mock_mcp, monkeypatch):
+    result = await _turn_on_group(
+        mock_mcp,
+        monkeypatch,
+        {"light.group": _GROUP, "light.a": ("on", {}), "light.b": ("off", {})},
+    )
+
+    assert result["status"] == "unverified"
+    assert result["attention_required"] is True
+    assert "light.b" in result["error"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [RuntimeError("member read failed"), ("unavailable", {}), ("unknown", {})],
+    ids=["read-failure", "unavailable", "unknown"],
+)
+async def test_an_unreadable_or_unavailable_member_leaves_the_group_unverified(
+    mock_mcp, monkeypatch, bad
+):
+    result = await _turn_on_group(
+        mock_mcp,
+        monkeypatch,
+        {"light.group": _GROUP, "light.a": ("on", {}), "light.b": bad},
+    )
+
+    assert result["status"] == "unverified"
+    assert result["attention_required"] is True
+
+
+async def test_nested_groups_are_verified_through_their_leaves(mock_mcp, monkeypatch):
+    states = {
+        "light.group": ("on", {"entity_id": ["light.inner", "light.b"]}),
+        "light.inner": ("on", {"entity_id": ["light.a"]}),
+        "light.a": ("on", {}),
+        "light.b": ("on", {}),
+    }
+    assert (await _turn_on_group(mock_mcp, monkeypatch, states))["status"] == "succeeded"
+    states["light.a"] = ("off", {})
+    assert (await _turn_on_group(mock_mcp, monkeypatch, states))["status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "states",
+    [
+        {  # a cycle back to the group
+            "light.group": ("on", {"entity_id": ["light.inner"]}),
+            "light.inner": ("on", {"entity_id": ["light.group"]}),
+        },
+        {"light.group": ("on", {"entity_id": []})},
+        {"light.group": ("on", {"entity_id": ["light.ok", 7]}), "light.ok": ("on", {})},
+        {  # nesting deeper than 8
+            **{f"light.g{i}": ("on", {"entity_id": [f"light.g{i + 1}"]}) for i in range(12)},
+            "light.group": ("on", {"entity_id": ["light.g0"]}),
+        },
+    ],
+    ids=["cycle", "empty", "malformed", "too-deep"],
+)
+async def test_an_unreadable_group_structure_is_unverified(mock_mcp, monkeypatch, states):
+    assert (await _turn_on_group(mock_mcp, monkeypatch, states))["status"] == "unverified"
+
+
+def test_verify_post_condition_reads_a_groups_members_never_its_aggregate():
+    base = {"state": "on", "attributes": {"entity_id": ["light.a", "light.b"]}}
+    members = {"light.a": {"state": "on"}, "light.b": {"state": "on"}}
+    verify = ha_actuation.verify_post_condition
+    assert verify("light", "turn_on", None, {"light.group": {**base, "members": members}}).verified
+    assert not verify("light", "turn_on", None, {"light.group": base}).verified
+    assert not verify(
+        "light", "turn_on", None, {"light.group": {**base, "members_unreadable": True}}
+    ).verified
+    half = {"light.a": {"state": "on"}, "light.b": {"state": "off"}}
+    assert not verify("light", "turn_on", None, {"light.group": {**base, "members": half}}).verified
+    plain = {"light.a": {"state": "on", "attributes": {"brightness": 5}}}
+    assert verify("light", "turn_on", None, plain).verified

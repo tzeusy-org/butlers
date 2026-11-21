@@ -292,6 +292,8 @@ def effective_actuation_risk(
 CRITICAL_REASON = "critical_entity"
 #: Nesting deeper than this (or a cycle, or an unreadable member list) counts as critical.
 MAX_GROUP_DEPTH = 8
+#: Most member reads one group verification makes; more is treated as unreadable.
+MAX_GROUP_READS = 64
 _INDIRECT_PAIRS = frozenset(
     {("scene", "turn_on"), ("script", "turn_on"), ("automation", "trigger")}
 )
@@ -462,6 +464,28 @@ class Verification:
     reason: str | None
 
 
+def _verification_targets(
+    observed: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The leaf states to verify, and the groups whose members were not (all) read.
+
+    A group's own state aggregates its members, so it is replaced by the member states the
+    module read (``members``); a group without them cannot be verified.
+    """
+    leaves: dict[str, dict[str, Any]] = {}
+    blocked: list[str] = []
+    for entity_id, state in observed.items():
+        if "entity_id" not in (state.get("attributes") or {}):
+            leaves[entity_id] = state
+            continue
+        members = state.get("members")
+        if state.get("members_unreadable") or not isinstance(members, dict) or not members:
+            blocked.append(entity_id)
+        else:
+            leaves.update(members)
+    return leaves, blocked
+
+
 def verify_post_condition(
     domain: str,
     service: str,
@@ -471,6 +495,15 @@ def verify_post_condition(
     """Compare live post-call entity states with the service's declared effect."""
     if not observed:
         return Verification(False, "no explicit entity target was available for verification")
+
+    observed, blocked = _verification_targets(observed)
+    if blocked:
+        # A group reads "on" when any member is on: only its members, each read, can verify it.
+        return Verification(
+            False,
+            f"group target {', '.join(sorted(blocked))}: its members could not all be read, "
+            "so its aggregate state cannot verify every member",
+        )
 
     expected_state = _EXPECTED_STATES.get((domain, service))
     if expected_state is not None:
@@ -516,6 +549,7 @@ __all__ = [
     "satisfied_by_pre_state",
     "CRITICAL_REASON",
     "MAX_GROUP_DEPTH",
+    "MAX_GROUP_READS",
     "ActuationRisk",
     "AttributeLookup",
     "Verification",
