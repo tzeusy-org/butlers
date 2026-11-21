@@ -1430,6 +1430,12 @@ ledger for a research call.
   the outgoing message references a handle and the broker resolves it to a
   ledger entry whose URL matches exactly. The model supplies the handle, not
   the URL.
+- A live link carries the recorded URL with its query string and fragment
+  removed, because a citation URL's query string is an exfiltration channel if a
+  poisoned page cited it. The exception is a citation recorded from an
+  owner-approved live search (c), whose full URL may be delivered. This is the
+  recommended default; the alternative, delivering the full recorded URL for
+  every handle, is left to the owner.
 - A URL the model wrote, a URL that differs in any way from the recorded one
   (scheme, host, path, query, fragment or a redirect target), an opened URL that
   was not a citation, and any handle that is unknown, belongs to another goal,
@@ -1491,6 +1497,23 @@ live search per event.
 approval is not a standing-rule exemption and does not count toward
 standing-rule promotion. D20's research host, egress rules, eligibility proof,
 budget and lifecycle, and its exclusion of third-party goals are unchanged.
+
+**Where it lands on adoption.** The requirement is proposed as
+`REQ-capability-authorization-025` in the change
+`openspec/changes/propose-d20-live-research-refinements` and binds nothing
+until adoption. On adoption `about/heart-and-soul/security.md` gains this
+paragraph after its Web research paragraph (it carries no proposed text until
+then):
+
+> Three refinements relax the rules above, and only these three: a URL the
+> broker recorded as a research citation may reach the owner as a live link
+> through a broker-issued handle, with its query string and fragment removed
+> unless it came from an owner-approved live search, while every other URL
+> stays inert; an owner-pinned research probe, run by deterministic code with
+> no goal data, may run live; and the owner may approve one live search per
+> event from an exposed goal, after seeing its exact question, instead of the
+> cached default. Third-party goals still never research, and nothing here adds
+> a credential or spend.
 
 **Release.** Adoption of this text authorizes no implementation or operational
 step. Live behavior stays behind the research dark-build gates and the default-off
