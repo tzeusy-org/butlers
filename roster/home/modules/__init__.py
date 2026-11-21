@@ -50,9 +50,12 @@ from butlers.modules.approvals.execution_context import get_approval_execution_c
 from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registrar
 
 from .actuation import (
+    CRITICAL_REASON,
     DATA_TARGET_SELECTORS,
     ActuationRisk,
     effective_actuation_risk,
+    names_critical_entity,
+    read_critical_registry,
     rollback_hint,
     snapshot_actuation_arguments,
     target_entity_ids,
@@ -1785,6 +1788,11 @@ class HomeAssistantModule(Module):
         results.sort(key=lambda x: x["entity_id"])
         return results
 
+    def _cached_attributes(self, entity_id: str) -> dict[str, Any] | None:
+        """Cached attributes for group expansion; ``None`` when Home has not seen the entity."""
+        cached = self._entity_cache.get(entity_id)
+        return None if cached is None else cached.attributes
+
     async def _call_service(
         self,
         domain: str,
@@ -1846,6 +1854,19 @@ class HomeAssistantModule(Module):
             if entity_id in self._entity_cache
         }
         effective = effective_actuation_risk(domain, service, target, data, temperature_units=units)
+        # REQ-module-home-assistant-002: the registry is read in this evaluation, never cached
+        # past it. An unreadable registry makes every call critical.
+        registry = await read_critical_registry(pool)
+        critical = names_critical_entity(
+            domain,
+            service,
+            target,
+            data,
+            registry=registry,
+            attributes=self._cached_attributes,
+        )
+        if critical:
+            effective = effective.as_critical()
         risk = effective.risk
         from butlers.modules.party_approval import parties_are_owner
 
@@ -1874,7 +1895,9 @@ class HomeAssistantModule(Module):
                 risk=risk,
                 session_id=session_id,
                 why=(
-                    "non-owner communication requires owner approval; physical risk: " + risk.value
+                    "non-owner communication requires owner approval; physical risk: "
+                    + risk.value
+                    + (f"; {CRITICAL_REASON}" if effective.critical else "")
                     if not owner_only
                     else effective.approval_reason
                 ),
@@ -1896,6 +1919,17 @@ class HomeAssistantModule(Module):
             payload["target"] = target
 
         if approval_context is not None:
+            # A critical call needs its own owner approval of the stored call: a standing rule,
+            # suggestion, capability grant or system actor never stands in for it
+            # (REQ-module-home-assistant-002). Refused before any receipt or request.
+            if effective.critical and not approval_context.actor.startswith("human:"):
+                return {
+                    "status": "not_run",
+                    "risk": risk.value,
+                    "approval_id": str(approval_context.action_id),
+                    "error": "A critical call runs only on the owner's own approval.",
+                    "reason": "critical_needs_owner_approval",
+                }
             # A departure fix replays only while the leave edge it was parked for is still the
             # latest confirmed owner.place edge (REQ-home-deterministic-jobs-009). Refused here,
             # before any receipt or request: nothing is sent and the row stays approved.
