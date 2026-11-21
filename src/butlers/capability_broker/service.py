@@ -28,7 +28,7 @@ from butlers.core.goal_labels import Label, output_label
 from butlers.core.owner_policy import PolicyHold
 from butlers.core.resource_pairs import encode_pair, pair_key
 
-from .actuation import rfc0028_actuation_risk
+from .actuation import CriticalRegistryReader, critical_actuation_risk, rfc0028_actuation_risk
 from .aliases import AliasResolver, Resolution, canonical_policy, resolve_args
 from .assertions import GOAL_PRINCIPAL, LIFETIME_SECONDS, AssertionSigner
 from .boundaries import BoundaryLedger, Extractor, content_bytes, extraction_key
@@ -120,6 +120,7 @@ class Broker:
         signer: AssertionSigner | None,
         *,
         actuation_risk: ActuationRiskMap = rfc0028_actuation_risk,
+        critical_registry: CriticalRegistryReader | None = None,
         clock: Callable[[], float] = time.time,
         transaction_timeout: float = 5,
         forward_timeout: float = 30,
@@ -136,6 +137,9 @@ class Broker:
         # call proceeds under its normal checks.
         self.health, self.health_timeout = health, health_timeout
         self.actuation_risk = actuation_risk
+        # REQ-module-home-assistant-002: the owner's critical-entity registry. Without a
+        # reader every Home call but a safe read is `unknown`, which parks per event.
+        self.critical_registry = critical_registry
         # M7 (bu-4c7nvp.1.2), dark: the quarantined extraction model, and whether
         # a committed result that would newly expose its reader is held behind a
         # handle. Off, the first-switch read path is unchanged.
@@ -330,7 +334,9 @@ class Broker:
         args = resolution.args
         recipient = await classify_recipients(ledger.connection, capability, args)
         risk = (
-            self.actuation_risk(capability, args)
+            await critical_actuation_risk(
+                self.actuation_risk(capability, args), capability, args, self.critical_registry
+            )
             if capability.effect_class == "actuate"
             else "safe"
         )

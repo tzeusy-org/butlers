@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from butlers.capability_broker.actuation import rfc0028_actuation_risk
+from butlers.capability_broker.actuation import critical_actuation_risk, rfc0028_actuation_risk
 from butlers.capability_broker.contracts import Capability, Decision, Disposition
 from butlers.capability_broker.policy import decide
 from butlers.capability_broker.recipients import classify_recipients
@@ -115,3 +115,93 @@ def test_undeclared_or_risky_actuation_stays_parked_per_event(cap, args):
 
 def test_the_broker_reads_the_rfc0028_map_by_default():
     assert Broker(None, None, None, None).actuation_risk is rfc0028_actuation_risk
+
+
+# --- Critical entities (bu-jv1moa.122, REQ-module-home-assistant-002) -----------------------
+
+
+def _registry(*entity_ids):
+    async def read():
+        return frozenset(entity_ids)
+
+    return read
+
+
+async def _critical_risk(cap, args, reader):
+    return await critical_actuation_risk(rfc0028_actuation_risk(cap, args), cap, args, reader)
+
+
+async def test_a_goal_call_naming_a_critical_entity_is_consequential_and_parks_per_event():
+    risk = await _critical_risk(HA_CALL, LIGHT_ON, _registry("light.kitchen"))
+    assert risk == "consequential"
+    cap = capability("ha_call_service", "actuate", "home", approval_gate=True)
+    grant = Grant(cap.identity)
+    decision = decide(principal(grant), cap, grant, "none", risk)
+    assert decision == Decision(Disposition.PARK, allow_standing_rule=False)
+
+
+async def test_an_empty_or_unrelated_registry_leaves_the_tier_alone():
+    assert await _critical_risk(HA_CALL, LIGHT_ON, _registry()) == "safe"
+    assert await _critical_risk(HA_CALL, LIGHT_ON, _registry("switch.freezer")) == "safe"
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {**LIGHT_ON, "target": {"area_id": "kitchen"}},
+        {"domain": "scene", "service": "turn_on"},
+        {"domain": "button", "service": "press", "target": {"entity_id": "button.x"}},
+    ],
+)
+async def test_broad_and_indirect_goal_calls_stay_parked_while_the_registry_is_non_empty(args):
+    assert await _critical_risk(HA_CALL, args, _registry("switch.freezer")) in {
+        "consequential",
+        "protected",
+    }
+
+
+async def test_a_scene_naming_a_critical_entity_never_gets_cheaper():
+    args = {"entity_id": "scene.movie_night"}
+    assert await _critical_risk(HA_SCENE, args, _registry("light.kitchen")) == "consequential"
+
+
+async def test_an_unreadable_registry_makes_every_home_call_unknown():
+    async def failing():
+        raise RuntimeError("table missing")
+
+    async def hanging():
+        import asyncio
+
+        await asyncio.sleep(60)
+
+    async def malformed():
+        return None
+
+    for reader in (None, failing, malformed):
+        assert await _critical_risk(HA_CALL, LIGHT_ON, reader) == "unknown"
+        assert await _critical_risk(HA_SCENE, {"entity_id": "scene.x"}, reader) == "unknown"
+    # A reader that never answers is cut off, not awaited.
+    import butlers.capability_broker.actuation as adapter
+
+    original = adapter._REGISTRY_TIMEOUT
+    adapter._REGISTRY_TIMEOUT = 0.01
+    try:
+        assert await _critical_risk(HA_CALL, LIGHT_ON, hanging) == "unknown"
+    finally:
+        adapter._REGISTRY_TIMEOUT = original
+
+
+async def test_a_safe_read_and_non_home_capabilities_are_never_promoted():
+    refresh = {"domain": "homeassistant", "service": "update_entity"}
+    for reader in (None, _registry("light.kitchen")):
+        assert await _critical_risk(HA_CALL, refresh, reader) == "safe"
+    other = capability("spotify_play", "actuate", "music")
+    assert await _critical_risk(other, {}, None) == "unknown"
+
+
+async def test_the_broker_carries_the_registry_reader_and_defaults_to_none():
+    """No reader means a Home call is unknown and parks per event (see the cases above)."""
+    broker = Broker(None, None, None, None)
+    assert broker.critical_registry is None
+    wired = Broker(None, None, None, None, critical_registry=_registry("light.kitchen"))
+    assert await wired.critical_registry() == frozenset({"light.kitchen"})
