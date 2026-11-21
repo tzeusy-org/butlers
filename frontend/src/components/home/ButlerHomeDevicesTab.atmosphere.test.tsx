@@ -44,6 +44,17 @@ vi.mock("@/hooks/use-home-departure-fixes.ts", () => {
   };
 });
 
+// Critical entities are not under test here either.
+vi.mock("@/hooks/use-home-critical-entities.ts", () => {
+  const loading = { isLoading: true, isError: false, data: undefined, refetch: () => undefined };
+  const idle = { mutate: () => undefined, isPending: false, isError: false };
+  return {
+    useHomeCriticalEntities: () => loading,
+    useSaveCriticalEntity: () => idle,
+    useDeleteCriticalEntity: () => idle,
+  };
+});
+
 import ButlerHomeDevicesTab from "./ButlerHomeDevicesTab.tsx";
 
 const unconfigured: HomeAtmosphereCurrentResponse = {
