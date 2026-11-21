@@ -158,7 +158,7 @@ MCP surface uses them; every failure below leaves the rest of Butlers unaffected
 
 | Dependency | Used By | Purpose | Failure Impact |
 |---|---|---|---|
-| **Cloudflare Worker** (`mcp.tze.how`) | Public MCP gateway | OAuth 2.1 + PKCE, client and user allowlist, per-call assertion signing (holds the Ed25519 private key) | Clients cannot connect |
+| **Cloudflare Worker** (the gateway host) | Public MCP gateway | OAuth 2.1 + PKCE, client and user allowlist, per-call assertion signing (holds the Ed25519 private key) | Clients cannot connect |
 | **GitHub OAuth** | Worker | Owner identity; the numeric GitHub id is the allowlist key | Clients cannot sign in |
 | **cloudflared-mcp, traefik-mcp** (namespace `mcp-gateway` / `mcp`) | Gateway | Tunnel from the Worker's VPC binding; routing to filter-proxy | Surface unreachable |
 | **filter-proxy release `butlers`** (namespace `mcp`) | Gateway | Injects the hop bearer from an ExternalSecret; forwards bytes unchanged (`FIXES` off) | Surface unreachable; any body rewrite fails the assertion body hash |

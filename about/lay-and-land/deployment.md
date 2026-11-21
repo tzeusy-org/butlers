@@ -278,7 +278,7 @@ Accepted design, not deployed:
 Rollout. This is the only Butlers workload meant to be reachable from the internet, and only
 through the owner's gateway.
 
-**Gateway path (owner-operated, homelab repo).** Cloudflare Worker at `mcp.tze.how` (OAuth 2.1
+**Gateway path (owner-operated, homelab repo).** Cloudflare Worker at the gateway host (OAuth 2.1
 with PKCE, GitHub-id allowlist, strips inbound `x-mcp-*`, signs `X-MCP-Assertion`), then the
 VPC binding to `cloudflared-mcp`, then `traefik-mcp` (watches namespace `mcp` only), then the
 filter-proxy release `butlers` in namespace `mcp` (injects the hop bearer, `FIXES` off). Its

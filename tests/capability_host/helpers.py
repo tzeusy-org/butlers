@@ -29,7 +29,7 @@ from butlers.testing.runtime_probe_control import current_entry, keyring_documen
 
 SEED = bytes(range(32))
 KID = "mcp-gateway-test-v1"
-AUD = "https://mcp.tze.how/butlers"
+AUD = "https://mcp.example.com/butlers"
 SUB = "4242"
 CID = "https://claude.ai/oauth/mcp-oauth-client-metadata"
 CID2 = "https://chatgpt.com/connector/oauth/client.json"

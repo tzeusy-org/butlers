@@ -45,7 +45,7 @@ owner holds kill switches. The exception does not generalize. See
 
 The owner's own AI clients (ChatGPT, including its Dots agent, and claude.ai)
 get read access to Butlers data over MCP, through the owner's existing
-Cloudflare gateway at `mcp.tze.how`. The rules of the surface:
+Cloudflare gateway. The rules of the surface:
 
 - **A separate deterministic server.** `butlers.mcp_public` (thin FastMCP
   stateless-HTTP entrypoint) over `butlers.capability_host` (auth,
@@ -1328,7 +1328,7 @@ when it has done so.
 ```text
 v      1
 iss    "mcp-gateway"
-aud    gateway resource URL, e.g. "https://mcp.tze.how/butlers"
+aud    gateway resource URL, e.g. "https://<gateway-host>/butlers"
 sub    GitHub numeric user id, as a string
 cid    OAuth client id (CIMD URL or DCR id), "" when absent
 mth    JSON-RPC method, from the parsed body
@@ -1470,10 +1470,10 @@ ingress in `butlers-<env>` today [Observed], so header trust is unsafe.
    in one Deployment (`deployment.md`), so what limits the importer's access
    is the `mcp_proposals_reader` grant and its `pg_hba` line (D3, D9), not the
    network.
-4. Only the filter-proxy pod carries `mcp.tze.how/exposed=true`. No Butlers
-   namespace joins traefik-mcp's watch list, and traefik never routes to a
-   Butlers Service; the cross-namespace hop is only filter-proxy's
-   `UPSTREAM_URL`.
+4. Only the filter-proxy pod carries the homelab gateway's exposure label.
+   No Butlers namespace joins traefik-mcp's watch list, and traefik never
+   routes to a Butlers Service; the cross-namespace hop is only
+   filter-proxy's `UPSTREAM_URL`.
 5. Non-root, read-only root filesystem, no service-account token,
    `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`.
 6. **Live policy check.** The rendered-chart check covers only the policies
@@ -2452,8 +2452,8 @@ carries no normative text of its own.
 5. `mcp` release `butlers` of `helm/mcp_server`: filter-proxy only,
    `UPSTREAM_URL` at the public Service, `UPSTREAM_BEARER` from an
    ExternalSecret on the **dev** store (not the chart default
-   `bitwarden-secretsmanager-prod`), `FIXES` empty, label
-   `mcp.tze.how/exposed=true`, egress only to the public pod's port.
+   `bitwarden-secretsmanager-prod`), `FIXES` empty, the
+   homelab gateway's exposure label set, egress only to the public pod's port.
 6. Add `butlers` to `MCP_SERVERS`, keep `KNOWN_CLIENT_DOMAINS` at
    `claude.ai,chatgpt.com`, redeploy the Worker.
 7. Uptime Kuma (OD11): add two `json-query` monitors to
