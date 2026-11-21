@@ -234,9 +234,12 @@ async def test_polling_recovers_and_keeps_credentials_out_of_retry_logs(
     retry_logs = [
         record
         for record in caplog.records
-        if record.getMessage() == "Error polling Telegram updates"
+        if record.name == telegram_bot.__name__ and hasattr(record, "consecutive_failures")
     ]
-    assert len(retry_logs) == failures + 1
+    assert [record.consecutive_failures for record in retry_logs] == [
+        *range(1, failures + 1),
+        1,
+    ]
     assert all(
         record.error_type == "http_error" and record.exc_info is None for record in retry_logs
     )
