@@ -105,6 +105,11 @@ class TestEntityCreate:
         result = await entity_create(mock_pool, "Alice", "person")
         assert result == {"entity_id": ENTITY_STR}
 
+    async def test_animal_type_is_accepted(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(return_value=ENTITY_UUID)
+        result = await entity_create(mock_pool, "Rex", "animal")
+        assert result == {"entity_id": ENTITY_STR}
+
     async def test_invalid_type_raises(self, mock_pool: AsyncMock) -> None:
         with pytest.raises(ValueError, match="Invalid entity_type"):
             await entity_create(mock_pool, "Ghost", "ghost")

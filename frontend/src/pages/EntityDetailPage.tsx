@@ -3028,7 +3028,7 @@ export default function EntityDetailPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {["person", "organization", "place", "other"].map((t) => (
+                  {["person", "organization", "place", "animal", "other"].map((t) => (
                     <SelectItem key={t} value={t} className="text-xs capitalize">
                       {t}
                     </SelectItem>

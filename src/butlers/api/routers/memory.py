@@ -2559,7 +2559,7 @@ async def update_entity(
         idx += 1
 
     if body.entity_type is not None:
-        _VALID_ENTITY_TYPES = {"person", "organization", "place", "other"}
+        _VALID_ENTITY_TYPES = {"person", "organization", "place", "animal", "other"}
         if body.entity_type not in _VALID_ENTITY_TYPES:
             raise HTTPException(
                 status_code=400,
