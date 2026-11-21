@@ -94,10 +94,12 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
     CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     CandidateOutcome,
     Complexity,
     DispatchResolution,
     SpendRoutingResult,
+    SpendRulesUnavailable,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
@@ -1851,8 +1853,8 @@ class Spawner:
         # to a real dispatchable catalog row so downstream quota / failover / ledger all
         # operate on the rule-selected model. This is a SELECTION step (which model),
         # distinct from the authorization (permissions) and budget (quota/ceiling) DENY
-        # gates below. apply_spend_routing_rules fails open, so a rules error never
-        # wedges spawns. Only runs on a real catalog resolution (direct_runtime has no
+        # gates below. apply_spend_routing_rules fails closed on an unreadable
+        # rule set (bu-svqpzo.15). Only runs on a real catalog resolution (direct_runtime has no
         # catalog_entry_id to route from).
         # ---------------------------------------------------------------------------
         # Per-call USD cap surfaced by a matching spend rule's action.max_cost_per_call
@@ -1873,6 +1875,7 @@ class Spawner:
         _pre_rule_catalog_entry_id = catalog_entry_id
         _receipt_selection_reason: str | None = None
         _routing_result: SpendRoutingResult | None = None
+        _spend_rules_unavailable = False
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1901,6 +1904,10 @@ class Spawner:
                 ) = _routing_result.resolved
                 _spend_rule_max_cost_per_call = _routing_result.max_cost_per_call
                 _spend_rule_breaker_open = _routing_result.breaker_open
+            except SpendRulesUnavailable:
+                # Fail closed (bu-svqpzo.15): a rule may carry an owner-set per-call cap, so an
+                # unreadable rule set refuses the dispatch below instead of dropping the cap.
+                _spend_rules_unavailable = True
             except Exception:
                 logger.warning(
                     "Spend routing-rule evaluation failed for butler=%s; "
@@ -1985,6 +1992,29 @@ class Spawner:
             selection_reason=_receipt_selection_reason,
         )
         _next_attempt_index = 0
+
+        if _spend_rules_unavailable and catalog_entry_id is not None and self._pool is not None:
+            logger.warning(
+                "Spawn blocked for butler=%s: %s", self._config.name, SPEND_RULES_UNAVAILABLE_REASON
+            )
+            await _write_dispatch_attempt(
+                self._pool,
+                catalog_entry_id=catalog_entry_id,
+                butler=self._config.name,
+                outcome="quota_skip",
+                attempt_index=_next_attempt_index,
+                failure_reason=SPEND_RULES_UNAVAILABLE_REASON,
+                tool_call_count=0,
+                logical_session_id=effective_request_id,
+                purpose_lane=purpose_lane,
+                produce_fleet_halt=False,
+                resolution_receipt=_current_resolution_receipt,
+            )
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
+                error=SPEND_RULES_UNAVAILABLE_REASON,
+                model=model,
+            )
 
         # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
         # spend rule routed to a model whose dispatch-outcome circuit breaker

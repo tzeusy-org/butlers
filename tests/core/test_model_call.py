@@ -33,10 +33,12 @@ from butlers.core.model_call import (
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
     CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     CeilingStatus,
     Complexity,
     QuotaStatus,
     SpendRoutingResult,
+    SpendRulesUnavailable,
 )
 
 pytestmark = pytest.mark.unit
@@ -321,6 +323,35 @@ async def test_spend_rule_errors_keep_the_tier_resolved_model() -> None:
         await _call(_spec(), attempt, sink)
 
     assert attempt.seen[0].model_id == "model-a"
+
+
+async def test_an_unreadable_rule_set_refuses_without_invoking_and_records_why() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+        with pytest.raises(SpendRulesUnavailable) as raised:
+            await _call(_spec(), attempt, sink)
+
+    assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+async def test_an_unreadable_rule_set_refuses_even_when_the_caller_skips_the_ceiling() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+        with pytest.raises(SpendRulesUnavailable):
+            await _call(_spec(enforce_ceiling=False), attempt, sink)
+
+    assert attempt.seen == []
 
 
 # --- spend gate -------------------------------------------------------------------------

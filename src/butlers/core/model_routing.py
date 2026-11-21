@@ -334,6 +334,16 @@ CEILING_UNAVAILABLE_REASON = (
     "Monthly spend ceiling unavailable: the ceiling state could not be read"
 )
 
+# Refusal when the spend-rule set cannot be read (bu-svqpzo.15): a rule may carry an owner-set
+# per-call cap, so an unreadable set must not be treated as "no rule". Distinct from the cap
+# and ceiling reasons, and never prefixed by the reached-ceiling text (no fleet-halt banner).
+SPEND_RULES_UNAVAILABLE_REASON = "Spend rules unavailable: the routing rules could not be read"
+
+
+class SpendRulesUnavailable(RuntimeError):
+    """The spend-rule set could not be read, so the dispatch is refused (fail closed)."""
+
+
 # Recorded on a ``public.model_dispatch_attempts`` row (outcome
 # ``breaker_open_override``) when an operator spend rule routes to a model whose
 # dispatch-outcome circuit breaker is open (bu-14j0m, decision (b): honor the
@@ -2744,10 +2754,13 @@ async def apply_spend_routing_rules(
       rule); the tier-resolved model is kept and the cap is surfaced.  A matched rule
       with neither effect keeps the model and logs a warning.
     - This helper is purely a model-SELECTION + effect-surfacing step.  It never blocks
-      a dispatch — the authorization (permissions) and budget (quota / ceiling /
-      per-call cap) DENY gates are the caller's responsibility.
-    - Fail-open: any DB error or malformed rule data leaves ``resolved`` unchanged with
-      no cap and logs a warning, so a routing-rules failure never wedges spawns.
+      a dispatch on a rule's own account — the authorization (permissions) and budget (quota /
+      ceiling / per-call cap) DENY gates are the caller's responsibility. The one refusal it
+      makes is :class:`SpendRulesUnavailable`, when the rules cannot be read.
+    - Fail-closed on the read: a rules-read failure raises :class:`SpendRulesUnavailable`
+      (bu-svqpzo.15). A rule may carry an owner-set ``max_cost_per_call`` cap, so an
+      unreadable set must not be mistaken for "no rule"; the callers refuse the dispatch.
+      A readable empty rule set is unconstrained. A single malformed rule is skipped.
 
     Parameters
     ----------
@@ -2783,11 +2796,11 @@ async def apply_spend_routing_rules(
     except Exception:
         logger.warning(
             "apply_spend_routing_rules: failed to load spend_rules for butler=%s; "
-            "keeping tier-resolved model (fail-open)",
+            "refusing the dispatch (fail-closed)",
             butler_name,
             exc_info=True,
         )
-        return SpendRoutingResult(resolved=resolved)
+        raise SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON) from None
 
     for rule_row in rule_rows:
         condition = _coerce_rule_dict(rule_row["condition"])
