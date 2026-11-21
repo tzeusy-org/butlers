@@ -34,6 +34,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
 | 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
 | 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
+| 24 (Chronicler regeneration) | 2026-11-21 | 15 | bu-uhbhzq | [2026-11-21-chronicler-pursuit.md](2026-11-21-chronicler-pursuit.md) |
 
 ## Tier history
 
@@ -476,3 +477,32 @@ Purchase aftercare, shipment feeds, general event/condition infrastructure, stre
 latency lanes were prior art, not refiled. The detailed dispositions and source-confirmed
 surface snapshots are in [the dossier](2026-10-28-jarvis-pursuit.md). No tracked data JSON or
 separately published artifact was created; complete structured Beads fields hold the packets.
+
+### 24 (Chronicler regeneration) (2026-11-21) · epic bu-uhbhzq
+
+Chronicler-only run on the owner's regeneration framing: keep and index enough evidence now that
+a better Chronicler can rebuild any past day later. Nine read-only auditors (eight ecosystem
+lenses and the Chronicles page) followed a live dev-stack investigation; the owner removed the
+hourly stagger for this run. New tier keys only, so no movement is claimed. Gate `bu-0j96x7`
+remains owner-held.
+
+1. Repair Google Calendar capture and keep an append-only event revision journal (`bu-uhbhzq.1`).
+2. Unblock daily narration: retired sources, per-lane gating, and availability frozen per day (`bu-uhbhzq.2`).
+3. Stop deleting belief history: supersession closes an interval and never deletes (`bu-uhbhzq.3`).
+4. Evidence before acknowledgement: every connector commits a durable evidence row first, and the routing inbox stops being the archive (`bu-uhbhzq.4`).
+5. End the 'multiple' sender: a content-blind party ledger at ingestion and re-resolvable entity links (`bu-uhbhzq.5`).
+6. Derivation ledger: algorithm version, config snapshot, run and evidence on every derived row (`bu-uhbhzq.6`).
+7. Retention charter: a per-source evidence-preservation contract, the location-forgetting decision, and a never-pruned cold archive (`bu-uhbhzq.7`).
+8. Typed telemetry series store: narrow rows, a dictionary, raw and minute tiers, fed before the filter (`bu-uhbhzq.8`).
+9. Sense coverage ledger: per stream and local day, with typed absence reasons (`bu-uhbhzq.9`).
+10. Projection hygiene: yield sentinels, the cursor defects found, and day-scale indexes (`bu-uhbhzq.10`).
+11. Day evidence manifest: what evidence existed for each date, frozen at close (`bu-uhbhzq.11`).
+12. The regenerable day: window-addressable replay with shadow generations, an immutable day account, a budgeted queue and a quality gate (`bu-uhbhzq.12`).
+13. Owner assertions: corrections anchored to time intervals that every regeneration must honour (`bu-uhbhzq.13`).
+14. Owner-device evidence receiver: a push-based desktop sense that replaces the ActivityWatch pull (`bu-uhbhzq.14`).
+15. Chronicles shows coverage, lineage and replayability: a coverage calendar, a raw-evidence door, and a derivation stamp (`bu-uhbhzq.15`).
+
+Deferred by the fifteen-move cap and listed in [the dossier](2026-11-21-chronicler-pursuit.md):
+wearable full fidelity, place entities, co-presence, retrieval surfaces, Finance purchases as
+evidence, the Telegram consent split, phone senses and historical imports. The artifact report
+is private to the owner; complete structured Beads fields hold the packets.
