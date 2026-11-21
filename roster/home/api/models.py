@@ -383,6 +383,32 @@ class DepartureFixUpsertRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict, max_length=8)
 
 
+class CriticalEntityEntry(BaseModel):
+    """One entity the owner marked critical (``home.critical_entities``)."""
+
+    entity_id: str
+    owner_label: str
+    added_by: str
+    added_at: str | None = None
+
+
+class CriticalEntityUpsertRequest(BaseModel):
+    """Mark one explicit entity critical.  The label is display text and never authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("owner_label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("owner_label must not be blank")
+        return stripped
+
+
 # ---------------------------------------------------------------------------
 # Away safety (home_007; bu-jv1moa.87, REQ-home-deterministic-jobs-002)
 # ---------------------------------------------------------------------------
