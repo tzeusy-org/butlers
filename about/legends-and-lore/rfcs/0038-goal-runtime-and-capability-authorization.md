@@ -1405,6 +1405,97 @@ under exposure and live otherwise; P2 adopts excluding third-party goals
 enqueue on 2026-11-08 (`bu-6qaju2.1`). Adoption does not launch research or
 release the switch.
 
+#### D20 Amendment 1: live citation links, live pinned probes, one approved live search
+
+**Status: PROPOSED, owner adoption required.** Date 2026-11-21. The owner said yes
+to drafting exactly these three refinements on `bu-cs33zx` (2026-10-20, 14:31Z,
+choice A); that is permission to draft, not adoption. This text binds nothing
+until the owner adopts it verbatim or as edited. Everything above in D20 stays
+as adopted; this amendment changes only what (a), (b) and (c) say. It adds no
+credential, key or spend, selects no model, and does not release live research,
+which stays dark until the research host (`bu-6qaju2.3`) and broker
+(`bu-6qaju2.4`) pass their named gates. It does not decide `bu-ilqhh0` (pre-switch
+search mode) or `bu-ob3bbc` question 2 (typed-slot templates), and neither can
+override (c).
+
+**(a) Live links for broker-recorded citations.** Today every URL sent to the
+owner is inert (D4, D6, REQ-capability-authorization-006). This amendment lets
+one class of URL be live: a citation URL the broker itself recorded in the goal
+ledger for a research call.
+
+- When the broker records a research result, it issues a *citation handle* for
+  each recorded citation. A handle is an opaque broker-issued identifier bound
+  to the goal, the research call and the exact recorded URL.
+- Owner-facing delivery code (never the model) renders a link live only when
+  the outgoing message references a handle and the broker resolves it to a
+  ledger entry whose URL matches exactly. The model supplies the handle, not
+  the URL.
+- A URL the model wrote, a URL that differs in any way from the recorded one
+  (scheme, host, path, query, fragment or a redirect target), an opened URL that
+  was not a citation, and any handle that is unknown, belongs to another goal,
+  or whose ledger entry is unavailable, stays inert. Resolution failure
+  degrades to the inert rendering and never blocks the message.
+- Only delivery to the owner can render a live link. Link previews stay off.
+  A goal that is Stopped, or whose ledger entry the owner deletes, resolves
+  none of its handles live afterwards.
+- A handle confers no authority. It is not an approval, a grant or evidence
+  for any check, and the cited page stays third-party content.
+
+**(b) Owner-pinned research probes run live.** A *pinned research probe* is a
+query the owner authored and pinned through an owner-authenticated surface, run
+by deterministic code (for example a web watch) with no model composing or
+altering it. Like D18's deterministic-code model functions, it is not a goal
+invocation.
+
+- The pin fixes the question, the optional hostname allowlist and the cadence.
+  The probe sends exactly the pinned question. It carries no goal, memory,
+  contact or other Butlers data, so there is nothing for injected text to
+  exfiltrate. Editing a pin creates a new probe; no pin is a wildcard or
+  template.
+- The probe runs live. It uses the same research host, profile, broker
+  acceptance, budget reservation, concurrency and daily caps, and refusal
+  rules as D20, and records question, mode, opened URLs, citations, usage and
+  outcome in its own audit record. It holds no grant, token or goal.
+- Its result is third-party content, fenced as D20 requires. Any goal that
+  later reads it becomes exposed under D6; the probe itself confers no
+  authority and does not mark any goal exposed by running.
+- A probe whose pin cannot be read, whose digest does not match, whose budget
+  does not fit, or whose tuple cannot prove the live profile is refused and
+  recorded, with no fallback.
+
+**(c) One approved live search from an exposed goal.** An exposed caller still
+runs cached by default (P1 stays as adopted). The owner may instead approve one
+live search per event.
+
+- An exposed caller may pass a bounded `request_live` flag with its question.
+  The flag selects nothing: it only asks the broker to park the call. The
+  mode is still derived from server-held state, and without an approval the call
+  never runs live.
+- The broker parks the call for per-event owner approval showing the exact
+  question and allowlist, with the D20 warning that the question leaves Butlers
+  and may reach sites the provider opens. The approval pins the question and
+  allowlist by digest, the calling invocation, one call and the live mode.
+- On approval the runner launches that one live search with the pinned question.
+  The approval is single-use: a replay, a changed question or allowlist, a
+  different caller, a different mode or an expired approval is refused and
+  recorded without launching. Approval of one search does not widen any later
+  call.
+- If the owner declines, the approval expires or Stop arrives first, nothing
+  launches live and nothing falls back to a cached run; the caller sees a
+  recorded refusal and may call again without the flag for the cached default.
+- The caller stays exposed. The result is third-party content with the same
+  lineage, taint and budget rules as any research result. Third-party goals
+  never hold `web_research`, so they cannot request this.
+
+**What does not change.** No wildcard or standing research grant exists. The
+approval is not a standing-rule exemption and does not count toward
+standing-rule promotion. D20's research host, egress rules, eligibility proof,
+budget and lifecycle, and its exclusion of third-party goals are unchanged.
+
+**Release.** Adoption of this text authorizes no implementation or operational
+step. Live behavior stays behind the research dark-build gates and the default-off
+switch.
+
 ### Details settled during the dark build
 
 Writing the baseline deltas surfaced details this RFC leaves to
@@ -1591,7 +1682,7 @@ built.
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
 | 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
-| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); the owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). |
+| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); the owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). Amendment 1 (live citation links, live pinned probes, one approved live search) is PROPOSED and awaits owner adoption; the owner said yes to drafting it on 2026-10-20 (`bu-cs33zx`, `bu-6qaju2.6`). |
 
 ### Author-detail confirmation
 
