@@ -93,7 +93,7 @@ unresolved outcome, not a success.
 ### Interactive goals
 
 A goal is interactive when its input carries a REQUEST CONTEXT JSON block whose
-`source_channel` is `telegram_bot`, `whatsapp` or `email`. Reply on that channel, in one of
+`source_channel` is `telegram_bot` or `whatsapp`. Reply on that channel, in one of
 five styles:
 
 1. **React**: an emoji only, when the message needs acknowledging and nothing more (a fact
