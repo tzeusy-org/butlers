@@ -46,6 +46,10 @@ _CHECKED: set[tuple[str, str]] = {
     ("knowledge_gaps", "entity_id"),
     # A live commitment candidate's confirm card names its counterparty (tombstones null it).
     ("commitment_candidates", "counterparty_entity_id"),
+    # Retained rota rows (rel_045): a duty's dependent and default carer, an occurrence's carer.
+    ("care_duties", "subject_entity_id"),
+    ("care_duties", "default_carrier_entity_id"),
+    ("care_occurrences", "carrier_entity_id"),
     # Door rows are retained forever, so one naming an entity pins it. The relationship role cannot
     # read the table; ``public.vendor_door_entity_pinned`` answers for both columns.
     ("vendor_doors", "owner_entity_id"),
@@ -416,6 +420,34 @@ async def test_the_reap_leaves_a_placeholder_a_live_commitment_candidate_names(r
     )
 
     assert await reap(rel_pool) == 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("role", ["subject", "default_carrier", "occurrence_carrier"])
+async def test_the_reap_leaves_a_placeholder_a_care_duty_names(rel_pool, role) -> None:
+    """A duty's dependent or carer, and an occurrence's carer, are the owner's rota: not orphans."""
+    placeholder = await _placeholder(rel_pool)
+    other = await _entity(rel_pool, "Dependent")
+    subject = placeholder if role == "subject" else other
+    carrier = placeholder if role == "default_carrier" else None
+    duty = await rel_pool.fetchval(
+        "INSERT INTO relationship.care_duties (subject_entity_id, title, kind, interval_days, "
+        "anchor_at, default_carrier_entity_id) VALUES ($1, 'Worming', 'completion_anchored', 90, "
+        "now(), $2) RETURNING id",
+        subject,
+        carrier,
+    )
+    if role == "occurrence_carrier":
+        await rel_pool.execute(
+            "INSERT INTO relationship.care_occurrences (duty_id, occurrence_start, "
+            "carrier_entity_id, state) VALUES ($1, now(), $2, 'assumed')",
+            duty,
+            placeholder,
+        )
+
+    assert await reap(rel_pool) >= 0
 
     assert await _deleted_at(rel_pool, placeholder) is None
 

@@ -3605,6 +3605,20 @@ _NO_LIVE_COMMITMENT_CANDIDATE = """
 """
 
 
+# A care duty names its dependent and default carer, a care occurrence its carer, and rel_045 holds
+# no FK to the entity. Duties and occurrences are retained (retiring keeps history), so a row
+# naming an entity pins it: reaping a carer or dependent the owner chose would orphan the rota.
+_NO_CARE_DUTY = """
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.care_duties cd
+        WHERE cd.subject_entity_id = e.id OR cd.default_carrier_entity_id = e.id
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM relationship.care_occurrences co WHERE co.carrier_entity_id = e.id
+    )
+"""
+
+
 # A vendor door names its owner and vendor entity, rows are retained forever, and this role cannot
 # read the table: the core_336 definer answers only whether a row names the entity (either column).
 _NO_VENDOR_DOOR = """
@@ -3638,9 +3652,10 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     schema, whose ``invalid_at`` is set by supersede, forget, expire and purge, and from this
     schema's own ``facts`` where present), no open knowledge gap in this schema (other
     butlers' gaps are out of reach), no live commitment candidate naming it as counterparty,
-    no vendor door naming it (owner or vendor, any status), no ``contact_entity_map`` link, no
-    ``public.entity_info`` row and no ``public.priority_contacts`` entry. Any acquired
-    reference means the entity graduated to a real entity and is left fully intact.
+    no care duty or care occurrence naming it, no vendor door naming it (owner or vendor, any
+    status), no ``contact_entity_map`` link, no ``public.entity_info`` row and no
+    ``public.priority_contacts`` entry. Any acquired reference means the entity graduated to a real
+    entity and is left fully intact.
     ``test_every_table_referencing_entities_is_checked_by_the_reap_or_excused`` fails when a
     column named ``*entity_id`` (or an FK to ``public.entities``) appears in the public or
     relationship schemas without being decided here; it cannot see other butlers' schemas.
@@ -3665,6 +3680,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
         "SELECT to_regclass('relationship.commitment_candidates') IS NOT NULL"
     ):
         clean_orphan += _NO_LIVE_COMMITMENT_CANDIDATE
+    if await db_pool.fetchval("SELECT to_regclass('relationship.care_duties') IS NOT NULL"):
+        clean_orphan += _NO_CARE_DUTY
     if await db_pool.fetchval(
         "SELECT to_regprocedure('public.vendor_door_entity_pinned(uuid)') IS NOT NULL"
     ):

@@ -53,6 +53,9 @@ _CONNECTOR_MANAGED_ENTITY_INFO_TYPES = SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 # Load local models module
 _models_module = roster_module("relationship", "api/models", api_source=__file__)
 care_duties = roster_module("relationship", "tools/care_duties")
+# Bound at import: tests shift the module-level ``datetime`` name, and FastAPI evaluates the
+# string annotations against module globals, so a route must not annotate with it directly.
+_CareDatetime = datetime
 
 Group = _models_module.Group
 GroupListResponse = _models_module.GroupListResponse
@@ -7517,8 +7520,8 @@ async def list_care_duties(
 async def list_care_occurrences(
     *,
     db: Db,
-    start: datetime | None = Query(None),
-    end: datetime | None = Query(None),
+    start: _CareDatetime | None = Query(None),
+    end: _CareDatetime | None = Query(None),
     limit: int = Query(200, ge=1, le=500),
 ):
     """List occurrences the owner recorded in ``[start, end)`` (default: the next 14 days).
@@ -7528,7 +7531,7 @@ async def list_care_occurrences(
     pool = _pool(db)
     if (err := await _assert_owner_role(pool)) is not None:
         return err
-    window_start = start or datetime.now(UTC)
+    window_start = start or _CareDatetime.now(UTC)
     window_end = end or window_start + timedelta(days=14)
     if window_end <= window_start:
         raise HTTPException(

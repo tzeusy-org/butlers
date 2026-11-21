@@ -334,6 +334,8 @@ OP GET /api/qa/settings/allowed-repos 6950693f1119
 OP GET /api/qa/settings/repo cf4b4b556a0f
 OP GET /api/qa/summary ba08e736553d
 OP GET /api/qa/trends d390b2e71ef0
+OP GET /api/relationship/care/duties af1c72600530
+OP GET /api/relationship/care/occurrences 496c7b9545d9
 OP GET /api/relationship/contacts/overdue 4f0511312eb8
 OP GET /api/relationship/dunbar/ranking a055d6a91c87
 OP GET /api/relationship/entities 3c832f9e6846
@@ -603,6 +605,8 @@ OP POST /api/qa/force-patrol e061d785d64e
 OP POST /api/qa/known-issues/{fingerprint}/dismiss 5076b8ce2a52
 OP POST /api/qa/settings/allowed-repos c266d311aaea
 OP POST /api/qa/settings/repo/sync 22d317681c49
+OP POST /api/relationship/care/duties dec3d9fe105a
+OP POST /api/relationship/care/duties/{duty_id}/retire e8956918a3b9
 OP POST /api/relationship/entities 0cd47c2f11b6
 OP POST /api/relationship/entities/compare a085fc6c74a7
 OP POST /api/relationship/entities/dismiss-pair 90b175859e00
@@ -696,6 +700,8 @@ OP PUT /api/oauth/google/credentials 0b20bb692316
 OP PUT /api/permissions/{butler}/{perm} adc8a11ecdf6
 OP PUT /api/qa/settings/git-author bd31d9e38526
 OP PUT /api/qa/settings/repo 84aee616f256
+OP PUT /api/relationship/care/duties/{duty_id}/carrier 8d20bcf12ce8
+OP PUT /api/relationship/care/duties/{duty_id}/occurrences 01b595fb43d0
 OP PUT /api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash} 8df426fb5bc9
 OP PUT /api/relationship/entities/{entity_id}/preferred-channel 84621ca6456a
 OP PUT /api/settings/general 8e14f41d4fac
@@ -1032,6 +1038,8 @@ ROUTE APIRoute GET '/api/qa/settings/allowed-repos' name=list_allowed_repos op=l
 ROUTE APIRoute GET '/api/qa/settings/repo' name=get_repo_config op=get_repo_config_api_qa_settings_repo_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/summary' name=get_qa_summary op=get_qa_summary_api_qa_summary_get tags=qa schema=True
 ROUTE APIRoute GET '/api/qa/trends' name=get_qa_trends op=get_qa_trends_api_qa_trends_get tags=qa schema=True
+ROUTE APIRoute GET '/api/relationship/care/duties' name=list_care_duties op=list_care_duties_api_relationship_care_duties_get tags=relationship schema=True
+ROUTE APIRoute GET '/api/relationship/care/occurrences' name=list_care_occurrences op=list_care_occurrences_api_relationship_care_occurrences_get tags=relationship schema=True
 ROUTE APIRoute GET '/api/relationship/contacts/overdue' name=get_overdue_contacts op=get_overdue_contacts_api_relationship_contacts_overdue_get tags=relationship schema=True
 ROUTE APIRoute GET '/api/relationship/dunbar/ranking' name=get_dunbar_ranking op=get_dunbar_ranking_api_relationship_dunbar_ranking_get tags=relationship schema=True
 ROUTE APIRoute GET '/api/relationship/entities' name=list_entities op=list_entities_api_relationship_entities_get tags=relationship schema=True
@@ -1299,6 +1307,8 @@ ROUTE APIRoute POST '/api/qa/force-patrol' name=force_patrol op=force_patrol_api
 ROUTE APIRoute POST '/api/qa/known-issues/{fingerprint}/dismiss' name=dismiss_known_issue op=dismiss_known_issue_api_qa_known_issues__fingerprint__dismiss_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/settings/allowed-repos' name=create_allowed_repo op=create_allowed_repo_api_qa_settings_allowed_repos_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/settings/repo/sync' name=sync_repo op=sync_repo_api_qa_settings_repo_sync_post tags=qa schema=True
+ROUTE APIRoute POST '/api/relationship/care/duties' name=create_care_duty op=create_care_duty_api_relationship_care_duties_post tags=relationship schema=True
+ROUTE APIRoute POST '/api/relationship/care/duties/{duty_id}/retire' name=retire_care_duty op=retire_care_duty_api_relationship_care_duties__duty_id__retire_post tags=relationship schema=True
 ROUTE APIRoute POST '/api/relationship/entities' name=promote_entity op=promote_entity_api_relationship_entities_post tags=relationship schema=True
 ROUTE APIRoute POST '/api/relationship/entities/compare' name=compare_entities op=compare_entities_api_relationship_entities_compare_post tags=relationship schema=True
 ROUTE APIRoute POST '/api/relationship/entities/dismiss-pair' name=dismiss_pair op=dismiss_pair_api_relationship_entities_dismiss_pair_post tags=relationship schema=True
@@ -1392,6 +1402,8 @@ ROUTE APIRoute PUT '/api/oauth/google/credentials' name=upsert_google_credential
 ROUTE APIRoute PUT '/api/permissions/{butler}/{perm}' name=set_permission op=set_permission_api_permissions__butler___perm__put tags=permissions schema=True
 ROUTE APIRoute PUT '/api/qa/settings/git-author' name=update_git_author op=update_git_author_api_qa_settings_git_author_put tags=qa schema=True
 ROUTE APIRoute PUT '/api/qa/settings/repo' name=update_repo_config op=update_repo_config_api_qa_settings_repo_put tags=qa schema=True
+ROUTE APIRoute PUT '/api/relationship/care/duties/{duty_id}/carrier' name=set_care_duty_carrier op=set_care_duty_carrier_api_relationship_care_duties__duty_id__carrier_put tags=relationship schema=True
+ROUTE APIRoute PUT '/api/relationship/care/duties/{duty_id}/occurrences' name=assign_care_occurrence op=assign_care_occurrence_api_relationship_care_duties__duty_id__occurrences_put tags=relationship schema=True
 ROUTE APIRoute PUT '/api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}' name=update_entity_contact op=update_entity_contact_api_relationship_entities__entity_id__contacts__predicate___value_hash__put tags=relationship schema=True
 ROUTE APIRoute PUT '/api/relationship/entities/{entity_id}/preferred-channel' name=set_entity_preferred_channel op=set_entity_preferred_channel_api_relationship_entities__entity_id__preferred_channel_put tags=relationship schema=True
 ROUTE APIRoute PUT '/api/settings/general' name=update_general_settings op=update_general_settings_api_settings_general_put tags=general-settings schema=True
@@ -1714,6 +1726,7 @@ SCHEMA ApprovalSummary f933363af5ba
 SCHEMA ApprovalsPolicy 50a93774aa3a
 SCHEMA ApprovalsPolicyUpdate 37b2568879a2
 SCHEMA AreaResponse 73894e6debcb
+SCHEMA AssignCareOccurrenceRequest fbec11a402e9
 SCHEMA AssignGroupLabelResponse 4e5249cd623b
 SCHEMA AtmosphereCurrentResponse c05ea39c8fe8
 SCHEMA AtmosphereLocationUpdateRequest 063b7130e145
@@ -1828,6 +1841,10 @@ SCHEMA Callback e23f0afbc25c
 SCHEMA CaptureIntakeContext 926b4b66df26
 SCHEMA CaptureStatus f436da8c8071
 SCHEMA CaptureTarget 2da7a121faad
+SCHEMA CareDuty c9651dd96026
+SCHEMA CareDutyListResponse ad6bc892b222
+SCHEMA CareOccurrence dc29c460c679
+SCHEMA CareOccurrenceListResponse 4a6c015e2144
 SCHEMA CategoryBucket 77803ca47ea0
 SCHEMA CategoryBuckets ec314a7fafca
 SCHEMA ChannelDefaultEntry fa7d27ba2425
@@ -1924,6 +1941,7 @@ SCHEMA CorrectionPrompts 20b932d6fc4a
 SCHEMA CostClaimModel 767cff8ff969
 SCHEMA CounterEvidenceItem 74d3e0386c4a
 SCHEMA CreateBackfillJobRequest bc123a06fcf2
+SCHEMA CreateCareDutyRequest 0a177f72f47a
 SCHEMA CreateDoor 8c10c74a3e98
 SCHEMA CreateEntityGiftRequest 7aca2b3d0c33
 SCHEMA CreateEntityInfoRequest 4049e93c61e8
@@ -2463,6 +2481,7 @@ SCHEMA SessionKindItem d7fb0a721da7
 SCHEMA SessionPromptReceipt 2b98e0ada658
 SCHEMA SessionStatusResponse c295df9efa57
 SCHEMA SessionSummary e43259d394d0
+SCHEMA SetCareDutyCarrierRequest b91d5124a3e8
 SCHEMA SetEligibilityRequest fb7e136194c2
 SCHEMA SetEligibilityResponse a58a272083cf
 SCHEMA SetPreferredChannelRequest 07ce5d0b346a
