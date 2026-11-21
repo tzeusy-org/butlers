@@ -1155,7 +1155,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
         Args:
             name: Name string to resolve.
-            entity_type: Optional filter (person/organization/place/other).
+            entity_type: Optional filter (person/organization/place/animal/other).
             context_topic: Optional topic hint for graph-based scoring.
             context_mentioned_with: Optional list of co-mentioned names.
         """

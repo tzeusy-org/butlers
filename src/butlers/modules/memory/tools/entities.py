@@ -15,7 +15,7 @@ from butlers.modules.memory.tools._helpers import _serialize_row
 
 logger = logging.getLogger(__name__)
 
-VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "other"})
+VALID_ENTITY_TYPES = frozenset({"person", "organization", "place", "animal", "other"})
 
 
 # Lifecycle keys no caller may write: a merge and a delete have their own paths. Owner
@@ -53,7 +53,7 @@ _GRAPH_BOOST_MAX: float = 20.0
 async def entity_create(
     pool: Pool,
     canonical_name: str,
-    entity_type: Literal["person", "organization", "place", "other"],
+    entity_type: Literal["person", "organization", "place", "animal", "other"],
     *,
     aliases: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
@@ -64,7 +64,7 @@ async def entity_create(
     Args:
         pool: asyncpg connection pool.
         canonical_name: The canonical name of the entity.
-        entity_type: One of 'person', 'organization', 'place', 'other'.
+        entity_type: One of 'person', 'organization', 'place', 'animal', 'other'.
         aliases: Optional list of alternative names for the entity.
         metadata: Optional JSONB metadata dict, without ``TOMBSTONE_METADATA_KEYS``.
         roles: Optional list of identity roles (e.g. ['owner']).  Internal use
@@ -131,7 +131,7 @@ async def entity_create(
 async def entity_find_by_canonical(
     pool: Pool,
     canonical_name: str,
-    entity_type: Literal["person", "organization", "place", "other"],
+    entity_type: Literal["person", "organization", "place", "animal", "other"],
 ) -> dict[str, Any] | None:
     """Return a live entity matching an exact canonical name/type pair."""
     row = await pool.fetchrow(
@@ -281,7 +281,7 @@ async def entity_resolve(
         identifier: Unified identifier string.  Tries role match first,
             then falls through to name-based tiers.  Mutually exclusive
             with ``name`` — provide one or the other.
-        entity_type: Optional entity type filter (person/organization/place/other).
+        entity_type: Optional entity type filter (person/organization/place/animal/other).
         context_hints: Optional dict with keys ``topic`` (str),
             ``mentioned_with`` (list of names), ``domain_scores``
             (dict of entity_id -> numeric score).

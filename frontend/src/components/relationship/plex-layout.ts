@@ -205,7 +205,7 @@ export function layoutOwnerPlex(
  * each dimension keeps its bearing across sessions (spatial memory); any
  * unexpected type sorts alphabetically after the known ones.
  */
-export const HALO_ARC_ORDER = ["organization", "place", "other"] as const;
+export const HALO_ARC_ORDER = ["organization", "place", "animal", "other"] as const;
 
 /** Radians of breathing room between adjacent halo arcs. */
 export const HALO_ARC_GAP = 0.14;

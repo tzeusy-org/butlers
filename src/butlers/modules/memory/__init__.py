@@ -1598,8 +1598,8 @@ class MemoryModule(Module):
         async def memory_entity_create(
             canonical_name: Annotated[str, Field(description="The canonical name of the entity.")],
             entity_type: Annotated[
-                Literal["person", "organization", "place", "other"],
-                Field(description="Entity type: person | organization | place | other."),
+                Literal["person", "organization", "place", "animal", "other"],
+                Field(description="Entity type: person | organization | place | animal | other."),
             ],
             aliases: Annotated[
                 list[str] | None,
