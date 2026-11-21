@@ -330,7 +330,47 @@ async def test_an_unexpected_rule_evaluation_error_refuses_rather_than_dropping_
     assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
     assert attempt.seen == []
     ((_, row),) = sink.events
-    assert (row["outcome"], row["failure_reason"]) == ("quota_skip", SPEND_RULES_UNAVAILABLE_REASON)
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+async def test_an_unreadable_rule_set_refuses_without_invoking_and_records_why() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+        with pytest.raises(SpendRulesUnavailable) as raised:
+            await _call(_spec(), attempt, sink)
+
+    assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON), RuntimeError("rule evaluation failed")],
+    ids=["unreadable", "unexpected-error"],
+)
+async def test_a_rule_refusal_holds_even_when_the_caller_skips_the_ceiling(error) -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = error
+        with pytest.raises(SpendRulesUnavailable):
+            await _call(_spec(enforce_ceiling=False), attempt, sink)
+
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert row["produce_fleet_halt"] is False
 
 
 # --- spend gate -------------------------------------------------------------------------
