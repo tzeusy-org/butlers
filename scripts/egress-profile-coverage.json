@@ -5407,6 +5407,46 @@
       "sites": [],
       "workloads": []
     },
+    "src/butlers/modules/google_drive/native.py::<module>::url::5caaf2d8f1ab96405da75cc49ef6389a97bf47f02e7a1d329333fa41dd4ad985": {
+      "class": "external",
+      "observed": {
+        "authorities": [
+          "sheets.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/modules/google_drive/native.py",
+        "scope": "<module>",
+        "sha256": "5caaf2d8f1ab96405da75cc49ef6389a97bf47f02e7a1d329333fa41dd4ad985"
+      },
+      "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up"
+      ]
+    },
+    "src/butlers/modules/google_drive/native_tools.py::<module>::url::f463d66acecd12424cca63caf8fd81e09f4691c5ab193d5f1daa581ca93a427f": {
+      "class": "external",
+      "observed": {
+        "authorities": [
+          "www.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/modules/google_drive/native_tools.py",
+        "scope": "<module>",
+        "sha256": "f463d66acecd12424cca63caf8fd81e09f4691c5ab193d5f1daa581ca93a427f"
+      },
+      "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up"
+      ]
+    },
     "src/butlers/modules/memory/catalog_measurement.py::_measurement_database_name_from_env::config::16989fa28ccaad46d73fd49013cca95596242cdcb6a34759791699075c41077d": {
       "class": "site",
       "observed": {

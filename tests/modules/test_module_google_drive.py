@@ -43,6 +43,15 @@ EXPECTED_DRIVE_TOOLS = {
     "drive_search_files",
 }
 
+NATIVE_DRIVE_TOOLS = {
+    "drive_create_doc",
+    "drive_update_doc",
+    "drive_create_sheet",
+    "drive_read_sheet",
+    "drive_append_sheet_rows",
+    "drive_update_sheet_range",
+}
+
 
 # ---------------------------------------------------------------------------
 # ABC compliance
@@ -95,6 +104,26 @@ class TestToolRegistration:
         mcp = FastMCP("providers8-google-drive-tools")
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
         assert set((await registered_tools(mcp)).keys()) == EXPECTED_DRIVE_TOOLS
+
+    async def test_switch_on_adds_the_six_native_tools(self, monkeypatch) -> None:
+        monkeypatch.setattr("butlers.core.goal_lineage._enforced", True)
+        module = GoogleDriveModule()
+        mcp = FastMCP("providers8-google-drive-tools")
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
+        assert (
+            set((await registered_tools(mcp)).keys()) == EXPECTED_DRIVE_TOOLS | NATIVE_DRIVE_TOOLS
+        )
+        assert set(module.tool_metadata()) >= NATIVE_DRIVE_TOOLS - {"drive_read_sheet"}
+
+    async def test_switch_off_declares_no_native_tool_metadata(self) -> None:
+        module = GoogleDriveModule()
+        mcp = FastMCP("providers8-google-drive-tools")
+        await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
+        assert set(module.tool_metadata()) == {
+            "drive_write_file",
+            "drive_create_folder",
+            "drive_move_file",
+        }
 
     async def test_butler_name_param_takes_precedence_over_db_schema(self) -> None:
         """butler_name param is stored directly and wins over db.schema."""
