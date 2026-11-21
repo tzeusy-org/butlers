@@ -408,6 +408,8 @@ def satisfied_by_pre_state(
     declared satisfied: it proceeds to the normal attempt. ``climate.set_temperature`` is
     verified on its one ``temperature`` key.
     """
+    if any("entity_id" in (state.get("attributes") or {}) for state in pre_state.values()):
+        return False  # a group's state aggregates its members: never proof that all comply
     if data and not (
         (domain, service) == ("climate", "set_temperature") and set(data) == {"temperature"}
     ):

@@ -2260,3 +2260,22 @@ def test_satisfied_by_pre_state_is_conservative_about_unread_data():
     assert not actuation.satisfied_by_pre_state(
         "climate", "set_temperature", {"temperature": 22}, heat
     )
+
+
+async def test_a_group_target_is_never_already_satisfied_from_its_aggregate_state(
+    mock_mcp, monkeypatch
+):
+    """A group reads "on" when any member is on, so its state proves nothing about the rest."""
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.freezer_group"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    group = _state_response("on", {"entity_id": ["light.freezer_lamp", "light.other"]})
+    _script_states(case, [group])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] != "already_satisfied"
+    case.client.post.assert_awaited_once()
