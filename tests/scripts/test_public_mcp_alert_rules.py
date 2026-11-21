@@ -87,6 +87,20 @@ class Case:
     series: list[tuple[str, str]]  # (selector, promtool values)
     flags: list[tuple[str, str, int]]  # (eval_time, flag, expected value)
     alerts: list[dict] = field(default_factory=list)  # promtool alert_rule_test entries
+    missing: tuple[str, ...] = ()  # source-health series to leave out: server, slot, importer
+
+
+# Every case runs with all three metric sources present, so the source-health alerts stay quiet
+# unless a case removes a source. Distinct names or labels keep them out of the other rules: the
+# slot is physical (the slot rules read logical ones) and the importer gauge is switch_enabled.
+_SOURCES = {
+    "server": (f"up{{{_SRV}}}", "1+0x3100"),
+    "slot": (
+        f'cnpg_pg_replication_slots_active{{{_PG}, slot_name="base", slot_type="physical"}}',
+        "1+0x3100",
+    ),
+    "importer": ("butlers_public_mcp_proposal_import_switch_enabled", "1+0x3100"),
+}
 
 
 def _run(promtool: Path, spec: dict, case: Case, tmp_path: Path) -> subprocess.CompletedProcess:
@@ -108,7 +122,13 @@ def _run(promtool: Path, spec: dict, case: Case, tmp_path: Path) -> subprocess.C
         "tests": [
             {
                 "interval": "1m",
-                "input_series": [{"series": s, "values": v} for s, v in case.series],
+                "input_series": [
+                    {"series": s, "values": v}
+                    for s, v in [
+                        *(src for name, src in _SOURCES.items() if name not in case.missing),
+                        *case.series,
+                    ]
+                ],
                 "promql_expr_test": [
                     {
                         "expr": flag,
@@ -141,6 +161,25 @@ def _slot_series(metric: str, slot: str, slot_type: str, values: str) -> tuple[s
 
 
 CASES: dict[str, Case] = {
+    # Source health: a missing source must show on a flag instead of silencing its rules.
+    "server scrape absent": Case(
+        series=[], missing=("server",), flags=[("4m", _CRITICAL, 1), ("6m", _CRITICAL, 0)]
+    ),
+    "server scrape down": Case(
+        series=[(f"up{{{_SRV}}}", "0+0x30")],
+        missing=("server",),
+        flags=[("4m", _CRITICAL, 1), ("6m", _CRITICAL, 0)],
+    ),
+    "slot series absent": Case(
+        series=[],
+        missing=("slot",),
+        flags=[("9m", _WARNING, 1), ("11m", _WARNING, 0), ("11m", _CRITICAL, 1)],
+    ),
+    "importer series absent": Case(
+        series=[],
+        missing=("importer",),
+        flags=[("29m", _WARNING, 1), ("31m", _WARNING, 0), ("31m", _CRITICAL, 1)],
+    ),
     # Healthy: traffic, an allowed slot and an unrelated critical cluster alert, which the
     # `surface` matcher must keep out of the flags. Both flags are present and 1.
     "healthy": Case(

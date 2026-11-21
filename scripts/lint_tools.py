@@ -53,8 +53,8 @@ INSTALL_HINT = "make install-lint-tools"
 # Explicit safety bounds, not calibrated performance claims.
 DOWNLOAD_TIMEOUT_S = 60.0
 TOOL_TIMEOUT_S = 300.0
-MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
-MAX_BINARY_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_BINARY_BYTES = 128 * 1024 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 # gitleaks exits 1 on its own fatal errors, so findings get a distinct status.
@@ -108,6 +108,13 @@ def load_pins(path: Path = PINS_PATH) -> dict[str, dict]:
             and isinstance(pin.get("assets"), dict)
         ):
             raise ToolError(f"malformed pin for {name}")
+        # A tool whose release is larger than the global bounds names its own, per tool.
+        for bound in ("max_archive_bytes", "max_binary_bytes"):
+            value = pin.get(bound)
+            if value is not None and not (
+                isinstance(value, int) and not isinstance(value, bool) and 0 < value <= 512 * 2**20
+            ):
+                raise ToolError(f"malformed {bound} for {name}")
         for asset in pin["assets"].values():
             digest = asset.get("sha256", "") if isinstance(asset, dict) else ""
             url = asset.get("url", "") if isinstance(asset, dict) else ""
@@ -156,7 +163,7 @@ def installed_binary(name: str, pins: dict[str, dict] | None = None) -> Path:
 # -- install ------------------------------------------------------------------------------
 
 
-def download(url: str, expected_sha256: str) -> bytes:
+def download(url: str, expected_sha256: str, limit: int = MAX_ARCHIVE_BYTES) -> bytes:
     """Fetch ``url`` within the size/time bounds and verify its digest."""
     deadline = time.monotonic() + DOWNLOAD_TIMEOUT_S
     chunks: list[bytes] = []
@@ -165,8 +172,8 @@ def download(url: str, expected_sha256: str) -> bytes:
         with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_S) as response:
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
-                if size > MAX_ARCHIVE_BYTES:
-                    raise ToolError(f"download exceeds {MAX_ARCHIVE_BYTES} bytes: {url}")
+                if size > limit:
+                    raise ToolError(f"download exceeds {limit} bytes: {url}")
                 if time.monotonic() > deadline:
                     raise ToolError(f"download exceeded {DOWNLOAD_TIMEOUT_S:.0f}s: {url}")
                 chunks.append(chunk)
@@ -183,7 +190,9 @@ def verify_digest(data: bytes, expected_sha256: str) -> None:
         raise ToolError(f"sha256 mismatch: expected {expected_sha256}, got {actual}")
 
 
-def extract_binary(archive: bytes, binary: str, member_path: str | None = None) -> bytes:
+def extract_binary(
+    archive: bytes, binary: str, member_path: str | None = None, limit: int = MAX_BINARY_BYTES
+) -> bytes:
     """The single regular file ``binary`` from a .tar.gz, refusing anything else.
 
     The file is top-level unless the pin names its exact in-archive path (``member_path``,
@@ -198,12 +207,12 @@ def extract_binary(archive: bytes, binary: str, member_path: str | None = None) 
             if len(matches) != 1 or not matches[0].isreg():
                 raise ToolError(f"archive has no single regular {wanted} for {binary}")
             member = matches[0]
-            if member.size > MAX_BINARY_BYTES:
-                raise ToolError(f"{binary} exceeds {MAX_BINARY_BYTES} bytes")
+            if member.size > limit:
+                raise ToolError(f"{binary} exceeds {limit} bytes")
             handle = tar.extractfile(member)
             if handle is None:
                 raise ToolError(f"cannot read {binary} from archive")
-            data = handle.read(MAX_BINARY_BYTES + 1)
+            data = handle.read(limit + 1)
     except (tarfile.TarError, OSError, EOFError) as exc:
         raise ToolError(f"unreadable archive for {binary}") from exc
     if len(data) != member.size:
@@ -252,8 +261,16 @@ def install(names: list[str] | None = None) -> None:
         asset = pin["assets"].get(key)
         if asset is None:
             raise ToolError(f"{name} has no pinned asset for {key}")
-        archive = download(asset["url"], asset["sha256"])
-        publish(name, pin, key, extract_binary(archive, pin["binary"], asset.get("member")))
+        archive = download(
+            asset["url"], asset["sha256"], pin.get("max_archive_bytes", MAX_ARCHIVE_BYTES)
+        )
+        binary = extract_binary(
+            archive,
+            pin["binary"],
+            asset.get("member"),
+            pin.get("max_binary_bytes", MAX_BINARY_BYTES),
+        )
+        publish(name, pin, key, binary)
         installed_binary(name, pins)
         print(f"{name} {pin['version']}: installed ({key}, sha256 verified)")
 

@@ -517,6 +517,16 @@ from this repository: the dev `Cluster` has `enablePodMonitor: false`). Check wi
 `butlers_public_mcp_proposal_import_inbox_depth` and
 `butlers_public_mcp_proposal_import_outcomes_total{state="apply_failed"}`.
 
+*Open homelab or owner act, [Unknown] until verified live:* `postgres-dev` must be scraped by the
+`lgtm` Prometheus. On the dev cluster the `Cluster` has `enablePodMonitor: false` and
+`postgres-dev-1` has no scrape annotations, so nothing may be scraping the slot series today and
+the three slot alerts (two critical) would never fire. Fix: CNPG `enablePodMonitor`, or a PodMonitor
+labelled `release: lgtm` plus an ingress allow for 9187 from `lgtm` on `postgres-dev`. The
+importer's OTLP path (`OTEL_EXPORTER_OTLP_ENDPOINT`) must likewise reach that Prometheus under the
+names above. Until both are done, the source-health alerts `PublicMcpSlotMetricsMissing` and
+`PublicMcpImporterMetricsMissing` keep the warning flag at 0 by design, and
+`PublicMcpServerMetricsMissing` (critical) covers a stopped scrape of the server itself.
+
 *Not covered, no metric source today* (see the README for why): replication lag over 10 minutes,
 a logical slot on an allowed name with a plugin other than `pgoutput`, and one `(sub, cid)` reading
 over 25 % of a domain's rows in a day. Each needs a source first (a server gauge from a background

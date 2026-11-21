@@ -281,6 +281,12 @@ def test_install_refuses_unverified_or_unsafe_archives(
         lint_tools.extract_binary(wrapped, "promtool")
     for tool in ("gitleaks", "actionlint", "promtool"):
         assert tool in lint_tools.load_pins()
+    # Size bounds are global unless a pin names its own; only promtool does.
+    with pytest.raises(lint_tools.ToolError, match="exceeds 3 bytes"):
+        lint_tools.extract_binary(wrapped, "promtool", "prom-1.0/promtool", 3)
+    all_pins = lint_tools.load_pins()
+    assert "max_archive_bytes" not in all_pins["gitleaks"]
+    assert all_pins["promtool"]["max_archive_bytes"] > lint_tools.MAX_ARCHIVE_BYTES
 
     # Exercise the actual installer and download digest check with disposable
     # release bytes; a restored cache is advisory, never installation authority.

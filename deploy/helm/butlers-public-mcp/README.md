@@ -93,6 +93,14 @@ diagnostic labels (`domain`, `client`, `slot_name`, `tool`, `change`) and never 
 | `PublicMcpSlotInactive` | warning | `cnpg_pg_replication_slots_active` | a logical slot at 0 for `slotInactiveFor` (10m) |
 | `PublicMcpInboxUndrained` | warning | `butlers_public_mcp_proposal_import_inbox_depth` | over `inboxUndrained` |
 | `PublicMcpProposalApplyFailed` | warning | `butlers_public_mcp_proposal_import_outcomes_total{state="apply_failed"}` | any transition in the last `eventWindow` |
+| `PublicMcpServerMetricsMissing` | critical | `up` for this release's job | no healthy scrape for 5m (source health) |
+| `PublicMcpSlotMetricsMissing` | warning | `cnpg_pg_replication_slots_active` | no series for `postgres-<env>` for 10m (source health) |
+| `PublicMcpImporterMetricsMissing` | warning | `butlers_public_mcp_proposal_import_switch_enabled` | no series for 30m (source health) |
+
+The three source-health alerts exist because a rule over a series nobody scrapes never fires: a
+missing source must lower a flag, not silence its rules. The server scrape is this chart's own, so
+its gap is critical; the other two depend on acts outside this repository, so they are warnings and
+fire by design until those acts are done.
 
 Every threshold is a value under `monitoring.rules.thresholds`. `slotRetainedWalBytes` is 50 % of
 the cluster's `max_slot_wal_keep_size` (`10GB` on dev, so `5368709120`) and has no metric to derive
@@ -104,6 +112,19 @@ instance pods' exporter port (the dev `Cluster` has `monitoring.enablePodMonitor
 scrape is the homelab's, not verified here). The importer series are exported by the butlers
 daemons over OTLP (OTel meter `butlers`, names with dots turned into underscores and `_total` on
 counters, as the repo's Grafana dashboards read them) and need no scrape from this chart.
+
+**Open homelab or owner acts for these sources (both [Unknown] until verified live):**
+
+- `postgres-dev` must be scraped by the `lgtm` Prometheus. Checked on the dev cluster: the
+  `Cluster` has `enablePodMonitor: false` and `postgres-dev-1` carries no `prometheus.io` or
+  `k8s.grafana.com` scrape annotations, so nothing may be scraping `cnpg_pg_replication_slots_*`
+  today and the three slot alerts (two critical) would never fire. Either set CNPG
+  `enablePodMonitor`, or add a PodMonitor labelled `release: lgtm` for the instance pods plus an
+  ingress allow for 9187 from `lgtm` on `postgres-dev` (homelab; this chart adds nothing there,
+  D8 item 3). Until then `PublicMcpSlotMetricsMissing` shows it on the warning flag.
+- The importer's OTLP path (`OTEL_EXPORTER_OTLP_ENDPOINT`, an external collector) must reach the
+  Prometheus that evaluates these rules, under the names above. Unverified;
+  `PublicMcpImporterMetricsMissing` shows a gap.
 
 **Gaps, no metric source today.** These conditions from REQ-public-mcp-authorization-014 have no
 rule, rather than a rule on an invented series:

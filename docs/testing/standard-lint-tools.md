@@ -26,7 +26,7 @@ make install-lint-tools   # once per worktree; CI runs it before Lint
 (gitleaks 8.30.1, actionlint 1.7.12 and promtool 3.5.0, the last used only by the public MCP alert-rule test and extracted from the release archive by its pinned in-archive `member` path, for Linux and macOS on x86_64 and arm64), verifies each
 archive's SHA-256, extracts only the single binary (top-level, or the pin's exact member path; no traversal, links or nested
 members), and publishes the tool directory into the ignored `.tmp/lint-tools/` cache in one rename.
-Downloads are bounded to 60 s and 256 MiB (the Prometheus archive that carries promtool is about 120 MiB); each tool run to 300 s and 16 MiB of output.
+Downloads are bounded to 60 s and 64 MiB (a pin may raise `max_archive_bytes` and `max_binary_bytes` for its own tool: promtool's archive is about 120 MiB, so it allows 192 MiB); each tool run to 300 s and 16 MiB of output.
 
 The scan commands never download. A missing tool, a cache that does not match its pin, or a binary
 that changed after its verified install is a failure naming `make install-lint-tools`, never a skip.

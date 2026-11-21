@@ -48,6 +48,8 @@
     "promtool": {
       "version": "3.5.0",
       "binary": "promtool",
+      "max_archive_bytes": 201326592,
+      "max_binary_bytes": 201326592,
       "assets": {
         "darwin-arm64": {
           "url": "https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.darwin-arm64.tar.gz",
