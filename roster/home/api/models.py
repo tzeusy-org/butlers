@@ -80,7 +80,9 @@ class CommandLogEntry(BaseModel):
     approval_id: UUID | None = None
     requested_state: dict[str, Any] | None = None
     observed_state: dict[str, Any] | None = None
-    status: Literal["attempting", "succeeded", "failed", "unverified"] | None = None
+    status: (
+        Literal["attempting", "succeeded", "failed", "unverified", "already_satisfied"] | None
+    ) = None
     rollback_hint: dict[str, Any] | None = None
     failure_reason: str | None = None
     completed_at: str | None = None

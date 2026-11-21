@@ -1857,7 +1857,7 @@ SCHEMA CliRuntimeSummary eaac7525b5ef
 SCHEMA Collection 66ee5ae38677
 SCHEMA ComfortDefaults 6192786ad313
 SCHEMA ComfortDeviation e791d3873caf
-SCHEMA CommandLogEntry f97ad96377a1
+SCHEMA CommandLogEntry dc3a8bcd208e
 SCHEMA CompactionLogEntry 5fa1e3bf14a7
 SCHEMA CompanionEntry 552a5ef21772
 SCHEMA CompareEntityBlock cfe033593cdd

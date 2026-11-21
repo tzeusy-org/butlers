@@ -1984,6 +1984,7 @@ async def test_no_shortcut_approves_a_critical_call(mock_mcp, monkeypatch, actor
 async def test_the_owner_approval_of_the_stored_critical_call_runs_it_once(mock_mcp, monkeypatch):
     args = _light("light.freezer_lamp")
     case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["off", "on"])
     result = await _replay(case, args, "human:owner")
 
     assert result["status"] == "succeeded"
@@ -1997,3 +1998,265 @@ async def test_an_ordinary_call_still_runs_on_a_rule_approval(mock_mcp, monkeypa
     result = await _replay(case, args, "rule:7")
 
     assert result["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# Pre-call state and already_satisfied (bu-jv1moa.123, REQ-module-home-assistant-003/004)
+# ---------------------------------------------------------------------------
+
+
+def _state_response(state, attributes=None, entity_id=None):
+    response = MagicMock()
+    payload = {
+        "state": state,
+        "attributes": attributes or {},
+        "last_updated": "2026-11-21T00:00:00Z",
+    }
+    if entity_id is not None:
+        payload["entity_id"] = entity_id
+    response.json.return_value = payload
+    return response
+
+
+def _script_states(case, states):
+    """GET /api/states answers these in order (then repeats the last); an Exception is raised."""
+    queue = list(states)
+
+    async def get(path):
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(item, Exception):
+            raise item
+        return item if isinstance(item, MagicMock) else _state_response(item)
+
+    case.client.get = AsyncMock(side_effect=get)
+
+
+def _receipt_inserts(case):
+    return [
+        call.args
+        for call in case.pool.execute.await_args_list
+        if "INSERT INTO ha_command_log" in call.args[0]
+    ]
+
+
+def _critical_case_args(entity="light.freezer_lamp", service="turn_off", data=None):
+    return _light(entity, service, data)
+
+
+@pytest.mark.parametrize(
+    ("reads", "reason"),
+    [
+        ([RuntimeError("down")], "pre_state_unavailable"),
+        ([httpx.ConnectError("down")], "pre_state_unavailable"),
+        (["unavailable"], "pre_state_unavailable"),
+        (["unknown"], "pre_state_unavailable"),
+        ([_state_response("on", entity_id="light.other")], "pre_state_unavailable"),
+    ],
+    ids=["error", "connect", "unavailable", "unknown", "wrong-entity"],
+)
+async def test_a_failed_or_unusable_pre_read_sends_nothing_and_writes_no_receipt(
+    mock_mcp, monkeypatch, reads, reason
+):
+    args = _critical_case_args()
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, reads)
+    result = await _replay(case, args, "human:owner")
+
+    assert (result["status"], result["reason"]) == ("not_run", reason)
+    assert reason in result["error"]
+    case.client.post.assert_not_awaited()
+    assert _receipt_inserts(case) == []
+
+
+async def test_a_partial_read_set_sends_nothing(mock_mcp, monkeypatch):
+    args = {
+        "domain": "light",
+        "service": "turn_off",
+        "target": {"entity_id": ["light.freezer_lamp", "light.other"]},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["on", RuntimeError("second read failed")])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["reason"] == "pre_state_unavailable"
+    case.client.post.assert_not_awaited()
+    assert _receipt_inserts(case) == []
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"area_id": "kitchen"},
+        {"entity_id": "all"},
+        None,
+        {"entity_id": "light.freezer_lamp", "area_id": "kitchen"},
+    ],
+    ids=["area", "all", "absent", "mixed"],
+)
+async def test_a_target_that_is_not_one_explicit_entity_list_is_unbound(
+    mock_mcp, monkeypatch, target
+):
+    args = {"domain": "light", "service": "turn_off", "target": target, "data": None}
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["reason"] == "target_unbound"
+    case.client.get.assert_not_awaited()
+    case.client.post.assert_not_awaited()
+    assert _receipt_inserts(case) == []
+
+
+async def test_a_stale_read_sends_nothing_and_a_later_fresh_read_sends_once(mock_mcp, monkeypatch):
+    args = _critical_case_args(service="turn_on")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["off", "on"])
+    monkeypatch.setattr(case.module, "_pre_state_is_fresh", lambda finished: False)
+    stale = await _replay(case, args, "human:owner")
+    assert stale["reason"] == "pre_state_stale"
+    case.client.post.assert_not_awaited()
+    assert _receipt_inserts(case) == []
+
+    monkeypatch.setattr(case.module, "_pre_state_is_fresh", lambda finished: True)
+    _script_states(case, ["off", "on"])
+    fresh = await _replay(case, args, "human:owner")
+    assert fresh["status"] == "succeeded"
+    case.client.post.assert_awaited_once()
+    assert len(_receipt_inserts(case)) == 1
+
+
+def test_the_freshness_bound_is_ten_seconds():
+    import time
+
+    module = HomeAssistantModule()
+    now = time.monotonic()
+    assert module._pre_state_is_fresh(now - 9.5)
+    assert not module._pre_state_is_fresh(now - 10.5)
+
+
+async def test_the_pre_call_state_is_kept_on_the_receipt_and_sent_once(mock_mcp, monkeypatch):
+    args = _critical_case_args(service="turn_on")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["off", "on"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "succeeded"
+    (insert,) = _receipt_inserts(case)
+    assert insert[-1]["light.freezer_lamp"]["state"] == "off"
+    assert "pre_state" in insert[0]
+    case.client.post.assert_awaited_once()
+
+
+async def test_an_ordinary_approved_call_is_not_pre_read_while_the_registry_is_readable(
+    mock_mcp, monkeypatch
+):
+    args = _light("light.fixture", "turn_on")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["switch.freezer"])
+    case.module._entity_cache["light.fixture"] = MagicMock(attributes={})
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "succeeded"
+    assert case.client.get.await_count == 1  # the post-call read-back only
+    assert _receipt_inserts(case)[0][-1] is None
+
+
+async def test_an_unreadable_registry_requires_the_pre_read_for_an_ordinary_call(
+    mock_mcp, monkeypatch
+):
+    args = _light("light.fixture", "turn_on")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=RuntimeError("down"))
+    _script_states(case, [RuntimeError("down")])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["reason"] == "pre_state_unavailable"
+    case.client.post.assert_not_awaited()
+
+
+async def test_a_satisfied_pre_state_sends_nothing_and_settles_already_satisfied(
+    mock_mcp, monkeypatch
+):
+    args = _critical_case_args(service="turn_off")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["off"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "already_satisfied"
+    assert result["message"] == "already that way, nothing sent"
+    case.client.post.assert_not_awaited()
+    (insert,) = _receipt_inserts(case)
+    assert "'already_satisfied'" in insert[0] and "'attempting'" not in insert[0]
+    assert "observed_state" not in insert[0]
+    assert insert[-1]["light.freezer_lamp"]["state"] == "off"
+    case.event.assert_awaited_once()
+    assert case.event.await_args.kwargs["status"] == "already_satisfied"
+    assert case.event.await_args.kwargs["attention_required"] is False
+
+
+async def test_a_replay_after_already_satisfied_returns_it_with_no_request_or_attention(
+    mock_mcp, monkeypatch
+):
+    args = _critical_case_args(service="turn_off")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    attempt = uuid.uuid4()
+    case.pool.fetchrow = AsyncMock(
+        return_value={
+            "attempt_id": attempt,
+            "status": "already_satisfied",
+            "result": None,
+            "observed_state": None,
+            "failure_reason": None,
+        }
+    )
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "already_satisfied"
+    assert result["attempt_id"] == str(attempt)
+    assert "attention_required" not in result
+    case.client.get.assert_not_awaited()
+    case.client.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("domain", "service", "data"),
+    [
+        ("scene", "turn_on", None),
+        ("light", "turn_on", {"brightness_pct": 40}),
+    ],
+)
+async def test_a_call_with_no_verifier_for_its_effect_is_never_already_satisfied(
+    mock_mcp, monkeypatch, domain, service, data
+):
+    entity = f"{domain}.freezer_item"
+    args = {"domain": domain, "service": service, "target": {"entity_id": entity}, "data": data}
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=[entity])
+    _script_states(case, ["on"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] in {"succeeded", "unverified"}
+    assert result["status"] != "already_satisfied"
+    case.client.post.assert_awaited_once()
+
+
+async def test_a_post_condition_that_fails_after_the_request_is_unverified(mock_mcp, monkeypatch):
+    args = _critical_case_args(service="turn_on")
+    case = await _registered_actuation(mock_mcp, monkeypatch, args, registry=["light.freezer_lamp"])
+    _script_states(case, ["off", "off"])
+    result = await _replay(case, args, "human:owner")
+
+    assert result["status"] == "unverified"
+    assert result["attention_required"] is True
+    case.client.post.assert_awaited_once()
+
+
+def test_satisfied_by_pre_state_is_conservative_about_unread_data():
+    actuation = ha_actuation
+    off = {"light.a": {"state": "off", "attributes": {}}}
+    assert actuation.satisfied_by_pre_state("light", "turn_off", None, off)
+    assert not actuation.satisfied_by_pre_state("light", "turn_off", {"transition": 2}, off)
+    assert not actuation.satisfied_by_pre_state("light", "turn_on", None, off)
+    assert not actuation.satisfied_by_pre_state("scene", "turn_on", None, off)
+    heat = {"climate.a": {"state": "heat", "attributes": {"temperature": 21}}}
+    assert actuation.satisfied_by_pre_state("climate", "set_temperature", {"temperature": 21}, heat)
+    assert not actuation.satisfied_by_pre_state(
+        "climate", "set_temperature", {"temperature": 22}, heat
+    )

@@ -387,6 +387,34 @@ def names_critical_entity(
     return any(_reaches_critical(entity, registry, attributes, 0, ()) for entity in entities)
 
 
+#: Receipt statuses a replay returns without a request (a possible effect never needs attention).
+SETTLED_WITHOUT_ATTENTION = frozenset({"succeeded", "already_satisfied"})
+#: The pre-call read must finish no more than this long before the receipt claim (D8).
+PRE_STATE_MAX_AGE_SECONDS = 10.0
+#: Content-blind reasons a replay is refused before any receipt or request (REQ-003).
+PRE_STATE_REFUSALS = frozenset({"pre_state_unavailable", "pre_state_stale", "target_unbound"})
+
+
+def satisfied_by_pre_state(
+    domain: str,
+    service: str,
+    data: dict[str, Any] | None,
+    pre_state: dict[str, dict[str, Any]],
+) -> bool:
+    """Whether the live pre-call state already meets the call's declared post-condition.
+
+    Only a service with a declared verifier can be satisfied. Extra ``data`` the verifier does not
+    read (a light's brightness, a transition) is never compared, so a call carrying any is not
+    declared satisfied: it proceeds to the normal attempt. ``climate.set_temperature`` is
+    verified on its one ``temperature`` key.
+    """
+    if data and not (
+        (domain, service) == ("climate", "set_temperature") and set(data) == {"temperature"}
+    ):
+        return False
+    return verify_post_condition(domain, service, data, pre_state).verified
+
+
 async def read_critical_registry(pool: Any, *, deadline: float = 2.0) -> frozenset[str] | None:
     """The owner's critical entity ids, read now; ``None`` when they cannot be read.
 
@@ -480,6 +508,10 @@ def verify_post_condition(
 
 
 __all__ = [
+    "PRE_STATE_MAX_AGE_SECONDS",
+    "PRE_STATE_REFUSALS",
+    "SETTLED_WITHOUT_ATTENTION",
+    "satisfied_by_pre_state",
     "CRITICAL_REASON",
     "MAX_GROUP_DEPTH",
     "ActuationRisk",

@@ -21,6 +21,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -52,11 +53,14 @@ from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registra
 from .actuation import (
     CRITICAL_REASON,
     DATA_TARGET_SELECTORS,
+    PRE_STATE_MAX_AGE_SECONDS,
+    SETTLED_WITHOUT_ATTENTION,
     ActuationRisk,
     effective_actuation_risk,
     names_critical_entity,
     read_critical_registry,
     rollback_hint,
+    satisfied_by_pre_state,
     snapshot_actuation_arguments,
     target_entity_ids,
     verify_post_condition,
@@ -1954,9 +1958,11 @@ class HomeAssistantModule(Module):
             )
             if prior_effect_possible is not None:
                 prior_status = prior_effect_possible["status"]
-                if prior_status == "succeeded":
+                if prior_status in SETTLED_WITHOUT_ATTENTION:
+                    # ``already_satisfied`` is terminal like ``succeeded``: returned without a
+                    # request and without attention (REQ-module-home-assistant-004).
                     return {
-                        "status": "succeeded",
+                        "status": prior_status,
                         "attempt_id": str(prior_effect_possible["attempt_id"]),
                         "risk": risk.value,
                         "approval_id": str(approval_context.action_id),
@@ -1979,6 +1985,27 @@ class HomeAssistantModule(Module):
                     "attention_required": True,
                 }
 
+        pre_state: dict[str, dict[str, Any]] | None = None
+        if approval_context is not None and effective.critical:
+            # REQ-module-home-assistant-003: read every target live, bind the read set to the
+            # stored target and require it fresh. A refusal sends nothing and writes no receipt;
+            # the approval stays approved and the executor records one approval event.
+            read = await self._read_pre_state(target)
+            refusal: str | None
+            if isinstance(read, str):
+                refusal = read
+            else:
+                pre_state, read_finished = read
+                refusal = None if self._pre_state_is_fresh(read_finished) else "pre_state_stale"
+            if refusal is not None:
+                return {
+                    "status": "not_run",
+                    "risk": risk.value,
+                    "approval_id": str(approval_context.action_id),
+                    "error": f"Home sent nothing: {refusal}. The approval stays unrun.",
+                    "reason": refusal,
+                }
+
         attempt_id = uuid.uuid4()
         actor = approval_context.actor if approval_context is not None else "system:home"
         approval_id = approval_context.action_id if approval_context is not None else None
@@ -1995,6 +2022,40 @@ class HomeAssistantModule(Module):
                 "reversible but has no rollback hint"
             )
 
+        if pre_state is not None and satisfied_by_pre_state(domain, service, data, pre_state):
+            # Already that way: send nothing, claim no effect (REQ-module-home-assistant-004).
+            await self._record_already_satisfied(
+                pool=pool,
+                attempt_id=attempt_id,
+                domain=domain,
+                service=service,
+                target=target,
+                data=data,
+                risk=risk,
+                actor=actor,
+                session_id=session_id,
+                approval_id=approval_id,
+                requested_state=requested_state,
+                pre_state=pre_state,
+            )
+            await self._emit_actuation_event(
+                pool=pool,
+                attempt_id=attempt_id,
+                domain=domain,
+                service=service,
+                risk=risk,
+                status="already_satisfied",
+                attention_required=False,
+            )
+            return {
+                "status": "already_satisfied",
+                "attempt_id": str(attempt_id),
+                "risk": risk.value,
+                "approval_id": str(approval_id) if approval_id is not None else None,
+                "pre_state": pre_state,
+                "message": "already that way, nothing sent",
+            }
+
         await self._start_actuation_receipt(
             pool=pool,
             attempt_id=attempt_id,
@@ -2008,6 +2069,7 @@ class HomeAssistantModule(Module):
             approval_id=approval_id,
             requested_state=requested_state,
             rollback=rollback,
+            pre_state=pre_state,
         )
 
         result: Any = {}
@@ -2293,14 +2355,15 @@ class HomeAssistantModule(Module):
         approval_id: uuid.UUID | None,
         requested_state: dict[str, Any],
         rollback: dict[str, Any] | None,
+        pre_state: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Claim a unique receipt before allowing the physical call to leave."""
         await pool.execute(
             """
             INSERT INTO ha_command_log (
                 attempt_id, domain, service, target, data, risk, actor, session_id,
-                approval_id, requested_state, status, rollback_hint
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'attempting', $11)
+                approval_id, requested_state, status, rollback_hint, pre_state
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'attempting', $11, $12)
             """,
             attempt_id,
             domain,
@@ -2313,7 +2376,92 @@ class HomeAssistantModule(Module):
             approval_id,
             requested_state,
             rollback,
+            pre_state,
         )
+
+    async def _record_already_satisfied(
+        self,
+        *,
+        pool: Any,
+        attempt_id: uuid.UUID,
+        domain: str,
+        service: str,
+        target: dict[str, Any] | None,
+        data: dict[str, Any] | None,
+        risk: ActuationRisk,
+        actor: str,
+        session_id: uuid.UUID | None,
+        approval_id: uuid.UUID | None,
+        requested_state: dict[str, Any],
+        pre_state: dict[str, dict[str, Any]],
+    ) -> None:
+        """Write the receipt that settles directly: no ``attempting`` phase, no observed state."""
+        await pool.execute(
+            """
+            INSERT INTO ha_command_log (
+                attempt_id, domain, service, target, data, risk, actor, session_id,
+                approval_id, requested_state, status, pre_state, completed_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'already_satisfied', $11, now())
+            """,
+            attempt_id,
+            domain,
+            service,
+            target,
+            data,
+            risk.value,
+            actor,
+            session_id,
+            approval_id,
+            requested_state,
+            pre_state,
+        )
+
+    @staticmethod
+    def _pre_state_is_fresh(read_finished: float) -> bool:
+        """The oldest target read finished no more than 10 seconds before the receipt claim."""
+        return time.monotonic() - read_finished <= PRE_STATE_MAX_AGE_SECONDS
+
+    async def _read_pre_state(
+        self, target: dict[str, Any] | None
+    ) -> tuple[dict[str, dict[str, Any]], float] | str:
+        """Read every explicit target live (never the cache), or return a refusal reason.
+
+        ``target_unbound`` when the target is not an explicit entity list; otherwise
+        ``pre_state_unavailable`` on a failed read, a missing entity, a state of ``unavailable``
+        or ``unknown``, or a read set that differs from the stored target. Returns the states and
+        the monotonic time the oldest read finished.
+        """
+        entities = target_entity_ids(target)
+        if not entities:
+            return "target_unbound"
+        client = self._get_client()
+        states: dict[str, dict[str, Any]] = {}
+        finished: list[float] = []
+        for entity_id in dict.fromkeys(entities):
+            try:
+                response = await asyncio.wait_for(
+                    client.get(f"/api/states/{quote(entity_id, safe='.')}"), 5.0
+                )
+                response.raise_for_status()
+                state = response.json()
+                if (
+                    not isinstance(state, dict)
+                    or state.get("entity_id", entity_id) != entity_id
+                    or not isinstance(state.get("state"), str)
+                    or state["state"] in {"unavailable", "unknown"}
+                ):
+                    return "pre_state_unavailable"
+                states[entity_id] = {
+                    "state": state["state"],
+                    "attributes": state.get("attributes") or {},
+                    "last_updated": state.get("last_updated"),
+                }
+            except Exception:  # noqa: BLE001 - any failed read sends nothing.
+                return "pre_state_unavailable"
+            finished.append(time.monotonic())
+        if set(states) != set(entities):
+            return "pre_state_unavailable"
+        return states, min(finished)
 
     async def _settle_actuation_receipt(
         self,
