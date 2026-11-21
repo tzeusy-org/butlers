@@ -1,4 +1,4 @@
-"""core_354 admits the 'animal' entity type on migrated PostgreSQL (bu-s11n0s.13 S1)."""
+"""core_355 admits the 'animal' entity type on migrated PostgreSQL (bu-s11n0s.13 S1)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def test_animal_is_admitted_and_unknown_types_stay_rejected(postgres_container) 
         postgres_container,
         migration_db_name(),
         chains=["core"],
-        revisions={"core": "core_353"},
+        revisions={"core": "core_354"},
     )
     config = _build_alembic_config(url, chains=["core"])
     engine = create_engine(url)
@@ -31,14 +31,14 @@ def test_animal_is_admitted_and_unknown_types_stay_rejected(postgres_container) 
         with engine.begin() as c:
             with pytest.raises(IntegrityError):
                 c.execute(_INSERT, {"name": "Rex", "entity_type": "animal"})
-        command.upgrade(config, "core_354")
+        command.upgrade(config, "core_355")
         with engine.begin() as c:
             c.execute(_INSERT, {"name": "Rex", "entity_type": "animal"})
         with engine.connect() as c:
             with pytest.raises(IntegrityError):
                 c.execute(_INSERT, {"name": "Ghost", "entity_type": "ghost"})
         # Cumulative downgrade: an existing animal row must not block it.
-        command.downgrade(config, "core_353")
+        command.downgrade(config, "core_354")
         with engine.connect() as c:
             kept = c.execute(
                 text("SELECT entity_type FROM public.entities WHERE canonical_name = 'Rex'")

@@ -40,7 +40,7 @@ CREATE TABLE public.entities (
 
 **Grants:** `core_014` grants `SELECT, INSERT, UPDATE, DELETE` on `public.entities` to: `butler_switchboard_rw`, `butler_general_rw`, `butler_health_rw`, `butler_relationship_rw`, `butler_messenger_rw`. Additional butler roles must be added to `_ALL_BUTLER_ROLES` in `core_014` (or a follow-up migration) as new butlers are created.
 
-**Entity types (core_354):** the taxonomy is `person`, `organization`, `place`, `animal`, `other`. `animal` was added by owner decision (bu-s11n0s.13) so a pet is a first-class dependent entity rather than an `other` with a role convention. Every code site that enumerates the types (memory tool `VALID_ENTITY_TYPES` and `Literal`s, the memory module `memory_entity_create` schema, the dashboard `PATCH /api/memory/entities/{id}` validator) and the `chk_entities_entity_type` CHECK MUST list the same five values. A dependent animal is an entity only: it is never a principal or a user.
+**Entity types (core_355):** the taxonomy is `person`, `organization`, `place`, `animal`, `other`. `animal` was added by owner decision (bu-s11n0s.13) so a pet is a first-class dependent entity rather than an `other` with a role convention. Every code site that enumerates the types (memory tool `VALID_ENTITY_TYPES` and `Literal`s, the memory module `memory_entity_create` schema, the dashboard `PATCH /api/memory/entities/{id}` validator) and the `chk_entities_entity_type` CHECK MUST list the same five values. A dependent animal is an entity only: it is never a principal or a user.
 
 #### Scenario: Animal entity type accepted
 

@@ -1,7 +1,7 @@
 """public.entities: admit the 'animal' entity type (bu-s11n0s.13 S1).
 
-Revision ID: core_354
-Revises: core_353
+Revision ID: core_355
+Revises: core_354
 Create Date: 2026-11-21 00:00:00.000000
 
 Owner decision relationship-duty-of-care (2026-11-21, option A): the entity taxonomy gains
@@ -21,8 +21,8 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "core_354"
-down_revision = "core_353"
+revision = "core_355"
+down_revision = "core_354"
 branch_labels = None
 depends_on = None
 
