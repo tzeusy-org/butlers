@@ -262,45 +262,19 @@ async def test_a_class_that_is_not_delivered_is_not_announced():
 # --------------------------------------------------------------------------- the proxy (S5)
 
 
-async def test_the_proxy_marks_everything_under_observe():
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value="observe")
-    pool.fetch = AsyncMock()
-    pool.execute = AsyncMock(return_value="UPDATE 2")
-    assert await broker.check_and_update_engagement(pool, now=_NOW) == 2
-    pool.fetch.assert_not_awaited()
-    assert pool.execute.await_args.args[3:] == ([], [])
+def _planned(verdicts: list[shaping.ClassVerdict]) -> shaping.ShapingPlan:
+    plan = shaping.ShapingPlan()
+    plan.verdicts = {v.key: v for v in verdicts}
+    return plan
 
 
-async def test_the_proxy_skips_classes_the_outcome_signal_covers_under_shape():
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value="shape")
-    covered = [
-        {
-            "origin_butler": "finance",
-            "category": "bill-due",
-            "verdict": "self_resolving",
-            "computed_at": _NOW,
-        },
-        {
-            "origin_butler": "health",
-            "category": "baseline",
-            "verdict": "unmeasured",
-            "computed_at": _NOW,
-        },
-        {
-            "origin_butler": "relationship",
-            "category": "stale",
-            "verdict": "effective",
-            "computed_at": _NOW - shaping.VERDICT_FRESH_FOR - timedelta(days=1),
-        },
-    ]
-    pool.fetch = AsyncMock(return_value=covered)
-    pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    await broker.check_and_update_engagement(pool, now=_NOW)
-
-    assert pool.execute.await_args.args[3:] == (["finance"], ["bill-due"])
+def test_a_delivery_is_proxy_tracked_unless_its_own_band_is_measured():
+    plan = _planned([_verdict("ignored", band="normal"), _verdict("unmeasured", band="low")])
+    assert plan.proxy_retired(_candidate(70))  # measured, same band: retired
+    assert not plan.proxy_retired(_candidate(95))  # urgent band: never shaped, proxy stays
+    assert not plan.proxy_retired(_candidate(20))  # low band is unmeasured: proxy stays
+    assert not plan.proxy_retired(_candidate(70, category="other"))
+    assert not shaping.ShapingPlan().proxy_retired(_candidate(70))  # observe: empty plan
 
 
 # --------------------------------------------------------------------------- real seams
@@ -502,30 +476,43 @@ class TestShapingOnRealTables:
 
         assert result["delivered"] == [bill]
 
-    async def test_the_proxy_retires_only_for_covered_classes_under_shape(self, shaped_pool):
-        now = datetime.now(UTC)  # live-clock: engagement rows and verdict are all relative to now
-        await _seed_verdict(shaped_pool, "ignored", now=now)
-        covered, plain = uuid.uuid4(), uuid.uuid4()
-        for insight_id, origin, category in (
-            (covered, "finance", "bill-due"),
-            (plain, "health", "sleep"),
-        ):
-            await shaped_pool.execute(
-                "INSERT INTO insight_engagement (insight_id, delivered_at, engaged, category, "
-                "origin_butler) VALUES ($1, $2, FALSE, $3, $4)",
-                insight_id,
-                now - timedelta(minutes=10),
-                category,
-                origin,
-            )
-
-        assert await broker.check_and_update_engagement(shaped_pool, now=now) == 2  # observe
-        await shaped_pool.execute("UPDATE insight_engagement SET engaged = FALSE")
+    async def test_riders_and_measured_classes_leave_no_proxy_row_but_urgent_ones_do(
+        self, shaped_pool
+    ):
+        now = datetime.now(UTC)  # live-clock: candidate created_at is the database now()
         await shaped_pool.execute("UPDATE insight_settings SET outcome_shaping = 'shape'")
-
-        assert await broker.check_and_update_engagement(shaped_pool, now=now) == 1
-        engaged = {
-            row["insight_id"]: row["engaged"]
-            for row in await shaped_pool.fetch("SELECT insight_id, engaged FROM insight_engagement")
+        await _seed_verdict(shaped_pool, "self_resolving", now=now)
+        bill = await _propose_bill(shaped_pool, key="a", priority=70, now=now)
+        sleep = await _propose_sleep(shaped_pool, day="2026-11-22", now=now)
+        await broker.delivery_cycle(shaped_pool, notify_fn=AsyncMock(return_value=_SENT), now=now)
+        tracked = {
+            str(row["insight_id"])
+            for row in await shaped_pool.fetch("SELECT insight_id FROM insight_engagement")
         }
-        assert engaged == {covered: False, plain: True}
+        # The rider (a measured class) has no proxy row, so the any-message mark, the category
+        # weight and the 14-day disengagement rate never see it; the unmeasured class keeps one.
+        assert tracked == {sleep}
+        assert bill not in tracked
+
+        urgent = await _propose_bill(shaped_pool, key="u", priority=95, now=now)
+        await shaped_pool.execute("DELETE FROM insight_cooldowns")
+        await broker.delivery_cycle(
+            shaped_pool, notify_fn=AsyncMock(return_value=_SENT), now=now + timedelta(minutes=1)
+        )
+        row = await shaped_pool.fetchval(
+            "SELECT count(*) FROM insight_engagement WHERE insight_id = $1::uuid", urgent
+        )
+        assert row == 1  # the measured class's urgent band is never shaped: the proxy stays
+
+    async def test_riders_do_not_spend_the_daily_send_budget(self, shaped_pool):
+        now = datetime.now(UTC)  # live-clock: candidate created_at is the database now()
+        await shaped_pool.execute("UPDATE insight_settings SET outcome_shaping = 'shape'")
+        await _seed_verdict(shaped_pool, "self_resolving", now=now)
+        for key in ("a", "b", "c"):
+            await _propose_bill(shaped_pool, key=key, priority=70, now=now)
+        await _propose_sleep(shaped_pool, day="2026-11-22", now=now)
+        result = await broker.delivery_cycle(
+            shaped_pool, notify_fn=AsyncMock(return_value=_SENT), now=now
+        )
+        assert len(result["delivered"]) == 4  # one standalone slot plus three riders
+        assert await broker.sends_today(shaped_pool, now=now) == 1

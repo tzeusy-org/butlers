@@ -396,7 +396,7 @@ Engagement detection is a side effect of the Switchboard's existing ingress proc
 3. This query uses the `idx_insight_engagement_window` index and is bounded to at most 60 minutes of rows. It does not scan the full table.
 4. The engagement check does not delay or block ingress processing. It runs as a lightweight post-acceptance side effect.
 
-Under the owner's `outcome_shaping=shape`, step 2 skips a class the outcome signal measures (a fresh non-urgent verdict other than `unmeasured`): only an explicit useful verdict marks it engaged. Unpremised classes keep this proxy.
+Under the owner's `outcome_shaping=shape`, a delivery whose class the outcome signal measures (a fresh verdict other than `unmeasured` in the candidate's own priority band) gets no `insight_engagement` row, so step 2, the category weight and the 14-day disengagement rate never count it. Urgent-band, unpremised and unmeasured deliveries keep this proxy, and a candidate that rode a digest takes no daily send slot.
 
 The engagement signal is intentionally rough — "any owner message within 60 minutes" is an imprecise proxy for "the user found the insight useful." Over-engineering engagement tracking (click tracking, read receipts, sentiment analysis) would add complexity for marginal accuracy gain. The 14-day rolling window smooths out noise from false positives.
 

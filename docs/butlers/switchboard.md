@@ -44,8 +44,10 @@ A `useful` reply on the class after its demotion began restores it until the ver
 `never` reply still mutes. A class that becomes `self_resolving`, or `ignored` with no feedback in
 30 days, is announced once, as one line riding a delivery (counts included, with the useful "keep"
 and mute "quiet" doors on one of the class's delivered candidates), at most once per class per 30
-days. Classes with a fresh measured verdict are also skipped by the 60-minute any-message
-engagement mark; unpremised classes keep it. Per-class state (`shaping_state`) records the verdict
+days. A delivery whose class has a fresh measured verdict in its own band gets no engagement row,
+so the 60-minute any-message mark, the category weight and the 14-day auto-off rate never count
+it (urgent-band, unpremised and unmeasured deliveries keep the proxy). Riders take no daily send
+slot. Per-class state (`shaping_state`) records the verdict
 seen, since when, and when the owner was last told.
 
 Read a verdict as a correlation, not an effect:

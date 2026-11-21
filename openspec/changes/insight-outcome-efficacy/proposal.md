@@ -52,7 +52,9 @@ owner-only `outcome_shaping=shape`, default `observe`):
   restores the class.
 - One line per class change (`self_resolving`, or `ignored` with no feedback), at most once per
   30 days, riding a delivery, with the existing useful (keep) and mute (quiet) doors.
-- The 60-minute any-message engagement mark skips classes with a fresh measured verdict.
+- A delivery whose class has a fresh measured verdict in its own band gets no engagement row (so
+  the proxy, the category weight and the disengagement rate never count it); riders take no
+  daily send slot.
 
 ## Deferred
 

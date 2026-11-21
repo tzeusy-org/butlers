@@ -948,9 +948,9 @@ async def check_and_update_engagement(
 
     Called on each Switchboard ingress request: if the user sends any message
     to any butler within 60 minutes of an insight's delivered_at, the insight
-    is considered engaged. Under the owner's ``outcome_shaping=shape`` setting a class the
-    outcome signal measures (``shaping.covered_classes``) is skipped here: only an explicit
-    ``useful`` reply marks it engaged (bu-s11n0s.15 S5). Unpremised classes keep the proxy.
+    is considered engaged. Under the owner's ``outcome_shaping=shape`` a delivery the outcome
+    signal covers never gets an engagement row (``ShapingPlan.proxy_retired``), so this proxy
+    never sees it (bu-s11n0s.15 S5); unpremised and unmeasured classes keep it.
 
     Parameters
     ----------
@@ -970,16 +970,6 @@ async def check_and_update_engagement(
         now = datetime.now(UTC)
     window_start = now - timedelta(minutes=window_minutes)
 
-    # bu-s11n0s.15 S5: under the owner's outcome_shaping=shape, a class the outcome signal
-    # measures is no longer marked by the any-message proxy; only an explicit useful reply is.
-    from . import shaping
-
-    covered: list[tuple[str, str]] = []
-    if await shaping.shaping_mode(pool) == shaping.MODE_SHAPE:
-        try:
-            covered = await shaping.covered_classes(pool, now=now)
-        except Exception:
-            logger.warning("insight engagement: coverage unreadable; marking all", exc_info=True)
     result = await pool.execute(
         """
         UPDATE insight_engagement
@@ -987,16 +977,9 @@ async def check_and_update_engagement(
         WHERE engaged = FALSE
           AND delivered_at >= $1
           AND delivered_at <= $2
-          AND NOT EXISTS (
-              SELECT 1 FROM unnest($3::text[], $4::text[]) AS covered(origin_butler, category)
-              WHERE covered.origin_butler = insight_engagement.origin_butler
-                AND covered.category = insight_engagement.category
-          )
         """,
         window_start,
         now,
-        [origin for origin, _ in covered],
-        [category for _, category in covered],
     )
     # asyncpg returns "UPDATE N" string
     count_str = result.split()[-1] if result else "0"
@@ -2547,7 +2530,8 @@ async def sends_today(
         SELECT count(*) FROM insight_candidates
         WHERE ($3::text IS NULL OR lane = $3)
           AND (
-            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2)
+            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2
+             AND COALESCE(metadata ->> 'digest_fold', '') <> 'true')
             OR (status = 'pending' AND claim_id IS NOT NULL)
           )
         """,
@@ -3291,7 +3275,21 @@ async def delivery_cycle(
                 await record_cooldowns(conn, selected, now=now)
 
                 # Step 9: Record engagement
-                await record_engagement_rows(conn, selected, delivered_at=delivered_at)
+                # bu-s11n0s.15 S5: deliveries the outcome signal covers have no proxy row.
+                await record_engagement_rows(
+                    conn,
+                    [c for c in selected if not plan.proxy_retired(c)],
+                    delivered_at=delivered_at,
+                )
+                # A rider took no slot: stamp it so the daily send count skips it.
+                if riders:
+                    await conn.execute(
+                        "UPDATE insight_candidates SET metadata = "
+                        "COALESCE(metadata, '{}'::jsonb) || '{\"digest_fold\": true}'::jsonb "
+                        "WHERE id = ANY($1::uuid[]) AND claim_id = $2",
+                        [str(c["id"]) for c in riders],
+                        claim_id,
+                    )
 
                 # bu-q7vx1q.5: persist where each candidate landed (so a later
                 # premise resolution can amend it in place) and retire the

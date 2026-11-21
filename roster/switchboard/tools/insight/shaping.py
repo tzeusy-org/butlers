@@ -15,8 +15,8 @@ Under ``shape``:
 - the owner is told once per class change, at most once per 30 days, in a line that rides the
   delivery and cites the counts, with the existing useful and mute doors on one of the class's
   candidates (:func:`build_notices`);
-- the 60-minute any-message engagement mark is retired for classes the outcome signal covers
-  (:func:`covered_classes`).
+- the 60-minute any-message engagement proxy is retired for deliveries the outcome signal covers
+  (:meth:`ShapingPlan.proxy_retired`): they get no engagement row.
 
 The urgent band (priority at or above ``URGENT_PRIORITY_THRESHOLD``) is never shaped, and the
 owner-declared break-through category is never shaped. A verdict older than
@@ -93,6 +93,23 @@ class ShapingPlan:
         """One counted reason per category, for the delivery's ``category_budget_reasons``."""
         return {s.verdict.category: s.reason for s in self.by_candidate.values()}
 
+    def proxy_retired(self, candidate: Mapping[str, Any]) -> bool:
+        """Whether the outcome signal covers this delivery, so the 60-minute proxy skips it.
+
+        Covered means a fresh verdict other than ``unmeasured`` in the candidate's own priority
+        band; the urgent band has no verdict here and keeps the proxy. A skipped delivery gets
+        no ``insight_engagement`` row, so the any-message mark, the category weight and the
+        14-day disengagement rate (which only read that table) never see it.
+        """
+        verdict = self.verdicts.get(
+            class_key(
+                candidate["origin_butler"],
+                candidate["category"],
+                priority_band(candidate["priority"]),
+            )
+        )
+        return verdict is not None and verdict.verdict != "unmeasured"
+
 
 @dataclass(frozen=True)
 class Notice:
@@ -158,25 +175,6 @@ async def _latest_verdicts(
         )
         verdicts[verdict.key] = verdict
     return verdicts
-
-
-async def covered_classes(pool: asyncpg.Pool, *, now: datetime) -> list[tuple[str, str]]:
-    """Classes the outcome signal measures: a fresh non-urgent verdict other than unmeasured."""
-    rows = await pool.fetch(
-        """
-        SELECT DISTINCT ON (origin_butler, category, priority_band)
-               origin_butler, category, verdict, computed_at
-        FROM public.insight_class_efficacy
-        WHERE priority_band <> 'urgent'
-        ORDER BY origin_butler, category, priority_band, bucket_date DESC, computed_at DESC
-        """
-    )
-    covered = {
-        (row["origin_butler"], row["category"])
-        for row in rows
-        if row["verdict"] != "unmeasured" and now - row["computed_at"] <= VERDICT_FRESH_FOR
-    }
-    return sorted(covered)
 
 
 def _parse_time(value: Any) -> datetime | None:
