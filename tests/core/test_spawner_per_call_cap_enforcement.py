@@ -312,6 +312,53 @@ class TestSpawnerSpendRulesUnavailable:
         assert len(refusals) == 1
         assert refusals[0][4] == "quota_skip"
 
+    async def test_an_unexpected_error_after_a_matched_rule_refuses_the_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        """A matched rule's cap could be lost with the tier model: refuse (bu-svqpzo.22)."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _MockAdapter(result_text="should not run")
+
+        with ExitStack() as stack:
+            _enter_resolution_patches(stack)
+            stack.enter_context(
+                patch(
+                    "butlers.core.spawner.apply_spend_routing_rules",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("post-match failure"),
+                )
+            )
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
+        assert result.success is False
+        assert result.error == SPEND_RULES_UNAVAILABLE_REASON
+        assert adapter.invoke_calls == 0
+
+    async def test_a_non_finite_cap_refuses_with_its_own_reason(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        mock_pool.fetch = AsyncMock(
+            return_value=[
+                {"id": uuid.UUID(int=7), "condition": {}, "action": {"max_cost_per_call": "nan"}}
+            ]
+        )
+        adapter = _MockAdapter(result_text="should not run")
+
+        with ExitStack() as stack:
+            _enter_resolution_patches(stack)
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick", max_token_budget=100_000)
+
+        assert result.success is False
+        assert result.error is not None and "not a finite number" in result.error
+        assert adapter.invoke_calls == 0
+
     async def test_a_readable_empty_rule_set_still_dispatches(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
         config_dir.mkdir()

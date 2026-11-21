@@ -315,14 +315,26 @@ async def test_spend_rule_override_dispatches_the_routed_model_with_its_receipt_
     assert sink.events[-1][1]["resolution_receipt"]["winner"]["reason"] == "spend_rule_override"
 
 
-async def test_spend_rule_errors_keep_the_tier_resolved_model() -> None:
+async def test_an_unexpected_rule_evaluation_error_refuses_rather_than_dropping_a_cap() -> None:
+    """Contract changed deliberately (bu-svqpzo.22): this used to keep the tier-resolved model.
+
+    A matched rule's owner-set cap could be lost with it, so any evaluation error refuses.
+    """
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))
     with _Catalog() as catalog:
-        catalog.rules.side_effect = RuntimeError("rules table missing")
-        await _call(_spec(), attempt, sink)
+        catalog.rules.side_effect = RuntimeError("rule evaluation blew up")
+        with pytest.raises(SpendRulesUnavailable) as raised:
+            await _call(_spec(), attempt, sink)
 
-    assert attempt.seen[0].model_id == "model-a"
+    assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
 
 
 async def test_an_unreadable_rule_set_refuses_without_invoking_and_records_why() -> None:
@@ -343,15 +355,22 @@ async def test_an_unreadable_rule_set_refuses_without_invoking_and_records_why()
     )
 
 
-async def test_an_unreadable_rule_set_refuses_even_when_the_caller_skips_the_ceiling() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON), RuntimeError("rule evaluation failed")],
+    ids=["unreadable", "unexpected-error"],
+)
+async def test_a_rule_refusal_holds_even_when_the_caller_skips_the_ceiling(error) -> None:
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))
     with _Catalog() as catalog:
-        catalog.rules.side_effect = SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+        catalog.rules.side_effect = error
         with pytest.raises(SpendRulesUnavailable):
             await _call(_spec(enforce_ceiling=False), attempt, sink)
 
     assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert row["produce_fleet_halt"] is False
 
 
 # --- spend gate -------------------------------------------------------------------------
@@ -423,7 +442,10 @@ async def test_unreadable_gate_state_refuses_without_invoking_or_raising_a_fleet
     attempt = _attempts()
     with (
         patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(return_value=(*A, "workhorse"))),
-        patch(f"{_K}.apply_spend_routing_rules", AsyncMock(side_effect=OSError("down"))),
+        patch(
+            f"{_K}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=A)),
+        ),
         pytest.raises(SpendCeilingReached) as raised,
     ):
         await call_model(pool, _spec(), attempt, adapter_for=_adapter_for(), sink=sink)

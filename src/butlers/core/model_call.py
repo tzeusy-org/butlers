@@ -291,14 +291,20 @@ async def _resolve(
                 else:
                     selection_reason = "spend_rule_override"
                     candidate = rerouted
-        except SpendRulesUnavailable as refusal:
-            logger.warning("%s blocked: %s", spec.caller, refusal)
+        except Exception as error:
+            # Fail closed (bu-svqpzo.15, .22): any evaluation error could drop a matched rule's cap.
+            refusal = (
+                error
+                if isinstance(error, SpendRulesUnavailable)
+                else SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+            )
+            logger.warning("%s blocked: %s", spec.caller, refusal, exc_info=refusal is not error)
             await sink.attempt(
                 catalog_entry_id=candidate.catalog_entry_id,
                 butler=spec.butler_name,
                 outcome="quota_skip",
                 attempt_index=0,
-                failure_reason=SPEND_RULES_UNAVAILABLE_REASON,
+                failure_reason=str(refusal),
                 purpose_lane=spec.purpose_lane,
                 produce_fleet_halt=False,
                 resolution_receipt=project_resolution_receipt(
@@ -311,16 +317,9 @@ async def _resolve(
                     selection_reason=None,
                 ),
             )
-            raise
-        except Exception:
-            logger.warning(
-                "%s: spend routing-rule evaluation failed for butler=%s; keeping tier-resolved "
-                "model=%s",
-                spec.caller,
-                spec.butler_name,
-                candidate.model_id,
-                exc_info=True,
-            )
+            if refusal is error:
+                raise
+            raise refusal from error
     return candidate, effective_tier, base_receipt, selection_reason
 
 
