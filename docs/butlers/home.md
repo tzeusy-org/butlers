@@ -292,6 +292,9 @@ opens are specified in
   rule, suggestion, grant or system actor gets `not_run` / `critical_needs_owner_approval` before
   any receipt or request. The capability broker classifies a goal call naming a critical entity
   `consequential` and every Home call `unknown` when its registry reader fails or is absent.
+- **Dashboard.** Home, Devices, Critical entities (`HomeCriticalEntitiesPanel`) lists, marks and
+  unmarks entities, says that unmarking never releases a call already waiting for approval, states
+  the coverage limit below, and shows a failed read as degraded, never as an empty registry.
 - **Not covered, stated plainly.** Home Assistant automations that fire on their own triggers and
   changes made outside Butlers never pass through `ha_call_service`. A helper that wraps an entity
   without exposing its membership is covered only when the owner marks the helper itself critical.
