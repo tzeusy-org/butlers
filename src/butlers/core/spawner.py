@@ -1875,7 +1875,7 @@ class Spawner:
         _pre_rule_catalog_entry_id = catalog_entry_id
         _receipt_selection_reason: str | None = None
         _routing_result: SpendRoutingResult | None = None
-        _spend_rules_unavailable = False
+        _spend_rules_refusal: str | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1904,17 +1904,20 @@ class Spawner:
                 ) = _routing_result.resolved
                 _spend_rule_max_cost_per_call = _routing_result.max_cost_per_call
                 _spend_rule_breaker_open = _routing_result.breaker_open
-            except SpendRulesUnavailable:
-                # Fail closed (bu-svqpzo.15): a rule may carry an owner-set per-call cap, so an
-                # unreadable rule set refuses the dispatch below instead of dropping the cap.
-                _spend_rules_unavailable = True
-            except Exception:
+            except Exception as exc:
+                # Fail closed (bu-svqpzo.15, .22): a matched rule may carry an owner-set per-call
+                # cap, so an unreadable rule set or any evaluation error refuses the dispatch
+                # below instead of keeping the tier-resolved model and dropping the cap.
+                _spend_rules_refusal = (
+                    str(exc)
+                    if isinstance(exc, SpendRulesUnavailable)
+                    else SPEND_RULES_UNAVAILABLE_REASON
+                )
                 logger.warning(
-                    "Spend routing-rule evaluation failed for butler=%s; "
-                    "keeping tier-resolved model=%s",
+                    "Spend routing-rule evaluation failed for butler=%s; refusing: %s",
                     self._config.name,
-                    model,
-                    exc_info=True,
+                    _spend_rules_refusal,
+                    exc_info=not isinstance(exc, SpendRulesUnavailable),
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
         if _spend_rule_fired:
@@ -1993,9 +1996,13 @@ class Spawner:
         )
         _next_attempt_index = 0
 
-        if _spend_rules_unavailable and catalog_entry_id is not None and self._pool is not None:
+        if (
+            _spend_rules_refusal is not None
+            and catalog_entry_id is not None
+            and self._pool is not None
+        ):
             logger.warning(
-                "Spawn blocked for butler=%s: %s", self._config.name, SPEND_RULES_UNAVAILABLE_REASON
+                "Spawn blocked for butler=%s: %s", self._config.name, _spend_rules_refusal
             )
             await _write_dispatch_attempt(
                 self._pool,
@@ -2003,7 +2010,7 @@ class Spawner:
                 butler=self._config.name,
                 outcome="quota_skip",
                 attempt_index=_next_attempt_index,
-                failure_reason=SPEND_RULES_UNAVAILABLE_REASON,
+                failure_reason=_spend_rules_refusal,
                 tool_call_count=0,
                 logical_session_id=effective_request_id,
                 purpose_lane=purpose_lane,
@@ -2012,7 +2019,7 @@ class Spawner:
             )
             return await self._dashboard_preflight_failure(
                 dashboard_turn_id=dashboard_turn_id,
-                error=SPEND_RULES_UNAVAILABLE_REASON,
+                error=_spend_rules_refusal,
                 model=model,
             )
 

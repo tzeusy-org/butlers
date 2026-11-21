@@ -34,6 +34,7 @@ from butlers.core.model_routing import (
     Complexity,
     QuotaStatus,
     SpendRoutingResult,
+    SpendRulesUnavailable,
 )
 
 pytestmark = pytest.mark.unit
@@ -624,9 +625,11 @@ async def test_call_no_matching_rule_keeps_tier_resolved_model() -> None:
     mock_record.assert_awaited_once()
 
 
-async def test_call_spend_rule_evaluation_failure_fails_open() -> None:
-    """A raising apply_spend_routing_rules must not block the discretion call
-    (fail-open), keeping the tier-resolved model.
+async def test_call_spend_rule_evaluation_failure_fails_closed() -> None:
+    """A raising apply_spend_routing_rules refuses the discretion call (bu-svqpzo.22).
+
+    Contract changed deliberately: this used to keep the tier-resolved model, which could drop a
+    matched rule's owner-set cap.
     """
     pool = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)
@@ -643,20 +646,18 @@ async def test_call_spend_rule_evaluation_failure_fails_open() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as mock_record,
+        pytest.raises(SpendRulesUnavailable),
     ):
-        result = await dispatcher.call("hi")
+        await dispatcher.call("hi")
 
-    assert result == "FORWARD"
-    _, invoke_kwargs = adapter.invoke.call_args
-    assert invoke_kwargs["model"] == catalog[1]
+    adapter.invoke.assert_not_called()
     mock_record.assert_awaited_once()
 
 
-async def test_call_unpatched_apply_spend_routing_rules_fails_open_on_mock_pool() -> None:
-    """End-to-end sanity: the real apply_spend_routing_rules against a plain
-    MagicMock pool (no real DB) fails open internally and the call still
-    succeeds with the tier-resolved model unchanged, matching every other
-    test in this module that never patches apply_spend_routing_rules.
+async def test_call_dispatches_on_a_mock_pool_with_the_readable_gate_rule_set() -> None:
+    """End-to-end sanity: with the readable-gate fixture's empty rule set, a plain MagicMock
+    pool still dispatches the tier-resolved model unchanged, like every other test in this
+    module that never patches apply_spend_routing_rules.
     """
     pool = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)

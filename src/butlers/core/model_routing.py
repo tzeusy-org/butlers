@@ -59,6 +59,7 @@ import dataclasses
 import enum
 import json
 import logging
+import math
 import time
 import uuid
 from collections import OrderedDict
@@ -340,8 +341,18 @@ CEILING_UNAVAILABLE_REASON = (
 SPEND_RULES_UNAVAILABLE_REASON = "Spend rules unavailable: the routing rules could not be read"
 
 
+# A matched rule's cap is NaN or infinite: a NaN cap never fires and an infinite one never binds,
+# so the rule cannot be applied as written (bu-svqpzo.22).
+SPEND_RULE_CAP_NOT_FINITE_REASON = (
+    "Spend rules unavailable: a matched rule's max_cost_per_call is not a finite number"
+)
+
+
 class SpendRulesUnavailable(RuntimeError):
-    """The spend-rule set could not be read, so the dispatch is refused (fail closed)."""
+    """The spend rules cannot be applied as written, so the dispatch is refused (fail closed).
+
+    ``str(exc)`` is the refusal reason the callers record.
+    """
 
 
 # Recorded on a ``public.model_dispatch_attempts`` row (outcome
@@ -2675,7 +2686,9 @@ def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
     """Extract and validate the ``action.max_cost_per_call`` per-call USD cap.
 
     Returns the cap as a positive float, or ``None`` when the action sets no cap or
-    the configured value is malformed (non-numeric or non-positive).  A malformed cap
+    the configured value is malformed (non-numeric or non-positive). A NaN or infinite
+    cap raises :class:`SpendRulesUnavailable`: it can never fire, so ignoring it would
+    silently drop an owner-set cap.  A malformed cap
     is ignored with a warning rather than failing the dispatch — a routing rule must
     never wedge a spawn because of bad effect data.
     """
@@ -2692,6 +2705,14 @@ def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
             raw,
         )
         return None
+    if not math.isfinite(cap):
+        logger.warning(
+            "apply_spend_routing_rules: rule %s has non-finite action.max_cost_per_call=%r; "
+            "refusing the dispatch (fail-closed)",
+            rule_id,
+            raw,
+        )
+        raise SpendRulesUnavailable(SPEND_RULE_CAP_NOT_FINITE_REASON)
     if cap <= 0:
         logger.warning(
             "apply_spend_routing_rules: rule %s has non-positive action.max_cost_per_call=%r; "
