@@ -355,11 +355,13 @@ def test_restart_recovery_and_recently_played_reconciliation(postgres_container)
     async def _exercise() -> None:
         pool = await asyncpg.create_pool(db_url)
         try:
+            epoch_ms = 1_742_000_000_000
+            recently_played_at_ms = epoch_ms + 30_000
             persisted = TrackPlayEvidence(
                 track_uri="spotify:track:a",
                 track_name="A",
-                first_seen_ms=100_000,
-                last_seen_ms=105_000,
+                first_seen_ms=epoch_ms,
+                last_seen_ms=epoch_ms + 5_000,
                 duration_ms=250_000,
                 max_progress_ms=5_000,
                 observation_precision="progress_tracked",
@@ -382,7 +384,7 @@ def test_restart_recovery_and_recently_played_reconciliation(postgres_container)
                     track_name="B",
                     duration_ms=200_000,
                     progress_ms=0,
-                    timestamp_ms=130_000,
+                    timestamp_ms=recently_played_at_ms,
                 )
             )
             assert closed is not None
@@ -404,7 +406,7 @@ def test_restart_recovery_and_recently_played_reconciliation(postgres_container)
                 pool,
                 endpoint_identity="spotify:user1",
                 track_uri="spotify:track:a",
-                played_at_ms=130_000,
+                played_at_ms=recently_played_at_ms,
             )
             await record_gap_fill_track_play(
                 pool,
@@ -413,15 +415,16 @@ def test_restart_recovery_and_recently_played_reconciliation(postgres_container)
                 track_uri="spotify:track:a",
                 track_name="A",
                 duration_ms=250_000,
-                played_at_ms=130_000,
+                played_at_ms=recently_played_at_ms,
             )
-            assert (
-                await pool.fetchval(
-                    "SELECT count(*) FROM connectors.spotify_track_plays "
-                    "WHERE endpoint_identity = 'spotify:user1' AND track_uri = 'spotify:track:a'"
-                )
-                == 1
+            reconciled = await pool.fetch(
+                "SELECT observation_precision, recently_played_at_ms "
+                "FROM connectors.spotify_track_plays "
+                "WHERE endpoint_identity = 'spotify:user1' AND track_uri = 'spotify:track:a'"
             )
+            assert len(reconciled) == 1
+            assert reconciled[0]["observation_precision"] == "progress_tracked"
+            assert reconciled[0]["recently_played_at_ms"] == recently_played_at_ms
         finally:
             await pool.close()
 
