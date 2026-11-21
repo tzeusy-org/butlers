@@ -34,7 +34,7 @@ from butlers.testing.runtime_probe_control import current_entry, keyring_documen
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 BEARER = "hop-bearer-proposals-test"
-AUD = "https://mcp.tze.how/butlers"
+AUD = "https://mcp.example.com/butlers"
 SUB = "7"
 CID = "https://claude.ai/meta"
 KEY = ed25519.Ed25519PrivateKey.from_private_bytes(bytes(range(32)))

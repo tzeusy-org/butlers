@@ -120,7 +120,7 @@ class Harness:
         (root / "switches/disabled_domains").write_text("")
         self.b64u = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
         self.settings = HostSettings(
-            audience="https://mcp.tze.how/butlers", allowed_subs=frozenset({"7"}), root=root
+            audience="https://mcp.example.com/butlers", allowed_subs=frozenset({"7"}), root=root
         )
         self.lines: list[str] = []
         self.host = CapabilityHost(

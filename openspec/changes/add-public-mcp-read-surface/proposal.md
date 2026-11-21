@@ -4,7 +4,7 @@ The owner's own AI clients (ChatGPT, including its Dots agent, and claude.ai)
 cannot see what Butlers knows: who someone is, recent trips, time use, spend,
 health series. Today the only route is pasting context by hand. Butlers already
 holds that context in structured, provenance-tagged form, and the owner's
-Cloudflare MCP gateway (`mcp.tze.how`) already provides OAuth 2.1 with PKCE and
+Cloudflare MCP gateway already provides OAuth 2.1 with PKCE and
 a GitHub-id allowlist. This change specifies a deterministic, read-only MCP
 server that serves that context to those clients, with defense in depth past
 Cloudflare, and one owner-gated write: `propose_fact`.

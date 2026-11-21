@@ -107,7 +107,7 @@ async def test_header_must_be_the_exact_assertion_shape(env: Env, header):
         ({"v": True}, "claims"),
         ({"sub": 4242}, "claims"),
         ({"iss": "someone"}, "issuer"),
-        ({"aud": "https://mcp.tze.how/other"}, "audience"),
+        ({"aud": "https://mcp.example.com/other"}, "audience"),
         ({"sub": "999"}, "sub"),
         ({"jti": "short"}, "claims"),
         ({"jti": b64u(bytes(15)) + "AB"}, "claims"),
