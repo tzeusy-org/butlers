@@ -36,6 +36,7 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
 | 24 (Chronicler regeneration) | 2026-11-21 | 15 | bu-uhbhzq | [2026-11-21-chronicler-pursuit.md](2026-11-21-chronicler-pursuit.md) |
 | 25 (QA self-healing) | 2026-11-21 | 15 | bu-ejow5p | [2026-11-21-qa-self-healing-pursuit.md](2026-11-21-qa-self-healing-pursuit.md) |
+| 26 (calendar ecosystem) | 2026-11-22 | 15 | bu-5ii4gj | [2026-11-22-calendar-pursuit.md](2026-11-22-calendar-pursuit.md) |
 
 ## Tier history
 
@@ -529,3 +530,29 @@ Scoped QA lens with live dev-stack debugging; planning only. Gate bu-l34qcx was 
 15. Per-failure-class trust ladder: durable rungs, automatic demotion, owner step-up promotion, steward-rung RFC draft (bu-ejow5p.15)
 
 Discovery-coverage and impact-ranking ideas were deferred until finding identity is fixed; see the dossier's dropped list.
+
+### 26 (calendar ecosystem) (2026-11-22) · epic bu-5ii4gj
+
+Calendar-only lens: what the system perceives, knows, decides, does and says about the owner's time.
+Six trust repairs lead, nine capability moves follow. The owner released gate `bu-5gywb6` on 2026-11-22. Calendar
+workspace core stays functional; two new calendar cohorts were tiered without a baseline (decision
+surfaces functional, calendar across other surfaces weak). Runs 24 (Chronicler regeneration) and 25 (QA self-healing) were filed the same weekend.
+
+1. Whose time is this: every calendar source gets a role, and one predicate decides what counts as owner time (`bu-5ii4gj.1`)
+2. Owner day sheet: one deterministic projection of a local day, rendered identically on Telegram and the dashboard, that can say 'unknown' (`bu-5ii4gj.2`)
+3. People in time: one participant record per occurrence, and an encounter ledger that only counts meetings that happened (`bu-5ii4gj.3`)
+4. Calendar write and render truth: placements checked against all owner time, no ghost mirrors, no silent drops, failed reads never render as empty (`bu-5ii4gj.4`)
+5. Zone-true time: no hard-coded UTC+8, the event's own zone beside the owner's, and future days read in the zone the owner will be in (`bu-5ii4gj.5`)
+6. Organizer verdict and invitation quarantine: one deterministic trust verdict per organizer, honored by every calendar reader (`bu-5ii4gj.6`)
+7. Time claims from mail: deterministic iCalendar and reservation parsing, reconciled against the calendar (`bu-5ii4gj.7`)
+8. Asked for your time: a time-ask ledger that offers spread-out slots, holds them, drafts the exact reply, and releases every hold on its own (`bu-5ii4gj.8`)
+9. Invitation docket: owner-written typed RSVP policies prepare exact answers that the owner signs with one tap (`bu-5ii4gj.9`)
+10. Changed since you said yes: a material change to an accepted event becomes one premise-bound card, and reminders follow their event (`bu-5ii4gj.10`)
+11. Resolve in place: typed resolution verbs for every conflict, and multi-event change plans with one composite undo (`bu-5ii4gj.11`)
+12. Protected and elastic time: owner-approved focus blocks Google enforces, policy-placed holds that yield, and buffers that follow their event (`bu-5ii4gj.12`)
+13. Domain time claims: each specialist record owns its one calendar presence, moved or retracted when the record changes (`bu-5ii4gj.13`)
+14. Planned versus lived: an evidence-linked outcome per planned block, learned durations with honest denominators, and weekly time intentions (`bu-5ii4gj.14`)
+15. A calendar you can ask and point at: deterministic time questions, model-free capture, occurrence doors, and a keyboard surface (`bu-5ii4gj.15`)
+
+Eighteen further candidates were dropped or deferred; dispositions are in
+[the dossier](2026-11-22-calendar-pursuit.md). Report: https://claude.ai/artifact/CMbkGQPx9EeQy4tyf2Ccea (private to the owner).

@@ -69,6 +69,7 @@ live in the [JARVIS pursuit skill, Phase 4](../../.claude/skills/butlers-develop
 
 | Run | Dossier |
 |---|---|
+| 26 (2026-11-22) | [2026-11-22-calendar-pursuit.md](2026-11-22-calendar-pursuit.md) — calendar ecosystem lens |
 | 25 (2026-11-21) | [2026-11-21-qa-self-healing-pursuit.md](2026-11-21-qa-self-healing-pursuit.md) — QA self-healing lens |
 | 24 (2026-11-21) | [2026-11-21-chronicler-pursuit.md](2026-11-21-chronicler-pursuit.md) — Chronicler ingestion, indexing and regenerability lens |
 | 23 (2026-10-28) | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) — realtime integrated feature exploration |
