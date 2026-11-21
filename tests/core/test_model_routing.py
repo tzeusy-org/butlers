@@ -32,6 +32,7 @@ from butlers.core.model_routing import (
     TIER_FALLTHROUGH_ORDER,
     Complexity,
     RoutingEvidence,
+    SpendRulesUnavailable,
     TierQuotaExhausted,
     _check_deprecated_tier,
     _parse_max_cost_per_call,
@@ -607,16 +608,17 @@ def test_rule_condition_purpose_dim_aliases_trigger() -> None:
 
 @pytest.mark.unit
 def test_parse_max_cost_per_call() -> None:
-    """action.max_cost_per_call parsing: positive float kept, malformed/non-positive dropped."""
+    """action.max_cost_per_call parsing: positive float kept, malformed/non-positive refused."""
     assert _parse_max_cost_per_call({"max_cost_per_call": 0.05}, "r1") == pytest.approx(0.05)
     assert _parse_max_cost_per_call({"max_cost_per_call": "0.1"}, "r1") == pytest.approx(0.1)
     # Absent cap → None.
     assert _parse_max_cost_per_call({"model": "m"}, "r1") is None
-    # Non-positive → ignored (None).
-    assert _parse_max_cost_per_call({"max_cost_per_call": 0}, "r1") is None
-    assert _parse_max_cost_per_call({"max_cost_per_call": -1.0}, "r1") is None
-    # Non-numeric → ignored (None).
-    assert _parse_max_cost_per_call({"max_cost_per_call": "abc"}, "r1") is None
+    # Contract changed deliberately (bu-svqpzo.22): a present but unusable cap used to be
+    # ignored (None), running the dispatch uncapped; it now fails closed.
+    for bad in (0, -1.0, "abc"):
+        with pytest.raises(SpendRulesUnavailable):
+            _parse_max_cost_per_call({"max_cost_per_call": bad}, "r1")
+    # An explicit null is no cap.
     assert _parse_max_cost_per_call({"max_cost_per_call": None}, "r1") is None
 
 

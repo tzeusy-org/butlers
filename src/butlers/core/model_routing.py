@@ -348,6 +348,13 @@ SPEND_RULE_CAP_NOT_FINITE_REASON = (
 )
 
 
+# A matched rule's cap is not a positive number (non-numeric, zero or negative): the owner meant
+# a cap that cannot be applied as written.
+SPEND_RULE_CAP_NOT_POSITIVE_REASON = (
+    "Spend rules unavailable: a matched rule's max_cost_per_call is not a positive number"
+)
+
+
 class SpendRulesUnavailable(RuntimeError):
     """The spend rules cannot be applied as written, so the dispatch is refused (fail closed).
 
@@ -2685,27 +2692,23 @@ async def next_same_tier_candidate(
 def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
     """Extract and validate the ``action.max_cost_per_call`` per-call USD cap.
 
-    Returns the cap as a positive float, or ``None`` when the action sets no cap or
-    the configured value is malformed (non-numeric or non-positive). A NaN or infinite
-    cap raises :class:`SpendRulesUnavailable`: it can never fire, so ignoring it would
-    silently drop an owner-set cap.  A malformed cap
-    is ignored with a warning rather than failing the dispatch — a routing rule must
-    never wedge a spawn because of bad effect data.
+    Returns the cap as a positive finite float, or ``None`` when the action sets no cap.
+    A cap that is present but unusable raises :class:`SpendRulesUnavailable`, each with its
+    own reason: the owner meant a cap, so ignoring it would run the dispatch uncapped.
+
+    - NaN or infinite: a NaN cap never fires and an infinite one never binds.
+    - Non-numeric (including booleans), zero or negative: not a positive number.
     """
     raw = action.get("max_cost_per_call")
     if raw is None:
         return None
     try:
+        if isinstance(raw, bool):
+            raise TypeError("boolean cap")
         cap = float(raw)
     except (TypeError, ValueError):
-        logger.warning(
-            "apply_spend_routing_rules: rule %s has non-numeric action.max_cost_per_call=%r; "
-            "ignoring the cap",
-            rule_id,
-            raw,
-        )
-        return None
-    if not math.isfinite(cap):
+        cap = None
+    if cap is not None and not math.isfinite(cap):
         logger.warning(
             "apply_spend_routing_rules: rule %s has non-finite action.max_cost_per_call=%r; "
             "refusing the dispatch (fail-closed)",
@@ -2713,14 +2716,14 @@ def _parse_max_cost_per_call(action: dict, rule_id: object) -> float | None:
             raw,
         )
         raise SpendRulesUnavailable(SPEND_RULE_CAP_NOT_FINITE_REASON)
-    if cap <= 0:
+    if cap is None or cap <= 0:
         logger.warning(
-            "apply_spend_routing_rules: rule %s has non-positive action.max_cost_per_call=%r; "
-            "ignoring the cap",
+            "apply_spend_routing_rules: rule %s has unusable action.max_cost_per_call=%r; "
+            "refusing the dispatch (fail-closed)",
             rule_id,
             raw,
         )
-        return None
+        raise SpendRulesUnavailable(SPEND_RULE_CAP_NOT_POSITIVE_REASON)
     return cap
 
 
