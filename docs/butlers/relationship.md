@@ -383,6 +383,15 @@ unified activity timeline. Each preview row opens `/chronicles?date=<owner-local
 Meeting Prep attendee names link to `/entities/{entity_id}` with the full current Calendar query
 appended verbatim; an attendee without a nonblank id stays plain text.
 
+## Care duties
+
+The owner declares recurring duties for dependents (a school pickup, a parent's medication, a pet's worming) and who is assumed to carry each one. Spec: `openspec/specs/relationship-care-duties/spec.md`; manifesto: "Duty of Care".
+
+- `relationship.care_duties` (`rel_045`): the declaration. Calendar-anchored duties carry an RFC 5545 `rrule`; completion-anchored ones carry `interval_days`. A CHECK keeps the two shapes apart. `retired_at` retires without deleting.
+- `relationship.care_occurrences`: one row per `(duty_id, occurrence_start)` holding the owner's carer and an `assumed` or `confirmed` state. Other states are reserved for the coverage job.
+- Owner-gated dashboard routes under `/api/relationship/care`: `GET /duties`, `GET /occurrences`, `POST /duties`, `PUT /duties/{id}/carrier`, `PUT /duties/{id}/occurrences`, `POST /duties/{id}/retire`. Logic lives in `roster/relationship/tools/care_duties.py`, which imports nothing that can contact anyone. No model-reachable tool writes these tables.
+- Dependents (including `animal` entities) and carers are entities, never users. Nothing here messages a carer, and the listing never claims an occurrence is covered or uncovered: the coverage job (S2) is deferred past the cutover.
+
 ## Implementation Notes
 
 ### Meeting debrief answer transactions
