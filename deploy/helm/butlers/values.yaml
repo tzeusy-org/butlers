@@ -454,9 +454,21 @@ egressProfiles:
   # The shared gateway (src/butlers/egress/gateway.py), rendered only when enabled.
   gateway:
     replicas: 2
+    # Use the actual cluster DNS domain. The gateway server certificate needs
+    # egress-gateway.<release namespace>.svc.<clusterDomain> in its DNS SAN.
+    clusterDomain: cluster.local
+    # A dedicated server Secret and a distinct client Secret for each external
+    # profile. Each contains tls.crt, tls.key and the appropriate peer CA (ca.crt).
+    # Supply these references and the SHA-256 leaf fingerprint map at the site.
+    tlsSecret: ""
+    clientSecrets: {}
+    clientPins: {}
     resources:
       requests: {cpu: 50m, memory: 128Mi}
       limits: {memory: 256Mi}
+    relayResources:
+      requests: {cpu: 25m, memory: 64Mi}
+      limits: {memory: 128Mi}
     # Destinations the gateway's own policy never admits, beside egressPolicy.privateCidrs
     # and the tracker. The gateway refuses them per tunnel as well.
     deniedCidrs:

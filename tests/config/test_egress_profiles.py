@@ -164,12 +164,12 @@ def test_an_invalid_document_is_refused(text, match):
         parse_profiles(text)
 
 
-def test_a_shared_gateway_port_is_refused_because_it_is_the_workload_identity():
+def test_a_shared_gateway_port_is_refused_because_each_listener_selects_one_profile():
     text = _VALID + (
         '\n[workloads.gamma]\nsummary = "g"\ngateway_port = 3101\n'
         'external = ["api.example-provider.com:443"]\n'
     )
-    with pytest.raises(ProfileError, match="workload identity"):
+    with pytest.raises(ProfileError, match="gateway_port 3101 is shared by alpha and gamma"):
         parse_profiles(text)
 
 

@@ -1,9 +1,8 @@
 {{- /*
 The shared egress gateway (RFC 0038 S7, bu-dhloi1.15), rendered only with
-egressProfiles.enabled. Each profiled workload with external hosts reaches it on its
-own gateway_port, and only that workload's pods are admitted to that port, so the
-port is the workload's identity. The gateway alone may dial public addresses, and
-only on the external ports some profile declares.
+egressProfiles.enabled. Each listener selects a profile and authenticates its workload
+through mTLS. Both the workload and gateway NetworkPolicies constrain the same port.
+The gateway alone may dial public addresses on the ports the profiles declare.
 */ -}}
 {{- if include "butlers.egressProfilesEnabled" . }}
 {{- $doc := .Files.Get "files/egress-profiles.json" | fromJson }}
@@ -19,6 +18,35 @@ only on the external ports some profile declares.
 {{- end }}
 {{- end }}
 {{- $externalPorts = $externalPorts | uniq | sortAlpha }}
+{{- if not (and (kindIs "map" $g.clientPins) (kindIs "map" $g.clientSecrets)) }}
+{{- fail "egressProfiles.gateway.clientPins and clientSecrets must map workloads to credentials" }}
+{{- end }}
+{{- if or (ne (len $g.clientPins) (len $routes)) (ne (len $g.clientSecrets) (len $routes)) }}
+{{- fail "egressProfiles.gateway.clientPins and clientSecrets must cover every workload listener exactly" }}
+{{- end }}
+{{- $secretNames := dict }}
+{{- $pins := dict }}
+{{- $credentials := list $g.tlsSecret }}
+{{- range $routes }}
+{{- $pin := get $g.clientPins .workload }}
+{{- if not (and (kindIs "string" $pin) (regexMatch "^[0-9a-f]{64}$" (toString $pin))) }}
+{{- fail (printf "egressProfiles.gateway.clientPins requires a SHA-256 fingerprint for %s" .workload) }}
+{{- end }}
+{{- if hasKey $pins $pin }}
+{{- fail "egressProfiles.gateway.clientPins must bind distinct workload certificates" }}
+{{- end }}
+{{- $_ := set $pins $pin true }}
+{{- $credentials = append $credentials (get $g.clientSecrets .workload) }}
+{{- end }}
+{{- range $credentials }}
+{{- if not (and (kindIs "string" .) (le (len (toString .)) 63) (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$" (toString .))) }}
+{{- fail "egressProfiles.gateway.tlsSecret and clientSecrets must name gateway TLS Secrets" }}
+{{- end }}
+{{- if or (hasKey $secretNames .) (eq . (printf "%s-bws" $.Release.Name)) (eq . $.Values.sessionHost.pkiSecret) }}
+{{- fail "egressProfiles.gateway.tlsSecret and clientSecrets must name distinct gateway-only Secrets" }}
+{{- end }}
+{{- $_ := set $secretNames . true }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -28,6 +56,7 @@ metadata:
 data:
   egress-profiles.json: |
 {{ .Files.Get "files/egress-profiles.json" | indent 4 }}
+  client-pins.json: {{ $g.clientPins | toJson | quote }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -46,6 +75,7 @@ spec:
         {{- include "butlers.selector" (dict "root" . "component" "egress-gateway") | nindent 8 }}
       annotations:
         checksum/egress-profiles: {{ .Files.Get "files/egress-profiles.json" | sha256sum }}
+        checksum/egress-client-pins: {{ $g.clientPins | toJson | sha256sum }}
     spec:
       automountServiceAccountToken: false
       containers:
@@ -72,10 +102,12 @@ spec:
             {{- toYaml $g.resources | nindent 12 }}
           volumeMounts:
             - {name: profiles, mountPath: /etc/butlers-egress, readOnly: true}
+            - {name: egress-tls, mountPath: /var/run/butlers-egress-tls, readOnly: true}
       volumes:
         - name: profiles
           configMap:
             name: {{ .Release.Name }}-egress-profiles
+        {{- include "butlers.egressTLSVolume" $g.tlsSecret | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

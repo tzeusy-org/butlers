@@ -68,6 +68,8 @@ class RenderedPythonRoles(unittest.TestCase):
         gateway_render = subprocess.run(
             [
                 *rendered.args,
+                "-f",
+                str(ROOT / "tests/fixtures/egress-gateway-values.yaml"),
                 "--set",
                 "egressProfiles.enabled=true",
                 "--set",
@@ -87,12 +89,23 @@ class RenderedPythonRoles(unittest.TestCase):
             if doc and doc["kind"] == "Deployment" and doc["metadata"]["name"] == "egress-gateway"
         )
         gateway = gateway_doc["spec"]["template"]["spec"]["containers"][0]
+        workload_doc = next(
+            doc
+            for doc in yaml.safe_load_all(gateway_render.stdout)
+            if doc and doc["kind"] == "Deployment" and doc["metadata"]["name"] == "butlers-up"
+        )
+        relay = next(
+            container
+            for container in workload_doc["spec"]["template"]["spec"]["containers"]
+            if container["name"] == "egress-relay"
+        )
         compose = yaml.safe_load((ROOT / "docker-compose.restore-drill.yml").read_text())
         executor = compose["services"]["restore-drill-executor"]
         self.direct = {
             "oauth": oauth["command"],
             "health-waiter": waiter["command"] + waiter["args"],
             "gateway": gateway["command"],
+            "gateway-relay": relay["command"] + relay["args"],
             "restore-executor": executor["entrypoint"] + executor["command"],
         }
         self.payload = "import json,sys; print(json.dumps(sys.argv[1:]))\n"
