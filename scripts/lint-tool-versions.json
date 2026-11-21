@@ -44,6 +44,34 @@
           "sha256": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
         }
       }
+    },
+    "promtool": {
+      "version": "3.5.0",
+      "binary": "promtool",
+      "max_archive_bytes": 201326592,
+      "max_binary_bytes": 201326592,
+      "assets": {
+        "darwin-arm64": {
+          "url": "https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.darwin-arm64.tar.gz",
+          "sha256": "c17bc2c992f0b5515eebe2b4ccd626214f8e309a0fe6ec40ed13c42ec13d05fb",
+          "member": "prometheus-3.5.0.darwin-arm64/promtool"
+        },
+        "darwin-x86_64": {
+          "url": "https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.darwin-amd64.tar.gz",
+          "sha256": "5856d0c306e7d852d9a79788b20acb630501b3fab120b69f5317d6b0732dea57",
+          "member": "prometheus-3.5.0.darwin-amd64/promtool"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-arm64.tar.gz",
+          "sha256": "173389cc42bf09c4e6e54cb53fa07a5a835d7c261e14775d2183181d6e385d1c",
+          "member": "prometheus-3.5.0.linux-arm64/promtool"
+        },
+        "linux-x86_64": {
+          "url": "https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz",
+          "sha256": "e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a",
+          "member": "prometheus-3.5.0.linux-amd64/promtool"
+        }
+      }
     }
   }
 }

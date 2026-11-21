@@ -611,3 +611,71 @@ def test_the_egress_profile_row_declares_exactly_what_the_policies_allow():
     row = profiles["workloads"]["butlers-public-mcp"]
     assert row["sites"] == [{"site": "database", "port": 5432}]
     assert not row.get("external") and not row.get("internal") and "gateway_port" not in row
+
+
+# ---- monitoring: PodMonitor and PrometheusRule (RFC 0039 D16, REQ-public-mcp-authorization-014)
+
+
+def test_dev_renders_a_podmonitor_for_the_metrics_port_selected_by_release_lgtm(docs):
+    monitor = _one(docs, "PodMonitor")
+    assert monitor["metadata"]["namespace"] == _NAMESPACE
+    assert monitor["metadata"]["labels"]["release"] == "lgtm"
+    spec = monitor["spec"]
+    assert spec["namespaceSelector"] == {"matchNames": [_NAMESPACE]}
+    assert spec["selector"]["matchLabels"] == _POD
+    (endpoint,) = spec["podMetricsEndpoints"]
+    assert endpoint["port"] == "metrics" and endpoint["path"] == "/metrics"
+    # The named port resolves to the fixed 9090 container port the NetworkPolicy admits `lgtm` on.
+    ports = {p["name"]: p["containerPort"] for p in _container(docs)["ports"]}
+    assert ports["metrics"] == _METRICS_PORT
+    assert {"targetLabel": "job", "replacement": "butlers-public-mcp"} in endpoint["relabelings"]
+
+
+def test_dev_renders_the_alert_rules_selected_by_release_lgtm(docs):
+    rule = _one(docs, "PrometheusRule")
+    assert rule["metadata"]["namespace"] == _NAMESPACE
+    assert rule["metadata"]["labels"]["release"] == "lgtm"
+    (group,) = rule["spec"]["groups"]
+    alerts = [r for r in group["rules"] if "alert" in r]
+    assert {r["labels"]["severity"] for r in alerts} == {"critical", "warning"}
+    assert [r["record"] for r in group["rules"] if "record" in r] == [
+        "butlers_public_mcp:critical_ok",
+        "butlers_public_mcp:warning_ok",
+    ]
+    by_name = {r["alert"]: r for r in alerts}
+    # Narrowing is critical after 24 hours; the widening and pending warning has no delay.
+    assert by_name["PublicMcpNarrowingOwnerStepPending"]["for"] == "24h"
+    assert by_name["PublicMcpNarrowingOwnerStepPending"]["labels"]["severity"] == "critical"
+    assert "for" not in by_name["PublicMcpOwnerStepPending"]
+    assert by_name["PublicMcpOwnerStepPending"]["labels"]["severity"] == "warning"
+    # The server's series are selected by this release's job and namespace only.
+    assert (
+        'job="butlers-public-mcp", namespace="butlers-public-dev"'
+        in by_name["PublicMcpCanaryLatched"]["expr"]
+    )
+    # The CNPG series are scoped to postgres-<env>.
+    assert 'namespace="postgres-dev"' in by_name["PublicMcpSlotRetainedWal"]["expr"]
+
+
+def test_monitoring_is_off_by_default_and_toggles_independently():
+    plain = _render("env=dev", values=())
+    assert not _of(plain, "PodMonitor") and not _of(plain, "PrometheusRule")
+    only_rules = _render("monitoring.podMonitor.enabled=false")
+    assert not _of(only_rules, "PodMonitor") and _of(only_rules, "PrometheusRule")
+    only_monitor = _render("monitoring.rules.enabled=false")
+    assert _of(only_monitor, "PodMonitor") and not _of(only_monitor, "PrometheusRule")
+
+
+def test_monitoring_adds_no_ingress(docs):
+    """D16 'No new ingress': the same four allows, 9090 still only from `lgtm`."""
+    policies = _of(docs, "NetworkPolicy")
+    metrics_allows = [
+        rule
+        for policy in policies
+        for rule in policy["spec"].get("ingress", [])
+        if any(p["port"] == _METRICS_PORT for p in rule.get("ports", []))
+    ]
+    assert len(metrics_allows) == 1
+    (peer,) = metrics_allows[0]["from"]
+    assert peer["namespaceSelector"]["matchLabels"] == {"kubernetes.io/metadata.name": "lgtm"}
+    assert not _of(docs, "Ingress") and not _of(docs, "IngressRoute")

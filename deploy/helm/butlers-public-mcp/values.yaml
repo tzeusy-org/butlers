@@ -62,3 +62,35 @@ securityContext:
 resources:
   requests: {cpu: 50m, memory: 256Mi}
   limits: {memory: 1Gi}
+
+# Metrics scraping and alerting for the public surface (RFC 0039 D16, REQ-public-mcp-authorization-014).
+# Off by default: the CRDs need the Prometheus Operator, and `labels` must match the cluster
+# Prometheus' podMonitorSelector / ruleSelector (kube-prometheus-stack in `lgtm`: release=lgtm,
+# set in values.dev.yaml). Neither object adds ingress: the NetworkPolicy already admits `lgtm` on 9090.
+monitoring:
+  podMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  rules:
+    enabled: false
+    labels: {}
+    interval: 1m
+    # Every alert threshold is configuration (REQ-public-mcp-authorization-014).
+    thresholds:
+      # Critical: a narrowing left pending this long (D16). The widening warning has no delay.
+      narrowingPendingFor: 24h
+      # Critical: 50 % of the cluster's max_slot_wal_keep_size, in bytes. 10GB on dev -> 5 GiB.
+      # Keep in step with cluster.postgresql.parameters.max_slot_wal_keep_size (no metric exposes it).
+      slotRetainedWalBytes: 5368709120
+      # Warning: a logical slot inactive this long.
+      slotInactiveFor: 10m
+      redactionsPerHour: 20
+      assertionFailuresPer5m: 10
+      bearerRefusalsPer5m: 20
+      # Finance or health rows served to one client label in an hour.
+      rowsServedPerHour: 2000
+      inboxUndrained: 500
+      # How long an "any event" alert (canary hit, DLP drop, apply_failed) stays firing, long
+      # enough for Uptime Kuma's poll to see it.
+      eventWindow: 15m

@@ -260,6 +260,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_egress_profile_coverage.py
 
+      # The public MCP alert rules (RFC 0039 D16) run through the pinned promtool installed by
+      # "Install lint tools". Elsewhere the test skips without promtool; here a missing tool fails.
+      - name: Test the public MCP alert rules with promtool
+        id: promtool_alert_rules
+        if: ${{ !cancelled() }}
+        env:
+          BUTLERS_REQUIRE_PROMTOOL: "1"
+        run: uv run --no-sync pytest tests/scripts/test_public_mcp_alert_rules.py -q --tb=short -n 0
+
       - name: Fail if any guard failed
         if: ${{ !cancelled() }}
         env:
@@ -277,6 +286,7 @@ jobs:
             duplicate_names=${{ steps.duplicate_names.outcome }}
             host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
             egress_profile_coverage=${{ steps.egress_profile_coverage.outcome }}
+            promtool_alert_rules=${{ steps.promtool_alert_rules.outcome }}
         run: |
           failed=0
           while IFS= read -r line; do

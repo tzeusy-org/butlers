@@ -60,3 +60,90 @@ comes from `BUTLERS_IMAGE_REGISTRY`, `dashboardBase` from `BUTLERS_PUBLIC_HOST`.
 Helm cannot store a release in a namespace the chart creates, so the release `butlers-public-mcp`
 is recorded in `butlers-dev` while every object carries `namespace: butlers-public-dev`. The
 Namespace has `helm.sh/resource-policy: keep`.
+
+## Alerts and flags (RFC 0039 D16, task 3.2)
+
+`templates/podmonitor.yaml` scrapes the server's metrics port (`GET :9090/metrics`, job
+`butlers-public-mcp`) and `templates/prometheusrule.yaml` holds every alert condition plus the two
+flag recording rules. Both are `monitoring.podMonitor.enabled` / `monitoring.rules.enabled` (off in
+`values.yaml`, on in `values.dev.yaml`) and carry `monitoring.*.labels` (dev: `release: lgtm`, what
+the cluster's kube-prometheus-stack selects). Nothing is added to ingress: the NetworkPolicy
+already admits `lgtm` on 9090. Alerts never go through Butlers; the owner's Uptime Kuma polls the
+flags (`docs/operations/public-mcp-read-surface.md`, 3e).
+
+The flags are `butlers_public_mcp:critical_ok` and `butlers_public_mcp:warning_ok`: 1 while no alert
+of that severity fires, 0 while any does, always one series (never empty while Prometheus
+evaluates). They read `ALERTS{alertstate="firing", severity=..., surface="butlers-public-mcp"}`, so
+unrelated cluster alerts cannot move them. Every alert carries `severity` and `surface`, plus its
+diagnostic labels (`domain`, `client`, `slot_name`, `tool`, `change`) and never row content.
+
+| Alert | Severity | Reads | Fires when |
+|---|---|---|---|
+| `PublicMcpCanaryHit` | critical | `butlers_public_mcp_canary_hits_total` | a hit in the last `eventWindow` |
+| `PublicMcpCanaryLatched` | critical | `butlers_public_mcp_canary_latched` | the latch holds (until pod restart) |
+| `PublicMcpSlotRetainedWal` | critical | `cnpg_pg_replication_slots_pg_wal_lsn_diff` | a slot retains over `slotRetainedWalBytes` |
+| `PublicMcpForeignLogicalSlot` | critical | `cnpg_pg_replication_slots_active` | a logical slot other than `butlers_public_sub` or `pg_<oid>_sync_*` exists |
+| `PublicMcpNarrowingOwnerStepPending` | critical | `butlers_public_mcp_owner_step_pending{change="narrowing"}` | 1 for `narrowingPendingFor` (24h) |
+| `PublicMcpOwnerStepPending` | warning | `butlers_public_mcp_owner_step_pending` | 1 with either `change` label |
+| `PublicMcpDlpDrop` | warning | `butlers_public_mcp_dlp_blocked_total` | any drop in the last `eventWindow` |
+| `PublicMcpRedactionsHigh` | warning | `butlers_public_mcp_redactions_total` | over `redactionsPerHour` in 1h |
+| `PublicMcpAssertionFailures` | warning | `butlers_public_mcp_auth_failures_total` | over `assertionFailuresPer5m` in 5m |
+| `PublicMcpBearerRefusals` | warning | `butlers_public_mcp_bearer_refusals_total` | over `bearerRefusalsPer5m` in 5m |
+| `PublicMcpBulkRead` | warning | `butlers_public_mcp_rows_served_total{domain=~"finance\|health"}` | over `rowsServedPerHour` in 1h for one `(domain, client)` |
+| `PublicMcpSlotInactive` | warning | `cnpg_pg_replication_slots_active` | a logical slot at 0 for `slotInactiveFor` (10m) |
+| `PublicMcpInboxUndrained` | warning | `butlers_public_mcp_proposal_import_inbox_depth` | over `inboxUndrained` |
+| `PublicMcpProposalApplyFailed` | warning | `butlers_public_mcp_proposal_import_outcomes_total{state="apply_failed"}` | any transition in the last `eventWindow` |
+| `PublicMcpServerMetricsMissing` | critical | `up` for this release's job | no healthy scrape for 5m (source health) |
+| `PublicMcpSlotMetricsMissing` | warning | `cnpg_pg_replication_slots_active` | no series for `postgres-<env>` for 10m (source health) |
+| `PublicMcpImporterMetricsMissing` | warning | `butlers_public_mcp_proposal_import_switch_enabled` | no series for 30m (source health) |
+
+The three source-health alerts exist because a rule over a series nobody scrapes never fires: a
+missing source must lower a flag, not silence its rules. The server scrape is this chart's own, so
+its gap is critical; the other two depend on acts outside this repository, so they are warnings and
+fire by design until those acts are done.
+
+Every threshold is a value under `monitoring.rules.thresholds`. `slotRetainedWalBytes` is 50 % of
+the cluster's `max_slot_wal_keep_size` (`10GB` on dev, so `5368709120`) and has no metric to derive
+it from: keep the two in step.
+
+**Sources that live outside this chart.** The `cnpg_*` series come from CNPG's default exporter
+queries on `postgres-<env>` and exist in the cluster Prometheus only if the homelab scrapes the
+instance pods' exporter port (the dev `Cluster` has `monitoring.enablePodMonitor: false`, so the
+scrape is the homelab's, not verified here). The importer series are exported by the butlers
+daemons over OTLP (OTel meter `butlers`, names with dots turned into underscores and `_total` on
+counters, as the repo's Grafana dashboards read them) and need no scrape from this chart.
+
+**Open homelab or owner acts for these sources (both [Unknown] until verified live):**
+
+- `postgres-dev` must be scraped by the `lgtm` Prometheus. Checked on the dev cluster: the
+  `Cluster` has `enablePodMonitor: false` and `postgres-dev-1` carries no `prometheus.io` or
+  `k8s.grafana.com` scrape annotations, so nothing may be scraping `cnpg_pg_replication_slots_*`
+  today and the three slot alerts (two critical) would never fire. Either set CNPG
+  `enablePodMonitor`, or add a PodMonitor labelled `release: lgtm` for the instance pods plus an
+  ingress allow for 9187 from `lgtm` on `postgres-dev` (homelab; this chart adds nothing there,
+  D8 item 3). Until then `PublicMcpSlotMetricsMissing` shows it on the warning flag.
+- The importer's OTLP path (`OTEL_EXPORTER_OTLP_ENDPOINT`, an external collector) must reach the
+  Prometheus that evaluates these rules, under the names above. Unverified;
+  `PublicMcpImporterMetricsMissing` shows a gap.
+
+**Gaps, no metric source today.** These conditions from REQ-public-mcp-authorization-014 have no
+rule, rather than a rule on an invented series:
+
+- Replication lag over 10 minutes (the `as_of` age): the server reads `as_of` per request and
+  exports no gauge, and a gauge refreshed only by requests would alarm on an idle server. Needs a
+  background poll in the server or a CNPG custom query on `pg_stat_subscription`.
+- A logical slot whose plugin is not `pgoutput`, on a name the allowance admits: CNPG's default
+  slot query has no `plugin` column. A foreign slot name is covered; a `butlers_public_sub` slot
+  created with another plugin is not. Needs a custom query adding `plugin`.
+- One `(sub, cid)` reading over 25 % of a domain's published rows in a day: `rows_served_total`
+  carries the client label but not the subject, and no metric holds a domain's published row count.
+
+Also by design: the owner-step gauge is refreshed by requests, so a pod restart clears it until the
+next call and restarts the 24-hour clock; the table-sync slot allowance matches the name pattern,
+not the subscription's current oid.
+
+`tests/scripts/test_public_mcp_alert_rules.py` renders the rules and runs `promtool test rules`
+with synthetic series, one case per condition that must drive a flag to 0 (the pinned promtool
+comes from `make install-lint-tools`; CI's guards job requires it). The live Uptime Kuma fire drill
+(force each flag to 0, watch the monitor go DOWN and Telegram arrive) is owner act 7 and is not
+done.
