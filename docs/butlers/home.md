@@ -270,14 +270,34 @@ Owner-marked critical entities that always park, a fail-closed registry, pre-cal
 opens are specified in
 [specify-home-critical-entities-mitigations](../../openspec/changes/specify-home-critical-entities-mitigations/proposal.md)
 (bu-jv1moa.33). The owner adopted RFC 0028 Amendment 1 on 2026-11-21. Built so far
-(bu-jv1moa.122, REQ-module-home-assistant-001): the registry `home.critical_entities` (home_010)
-and the owner-only `GET/PUT /api/home/critical-entities` and
-`DELETE /api/home/critical-entities/{entity_id}`. Each add, relabel and removal writes one audit
-row naming the entity id and the authenticated actor in the write's own transaction, never the owner
-label, and the registry is never written by a tool, session, goal, rule or job. Marking an entity
-critical is an owner act at the dashboard; nothing seeds it, and an empty registry changes
-nothing. Pre-call state, `already_satisfied` and safety mitigations are not built, and the safety
-sentinel stays read-only.
+(bu-jv1moa.122, REQ-module-home-assistant-001 and -002):
+
+- **Registry.** `home.critical_entities` (home_010) is written only by the owner-only
+  `GET/PUT /api/home/critical-entities` and `DELETE /api/home/critical-entities/{entity_id}`. Each
+  add, relabel and removal writes one audit row naming the entity id and the authenticated actor in
+  the write's own transaction, never the owner label. No tool, session, goal, rule or job writes it,
+  and nothing infers membership from a Home Assistant label, area, device class or name. Marking an
+  entity critical is an owner act at the dashboard; nothing seeds it, and an empty registry changes
+  nothing.
+- **Gate.** `ha_call_service` reads the registry in each evaluation (no cache past the call). A call
+  naming a critical entity is at least `consequential` and parks with the fixed reason category
+  `critical_entity` (a `protected` call stays `protected`). While the registry is non-empty a call
+  is also critical when its target is not an explicit entity list, when it is an indirect actuator
+  (`scene.turn_on`, `script.turn_on`, any `script.<name>`, `automation.trigger`, any non-`safe`
+  `homeassistant` service, any pair the RFC 0028 map does not list), when a target is missing from
+  Home's entity cache, or when a target is a group whose members, followed through nested groups,
+  are critical or unreadable (malformed list, cycle, depth over 8). An unreadable registry makes
+  every call critical. `homeassistant.update_entity` is never promoted.
+- **No shortcut.** A critical call replays only on an owner approval (`human:` decider); a standing
+  rule, suggestion, grant or system actor gets `not_run` / `critical_needs_owner_approval` before
+  any receipt or request. The capability broker classifies a goal call naming a critical entity
+  `consequential` and every Home call `unknown` when its registry reader fails or is absent.
+- **Not covered, stated plainly.** Home Assistant automations that fire on their own triggers and
+  changes made outside Butlers never pass through `ha_call_service`. A helper that wraps an entity
+  without exposing its membership is covered only when the owner marks the helper itself critical.
+
+Pre-call state, `already_satisfied` and safety mitigations are not built, and the safety sentinel
+stays read-only.
 
 ## Proposed realtime feature specifications
 
