@@ -114,7 +114,13 @@ def tool_arguments(today: date) -> dict[str, dict[str, Any]]:
         "finance_ledger": {"start": start, "end": end},
         "finance_obligations": {"horizon_days": 30},
         "finance_records": {"kind": "accounts"},
-        "health_series": {"metric": "weight", "start": start, "end": end, "bucket": "day"},
+        # Metrics are full predicates (RFC 0039 D2); an unpublished metric is invalid_argument.
+        "health_series": {
+            "metric": "measurement_weight",
+            "start": start,
+            "end": end,
+            "bucket": "day",
+        },
         "health_profile": {},
         "health_records": {"kind": "conditions_public"},
     }

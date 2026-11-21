@@ -697,7 +697,7 @@ def _definitions() -> list[tuple[str, str, str, Schema, Schema]]:
             "Numeric measurements of one metric, raw or as daily or weekly means.",
             _input(
                 {
-                    "metric": _text(128, "A published metric name, e.g. weight."),
+                    "metric": _text(128, "A published metric predicate, e.g. measurement_weight."),
                     "start": _day("First day (UTC)."),
                     "end": _day(f"Last day (at most {health.SERIES_MAX_DAYS} days)."),
                     "bucket": _enum(("raw", "day", "week"), "Bucket size."),
