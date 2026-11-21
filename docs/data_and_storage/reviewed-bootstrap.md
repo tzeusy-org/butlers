@@ -79,6 +79,12 @@ and `pg_hba` come from homelab, and the subscription comes from a separate owner
 step, which on dev `make deploy-dev` runs after the migrations, never before
 them. See [Public MCP Read Surface](../operations/public-mcp-read-surface.md).
 
+The script also grants `CONNECT` on the database, and nothing else, to CNPG's
+metrics-exporter role `cnpg_metrics_exporter` when it exists. `core_001` revokes
+`CONNECT` from `PUBLIC`, which otherwise denies every exporter query there,
+including the replication-slot series the public MCP slot alerts read. Where the
+role is absent (local and Docker Postgres) the statement does nothing.
+
 Bootstrap reserves the recovery role and installs its privileged control plane;
 it does not enable the restore executor, provide its secret or activate a drill.
 Ordinary dev keeps base-only services. Direct `Database.connect()` development

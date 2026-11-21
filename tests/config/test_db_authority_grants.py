@@ -200,3 +200,19 @@ def test_publisher_absent_is_not_a_difference_where_cnpg_roles_do_not_exist() ->
     from butlers.db_authority.catalog import diff_publisher_catalog
 
     assert diff_publisher_catalog(_publisher_catalog({}, present=False), published=True) == []
+
+
+# --- CNPG's metrics exporter: database CONNECT only, no relation privileges ---
+
+
+def test_cnpg_metrics_exporter_is_declared_outside_the_fleet_with_no_relation_grants() -> None:
+    from pathlib import Path
+
+    from butlers.db_authority.grants import CNPG_METRICS_EXPORTER
+
+    assert CNPG_METRICS_EXPORTER == "cnpg_metrics_exporter"
+    assert CNPG_METRICS_EXPORTER not in _ROLES
+    assert not any(CNPG_METRICS_EXPORTER in grant.by_role for grant in PUBLIC_RELATIONS.values())
+    # The bootstrap grants CONNECT to exactly the declared role name.
+    init_db = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    assert f"'{CNPG_METRICS_EXPORTER}'" in init_db.read_text()

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 docker_available = shutil.which("docker") is not None
 psql_available = shutil.which("psql") is not None
@@ -1502,6 +1503,102 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
         "butler_chronicler_rw must NOT be able to SELECT education.state_store "
         "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"
     )
+
+
+def test_init_db_grants_cnpg_metrics_exporter_connect_only_when_the_role_exists(
+    postgres_container,
+):
+    """bu-y66o00.63: CNPG's exporter keeps CONNECT after core_001's PUBLIC revoke.
+
+    Without it every exporter query against the database is denied, including the
+    replication-slot query behind the RFC 0039 D16 slot alerts. Local and Docker
+    Postgres have no such role, so there the bootstrap must stay a no-op.
+    """
+    exporter = "cnpg_metrics_exporter"
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text(f"DROP ROLE IF EXISTS {exporter}"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+            # What core_001 leaves: no CONNECT through PUBLIC.
+            conn.execute(text("REVOKE ALL ON DATABASE butlers FROM PUBLIC"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    acl_sql = text(
+        "SELECT a.privilege_type, a.is_grantable FROM pg_database d, "
+        "LATERAL aclexplode(d.datacl) a JOIN pg_roles r ON r.oid = a.grantee "
+        "WHERE d.datname = 'butlers' AND r.rolname = :role"
+    )
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+
+    def run_bootstrap() -> None:
+        _run_psql_file(
+            host=host,
+            port=port,
+            user=admin_user,
+            password=admin_password,
+            database="butlers",
+            file_path=script_path,
+        )
+
+    # Role absent (local/Docker): the bootstrap succeeds and creates nothing.
+    run_bootstrap()
+    engine = create_engine(butlers_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM pg_roles WHERE rolname = :r"), {"r": exporter}
+                ).scalar_one()
+                == 0
+            )
+            # Stand in for the role CNPG creates on every instance.
+            conn.execute(text(f"CREATE ROLE {exporter} LOGIN PASSWORD 'exporter'"))
+            conn.execute(text(f"GRANT pg_monitor TO {exporter}"))
+            assert conn.execute(acl_sql, {"role": exporter}).all() == []
+    finally:
+        engine.dispose()
+    exporter_url = f"postgresql://{exporter}:exporter@{host}:{port}/butlers"
+    # The live failure: with PUBLIC revoked and no grant, the exporter cannot connect.
+    exporter_engine = create_engine(exporter_url)
+    try:
+        with pytest.raises(OperationalError, match="permission denied"):
+            with exporter_engine.connect():
+                pass
+    finally:
+        exporter_engine.dispose()
+
+    # Role present: CONNECT and nothing else, and a rerun (every deploy) keeps it.
+    for _ in range(2):
+        run_bootstrap()
+        engine = create_engine(butlers_url)
+        try:
+            with engine.connect() as conn:
+                assert conn.execute(acl_sql, {"role": exporter}).all() == [("CONNECT", False)]
+                assert (
+                    conn.execute(
+                        text("SELECT has_database_privilege(:r, 'butlers', 'CREATE, TEMPORARY')"),
+                        {"r": exporter},
+                    ).scalar_one()
+                    is False
+                )
+        finally:
+            engine.dispose()
+
+    exporter_engine = create_engine(exporter_url)
+    try:
+        with exporter_engine.connect() as conn:
+            # The exporter's slot query (cnpg_pg_replication_slots_*) now runs.
+            assert conn.execute(text("SELECT count(*) FROM pg_replication_slots")).scalar_one() >= 0
+    finally:
+        exporter_engine.dispose()
 
 
 @pytest.fixture(scope="module")

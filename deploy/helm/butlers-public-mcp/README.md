@@ -107,24 +107,22 @@ the cluster's `max_slot_wal_keep_size` (`10GB` on dev, so `5368709120`) and has 
 it from: keep the two in step.
 
 **Sources that live outside this chart.** The `cnpg_*` series come from CNPG's default exporter
-queries on `postgres-<env>` and exist in the cluster Prometheus only if the homelab scrapes the
-instance pods' exporter port (the dev `Cluster` has `monitoring.enablePodMonitor: false`, so the
-scrape is the homelab's, not verified here). The importer series are exported by the butlers
-daemons over OTLP (OTel meter `butlers`, names with dots turned into underscores and `_total` on
-counters, as the repo's Grafana dashboards read them) and need no scrape from this chart.
+queries on `postgres-<env>`, scraped by the homelab (this chart adds nothing there, D8 item 3).
+The importer series are exported by the butlers daemons over OTLP (OTel meter `butlers`, names
+with dots turned into underscores and `_total` on counters, as the repo's Grafana dashboards read
+them) and need no scrape from this chart.
 
-**Open homelab or owner acts for these sources (both [Unknown] until verified live):**
-
-- `postgres-dev` must be scraped by the `lgtm` Prometheus. Checked on the dev cluster: the
-  `Cluster` has `enablePodMonitor: false` and `postgres-dev-1` carries no `prometheus.io` or
-  `k8s.grafana.com` scrape annotations, so nothing may be scraping `cnpg_pg_replication_slots_*`
-  today and the three slot alerts (two critical) would never fire. Either set CNPG
-  `enablePodMonitor`, or add a PodMonitor labelled `release: lgtm` for the instance pods plus an
-  ingress allow for 9187 from `lgtm` on `postgres-dev` (homelab; this chart adds nothing there,
-  D8 item 3). Until then `PublicMcpSlotMetricsMissing` shows it on the warning flag.
-- The importer's OTLP path (`OTEL_EXPORTER_OTLP_ENDPOINT`, an external collector) must reach the
-  Prometheus that evaluates these rules, under the names above. Unverified;
-  `PublicMcpImporterMetricsMissing` shows a gap.
+- Slot series, [Observed: dev, 2026-11-21]: the homelab PodMonitor `lgtm/lgtm-cnpg` already
+  scrapes `postgres-dev`. What was missing was database access: `core_001` revokes `CONNECT` on
+  `butlers` from `PUBLIC`, so the exporter role `cnpg_metrics_exporter` was denied every query
+  there, the slot query included. `scripts/init-db.sql` now grants that role `CONNECT` (only) when
+  it exists, on every bootstrap rerun (bu-y66o00.63). Verified with
+  `cnpg_pg_replication_slots_active{namespace="postgres-dev"}`, which returned `butlers_public_sub`
+  at 1. A lost scrape shows as `PublicMcpSlotMetricsMissing` on the warning flag.
+- Importer series: `butlers_public_mcp_proposal_import_outcomes_total` has no series until the
+  first import outcome (an empty inbox records none), which moves no flag. The OTLP path
+  (`OTEL_EXPORTER_OTLP_ENDPOINT`, an external collector) must reach the Prometheus that evaluates
+  these rules, under the names above; `PublicMcpImporterMetricsMissing` shows a gap.
 
 **Gaps, no metric source today.** These conditions from REQ-public-mcp-authorization-014 have no
 rule, rather than a rule on an invented series:
@@ -144,6 +142,8 @@ not the subscription's current oid.
 
 `tests/scripts/test_public_mcp_alert_rules.py` renders the rules and runs `promtool test rules`
 with synthetic series, one case per condition that must drive a flag to 0 (the pinned promtool
-comes from `make install-lint-tools`; CI's guards job requires it). The live Uptime Kuma fire drill
-(force each flag to 0, watch the monitor go DOWN and Telegram arrive) is owner act 7 and is not
-done.
+comes from `make install-lint-tools`; CI's guards job requires it). The live Uptime Kuma monitors
+and fire drill are owner act 7, done on dev 2026-11-21: homelab
+`ansible/roles/proxmox_sentinel/files/uptimekuma-monitors.toml` declares critical (Kuma id 43,
+60s, 1 retry) and warning (id 44, 300s, 2 retries); in the drill (about 17:29-17:50Z) both went
+DOWN and recovered. Telegram delivery awaits the owner's confirmation.

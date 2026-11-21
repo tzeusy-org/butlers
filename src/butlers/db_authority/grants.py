@@ -424,6 +424,17 @@ grant from ``pg_publication_tables``; this declaration is the reviewed statement
 the sync may leave on ``public``.
 """
 
+CNPG_METRICS_EXPORTER = "cnpg_metrics_exporter"
+"""CNPG's metrics-exporter login, a ``pg_monitor`` member CNPG creates on each instance.
+
+Not a runtime role and never in :func:`runtime_roles`. ``core_001`` revokes ``CONNECT`` on
+the application database from ``PUBLIC``, which denied every exporter query there, including
+the replication-slot query behind the RFC 0039 D16 slot alerts. ``scripts/init-db.sql``
+therefore grants it ``CONNECT`` on that database, and nothing else, when the role exists
+(bu-y66o00.63). It holds no privilege on any ``public`` relation: its queries read
+``pg_catalog`` views through ``pg_monitor``.
+"""
+
 
 def publisher_relations() -> frozenset[str]:
     """Return the ``public`` relations the projection manifest publishes (publisher SELECT)."""
