@@ -42,7 +42,10 @@ The unknown-sender card shows the same lines as the live plain-text notice
 [identity model](../concepts/identity-model.md#owner-notification-for-surfaced-unknown-senders)).
 Its snapshot lives in the Switchboard `state` table under
 `identity:unknown_card:<entity_id>`, written once before the first request. Until
-composition, the owner gets the plain-text notice. bu-6hszs3 tracks the switch-over.
+composition, the owner gets the plain-text notice and, pre-cutover, a one-tap Ignore
+approval card that shares this source's Ignore sink
+([identity model](../concepts/identity-model.md#ignore-card-pre-cutover-bu-p7glz9)).
+bu-6hszs3 tracks the switch-over.
 
 The owner-chat candidate card is the owner's own promise, quoted, with the counterparty's name
 and any deadline. Its prompt comes only from the card snapshot persisted on the candidate, so a

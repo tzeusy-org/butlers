@@ -73,6 +73,25 @@ async def test_wiring_enables_identity_and_uses_notify_v1_messenger_boundary():
     }
 
 
+async def test_wiring_parks_the_unknown_sender_ignore_card_on_the_switchboard_pool():
+    """The pipeline gets the Ignore-card park bound to the Switchboard pool (bu-p7glz9)."""
+    from butlers.roster_imports import roster_module
+
+    cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+    daemon = _switchboard_daemon()
+    pool = MagicMock()
+
+    with (
+        patch("butlers.modules.pipeline.MessagePipeline") as pipeline_cls,
+        patch("butlers.core.buffer.DurableBuffer"),
+    ):
+        wire_pipelines(daemon, pool)
+
+    card_fn = pipeline_cls.call_args.kwargs["unknown_sender_card_fn"]
+    assert card_fn.func is cards.park_ignore_card
+    assert card_fn.args == (pool,)
+
+
 async def test_wired_owner_callback_surfaces_failed_delivery_to_identity_helper():
     """The callback must reject a failed delivery so the helper can log-and-seal it."""
     daemon = _switchboard_daemon()

@@ -121,8 +121,49 @@ helper logs the problem, skips the owner send, and leaves normal unknown-sender
 routing intact. The owner can still review the transitory entity through the
 Unidentified Entities flow.
 
-An actionable card version (Add as contact / Ignore this sender / Open) is built
-as the `switchboard.unknown_sender` signed-confirm source
+#### Ignore card (pre-cutover, bu-p7glz9)
+
+The claim winner also parks one approval-gated pending action,
+`identity_ignore_unknown_sender`, through `park_pending_action`
+(`unknown_sender_cards.park_ignore_card`, wired in `switchboard_wiring.py`). The
+live decision-loop push (RFC 0021) turns it into a Telegram card with Approve,
+Reject and Open:
+
+```text
+Approval needed: Ignore this new sender
+Name: Chloe L
+Address: chloe@x.com
+Channel: email
+Entity: <entity_id>
+Effect: Archive this sender and skip their future email
+Started by: switchboard butler
+Assistant says (claims, not verified):
+  Why: Chloe L <chloe@x.com> wrote to you for the first time on email, subject "Re: dinner". ...
+  Blast radius: self
+  Reversibility: reversible
+```
+
+- Approve ignores the sender: it archives the entity (`metadata.archived_at`) and,
+  for an email address, adds one global `sender_address` skip rule. A replay finds
+  both in place. A non-email sender is archived only. Both are reversible from the
+  dashboard (unarchive the entity, delete the rule).
+- Reject or expiry (72 hours) changes nothing; the sender stays in Unidentified
+  Entities.
+- The action id derives from the entity id, so a replay or backlog rescan never
+  parks a second card.
+- The call carries the entity id, channel, address and display name, and the card
+  shows each. The park writes the same fields to the Switchboard `state` table
+  (`identity:unknown_ignore:<entity_id>`) in the same transaction. The tool refuses
+  any call that does not match them, and refuses an owner, merged or since-identified
+  entity.
+- While Switchboard's `approval_delivery_rollout` is off, the pending action is
+  committed for dashboard review with no push, and the plain-text notice still
+  goes out. When admission and the delivery worker are both on, the card replaces
+  the plain-text notice. If the park fails, the notice is still sent. A burst of new
+  senders may fold into one "N actions awaiting review" message.
+
+A fuller card (Add as contact / Ignore this sender / Open) is built as the
+`switchboard.unknown_sender` signed-confirm source
 (`roster/switchboard/tools/identity/unknown_sender_cards.py`) but stays dark with
 the rest of signed confirm. See
 [signed confirms](../runtime/signed-confirms.md); bu-6hszs3 tracks turning it on.

@@ -19,6 +19,7 @@ from butlers.core.approval_delivery_authority import (
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.modules.base import tool_registrar
+from butlers.roster_imports import roster_module
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.registry import registry as _registry
     from butlers.tools.switchboard.routing import correct_route as _correct_route
     from butlers.tools.switchboard.routing import route as _route
+
+    _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
 
     _tool = tool_registrar(mcp, config)
 
@@ -101,6 +104,31 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             module._get_pool(),
             connector_type,
             endpoint_identity,
+        )
+
+    # =================================================================
+    # Identity tools
+    # =================================================================
+
+    @_tool("identity")
+    async def identity_ignore_unknown_sender(
+        entity_id: str,
+        channel: str,
+        address: str,
+        display_name: str | None,
+    ) -> dict[str, Any]:
+        """Ignore one newly surfaced unknown sender: archive them and skip their email.
+
+        Only the owner's Approve on the unknown-sender Ignore card runs this: the
+        Switchboard approvals gate parks any other invocation, and the handler refuses a
+        call that does not match the card Switchboard parked for that sender.
+        """
+        return await _unknown_sender_cards.ignore_unknown_sender(
+            module._get_pool(),
+            entity_id=entity_id,
+            channel=channel,
+            address=address,
+            display_name=display_name,
         )
 
     # =================================================================

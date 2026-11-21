@@ -12,6 +12,7 @@ this module.  The same pattern is used in :mod:`butlers.lifecycle`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -242,6 +243,9 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
 
     from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
+    from butlers.roster_imports import roster_module
+
+    _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
 
     daemon._fact_source_registry = FactSourceContextRegistry(pool)
     register_source_registry(daemon._fact_source_registry)
@@ -254,6 +258,8 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         classification_timeout_s=classification_timeout_s,
         enable_identity_resolution=True,
         notify_owner_fn=_notify_owner_about_unknown_sender,
+        # The owner's one-tap Ignore card for the same sender (bu-p7glz9).
+        unknown_sender_card_fn=functools.partial(_unknown_sender_cards.park_ignore_card, pool),
         # daemon.mcp is not yet assigned a real FastMCP instance at this
         # point in startup (see butlers.lifecycle.run_startup: _wire_pipelines
         # runs at step 10b, daemon.mcp = FastMCP(...) at step 12) — a provider

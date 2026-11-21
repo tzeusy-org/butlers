@@ -84,6 +84,18 @@ MEMORY_RECLASSIFY_COMMAND = ExecutableApprovalCommand(
     ),
 )
 
+#: Switchboard's pre-cutover Ignore card for a newly surfaced unknown sender
+#: (bu-p7glz9): parked deterministically at identity ingress, replayed on Approve.
+UNKNOWN_SENDER_IGNORE_COMMAND = ExecutableApprovalCommand(
+    name="identity_ignore_unknown_sender",
+    owner_butler="switchboard",
+    argument_names=("entity_id", "channel", "address", "display_name"),
+    producer_source=(
+        "roster/switchboard/tools/identity/unknown_sender_cards.py",
+        "park_ignore_card",
+    ),
+)
+
 #: ``owner_butler`` of a command a shared module registers on every butler that loads
 #: it. Each such butler validates the command when the tool is registered there.
 ANY_HOSTING_BUTLER = "*"
@@ -114,6 +126,7 @@ EXECUTABLE_DIRECT_COMMANDS: tuple[ExecutableApprovalCommand, ...] = (
     CONNECTOR_DISCONNECT_COMMAND,
     MEMORY_RECLASSIFY_COMMAND,
     REPLAN_UNDO_COMMAND,
+    UNKNOWN_SENDER_IGNORE_COMMAND,
 )
 
 NON_MESSENGER_PRODUCER_INVENTORY: tuple[
@@ -123,6 +136,7 @@ NON_MESSENGER_PRODUCER_INVENTORY: tuple[
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
     MEMORY_RECLASSIFY_COMMAND,
     REPLAN_UNDO_COMMAND,
+    UNKNOWN_SENDER_IGNORE_COMMAND,
 )
 
 
@@ -200,5 +214,6 @@ __all__ = [
     "NON_MESSENGER_PRODUCER_INVENTORY",
     "NonReplayableApprovalProducer",
     "REPLAN_UNDO_COMMAND",
+    "UNKNOWN_SENDER_IGNORE_COMMAND",
     "validate_owner_command_registry",
 ]

@@ -362,6 +362,28 @@ def _notify_preview(args: Mapping[str, Any]) -> CallPreview:
     return CallPreview(title="Send notification", facts=tuple(facts))
 
 
+def _unknown_sender_ignore_preview(args: Mapping[str, Any]) -> CallPreview:
+    """Switchboard's pre-cutover unknown-sender Ignore card (bu-p7glz9)."""
+    _reject_unshown(args, frozenset({"entity_id", "channel", "address", "display_name"}))
+    channel = _require_text(args, "channel")
+    address = _require_text(args, "address")
+    facts = []
+    if name := _optional_text(args, "display_name"):
+        facts.append(PreviewFact("Name", name))
+    effect = "Archive this sender"
+    if channel == "email":
+        effect += " and skip their future email"
+    facts.extend(
+        (
+            PreviewFact("Address", address),
+            PreviewFact("Channel", channel),
+            PreviewFact("Entity", _require_text(args, "entity_id")),
+            PreviewFact("Effect", effect),
+        )
+    )
+    return CallPreview(title="Ignore this new sender", facts=tuple(facts))
+
+
 register_preview("email_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
 register_preview("telegram_reply_to_message", _telegram_reply_preview)
@@ -371,6 +393,9 @@ register_preview(
 )
 register_preview("whatsapp_send_message", _whatsapp_preview)
 register_preview("notify", _notify_preview)
+register_preview(
+    "identity_ignore_unknown_sender", _unknown_sender_ignore_preview, effect_class="record"
+)
 
 
 # ---------------------------------------------------------------------------

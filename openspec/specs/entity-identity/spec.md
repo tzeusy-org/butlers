@@ -884,6 +884,24 @@ render as a link or formatting. The notification SHALL NOT include the inbound
 message body or grant the unknown sender any role or approval authority. One
 notification SHALL be sent per sender; senders SHALL NOT be batched into a digest.
 
+The caller that obtains the claim SHALL also park one owner approval, the Ignore
+card, for the transitory entity through the standard approvals park boundary, so
+the owner's decision-loop push can offer Approve, Reject and Open. The parked call
+SHALL carry only the entity, the source channel, the raw sender identifier and the
+bounded display name, each shown on the card; its action identity SHALL derive
+from the entity, so a replayed or rescanned ingress event never parks a second
+card. Approve SHALL ignore the sender: archive the transitory entity and, for an
+email address, add one global sender-address skip rule. It SHALL be idempotent,
+and SHALL refuse a call that does not match the card parked for that entity, an
+owner or merged entity, or an entity the owner has since identified. Reject or
+expiry SHALL change nothing, leaving the sender in Unidentified Entities. While
+the owning schema's approval delivery is disabled, the park SHALL still commit
+the pending action for dashboard review and the plain-text notification SHALL
+still be sent; when the parked card is admitted for delivery with the delivery
+worker enabled, the card SHALL replace the plain-text notification. A park
+failure SHALL NOT block routing or the plain-text notification. This Ignore card
+precedes the signed-confirm cutover.
+
 #### Scenario: New unknown sender is surfaced for entity review
 
 - **WHEN** reverse lookup misses an inbound email from `chloe@x.com` with display
@@ -916,6 +934,30 @@ notification SHALL be sent per sender; senders SHALL NOT be batched into a diges
   attempt for that sender
 - **AND** the later message MUST continue through normal known-entity
   resolution and routing
+
+#### Scenario: New unknown sender gets one Ignore card
+
+- **WHEN** reverse lookup first surfaces email sender `chloe@x.com` as transitory
+  entity `E` and the notification claim is obtained
+- **THEN** the system MUST park one pending Ignore approval for `E` carrying the
+  email channel, `chloe@x.com` and the display name
+- **AND** a later ingress event or replay for the same sender MUST NOT park a
+  second approval for `E`
+
+#### Scenario: Approving the Ignore card ignores the sender
+
+- **WHEN** the owner approves the Ignore card for email sender `chloe@x.com`
+- **THEN** the system MUST archive entity `E` and add one global sender-address
+  skip rule for `chloe@x.com`
+- **AND** replaying the approved call MUST NOT add a second rule
+- **AND** for a non-email sender the system MUST archive `E` without adding a rule
+
+#### Scenario: Ignore card with approval delivery disabled
+
+- **WHEN** a new unknown sender is surfaced while the owning schema's approval
+  delivery admission is disabled
+- **THEN** the pending Ignore approval MUST still be committed for dashboard review
+- **AND** the plain-text owner notification MUST still be sent
 
 #### Scenario: Concurrent first messages reuse one transitory entity
 

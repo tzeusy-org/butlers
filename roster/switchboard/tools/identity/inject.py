@@ -10,6 +10,8 @@ For each incoming message:
 2. If unknown: create a transitory entity with
    ``metadata.unidentified=true`` and notify the owner at most once, naming the
    sender (display name, raw address, email subject) and linking to the entity.
+   The same claim winner parks the owner's Ignore approval card (bu-p7glz9);
+   when that card will be pushed, it replaces the plain-text notice.
 3. Build the identity preamble and inject it at the top of the routed prompt.
 
 Preamble formats (``entity_id`` is the canonical identifier post bu-akads):
@@ -62,6 +64,8 @@ _TEMP_ENTITY_STATE_KEY_PREFIX = "identity:unknown_entity:"
 _NAME_LIMIT = 120
 _ADDRESS_LIMIT = 254
 _SUBJECT_LIMIT = 200
+#: Parks the unknown-sender Ignore approval card (bu-p7glz9); True when it will be pushed.
+UnknownSenderCardFn = Callable[..., Awaitable[bool]]
 _MARKDOWN_NEUTRAL = str.maketrans({"[": "(", "]": ")", "*": None, "`": None, "~": None, "|": None})
 
 
@@ -158,6 +162,7 @@ async def resolve_and_inject_identity(
     resolver: Any = None,
     subject: str | None = None,
     owner_custody: str | None | CustodyUnread = UNREAD,
+    unknown_sender_card_fn: UnknownSenderCardFn | None = None,
 ) -> IdentityResolutionResult:
     """Resolve sender identity and build the preamble for the routed prompt.
 
@@ -195,6 +200,11 @@ async def resolve_and_inject_identity(
     owner_custody:
         A custody verdict this message's accepted-source capture already read, reused
         instead of a second read when the sender resolves to the owner.
+    unknown_sender_card_fn:
+        Optional async callable that parks the owner's Ignore approval card for a newly
+        surfaced unknown sender (bu-p7glz9). It runs only for the claim winner, before
+        the plain-text notice; when it returns True the card will be pushed and the
+        notice is skipped. A failure is logged and the notice is still sent.
 
     Returns
     -------
@@ -229,6 +239,7 @@ async def resolve_and_inject_identity(
         notify_owner_fn=notify_owner_fn,
         state_pool=state_pool,
         resolver=resolver,
+        unknown_sender_card_fn=unknown_sender_card_fn,
     )
 
 
@@ -244,6 +255,7 @@ async def _inject_unknown_identity(
     strict_reservation: bool = False,
     resolver: Any = None,
     subject: str | None = None,
+    unknown_sender_card_fn: UnknownSenderCardFn | None = None,
 ) -> IdentityResolutionResult:
     """Reserve and inject an already-confirmed unresolved sender.
 
@@ -301,7 +313,25 @@ async def _inject_unknown_identity(
     # Step 3: The successful claimer makes the one owner-facing attempt. A
     # delivery failure is observable but intentionally does not clear the
     # durable claim: later ingress must not retry into a notification storm.
-    if notification_claimed and notify_owner_fn is not None:
+    card_pushed = False
+    if notification_claimed and unknown_sender_card_fn is not None and result.entity_id:
+        try:
+            card_pushed = await unknown_sender_card_fn(
+                entity_id=result.entity_id,
+                channel=source_channel_type,
+                address=channel_value,
+                display_name=display_name,
+                subject=subject,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "identity.unknown_sender_card_failed",
+                extra={
+                    "channel_type": source_channel_type,
+                    "failure_class": type(exc).__name__,
+                },
+            )
+    if notification_claimed and notify_owner_fn is not None and not card_pushed:
         notification_msg = "\n".join(
             unknown_sender_notice_lines(
                 channel=source_channel_type,
@@ -366,6 +396,7 @@ async def resolve_sender_identities(
     state_pool: asyncpg.Pool | None = None,
     resolver: Any = None,
     bulk_resolver: Any = None,
+    unknown_sender_card_fn: UnknownSenderCardFn | None = None,
 ) -> dict[str, IdentityResolutionResult]:
     """Resolve each distinct batch speaker through one strict bulk lookup.
 
@@ -424,6 +455,7 @@ async def resolve_sender_identities(
                 state_pool=state_pool,
                 strict_reservation=True,
                 resolver=resolver,
+                unknown_sender_card_fn=unknown_sender_card_fn,
             )
         except Exception as exc:  # noqa: BLE001
             failure_class = getattr(exc, "failure_class", type(exc).__name__)

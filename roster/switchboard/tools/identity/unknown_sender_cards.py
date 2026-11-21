@@ -1,6 +1,25 @@
-"""The unknown-sender card and its sink, built but dark (bu-g0nsbw).
+"""The unknown-sender cards and their Ignore/Add sink (bu-g0nsbw, bu-p7glz9).
 
-A newly surfaced unknown sender can become one signed confirm card through the
+Live today, pre-cutover: the Ignore approval card (bu-p7glz9). When Switchboard surfaces
+a new unknown sender, ``park_ignore_card`` parks one approval-gated pending action for
+``identity_ignore_unknown_sender`` through ``park_pending_action``, so the decision-loop
+push (RFC 0021) shows the owner Approve / Reject / Open. Approve runs the Ignore sink
+(``ignore_unknown_sender``); Reject or expiry does nothing, so the sender stays in the
+Unidentified queue.
+
+* The action id is derived from the entity id, so a replayed notice or a backlog rescan
+  finds the existing action and never parks a second one.
+* The parked call carries the entity id, channel, address and display name, and the
+  approval preview shows each of them. The park writes a snapshot of the same fields to
+  the Switchboard ``state`` table in the same transaction; the tool refuses any call
+  that does not match it, so only a call Switchboard parked for a surfaced sender can
+  archive anything.
+* With Switchboard's ``approval_delivery_rollout`` off, the park still commits the
+  pending action (visible on the dashboard) without a push, and the owner keeps the
+  plain-text notice. With admission and worker both on, the card replaces the notice.
+
+Dark: the signed-confirm card (bu-g0nsbw). A newly surfaced unknown sender can become
+one signed confirm card through the
 ``switchboard.unknown_sender`` ``ConfirmSource``: the sender's name, raw address and
 subject, an Open link to the transitory entity, and two options, Add as contact and
 Ignore this sender.
@@ -19,24 +38,26 @@ Ignore this sender.
     address, adds one global ``sender_address`` skip rule so later mail from that sender
     never reaches a routing session. Switchboard does not write
     ``relationship.entity_facts`` (switchboard-identity), so the queue's
-    ``queue.dismissed`` triple is not used here.
+    ``queue.dismissed`` triple is not used here. Both cards share this sink.
 
-Nothing here runs until the canonical goal-runtime switch composes the signed-confirm
-topology with ``switchboard_confirm_sources`` (follow-up bu-6hszs3). Until then the owner
-gets the plain-text notice from ``inject.unknown_sender_notice_lines``.
+The signed-confirm source does not run until the canonical goal-runtime switch composes
+the signed-confirm topology with ``switchboard_confirm_sources`` (follow-up bu-6hszs3).
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from butlers.core.confirm_authority import UNKNOWN_SENDER_SOURCE, ConfirmSource
 from butlers.core.confirm_models import ConfirmCard, ConfirmOption, ConfirmPrompt, Recipient
 from butlers.core.confirm_recipient import OwnerRecipient
+from butlers.modules.approvals.command_contracts import UNKNOWN_SENDER_IGNORE_COMMAND
+from butlers.modules.approvals.park import park_pending_action
+from butlers.modules.approvals.rollout import read_approval_delivery_rollout
 from butlers.roster_imports import roster_module
 
 _inject = roster_module("switchboard", "tools/identity/inject")
@@ -54,6 +75,14 @@ SNAPSHOT_KEY_PREFIX: Final = "identity:unknown_card:"
 RECEIPT_KEY_PREFIX: Final = "identity:unknown_card_receipt:"
 #: Same priority as promoted rules: an explicit owner choice for one exact address.
 SKIP_RULE_PRIORITY: Final = 10
+
+#: The pre-cutover Ignore approval card (bu-p7glz9).
+IGNORE_TOOL_NAME: Final = UNKNOWN_SENDER_IGNORE_COMMAND.name
+IGNORE_SNAPSHOT_KEY_PREFIX: Final = "identity:unknown_ignore:"
+IGNORE_DEDUP_KEY_PREFIX: Final = "switchboard.unknown_sender.ignore:"
+#: Matches Switchboard's ``default_expiry_hours``; expiry leaves the sender queued.
+IGNORE_CARD_TTL: Final = timedelta(hours=72)
+_IGNORE_ACTION_NAMESPACE: Final = UUID("6f1d2a52-3c1e-4f43-9a55-0b5e6c1d7a01")
 
 #: The trusted producer client's ``request(key, data)``.
 CardRequest = Callable[[str, dict], Awaitable[Mapping[str, Any]]]
@@ -293,3 +322,130 @@ async def _ignore(
         "Owner chose Ignore this sender on the unknown-sender card.",
     )
     return {"status": "applied", "outcome": "ignored", "rule": "created"}
+
+
+# ---------------------------------------------------------------------------
+# The pre-cutover Ignore approval card (bu-p7glz9)
+# ---------------------------------------------------------------------------
+
+
+def ignore_action_id(entity_id: UUID) -> UUID:
+    """The one pending-action id an entity's Ignore card can ever have."""
+    return uuid5(_IGNORE_ACTION_NAMESPACE, f"{IGNORE_DEDUP_KEY_PREFIX}{entity_id}")
+
+
+def ignore_card_args(
+    *, entity_id: UUID, channel: str, address: str, display_name: str | None
+) -> dict[str, Any]:
+    """The exact parked call: every field the owner sees on the card, and no more."""
+    return UNKNOWN_SENDER_IGNORE_COMMAND.materialize(
+        {
+            "entity_id": str(entity_id),
+            "channel": channel,
+            "address": address,
+            "display_name": _inject._clean(display_name, _inject._NAME_LIMIT) or None,
+        }
+    )
+
+
+def ignore_card_dossier(args: Mapping[str, Any], subject: str | None) -> dict[str, Any]:
+    """Server-written approval context; it never carries the message body."""
+    name, address, channel = args["display_name"], args["address"], args["channel"]
+    sender = f"{name} <{address}>" if name else address
+    email = channel == "email" and _verdict_log.is_email_sender_key(address.strip().lower())
+    clean_subject = _inject._clean(subject, _inject._SUBJECT_LIMIT)
+    first = f"{sender} wrote to you for the first time on {channel}"
+    first += f', subject "{clean_subject}".' if clean_subject else "."
+    effect = (
+        "Approving archives this unidentified sender and adds a skip rule, so their "
+        "future email never reaches a routing session."
+        if email
+        else "Approving archives this unidentified sender. No skip rule is added for "
+        f"{channel}, so their later messages still arrive."
+    )
+    evidence = [{"type": "entity", "ref": args["entity_id"], "note": "Unidentified sender."}]
+    if clean_subject:
+        evidence.append({"type": "text", "ref": clean_subject, "note": "First message subject."})
+    return {
+        "agent_summary": f"Ignore {sender}"[:300],
+        "why": (
+            f"{first} {effect} Rejecting or letting this expire keeps them in "
+            "Unidentified Entities."
+        ),
+        "evidence": evidence,
+        "blast_radius": "self",
+        "reversibility": "reversible",
+    }
+
+
+async def park_ignore_card(
+    pool: Any,
+    *,
+    entity_id: UUID,
+    channel: str,
+    address: str,
+    display_name: str | None,
+    subject: str | None,
+) -> bool:
+    """Park the one Ignore card for a newly surfaced unknown sender.
+
+    Returns True only when this call parked a card the delivery worker will push (the
+    Switchboard rollout's admission and worker are both on), so the caller can skip the
+    plain-text notice. A duplicate park, or a disabled rollout, returns False: the
+    pending action is on the dashboard, but nothing reaches Telegram from it.
+    """
+    args = ignore_card_args(
+        entity_id=entity_id, channel=channel, address=address, display_name=display_name
+    )
+    dossier = ignore_card_dossier(args, subject)
+    now = datetime.now(UTC)
+    async with pool.acquire() as conn, conn.transaction():
+        await _put_state(conn, f"{IGNORE_SNAPSHOT_KEY_PREFIX}{entity_id}", dict(args))
+        admission = await park_pending_action(
+            conn,
+            action_id=ignore_action_id(entity_id),
+            tool_name=IGNORE_TOOL_NAME,
+            tool_args=args,
+            requested_at=now,
+            expires_at=now + IGNORE_CARD_TTL,
+            origin_butler="switchboard",
+            deduplication_key=f"{IGNORE_DEDUP_KEY_PREFIX}{entity_id}",
+            **dossier,
+        )
+        rollout = await read_approval_delivery_rollout(conn)
+    return not admission.duplicate and admission.intent_id is not None and rollout.worker_enabled
+
+
+async def ignore_unknown_sender(
+    pool: Any, *, entity_id: str, channel: str, address: str, display_name: str | None
+) -> dict[str, Any]:
+    """Run the approved Ignore card: archive the sender, and skip their email.
+
+    Idempotent: a replay finds the entity archived and the rule present. Refuses (with an
+    ``error``, so the executor records a failure) a call Switchboard did not park, an
+    owner or merged entity, and a sender the owner has since identified.
+    """
+    try:
+        eid = UUID(entity_id)
+    except (TypeError, ValueError):
+        return {"error": "entity_ref_invalid"}
+    called = {
+        "entity_id": entity_id,
+        "channel": channel,
+        "address": address,
+        "display_name": display_name,
+    }
+    async with pool.acquire() as conn, conn.transaction():
+        entity = await conn.fetchrow(
+            "SELECT canonical_name, roles, metadata FROM public.entities WHERE id = $1 FOR UPDATE",
+            eid,
+        )
+        snapshot = await _state(conn, f"{IGNORE_SNAPSHOT_KEY_PREFIX}{eid}")
+        if snapshot != called:
+            return {"error": "ignore_card_unknown"}
+        metadata = (_json(entity["metadata"]) or {}) if entity is not None else {}
+        if entity is None or metadata.get("merged_into") or "owner" in (entity["roles"] or []):
+            return {"error": "entity_not_ignorable"}
+        if not metadata.get("unidentified"):
+            return {"error": "entity_identified"}
+        return await _ignore(conn, eid, metadata, snapshot)
