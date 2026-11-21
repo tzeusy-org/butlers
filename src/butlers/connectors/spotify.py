@@ -1526,7 +1526,7 @@ async def gap_fill_play_already_observed(
                 WHERE endpoint_identity = $1
                   AND track_uri = $2
                   AND observation_precision = 'progress_tracked'
-                  AND first_seen_ms BETWEEN $3 - 60000 AND $3 + 60000
+                  AND first_seen_ms BETWEEN $3::bigint - 60000 AND $3::bigint + 60000
                   AND recently_played_at_ms IS NULL
                 ORDER BY abs(first_seen_ms - $3)
                 LIMIT 1
