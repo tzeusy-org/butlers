@@ -53,10 +53,10 @@ from butlers.modules.base import Module, ToolGroupMixin, ToolMeta, tool_registra
 from .actuation import (
     CRITICAL_REASON,
     DATA_TARGET_SELECTORS,
-    PRE_STATE_MAX_AGE_SECONDS,
-    SETTLED_WITHOUT_ATTENTION,
     MAX_GROUP_DEPTH,
     MAX_GROUP_READS,
+    PRE_STATE_MAX_AGE_SECONDS,
+    SETTLED_WITHOUT_ATTENTION,
     ActuationRisk,
     effective_actuation_risk,
     names_critical_entity,
