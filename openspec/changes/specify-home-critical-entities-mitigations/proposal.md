@@ -75,6 +75,6 @@ Unaffected:
   new approval status).
 - Every call that names no critical entity, while the registry is readable.
 
-Status: **specification proposed, not adopted or implemented**. The RFC 0028 amendment requires
-owner adoption of its exact text. Tracking: `bu-jv1moa.33`. Base: `origin/main` on 2026-11-15. No
+Status: **RFC 0028 Amendment 1 adopted 2026-11-21 (owner); specification not yet implemented**.
+Tracking: `bu-jv1moa.33`, `bu-jv1moa.121`. Base: `origin/main` on 2026-11-15. No
 registry entry, mitigation, flag, button or schedule is activated by this change.
