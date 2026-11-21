@@ -2279,3 +2279,32 @@ async def test_a_group_target_is_never_already_satisfied_from_its_aggregate_stat
 
     assert result["status"] != "already_satisfied"
     case.client.post.assert_awaited_once()
+
+async def test_a_half_on_group_is_unverified_after_turn_on_never_succeeded(mock_mcp, monkeypatch):
+    """A group reads "on" when any member is on, so its state cannot prove every member is."""
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.group"},
+        "data": None,
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    half_on = MagicMock()
+    half_on.json.return_value = {
+        "state": "on",
+        "attributes": {"entity_id": ["light.a", "light.b"]},
+        "last_updated": "2026-11-21T00:00:00Z",
+    }
+    case.client.get = AsyncMock(return_value=half_on)
+    result = await case.tool(**args)
+
+    assert result["status"] == "unverified"
+    assert result["attention_required"] is True
+    assert "group" in result["error"]
+
+
+def test_verify_post_condition_never_succeeds_on_a_groups_aggregate_state():
+    group = {"light.group": {"state": "on", "attributes": {"entity_id": ["light.a", "light.b"]}}}
+    assert not ha_actuation.verify_post_condition("light", "turn_on", None, group).verified
+    plain = {"light.a": {"state": "on", "attributes": {"brightness": 5}}}
+    assert ha_actuation.verify_post_condition("light", "turn_on", None, plain).verified

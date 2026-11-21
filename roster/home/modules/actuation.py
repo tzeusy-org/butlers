@@ -472,6 +472,18 @@ def verify_post_condition(
     if not observed:
         return Verification(False, "no explicit entity target was available for verification")
 
+    groups = sorted(
+        entity_id
+        for entity_id, state in observed.items()
+        if "entity_id" in (state.get("attributes") or {})
+    )
+    if groups:
+        # A group reads "on" when any member is on: its state never proves every member complied.
+        return Verification(
+            False,
+            f"group target {', '.join(groups)}: its aggregate state cannot verify every member",
+        )
+
     expected_state = _EXPECTED_STATES.get((domain, service))
     if expected_state is not None:
         mismatches = [
