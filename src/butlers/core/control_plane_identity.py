@@ -471,7 +471,7 @@ async def run_shadow_observer_loop(
         raise RuntimeError("no exact Git-roster targets for shadow observer")
     role_view = DashboardProbeRoleView(pool)
     async with httpx.AsyncClient(
-        trust_env=False, timeout=PROBE_DEADLINE_S, **switchboard_http_options()
+        timeout=PROBE_DEADLINE_S, **switchboard_http_options(trust_env=False)
     ) as client:
         prober = SingleFlightProber(role_view, client=client)
         try:

@@ -569,8 +569,8 @@ class FinanceWarningControlOwner:
         async def operation():
             nonce = secrets.token_urlsafe(32)
             verification_start = asyncio.get_running_loop().time()
-            options = {"trust_env": False} | switchboard_http_options(
-                self.verifier_url, require_origin=True
+            options = switchboard_http_options(
+                self.verifier_url, require_origin=True, trust_env=False
             )
             async with self.client_context(
                 httpx.AsyncClient(timeout=DEADLINE_SECONDS, **options)

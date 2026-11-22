@@ -17,7 +17,7 @@ import pytest
 
 from butlers.api.app import create_app
 from butlers.api.deps import ButlerConnectionInfo
-from butlers.api.readiness import CHECK_KEYS, FleetReadiness, ReadinessSnapshot
+from butlers.api.readiness import CHECK_KEYS, PREFLIGHT_PATH, FleetReadiness, ReadinessSnapshot
 from butlers.core.control_plane_identity import ShadowCycle
 from butlers.core.qa.patrol_provenance import (
     LAST_QUALIFYING_PATROL_SQL,
@@ -160,6 +160,25 @@ def _readiness(
 
 def _replace(name: str, **overrides: Any) -> list[dict[str, Any]]:
     return [_row(n, **overrides) if n == name else _row(n) for n in _NAMES]
+
+
+async def test_route_canary_uses_configured_switchboard_https(monkeypatch):
+    origin = "https://butlers-control:41100"
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", f"{origin}/sse")
+    seen = []
+
+    def preflight(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"ready": True})
+
+    readiness = FleetReadiness(
+        lambda: None,
+        [ButlerConnectionInfo(name="switchboard", port=41100)],
+        None,
+        client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(preflight)),
+    )
+    assert await readiness._route_canary()
+    assert seen == [f"{origin}{PREFLIGHT_PATH}"]
 
 
 async def test_all_fresh_inputs_are_ready_and_paused_daemon_is_an_intentional_exclusion():

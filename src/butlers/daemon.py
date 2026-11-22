@@ -45,10 +45,11 @@ import socket
 import ssl
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from ipaddress import IPv4Address
 from pathlib import Path
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 from urllib.parse import quote, quote_plus
 
 import asyncpg
@@ -221,9 +222,10 @@ class _SwitchboardServiceServer(uvicorn.Server):
         self.started = False
         config = self.config
         loop = asyncio.get_running_loop()
+        protocol_factory = cast(Callable[..., asyncio.Protocol], config.http_protocol_class)
 
         def protocol() -> asyncio.Protocol:
-            return config.http_protocol_class(
+            return protocol_factory(
                 config=config,
                 server_state=self.server_state,
                 app_state=self.lifespan.state,
