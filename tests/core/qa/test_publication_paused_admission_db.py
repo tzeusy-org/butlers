@@ -64,8 +64,18 @@ async def _attempt(
         error_detail,
     )
     if retained:
-        await retain_export(pool, attempt_id, synthetic_export())
+        await _retain_as_qa(pool, attempt_id)
     return attempt_id
+
+
+async def _retain_as_qa(pool: asyncpg.Pool, attempt_id: uuid.UUID) -> None:
+    """Retain an export as the only role the insert policy admits (``butler_qa_rw``)."""
+    async with pool.acquire() as connection:
+        await connection.execute("SET ROLE butler_qa_rw")
+        try:
+            await retain_export(connection, attempt_id, synthetic_export())
+        finally:
+            await connection.execute("RESET ROLE")
 
 
 async def _tripped_both_ways(pool: asyncpg.Pool) -> tuple[bool, bool]:
