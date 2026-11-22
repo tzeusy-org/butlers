@@ -42,6 +42,7 @@ import json
 import logging
 import os
 import socket
+import ssl
 import time
 import uuid
 from dataclasses import dataclass
@@ -219,11 +220,14 @@ class ButlerDaemon:
         butler_name: str | None = None,
         db: Database | None = None,
         control_profile: str | None = None,
+        service_tls_dir: Path | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
         if config_dir is not None and butler_name is not None:
             raise ValueError("Cannot provide both config_dir and butler_name")
+        if service_tls_dir is not None and control_profile is None:
+            raise ValueError("Switchboard service TLS requires a control profile")
 
         # If butler_name is provided, derive config_dir from roster/
         if butler_name is not None:
@@ -232,6 +236,7 @@ class ButlerDaemon:
             self.config_dir = config_dir  # type: ignore
 
         self._control_profile = control_profile
+        self._service_tls_dir = service_tls_dir
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -581,6 +586,7 @@ class ButlerDaemon:
         """
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
+        service_tls = self._service_listener_tls()
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
         if self.config.name in {"finance", "switchboard"}:
             from butlers.config import list_butlers
@@ -628,6 +634,8 @@ class ButlerDaemon:
             log_config=None,
             timeout_graceful_shutdown=self.config.shutdown_timeout_s,
         )
+        if service_tls is not None:
+            config.ssl_context_factory = lambda _config, _default: service_tls
         # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
         # in TIME_WAIT (e.g. after SIGKILL) does not block re-binding.  Raising the
         # OSError here (before the asyncio task is running) gives callers a clear,
@@ -764,6 +772,25 @@ class ButlerDaemon:
         from butlers.tools.switchboard.routing.preflight import RoutePreflight
 
         return RoutePreflight(self.db.pool, list_butlers(self.config_dir.parent))
+
+    def _service_listener_tls(self) -> ssl.SSLContext | None:
+        directory = self._service_tls_dir
+        if directory is None:
+            return None
+        config = self.config
+        if config is None or (config.name, config.port) != ("switchboard", 41100):
+            raise ValueError("Service TLS is configured outside the Switchboard service listener")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        try:
+            context.load_cert_chain(
+                directory / "tls.crt", directory / "tls.key", password=lambda: b""
+            )
+        except OSError:
+            raise RuntimeError(
+                "Switchboard service TLS material is unavailable or invalid"
+            ) from None
+        return context
 
     def _build_service_relay_route(self) -> Any | None:
         """RFC 0038 D7 named relays, on Switchboard's service listener only."""

@@ -152,11 +152,22 @@ def run(config_path: Path) -> None:
     show_default=True,
     help="Bind session refusal port to this operator/deployment-selected interface",
 )
-def control(profile: str, config_path: Path, session_host: str) -> None:
+@click.option(
+    "--service-tls-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Mounted TLS certificate and key for the Switchboard service listener",
+)
+def control(
+    profile: str, config_path: Path, session_host: str, service_tls_dir: Path | None
+) -> None:
     """Run Switchboard separately, without any goal signing key or broker."""
     from butlers.control import run_control
 
-    asyncio.run(run_control(config_path, profile=profile, session_host=session_host))
+    asyncio.run(
+        run_control(
+            config_path, profile=profile, session_host=session_host, service_tls_dir=service_tls_dir
+        )
+    )
 
 
 @cli.command("session-host")
