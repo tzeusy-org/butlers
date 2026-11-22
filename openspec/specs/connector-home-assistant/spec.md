@@ -301,8 +301,12 @@ The classifier SHALL be configured via environment variables consistent with the
 - **WHEN** an entity_id appears in `HA_WELLNESS_ENTITY_DENYLIST`
 - **THEN** its events SHALL never be emitted on the `wellness` channel even if they match a rule
 
+#### Scenario: Transient-reading entity never promoted
+- **WHEN** an entity_id contains (case-insensitively) `non_stabilized`, `unstabilized`, `non_stable`, or `unstable`
+- **THEN** its events SHALL never be emitted on the `wellness` channel, in live classification or REST history recovery, and the classifier outcome SHALL be `skipped_transient`
+
 ### Requirement: Promotion observability
-The connector SHALL export Prometheus counters for classifier outcomes (promoted, skipped-non-numeric, denylisted) labeled by `metric`, and the existing per-envelope submission metrics SHALL distinguish the two channels.
+The connector SHALL export Prometheus counters for classifier outcomes (promoted, skipped-non-numeric, skipped-transient, denylisted) labeled by `metric`, and the existing per-envelope submission metrics SHALL distinguish the two channels.
 
 #### Scenario: Promoted reading visible in metrics
 - **WHEN** a reading is promoted to the `wellness` channel

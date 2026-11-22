@@ -970,7 +970,7 @@ ha_wellness_classify_total = Counter(
     "Wellness classifier outcomes for filter-passing events",
     labelnames=["endpoint_identity", "outcome", "metric"],
 )
-"""outcome: promoted | no_match | skipped_non_numeric | denylisted.
+"""outcome: promoted | no_match | skipped_non_numeric | denylisted | skipped_transient.
 
 metric: matched metric name, or 'none' when not promoted."""
 
@@ -1071,7 +1071,7 @@ class HAConnectorMetrics:
 
         Args:
             outcome: One of ``promoted``, ``no_match``, ``skipped_non_numeric``,
-                ``denylisted``.
+                ``denylisted``, ``skipped_transient``.
             metric: Matched metric name, or ``None`` (recorded as ``"none"``).
         """
         ha_wellness_classify_total.labels(

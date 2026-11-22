@@ -169,6 +169,63 @@ def test_denylisted_entity_never_promoted() -> None:
     )
 
 
+_TRANSIENT_WEIGHT_ID = "sensor.bathroom_scale_weight_non_stabilized"
+_STABLE_WEIGHT_ID = "sensor.bathroom_scale_weight"
+
+
+def _classify_weight(clf: WellnessClassifier, entity_id: str, state: str = "80.0") -> Any:
+    return clf.classify_detailed(
+        entity_id=entity_id,
+        device_class="weight",
+        unit_of_measurement="kg",
+        attributes={},
+        state=state,
+    )
+
+
+def test_transient_weight_sensor_is_skipped_and_stabilized_is_promoted() -> None:
+    clf = _classifier()
+    transient = _classify_weight(clf, _TRANSIENT_WEIGHT_ID, "0.1")
+    assert (transient.metric, transient.outcome) == (None, "skipped_transient")
+    stable = _classify_weight(clf, _STABLE_WEIGHT_ID)
+    assert (stable.metric, stable.outcome, stable.value) == ("weight", "promoted", 80.0)
+
+
+@pytest.mark.parametrize(
+    "entity_id",
+    [
+        "sensor.scale_weight_non_stabilized",
+        "sensor.scale_weight_unstabilized",
+        "sensor.scale_weight_non_stable",
+        "sensor.scale_weight_unstable",
+        "sensor.SCALE_Weight_Non_Stabilized",
+    ],
+)
+def test_transient_tokens_match_case_insensitively(entity_id: str) -> None:
+    clf = _classifier()
+    assert _classify_weight(clf, entity_id).outcome == "skipped_transient"
+    assert (
+        clf.match_metric(entity_id=entity_id, device_class="weight", unit_of_measurement="kg")
+        is None
+    )
+    assert (
+        clf.classify(
+            entity_id=entity_id,
+            device_class="weight",
+            unit_of_measurement="kg",
+            attributes={},
+            state="70",
+        )
+        is None
+    )
+
+
+def test_transient_outcome_is_distinct_from_denylisted() -> None:
+    clf = _classifier(denylist=frozenset({_TRANSIENT_WEIGHT_ID}))
+    # Owner denylist wins and keeps its own outcome.
+    assert _classify_weight(clf, _TRANSIENT_WEIGHT_ID).outcome == "denylisted"
+
+
 def test_denylisted_outcome_is_distinct_from_skip() -> None:
     clf = _classifier(denylist=frozenset({"sensor.withings_systolic_blood_pressure"}))
     result = clf.classify_detailed(
