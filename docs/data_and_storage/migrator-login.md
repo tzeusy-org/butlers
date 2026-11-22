@@ -52,12 +52,21 @@ all of these to the migrator. A second
 run after a successful transfer is a no-op.
 
 `tests/integration/test_db_authority_ownership.py` runs the transfer on a migrated
-database, replays init-db with the migrator, and migrates as the migrator. It needs
-Docker, so CI runs it.
+database and checks that a rerun is a no-op. It also pins the init-db blocker described
+below. It needs Docker, so CI runs it.
 
 ## Activation (owner acts, in order)
 
-**Not yet activatable.** The daemons still run their Alembic chains at startup as the
+**Not yet activatable: init-db pins the migration role.** Six init-db bunkers record
+their configured migration role in a `bootstrap_configuration` singleton and refuse a
+replay that names a different one ("bootstrap configuration differs"):
+`dashboard_attention`, `dashboard_stepup`, `dnd_generation_admin`, `perception_admin`,
+`restore_drill_executor_admin` and `runtime_attention_admin`. The runtime-attention
+upgrades also require that role. Once the transfer runs, any init-db replay refuses,
+whichever login it names. So steps 3 and 4 wait for the bunker-deletion slice, or for an
+explicit migration-role rotation there.
+
+**Also not yet activatable.** The daemons still run their Alembic chains at startup as the
 runtime login (`_startup_core_migrations` in `src/butlers/lifecycle.py`). Once the
 transfer runs, the runtime login no longer owns the `alembic_version` tables or the
 schemas' objects, so startup migrations must first become a read-only head check. That

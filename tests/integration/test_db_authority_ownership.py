@@ -5,17 +5,16 @@ shared login. After ``transfer_ownership`` the shared login owns nothing in the 
 the migrator owns everything the shared login owned, every object owned by a purpose role
 (the DND FORCE-RLS tables' ``dnd_generation_owner`` included) keeps its owner, and the
 migrator holds every membership the shared login held. Replaying init-db.sql with the
-migrator as the connecting user and re-running the migrations as the migrator then
-succeeds, which is the activation path in docs/data_and_storage/migrator-login.md.
+migrator as the connecting user is still refused by the bunkers' pinned migration role,
+the activation blocker recorded in docs/data_and_storage/migrator-login.md.
 """
 
 from __future__ import annotations
 
-import asyncio
 import shutil
 import uuid
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -149,11 +148,8 @@ def test_transfer_moves_only_the_shared_logins_objects_and_activation_migrates(
     assert set(owners_before.values()) - {shared}, "purpose-owned objects must exist"
     assert rerun.owned == () and rerun.refusals == ()
 
-    # Activation: init-db names the migrator as the connecting user, then it migrates.
-    _replay_init_db(bootstrap_url, migrator)
-    from butlers.migrations import run_migrations
-
-    host, port = urlparse(db_url).hostname, urlparse(db_url).port
-    migrator_url = f"postgresql://{quote(migrator, safe='')}:{password}@{host}:{port}/{db_name}"
-    asyncio.run(run_migrations(migrator_url, chain="core"))
-    asyncio.run(run_migrations(migrator_url, chain="switchboard", schema="switchboard"))
+    # The known activation blocker: the init-db bunkers pin their configured migration
+    # role, so naming the migrator is refused until the bunker-deletion slice lands. When
+    # this stops raising, extend the test to migrate as the migrator (migrator-login.md).
+    with pytest.raises(Exception, match="bootstrap configuration differs"):
+        _replay_init_db(bootstrap_url, migrator)
