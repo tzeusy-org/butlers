@@ -354,6 +354,20 @@ provider SHALL be rejected with a labeled rejection metric and no fact written.
 - **AND** Google Health envelopes SHALL continue to validate against the
   owner's health-scoped Google accounts unchanged
 
+#### Scenario: Implausible weight held as unconfirmed
+
+- **WHEN** a `home_assistant` wellness envelope carries a `weight` reading in kilograms and the owner has at least 3 active `measurement_weight` facts in the 30 days before its `valid_at`
+- **AND** the reading deviates from the median of those facts by more than 15%
+- **THEN** the Health butler SHALL store it as a fact with `validity = 'candidate'` and `metadata.held` naming the reason and baseline, so it is not asserted and no active-only reader (series, projection, briefs) sees it
+- **AND** SHALL increment `health_wellness_ingest_total` with outcome `held_implausible` and return status `held_implausible`
+- **AND** a reading within the threshold, or with fewer than 3 baseline readings, SHALL be stored `active` as before
+
+#### Scenario: Implausible weights already asserted are retracted
+
+- **WHEN** migration `health_009` runs
+- **THEN** each active Home Assistant sourced `measurement_weight` fact deviating by more than 15% from the median of the other active weight facts within 15 days either side (at least 3) SHALL become `retracted`
+- **AND** facts from other sources or predicates SHALL be untouched and a rerun SHALL retract nothing further
+
 ### Requirement: Cross-provider measurement idempotency
 
 Facts translated from `home_assistant` wellness envelopes SHALL carry an

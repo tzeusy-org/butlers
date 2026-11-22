@@ -21,14 +21,14 @@ Fan-out: the ``sleep_session`` resource emits up to two facts per envelope —
 
 Prometheus counter ``health_wellness_ingest_total`` is incremented once per
 emitted fact with labels ``predicate`` and ``outcome``
-(success | error | skipped_* | rejected_*).
+(success | error | held_implausible | skipped_* | rejected_*).
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from butlers.credential_store import resolve_owner_entity_info
@@ -44,6 +44,79 @@ health_wellness_ingest_total = get_or_create_counter(
     "Total wellness ingest events by predicate and outcome",
     labelnames=["predicate", "outcome"],
 )
+
+# ---------------------------------------------------------------------------
+# Body-weight plausibility gate (bu-swkpoo.11)
+#
+# A shared scale reports every household member through one stabilized sensor, so a
+# weigh-in by someone else would land in the owner's series.  A Home Assistant weight far
+# from the owner's rolling baseline is held as an unconfirmed ``candidate`` fact instead of
+# being asserted.  health_009 retracts readings already stored; keep its frozen literals
+# (15%, 15 days either side, 3 readings) in step with these only deliberately.
+# ---------------------------------------------------------------------------
+
+#: Baseline = median of the owner's active ``measurement_weight`` facts over this many days
+#: before the reading.
+WEIGHT_BASELINE_WINDOW_DAYS = 30
+#: Fewest baseline readings that make a baseline; with fewer, the reading is accepted.
+WEIGHT_BASELINE_MIN_READINGS = 3
+#: A reading deviating from the baseline by more than this fraction is held, not asserted.
+WEIGHT_MAX_BASELINE_DEVIATION = 0.15
+
+_WEIGHT_BASELINE_SQL = """
+    SELECT count(*) AS n,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY (metadata->>'value')::float8) AS median
+    FROM facts
+    WHERE predicate = 'measurement_weight'
+      AND scope = 'health'
+      AND validity = 'active'
+      AND entity_id = $1::uuid
+      AND jsonb_typeof(metadata->'value') = 'number'
+      AND COALESCE(metadata->>'unit', 'kg') = 'kg'
+      AND valid_at >= $2 - make_interval(days => $3)
+      AND valid_at < $2
+"""
+
+
+async def _weight_baseline(
+    pool: Any, owner_entity_id: str, valid_at: str
+) -> tuple[int, float | None]:
+    """Return ``(reading_count, median_kg)`` of the owner's active weights before ``valid_at``."""
+    when = datetime.fromisoformat(valid_at)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    row = await pool.fetchrow(
+        _WEIGHT_BASELINE_SQL, owner_entity_id, when, WEIGHT_BASELINE_WINDOW_DAYS
+    )
+    if row is None or row["median"] is None:
+        return 0, None
+    return int(row["n"]), float(row["median"])
+
+
+async def _implausible_weight_baseline(
+    pool: Any,
+    owner_entity_id: str,
+    value: float,
+    unit: Any,
+    valid_at: str,
+) -> float | None:
+    """Return the baseline kg when ``value`` is implausibly far from it, else ``None``.
+
+    Fails open (``None``): no baseline, an unparsable ``valid_at`` or a failing query never
+    holds a reading.
+    """
+    if unit not in (None, "kg"):
+        return None
+    try:
+        count, median = await _weight_baseline(pool, owner_entity_id, valid_at)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("wellness_ingest[home_assistant]: weight baseline query failed: %s", exc)
+        return None
+    if median is None or median <= 0 or count < WEIGHT_BASELINE_MIN_READINGS:
+        return None
+    if abs(value - median) / median > WEIGHT_MAX_BASELINE_DEVIATION:
+        return median
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +724,7 @@ async def _translate_home_assistant_envelope(
     on ``source.provider == "home_assistant"`` (already dispatched here) plus a
     well-formed ``payload.raw.wellness_measurement`` payload.
 
-    Possible statuses: ``ok``, ``rejected_malformed_payload``, ``error``.
+    Possible statuses: ``ok``, ``held_implausible``, ``rejected_malformed_payload``, ``error``.
     """
     # ------------------------------------------------------------------
     # Step 1: Validate the normalized measurement payload shape
@@ -742,6 +815,30 @@ async def _translate_home_assistant_envelope(
     content = payload.get("normalized_text") or f"wellness:{predicate}:{valid_at}"
 
     # ------------------------------------------------------------------
+    # Step 3b: Plausibility gate (bu-swkpoo.11).  An implausible weight is stored as an
+    # unconfirmed ``candidate`` (not asserted), which every active-only reader skips.
+    # ------------------------------------------------------------------
+    validity = "active"
+    held_baseline: float | None = None
+    if predicate == "measurement_weight":
+        held_baseline = await _implausible_weight_baseline(
+            pool, owner_entity_id_str, float(value), unit, valid_at
+        )
+        if held_baseline is not None:
+            validity = "candidate"
+            metadata["held"] = {
+                "reason": "implausible_weight",
+                "baseline": held_baseline,
+                "max_deviation": WEIGHT_MAX_BASELINE_DEVIATION,
+            }
+            logger.warning(
+                "wellness_ingest[home_assistant]: holding implausible weight %s kg "
+                "(baseline %s kg) as an unconfirmed candidate",
+                value,
+                held_baseline,
+            )
+
+    # ------------------------------------------------------------------
     # Step 4: Store the fact
     # ------------------------------------------------------------------
     try:
@@ -759,6 +856,7 @@ async def _translate_home_assistant_envelope(
             idempotency_key=idempotency_key,
             retention_class="operational",
             sensitivity="normal",
+            validity=validity,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -769,8 +867,18 @@ async def _translate_home_assistant_envelope(
         health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
         return {"status": "error", "reason": str(exc)}
 
-    health_wellness_ingest_total.labels(predicate=predicate, outcome="success").inc()
     fact_id = result.get("id")
+    if held_baseline is not None:
+        health_wellness_ingest_total.labels(predicate=predicate, outcome="held_implausible").inc()
+        return {
+            "status": "held_implausible",
+            "facts_written": 0,
+            "held_fact_id": fact_id,
+            "predicate": predicate,
+            "baseline": held_baseline,
+        }
+
+    health_wellness_ingest_total.labels(predicate=predicate, outcome="success").inc()
     return {
         "status": "ok",
         "facts_written": 1,
