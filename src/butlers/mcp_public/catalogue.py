@@ -470,7 +470,9 @@ def _definitions() -> list[tuple[str, str, str, Schema, Schema]]:
                     "kinds": _set(
                         {"type": "string", "minLength": 1, "maxLength": 64},
                         20,
-                        "Only items of these kinds.",
+                        "Only items of these kinds: trip_leg (alias leg) for trip legs; any other "
+                        "value is an episode kind such as scheduled_block, work or social_episode. "
+                        "An unknown kind matches nothing.",
                     ),
                     "cursor": _CURSOR,
                     "limit": _int(1, chronology.TIMELINE_LIMIT, "Items per page.", 100),

@@ -41,7 +41,7 @@ PINNED = {
     "entity_profile": "0de5996f8960b52c9525b342d5d76e21c21e35fa4435c65f890eda27774331a3",
     "graph_neighbors": "c4d336946cb9e313bb4da207a5a2dee7c9c0e0f9dce1a96d6995910971a031a2",
     "graph_path": "ebdd94c7cb9dba367c7e9caeed6933c4dbc3cf4975ce0d3d3e3e9d4f7a974dc4",
-    "timeline": "759b0e6faa9d22b7d5310699dd9301fea6263c8585006e566ce82af15195c195",
+    "timeline": "8a62b31c86f6a506443b9428f78ec7d89ec1b3cdafd00da2853d4b494ed5300d",
     "time_use": "37edcb1d466996c13e1033b70b96c0565942c2f000d5b9b0c013581417d3130d",
     "trips": "abf582111ffb69b79b1a22e578f49b6b5a0ed8b4ac0f06f08d1b655270b13d31",
     "describe": "2dbb3cc3ad2b9fe9c80c330cc41d15ecfd0770c9fa746b539569e93e4d99df9a",
@@ -185,3 +185,10 @@ async def test_propose_fact_is_the_only_writer_and_parses_before_the_database():
     assert tool.writes and tool.domain == "proposals"
     assert [n for n, t in served_tools().items() if t.writes] == ["propose_fact"]
     assert tool.read.__module__ == "butlers.mcp_public.proposals"
+
+
+def test_timeline_kinds_description_names_the_trip_leg_vocabulary():
+    timeline = next(e for e in _entries() if e["name"] == "timeline")
+    text = timeline["inputSchema"]["properties"]["kinds"]["description"]
+    assert "trip_leg" in text and "leg" in text
+    assert all(k in text for k in ("scheduled_block", "work", "social_episode"))

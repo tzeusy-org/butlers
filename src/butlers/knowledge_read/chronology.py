@@ -31,7 +31,16 @@ TIMELINE_LIMIT = 200
 TIME_USE_MAX_DAYS = 366
 TIME_USE_POINTS = 400
 LEG_KIND = "trip_leg"
+# Search calls a trip leg ``leg``; the timeline filter accepts it as an alias of ``trip_leg``.
+_KIND_ALIASES = {"leg": LEG_KIND}
 _TIMELINE_DOMAINS = ("time", "travel")
+
+
+def normalize_kinds(kinds: tuple[str, ...] | None) -> list[str] | None:
+    """Map kind aliases onto stored kinds (``leg`` -> ``trip_leg``), deduplicated and sorted."""
+    if not kinds:
+        return None
+    return sorted({_KIND_ALIASES.get(kind, kind) for kind in kinds})
 
 
 def leg_title(leg: dict[str, Any]) -> str:
@@ -80,7 +89,7 @@ async def timeline(
             ORDER BY at, source_id LIMIT $6""",
             start,
             end,
-            list(kinds) if kinds else None,
+            normalize_kinds(kinds),
             after_at,
             None if after is None else after[1],
             limit + 1,
