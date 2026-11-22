@@ -477,8 +477,7 @@ def test_deploy_prod_runs_the_real_step_as_a_reminder_and_exits_zero(
 
 def test_committed_switch_and_override_passthrough(chart: Path) -> None:
     makefile = (_REPO_ROOT / "deploy/helm/butlers/makefile").read_text(encoding="utf-8")
-    # Off only for the dev rollback rehearsal (bu-y66o00.7, task 8.1); the rebuild PR restores on.
-    assert "\nPUBLIC_MCP_OWNER_STEP_dev := off\n" in makefile
+    assert "\nPUBLIC_MCP_OWNER_STEP_dev := on\n" in makefile
     _code, calls = _deploy(chart, "PUBLIC_MCP_OWNER_STEP_dev=off")
     assert f"public-mcp-owner-step.sh dev {_TAG} off butlers" in calls
 
