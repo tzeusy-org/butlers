@@ -70,9 +70,13 @@ https://{{ .Values.publicUrl.host }}
   command: ["sh", "-c"]
   args:
     - |
-      until curl -sf {{ .url }} >/dev/null; do
+      until curl -sf{{ if .switchboardCA }} --noproxy '*' --cacert /var/run/butlers-switchboard-ca/ca.crt{{ end }} {{ .url }} >/dev/null; do
         echo "waiting for {{ .url }}"; sleep 5
       done
+  {{- if .switchboardCA }}
+  volumeMounts:
+    {{- include "butlers.switchboardCAMount" .root | nindent 4 }}
+  {{- end }}
 {{- end -}}
 
 {{/* OAuth gate: blocks until a Google refresh token exists in the DB. */}}
@@ -122,6 +126,40 @@ https://{{ .Values.publicUrl.host }}
 {{/* Only dev opts into the key-absent topology; existing service port stays 41100. */}}
 {{- define "butlers.switchboardHost" -}}
 {{- if .Values.butlersControl.enabled -}}butlers-control{{- else -}}butlers-up{{- end -}}
+{{- end -}}
+
+{{- define "butlers.switchboardOrigin" -}}
+{{- if .Values.servicePlaneAuth.switchboardTLS.enabled -}}
+{{- if not (and .Values.butlersControl.enabled .Values.servicePlaneAuth.enabled) -}}
+{{- fail "Switchboard TLS requires butlersControl.enabled and servicePlaneAuth.enabled" -}}
+{{- end -}}
+https://{{ include "butlers.switchboardHost" . }}:41100
+{{- else -}}
+http://{{ include "butlers.switchboardHost" . }}:41100
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.switchboardClientEnv" -}}
+- {name: SWITCHBOARD_MCP_URL, value: {{ printf "%s/sse" (include "butlers.switchboardOrigin" .) | quote }}}
+{{- if .Values.servicePlaneAuth.switchboardTLS.enabled }}
+- {name: BUTLERS_SWITCHBOARD_CA_FILE, value: /var/run/butlers-switchboard-ca/ca.crt}
+{{- end }}
+{{- end -}}
+
+{{- define "butlers.switchboardCAMount" -}}
+{{- if .Values.servicePlaneAuth.switchboardTLS.enabled -}}
+- {name: switchboard-ca, mountPath: /var/run/butlers-switchboard-ca, readOnly: true}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.switchboardCAVolume" -}}
+{{- if .Values.servicePlaneAuth.switchboardTLS.enabled -}}
+- name: switchboard-ca
+  configMap:
+    name: {{ required "Switchboard TLS requires caConfigMapName" .Values.servicePlaneAuth.switchboardTLS.caConfigMapName | quote }}
+    items:
+      - {key: ca.crt, path: ca.crt}
+{{- end -}}
 {{- end -}}
 
 {{/* "true" when egressProfiles.enabled, "" when not. tracker-egress.yaml and

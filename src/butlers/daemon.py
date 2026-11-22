@@ -42,11 +42,14 @@ import json
 import logging
 import os
 import socket
+import ssl
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 from urllib.parse import quote, quote_plus
 
 import asyncpg
@@ -208,6 +211,38 @@ class LocalSwitchboardClient:
             return await client.call_tool(name, arguments)
 
 
+class _SwitchboardServiceServer(uvicorn.Server):
+    """Serve Service TLS and private runtime HTTP with one ASGI lifespan."""
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        if not self.started:
+            return
+
+        self.started = False
+        config = self.config
+        loop = asyncio.get_running_loop()
+        protocol_factory = cast(Callable[..., asyncio.Protocol], config.http_protocol_class)
+
+        def protocol() -> asyncio.Protocol:
+            return protocol_factory(
+                config=config,
+                server_state=self.server_state,
+                app_state=self.lifespan.state,
+                _loop=loop,
+            )
+
+        try:
+            local = await loop.create_server(
+                protocol, host="127.0.0.1", port=config.port, backlog=config.backlog
+            )
+        except BaseException:
+            await self.shutdown(sockets=sockets)
+            raise
+        self.servers.append(local)
+        self.started = True
+
+
 class ButlerDaemon:
     """Central orchestrator for a single butler instance."""
 
@@ -219,11 +254,21 @@ class ButlerDaemon:
         butler_name: str | None = None,
         db: Database | None = None,
         control_profile: str | None = None,
+        service_tls_dir: Path | None = None,
+        service_tls_bind: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
         if config_dir is not None and butler_name is not None:
             raise ValueError("Cannot provide both config_dir and butler_name")
+        if service_tls_dir is not None and control_profile is None:
+            raise ValueError("Switchboard service TLS requires a control profile")
+        if (service_tls_dir is None) != (service_tls_bind is None):
+            raise ValueError("Switchboard service TLS requires both material and a pod IP bind")
+        if service_tls_bind is not None:
+            address = IPv4Address(service_tls_bind)
+            if address.is_loopback or address.is_unspecified or address.is_multicast:
+                raise ValueError("Switchboard service TLS requires a non-loopback IPv4 pod IP")
 
         # If butler_name is provided, derive config_dir from roster/
         if butler_name is not None:
@@ -232,6 +277,8 @@ class ButlerDaemon:
             self.config_dir = config_dir  # type: ignore
 
         self._control_profile = control_profile
+        self._service_tls_dir = service_tls_dir
+        self._service_tls_bind = service_tls_bind
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -581,6 +628,7 @@ class ButlerDaemon:
         """
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
+        service_tls = self._service_listener_tls()
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
         if self.config.name in {"finance", "switchboard"}:
             from butlers.config import list_butlers
@@ -620,24 +668,32 @@ class ButlerDaemon:
             finance_warning_control_owner=self._finance_warning_control_owner,
             service_relay_route=self._build_service_relay_route(),
         )
+        service_host = self._service_tls_bind or "0.0.0.0"
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=service_host,
             port=self.config.port,
             log_level="warning",
             log_config=None,
             timeout_graceful_shutdown=self.config.shutdown_timeout_s,
         )
+        if service_tls is not None:
+            config.ssl_context_factory = lambda _config, _default: service_tls
         # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
         # in TIME_WAIT (e.g. after SIGKILL) does not block re-binding.  Raising the
         # OSError here (before the asyncio task is running) gives callers a clear,
         # catchable error instead of uvicorn's sys.exit(1).
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", self.config.port))
-        sock.listen(config.backlog)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((service_host, self.config.port))
+            sock.listen(config.backlog)
+        except BaseException:
+            sock.close()
+            raise
         self._mcp_socket = sock
-        self._server = uvicorn.Server(config)
+        server_type = _SwitchboardServiceServer if service_tls is not None else uvicorn.Server
+        self._server = server_type(config)
         self._server_task = asyncio.create_task(self._server.serve(sockets=[sock]))
         deadline = time.monotonic() + _MCP_SERVER_START_TIMEOUT_S
         try:
@@ -650,21 +706,17 @@ class ButlerDaemon:
                         f"MCP server task exited before startup completed for {self.config.name}"
                     )
                 if time.monotonic() >= deadline:
-                    self._server.should_exit = True
-                    self._server_task.cancel()
-                    try:
-                        await self._server_task
-                    except asyncio.CancelledError:
-                        pass
                     raise TimeoutError(
                         "MCP server did not become ready within "
                         f"{_MCP_SERVER_START_TIMEOUT_S:.1f}s for {self.config.name}"
                     )
                 await asyncio.sleep(_MCP_SERVER_START_POLL_INTERVAL_S)
         except BaseException:
-            # On any failure path (timeout, server-task exit, cancellation),
-            # release the pre-bound socket and clear startup state so callers
-            # can retry without leaking the listening port.
+            # Stop the server before releasing startup state and its sockets.
+            if not self._server_task.done():
+                self._server.should_exit = True
+                self._server_task.cancel()
+                await asyncio.gather(self._server_task, return_exceptions=True)
             self._server_task = None
             self._server = None
             if self._mcp_socket is not None:
@@ -764,6 +816,25 @@ class ButlerDaemon:
         from butlers.tools.switchboard.routing.preflight import RoutePreflight
 
         return RoutePreflight(self.db.pool, list_butlers(self.config_dir.parent))
+
+    def _service_listener_tls(self) -> ssl.SSLContext | None:
+        directory = self._service_tls_dir
+        if directory is None:
+            return None
+        config = self.config
+        if config is None or (config.name, config.port) != ("switchboard", 41100):
+            raise ValueError("Service TLS is configured outside the Switchboard service listener")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        try:
+            context.load_cert_chain(
+                directory / "tls.crt", directory / "tls.key", password=lambda: b""
+            )
+        except OSError:
+            raise RuntimeError(
+                "Switchboard service TLS material is unavailable or invalid"
+            ) from None
+        return context
 
     def _build_service_relay_route(self) -> Any | None:
         """RFC 0038 D7 named relays, on Switchboard's service listener only."""

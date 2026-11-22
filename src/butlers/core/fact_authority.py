@@ -29,6 +29,7 @@ from starlette.routing import Route
 
 from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
 from butlers.core.custody_ingress import UNREAD, CustodyUnread, custody_recheck_context
+from butlers.core.switchboard_tls import switchboard_http_options
 
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
@@ -631,7 +632,8 @@ class FactReceiverContextRegistry:
         try:
             parts = urlsplit(source_endpoint)
             url = urlunsplit((parts.scheme, parts.netloc, RECOVERY_PATH, "", ""))
-            async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+            options = switchboard_http_options(url, require_origin=True, trust_env=False)
+            async with httpx.AsyncClient(timeout=5, **options) as client:
                 response = await client.post(url, json={"target": self.target, "capability": token})
                 response.raise_for_status()
                 fresh_source = response.json()["capability"]
@@ -715,7 +717,8 @@ async def admit_incoming_source(
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise ValueError("configured source verifier is unavailable")
     url = urlunsplit((parts.scheme, parts.netloc, VERIFIER_PATH, "", ""))
-    async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+    options = switchboard_http_options(url, require_origin=True, trust_env=False)
+    async with httpx.AsyncClient(timeout=5, **options) as client:
         response = await client.post(
             url,
             json={

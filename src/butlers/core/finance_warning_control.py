@@ -20,6 +20,8 @@ from uuid import UUID
 
 import httpx
 
+from butlers.core.switchboard_tls import switchboard_http_options
+
 TOOL = "subscription_warning_still_relevant"
 HEADER = "X-Butlers-Finance-Warning"
 VERIFY_PATH = "/internal/finance-warning/verify"
@@ -567,8 +569,11 @@ class FinanceWarningControlOwner:
         async def operation():
             nonce = secrets.token_urlsafe(32)
             verification_start = asyncio.get_running_loop().time()
+            options = switchboard_http_options(
+                self.verifier_url, require_origin=True, trust_env=False
+            )
             async with self.client_context(
-                httpx.AsyncClient(trust_env=False, timeout=DEADLINE_SECONDS)
+                httpx.AsyncClient(timeout=DEADLINE_SECONDS, **options)
             ) as client:
                 response = await client.post(
                     self.verifier_url,

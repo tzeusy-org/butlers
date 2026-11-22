@@ -69,6 +69,7 @@ def resolve_cross_container_mcp_url(url: str) -> str:
 
     Domains use BUTLERS_HOST. Canonical Switchboard port 41100 instead uses
     SWITCHBOARD_MCP_URL when configured, including from domain processes.
+    Upgrade a registered HTTP Switchboard URL when that endpoint requires HTTPS.
     Preserve path, query and raw userinfo; explicit remote hosts stay intact.
     Without cross-container configuration, resolution is a no-op.
     """
@@ -93,6 +94,8 @@ def resolve_cross_container_mcp_url(url: str) -> str:
     destination = (
         target.netloc.rsplit("@", 1)[-1] if target is not None else f"{host}{port_sep}{port}"
     )
+    if target is not None and target.scheme == "https" and parsed.scheme == "http":
+        parsed = parsed._replace(scheme="https")
     return urlunparse(parsed._replace(netloc=f"{userinfo}{sep}{destination}"))
 
 

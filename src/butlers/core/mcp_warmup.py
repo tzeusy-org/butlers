@@ -38,6 +38,7 @@ from typing import Any
 import httpx
 
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
+from butlers.core.switchboard_tls import switchboard_http_options
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,9 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
         t0 = time.monotonic()
         request_url = prefer_ipv4_loopback_url(url)
 
-        async with httpx.AsyncClient(timeout=_WARMUP_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(
+            timeout=_WARMUP_TIMEOUT_S, **switchboard_http_options(request_url)
+        ) as client:
             # MCP initialize request (streamable-HTTP: single POST with JSON-RPC).
             init_payload = {
                 "jsonrpc": "2.0",

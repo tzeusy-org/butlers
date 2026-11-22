@@ -236,3 +236,70 @@ def test_the_owntracks_connector_runs_its_retention_worker() -> None:
         others = _connector_pods(docs)
         others.pop("connector-owntracks")
         assert all("OWNTRACKS_RAW_RETENTION_ENABLED" not in _env(pod) for pod in others.values())
+
+
+_SWITCHBOARD_TLS = (
+    "servicePlaneAuth.enabled=true",
+    "servicePlaneAuth.switchboardTLS.enabled=true",
+    "servicePlaneAuth.switchboardTLS.servingSecretName=test-switchboard-identity",
+    "servicePlaneAuth.switchboardTLS.caConfigMapName=test-switchboard-ca",
+)
+
+
+def test_switchboard_tls_mounts_public_trust_on_callers_and_serving_material_on_control():
+    docs = _render(*_SWITCHBOARD_TLS)
+    pods = {
+        "butlers-control": _pod(docs, "butlers-control"),
+        "butlers-up": _pod(docs, "butlers-up"),
+        "dashboard-api": _pod(docs, "dashboard-api"),
+        **_connector_pods(docs),
+    }
+    for name, pod in pods.items():
+        assert _env(pod)["SWITCHBOARD_MCP_URL"] == "https://butlers-control:41100/sse"
+        assert _env(pod)["BUTLERS_SWITCHBOARD_CA_FILE"] == "/var/run/butlers-switchboard-ca/ca.crt"
+        volumes = {volume["name"]: volume for volume in pod["volumes"]}
+        assert volumes["switchboard-ca"]["configMap"] == {
+            "name": "test-switchboard-ca",
+            "items": [{"key": "ca.crt", "path": "ca.crt"}],
+        }
+        assert ("switchboard-serving-tls" in volumes) == (name == "butlers-control")
+        container = next(c for c in pod["containers"] if c["name"] in {name, "connector"})
+        assert any(
+            m["name"] == "switchboard-ca" and m["readOnly"] for m in container["volumeMounts"]
+        )
+        if name.startswith("connector-"):
+            waiter = next(c for c in pod["initContainers"] if c["name"] == "wait-for-butlers-up")
+            assert "--cacert /var/run/butlers-switchboard-ca/ca.crt" in waiter["args"][0]
+            assert "https://butlers-control:41100/health" in waiter["args"][0]
+            assert waiter["volumeMounts"][0]["name"] == "switchboard-ca"
+    control = pods["butlers-control"]["containers"][0]
+    assert control["args"] == [
+        "--service-tls-dir",
+        "/var/run/butlers-switchboard-tls",
+        "--service-tls-bind",
+        "$(BUTLERS_CONTROL_POD_IP)",
+    ]
+    pod_ip = next(env for env in control["env"] if env["name"] == "BUTLERS_CONTROL_POD_IP")
+    assert pod_ip["valueFrom"] == {"fieldRef": {"fieldPath": "status.podIP"}}
+    assert control["ports"] == [
+        {"name": "service", "containerPort": 41100},
+        {"name": "session", "containerPort": 41199},
+    ]
+    for probe in ("readinessProbe", "startupProbe", "livenessProbe"):
+        assert control[probe]["httpGet"] == {
+            "path": "/health",
+            "port": "service",
+            "scheme": "HTTPS",
+        }
+
+
+def test_switchboard_tls_requires_service_plane_auth_and_explicit_trust():
+    for override, reason in (
+        ("servicePlaneAuth.enabled=false", "requires butlersControl.enabled"),
+        ("butlersControl.enabled=false", "requires butlersControl.enabled"),
+        ("servicePlaneAuth.switchboardTLS.servingSecretName=", "requires servingSecretName"),
+        ("servicePlaneAuth.switchboardTLS.caConfigMapName=", "requires caConfigMapName"),
+    ):
+        result = _helm(*_SWITCHBOARD_TLS, override)
+        assert result.returncode != 0
+        assert reason in result.stderr

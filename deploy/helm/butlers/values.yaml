@@ -178,6 +178,10 @@ servicePlaneAuth:
   enabled: false
   issuer: https://kubernetes.default.svc.cluster.local
   tokenExpirationSeconds: 600
+  switchboardTLS:
+    enabled: false
+    servingSecretName: ""
+    caConfigMapName: ""
 
 butlersUp:
   resources:
