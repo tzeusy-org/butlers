@@ -204,6 +204,9 @@ View investigation details at: {dashboard_url}
 # ---------------------------------------------------------------------------
 
 
+_UNRENDERED_EVIDENCE_KEYS = frozenset({"traceback_tail"})
+
+
 def _format_evidence_lines(evidence: dict[str, Any]) -> str:
     """Format a structured evidence dict into human-readable prompt lines.
 
@@ -217,7 +220,9 @@ def _format_evidence_lines(evidence: dict[str, Any]) -> str:
     """
     lines = []
     for key, value in evidence.items():
-        if value is None:
+        # Multi-line evidence (the anonymized traceback tail) is stored for the dossier
+        # and is not rendered into the one-line bullet format here.
+        if value is None or key in _UNRENDERED_EVIDENCE_KEYS:
             continue
         if isinstance(value, list):
             if not value:

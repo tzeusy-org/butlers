@@ -62,6 +62,10 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
+#: Lines and characters of the anonymized traceback tail kept as evidence.
+_TRACEBACK_TAIL_LINES = 8
+_TRACEBACK_TAIL_CHARS = 1500
+
 #: Default maximum number of log entries processed per scan.
 DEFAULT_MAX_ENTRIES_PER_SCAN = 10_000
 
@@ -135,6 +139,9 @@ class LogEntry:
     exception: str | None = None
     traceback: str | None = None
     trigger_source: str | None = None
+    #: Structured identity written by ``core.logging.add_exception_identity``.
+    exc_frame: str | None = None
+    exc_message: str | None = None
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -188,6 +195,70 @@ def _parse_timestamp(ts_str: str) -> datetime | None:
         return None
 
 
+_RE_EXC_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+_RE_EXC_LAST_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?::\s|:?$)")
+
+
+def _exception_type_from_text(text: str) -> tuple[str | None, str | None]:
+    """Split a legacy ``exception`` field into ``(class name, traceback body)``.
+
+    The field holds either a bare class name (``mcp_wrappers`` extra) or a rendered
+    traceback.  A traceback's last line names the outermost raised exception, so that
+    class is the type; text that names no class is ``None`` (``unknown``), never raw text.
+    """
+    text = text.strip()
+    if not text:
+        return None, None
+    if _RE_EXC_TYPE.fullmatch(text):
+        return text, None
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    match = _RE_EXC_LAST_LINE.match(lines[-1]) if lines else None
+    exc_type = match.group(1) if match else None
+    return exc_type, text if len(lines) > 1 else None
+
+
+def _resolve_exception_fields(data: dict) -> tuple[str | None, str | None]:
+    """Return ``(exception class, traceback text)`` for a parsed log record."""
+    exc_type = data.get("exc_type")
+    exception_raw = data.get("exception")
+    traceback_raw = data.get("traceback") or data.get("exc_info")
+    traceback = traceback_raw if isinstance(traceback_raw, str) else None
+    if isinstance(exc_type, str) and exc_type.strip():
+        # Structured writer: the class is explicit, ``exception`` is only the traceback body.
+        if isinstance(exception_raw, str) and exception_raw != exc_type:
+            traceback = exception_raw
+        return exc_type.strip(), traceback
+    if isinstance(exception_raw, str) and exception_raw:
+        parsed_type, parsed_tb = _exception_type_from_text(exception_raw)
+        return parsed_type, parsed_tb or traceback
+    return None, traceback
+
+
+def _entry_identity(entry: LogEntry) -> tuple[str, str, str]:
+    """Canonical ``(exception_type, call_site, message)`` for one log entry.
+
+    Structured entries hash the exception's own normalized message; legacy and
+    class-name-only entries keep hashing the log event so existing fingerprints for
+    non-exception lines (and the tool-call-failure alignment) are unchanged.
+    """
+    exception_type = entry.exception or "unknown"
+    call_site = _extract_call_site(entry)
+    message = entry.exc_message if entry.exc_message is not None else entry.event
+    return exception_type, call_site, _sanitize_message(message)
+
+
+def _entry_fingerprint(entry: LogEntry) -> str:
+    return _compute_hash(*_entry_identity(entry))
+
+
+def _traceback_tail(entry: LogEntry, repo_root: Path) -> str | None:
+    """Anonymized last lines of the rendered traceback, kept as evidence (not identity)."""
+    if not entry.traceback:
+        return None
+    tail = "\n".join(entry.traceback.strip().splitlines()[-_TRACEBACK_TAIL_LINES:])
+    return anonymize(tail, repo_root)[:_TRACEBACK_TAIL_CHARS] or None
+
+
 def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
     """Parse a single JSON-lines log line into a LogEntry.
 
@@ -213,8 +284,9 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
     # butler_name: prefer value from log context, fall back to filename
     bn = data.get("butler_name") or data.get("butler") or butler_name
     logger_name = data.get("logger") or data.get("module") or ""
-    exception = data.get("exception") or data.get("exc_type") or None
-    traceback = data.get("traceback") or data.get("exc_info") or None
+    exception, traceback = _resolve_exception_fields(data)
+    exc_frame = data.get("exc_frame")
+    exc_message = data.get("exc_message_sanitized")
     trigger_source = data.get("trigger_source") or None
 
     return LogEntry(
@@ -223,9 +295,11 @@ def _parse_log_line(line: str, butler_name: str) -> LogEntry | None:
         timestamp=ts,
         butler_name=str(bn),
         logger=str(logger_name),
-        exception=str(exception) if exception else None,
-        traceback=str(traceback) if traceback else None,
+        exception=exception,
+        traceback=traceback,
         trigger_source=str(trigger_source) if trigger_source else None,
+        exc_frame=exc_frame if isinstance(exc_frame, str) and exc_frame else None,
+        exc_message=exc_message if isinstance(exc_message, str) else None,
         raw=data,
     )
 
@@ -449,6 +523,8 @@ def _extract_call_site(entry: LogEntry) -> str:
 
     Prefers the logger module path; falls back to ``<unknown>:<unknown>``.
     """
+    if entry.exc_frame and entry.exc_frame != "<unknown>:<unknown>":
+        return entry.exc_frame
     if entry.traceback:
         # Try to extract from traceback string
         cs = _extract_call_site_from_str(entry.traceback)
@@ -629,18 +705,15 @@ class LogScannerSource:
                     entries_processed += 1
 
                     # Build finding fields
-                    exception_type = entry.exception or "unknown"
-                    call_site = _extract_call_site(entry)
+                    exception_type, call_site, sanitized_message_for_fp = _entry_identity(entry)
 
-                    # Fingerprint on the full sanitized event (up to fingerprint.py's 500-char
-                    # internal cap) so this source stays compatible with canonical paths.
-                    # Store a shorter anonymized summary for display/storage only.
-                    sanitized_event_for_fp = _sanitize_message(entry.event)
+                    # Identity is the class, the innermost repo frame and the normalized
+                    # message (see _entry_identity); the summary below is display-only.
                     raw_summary = entry.event[:_MAX_SUMMARY_LEN]
                     sanitized_summary = _sanitize_message(raw_summary)
                     anon_summary = anonymize(sanitized_summary, self._repo_root)
 
-                    fingerprint = _compute_hash(exception_type, call_site, sanitized_event_for_fp)
+                    fingerprint = _compute_hash(exception_type, call_site, sanitized_message_for_fp)
 
                     if fingerprint not in aggregated:
                         if len(aggregated) >= self._max_findings:
@@ -661,6 +734,7 @@ class LogScannerSource:
                             last_seen=entry.timestamp,
                             log_level=entry.level,
                             trigger_source=entry_trigger_source,
+                            traceback_tail=_traceback_tail(entry, self._repo_root),
                         )
                     else:
                         acc = aggregated[fingerprint]
@@ -754,6 +828,7 @@ class _FindingAccumulator:
     # Structured evidence fields — set from the first matching log entry
     log_level: str = field(default="")
     trigger_source: str | None = field(default=None)
+    traceback_tail: str | None = field(default=None)
 
     def to_finding(self, now: datetime) -> QaFinding:
         """Build an aggregated QaFinding with structured evidence."""
@@ -764,6 +839,8 @@ class _FindingAccumulator:
         }
         if self.trigger_source is not None:
             structured_evidence["trigger_source"] = self.trigger_source
+        if self.traceback_tail:
+            structured_evidence["traceback_tail"] = self.traceback_tail
         return QaFinding(
             fingerprint=self.fingerprint,
             source_type="log_scanner",
