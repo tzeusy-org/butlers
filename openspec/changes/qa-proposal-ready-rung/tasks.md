@@ -10,5 +10,5 @@
 
 - [ ] 2.1 Dossier diff from the retained export (full `base..head`) and mbox download (bu-ejow5p.7).
 - [ ] 2.2 Publisher resumes from `load_retained_export` with zero spawner calls (bu-mc01y5.7).
-- [ ] 2.4 Flag exports as sealed before isolation is proven (bu-ejow5p.11 (per-attempt credential-free investigator with an executable isolation verifier)).
 - [ ] 2.3 Backfill receipts for historical attempts (needs owner approval).
+- [ ] 2.4 Flag exports as sealed before isolation is proven (`bu-ejow5p.11`, the per-attempt credential-free investigator with an executable isolation verifier).

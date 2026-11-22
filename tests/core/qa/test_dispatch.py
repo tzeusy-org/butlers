@@ -85,17 +85,6 @@ def _qa_pool():
     return fake_pool(fetchval=uuid.uuid4(), fetchrow=None, fetch=[], execute=None)
 
 
-@pytest.fixture(autouse=True)
-def _no_paused_proposal():
-    """The fake pool's ``fetchval`` is truthy; Gate 5.6 has its own tests below."""
-    with patch(
-        "butlers.core.qa.dispatch.get_paused_proposal",
-        new_callable=AsyncMock,
-        return_value=None,
-    ) as paused:
-        yield paused
-
-
 @pytest.mark.asyncio
 async def test_dispatch_qa_publication_paused_holds_before_claim(_no_paused_proposal):
     """A retained proposal holds its fingerprint: event written, no claim, no spawn."""
