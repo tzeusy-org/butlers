@@ -19,4 +19,4 @@
 - [x] 3.3 A source read failure raises before any set or clear and leaves the bus unchanged (independent readback)
 - [x] 3.4 Superseded, not built: one-transaction producer atomicity with a scoped advisory lock (design E8) and AC C's atomic-failed-transition clause. They move to the successor writer (PerceptionStore CAS and per-slot serializer at the RFC 0038 switch). The calendar witness on the retiring bus is keyed by pool and stays as is
 - [x] 3.5 RFC 0009 gains a calendar event-type section; the calendar docs match
-- [ ] 3.6 Recorded Google payload capture (AC B) is an owner-run step; the synthetic corpus discloses that nothing is captured
+- [x] 3.6 Recorded Google payload capture (AC B) is dropped by owner decision (2026-11-22): recorded capture is infeasible on a consumer account, so the synthetic fixtures are accepted for AC B and disclosed as synthetic
