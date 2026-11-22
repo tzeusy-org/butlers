@@ -214,11 +214,13 @@ inline match.
 
 #### Scenario: bill-reconciliation-sweep rolls recurring bills to the next period
 - **WHEN** the `bill-reconciliation-sweep` job runs, after `reconcile_bills` and the stale-bill aging
-- **THEN** for each series of non-predicted `weekly`, `monthly`, `quarterly` or `yearly` bills (keyed by `payee_key`, `currency`, `frequency`) whose latest bill has `amount > 0` and is `paid`, `overdue`, or an `autopay` bill still `pending` more than 7 days past due, exactly one new `pending` bill SHALL be inserted with the same payee, `payee_key`, `amount`, `currency`, `frequency`, `autopay`, `payment_method` and `account_id`
+- **THEN** for each series of non-predicted `weekly`, `monthly`, `quarterly` or `yearly` bills (keyed by canonical payee identity, `currency`, `frequency`) whose latest bill has `amount > 0` and is `paid`, `overdue`, or an `autopay` bill still `pending` more than 7 days past due, exactly one new `pending` bill SHALL be inserted with the same payee, `payee_key`, `amount`, `currency`, `frequency`, `autopay`, `payment_method` and `account_id`
 - **AND** its `due_date` SHALL be the first period boundary on or after today, advancing from the source `due_date` by whole periods with month-end clamping (a 31st bill returns to the 31st after a short month)
 - **AND** the roll SHALL live in the sweep, not `reconcile_bills`, because bills that pass unpaid (`overdue`, aged-out autopay) are never settled by reconciliation yet still need a next occurrence
 - **AND** `one_time` and `custom` bills, `predicted` rows and `$0` placeholders SHALL NOT roll
 - **AND** re-running the sweep SHALL insert nothing further, and an existing later bill in the series SHALL prevent a roll
+- **AND** canonical payee identity SHALL be the `payee_key` with a trailing parenthesised web domain removed and a trailing `credit card` read as `cc` (after at least one other word), so `payee_key` variants of one real payee form one series; it SHALL NOT merge on a bare name prefix or drop other qualifiers
+- **AND** no bill SHALL be inserted while an equivalent canonical payee in the same currency already has a later non-predicted bill (any frequency, `pending`, `paid` or `overdue`) within one period of the new due date
 
 #### Scenario: Payment recorded before its bill is reconciled by the sweep
 - **WHEN** a debit transaction was recorded before any matching bill existed
