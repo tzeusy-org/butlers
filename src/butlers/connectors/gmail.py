@@ -39,21 +39,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import codecs
 import dataclasses
 import html
 import logging
 import os
-import re
 import time
 import uuid
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from email.message import Message
 from email.utils import parsedate_to_datetime
 from functools import partial
-from html.parser import HTMLParser
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -118,6 +114,14 @@ from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.gmail_payload import (
+    CHARSET_VALUE_NOISE,
+    SIGNATURE_MIME_TYPES,
+    charset_from_headers,
+    decode_part_bytes,
+    extract_body_with_quotes,
+    strip_html_with_quotes,
+)
 from butlers.google_credentials import (
     InvalidGoogleCredentialsError,
     load_google_credentials,
@@ -2947,74 +2951,17 @@ class GmailConnectorRuntime:
         scrubbed, _ = scrub_envelope(envelope)
         return scrubbed
 
-    # MIME types that carry cryptographic signatures rather than body content.
-    # These parts must be skipped during body extraction so signatures are never
-    # mistaken for readable text.
-    _SIGNATURE_MIME_TYPES: frozenset[str] = frozenset(
-        {
-            "application/pkcs7-signature",  # S/MIME detached signature
-            "application/pgp-signature",  # PGP/MIME detached signature
-            "application/x-pkcs7-signature",  # Legacy S/MIME variant
-        }
-    )
-
-    # Characters that can surround a Content-Type parameter value but are never
-    # part of a charset name. ``email`` already removes a well-formed pair of
-    # double quotes; this additionally covers the single-quoted form -- which
-    # RFC 2045 does not permit but non-conformant senders emit -- and unbalanced
-    # quotes, whose intent is still legible. ``codecs.lookup`` bounds the
-    # leniency: whatever survives the strip is accepted only if it names a real
-    # encoding.
-    _CHARSET_VALUE_NOISE: str = " \t\r\n\"'"
+    _SIGNATURE_MIME_TYPES: frozenset[str] = SIGNATURE_MIME_TYPES
+    _CHARSET_VALUE_NOISE: str = CHARSET_VALUE_NOISE
 
     @staticmethod
     def _charset_from_headers(headers: list[Any]) -> str:
-        """Extract charset from the Content-Type header in a MIME part's headers list.
-
-        Parsing is delegated to :mod:`email`, which implements the RFC 2045
-        parameter grammar: quoted values, whitespace around ``=``, parameter
-        names in any case, and RFC 2231 extended values. It also refuses to
-        read ``charset=`` out of some *other* parameter's quoted value, which a
-        substring match would happily do.
-
-        Quote characters :mod:`email` leaves behind -- the single-quoted form,
-        and unbalanced quotes -- are then stripped, because the declared
-        charset is still the sender's real intent and decoding legacy bytes as
-        UTF-8 with replacement would destroy the text irrecoverably.
-
-        Returns the charset string if present and recognised by :mod:`codecs`,
-        otherwise returns ``"utf-8"`` as a safe fallback. Malformed entries
-        (non-dict, or a non-string ``name``/``value``) are skipped -- these come
-        straight from the provider payload and are not shape-guaranteed.
-        """
-        for header in headers:
-            if not _header_name_is(header, "content-type"):
-                continue
-            parsed = Message()
-            parsed["Content-Type"] = _header_str_value(header)
-            declared = parsed.get_content_charset()
-            if declared is None:
-                continue
-            charset_name = declared.strip(GmailConnectorRuntime._CHARSET_VALUE_NOISE)
-            try:
-                codecs.lookup(charset_name)
-                return charset_name
-            except LookupError:
-                logger.debug(
-                    "Unknown charset %r in Content-Type; falling back to utf-8",
-                    charset_name,
-                )
-        return "utf-8"
+        """Delegates to the shared payload helper."""
+        return charset_from_headers(headers)
 
     def _decode_part_bytes(self, raw_bytes: bytes, payload: dict[str, Any]) -> str:
-        """Decode *raw_bytes* using the charset declared in *payload*'s Content-Type header.
-
-        Falls back to UTF-8 with replacement characters when the declared
-        charset is absent or not recognised by :mod:`codecs`.
-        """
-        headers = payload.get("headers")
-        charset = self._charset_from_headers(headers if isinstance(headers, list) else [])
-        return raw_bytes.decode(charset, errors="replace")
+        """Delegates to the shared payload helper."""
+        return decode_part_bytes(raw_bytes, payload)
 
     _BODY_TEXT_MIME_TYPES = frozenset({"text/plain", "text/html"})
 
@@ -3082,81 +3029,8 @@ class GmailConnectorRuntime:
     def _extract_body_with_quotes(
         self, payload: dict[str, Any], depth: int = 0
     ) -> tuple[str, list[dict[str, Any]]]:
-        """Recursively extract body text from Gmail message payload.
-
-        Preference order: text/plain > text/html (stripped) > "(no body)".
-        HTML is stripped using stdlib html.parser — no third-party deps.
-
-        S/MIME handling:
-        - multipart/signed: recurse into content parts, skip signature parts.
-        - application/pkcs7-mime (opaque S/MIME): body is inside the PKCS
-          envelope and cannot be extracted without the recipient's private key.
-          Returns a descriptive fallback string and logs a warning.
-        """
-        # Prevent stack overflow from malicious deeply nested messages
-        if depth > 20:
-            logger.warning("Maximum recursion depth reached in email parsing")
-            return "(body too deeply nested)", []
-
-        mime_type = payload.get("mimeType", "")
-
-        # Opaque S/MIME: body is encrypted inside the PKCS envelope — cannot
-        # extract without the recipient's private key.
-        if mime_type in ("application/pkcs7-mime", "application/x-pkcs7-mime"):
-            logger.warning(
-                "S/MIME encrypted email (application/pkcs7-mime): body cannot be extracted"
-            )
-            return "(S/MIME encrypted body — cannot extract)", []
-
-        # Leaf node: text/plain — return immediately (highest priority)
-        if mime_type == "text/plain":
-            body = payload.get("body")
-            body_data = body.get("data") if isinstance(body, dict) else ""
-            if isinstance(body_data, str) and body_data:
-                raw_bytes = base64.urlsafe_b64decode(body_data)
-                return self._decode_part_bytes(raw_bytes, payload), []
-
-        # Leaf node: text/html — decode and strip tags (fallback candidate)
-        if mime_type == "text/html":
-            body = payload.get("body")
-            body_data = body.get("data") if isinstance(body, dict) else ""
-            if isinstance(body_data, str) and body_data:
-                raw_bytes = base64.urlsafe_b64decode(body_data)
-                raw_html = self._decode_part_bytes(raw_bytes, payload)
-                return self._strip_html_with_quotes(raw_html)
-
-        # Multipart: collect plain and html candidates separately so we can
-        # prefer plain regardless of part ordering in the MIME tree.
-        # For multipart/signed emails, skip detached-signature parts so only the
-        # content part(s) contribute to the extracted body.
-        parts = payload.get("parts")
-        if isinstance(parts, list):
-            plain_candidate: tuple[str, list[dict[str, Any]]] | None = None
-            html_candidate: tuple[str, list[dict[str, Any]]] | None = None
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                child_mime = part.get("mimeType", "")
-                # Skip cryptographic signature parts — they carry no readable body.
-                if child_mime in self._SIGNATURE_MIME_TYPES:
-                    continue
-                body = self._extract_body_with_quotes(part, depth + 1)
-                if body[0] in ("(no body)", "(body too deeply nested)"):
-                    continue
-                # Classify by the child's own MIME type to preserve preference.
-                if child_mime == "text/plain" and plain_candidate is None:
-                    plain_candidate = body
-                elif child_mime == "text/html" and html_candidate is None:
-                    html_candidate = body
-                elif plain_candidate is None and html_candidate is None:
-                    # Nested multipart returned a resolved body — treat as plain.
-                    plain_candidate = body
-            if plain_candidate is not None:
-                return plain_candidate
-            if html_candidate is not None:
-                return html_candidate
-
-        return "(no body)", []
+        """Delegates to the shared payload helper."""
+        return extract_body_with_quotes(payload, depth)
 
     @staticmethod
     def _strip_html(raw_html: str) -> str:
@@ -3164,84 +3038,8 @@ class GmailConnectorRuntime:
 
     @staticmethod
     def _strip_html_with_quotes(raw_html: str) -> tuple[str, list[dict[str, Any]]]:
-        """Retain citation ownership while preserving the existing visible-text transform.
-
-        Quote tags/classes are structural provider facts; quoted characters travel
-        through the same whitespace collapse as text, then through HTML escaping.
-        No hidden/script text or unselected MIME alternative becomes a body.
-        """
-
-        class _TextExtractor(HTMLParser):
-            _SKIP_TAGS = frozenset({"style", "script", "head"})
-            _VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "wbr"})
-
-            def __init__(self) -> None:
-                super().__init__(convert_charrefs=True)
-                self.stack: list[tuple[str, bool]] = []
-                self.parts: list[str] = []
-                self.marked: list[bool] = []
-                self.quote_seen = False
-
-            def handle_starttag(self, tag: str, attrs: list) -> None:
-                values = dict(attrs)
-                classes = (values.get("class") or "").split()
-                quoted = (
-                    tag == "blockquote"
-                    or (values.get("type") or "").lower() == "cite"
-                    or bool({"gmail_quote", "yahoo_quoted"}.intersection(classes))
-                )
-                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
-                    self.quote_seen |= quoted
-                if tag not in self._VOID_TAGS:
-                    self.stack.append((tag, quoted))
-
-            def handle_startendtag(self, tag: str, attrs: list) -> None:
-                self.handle_starttag(tag, attrs)
-                self.handle_endtag(tag)
-
-            def handle_endtag(self, tag: str) -> None:
-                for index in range(len(self.stack) - 1, -1, -1):
-                    if self.stack[index][0] == tag:
-                        del self.stack[index:]
-                        break
-
-            def handle_data(self, data: str) -> None:
-                if not any(t in self._SKIP_TAGS for t, _ in self.stack):
-                    self.parts.append(data)
-                    self.marked.extend([any(q for _, q in self.stack)] * len(data))
-
-            def result(self) -> tuple[str, list[dict[str, Any]]]:
-                text, marked = "".join(self.parts), self.marked
-                for pattern, replacement in ((r"[ \t]+", " "), (r"\n{3,}", "\n\n")):
-                    pieces, flags, offset = [], [], 0
-                    for match in re.finditer(pattern, text):
-                        pieces.append(text[offset : match.start()])
-                        flags.extend(marked[offset : match.start()])
-                        pieces.append(replacement)
-                        flags.extend([any(marked[match.start() : match.end()])] * len(replacement))
-                        offset = match.end()
-                    pieces.append(text[offset:])
-                    flags.extend(marked[offset:])
-                    text, marked = "".join(pieces), flags
-                lead = len(text) - len(text.lstrip())
-                text = text.strip()
-                marked = marked[lead : lead + len(text)]
-                spans, start = [], None
-                for index, flag in enumerate(marked + [False]):
-                    if flag and start is None:
-                        start = index
-                    elif not flag and start is not None:
-                        spans.append({"kind": "quoted", "start": start, "end": index})
-                        start = None
-                text = text or "(no body)"
-                if self.quote_seen and not spans:
-                    spans = [{"kind": "quoted", "start": 0, "end": len(text)}]
-                return text, spans
-
-        extractor = _TextExtractor()
-        extractor.feed(raw_html)
-        extractor.close()
-        return extractor.result()
+        """Delegates to the shared payload helper."""
+        return strip_html_with_quotes(raw_html)
 
     def _extract_attachments(self, payload: dict[str, Any], depth: int = 0) -> list[dict[str, Any]]:
         """Walk MIME parts tree, identify supported attachments.
