@@ -156,3 +156,31 @@ async def test_session_complete_without_a_clock_writes_null_not_a_guess() -> Non
     await session_complete(pool, sid, output=None, tool_calls=[], duration_ms=5, success=False)
 
     assert pool.fetchrow.await_args.args[-1] is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["api:day_close_refresh:2026-10-14", "api:day_close_refresh:2024-02-29"],
+)
+def test_manual_day_close_refresh_source_is_valid(source: str) -> None:
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    assert _is_valid_trigger_source(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "api:day_close_refresh:",
+        "api:day_close_refresh:not-a-date",
+        "api:day_close_refresh:2026-10-14:x",
+        "api:day_close_refresh:2026-13-40",
+        "api:other:2026-10-14",
+        "api:",
+        "api",
+    ],
+)
+def test_other_api_sources_stay_rejected(source: str) -> None:
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    assert not _is_valid_trigger_source(source)

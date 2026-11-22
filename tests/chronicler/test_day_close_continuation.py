@@ -498,3 +498,29 @@ async def test_zero_fill_checkpoint_is_not_automatic_quiet_authority():
     pending = next(value for key, value in pool.state.items() if "pending:" in key)
     assert pending["processed"] is None
     assert pool.witness is None
+
+
+async def test_the_refresh_trigger_source_passes_the_session_validator():
+    """bu-2cgabc: the source the real refresh path builds must be a creatable session."""
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    continuation, _pool, daemon = owner()
+    assert (await continuation.resume_once())["status"] == "success"
+    source = daemon._dispatch_scheduled_task.call_args.kwargs["trigger_source"]
+    assert source == "api:day_close_refresh:2026-05-01"
+    assert _is_valid_trigger_source(source)
+
+
+async def test_a_failed_refresh_backs_off_instead_of_retrying_every_tick():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("Invalid trigger_source")
+    first = await continuation.resume_once()
+    assert first["code"] == "dispatch_failed"
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+    assert "processed" not in pending or pending["processed"] is None
+
+    continuation.begin_tick()
+    again = await continuation.resume_once()
+    assert again["status"] != "error" or again.get("code") != "dispatch_failed"
+    assert daemon._dispatch_scheduled_task.await_count == 1
