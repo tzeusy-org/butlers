@@ -8,8 +8,8 @@ in-process TTL cache keyed by ``(owner, repo, pr_number)``.
 
 Auth: the read-only GitHub token is resolved by the caller (CredentialStore
 ``BUTLERS_QA_GH_READ_TOKEN`` only; environment tokens are ignored) and passed in. When no
-token is available — or GitHub is unreachable, rate-limited, or returns 401/403/404 — every accessor degrades
-gracefully to ``None`` fields. The dossier never breaks because GitHub is
+token is available — or GitHub is unreachable, rate-limited, or returns 401/403/404 —
+every accessor degrades gracefully to ``None`` fields. The dossier never breaks because GitHub is
 down: it falls back to the honest "unavailable" state.
 
 NO persistence, NO migration: live-fetch + TTL cache only.
