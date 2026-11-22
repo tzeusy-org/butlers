@@ -272,6 +272,9 @@ def test_the_base_url_follows_switchboard_into_its_control_workload(
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
     assert activation.switchboard_control_base_url() == "http://butlers-control:41100"
 
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "https://butlers-control:41100/sse")
+    assert activation.switchboard_control_base_url() == "https://butlers-control:41100"
+
     monkeypatch.setenv("SWITCHBOARD_MCP_URL", "not-an-http-endpoint")
     with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
         activation.switchboard_control_base_url()

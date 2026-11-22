@@ -152,6 +152,12 @@ def test_expected_switchboard_identity_follows_the_canonical_switchboard_destina
         "health": "http://butlers-up:41103/internal/control-plane/identity",
     }
 
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "https://butlers-control:41100/sse")
+    assert {target.name: target.url for target in expected_from_roster(configs)} == {
+        "switchboard": "https://butlers-control:41100/internal/control-plane/identity",
+        "health": "http://butlers-up:41103/internal/control-plane/identity",
+    }
+
     # Without the stage destination every daemon keeps the shared BUTLERS_HOST rule.
     monkeypatch.delenv("SWITCHBOARD_MCP_URL")
     assert [target.url for target in expected_from_roster(configs)] == [
