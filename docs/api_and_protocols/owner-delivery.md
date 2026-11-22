@@ -233,10 +233,23 @@ The ledger does not record which bot sent a card, so the listing cannot be scope
 second bot's connector would see the first bot's cards, get refused, and use up their attempts, so
 it must set `CONNECTOR_OWNER_DELIVERY_SWEEP_ENABLED=false`.
 
+## Derived urgency
+
+`urgency_class` is `routine` or `interrupt`; an interrupt carries a content-free
+`urgency_reason` (`owner_creation`, `owner_clause`, `home_safety`). It is derived by
+`owner_delivery.derive_urgency` when the approval bridge opens the subject, from the same
+verified interruption authority notify uses (`attention_urgency.evaluate_interruption`), and
+only when the quiet-hours and the context gate both interrupt. A model priority, an
+owner-origin goal, an unreadable authority (the evaluation runs in a savepoint) or an unknown
+cause is routine. `open_subject` takes an `Urgency`, never a priority. The pair is written
+with the row; a replay returns the stored pair and a trigger (core_357) refuses any update.
+Rows from before core_357 read as routine. Owner mode holds (#5783, #5776) and the owner law
+may only hold a subject, never raise it; consuming them is not done here.
+
 ## Later-owned inputs (not active here)
 
 `owner_delivery.delivery_inputs(conn, subject_id)` exposes the typed inputs later lanes read:
-`urgency_class` (bu-dhloi1.22; no value is admissible yet), `holding_reason` (the broker's
+`urgency_class` / `urgency_reason` (see [Derived urgency](#derived-urgency)), `holding_reason` (the broker's
 owner-policy hold receipt `{stage, terms, generation}`, written with `record_holding_reason`;
 rendering it on /status and cards is bu-dhloi1.10's surface half), and the current
 presentations. Presence-aware surface selection, Why doors and push (bu-4c7nvp.1.8,

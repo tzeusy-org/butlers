@@ -62,7 +62,7 @@ Scope: v1-mandatory
 - **THEN** receipts and old-ID mapping persist and stale tokens cannot become executable again
 
 ### Requirement: Push references reveal no private subject content
-The later push interface SHALL permit only a fixed non-sensitive cause and opaque subject reference, requiring normal owner authentication for details/actions. Provisioning, urgency, step-up and presence/desk-first policy SHALL remain separately owned and unactivated.
+The later push interface SHALL permit only a fixed non-sensitive cause and opaque subject reference, requiring normal owner authentication for details/actions. Provisioning, step-up and presence/desk-first policy SHALL remain separately owned and unactivated.
 
 ID: REQ-owner-delivery-004
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S6/S7; bu-dhloi1.19
@@ -79,3 +79,18 @@ Scope: v1-mandatory
 #### Scenario: Push provisioning is absent
 - **WHEN** the software interface exists without platform/credential authorization
 - **THEN** no provisioning or delivery is inferred and existing reply-target behavior remains
+
+### Requirement: Subjects carry a derived urgency that never changes
+A subject SHALL record `urgency_class` (`routine` or `interrupt`) and, for an interrupt, a content-free `urgency_reason` (`owner_creation`, `owner_clause` or `home_safety`) once, when it opens. The daemon SHALL derive both from the verified interruption authority evaluated at both the quiet-hours and the context gate, and an interrupt SHALL require both. A model priority, an owner-origin goal, a caller-provided flag, an unreadable authority or an unknown cause SHALL yield `routine`. Opening SHALL NOT accept a priority or class argument. A replay, retry, new generation, callback or fallback SHALL keep the stored pair and SHALL NOT re-derive, raise or lower it, and the database SHALL refuse any update of either column. Owner mode holds and the tighten-only owner law MAY only hold a subject and SHALL NOT raise its urgency.
+
+ID: REQ-owner-delivery-005
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md S6; bu-dhloi1.22
+Scope: v1-mandatory
+
+#### Scenario: A model asks for high priority
+- **WHEN** a model-driven call, including an owner-started goal, opens a subject
+- **THEN** the subject is `routine` with no reason
+
+#### Scenario: Both gates verify an owner break-through rule
+- **WHEN** the verified origin matches a current owner-authored rule at the quiet-hours and the context gate
+- **THEN** the subject is `interrupt` with reason `owner_clause`, and a later replay returns that same pair
