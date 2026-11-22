@@ -68,6 +68,8 @@ from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_gi
 from butlers.core.healing.anonymizer import anonymize, validate_anonymized
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_WHERE_SQL,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
@@ -76,6 +78,7 @@ from butlers.core.healing.tracking import (
     create_dispatch_event,
     create_or_join_attempt,
     delete_orphaned_attempt,
+    get_paused_proposal,
     get_publication_hold,
     get_recent_attempt,
     record_phase_session,
@@ -107,12 +110,16 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
 from butlers.core.qa.publication.export import GitIdentity
-from butlers.core.qa.publication.proposal import publish_investigation
+from butlers.core.qa.publication.proposal import (
+    publish_investigation,
+    retain_unpublished_proposal,
+)
 from butlers.core.qa.publication.publisher import (
     PublicationResult,
     PublicationStatus,
     QaPublisher,
 )
+from butlers.core.qa.publication.retention import EXPORT_RETENTION
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
@@ -345,6 +352,9 @@ class QaDispatchConfig:
     dashboard_base_url: str | None = None
     repo_whitelist: RepoWhitelist | None = None
     """Repository whitelist the publisher enforces; ``None`` refuses publication."""
+    publication_hold_days: int = 7
+    """Days a retained unpublished proposal holds its fingerprint while no publisher exists;
+    capped at the 30-day export retention."""
     publisher: QaPublisher | None = None
     """Trusted deterministic publisher.  ``None`` (the production default) disables
     publication: a committed investigation fails ``publication_unavailable``."""
@@ -482,6 +492,11 @@ def _build_git_prep_env() -> dict[str, str]:
 
 
 _PUBLICATION_UNAVAILABLE = "publication_unavailable"
+_PUBLICATION_UNRETAINED = "publication_unretained"
+#: Retention-store refusals: nothing was kept and no receipt exists, so the attempt fails closed.
+_RETENTION_REFUSALS = frozenset(
+    {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
+)
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
@@ -1429,6 +1444,84 @@ async def _run_investigation_session(
             )
             return
 
+        # No publisher: keep the work as an unpublished proposal (bu-ejow5p.2).  Sealing and
+        # retention need no credential and no egress.  A validator refusal is recorded as the
+        # publisher records it; an unretainable export falls through to the fail-closed path.
+        identity = (
+            GitIdentity(git_author_name.strip(), git_author_email.strip())
+            if git_author_name and git_author_email
+            else None
+        )
+        refusal = await retain_unpublished_proposal(
+            pool,
+            repo_root=repo_root,
+            attempt_id=attempt_id,
+            branch_name=branch_name,
+            base_sha=base_sha,
+            identity=identity,
+        )
+        if refusal is None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            if metrics is not None:
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="proposal_retained",
+                    duration_ms=_elapsed,
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:  # noqa: BLE001
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+                healing_session_id=investigation_session_id,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                # The sealed bytes live in the retention store; the agent branch is not needed.
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+        if refusal.category not in _RETENTION_REFUSALS:
+            await _record_publication_outcome(
+                pool,
+                refusal,
+                attempt_id=attempt_id,
+                branch_name=branch_name,
+                diff_snapshot=diff_snapshot,
+                healing_session_id=investigation_session_id,
+                phase_session_id=phase_session_id,
+                metrics=metrics,
+                elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+
+        # Retention did not succeed for THIS attempt (an export row from a re-run does not
+        # count), so the reason must not match the breaker's retained-success marker.
+        unretained_detail = f"{_PUBLICATION_UNRETAINED}: {refusal.category}; nothing was pushed"
         if metrics is not None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
             metrics.record_recovery_phase_duration(
@@ -1440,7 +1533,7 @@ async def _run_investigation_session(
             metrics.record_recovery_execution_failure(
                 workflow="qa",
                 phase="investigate",
-                error_class=_PUBLICATION_UNAVAILABLE,
+                error_class=_PUBLICATION_UNRETAINED,
             )
         if phase_session_id is not None:
             try:
@@ -1448,7 +1541,7 @@ async def _run_investigation_session(
                     pool,
                     phase_session_id,
                     "failed",
-                    error_detail=_PUBLICATION_UNAVAILABLE,
+                    error_detail=unretained_detail,
                 )
             except Exception as _pss_exc:
                 logger.debug("Failed to mark phase session failed: %s", _pss_exc)
@@ -1456,14 +1549,14 @@ async def _run_investigation_session(
             pool,
             attempt_id,
             "failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
             healing_session_id=investigation_session_id,
         )
         await _record_escalation_for_terminal(
             pool,
             attempt_id=attempt_id,
             status="failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
         )
         await _persist_notes_and_remove_worktree(
             pool,
@@ -2464,24 +2557,18 @@ async def _is_circuit_breaker_tripped(
     dispatch events do not have a ``healing_session_id`` and remain excluded
     from the circuit-breaker signal.
 
-    Kept byte-identical to the dashboard filter in
-    ``butlers.api.routers.qa._QA_CIRCUIT_BREAKER_WHERE_CLAUSE``.
+    Shares its SQL with the dashboard
+    (``butlers.core.healing.constants.QA_BREAKER_*``). A failed attempt that retained a sealed
+    proposal reads as ``proposal_retained``, an execution success.
     """
     # Check only QA-originated terminal attempts where an investigation actually
     # launched (healing_session_id IS NOT NULL).  Admission-control rejections
     # were never inserted as attempts (they use healing_dispatch_events instead),
     # so this filter is defensive against any legacy rows.
     rows = await pool.fetch(
-        """
-        SELECT status
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-          AND healing_session_id IS NOT NULL
-          AND closed_at > COALESCE(
-                (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-                '-infinity'::timestamptz
-              )
+        f"""
+        SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status
+        {QA_BREAKER_WHERE_SQL}
         ORDER BY closed_at DESC
         LIMIT $1
         """,
@@ -2701,6 +2788,38 @@ async def dispatch_qa_investigation(
                     fingerprint=fp,
                     reason="infra_condition_open",
                 )
+
+        # ---------------------------------------------------------------
+        # Gate 5.6: Publication paused (bu-ejow5p.2)
+        # ---------------------------------------------------------------
+        # While no publisher is injected, a fingerprint whose committed investigation is
+        # retained as an unpublished proposal is not investigated again inside the hold
+        # window.  It pairs with the breaker treating that proposal as an execution success:
+        # neutrality without this hold is unbounded spend.  A non-atomic pre-check; the
+        # authoritative claim stays create_or_join_attempt.
+        if config.publisher is None:
+            hold_days = min(config.publication_hold_days, EXPORT_RETENTION.days)
+            held_attempt = await get_paused_proposal(pool, fp, hold_days)
+            if held_attempt is not None:
+                await update_finding_dedup_reason(pool, finding_id, "publication_paused")
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="publication_paused",
+                    reason=(
+                        "A retained unpublished proposal already exists for this fingerprint; "
+                        "publication is disabled, so it is not investigated again within the "
+                        f"{hold_days}-day hold window"
+                    ),
+                    attempt_id=None,
+                    event_id=uuid.uuid5(uuid.NAMESPACE_URL, f"qa:publication-paused:{finding_id}"),
+                )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="qa", decision="publication_paused"
+                    )
+                return QaDispatchResult(accepted=False, fingerprint=fp, reason="publication_paused")
 
         # ---------------------------------------------------------------
         # Gate 6: Novelty gate — atomic check+insert

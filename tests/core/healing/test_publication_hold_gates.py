@@ -17,9 +17,10 @@ import pytest
 from butlers.core.healing.tracking import get_recent_attempt
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
 from butlers.core.qa.relay import QaRelay
+from tests.core.qa.conftest import _no_paused_proposal, no_paused_proposal  # noqa: F401
 from tests.core.qa.test_dispatch import _make_finding, _make_triaged, _qa_pool
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("_no_paused_proposal")]
 
 _FP = "f" * 64
 

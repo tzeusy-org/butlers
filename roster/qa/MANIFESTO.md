@@ -192,9 +192,9 @@ access.
 | DB pool exhaustion | Patrol hangs or fails | Daemon restart; stale `running` patrol rows recovered on startup |
 | GitHub API rate limiting | PR creation fails; attempt transitions to `failed` | Next patrol cycle for the same fingerprint will retry after cooldown |
 | Worktree creation failure | Investigation not dispatched; attempt marked `failed` | Next patrol cycle retries if fingerprint recurs |
-| Publication unavailable (production default: no publisher configured) | Investigation completes but transitions to `failed` with `"publication_unavailable"`; nothing is pushed and no PR is opened. A follow-up on an open PR records the same reason and leaves the PR untouched | Wait for publisher activation after isolation (bu-mc01y5.7) |
+| Publication unavailable (production default: no publisher configured) | A committed investigation is sealed and retained as an unpublished proposal (the dossier reads `unpublished`); the attempt keeps `"publication_unavailable"` but counts as an execution success for the breaker, and Gate 5.6 `publication_paused` holds its fingerprint for 7 days. Nothing is pushed and no PR is opened; a follow-up on an open PR records the same reason and leaves the PR untouched. A validator refusal or an unretainable export is still a failure | Owner reviews the retained proposal; the publisher takes it over after isolation (bu-mc01y5.7) |
 | Publication refused or ambiguous | Attempt `failed` with `publication_refused`, `publication_failed` or `publication_ambiguous` and a content-free category; an ambiguous operation holds the fingerprint lineage | Reconcile the bound branch/PR read-only, then record the reconciliation (`docs/operations/qa-publication-boundary.md`) |
-| Circuit breaker tripped | All dispatch halted after N consecutive failures | Investigate and fix underlying cause; circuit breaker resets on next success |
+| Circuit breaker tripped | All dispatch halted after N consecutive execution failures; a retained unpublished proposal is not a failure | Investigate and fix underlying cause; reset from the dashboard (the breaker sees only launched executions, so it cannot recover on its own while tripped) |
 | Repeated anonymization failures | PR pipeline halted | Manual review required; operator clears via dashboard |
 
 ---

@@ -283,8 +283,9 @@ curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
 - Codex stages per-invocation `HOME` roots under `~/.codex/.tmp` (the CLI fails with `codex_home`
   under `/tmp`).
 - QA agent sessions receive no GitHub credential (`build_agent_env()`: no `GH_TOKEN`, no git
-  credential variable), and automated publication (push / PR create) fails closed with
-  `publication_unavailable` until the isolated publisher lands. The dispatcher alone keeps the
+  credential variable), and automated publication (push / PR create) fails closed until the isolated publisher lands: a
+  committed investigation is sealed and retained as an unpublished proposal, ending `failed` with
+  `publication_unavailable`. The dispatcher alone keeps the
   token for PR-status polling and fetch/worktree preparation (`gh` in `Dockerfile.base`). QA
   branches from a freshly fetched
   verified immutable `origin/main` commit via the worktree `base_ref`. Failed fetch or

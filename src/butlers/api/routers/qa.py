@@ -71,7 +71,11 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
-from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import (
+    CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_WHERE_SQL,
+)
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
@@ -1240,16 +1244,7 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # attempt/patrol history stays visible in summary + all-time stats. Kept
 # byte-identical to the dispatch-admission filter in
 # ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``.
-_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
-FROM public.healing_attempts
-WHERE qa_patrol_id IS NOT NULL
-  AND closed_at IS NOT NULL
-  AND healing_session_id IS NOT NULL
-  AND closed_at > COALESCE(
-        (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-        '-infinity'::timestamptz
-      )
-"""
+_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = QA_BREAKER_WHERE_SQL
 
 
 async def _fetch_recent_circuit_breaker_rows(
@@ -1260,7 +1255,8 @@ async def _fetch_recent_circuit_breaker_rows(
 ) -> list[asyncpg.Record]:
     """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
 
-    select_cols = "id, status, closed_at" if include_ids else "status"
+    status_col = f"{QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status"
+    select_cols = f"id, {status_col}, closed_at" if include_ids else status_col
     return await pool.fetch(
         f"""
         SELECT {select_cols}
