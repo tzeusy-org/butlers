@@ -143,6 +143,29 @@ def test_credential_segments_keep_allowed_neighbors():
     assert not credential("metadata.fingerprint") and not credential("shipping")
 
 
+# Task 6.1: a credential-named JSON path cannot be marked dlp = "identifier" (which would skip
+# the entropy rule) in any key style. The DB-side twin, which keeps such leaves out of
+# json_fields_public, is tests/migrations/test_public_projection_source.py.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "metadata.api_key",
+        "metadata.apiKey",
+        "metadata.api-key",
+        "metadata.client_secret",
+        "metadata.clientSecret",
+        "metadata.Client-Secret",
+        "metadata.portal.password",
+        "metadata.session-cookie",
+    ],
+)
+def test_a_credential_json_path_cannot_be_marked_in_any_key_style(path):
+    data = files("butlers.knowledge_read").joinpath("projection.toml").read_text()
+    assert "metadata.external_ref" in data
+    with pytest.raises(ManifestError, match="unsafe identifier mark"):
+        load_manifest(data.replace("metadata.external_ref", path, 1).encode())
+
+
 def test_credential_guard_has_a_type_consistent_control():
     data = files("butlers.knowledge_read").joinpath("projection.toml").read_text()
     # Change both the selected column and its declared type key. The only violated

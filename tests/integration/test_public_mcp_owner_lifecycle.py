@@ -1508,7 +1508,10 @@ def test_actual_tcp_principals_and_no_credential_guards(copied):
         importer.dispose()
 
 
-@pytest.mark.parametrize("fault", ["missing", "physical", "missing-subscription"])
+# "test_decoding" (task 6.1): the publisher's REPLICATION lets it decode every change in the
+# database through any output plugin (RFC 0039 D9), so a slot under the subscription's name with
+# any plugin but pgoutput must stop the owner step before it reuses or rebuilds anything.
+@pytest.mark.parametrize("fault", ["missing", "physical", "missing-subscription", "test_decoding"])
 def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault):
     topology, projection, manifest = copied
     stale = uuid.uuid4()
@@ -1561,6 +1564,25 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
                     conn.exec_driver_sql(
                         "SELECT pg_create_physical_replication_slot('butlers_public_sub')"
                     )
+                if fault == "test_decoding":
+                    # As the publisher itself: the SQL slot functions check the current
+                    # user's REPLICATION attribute, which only the publisher holds.
+                    conn.exec_driver_sql("SET SESSION AUTHORIZATION butlers_projection_publisher")
+                    try:
+                        assert conn.exec_driver_sql("SELECT current_user").scalar_one() == (
+                            "butlers_projection_publisher"
+                        )
+                        conn.exec_driver_sql(
+                            "SELECT pg_create_logical_replication_slot("
+                            "'butlers_public_sub', 'test_decoding')"
+                        )
+                    finally:
+                        conn.exec_driver_sql("RESET SESSION AUTHORIZATION")
+            assert _scalar(
+                topology.admin,
+                "SELECT count(*) FROM pg_replication_slots WHERE slot_name='butlers_public_sub' "
+                "AND slot_type='logical' AND plugin='test_decoding'",
+            ) == (1 if fault == "test_decoding" else 0)
         with projection.begin() as conn:
             conn.execute(
                 text(
@@ -1578,7 +1600,7 @@ def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault
             _scalar(projection, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale})
             == 1
         )
-        if fault == "physical":
+        if fault in ("physical", "test_decoding"):
             refused = _run(topology, render_owner_program(manifest), success=False)
             assert b"slot identity refused" in refused.output
             assert (

@@ -283,7 +283,8 @@ class Arguments:
         if not isinstance(value, str):
             raise ReadError("invalid_argument", argument=name)
         value = unicodedata.normalize("NFC", value).strip()
-        if len(value) > max_length or (required and not value):
+        # PostgreSQL text cannot hold NUL: refuse it here as final, not as a retryable DB error.
+        if len(value) > max_length or (required and not value) or "\x00" in value:
             raise ReadError("invalid_argument", argument=name)
         return self._keep(name, value or None)
 
@@ -307,7 +308,12 @@ class Arguments:
             if not isinstance(item, str):
                 raise ReadError("invalid_argument", argument=name)
             item = unicodedata.normalize("NFC", item).strip()
-            if not item or len(item) > max_length or (options and item not in options):
+            if (
+                not item
+                or len(item) > max_length
+                or (options and item not in options)
+                or "\x00" in item
+            ):
                 raise ReadError("invalid_argument", argument=name)
             items.append(item)
         return self._keep(name, tuple(sorted(set(items))))
