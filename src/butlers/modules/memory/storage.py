@@ -1531,6 +1531,7 @@ async def _insert_fact_record(
     embedding_model_version: str = "unknown",
     authority: ContentAuthority | None = None,
     confidence: float = 1.0,
+    validity: str = "active",
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -1569,6 +1570,7 @@ async def _insert_fact_record(
         embedding_model_version: Model name used to produce the embedding vector.
         authority: Server-derived content authority to stamp, or ``None`` (legacy).
         confidence: Base confidence in ``[0, 1]`` (default 1.0).
+        validity: Initial validity, ``'active'`` or ``'candidate'`` (held, not asserted).
     """
     sql = f"""
         INSERT INTO facts (
@@ -1584,7 +1586,7 @@ async def _insert_fact_record(
         VALUES (
             $1, $2, $3, $4, $5, {tsvector_sql("$6")},
             $7, $8, $9, $10, $11,
-            $12, $13, 'active', $14,
+            $12, $13, $32, $14,
             $15, $15, $16, $17, $18,
             $19, $20, $21, $22,
             $23, $24, $25, $26,
@@ -1624,6 +1626,7 @@ async def _insert_fact_record(
         authority.authority if authority else None,
         authority.entity_id if authority else None,
         *taint_stamp(),
+        validity,
     )
 
 
@@ -1659,6 +1662,7 @@ async def store_fact(
     content_authority: str | None = None,
     authority_entity_id: uuid.UUID | None = None,
     transaction_guard: Callable[[Any], Awaitable[None]] | None = None,
+    validity: str = "active",
 ) -> dict:
     """Store a distilled fact with optional supersession.
 
@@ -1741,6 +1745,9 @@ async def store_fact(
         confidence: Base confidence in ``[0, 1]`` for the fact (and any inverse
             edge it creates). Defaults to 1.0; deterministic writers with an
             evidence-derived confidence pass it here so decay starts from it.
+        validity: Initial validity, ``'active'`` (default) or ``'candidate'``. A candidate is
+            held, not asserted: every reader that selects ``validity = 'active'`` (series,
+            projections, recall) skips it, and its idempotency key still dedupes redelivery.
 
     Returns:
         A dict with:
@@ -1754,6 +1761,8 @@ async def store_fact(
         _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
     if not 0.0 <= confidence <= 1.0:
         raise ValueError(f"confidence must be within [0, 1], got {confidence!r}")
+    if validity not in ("active", "candidate"):
+        raise ValueError(f"validity must be 'active' or 'candidate', got {validity!r}")
 
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
@@ -2201,6 +2210,7 @@ async def store_fact(
                 embedding_model_version=embedding_engine.model_name,
                 authority=authority,
                 confidence=confidence,
+                validity=validity,
             )
 
             # An owner question this fact answers moves to `answerable` in this same

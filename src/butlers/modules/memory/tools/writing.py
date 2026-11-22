@@ -386,6 +386,7 @@ async def memory_store_fact(
     sensitivity: str = "normal",
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    validity: str = "active",
 ) -> dict[str, Any]:
     """Store a distilled fact, automatically superseding any existing match.
 
@@ -419,6 +420,9 @@ async def memory_store_fact(
     Accepts optional ``retention_class`` (default 'operational') and
     ``sensitivity`` (default 'normal') to classify the stored fact for
     lifecycle management and data governance purposes.
+
+    Accepts ``validity`` (``'active'`` default, or ``'candidate'`` for a held, unasserted
+    fact); in-process callers only, never an MCP tool argument.
 
     Delegates to the storage layer and returns an MCP-friendly dict with the
     new fact's ID and the superseded fact's ID (if any).
@@ -497,6 +501,7 @@ async def memory_store_fact(
         sensitivity=sensitivity,
         enable_shared_catalog=enable_shared_catalog,
         source_schema=source_schema,
+        validity=validity,
     )
 
     # Backward-compatible: older storage variants may return a mapping.
