@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import asyncpg
@@ -158,6 +158,129 @@ async def _find_matching_trip(
         if dest_match and not candidate_dates:
             return trip_id
 
+    return None
+
+
+# A leg departing within this window after a trip's previous leg arrives is
+# treated as the next segment of the same journey (bu-swkpoo.7).
+_JOURNEY_ADJACENCY_WINDOW = timedelta(hours=72)
+
+
+def _normalize_flight_number(value: Any) -> str | None:
+    """Canonicalise a flight number ("EX 101" == "ex101")."""
+    text = _nonblank_text(value) if isinstance(value, str) else None
+    if text is None:
+        return None
+    return "".join(text.split()).upper()
+
+
+def _payload_flight_number(payload: dict[str, Any]) -> str | None:
+    metadata = payload.get("metadata") or {}
+    return _normalize_flight_number(payload.get("flight_number")) or _normalize_flight_number(
+        metadata.get("flight_number") if isinstance(metadata, dict) else None
+    )
+
+
+async def _find_existing_segment(
+    pool: asyncpg.Pool, payload: dict[str, Any], *, trip_id: str | None = None
+) -> asyncpg.Record | None:
+    """Find a stored leg for the same carrier + flight number + departure time.
+
+    Used when no ``booking_record_id`` identity exists, so a re-ingest of one
+    segment converges on the existing row instead of inserting a duplicate.
+    """
+    carrier = _nonblank_text(payload.get("carrier")) or _nonblank_text(payload.get("provider"))
+    flight_number = _payload_flight_number(payload)
+    departure_at = _normalize_datetime(payload.get("departure_at"))
+    if not (carrier and flight_number and departure_at):
+        return None
+    return await pool.fetchrow(
+        """
+        SELECT id, trip_id, departure_at, arrival_at, metadata
+        FROM travel.legs
+        WHERE lower(btrim(COALESCE(carrier, ''))) = $1
+          AND upper(regexp_replace(COALESCE(metadata->>'flight_number', ''), '\\s', '', 'g')) = $2
+          AND departure_at = $3
+          AND ($4::uuid IS NULL OR trip_id = $4::uuid)
+        ORDER BY created_at
+        LIMIT 1
+        """,
+        carrier.strip().casefold(),
+        flight_number,
+        departure_at,
+        trip_id,
+    )
+
+
+async def _find_trip_for_leg_journey(pool: asyncpg.Pool, payload: dict[str, Any]) -> str | None:
+    """Locate the trip a PNR-less leg belongs to from existing journey evidence.
+
+    In order: (1) the same segment already stored; (2) a stored leg sharing the
+    same carrier-scoped PNR/confirmation number (a bare locator is never
+    globally unique); (3) a flight leg whose arrival is at most 72h before this
+    departure, with matching stations when both are known, else the same carrier.
+    """
+    segment = await _find_existing_segment(pool, payload)
+    if segment is not None:
+        return str(segment["trip_id"])
+
+    carrier = _nonblank_text(payload.get("carrier")) or _nonblank_text(payload.get("provider"))
+    departure_at = _normalize_datetime(payload.get("departure_at"))
+    if not carrier:
+        return None
+    carrier_key = carrier.strip().casefold()
+
+    locators = {
+        text.strip().upper()
+        for text in (
+            _nonblank_text(payload.get("pnr")),
+            _nonblank_text(payload.get("record_locator")),
+            _nonblank_text(payload.get("confirmation_number")),
+        )
+        if text
+    }
+    if locators:
+        trip = await pool.fetchval(
+            """
+            SELECT l.trip_id
+            FROM travel.legs l JOIN travel.trips t ON t.id = l.trip_id
+            WHERE lower(btrim(COALESCE(l.carrier, ''))) = $1
+              AND t.status IN ('planned', 'active')
+              AND (upper(btrim(COALESCE(l.pnr, ''))) = ANY($2::text[])
+                   OR upper(btrim(COALESCE(l.confirmation_number, ''))) = ANY($2::text[]))
+            ORDER BY l.departure_at
+            LIMIT 1
+            """,
+            carrier_key,
+            sorted(locators),
+        )
+        if trip is not None:
+            return str(trip)
+
+    if departure_at is None or payload.get("type", "flight") != "flight":
+        return None
+    dep_station = _nonblank_text(payload.get("departure_airport_station")) or _nonblank_text(
+        payload.get("departure")
+    )
+    rows = await pool.fetch(
+        """
+        SELECT l.trip_id, l.carrier, l.arrival_airport_station
+        FROM travel.legs l JOIN travel.trips t ON t.id = l.trip_id
+        WHERE l.type = 'flight'
+          AND t.status IN ('planned', 'active')
+          AND l.arrival_at <= $1 AND l.arrival_at >= $2
+        ORDER BY l.arrival_at DESC
+        """,
+        departure_at,
+        departure_at - _JOURNEY_ADJACENCY_WINDOW,
+    )
+    for row in rows:
+        prev_station = row["arrival_airport_station"]
+        if prev_station and dep_station:
+            if prev_station.strip().upper() == dep_station.strip().upper():
+                return str(row["trip_id"])
+        elif (row["carrier"] or "").strip().casefold() == carrier_key:
+            return str(row["trip_id"])
     return None
 
 
@@ -473,6 +596,43 @@ async def _insert_leg_legacy(
 ) -> tuple[str, bool, bool, datetime, datetime]:
     """Insert a leg entity without PNR-segment identity. Returns (entity_id, created, deduped)."""
     confirmation_number = payload.get("confirmation_number")
+
+    # Same carrier + flight number + departure time on this trip is the same
+    # segment re-ingested: converge on the stored row (bu-swkpoo.7).
+    segment = await _find_existing_segment(pool, payload, trip_id=trip_id)
+    if segment is not None:
+        incoming = _leg_insert_fields(payload, source_message_id)
+        stored_meta = segment["metadata"]
+        if isinstance(stored_meta, str):
+            stored_meta = json.loads(stored_meta)
+        row = await pool.fetchrow(
+            """
+            UPDATE travel.legs SET
+                arrival_at = $2,
+                departure_airport_station = COALESCE($3, departure_airport_station),
+                departure_city = COALESCE($4, departure_city),
+                arrival_airport_station = COALESCE($5, arrival_airport_station),
+                arrival_city = COALESCE($6, arrival_city),
+                confirmation_number = COALESCE($7, confirmation_number),
+                pnr = COALESCE($8, pnr),
+                seat = COALESCE($9, seat),
+                metadata = $10::jsonb
+            WHERE id = $1::uuid
+            RETURNING id, departure_at, arrival_at
+            """,
+            segment["id"],
+            incoming[7],
+            incoming[2],
+            incoming[3],
+            incoming[5],
+            incoming[6],
+            incoming[8],
+            _nonblank_text(payload.get("pnr")),
+            _nonblank_text(payload.get("seat")),
+            _deep_merge_metadata(dict(stored_meta or {}), incoming[9]),
+        )
+        assert row is not None
+        return str(row["id"]), False, True, row["departure_at"], row["arrival_at"]
 
     # Dedup check: match on confirmation_number + trip_id
     if confirmation_number and source_message_id:
@@ -1192,7 +1352,11 @@ async def _record_booking_transaction(
             if val and val not in candidate_destinations:
                 candidate_destinations.append(str(val))
 
-        trip_id = await _find_matching_trip(pool, candidate_dates, candidate_destinations)
+        trip_id = None
+        if entity_type == "leg":
+            trip_id = await _find_trip_for_leg_journey(pool, payload)
+        if trip_id is None:
+            trip_id = await _find_matching_trip(pool, candidate_dates, candidate_destinations)
         trip_created = False
         trip_event_payload = None
         if trip_id is None:
