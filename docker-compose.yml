@@ -129,6 +129,10 @@ services:
         && exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
     environment:
       <<: *postgres-env
+      # bu-dss7he.6 S3: the migrator login, when set; unset keeps the shared login.
+      # See docs/data_and_storage/migrator-login.md before setting it.
+      POSTGRES_USER: ${BUTLERS_MIGRATOR_DB_USER:-${POSTGRES_USER:-butlers}}
+      POSTGRES_PASSWORD: ${BUTLERS_MIGRATOR_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.dev or .env.prod}}
     volumes:
       - ./roster:/app/roster:ro
     networks: [db]

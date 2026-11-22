@@ -45,7 +45,7 @@ spec:
               else echo 'public-mcp reconcile: not in this image (a rollback); skipped' >&2; fi
               {{- end }}
           env:
-            {{- include "butlers.postgresEnv" . | nindent 12 }}
+            {{- include "butlers.migratorPostgresEnv" . | nindent 12 }}
       containers:
         - name: dashboard-api
           image: {{ include "butlers.image" . }}
