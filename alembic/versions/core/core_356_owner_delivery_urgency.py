@@ -41,6 +41,10 @@ def _quoted(values: tuple[str, ...]) -> str:
     return ", ".join(f"'{v}'" for v in values)
 
 
+# The key core_317 takes for the same ledger objects: every per-schema chain replays this
+# revision, and the guard is one shared pg_proc row.
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_317:owner-delivery', 0))"
+
 _GUARD = r"""
 CREATE OR REPLACE FUNCTION public.owner_delivery_subject_guard() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -92,6 +96,7 @@ END $$;
 
 
 def _apply() -> None:
+    op.execute(_LOCK)
     op.execute(
         "ALTER TABLE public.owner_delivery_subjects ADD COLUMN IF NOT EXISTS urgency_reason TEXT"
     )
