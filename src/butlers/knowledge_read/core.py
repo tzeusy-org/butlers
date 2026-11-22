@@ -47,15 +47,27 @@ _ERRORS = {
 
 
 class ReadError(Exception):
-    """A tool-level refusal with a D17 code; ``argument`` names a field, never its value."""
+    """A tool-level refusal with a D17 code; ``argument`` names a field, never its value.
 
-    def __init__(self, code: str, *, domain: str | None = None, argument: str | None = None):
+    ``cause`` is a fixed internal category for the audit line and log (bu-swkpoo.1), never sent
+    to the client: :meth:`to_dict` leaves it out.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        *,
+        domain: str | None = None,
+        argument: str | None = None,
+        cause: str | None = None,
+    ):
         if code not in _ERRORS:
             raise ValueError(f"unknown read error code: {code}")
         super().__init__(code)
         self.code = code
         self.domain = domain
         self.argument = argument
+        self.cause = cause
 
     def to_dict(self) -> dict[str, Any]:
         retryable, message = _ERRORS[self.code]
@@ -211,7 +223,7 @@ async def in_snapshot(conn: asyncpg.Connection, read: Callable[[], Any]) -> Any:
         async with conn.transaction(isolation="repeatable_read", readonly=True):
             return await read()
     except asyncpg.QueryCanceledError:
-        raise ReadError("unavailable") from None
+        raise ReadError("unavailable", cause="query_canceled") from None
 
 
 async def in_write_transaction(conn: asyncpg.Connection, write: Callable[[], Any]) -> Any:
@@ -226,7 +238,7 @@ async def in_write_transaction(conn: asyncpg.Connection, write: Callable[[], Any
         async with conn.transaction():
             return await write()
     except asyncpg.QueryCanceledError:
-        raise ReadError("unavailable") from None
+        raise ReadError("unavailable", cause="query_canceled") from None
 
 
 def fields(value: str | dict | None) -> dict[str, Any]:

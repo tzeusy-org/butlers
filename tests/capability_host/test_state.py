@@ -261,6 +261,75 @@ async def test_a_cancelled_replication_read_is_unavailable(env: Env):
     assert error_code(await env.tool("entity_lookup")) == "unavailable"
 
 
+# -- bu-swkpoo.1: a fail-closed `unavailable` names its cause in the audit line and the log --
+
+
+@pytest.mark.parametrize(
+    ("failure", "cause"),
+    [
+        (asyncpg.TooManyConnectionsError("too many"), "connection"),
+        (OSError("refused"), "connection"),
+        (TimeoutError(), "timeout"),
+        (asyncpg.QueryCanceledError("statement timeout"), "query_canceled"),
+    ],
+)
+async def test_an_unavailable_outage_records_a_fixed_cause(env: Env, caplog, failure, cause):
+    env.pool.refuse = failure
+    with caplog.at_level("WARNING", logger="butlers.capability_host.host"):
+        assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    line = env.audits()[-1]
+    assert (line["outcome"], line["cause"]) == ("unavailable", cause)
+    logged = [r.getMessage() for r in caplog.records]
+    assert any(f"cause={cause}" in m and type(failure).__name__ in m for m in logged)
+    assert not any("refused" in m or "too many" in m for m in logged)  # never the message
+
+
+async def test_an_unavailable_reader_defect_is_logged_as_a_defect(tmp_path, caplog):
+    tools = default_fake_tools()
+
+    async def broken(conn, context, arguments):
+        await conn.fetchval("SELECT 1")
+        raise KeyError("row content must not reach the log")
+
+    tools["trips"] = Tool("trips", "travel", broken)
+    env = Env(tmp_path, tools=tools)
+    with caplog.at_level("WARNING", logger="butlers.capability_host.host"):
+        assert error_code(await env.tool("trips")) == "unavailable"
+    assert env.audits()[-1]["cause"] == "defect"
+    assert not any("row content" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_cancelled_snapshot_read_records_query_canceled(env: Env):
+    assert error_code(await env.tool("entity_lookup")) is None  # probed
+    env.projection.fail = asyncpg.QueryCanceledError("statement timeout")
+    assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    assert env.audits()[-1]["cause"] == "query_canceled"
+
+
+async def test_missing_canaries_record_their_cause(env: Env):
+    (env.root / "canaries/canaries.json").unlink()
+    env.reload()
+    assert error_code(await env.tool("entity_lookup")) == "unavailable"
+    assert env.audits()[-1]["cause"] == "canaries_missing"
+
+
+async def test_warm_probes_before_the_first_call(env: Env):
+    await env.host.warm()
+    assert _probes(env) == len(MANIFEST.tables)
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == len(MANIFEST.tables)  # the first call reuses the warm probe
+
+
+async def test_a_failed_warm_up_never_raises_and_the_next_call_probes(env: Env, caplog):
+    env.pool.refuse = OSError("refused")
+    with caplog.at_level("WARNING", logger="butlers.capability_host.host"):
+        await env.host.warm()
+    assert any("cause=connection" in r.getMessage() for r in caplog.records)
+    env.pool.refuse = None
+    assert error_code(await env.tool("entity_lookup")) is None
+    assert _probes(env) == len(MANIFEST.tables)
+
+
 async def test_missing_projection_objects_mean_the_owner_step_never_ran(env: Env):
     env.projection.fail = asyncpg.UndefinedTableError("missing view")
     assert error_code(await env.tool("entity_lookup")) == "projection_apply_pending"
