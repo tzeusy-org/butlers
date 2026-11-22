@@ -165,10 +165,14 @@ class DayCloseContinuation:
                         "revision": revision,
                         "processed": state.get("processed"),
                     }
-                    await self._save(key, pending)
-                    if state.get("retry_at") and datetime.fromisoformat(
+                    held = bool(state.get("retry_at")) and datetime.fromisoformat(
                         state["retry_at"]
-                    ) > datetime.now(UTC):
+                    ) > datetime.now(UTC)
+                    if held:
+                        # The hold must survive the whole-value overwrite below.
+                        pending["retry_at"] = state["retry_at"]
+                    await self._save(key, pending)
+                    if held:
                         continue
                     if not await self._has_refresh_evidence(target):
                         unproven = True

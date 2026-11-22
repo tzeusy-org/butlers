@@ -524,3 +524,48 @@ async def test_a_failed_refresh_backs_off_instead_of_retrying_every_tick():
     again = await continuation.resume_once()
     assert again["status"] != "error" or again.get("code") != "dispatch_failed"
     assert daemon._dispatch_scheduled_task.await_count == 1
+
+
+async def _four_ticks(continuation):
+    """Run four ticks and return how many reached the refresh service."""
+    real = continuation.service.refresh
+    calls = []
+
+    async def counted(*args, **kwargs):
+        calls.append(1)
+        return await real(*args, **kwargs)
+
+    continuation.service.refresh = counted
+    for _ in range(4):
+        continuation.begin_tick()
+        await continuation.resume_once()
+    return len(calls)
+
+
+async def test_a_failure_hold_lasts_until_retry_at_across_ticks():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("Invalid trigger_source")
+    assert await _four_ticks(continuation) == 1
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+
+
+async def test_a_rate_limit_hold_lasts_until_retry_at_across_ticks():
+    continuation, pool, _daemon = owner()
+    pool.cache = {"cache_built_at": datetime.now(UTC)}
+    pool.witness = {"covered_at": datetime.now(UTC)}
+    assert await _four_ticks(continuation) == 1
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+
+
+async def test_an_elapsed_hold_is_retried_and_cleared_on_success():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("boom")
+    await continuation.resume_once()
+    key = next(k for k in pool.state if "pending:" in k)
+    pool.state[key]["retry_at"] = "2000-01-01T00:00:00+00:00"
+    daemon._dispatch_scheduled_task.side_effect = None
+    continuation.begin_tick()
+    assert (await continuation.resume_once())["status"] == "success"
+    assert "retry_at" not in pool.state[key]
