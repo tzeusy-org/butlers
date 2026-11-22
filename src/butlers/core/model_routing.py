@@ -3223,6 +3223,26 @@ async def check_monthly_ceiling(
         return CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)
 
 
+async def ceiling_refusal_reason(pool: asyncpg.Pool) -> str | None:
+    """The refusal reason when the monthly spend ceiling blocks a call, else ``None``.
+
+    For the API fast lanes that spend outside the Spawner and ``call_model``
+    (bu-svqpzo.14). Same semantics as the Spawner's gate: a reached ceiling refuses with the
+    ``Monthly spend ceiling reached`` text; an unreadable one fails closed with
+    ``CEILING_UNAVAILABLE_REASON``, which never carries the reached-ceiling prefix (so it can
+    never raise the fleet-halt banner).
+    """
+    ceiling = await check_monthly_ceiling(pool)
+    if ceiling.allowed:
+        return None
+    if ceiling.unavailable:
+        return CEILING_UNAVAILABLE_REASON
+    return (
+        f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+        f"${ceiling.ceiling_usd:.2f}"
+    )
+
+
 async def record_token_usage(
     pool: asyncpg.Pool,
     *,
