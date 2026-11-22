@@ -3910,3 +3910,91 @@ async def test_door_flag_on_owner_cancelled_still_suppresses_and_extracted_still
         )
         assert len(rows) == 1 and "Reported" in rows[0]["message"]
         assert "confirm the subscription status" in rows[0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: stale-bill lifecycle in the bill sweep (bu-swkpoo.6)
+# ---------------------------------------------------------------------------
+
+
+async def _sweep_with_noop_reconcile(fj, pool, monkeypatch) -> None:
+    async def _fake_reconcile(conn, lookback_days=90):
+        return {"auto_settled": [], "candidates": []}
+
+    async def _fake_predict(conn, days_ahead=30):
+        return {"predictions": []}
+
+    monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
+    monkeypatch.setattr(fj, "predict_bills", _fake_predict)
+    await _setup_insight_schema(pool)
+    await fj.run_bill_reconciliation_sweep(pool)
+
+
+async def _bill_state(pool, payee: str):
+    row = await pool.fetchrow(
+        "SELECT status, paid_at, metadata FROM finance.bills WHERE payee = $1", payee
+    )
+    assert row is not None
+    return row
+
+
+async def test_bill_sweep_closes_stale_zero_placeholder(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 1)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Stale Zero", amount="0.00", due_date=old)
+        await _insert_bill(
+            pool,
+            payee="Recent Zero",
+            amount="0.00",
+            due_date=_today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS - 1),
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        stale = await _bill_state(pool, "Stale Zero")
+        assert stale["status"] == "paid"
+        assert stale["paid_at"] is None
+        assert "stale_zero_placeholder" in str(stale["metadata"])
+        assert (await _bill_state(pool, "Recent Zero"))["status"] == "pending"
+
+
+async def test_bill_sweep_marks_stale_nonautopay_bill_overdue(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 1)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Stale Real", amount="42.00", due_date=old)
+        await _insert_bill(
+            pool,
+            payee="Within Grace",
+            amount="42.00",
+            due_date=_today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS - 1),
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        assert (await _bill_state(pool, "Stale Real"))["status"] == "overdue"
+        assert (await _bill_state(pool, "Within Grace"))["status"] == "pending"
+
+
+async def test_bill_sweep_leaves_stale_autopay_pending(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 30)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Autopay Card", amount="42.00", due_date=old)
+        await pool.execute("UPDATE finance.bills SET autopay = true WHERE payee = 'Autopay Card'")
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        assert (await _bill_state(pool, "Autopay Card"))["status"] == "pending"
+
+
+async def test_bill_sweep_stale_bill_lifecycle_is_idempotent(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 1)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Stale Zero", amount="0.00", due_date=old)
+        await _insert_bill(pool, payee="Stale Real", amount="42.00", due_date=old)
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        before = await pool.fetch("SELECT payee, status, metadata, updated_at FROM finance.bills")
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        after = await pool.fetch("SELECT payee, status, metadata, updated_at FROM finance.bills")
+
+        assert [dict(r) for r in before] == [dict(r) for r in after]

@@ -1784,6 +1784,51 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
 # ---------------------------------------------------------------------------
 
 
+# bu-swkpoo.6: grace before a past-due pending bill is aged out by the weekly sweep.
+_STALE_BILL_GRACE_DAYS = 7
+_STALE_PLACEHOLDER_CLOSED_REASON = "stale_zero_placeholder"
+
+
+async def _age_out_stale_bills(conn: Any, today: date) -> dict[str, int]:
+    """Close stale $0 placeholders and mark stale real bills overdue (idempotent).
+
+    Runs after ``reconcile_bills`` so a payment that settles a bill wins first.
+    ``bills.status`` has no ``closed`` value (CHECK pending|paid|overdue), so a
+    past-due ``$0`` placeholder is closed as ``paid`` with ``paid_at`` left NULL
+    and ``metadata.closed_reason`` set: nothing was owed, so nothing was paid, and
+    the NULL ``paid_at`` plus reason keeps that distinguishable from a real
+    settlement. A non-autopay, non-predicted bill with ``amount > 0`` becomes
+    ``overdue``. Autopay bills stay ``pending`` (reconciliation settles them) and
+    a ``$0`` bill is never ``overdue`` (CHECK).
+    """
+    cutoff = today - timedelta(days=_STALE_BILL_GRACE_DAYS)
+    closed = await conn.fetch(
+        """
+        UPDATE bills
+           SET status = 'paid',
+               metadata = metadata || jsonb_build_object(
+                   'closed_reason', $2::text, 'closed_on', $3::text),
+               updated_at = now()
+         WHERE status = 'pending' AND amount = 0 AND due_date < $1
+        RETURNING id
+        """,
+        cutoff,
+        _STALE_PLACEHOLDER_CLOSED_REASON,
+        today.isoformat(),
+    )
+    overdue = await conn.fetch(
+        """
+        UPDATE bills
+           SET status = 'overdue', updated_at = now()
+         WHERE status = 'pending' AND amount > 0 AND NOT autopay AND NOT predicted
+           AND due_date < $1
+        RETURNING id
+        """,
+        cutoff,
+    )
+    return {"placeholders_closed": len(closed), "marked_overdue": len(overdue)}
+
+
 async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the weekly bill-reconciliation sweep and surface results as insights.
 
@@ -1827,6 +1872,11 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
         reconcile_result = await reconcile_bills(conn, lookback_days=90)
     auto_settled = reconcile_result.get("auto_settled", [])
     confirm_candidates = reconcile_result.get("candidates", [])
+
+    # bu-swkpoo.6: age out past-due pending bills only after reconciliation ran.
+    async with _finance_scoped_connection(db_pool) as conn:
+        aged = await _age_out_stale_bills(conn, today)
+    logger.info("Finance bill sweep aged out stale bills: %s", aged)
 
     async with _finance_scoped_connection(db_pool) as conn:
         predict_result = await predict_bills(conn, days_ahead=30)
