@@ -10,6 +10,7 @@ Each job handler:
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -652,3 +653,110 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
         stats["early_exit"],
     )
     return stats
+
+
+# --------------------------------------------------------------------------
+# Trip lifecycle advance
+# --------------------------------------------------------------------------
+
+
+def _lifecycle_target_status(
+    status: str, start_date: date | None, end_date: date | None, today: date
+) -> str | None:
+    """Return the status a trip should advance to on *today*, or None to leave it.
+
+    Forward-only: ``planned`` -> ``active`` -> ``completed``. ``cancelled`` and
+    ``completed`` trips are never touched, and a trip missing either date is left
+    alone (no date evidence to advance it by).
+    """
+    if status not in ("planned", "active") or start_date is None or end_date is None:
+        return None
+    if end_date < today:
+        return "completed"
+    if status == "planned" and start_date <= today:
+        return "active"
+    return None
+
+
+async def run_trip_lifecycle_advance(
+    db_pool: asyncpg.Pool, *, today: date | None = None
+) -> dict[str, Any]:
+    """Advance trip status by date: planned -> active -> completed.
+
+    Deterministic and zero-LLM. "Today" is the owner's local date (shared
+    ``settings.general`` timezone, SGT fallback). A trip whose ``end_date`` is
+    before today becomes ``completed`` (even straight from ``planned``); a
+    ``planned`` trip whose window contains today becomes ``active``. Never touches
+    ``cancelled`` trips and never moves a status backwards, so re-running is a
+    no-op. Each change appends a ``change_history`` entry to ``trips.metadata``
+    recording the prior status, matching ``update_itinerary``'s ``prior_values``.
+
+    Args:
+        db_pool: Database connection pool.
+        today: Override for the owner-local date (tests).
+
+    Returns:
+        Dictionary with keys: trips_checked, activated, completed.
+    """
+    if today is None:
+        from butlers.jobs.briefing import owner_briefing_zone
+
+        today = datetime.now(await owner_briefing_zone(db_pool)).date()
+
+    activated: list[str] = []
+    completed: list[str] = []
+    now_iso = datetime.now(UTC).isoformat()
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, status, start_date, end_date
+                FROM travel.trips
+                WHERE status IN ('planned', 'active')
+                ORDER BY start_date ASC
+                FOR UPDATE
+                """
+            )
+            for row in rows:
+                target = _lifecycle_target_status(
+                    row["status"], row["start_date"], row["end_date"], today
+                )
+                if target is None:
+                    continue
+                entry = {
+                    "prior_values": {"status": row["status"]},
+                    "source_message_id": None,
+                    "updated_by": "trip_lifecycle_advance",
+                    "reason": f"date-driven lifecycle advance on {today.isoformat()}",
+                    "updated_at": now_iso,
+                }
+                await conn.execute(
+                    """
+                    UPDATE travel.trips
+                    SET status = $2,
+                        metadata = jsonb_set(
+                            metadata,
+                            '{change_history}',
+                            COALESCE(metadata->'change_history', '[]'::jsonb) || $3::jsonb
+                        ),
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    row["id"],
+                    target,
+                    json.dumps([entry]),
+                )
+                (completed if target == "completed" else activated).append(str(row["id"]))
+
+    logger.info(
+        "Trip lifecycle advance: %d checked, %d activated, %d completed",
+        len(rows),
+        len(activated),
+        len(completed),
+    )
+    return {
+        "trips_checked": len(rows),
+        "activated": len(activated),
+        "completed": len(completed),
+    }

@@ -5980,7 +5980,7 @@
       "sha256": "6d9c16a5787bb0c3ff4281519d4b19946ac4d3d6bf70572e0d24cd230bae85be"
     },
     "roster/travel/butler.toml": {
-      "sha256": "7acadf31e6a30e5a1007f0c0a64cfc8c97aa58a1dea5aafd3042707078c54fcc"
+      "sha256": "3a15504cf000731564856b1cd1b80c4ef809cadea23218d297ff7a8ab05c4f1b"
     },
     "src/butlers/connector_catalog.py": {
       "sha256": "f20b49d2d0bc61896b6734434a7df49b0004fa548c6d98155cdf860497bc7811"

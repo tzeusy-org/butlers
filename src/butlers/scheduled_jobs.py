@@ -1163,6 +1163,18 @@ async def _run_travel_insight_scan_job(
     return await mod.run_insight_scan(pool)
 
 
+async def _run_travel_trip_lifecycle_advance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Advance travel trip status by date (planned -> active -> completed)."""
+    del job_args
+    from butlers.jobs._roster_loader import load_roster_jobs
+
+    mod = load_roster_jobs("travel")
+    return await mod.run_trip_lifecycle_advance(pool)
+
+
 async def _run_travel_flight_status_check_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2457,6 +2469,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_travel_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_travel_calendar_prep_contribution_job,
             "insight_scan": _run_travel_insight_scan_job,
+            "trip_lifecycle_advance": _run_travel_trip_lifecycle_advance_job,
             "flight_status_check": _run_travel_flight_status_check_job,
             "destination_outlook": _run_travel_destination_outlook_job,
             "context_producer_travel": _run_context_producer_travel_job,
