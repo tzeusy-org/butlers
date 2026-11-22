@@ -93,6 +93,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.public_mcp_controls", "router"),
     ("butlers.api.routers.data_ops", "router"),
     ("butlers.api.routers.delegation", "router"),
+    ("butlers.api.routers.goals", "router"),
     ("butlers.api.routers.entities", "router"),
     ("butlers.api.routers.domain_events", "router"),
     ("butlers.api.routers.webhooks", "router"),

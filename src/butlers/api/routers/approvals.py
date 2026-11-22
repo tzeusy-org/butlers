@@ -649,7 +649,7 @@ def _pending_action_to_api(
         id=str(action.id),
         butler=butler_name,
         tool_name=action.tool_name,
-        tool_args=redact_tool_args(action.tool_name, action.tool_args),
+        tool_args=redact_tool_args(action.tool_name, action.tool_args, reveal_recipients=True),
         status=action.status.value,
         requested_at=action.requested_at,
         agent_summary=action.agent_summary,
@@ -780,7 +780,9 @@ def _pending_action_to_detail(
         "agent_summary": action.agent_summary,
     }
     if external_review is None:
-        proposed_action["tool_args"] = redact_tool_args(action.tool_name, action.tool_args)
+        proposed_action["tool_args"] = redact_tool_args(
+            action.tool_name, action.tool_args, reveal_recipients=True
+        )
     return ApprovalDetail(
         id=str(action.id),
         title=title,

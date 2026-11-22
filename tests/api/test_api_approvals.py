@@ -3748,3 +3748,38 @@ async def test_detail_returns_the_server_built_goal_facts_and_null_for_other_act
     ) as client:
         resp = await client.get(f"/api/approvals/{plain_id}")
     assert resp.json()["data"]["goal"] is None
+
+
+# ---------------------------------------------------------------------------
+# Owner view shows recipients (bu-0rbswe AC4)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_tool_args_reveals_only_recipient_arguments_for_the_owner_view():
+    from butlers.modules.approvals.sensitivity import redact_tool_args
+
+    args = {"to": "sam@example.com", "account": "main", "api_key": "k", "text": "hi"}
+
+    assert redact_tool_args("send_email", args)["to"] == "[REDACTED]"
+    owner_view = redact_tool_args("send_email", args, reveal_recipients=True)
+    assert owner_view == {
+        "to": "sam@example.com",
+        "account": "main",
+        "api_key": "[REDACTED]",
+        "text": "hi",
+    }
+
+
+async def test_action_detail_shows_the_exact_recipient_but_not_credentials(app):
+    action = _make_action(tool_name="send_email")
+    action["tool_args"] = {"to": "sam@example.com", "token": "t0ken", "subject": "Hello"}
+    app, _ = _app_with_mock_db(app, fetchrow_return=action)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/approvals/actions/{action['id']}")
+
+    assert response.status_code == 200, response.text
+    tool_args = response.json()["data"]["tool_args"]
+    assert tool_args == {"to": "sam@example.com", "token": "[REDACTED]", "subject": "Hello"}
