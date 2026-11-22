@@ -41,7 +41,11 @@ from butlers.core.qa.dispatch import (
 )
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.publication.binding import OperationKind
-from butlers.core.qa.publication.publisher import QaPublisher
+from butlers.core.qa.publication.publisher import (
+    PublicationResult,
+    PublicationStatus,
+    QaPublisher,
+)
 from butlers.core.qa.triage import TriagedFinding
 from butlers.testing.fake_pool import fake_pool
 from tests.core.qa.publication_fakes import (
@@ -79,6 +83,64 @@ def _make_triaged(finding: QaFinding | None = None) -> TriagedFinding:
 
 def _qa_pool():
     return fake_pool(fetchval=uuid.uuid4(), fetchrow=None, fetch=[], execute=None)
+
+
+@pytest.fixture(autouse=True)
+def _no_paused_proposal():
+    """The fake pool's ``fetchval`` is truthy; Gate 5.6 has its own tests below."""
+    with patch(
+        "butlers.core.qa.dispatch.get_paused_proposal",
+        new_callable=AsyncMock,
+        return_value=None,
+    ) as paused:
+        yield paused
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_publication_paused_holds_before_claim(_no_paused_proposal):
+    """A retained proposal holds its fingerprint: event written, no claim, no spawn."""
+    _no_paused_proposal.return_value = uuid.uuid4()
+    spawner = MagicMock()
+    with (
+        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock) as claim,
+        patch(
+            "butlers.core.qa.dispatch.update_finding_dedup_reason", new_callable=AsyncMock
+        ) as dedup,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_qa_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=spawner,
+            gh_token=None,
+        )
+    assert result.accepted is False and result.reason == "publication_paused"
+    claim.assert_not_awaited()
+    spawner.trigger.assert_not_called()
+    dedup.assert_awaited_once_with(ANY, ANY, "publication_paused")
+    assert event.await_args.kwargs["decision"] == "publication_paused"
+    assert event.await_args.kwargs["attempt_id"] is None
+    # The hold window is passed through and capped by the export retention.
+    assert _no_paused_proposal.await_args.args[2] == 7
+
+
+@pytest.mark.asyncio
+async def test_dispatch_qa_publication_paused_inert_with_publisher(_no_paused_proposal):
+    """With a publisher injected the gate is inert and never consults the store."""
+    result = await dispatch_qa_investigation(
+        pool=_qa_pool(),
+        triaged_finding=_make_triaged(_make_finding(severity=3)),
+        patrol_id=uuid.uuid4(),
+        config=QaDispatchConfig(severity_threshold=2, publisher=MagicMock()),
+        repo_root=Path("/tmp/repo"),
+        spawner=MagicMock(),
+        gh_token=None,
+    )
+    assert result.reason == "severity_above_threshold"
+    _no_paused_proposal.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -1394,8 +1456,22 @@ def _assert_no_credential(env: dict[str, str]) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retained", "expected_detail"),
+    [
+        # Sealed and retained: the attempt keeps the publication_unavailable reason.
+        (None, "publication_unavailable:"),
+        # The store could not keep the bytes: fail closed, same reason, no receipt claimed.
+        (
+            PublicationResult(PublicationStatus.REFUSED, "export_unretained"),
+            "publication_unavailable:",
+        ),
+        # The validator refused: recorded as the publisher records a refusal.
+        (PublicationResult(PublicationStatus.REFUSED, "unbound_export"), "publication_refused:"),
+    ],
+)
 async def test_investigation_agent_has_no_credential_and_publication_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retained, expected_detail
 ):
     """Agent env carries no token; a successful run pushes nothing and records the reason."""
     monkeypatch.setenv("GH_TOKEN", _AGENT_TOKEN)
@@ -1416,6 +1492,11 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
         patch(
             "butlers.core.qa.dispatch._persist_notes_and_remove_worktree", new_callable=AsyncMock
         ),
+        patch(
+            "butlers.core.qa.dispatch.retain_unpublished_proposal",
+            new_callable=AsyncMock,
+            return_value=retained,
+        ),
     ):
         await _run_investigation_session(
             pool=_qa_pool(),
@@ -1432,7 +1513,7 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
 
     _assert_no_credential(spawner.trigger.await_args.kwargs["env_override"])
     assert update.await_args.args[2] == "failed"
-    assert update.await_args.kwargs["error_detail"].startswith("publication_unavailable:")
+    assert update.await_args.kwargs["error_detail"].startswith(expected_detail)
 
 
 @pytest.mark.asyncio
@@ -1624,3 +1705,74 @@ async def test_leaking_commit_escalates_anonymization_failed_without_egress(
     assert secret not in repr(mocks["event"].await_args_list + mocks["update"].await_args_list)
     mocks["drafted"].assert_not_awaited()
     assert mocks["td"].await_args.kwargs["delete_branch"] is True
+
+
+async def _run_unpublished_investigation(
+    repo: Path, base: str, attempt_id: uuid.UUID
+) -> dict[str, AsyncMock]:
+    """Run a real-git investigation with NO publisher; retention is captured, not stored."""
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+    worktree = repo.parent / "worktree"
+    worktree.mkdir(exist_ok=True)
+    with (
+        patch("butlers.core.qa.dispatch._detect_no_op_branch", AsyncMock(return_value=False)),
+        patch("butlers.core.qa.dispatch._capture_commit_diff_snapshot", AsyncMock(return_value=[])),
+        patch("butlers.core.qa.dispatch.update_attempt_status", AsyncMock(return_value=True)) as up,
+        patch("butlers.core.qa.dispatch._persist_notes_and_remove_worktree", AsyncMock()) as td,
+        patch("butlers.core.qa.dispatch.record_event", AsyncMock()),
+        patch("butlers.core.qa.dispatch.record_escalated_event", AsyncMock()),
+        patch("butlers.core.qa.publication.proposal.retention.retain_export", AsyncMock()) as keep,
+        patch("butlers.core.qa.publication.proposal.retention.record_refusal", AsyncMock()) as rec,
+    ):
+        await _run_investigation_session(
+            pool=_qa_pool(),
+            repo_root=repo,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name=_QA_BRANCH,
+            worktree_path=worktree,
+            finding=_make_finding(),
+            config=QaDispatchConfig(),
+            spawner=spawner,
+            gh_token=None,
+            git_author_name=QA_IDENTITY.name,
+            git_author_email=QA_IDENTITY.email,
+            base_sha=base,
+        )
+    return {"update": up, "td": td, "keep": keep, "refuse": rec}
+
+
+@pytest.mark.asyncio
+async def test_committed_investigation_without_publisher_retains_sealed_proposal(
+    tmp_path: Path,
+) -> None:
+    repo, base = _publishing_repo(tmp_path)
+    head = git(repo, "rev-parse", _QA_BRANCH)
+    attempt_id = uuid.uuid4()
+
+    mocks = await _run_unpublished_investigation(repo, base, attempt_id)
+
+    mocks["keep"].assert_awaited_once()
+    _pool, kept_attempt, export = mocks["keep"].await_args.args
+    assert kept_attempt == attempt_id
+    export.verify()
+    assert (export.base_sha, export.head_sha) == (base, head)
+    mocks["refuse"].assert_not_awaited()
+    update = mocks["update"].await_args
+    assert update.args[2] == "failed"
+    assert update.kwargs["error_detail"].startswith("publication_unavailable:")
+
+
+@pytest.mark.asyncio
+async def test_leaking_commit_without_publisher_is_refused_not_retained(tmp_path: Path) -> None:
+    repo, base = _publishing_repo(tmp_path, content="token = 'sk-ant-abcdefghijklmnopqrst'\n")
+
+    mocks = await _run_unpublished_investigation(repo, base, uuid.uuid4())
+
+    mocks["keep"].assert_not_awaited()
+    assert mocks["refuse"].await_args.kwargs == {
+        "status": "anonymization_failed",
+        "category": "content_leak",
+    }
+    assert mocks["update"].await_args.args[2] == "anonymization_failed"

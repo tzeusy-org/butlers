@@ -2,8 +2,9 @@
 
 QA automated publication is disabled in production (program bu-mc01y5). The repository holds the
 trusted deterministic publisher (slice 3, below) and the durable ledger it writes, but no production
-configuration injects a publisher, so a committed investigation still fails `publication_unavailable`
-until process isolation is proven (bu-mc01y5.7). The governing requirements are
+configuration injects a publisher, so a committed investigation is sealed and retained as an unpublished proposal (the attempt
+keeps `publication_unavailable` but the breaker counts it as a success and Gate 5.6 holds the
+fingerprint for 7 days, bu-ejow5p.2) until process isolation is proven (bu-mc01y5.7). The governing requirements are
 `REQ-qa-publication-authority-002` (immutable binding), `-003` (closed operations), `-004` (whole
 reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery) in
 `openspec/changes/confine-qa-publication-authority`.

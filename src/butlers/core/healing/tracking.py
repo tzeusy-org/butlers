@@ -62,6 +62,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.healing.constants import QA_PUBLICATION_UNAVAILABLE_PREFIX
+
 logger = logging.getLogger(__name__)
 
 # Type aliases
@@ -166,6 +168,34 @@ class PublicationLineageHeld(RuntimeError):
 async def get_publication_hold(pool: asyncpg.Pool, fingerprint: str) -> bool:
     """Return True while an ambiguous publication holds *fingerprint*'s lineage."""
     return bool(await pool.fetchval(f"SELECT {_PUBLICATION_HOLD_EXISTS_SQL}", fingerprint))
+
+
+async def get_paused_proposal(
+    pool: asyncpg.Pool, fingerprint: str, hold_days: int
+) -> uuid.UUID | None:
+    """Return the attempt whose retained, unpruned proposal holds *fingerprint*, if any.
+
+    A proposal holds while publication is absent (bu-ejow5p.2): the attempt closed
+    ``failed`` with ``publication_unavailable`` within *hold_days* and its sealed export
+    is still retained.  A pruned export or an expired window releases the fingerprint.
+    """
+    return await pool.fetchval(
+        """
+        SELECT a.id
+        FROM public.healing_attempts AS a
+        JOIN public.qa_publication_exports AS x ON x.attempt_id = a.id
+        WHERE a.fingerprint = $1
+          AND a.status = 'failed'
+          AND a.error_detail LIKE $2
+          AND a.closed_at >= now() - ($3 * INTERVAL '1 day')
+          AND x.pruned_at IS NULL
+        ORDER BY a.closed_at DESC
+        LIMIT 1
+        """,
+        fingerprint,
+        QA_PUBLICATION_UNAVAILABLE_PREFIX + "%",
+        hold_days,
+    )
 
 
 # ---------------------------------------------------------------------------
