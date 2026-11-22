@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 
 from butlers.roster_imports import roster_module
+from butlers.testing.fake_pool import FakeConnection
 
 canonical_payee_key = roster_module("finance", "tools/reconciliation").canonical_payee_key
 
@@ -55,18 +56,6 @@ def test_canonical_key_is_idempotent() -> None:
 # --- Docker-free proof of the roll grouping (bu-swkpoo.15) --------------------
 
 
-class _FakeConn:
-    def __init__(self, rows: list[dict]) -> None:
-        self.rows = rows
-        self.inserts: list[tuple] = []
-
-    async def fetch(self, *_args):
-        return self.rows
-
-    async def execute(self, _sql, *args):
-        self.inserts.append(args)
-
-
 _ids = itertools.count(1)
 
 
@@ -91,9 +80,9 @@ def _bill(payee: str, due: date, *, frequency="monthly", status="paid", created=
 
 async def _roll(rows: list[dict], today: date) -> list[tuple]:
     fj = importlib.import_module("butlers.jobs._roster.finance_jobs")
-    conn = _FakeConn(rows)
+    conn = FakeConnection(fetch=rows, execute=None)
     await fj._roll_recurring_bills(conn, today)
-    return conn.inserts
+    return [call.args[1:] for call in conn.execute.call_args_list]
 
 
 async def test_roll_groups_variants_into_one_insert() -> None:
