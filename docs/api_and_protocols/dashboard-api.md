@@ -83,7 +83,7 @@ Cross-cutting envelope, pagination, and degraded-source rules are in
 `switchboard.goals` and its sibling ledger tables. No current page calls them; they wait for the
 D19 pages and the M6 switch.
 
-- `GET /api/goals` is a `Page` list (`created_at DESC, id DESC`) filtered by `origin`, `exposed`,
+- `GET /api/goals` is a `Page` list (`created_at DESC, id DESC`) filtered by `origin`, `exposed`, `outcome`, a `since` (inclusive) and `until` (exclusive) `created_at` range,
   `state` and `region`. A region is the domain prefix of an effect's capability identity. An
   unreachable or failing ledger answers 200 with `sources_degraded: ["goal_ledger"]`, never an
   empty page.

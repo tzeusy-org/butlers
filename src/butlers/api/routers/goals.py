@@ -18,6 +18,8 @@ literal route to the Hold/Stop-all owner.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -42,7 +44,12 @@ from butlers.api.models.goals import (
     RegionSummaries,
     RegionSummary,
 )
-from butlers.api.pagination import Page, decode_cursor, encode_cursor
+from butlers.api.pagination import InvalidCursorError, Page, decode_cursor, encode_cursor
+
+
+def digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, default=str).encode()).hexdigest()[:16]
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,7 @@ CURSOR_SCOPE = "goals:list:v1"
 LEDGER_SOURCE = "goal_ledger"
 
 GoalOrigin = Literal["owner", "obligation", "third_party", "staffer"]
+GoalOutcomeFilter = Literal["completed", "partial", "failed"]
 GoalState = Literal[
     "admitted",
     "running",
@@ -118,11 +126,28 @@ async def list_goals(
     exposed: bool | None = Query(None, description="Exposure: true or false."),
     state: GoalState | None = Query(None),
     region: str | None = Query(None, min_length=1, max_length=64),
+    outcome: GoalOutcomeFilter | None = Query(None, description="The lead's recorded outcome."),
+    since: datetime | None = Query(None, description="created_at >= since (ISO 8601 with offset)."),
+    until: datetime | None = Query(None, description="created_at < until (ISO 8601 with offset)."),
     limit: int = Query(25, ge=1, le=100),
     cursor: str | None = Query(None),
 ) -> Any:
-    """Goals newest first (``created_at DESC, id DESC``)."""
-    position = decode_cursor(cursor, (datetime, uuid.UUID), scope=CURSOR_SCOPE) if cursor else None
+    """Goals newest first (``created_at DESC, id DESC``).
+
+    ``since`` is inclusive and ``until`` exclusive, both on ``created_at``. A cursor is bound to
+    the filter set that minted it: replayed under other filters it is a 400.
+    """
+    for name, value in (("since", since), ("until", until)):
+        if value is not None and value.utcoffset() is None:
+            raise HTTPException(status_code=422, detail=f"{name} must include a UTC offset")
+    if since is not None and until is not None and since >= until:
+        raise HTTPException(status_code=422, detail="since must be before until")
+    filters = digest([origin, exposed, state, region, outcome, since, until])
+    position = None
+    if cursor:
+        *position, bound = decode_cursor(cursor, (datetime, uuid.UUID, str), scope=CURSOR_SCOPE)
+        if bound != filters:
+            raise InvalidCursorError()
     pool = _ledger_pool(db)
     if pool is None:
         return Page[GoalSummary](items=[], limit=limit, sources_degraded=[LEDGER_SOURCE])
@@ -145,6 +170,12 @@ async def list_goals(
             "EXISTS (SELECT 1 FROM switchboard.effects e "
             f"WHERE e.goal_id = g.id AND {_REGION_SQL} = {bind(region)})"
         )
+    if outcome is not None:
+        clauses.append(f"o.outcome = {bind(outcome)}")
+    if since is not None:
+        clauses.append(f"g.created_at >= {bind(since)}")
+    if until is not None:
+        clauses.append(f"g.created_at < {bind(until)}")
     if position is not None:
         clauses.append(f"(g.created_at, g.id) < ({bind(position[0])}, {bind(position[1])})")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -161,7 +192,7 @@ async def list_goals(
 
     page = rows[:limit]
     next_cursor = (
-        encode_cursor((page[-1]["created_at"], page[-1]["id"]), scope=CURSOR_SCOPE)
+        encode_cursor((page[-1]["created_at"], page[-1]["id"], filters), scope=CURSOR_SCOPE)
         if len(rows) > limit
         else None
     )

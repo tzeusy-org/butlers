@@ -261,3 +261,45 @@ async def test_regions_flag_the_ledger_when_it_is_unreachable(app):
     assert resp.status_code == 200
     assert resp.json()["data"]["sources_degraded"] == ["goal_ledger"]
     assert resp.json()["data"]["regions"] == []
+
+
+async def test_list_filters_by_outcome_and_a_created_at_range(app):
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=[])
+    since, until = "2026-11-01T00:00:00%2B00:00", "2026-11-02T00:00:00%2B00:00"
+
+    resp = await _get(app, _db(pool), f"/api/goals?outcome=failed&since={since}&until={until}")
+
+    assert resp.status_code == 200, resp.text
+    sql, *args = pool.fetch.await_args.args
+    assert args == [
+        "failed",
+        datetime(2026, 11, 1, tzinfo=UTC),
+        datetime(2026, 11, 2, tzinfo=UTC),
+        26,
+    ]
+    assert "o.outcome = $1" in sql and "g.created_at >= $2" in sql and "g.created_at < $3" in sql
+
+
+async def test_list_rejects_bad_outcome_and_time_input(app):
+    db = _db(AsyncMock())
+    assert (await _get(app, db, "/api/goals?outcome=won")).status_code == 422
+    assert (await _get(app, db, "/api/goals?since=yesterday")).status_code == 422
+    assert (await _get(app, db, "/api/goals?since=2026-11-01T00:00:00")).status_code == 422
+    inverted = "since=2026-11-02T00:00:00%2B00:00&until=2026-11-01T00:00:00%2B00:00"
+    assert (await _get(app, db, f"/api/goals?{inverted}")).status_code == 422
+
+
+async def test_a_cursor_only_continues_the_filter_set_that_minted_it(app):
+    rows = [_goal(created_at=_NOW - timedelta(minutes=i)) for i in range(3)]
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(return_value=rows)
+    first = (await _get(app, _db(pool), "/api/goals?limit=2&outcome=completed")).json()
+    cursor = first["next_cursor"]
+
+    same = await _get(app, _db(pool), f"/api/goals?limit=2&outcome=completed&cursor={cursor}")
+    other = await _get(app, _db(pool), f"/api/goals?limit=2&outcome=failed&cursor={cursor}")
+    bare = await _get(app, _db(pool), f"/api/goals?limit=2&cursor={cursor}")
+
+    assert same.status_code == 200
+    assert other.status_code == 400 and bare.status_code == 400

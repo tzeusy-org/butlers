@@ -212,7 +212,7 @@ OP GET /api/general/entities/{entity_id} 9889d2803a32
 OP GET /api/general/projects 49de71e1875b
 OP GET /api/general/projects/{project_id} 9fe8bd260b21
 OP GET /api/general/stats 1a5709ce3ef1
-OP GET /api/goals 3085069281c8
+OP GET /api/goals da7b15d239e2
 OP GET /api/goals/regions 98a61f85e7e0
 OP GET /api/goals/{goal_id} b6da13beebd4
 OP GET /api/healing/attempts 2cd5f66a765d

@@ -3783,3 +3783,19 @@ async def test_action_detail_shows_the_exact_recipient_but_not_credentials(app):
     assert response.status_code == 200, response.text
     tool_args = response.json()["data"]["tool_args"]
     assert tool_args == {"to": "sam@example.com", "token": "[REDACTED]", "subject": "Hello"}
+
+
+def test_dossier_shows_the_exact_recipient_but_not_credentials():
+    from butlers.api.routers.approvals import _pending_action_to_detail
+    from butlers.modules.approvals.models import PendingAction
+
+    row = _make_action(tool_name="send_email")
+    row["tool_args"] = {"to": "sam@example.com", "api_key": "k", "subject": "Hello"}
+
+    detail = _pending_action_to_detail(PendingAction.from_row(row), "general", None, [])
+
+    assert detail.proposed_action["tool_args"] == {
+        "to": "sam@example.com",
+        "api_key": "[REDACTED]",
+        "subject": "Hello",
+    }
