@@ -315,9 +315,13 @@ class TestChroniclerMemoryPreparation:
 
 
 class TestUpCommand:
-    def test_up_passes_optional_health_service_tls(self, runner, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("service_auth", ["0", "1"])
+    def test_up_requires_service_auth_for_health_tls(
+        self, runner, tmp_path, monkeypatch, service_auth
+    ):
         start = AsyncMock()
         monkeypatch.setattr("butlers.cli._start_all", start)
+        monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", service_auth)
         result = runner.invoke(
             cli,
             [
@@ -330,10 +334,15 @@ class TestUpCommand:
                 "192.0.2.80",
             ],
         )
-        assert result.exit_code == 0, result.exception
-        start.assert_awaited_once_with(
-            {"health": Path("roster/health")}, health_tls=(tmp_path, "192.0.2.80")
-        )
+        if service_auth == "1":
+            assert result.exit_code == 0, result.exception
+            start.assert_awaited_once_with(
+                {"health": Path("roster/health")}, health_tls=(tmp_path, "192.0.2.80")
+            )
+        else:
+            assert result.exit_code != 0
+            assert "requires BUTLERS_SERVICE_PLANE_AUTH=1" in result.output
+            start.assert_not_awaited()
 
     def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
         """up fails with no configs and with nonexistent --only target."""

@@ -128,8 +128,12 @@ def up(
         raise click.ClickException("Health service TLS requires both material and a pod IP bind")
     health_tls = None
     if health_tls_dir is not None and health_tls_bind is not None:
+        from butlers.core.service_plane.switch import service_plane_auth_enabled
+
         if "health" not in configs:
             raise click.ClickException("Health service TLS requires starting the Health daemon")
+        if not service_plane_auth_enabled():
+            raise click.ClickException("Health service TLS requires BUTLERS_SERVICE_PLANE_AUTH=1")
         health_tls = (health_tls_dir, health_tls_bind)
 
     # Check for port conflicts before starting any butler

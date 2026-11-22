@@ -828,11 +828,13 @@ class ButlerDaemon:
         if directory is None:
             return None
         config = self.config
-        expected = ("switchboard", 41100) if self._control_profile else ("health", 41103)
-        if config is None or (config.name, config.port) != expected:
-            raise ValueError(
-                f"Service TLS is configured outside the {expected[0].capitalize()} service listener"
-            )
+        if self._control_profile is not None:
+            if config is None or (config.name, config.port) != ("switchboard", 41100):
+                raise ValueError(
+                    "Service TLS is configured outside the Switchboard service listener"
+                )
+        elif config is None or (config.name, config.port) != ("health", 41103):
+            raise ValueError("Service TLS is configured outside the Health service listener")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_3
         try:
