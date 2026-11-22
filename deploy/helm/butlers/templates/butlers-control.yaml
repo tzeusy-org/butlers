@@ -53,6 +53,7 @@ spec:
             - {name: BUTLERS_HOST, value: butlers-up}
             # Switchboard's own identity target resolves here, not on butlers-up.
             {{- include "butlers.switchboardClientEnv" . | nindent 12 }}
+            {{- with (include "butlers.healthClientEnv" .) }}{{ . | nindent 12 }}{{- end }}
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "1"}
@@ -76,6 +77,7 @@ spec:
             - {name: switchboard-serving-tls, mountPath: /var/run/butlers-switchboard-tls, readOnly: true}
             {{- end }}
             {{- with (include "butlers.switchboardCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.healthCAMount" .) }}{{ . | nindent 12 }}{{- end }}
             - {name: logs, mountPath: /app/logs}
             {{- range list "claude" "codex" "opencode" "gemini" }}
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
@@ -96,6 +98,7 @@ spec:
               - {key: tls.key, path: tls.key}
         {{- end }}
         {{- with (include "butlers.switchboardCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- with (include "butlers.healthCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
         {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- with (include "butlers.servicePlaneAccountVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
@@ -111,6 +114,7 @@ spec:
                   audience: butlers.messenger-delivery.v1
                   path: butlers.messenger-delivery.v1
                   expirationSeconds: {{ .Values.servicePlaneAuth.tokenExpirationSeconds }}
+              {{- with (include "butlers.healthPeerTokenSource" .) }}{{ . | nindent 14 }}{{- end }}
         {{- end }}
 ---
 # Existing service callers use 41100. Session 41199 is separately restricted

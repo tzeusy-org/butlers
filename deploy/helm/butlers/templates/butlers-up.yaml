@@ -34,12 +34,17 @@ spec:
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Execute the sealed installed environment; never resolve dependencies at startup.
-          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "butlers", "up"{{ if .Values.butlersControl.enabled }}, "--exclude", "switchboard"{{ end }}]
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "butlers", "up"{{ if .Values.butlersControl.enabled }}, "--exclude", "switchboard"{{ end }}{{ if .Values.servicePlaneAuth.healthTLS.enabled }}, "--health-tls-dir", "/var/run/butlers-health-tls", "--health-tls-bind", "$(BUTLERS_UP_POD_IP)"{{ end }}]
           ports:
             - {name: daemon, containerPort: {{ if .Values.butlersControl.enabled }}41101{{ else }}41100{{ end }}}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
+            {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+            - name: BUTLERS_UP_POD_IP
+              valueFrom:
+                fieldRef: {fieldPath: status.podIP}
+            {{- end }}
             {{- if .Values.butlersControl.enabled }}
             {{- include "butlers.switchboardClientEnv" . | nindent 12 }}
             {{- end }}
@@ -65,6 +70,9 @@ spec:
             {{- toYaml .Values.butlersUp.resources | nindent 12 }}
           volumeMounts:
             {{- with (include "butlers.switchboardCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+            - {name: health-serving-tls, mountPath: /var/run/butlers-health-tls, readOnly: true}
+            {{- end }}
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             {{- range list "claude" "codex" "opencode" "gemini" }}
@@ -81,6 +89,14 @@ spec:
         {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
         {{- with (include "butlers.switchboardCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+        - name: health-serving-tls
+          secret:
+            secretName: {{ required "Health TLS requires servingSecretName" .Values.servicePlaneAuth.healthTLS.servingSecretName | quote }}
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        {{- end }}
         {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- with (include "butlers.servicePlaneAccountVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}

@@ -162,6 +162,49 @@ http://{{ include "butlers.switchboardHost" . }}:41100
 {{- end -}}
 {{- end -}}
 
+{{- define "butlers.healthOrigin" -}}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled -}}
+{{- if not (and .Values.butlersControl.enabled .Values.servicePlaneAuth.enabled) -}}
+{{- fail "Health TLS requires butlersControl.enabled and servicePlaneAuth.enabled" -}}
+{{- end -}}
+https://butlers-up:41103
+{{- else -}}
+http://butlers-up:41103
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.healthClientEnv" -}}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled -}}
+- {name: HEALTH_MCP_URL, value: {{ printf "%s/mcp" (include "butlers.healthOrigin" .) | quote }}}
+- {name: BUTLERS_HEALTH_CA_FILE, value: /var/run/butlers-health-ca/ca.crt}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.healthCAMount" -}}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled -}}
+- {name: health-ca, mountPath: /var/run/butlers-health-ca, readOnly: true}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.healthCAVolume" -}}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled -}}
+- name: health-ca
+  configMap:
+    name: {{ required "Health TLS requires caConfigMapName" .Values.servicePlaneAuth.healthTLS.caConfigMapName | quote }}
+    items:
+      - {key: ca.crt, path: ca.crt}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.healthPeerTokenSource" -}}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled -}}
+- serviceAccountToken:
+    audience: butlers.health-medication-peer.v1
+    path: butlers.health-medication-peer.v1
+    expirationSeconds: {{ .Values.servicePlaneAuth.tokenExpirationSeconds }}
+{{- end -}}
+{{- end -}}
+
 {{/* "true" when egressProfiles.enabled, "" when not. tracker-egress.yaml and
      egress-profiles.yaml share it so they can never disagree; a non-boolean refuses. */}}
 {{- define "butlers.egressProfilesEnabled" -}}

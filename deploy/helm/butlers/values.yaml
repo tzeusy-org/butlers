@@ -182,6 +182,10 @@ servicePlaneAuth:
     enabled: false
     servingSecretName: ""
     caConfigMapName: ""
+  healthTLS:
+    enabled: false
+    servingSecretName: ""
+    caConfigMapName: ""
 
 butlersUp:
   resources:

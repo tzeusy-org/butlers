@@ -5,14 +5,21 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import ssl
 import subprocess
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import certifi
 import pytest
 import yaml
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 pytestmark = pytest.mark.unit
 _ROOT = Path(__file__).resolve().parents[2]
@@ -40,8 +47,8 @@ class _Response:
 
 
 @asynccontextmanager
-async def _identity_server(responses: list[_Response]):
-    """Serve a deterministic response sequence over real loopback HTTP."""
+async def _identity_server(responses: list[_Response], *, tls: ssl.SSLContext | None = None):
+    """Serve a deterministic response sequence over a real loopback listener."""
     paths: list[str] = []
     tasks: set[asyncio.Task] = set()
 
@@ -77,10 +84,11 @@ async def _identity_server(responses: list[_Response]):
                 pass
             tasks.discard(task)
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await asyncio.start_server(handle, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
+    origin = f"http://127.0.0.1:{port}" if tls is None else f"https://localhost:{port}"
     try:
-        yield f"http://127.0.0.1:{port}/internal/control-plane/identity", paths
+        yield f"{origin}/internal/control-plane/identity", paths
     finally:
         server.close()
         pending = list(tasks)
@@ -160,6 +168,68 @@ async def test_probe_deadline_and_invalid_configuration_refuse_startup():
             code, _, stderr = await _run_probe(url, "--timeout-seconds", invalid)
             assert code != 0 and "finite positive" in stderr
         assert paths == ["/internal/control-plane/identity"]
+
+
+@pytest.fixture
+def route_gate_tls(tmp_path):
+    key = ec.generate_private_key(ec.SECP256R1())
+    identity = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Health test CA")])
+    now = datetime.now(UTC)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(identity)
+        .issuer_name(identity)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(hours=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    cert, private = tmp_path / "health-ca.crt", tmp_path / "health.key"
+    cert.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    private.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server.minimum_version = ssl.TLSVersion.TLSv1_3
+    server.load_cert_chain(cert, private)
+    return server, str(cert)
+
+
+async def test_https_probe_verifies_health_before_accepting_readiness(route_gate_tls, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    tls, ca_file = route_gate_tls
+    malformed_ca = Path(ca_file).with_name("bad-ca.crt")
+    malformed_ca.write_text("synthetic malformed CA")
+    responses = [_Response(_identity(accepting_routes=False)), _Response(_identity())]
+    async with _identity_server(responses, tls=tls) as (url, paths):
+        invalid_config = "route-gate: invalid transport configuration\n"
+        deadline = "route-gate: startup deadline exceeded\n"
+        for target, trust, diagnostic in (
+            (url, (), invalid_config),
+            (url, ("--ca-file", str(malformed_ca)), invalid_config),
+            (url, ("--ca-file", certifi.where()), deadline),
+            (url.replace("localhost", "127.0.0.1"), ("--ca-file", ca_file), deadline),
+        ):
+            code, stdout, stderr = await _run_probe(target, *trust, "--timeout-seconds", "0.7")
+            assert code == 1 and stderr == diagnostic
+            assert "confirmed" not in stdout
+            assert paths == []
+
+        code, stdout, stderr = await _run_probe(
+            url, "--ca-file", ca_file, "--timeout-seconds", "3", "--interval-seconds", "0.01"
+        )
+        assert code == 0, stderr
+        assert "confirmed" in stdout
+        assert paths == ["/internal/control-plane/identity"] * 2
 
 
 @pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")

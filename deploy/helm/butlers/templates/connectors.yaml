@@ -54,7 +54,11 @@ spec:
           image: {{ include "butlers.image" $ }}
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "scripts/wait_for_butler_routes.py"]
-          args: ["--url", "http://butlers-up:41103/internal/control-plane/identity", "--butler", "health"]
+          args: ["--url", {{ printf "%s/internal/control-plane/identity" (include "butlers.healthOrigin" $) | quote }}, "--butler", "health"{{ if $.Values.servicePlaneAuth.healthTLS.enabled }}, "--ca-file", "/var/run/butlers-health-ca/ca.crt"{{ end }}]
+          {{- if $.Values.servicePlaneAuth.healthTLS.enabled }}
+          volumeMounts:
+            {{- include "butlers.healthCAMount" $ | nindent 12 }}
+          {{- end }}
         {{- end }}
       containers:
         - name: connector
@@ -123,6 +127,9 @@ spec:
         {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
         {{- with (include "butlers.switchboardCAVolume" $) }}{{ . | nindent 8 }}{{- end }}
+        {{- if $c.waitForHealthRoutes }}
+        {{- with (include "butlers.healthCAVolume" $) }}{{ . | nindent 8 }}{{- end }}
+        {{- end }}
         {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" $ | nindent 8 }}
         {{- if $c.waBridge }}

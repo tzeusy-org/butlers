@@ -66,6 +66,16 @@ The Service listener binds the control pod IP. Local runtime MCP uses the same
 port on IPv4 loopback.
 The mode defaults to false. Provision the TLS resources before enabling it.
 
+The optional `servicePlaneAuth.healthTLS.enabled` mode requires the split stage
+and service-plane workload authentication. It serves HTTPS on the existing
+`butlers-up:41103` Service while keeping native Health MCP on IPv4 loopback.
+Set the Health `servingSecretName` to a Secret with `tls.crt` and `tls.key`.
+The certificate needs a DNS SAN for `butlers-up`. Set the Health `caConfigMapName`
+to a ConfigMap with the dedicated public CA in `ca.crt`. Switchboard and
+Dashboard verify this origin before sending their projected Health audience
+tokens. Google Health's startup check uses the same CA and readiness rules.
+The mode defaults to false, with the startup check using HTTP.
+
 When the split stage is selected, `butlers-control-ingress` permits service callers within the namespace on 41100.
 Port 41199 permits only pods with this release's instance label and component
 `control-session-health` (operator/test caller) or `session-host`. These labels are
