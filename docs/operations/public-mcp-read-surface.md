@@ -677,8 +677,8 @@ step each, with no unlock.
     butlers public-mcp disable all        # or: enable <domain|all>, disable <domain>
   ```
 
-  [Inferred: the same image, entrypoint and `POSTGRES_*` environment as the `migrations`
-  initContainer, which runs `butlers public-mcp reconcile` this way; not yet run live.]
+  [Observed: `disable all`, `enable all` and `reconcile --database butlers` ran this way in the
+  2026-11-22 dev rollback rehearsal.]
 - *Verify on the primary* (superuser, `-d butlers`):
   `SELECT domain, state, changed_at, changed_by FROM mcp_surface.controls ORDER BY domain;`.
   Then `describe` shows the domain `disabled`, within 15 minutes. For `proposals` or `all`, the
@@ -985,7 +985,8 @@ note the deployed tag (handles above) as `tag`.
    env file, the keyring file and everything in `postgres-dev` are untouched. Verify:
    `helm -n butlers-dev status butlers-public-mcp` reports the release not found, and
    `kubectl -n butlers-public-dev get deploy,svc,configmap,secret,externalsecret,networkpolicy,prometheusrule,podmonitor`
-   lists only Kubernetes' own `kube-root-ca.crt` ConfigMap [Inferred]. The rebuild's install
+   lists only Kubernetes' own `kube-root-ca.crt` ConfigMap [Observed: 2026-11-22 rehearsal, which
+   also confirms the Secrets went with their ExternalSecrets]. The rebuild's install
    reuses the namespace.
 4. *Drop the subscription, then the publication* (superuser). First confirm the initial copy is
    complete, in `-d butlers_public`:
@@ -1043,9 +1044,12 @@ note the deployed tag (handles above) as `tag`.
    build: `scripts/k8s/deploy-dev.sh "$tag"`. Check:
    - the output carries `public-mcp owner step: PUBLIC_MCP_OWNER_STEP_dev is off; skipped`, no
      `public-mcp chart` line (the recipe does not call it), and the deploy exits 0;
-   - the step 5 queries still find no slot and no subscription. `butlers_public_v1` exists again,
-     as expected: the migrations' reconcile recreates the publication, which is inert without a
-     slot or subscription and retains no WAL;
+   - the step 5 queries still find no slot and no subscription. `butlers_public_v1` is still
+     absent after a same-tag deploy: reconcile runs only in the `dashboard-api` migrations
+     initContainer, and a deploy that leaves the `dashboard-api` pod spec unchanged does not
+     restart it (observed in the 2026-11-22 rehearsal). A deploy of a new tag restarts the pod and
+     its reconcile recreates the publication, which is inert without a slot or subscription and
+     retains no WAL. Either outcome passes;
    - `helm -n butlers-dev status butlers-public-mcp` still reports not found, and
      `kubectl -n butlers-public-dev get pods` lists nothing.
 
@@ -1056,9 +1060,14 @@ note the deployed tag (handles above) as `tag`.
    switch `PUBLIC_MCP_CHART_dev` on, `bu-y66o00.67`), and `git pull` the deploy checkout.
 2. *Preflight.* Section 1, both tables (read-only). "Logical slots before first sync" holds again:
    no logical slot.
-3. *Deploy:* `scripts/k8s/deploy-dev.sh "$tag"`. It reruns `init-db.sql` (3a), reconciles (3b) and
-   runs the owner step (3c), which finds no slot, rebuilds and starts the initial copy. The output
-   ends the step with `public-mcp owner step: applied`.
+3. *Reconcile, then deploy.* If `SELECT count(*) FROM pg_publication WHERE pubname =
+   'butlers_public_v1';` in `-d butlers` returns 0 (teardown step 6 deployed the same tag, so
+   reconcile never reran), recreate it first, as the migration principal, with the teardown
+   step 1 command and `reconcile --database butlers` in place of `disable all`. It prints
+   `Primary projection reconciled`; the query then returns 1. Without the publication the owner
+   step cannot build the subscription. Then deploy: `scripts/k8s/deploy-dev.sh "$tag"`. It reruns
+   `init-db.sql` (3a) and the owner step (3c), which finds no slot, rebuilds and starts the
+   initial copy. The output ends the step with `public-mcp owner step: applied`.
 4. *Public chart.* If `PUBLIC_MCP_CHART_dev` is still `off`:
    `scripts/k8s/public-mcp-chart-deploy.sh dev "$tag" on`, from a checkout whose site env carries
    `BUTLERS_PUBLIC_MCP_AUDIENCE`, `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS` and
