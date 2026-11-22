@@ -1492,10 +1492,33 @@
         "scope": "FleetReadiness._route_canary",
         "sha256": "8c8dac95aa0a16cdc1d9219faf6edef368449abe8bc11404601ca000013efe9d"
       },
-      "reason": "Dashboard supervised readiness performs client.stream GET to the Switchboard host/port selected by expected_from_roster(configs) in FleetReadiness.__init__. This actual internal outbound resolver gains no destination beyond the existing butlers-control peer.",
+      "reason": "Dashboard readiness uses the Switchboard Service host, port and protocol selected by expected_from_roster. The transport follows the declared internal peer.",
       "resolver": {
         "path": "src/butlers/api/readiness.py",
-        "sha256": "2f0f0ca2d0c43ad9324fd83e30ed7fb24f67bcad2e2ca77b3e15bbb762d0db4c",
+        "sha256": "670de67f0a178ff530dbe252f3adfbbb78b2ae6bfcfe3fd3826bbbb904cc1ffe",
+        "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary",
+        "symbol": "FleetReadiness._route_canary"
+      },
+      "sites": [],
+      "workloads": [
+        "dashboard-api"
+      ]
+    },
+    "src/butlers/api/readiness.py::FleetReadiness._route_canary::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
+      "class": "dynamic",
+      "observed": {
+        "authorities": [],
+        "config": null,
+        "count": 1,
+        "kind": "url",
+        "path": "src/butlers/api/readiness.py",
+        "scope": "FleetReadiness._route_canary",
+        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
+      },
+      "reason": "Dashboard readiness uses the Switchboard Service host, port and protocol selected by expected_from_roster. The transport follows the declared internal peer.",
+      "resolver": {
+        "path": "src/butlers/api/readiness.py",
+        "sha256": "670de67f0a178ff530dbe252f3adfbbb78b2ae6bfcfe3fd3826bbbb904cc1ffe",
         "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary",
         "symbol": "FleetReadiness._route_canary"
       },

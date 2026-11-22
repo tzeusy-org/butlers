@@ -4995,7 +4995,7 @@
       "kind": "compare",
       "expression": "(config.name, config.port) != ('switchboard', 41100)",
       "occurrence": 1,
-      "line": 827,
+      "line": 825,
       "direct": false,
       "container": true,
       "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
