@@ -170,6 +170,16 @@ caller. Results return bounded and fenced as third-party data with citations,
 exposing the caller and goal and retaining taint on later stores. They never
 authorize an effect. Lead and child sessions retain every guarantee above.
 
+Three refinements relax the rules above, and only these three: a URL the broker
+recorded as a research citation may reach the owner as a live link through a
+broker-issued handle, with its full recorded address and its destination host
+shown beside it, while every other URL stays inert; an owner-pinned research
+probe, run by deterministic code with no goal data, may run live; and the owner
+may approve one live search per event from an exposed goal, after seeing its
+exact question, instead of the cached default. A declined, expired or stopped
+request runs nothing. Third-party goals still never research, and nothing here
+adds a credential or spend.
+
 ## Schema Isolation
 
 The single PostgreSQL database uses per-butler schemas with role-based
