@@ -15,7 +15,8 @@ the dashboard capability owners) keep their owners, so their fencing is unchange
 What it does not do, by design, and what does it instead:
 
 * Privileges granted *to* the shared login on objects it does not own (schema ``CREATE``,
-  database ``CONNECT``) and its default privileges are not copied: replaying
+  database ``CONNECT``) and its default privileges (which ``REASSIGN OWNED`` leaves with
+  the old role; they only govern objects that login creates) are not copied: replaying
   ``scripts/init-db.sql`` with ``butlers.connecting_user`` set to the migrator grants them
   to the migrator. The plan lists them as ``acl_not_copied``.
 * ``REASSIGN OWNED`` also moves shared objects (databases, tablespaces) the login owns in
@@ -138,7 +139,12 @@ _OWNED_SQL = text(
     FROM pg_catalog.pg_shdepend AS d
     WHERE d.refclassid = 'pg_catalog.pg_authid'::regclass
       AND d.refobjid = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = :name)
-      AND d.deptype = :deptype
+      AND CASE WHEN :owned
+          -- REASSIGN OWNED leaves default privileges (pg_default_acl) with the old role.
+          THEN d.deptype = 'o' AND d.classid <> 'pg_catalog.pg_default_acl'::regclass
+          ELSE d.deptype = 'a'
+               OR (d.deptype = 'o' AND d.classid = 'pg_catalog.pg_default_acl'::regclass)
+          END
       AND d.dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())
     ORDER BY 1
     """
@@ -187,7 +193,7 @@ def _names(conn: Connection, sql, **params: object) -> tuple[str, ...]:
 def _owned(conn: Connection, name: str) -> tuple[str, ...]:
     """Objects in this database owned by ``name``, plus this database itself if it owns it."""
     current = _names(conn, _CURRENT_DATABASE_SQL, name=name)
-    return (*current, *_names(conn, _OWNED_SQL, name=name, deptype="o"))
+    return (*current, *_names(conn, _OWNED_SQL, name=name, owned=True))
 
 
 def _memberships(conn: Connection, name: str) -> tuple[Membership, ...]:
@@ -215,7 +221,7 @@ def read_transfer_plan(conn: Connection, source: str, target: str) -> TransferPl
         target=target,
         owned=_owned(conn, source),
         memberships=_memberships(conn, source),
-        acl_not_copied=_names(conn, _OWNED_SQL, name=source, deptype="a"),
+        acl_not_copied=_names(conn, _OWNED_SQL, name=source, owned=False),
         refusals=tuple(refusals),
     )
 

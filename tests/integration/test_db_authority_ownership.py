@@ -43,6 +43,7 @@ _OWNERS_SQL = text(
     FROM pg_catalog.pg_shdepend AS d
     JOIN pg_catalog.pg_roles AS r ON r.oid = d.refobjid
     WHERE d.deptype = 'o'
+      AND d.classid <> 'pg_catalog.pg_default_acl'::regclass
       AND d.dbid = (SELECT oid FROM pg_catalog.pg_database WHERE datname = current_database())
     """
 )
@@ -127,6 +128,8 @@ def test_transfer_moves_only_the_shared_logins_objects_and_activation_migrates(
         }
         assert dry.owned, "the shared login must own something for this test to mean anything"
         assert memberships_before, "init-db grants the shared login the runtime memberships"
+        # init-db's default privileges stay with the shared login and are reported, not moved.
+        assert any(o.startswith("default privileges") for o in dry.acl_not_copied)
 
         with engine.begin() as conn:
             applied = transfer_ownership(conn, shared, migrator)

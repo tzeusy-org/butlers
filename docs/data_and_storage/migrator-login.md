@@ -45,8 +45,10 @@ superuser. In one transaction, under an advisory lock, it:
 
 The dry run prints names only: `OWNED`, `MEMBERSHIP`, `ACL-NOT-COPIED` and `REFUSED`
 lines. `ACL-NOT-COPIED` lists privileges granted *to* the shared login on objects it
-does not own, such as schema `CREATE` and database `CONNECT`. The init-db replay in
-step 4 below grants these to the migrator, along with the default privileges. A second
+does not own, such as schema `CREATE` and database `CONNECT`, and the shared login's
+default privileges. `REASSIGN OWNED` leaves default privileges with the old role, and
+they only govern objects that login creates. The init-db replay in step 4 below grants
+all of these to the migrator. A second
 run after a successful transfer is a no-op.
 
 `tests/integration/test_db_authority_ownership.py` runs the transfer on a migrated
