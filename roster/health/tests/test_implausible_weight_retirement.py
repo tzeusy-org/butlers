@@ -36,7 +36,7 @@ def _migration_sql(step: str) -> list[str]:
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert (mod.revision, mod.down_revision) == ("health_009", "health_007")
+    assert (mod.revision, mod.down_revision) == ("health_009", "health_008")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = sqls.append
