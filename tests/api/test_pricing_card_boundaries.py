@@ -27,3 +27,11 @@ def test_haiku_5_5_upper_card_starts_above_100k(context_tokens, expected):
 def test_gpt_6_1_sol_cache_writes_bill_at_the_published_rate():
     cost = load_pricing().estimate_cost("gpt-6.1-sol", 0, 0, cache_creation_tokens=1_000_000)
     assert cost == pytest.approx(2.5)
+
+
+def test_gpt_6_2_sol_is_priced_like_6_1_sol():
+    pricing = load_pricing()
+    assert pricing.estimate_cost("gpt-6.2-sol", 1_000_000, 1_000_000) == pytest.approx(12.0)
+    assert pricing.estimate_cost(
+        "gpt-6.2-sol", 0, 0, cache_creation_tokens=1_000_000
+    ) == pytest.approx(2.5)

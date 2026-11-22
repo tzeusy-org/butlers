@@ -280,9 +280,9 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `workhorse` | 0 | true |
 | `gpt-5.4-high` | `codex` | `gpt-5.4` | `["--config", "model_reasoning_effort=high"]` | `reasoning` | 0 | true |
 | `gpt-6-luna-max` | `codex` | `gpt-6-luna` | `["--config", "model_reasoning_effort=\"max\""]` | `cheap` | 26 | true |
-| `gpt-6.1-sol-low` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"low\""]` | `workhorse` | 31 | true |
-| `gpt-6.1-sol-high` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `reasoning` | 30 | true |
-| `healing-gpt-6.1-sol` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `specialty` | 5 | true |
+| `gpt-6.2-sol-low` | `codex` | `gpt-6.2-sol` | `["--config", "model_reasoning_effort=\"low\""]` | `workhorse` | 31 | true |
+| `gpt-6.2-sol-high` | `codex` | `gpt-6.2-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `reasoning` | 30 | true |
+| `healing-gpt-6.2-sol` | `codex` | `gpt-6.2-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `specialty` | 5 | true |
 | `gemini-3.8-flash` | `gemini` | `gemini-3.8-flash` | `[]` | `cheap` | 10 | true |
 | `gemini-4-argon` | `gemini` | `gemini-4-argon` | `[]` | `reasoning` | 10 | false |
 | `glm-5.3-flash` | `opencode` | `opencode-go/glm-5.3-flash` | `[]` | `workhorse` | 30 | true |
