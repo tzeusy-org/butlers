@@ -66,8 +66,10 @@ class LivenessClient(Client):
         init_timeout: float | None = DEFAULT_INIT_TIMEOUT_S,
         **kwargs: Any,
     ) -> None:
-        if isinstance(transport, str) and transport.startswith(("http://", "https://")):
-            transport = switchboard_mcp_transport(transport)
+        if isinstance(transport, str):
+            scheme, separator, _ = transport.partition("://")
+            if separator and scheme in {"http", "https"}:
+                transport = switchboard_mcp_transport(transport)
         super().__init__(transport, *args, init_timeout=init_timeout, **kwargs)
         self._ping_interval_s = ping_interval_s
         self._ping_timeout_s = ping_timeout_s

@@ -58,8 +58,9 @@ def switchboard_http_options(
         ) from None
 
     if url is None:
+        mount_origin = str(httpx.URL(scheme=scheme, host=host, port=port))
         options["mounts"] = {
-            f"https://{host}:{port}": httpx.AsyncHTTPTransport(verify=context, trust_env=False),
+            mount_origin: httpx.AsyncHTTPTransport(verify=context, trust_env=False),
         }
     else:
         options["verify"] = context

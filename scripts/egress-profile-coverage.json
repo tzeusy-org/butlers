@@ -1495,30 +1495,7 @@
       "reason": "Dashboard readiness uses the Switchboard Service host, port and protocol selected by expected_from_roster. The transport follows the declared internal peer.",
       "resolver": {
         "path": "src/butlers/api/readiness.py",
-        "sha256": "670de67f0a178ff530dbe252f3adfbbb78b2ae6bfcfe3fd3826bbbb904cc1ffe",
-        "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary",
-        "symbol": "FleetReadiness._route_canary"
-      },
-      "sites": [],
-      "workloads": [
-        "dashboard-api"
-      ]
-    },
-    "src/butlers/api/readiness.py::FleetReadiness._route_canary::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
-      "class": "dynamic",
-      "observed": {
-        "authorities": [],
-        "config": null,
-        "count": 1,
-        "kind": "url",
-        "path": "src/butlers/api/readiness.py",
-        "scope": "FleetReadiness._route_canary",
-        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
-      },
-      "reason": "Dashboard readiness uses the Switchboard Service host, port and protocol selected by expected_from_roster. The transport follows the declared internal peer.",
-      "resolver": {
-        "path": "src/butlers/api/readiness.py",
-        "sha256": "670de67f0a178ff530dbe252f3adfbbb78b2ae6bfcfe3fd3826bbbb904cc1ffe",
+        "sha256": "a464b09ad104c177b723690cc646c084805e37909096bb52c2c5ff6ff8a259de",
         "source": "src/butlers/api/readiness.py:FleetReadiness._route_canary",
         "symbol": "FleetReadiness._route_canary"
       },
@@ -4730,22 +4707,6 @@
         "dashboard-api"
       ]
     },
-    "src/butlers/core/switchboard_tls.py::switchboard_http_options::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
-      "class": "reference",
-      "observed": {
-        "authorities": [],
-        "config": null,
-        "count": 1,
-        "kind": "url",
-        "path": "src/butlers/core/switchboard_tls.py",
-        "scope": "switchboard_http_options",
-        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
-      },
-      "reason": "Protocol validation or HTTPX mount spelling for an existing URL.",
-      "resolver": null,
-      "sites": [],
-      "workloads": []
-    },
     "src/butlers/core/telemetry.py::init_telemetry::config::0444af29965931161a167a8442fb48062a213fa0afd91c5ce9e84a2fd66e30a2": {
       "class": "site",
       "observed": {
@@ -5186,38 +5147,6 @@
         "butlers-control",
         "dashboard-api"
       ]
-    },
-    "src/butlers/mcp_liveness.py::LivenessClient.__init__::url::66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8": {
-      "class": "reference",
-      "observed": {
-        "authorities": [],
-        "config": null,
-        "count": 1,
-        "kind": "url",
-        "path": "src/butlers/mcp_liveness.py",
-        "scope": "LivenessClient.__init__",
-        "sha256": "66dfeeedabf1f022d223bd6b9f464d1ca241d6da54ab7ade5b2c7758b4e08fa8"
-      },
-      "reason": "Protocol validation or HTTPX mount spelling for an existing URL.",
-      "resolver": null,
-      "sites": [],
-      "workloads": []
-    },
-    "src/butlers/mcp_liveness.py::LivenessClient.__init__::url::8c8dac95aa0a16cdc1d9219faf6edef368449abe8bc11404601ca000013efe9d": {
-      "class": "reference",
-      "observed": {
-        "authorities": [],
-        "config": null,
-        "count": 1,
-        "kind": "url",
-        "path": "src/butlers/mcp_liveness.py",
-        "scope": "LivenessClient.__init__",
-        "sha256": "8c8dac95aa0a16cdc1d9219faf6edef368449abe8bc11404601ca000013efe9d"
-      },
-      "reason": "Protocol validation or HTTPX mount spelling for an existing URL.",
-      "resolver": null,
-      "sites": [],
-      "workloads": []
     },
     "src/butlers/modules/calendar/__init__.py::CalendarModule._verified_response_account::url::2c679258708982137d0a2254ab65c05ae35934a03a87136cdcfa3a3888821a3b": {
       "class": "reference",

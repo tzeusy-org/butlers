@@ -253,10 +253,8 @@ class FleetReadiness:
         target = self._switchboard
         if target is None:
             return False
-        url = (
-            f"https://{target.host}:{target.port}{PREFLIGHT_PATH}"
-            if target.scheme == "https"
-            else f"http://{target.host}:{target.port}{PREFLIGHT_PATH}"
+        url = httpx.URL(f"http://{target.host}:{target.port}{PREFLIGHT_PATH}").copy_with(
+            scheme=target.scheme
         )
         async with asyncio.timeout(PROBE_DEADLINE_S + 1.0), self._client_factory() as client:
             async with client.stream("GET", url, follow_redirects=False) as response:
