@@ -104,6 +104,65 @@ def digest_of(value: object) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+#: Verified causes the interruption authority records (attention_urgency); nothing else
+#: can make a subject an interrupt.
+URGENCY_REASONS: Final = frozenset({"owner_creation", "owner_clause", "home_safety"})
+
+
+@dataclass(frozen=True, slots=True)
+class Urgency:
+    """A subject's derived urgency: ``routine``, or ``interrupt`` with a verified cause."""
+
+    cls: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.cls == "routine" and self.reason is None:
+            return
+        if self.cls == "interrupt" and self.reason in URGENCY_REASONS:
+            return
+        raise OwnerDeliveryRefused("urgency_invalid")
+
+
+ROUTINE: Final = Urgency("routine")
+
+
+def urgency_from_decision(decision: Any) -> Urgency:
+    """Map an ``InterruptionDecision`` to a subject urgency; unknown input is routine.
+
+    The decision comes from ``attention_urgency.evaluate_interruption`` (verified origin,
+    persisted owner flag or rule, deterministic safety producer). A model priority, an
+    owner-origin goal or any other cause string is never an input here.
+    """
+    from butlers.core.attention_urgency import InterruptionDecision
+
+    if not isinstance(decision, InterruptionDecision) or decision.cause not in URGENCY_REASONS:
+        return ROUTINE
+    return Urgency("interrupt", decision.cause)
+
+
+async def derive_urgency(conn: Any) -> Urgency:
+    """The urgency of the verified origin bound to this call, or routine.
+
+    The origin is the private context set only by the scheduler's claimed occurrence and the
+    accepted-source verifier; the persisted owner flag or rule is evaluated now, at both the
+    quiet-hours and the context gate. Both must interrupt: owner origin alone never does, an
+    unreadable authority is routine, and no message, priority or argument is read.
+    """
+    from butlers.core.attention_urgency import evaluate_interruption
+
+    try:
+        # A savepoint: the evaluator swallows SQL errors, which would otherwise leave the
+        # caller's transaction aborted. The trailing probe re-raises one so it rolls back.
+        async with conn.transaction():
+            quiet = await evaluate_interruption(conn, gate="quiet_hours")
+            context = await evaluate_interruption(conn, gate="context")
+            await conn.fetchval("SELECT 1")
+    except Exception:
+        return ROUTINE
+    return urgency_from_decision(quiet) if quiet.interrupts and context.interrupts else ROUTINE
+
+
 @dataclass(frozen=True, slots=True)
 class Subject:
     id: UUID
@@ -114,6 +173,8 @@ class Subject:
     action_digest: str
     generation: int
     state: str
+    urgency_class: str = "routine"
+    urgency_reason: str | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> Subject:
@@ -126,6 +187,9 @@ class Subject:
             row["action_digest"],
             row["generation"],
             row["state"],
+            # NULL is a row from before core_356; it reads as routine.
+            row["urgency_class"] or "routine",
+            row["urgency_reason"],
         )
 
 
@@ -212,19 +276,21 @@ async def open_subject(
     content_digest: str,
     action_digest: str,
     goal_effect_id: UUID | None = None,
+    urgency: Urgency = ROUTINE,
 ) -> Subject:
     """Open (or return) the one subject for an authority row in the current schema.
 
     Idempotent per ``(schema, kind, source_ref)``; a different digest or owner for the same
-    source refuses rather than silently re-binding the subject.
+    source refuses rather than silently re-binding the subject. ``urgency`` is written once,
+    with the row: a replay returns the stored urgency and never re-derives it.
     """
     if kind not in SUBJECT_KINDS:
         raise OwnerDeliveryRefused("subject_kind_invalid")
     inserted = await conn.fetchrow(
         "INSERT INTO public.owner_delivery_subjects "
         "(id, kind, owning_schema, source_ref, goal_effect_id, owner_entity, "
-        " content_digest, action_digest) "
-        "VALUES ($1, $2, current_schema(), $3, $4, $5, $6, $7) "
+        " content_digest, action_digest, urgency_class, urgency_reason) "
+        "VALUES ($1, $2, current_schema(), $3, $4, $5, $6, $7, $8, $9) "
         "ON CONFLICT (owning_schema, kind, source_ref) DO NOTHING RETURNING *",
         uuid4(),
         kind,
@@ -233,6 +299,8 @@ async def open_subject(
         owner_entity,
         content_digest,
         action_digest,
+        urgency.cls,
+        urgency.reason,
     )
     if inserted is not None:
         await append_receipt(conn, inserted["id"], "opened", inserted["generation"])
@@ -895,7 +963,8 @@ async def owner_entity_id(conn: Any) -> UUID | None:
 class DeliveryInputs:
     """Stable typed inputs later lanes read; nothing here activates them.
 
-    ``urgency_class`` (bu-dhloi1.22) has no admissible value yet, ``holding_reason`` is
+    ``urgency_class``/``urgency_reason`` are the daemon-derived urgency written once when the
+    subject opened (bu-dhloi1.22), ``holding_reason`` is
     the broker's owner-policy hold receipt (bu-dhloi1.10), and presence-aware selection,
     Why doors and push (bu-4c7nvp.1.8, bu-dhloi1.24) consume ``surfaces`` without this
     module choosing among them.
@@ -908,11 +977,12 @@ class DeliveryInputs:
     urgency_class: str | None
     holding_reason: dict[str, Any] | None
     surfaces: tuple[tuple[str, str], ...]
+    urgency_reason: str | None = None
 
 
 async def delivery_inputs(conn: Any, subject_id: UUID) -> DeliveryInputs | None:
     row = await conn.fetchrow(
-        "SELECT id, kind, generation, state, urgency_class, holding_reason "
+        "SELECT id, kind, generation, state, urgency_class, urgency_reason, holding_reason "
         "FROM public.owner_delivery_subjects WHERE id = $1",
         subject_id,
     )
@@ -932,9 +1002,10 @@ async def delivery_inputs(conn: Any, subject_id: UUID) -> DeliveryInputs | None:
         row["kind"],
         row["generation"],
         row["state"],
-        row["urgency_class"],
+        row["urgency_class"] or "routine",
         holding,
         tuple((p["surface"], p["state"]) for p in presentations),
+        row["urgency_reason"],
     )
 
 
@@ -969,7 +1040,12 @@ __all__ = [
     "pending_retractions",
     "record_holding_reason",
     "subject_for_source",
+    "ROUTINE",
+    "derive_urgency",
     "TOKEN_PREFIX",
+    "URGENCY_REASONS",
+    "Urgency",
+    "urgency_from_decision",
     "OwnerDeliveryRefused",
     "Presentation",
     "Redemption",

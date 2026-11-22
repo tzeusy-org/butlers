@@ -1835,7 +1835,7 @@ async def test_delivery_inputs_reads_the_subject_and_its_current_presentations(
         "approval",
         subject.generation,
         "delivered",
-        None,
+        "routine",
         None,
         (("dashboard", "sent"), ("telegram", "pending")),
     )
@@ -1865,12 +1865,28 @@ async def test_delivery_inputs_of_an_unknown_subject_is_none(ledger_pool) -> Non
         assert await od.delivery_inputs(conn, uuid.uuid4()) is None
 
 
-async def test_no_urgency_class_is_admissible_yet(ledger_pool) -> None:
+async def test_urgency_is_set_with_the_row_and_never_changes(ledger_pool) -> None:
     subject, _ = await _present(ledger_pool, await _park(ledger_pool))
+    assert (subject.urgency_class, subject.urgency_reason) == ("routine", None)
 
+    # The guard trigger fires before the CHECK, so every change is refused as a change.
+    for cls, reason in (("now", None), ("interrupt", "model_asked"), ("interrupt", "home_safety")):
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await ledger_pool.execute(
+                "UPDATE public.owner_delivery_subjects SET urgency_class = $2, "
+                "urgency_reason = $3 WHERE id = $1",
+                subject.id,
+                cls,
+                reason,
+            )
+    # The closed vocabulary is enforced where a value can first be written: the INSERT.
     with pytest.raises(asyncpg.CheckViolationError):
         await ledger_pool.execute(
-            "UPDATE public.owner_delivery_subjects SET urgency_class = 'now' WHERE id = $1",
+            "INSERT INTO public.owner_delivery_subjects (id, kind, owning_schema, source_ref, "
+            "owner_entity, content_digest, action_digest, urgency_class, urgency_reason) "
+            "SELECT gen_random_uuid(), 'approval', current_schema(), 'x-' || gen_random_uuid(), "
+            "owner_entity, content_digest, action_digest, 'interrupt', 'model_asked' "
+            "FROM public.owner_delivery_subjects WHERE id = $1",
             subject.id,
         )
 

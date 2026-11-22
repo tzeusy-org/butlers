@@ -77,6 +77,7 @@ async def open_approval_subject(conn: Any, action: Mapping[str, Any]) -> od.Subj
         content_digest=content,
         action_digest=action_digest,
         goal_effect_id=goal_effect if isinstance(goal_effect, uuid.UUID) else None,
+        urgency=await od.derive_urgency(conn),
     )
 
 
