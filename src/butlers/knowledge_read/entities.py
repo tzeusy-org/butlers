@@ -26,6 +26,9 @@ from butlers.knowledge_read.core import (
 
 LOOKUP_LIMIT = 10
 PROFILE_FACT_LIMIT = 200
+# The predicates the memory predicate registry seeds with ``is_symmetric`` (mem_002). A symmetric
+# edge is stored once per direction, so the profile keeps one fact per unordered entity pair.
+SYMMETRIC_PREDICATES = frozenset({"knows", "lives_with", "sibling_of"})
 TRIGRAM_THRESHOLD = 0.3
 # Candidates ranked in SQL before merge resolution; the type filter applies before this cut.
 CANDIDATE_LIMIT = 100
@@ -203,13 +206,34 @@ def _fact_time(fact: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(value) if value else _NEVER
 
 
+def _collapse_symmetric(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep the newest fact per (symmetric predicate, unordered entity pair).
+
+    Other predicates, literal-object facts and one-sided facts pass through untouched, so a
+    non-symmetric predicate such as ``manages`` still shows both directions.
+    """
+    newest: dict[tuple[str, frozenset[str]], dict[str, Any]] = {}
+    kept: list[dict[str, Any]] = []
+    for fact in facts:
+        subject, other = fact["subject_entity_id"], fact["object_entity_id"]
+        if fact["predicate"] not in SYMMETRIC_PREDICATES or not subject or not other:
+            kept.append(fact)
+            continue
+        key = (fact["predicate"], frozenset((subject, other)))
+        current = newest.get(key)
+        if current is None or (_fact_time(fact), fact["id"]) > (_fact_time(current), current["id"]):
+            newest[key] = fact
+    return kept + list(newest.values())
+
+
 async def entity_profile(
     conn: asyncpg.Connection, context: ReadContext, arguments: object
 ) -> dict[str, Any]:
     """One published entity, its published relationship facts and its edge counts.
 
     ``facts`` holds the entity's ``relationship.entity_facts`` and ``relationship`` memory facts
-    on either end, newest first (OD21). ``edges`` counts known edges on either end and withheld
+    on either end, newest first (OD21), with a symmetric edge stored once per direction shown once
+    per unordered pair. ``edges`` counts known edges on either end and withheld
     stubs on the subject side, dropping those whose fact source's domain is disabled.
     """
     args = Arguments(arguments, {"entity_id", "sections"})
@@ -251,6 +275,7 @@ async def entity_profile(
                 facts += [
                     _profile_fact(context, table, r["source_id"], fields(r["fields"])) for r in rows
                 ]
+            facts = _collapse_symmetric(facts)
             facts.sort(key=lambda f: f["id"])
             facts.sort(key=_fact_time, reverse=True)
             complete = len(facts) <= PROFILE_FACT_LIMIT
