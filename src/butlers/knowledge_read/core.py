@@ -198,8 +198,10 @@ def tables_for(tool: str) -> tuple[Table, ...]:
 def record_uri(table: Table, row_id: str) -> tuple[str, str]:
     """(kind, uri) from the manifest's ``butlers://<domain>/<kind>/{key}`` template."""
     template = table.uri
-    kind = template.split("/")[3]
-    return kind, template[: template.index("{")] + row_id
+    parts = template.split("/")
+    if len(parts) != 5 or not parts[3] or "{" in parts[3] or not parts[4].startswith("{"):
+        raise ValueError(f"uri template must be butlers://<domain>/<kind>/{{key}}: {template}")
+    return parts[3], template[: template.index("{")] + row_id
 
 
 def source_domains() -> dict[str, str]:
