@@ -34,7 +34,8 @@ Scope: v1-mandatory
 - **THEN** the dispatcher seals the exact `base..head` commits with the same validator the publisher uses and retains the sealed export, with no credential, push or PR
 - **AND** the phase session completes, and the case dossier reports `proposal_state = unpublished` with the retained diff and notes
 - **AND** the attempt carrying a retained export and the `publication_unavailable` reason counts as an execution success for the circuit breaker: it breaks a failure streak and is never counted as a failure, both in dispatch admission and in `GET /api/qa/circuit-breaker`, which share one definition
-- **AND** a validator refusal (anonymization residue, unsafe objects, unbound base or identity) or an unretainable export records the publisher's refusal receipt, ends the attempt as the publisher path does today, and counts as an execution failure
+- **AND** a validator refusal (anonymization residue, unsafe objects, unbound base or identity) records the publisher's refusal receipt, ends the attempt as the publisher path does today, and counts as an execution failure
+- **AND** an export that cannot be retained for this attempt (retention store error, or an existing export row on a re-run: `export_unretained`, `export_changed`, `export_pruned`) ends the attempt `failed` with reason `publication_unretained`, which counts as an execution failure and holds nothing
 - **AND** timeouts, agent failures and other genuine execution failures keep counting, so five in a row still trip the breaker
 
 #### Scenario: A held proposal suppresses re-investigation while publication is absent
@@ -42,7 +43,7 @@ Scope: v1-mandatory
 - **THEN** the dispatcher records a decision-only `publication_paused` dispatch event and `dedup_reason = publication_paused` before calling `create_or_join_attempt`
 - **AND** no `healing_attempts` row, worktree, runtime session or LLM invocation exists as a consequence
 - **AND** the gate is inert whenever a publisher is injected, and a pruned export or an expired window makes the fingerprint eligible again for exactly one re-investigation
-- **AND** an exported proposal is flagged as sealed before isolation is proven: it is never auto-published and each needs owner approval per pull request (needs owner approval)
+- **AND** nothing publishes a retained proposal automatically today, because no publisher exists; flagging exports as sealed before isolation is proven, so each needs owner approval per pull request, is deferred to a follow-up bead (sealed-before-isolation flag)
 
 #### Scenario: Dispatcher git subprocesses in the shared clone are isolated
 - **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)

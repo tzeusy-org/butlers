@@ -1461,11 +1461,14 @@ def _assert_no_credential(env: dict[str, str]) -> None:
     [
         # Sealed and retained: the attempt keeps the publication_unavailable reason.
         (None, "publication_unavailable:"),
-        # The store could not keep the bytes: fail closed, same reason, no receipt claimed.
+        # The store could not keep the bytes (or a re-run met an existing export): fail closed
+        # under a reason the breaker does not read as retained success.
         (
             PublicationResult(PublicationStatus.REFUSED, "export_unretained"),
-            "publication_unavailable:",
+            "publication_unretained:",
         ),
+        (PublicationResult(PublicationStatus.REFUSED, "export_changed"), "publication_unretained:"),
+        (PublicationResult(PublicationStatus.REFUSED, "export_pruned"), "publication_unretained:"),
         # The validator refused: recorded as the publisher records a refusal.
         (PublicationResult(PublicationStatus.REFUSED, "unbound_export"), "publication_refused:"),
     ],

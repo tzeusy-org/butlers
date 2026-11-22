@@ -492,6 +492,7 @@ def _build_git_prep_env() -> dict[str, str]:
 
 
 _PUBLICATION_UNAVAILABLE = "publication_unavailable"
+_PUBLICATION_UNRETAINED = "publication_unretained"
 #: Retention-store refusals: nothing was kept and no receipt exists, so the attempt fails closed.
 _RETENTION_REFUSALS = frozenset(
     {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
@@ -1518,6 +1519,9 @@ async def _run_investigation_session(
             )
             return
 
+        # Retention did not succeed for THIS attempt (an export row from a re-run does not
+        # count), so the reason must not match the breaker's retained-success marker.
+        unretained_detail = f"{_PUBLICATION_UNRETAINED}: {refusal.category}; nothing was pushed"
         if metrics is not None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
             metrics.record_recovery_phase_duration(
@@ -1529,7 +1533,7 @@ async def _run_investigation_session(
             metrics.record_recovery_execution_failure(
                 workflow="qa",
                 phase="investigate",
-                error_class=_PUBLICATION_UNAVAILABLE,
+                error_class=_PUBLICATION_UNRETAINED,
             )
         if phase_session_id is not None:
             try:
@@ -1537,7 +1541,7 @@ async def _run_investigation_session(
                     pool,
                     phase_session_id,
                     "failed",
-                    error_detail=_PUBLICATION_UNAVAILABLE,
+                    error_detail=unretained_detail,
                 )
             except Exception as _pss_exc:
                 logger.debug("Failed to mark phase session failed: %s", _pss_exc)
@@ -1545,14 +1549,14 @@ async def _run_investigation_session(
             pool,
             attempt_id,
             "failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
             healing_session_id=investigation_session_id,
         )
         await _record_escalation_for_terminal(
             pool,
             attempt_id=attempt_id,
             status="failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
         )
         await _persist_notes_and_remove_worktree(
             pool,

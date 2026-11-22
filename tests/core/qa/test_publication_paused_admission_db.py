@@ -130,3 +130,16 @@ async def test_hold_expires_with_window_and_is_inert_for_other_fingerprints(db_p
     assert await get_paused_proposal(db_pool, "d" * 64, 7) is None
     # A zero-day window has already elapsed.
     assert await get_paused_proposal(db_pool, _FP, 0) is None
+
+
+async def test_unretained_with_existing_export_row_counts_as_failure(db_pool) -> None:
+    """A re-run that met an existing export fails closed; the row alone is not a success."""
+    patrol = await _patrol(db_pool)
+    for _ in range(5):
+        await _attempt(
+            db_pool,
+            patrol,
+            error_detail="publication_unretained: export_changed; nothing was pushed",
+            retained=True,
+        )
+    assert await _tripped_both_ways(db_pool) == (True, True)
