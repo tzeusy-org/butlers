@@ -3,6 +3,10 @@
 ### Requirement: Finding Extraction
 Each qualifying log entry SHALL be normalized into a `QaFinding` with a computed fingerprint for deduplication.
 
+ID: REQ-qa-log-scanner-003
+Source: bu-ejow5p.4 (owner-confirmed spec-restoring fix); canonical Finding Extraction requirement
+Scope: v1-mandatory
+
 #### Scenario: Finding structure
 - **WHEN** a qualifying log entry is processed
 - **THEN** a `QaFinding` is produced with: `fingerprint` (str, SHA-256), `source_type` (str, `"log_scanner"`), `source_butler` (str), `source_file` (str, log filename), `severity` (int, 0=critical..3=low), `exception_type` (str or "unknown"), `event_summary` (str, first 200 chars of event, sanitized via `anonymize()` to strip PII), `call_site` (str, the innermost repository frame `file:function` when known, otherwise the logger name), `timestamp` (datetime)
