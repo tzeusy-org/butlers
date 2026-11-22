@@ -86,6 +86,14 @@ EXEMPT = frozenset(
 UNAUTHORIZED = {"code": -32001, "message": "Unauthorized", "data": {"reason": "unauthorized"}}
 INTERNAL = {"code": -32603, "message": "Internal error"}
 _CONTENT_LENGTH = re.compile(r"[0-9]{1,8}\Z", re.ASCII)
+_CONNECTION_ERRORS = (
+    OSError,
+    asyncpg.InterfaceError,
+    asyncpg.TooManyConnectionsError,
+    asyncpg.CannotConnectNowError,
+    asyncpg.ConnectionDoesNotExistError,
+    asyncpg.ConnectionFailureError,
+)
 _TOP_KEYS = frozenset({"jsonrpc", "id", "method", "params"})
 _CALL_KEYS = frozenset({"name", "arguments", "_meta"})
 _MAX_AUDIT_IDS = 200
@@ -376,6 +384,7 @@ class CapabilityHost:
 
     def _error(self, call: _Call, refused: ReadError) -> dict[str, Any]:
         call.outcome = refused.code
+        call.cause = refused.cause
         error = refused.to_dict()
         return {
             "content": [{"type": "text", "text": _json(error).decode()}],
@@ -395,12 +404,12 @@ class CapabilityHost:
         if wait is not None:
             raise _Budget(wait)
         if self.pool is None:
-            raise ReadError("unavailable")
+            raise ReadError("unavailable", cause="no_pool")
         canaries = files.canaries
         probed = tool.name == "describe"  # D17: describe answers without canaries or probe
         if not probed:
             if canaries is None:
-                raise ReadError("unavailable")
+                raise ReadError("unavailable", cause="canaries_missing")
             if tool.domain is not None and tool.domain not in DOMAINS:
                 raise ReadError("domain_disabled")  # a mis-registered tool never reads
         disabled = files.break_glass
@@ -414,7 +423,8 @@ class CapabilityHost:
                 if verdict.code is not None:
                     raise ReadError(verdict.code)
                 if self._probed != self._marker(status, canaries):
-                    raise ReadError("unavailable")  # an apply landed after the probe; retry
+                    # An apply landed after the probe; retry.
+                    raise ReadError("unavailable", cause="apply_after_probe")
             context = await read_context(
                 conn,
                 sub=who.sub,
@@ -437,10 +447,41 @@ class CapabilityHost:
                 result = await run(conn, lambda: read(conn))
         except ReadError:
             raise
-        except Exception:
-            # Connection, timeout and driver errors, and any reader defect: fail closed.
-            raise ReadError("unavailable") from None
+        except Exception as exc:
+            # Connection, timeout and driver errors, and any reader defect: fail closed, but
+            # name the fixed cause category and exception class (never its message, which can
+            # carry row content) so an outage is diagnosable from the pod log (bu-swkpoo.1).
+            cause = _unavailable_cause(exc)
+            logger.warning(
+                "public MCP tool unavailable: tool=%s cause=%s exception=%s",
+                tool.name,
+                cause,
+                _exception_label(exc),
+            )
+            raise ReadError("unavailable", cause=cause) from None
         return self._release(call, who, tool, result, canaries, now)
+
+    async def warm(self) -> None:
+        """Open one pool connection and run the D15 probe before the first client call.
+
+        The first burst after a start then reuses a live connection and a probed marker instead
+        of racing pool growth and the probe (bu-swkpoo.1). Never raises: a failed warm-up is
+        logged and the next call probes as usual.
+        """
+        canaries = self.files.current().canaries
+        if self.pool is None or canaries is None:
+            return
+        try:
+            async with self.pool.acquire() as conn:
+                await self._probe(cast(asyncpg.Connection, conn), canaries)
+        except ReadError as refused:
+            logger.warning("public MCP warm-up refused: code=%s", refused.code)
+        except Exception as exc:
+            logger.warning(
+                "public MCP warm-up failed: cause=%s exception=%s",
+                _unavailable_cause(exc),
+                _exception_label(exc),
+            )
 
     @staticmethod
     def _marker(status: ProjectionStatus, canaries: tuple[str, ...]) -> tuple:
@@ -565,3 +606,23 @@ def _rows_and_ids(result: dict[str, Any]) -> tuple[int, list[str]]:
         elif isinstance(node, list):
             stack.extend(node)
     return rows, ids
+
+
+def _unavailable_cause(exc: BaseException) -> str:
+    """A fixed category for a fail-closed exception; the audit line and log carry only this."""
+    if isinstance(exc, asyncpg.QueryCanceledError):
+        return "query_canceled"
+    if isinstance(exc, TimeoutError):  # before OSError: TimeoutError subclasses it
+        return "timeout"
+    if isinstance(exc, _CONNECTION_ERRORS):
+        return "connection"
+    if isinstance(exc, asyncpg.PostgresError):
+        return "database"
+    return "defect"
+
+
+def _exception_label(exc: BaseException) -> str:
+    """The exception class, plus the SQLSTATE for a server error: never the message."""
+    sqlstate = getattr(exc, "sqlstate", None)
+    name = type(exc).__name__
+    return f"{name}[{sqlstate}]" if isinstance(sqlstate, str) else name

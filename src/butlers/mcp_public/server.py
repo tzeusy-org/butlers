@@ -25,6 +25,7 @@ from butlers.capability_host import (
     create_pool,
     default_tools,
 )
+from butlers.capability_host.host import PROBE_TIMEOUT_S
 from butlers.mcp_public.app import McpApp, MetricsApp
 from butlers.mcp_public.catalogue import STATIC_HANDLERS, catalogue
 from butlers.mcp_public.proposals import propose_fact
@@ -61,10 +62,27 @@ def _server(app: McpApp | MetricsApp, port: int) -> uvicorn.Server:
     )
 
 
+WARM_TIMEOUT_S = PROBE_TIMEOUT_S + 15  # one probe plus connect; never hold the ports shut longer
+
+
+async def warm(host: CapabilityHost, limit_s: float = WARM_TIMEOUT_S) -> None:
+    """Probe before the ports open so the first client burst finds a warm host (bu-swkpoo.1).
+
+    Bounded and best-effort: a slow or failed warm-up is logged and serving starts anyway; the
+    first call then probes as it always did.
+    """
+    try:
+        async with asyncio.timeout(limit_s):
+            await host.warm()
+    except TimeoutError:
+        logger.warning("public MCP warm-up timed out after %ss; serving cold", limit_s)
+
+
 async def serve(settings: HostSettings) -> None:
     pool = await create_pool(settings)
     try:
         host = build_host(settings, pool)
+        await warm(host)
         await asyncio.gather(
             _server(McpApp(host), MCP_PORT).serve(),
             _server(MetricsApp(host), METRICS_PORT).serve(),
