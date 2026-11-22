@@ -266,6 +266,14 @@ async def test_missing_search_columns_are_unavailable_until_the_owner_step_runs(
     assert caught.value.code == "unavailable"
 
 
+def test_episode_results_deep_link_to_the_item_by_path_not_query():
+    from butlers.knowledge_read.search import _url
+
+    url = _url(_context(), "episode", "ep-1")
+    assert url == "https://dash.example.test/chronicles/episodes/ep-1"
+    assert "?" not in url
+
+
 def test_deep_links_are_the_base_plus_a_fixed_path():
     context = _context()
     assert context.link("/entities/abc") == "https://dash.example.test/entities/abc"

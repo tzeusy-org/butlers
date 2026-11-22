@@ -11,6 +11,7 @@ import {
   RouterProvider,
   Routes,
   createMemoryRouter,
+  useLocation,
   useParams,
   useSearchParams,
 } from 'react-router'
@@ -539,5 +540,41 @@ describe('router-config unmatched routes and route errors', () => {
       vi.unstubAllGlobals()
       consoleError.mockRestore()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /chronicles/episodes/:episodeId → /chronicles?episode=:episodeId
+// ---------------------------------------------------------------------------
+
+import { ChroniclesEpisodeRedirect } from './router.tsx'
+
+function ChroniclesProbe() {
+  const location = useLocation()
+  return <div data-testid="chronicles-probe">{`${location.pathname}${location.search}`}</div>
+}
+
+describe('/chronicles/episodes/:episodeId redirect', () => {
+  it('forwards the episode id to the ?episode= query', () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={['/chronicles/episodes/ep-1']}>
+          <Routes>
+            <Route path="/chronicles/episodes/:episodeId" element={<ChroniclesEpisodeRedirect />} />
+            <Route path="/chronicles" element={<ChroniclesProbe />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+    })
+    expect(container.querySelector('[data-testid="chronicles-probe"]')?.textContent).toBe(
+      '/chronicles?episode=ep-1',
+    )
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
   })
 })

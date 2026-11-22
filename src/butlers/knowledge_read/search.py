@@ -130,7 +130,7 @@ _FACT_TEXT = ("predicate", "subject", "valid_at", "validity")
 _LINKS = {
     "entity": "/entities/{id}",
     "fact": "/memory/facts/{id}",
-    "episode": "/chronicles",
+    "episode": "/chronicles/episodes/{id}",
     "trip": "/butlers/travel",
     "leg": "/butlers/travel",
     "document": "/butlers/travel",

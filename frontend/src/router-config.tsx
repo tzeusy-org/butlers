@@ -19,6 +19,7 @@ import RootLayout from './layouts/RootLayout.tsx'
 import NotFoundPage from './pages/NotFoundPage.tsx'
 import { getShellCapability } from './lib/shell-capability'
 import {
+  ChroniclesEpisodeRedirect,
   ColumnsToPlexRedirect,
   ConnectorDetailRedirect,
   HopToPlexRedirect,
@@ -184,6 +185,7 @@ export const routes: RouteObject[] = [
           path: '/chronicles',
           element: routeElement(<ChroniclesPage />),
         },
+        { path: '/chronicles/episodes/:episodeId', element: <ChroniclesEpisodeRedirect /> },
         // QA Staffer routes
         { path: '/qa', element: routeElement(<QaOverviewPage />) },
         { path: '/qa/patrols/:patrolId', element: routeElement(<QaPatrolDetailPage />) },
