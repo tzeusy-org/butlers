@@ -1,4 +1,4 @@
-"""One closed Codex 0.159.2 goal configuration, not runtime eligibility.
+"""One closed Codex 0.170.0 goal configuration, not runtime eligibility.
 
 A config file containing the right keys proves nothing. What the settings below
 enforce was measured against the real binary by removing each one; see
@@ -12,7 +12,7 @@ enforce was measured against the real binary by removing each one; see
   outbound calls, which an empty network namespace cannot distinguish.
 
 No permission-bypass flag is ever passed. The private model catalog is the only
-way found to remove ``apply_patch``: pinned 0.159.2 registers its handler from
+way found to remove ``apply_patch``: pinned 0.170.0 registers its handler from
 model metadata whatever the feature flags say. It also takes the tuple off the
 ``code_mode_only`` and Responses-lite paths, where the wire ``tools`` array is
 empty while the real tool list travels inside ``input``.
@@ -233,7 +233,7 @@ class CodexSettings:
         """
         identity = {
             "version": 1,
-            "cli": "@openai/codex@0.159.2",
+            "cli": "@openai/codex@0.170.0",
             "auth_mode": "openai-api-key",
             "config_utf8": self._config("$BROKER_ENDPOINT", "$BROKER_TOKEN").decode(),
             "catalog_utf8": self._catalog().decode(),

@@ -1,8 +1,8 @@
 {
   "schema": "butlers.codex-build-inputs/v1",
   "source": {
-    "url": "https://codeload.github.com/openai/codex/tar.gz/ff6aec96948b70d94983af2641a6b67c94faeff5",
-    "sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+    "url": "https://codeload.github.com/openai/codex/tar.gz/29eb79e9866b3262a777fdf8195c1b9e63684c91",
+    "sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
     "maximum_bytes": 268435456
   },
   "cmake": {

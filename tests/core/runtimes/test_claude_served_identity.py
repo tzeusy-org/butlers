@@ -312,7 +312,7 @@ async def test_claude_served_identity_conformance(tmp_path):
         assert safe_execution["malformed_identity"] is True
     # Fixed-image reader refuses nonregular, duplicate and malformed manifests.
     manifest = tmp_path / "manifest"
-    manifest.write_text("├── @anthropic-ai/claude-code@2.1.179\n└── @openai/codex@0.159.2\n")
+    manifest.write_text("├── @anthropic-ai/claude-code@2.1.179\n└── @openai/codex@0.170.0\n")
     import os
 
     real_open = os.open
@@ -320,8 +320,8 @@ async def test_claude_served_identity_conformance(tmp_path):
         "butlers.core.runtimes.served_identity.os.open",
         side_effect=lambda _path, flags: real_open(manifest, flags),
     ):
-        assert expected_toolchain()["versions"]["@openai/codex"] == "0.159.2"
-        manifest.write_text("@openai/codex@0.159.2\n@openai/codex@0.159.2\n")
+        assert expected_toolchain()["versions"]["@openai/codex"] == "0.170.0"
+        manifest.write_text("@openai/codex@0.170.0\n@openai/codex@0.170.0\n")
         assert expected_toolchain()["state"] == "unknown"
     # Cancellation clears prior evidence without generating provider output.
     process.communicate = AsyncMock(side_effect=asyncio.CancelledError)

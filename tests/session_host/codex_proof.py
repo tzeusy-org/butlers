@@ -100,8 +100,8 @@ def oauth_document(account: str = OAUTH_ACCOUNT) -> bytes:
     ).encode()
 
 
-# @openai/codex@0.159.2 (Dockerfile.base), x86_64-unknown-linux-musl native binary.
-PINNED_CODEX_SHA256 = "1748767b230ebfc3d4ab7e4e254920d0c0ad9691fd8c11f190e7d44511a4a92e"
+# @openai/codex@0.170.0 (Dockerfile.base), x86_64-unknown-linux-musl native binary.
+PINNED_CODEX_SHA256 = "880819aab735adcf16f36cd628940b9f1e652a36c01d10a5d32f83cc84902971"
 
 # The whole permitted model-visible surface. The three resource tools are runtime
 # built-ins with no off switch in the pinned CLI; they only reach configured MCP

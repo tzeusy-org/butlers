@@ -23,7 +23,7 @@ components/
 `inputs.json` is a separately reviewed `butlers.runtime-inputs/v1` JSON object with
 exactly `schema`, `target`, `versions`, `components` and `provenance`. The target is
 Python3.12.13, linux-amd64, glibc2.41. The versions are Nodev22.23.4, npm10.9.9,
-uv0.12.22, Claude2.1.309, Codex0.159.2, Gemini0.66.0 and OpenCode1.17.7. Node/npm/uv
+uv0.12.22, Claude2.1.309, Codex0.170.0, Gemini0.66.0 and OpenCode1.17.7. Node/npm/uv
 also have their public input identities in `deploy/runtime-clis/toolchains.json`.
 Version declarations are not executable version checks.
 

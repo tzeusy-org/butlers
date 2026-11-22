@@ -1,11 +1,11 @@
-# Codex 0.159.2
+# Codex 0.170.0
 
 `series.json` binds upstream commit
-`ff6aec96948b70d94983af2641a6b67c94faeff5` and its public source archive.
+`29eb79e9866b3262a777fdf8195c1b9e63684c91` and its public source archive.
 The five ordered patches have separate purposes:
 
-1. Normalize the 159 internal lockfile package versions from the shipped `0.0.0`
-   to the source workspace's `0.159.2`. External package versions, sources,
+1. Normalize the 174 internal lockfile package versions from the shipped `0.0.0`
+   to the source workspace's `0.170.0`. External package versions, sources,
    checksums, dependency edges and lock metadata remain identical. Stock Cargo
    accepts the resulting lock with `--locked`.
 2. Route the existing HTTP factories, route-aware pool and transport executor
@@ -32,7 +32,7 @@ Build from the prepared source with Rust 1.95.0, the locked graph, default featu
 and the target recorded in the series. The source commit is embedded explicitly:
 
 ```sh
-STABLE_GIT_COMMIT=ff6aec96948b70d94983af2641a6b67c94faeff5 \
+STABLE_GIT_COMMIT=29eb79e9866b3262a777fdf8195c1b9e63684c91 \
   cargo +1.95.0 build --locked --release --manifest-path codex-rs/Cargo.toml \
   -p codex-cli --bin codex --target x86_64-unknown-linux-gnu -j2
 ```
@@ -114,3 +114,24 @@ Existing runtime contexts retain their old identities and are not requalified by
 updating `runtime-inputs.json`. A new aggregate close/install, installed-wrapper
 native checks and image checks remain required; auxiliary native request
 observations and process-exit shutdown remain separately qualified.
+
+## 0.170.0 re-pin status
+
+0.170.0 (`29eb79e9`) replaces 0.159.2 because the bundled model catalog marks
+`gpt-6.2-sol` with `minimal_client_version` 0.166.0, and ChatGPT-login sessions on an
+older client are refused with `model_not_found`. 0.170.0 is the first release that bundles
+`gpt-6.2-sol` while keeping `rust-toolchain.toml` at 1.95.0, so the builder and compiler
+pins are unchanged (0.171.0 moves to Rust 1.99.1).
+
+WORK IN PROGRESS (bu-f10puo). Patch 001 was regenerated for the 174 internal packages and
+`prepare_vendor.py` reproduces the recorded `source_tree_sha256`, but that only proves the
+series applies. Patches 002-005 are zero-context, so `patch` placed their 0.159.2 hunks at
+shifted line numbers in 0.170.0's refactored `http-client`: the patched tree does not compile
+(19 errors in `codex-http-client`). They must be re-ported by hand before this series is usable.
+The session-host native proof also fails on stock 0.170.0 (tool_search sources, OAuth refresh).
+
+The paragraphs above describe measurements taken on 0.159.2. The fixed-builder release
+hashes (`native-package-artifacts/build-inputs.json` `codex.binary_sha256` / `tree_sha256`,
+`runtime-inputs.json` `components.codex` and `native_artifacts.codex`) still carry the
+0.159.2 values. They are recorded, not enforced, so the producers log drift rather than
+refuse; replace them with the values the first fixed-builder 0.170.0 build reports.

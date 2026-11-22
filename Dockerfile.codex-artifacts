@@ -28,7 +28,7 @@ COPY Dockerfile.codex-artifacts /recipe/Dockerfile.codex-artifacts
 ENV PATH=/opt/rust/bin:/opt/cmake/cmake/data/bin:/usr/local/bin:/usr/bin:/bin \
     CARGO_HOME=/opt/build/cargo-home CARGO_TARGET_DIR=/opt/build/target \
     CARGO_NET_GIT_FETCH_WITH_CLI=false CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0 \
-    STABLE_GIT_COMMIT=ff6aec96948b70d94983af2641a6b67c94faeff5 \
+    STABLE_GIT_COMMIT=29eb79e9866b3262a777fdf8195c1b9e63684c91 \
     SOURCE_DATE_EPOCH=0 ZERO_AR_DATE=1 \
     RUSTFLAGS="--remap-path-prefix=/opt/build=/butlers-build --remap-path-prefix=/opt/rust=/butlers-rust" \
     CFLAGS="-ffile-prefix-map=/opt/build=/butlers-build" \

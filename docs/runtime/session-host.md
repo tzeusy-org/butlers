@@ -450,7 +450,7 @@ and tool-less-function acceptance criteria remain unfinished.
 
 ## Codex adapter proof (dark, tuple not eligible)
 
-`CodexSettings` is the closed preset for `codex` on `gpt-6-sol`: Codex 0.159.2, API
+`CodexSettings` is the closed preset for `codex` on `gpt-6-sol`: Codex 0.170.0, API
 key auth, no bypass flag, a generated config, and a private one-model catalog.
 `Profile` refuses known bypass forms in any runtime's command, ignoring case and
 reading `--flag=value` and `--flag value` alike: any argument containing
@@ -480,7 +480,7 @@ reads the tools the runtime offered and how it answered, over both WebSocket and
 HTTP. Software tests run in CI. The native ones need the pinned binary:
 
 ```bash
-npm install --ignore-scripts --prefix "$DIR" @openai/codex@0.159.2
+npm install --ignore-scripts --prefix "$DIR" @openai/codex@0.170.0
 export BUTLERS_CODEX_PROOF_BINARY="$DIR/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
 uv run pytest tests/session_host/test_codex_adapter_proof.py -n 0
 ```

@@ -9,13 +9,13 @@
       "sha256": "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b"
     },
     "deploy/runtime-clis/codex/build-inputs.json": {
-      "sha256": "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84"
+      "sha256": "1cca53ebf4d8398d39237e62870616a59aa395ac4ddc8f3fc8cead4b887eb72b"
     },
     "deploy/runtime-clis/codex/compiler-inputs.json": {
       "sha256": "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412"
     },
     "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch": {
-      "sha256": "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43"
+      "sha256": "4b11961badcef24e56dc509a0fe2518afb4dfb9255593b19ed065440e718ef49"
     },
     "deploy/runtime-clis/codex/patches/002-explicit-http-executor.patch": {
       "sha256": "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0"
@@ -30,7 +30,7 @@
       "sha256": "0fce292ee4322e495d72deaca5768175dc48a3f3f9b2291df2b34ed80e996348"
     },
     "deploy/runtime-clis/codex/series.json": {
-      "sha256": "80c5d00a2581beaa8a39f2026225167ae1ad803028c6b89d6b921e987847255c"
+      "sha256": "8d5fdddab10c6ff4b279600d304bcffddd02d2a7619592d06d8bd87182aa346b"
     },
     "deploy/runtime-clis/debian-system-inputs.json": {
       "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28"
@@ -87,7 +87,7 @@
       "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
     },
     "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
-      "sha256": "68485d59767d5a8b5e2df8482117562ff0e4831bf913e361f4d43d5658f14e39"
+      "sha256": "4c9c892d6b45ab4254e2c5a4a03de705b6a5f1a955ccb7f50f53fdf2fb7f2df6"
     },
     "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
       "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
@@ -156,7 +156,7 @@
       "sha256": "f02fb9ac77ff654765ea1ef97508e0a417b115e9b56e26285721cccae8047bb2"
     },
     "deploy/runtime-clis/runtime-inputs.json": {
-      "sha256": "197af1c7be45a9cf7dcac8067af5c4e15a1fdf81137c42fdf3caaead7853e51c"
+      "sha256": "805771c0335376aa5f18efb1eb36d052d154a5a4549e2cbc1d863796858cfbcf"
     },
     "deploy/runtime-clis/shared/egress.ts": {
       "sha256": "c18a9d00ac0a4766aca736dc6e56c3f3b93c77e486b7be04b2a12b4b22817301"
@@ -5988,9 +5988,9 @@
   },
   "vendor_resolvers": {
     "codex:auth": {
-      "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+      "archive_sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
       "catalogue": null,
-      "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+      "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
       "config": [
         "ServerOptions.issuer",
         "chatgpt_base_url"
@@ -6004,10 +6004,10 @@
       "source": {
         "binding": "archive",
         "path": "codex-rs/login/src/server.rs",
-        "sha256": "17b49a6da8fb54ec6d43efa037fbd867291c804038329035929322e15de830c8",
+        "sha256": "2f66d1c033e3918bc8bfda0cdad047c4553c10ec6a33ef8f80a7f9d6c2b47c10",
         "symbol": "run_login_server"
       },
-      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
+      "source_tree_sha256": "6057d6bd66ebccafc1666fbbafb1aba219a1d58cd013216d66d972e9086471ab",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -6017,9 +6017,9 @@
       ]
     },
     "codex:http-ws": {
-      "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+      "archive_sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
       "catalogue": null,
-      "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+      "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
       "config": [
         "provider.url",
         "experimental_realtime_ws_base_url"
@@ -6031,10 +6031,10 @@
       "source": {
         "binding": "patched",
         "path": "codex-rs/codex-api/src/endpoint/responses_websocket.rs",
-        "sha256": "ac48f705a5ce89393db8e90d69f3d390bcff943c324d041d1a0e2fcb82ea0633",
+        "sha256": "f3327039849f35e3bed087ca1686a0d7ce15bb2a9f9d577ec3dbad626cbaf138",
         "symbol": "ResponsesWebsocketClient"
       },
-      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
+      "source_tree_sha256": "6057d6bd66ebccafc1666fbbafb1aba219a1d58cd013216d66d972e9086471ab",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -6044,9 +6044,9 @@
       ]
     },
     "codex:plugin-tools": {
-      "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+      "archive_sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
       "catalogue": null,
-      "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+      "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
       "config": [
         "mcp_servers",
         "otel",
@@ -6059,10 +6059,10 @@
       "source": {
         "binding": "archive",
         "path": "codex-rs/core/src/config/mod.rs",
-        "sha256": "df6d6871a35a9e365e36beb3d388c2c39cae59d95bd84834321c8501390ec397",
+        "sha256": "f210c3281f997b634276bcc2c1d00dc1215b2c07adc18e9a2eed2efaaf54770c",
         "symbol": "mcp_servers"
       },
-      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
+      "source_tree_sha256": "6057d6bd66ebccafc1666fbbafb1aba219a1d58cd013216d66d972e9086471ab",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
@@ -6072,9 +6072,9 @@
       ]
     },
     "codex:provider-model": {
-      "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
+      "archive_sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
       "catalogue": null,
-      "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
+      "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
       "config": [
         "model_providers.*.base_url",
         "openai_base_url",
@@ -6090,10 +6090,10 @@
       "source": {
         "binding": "archive",
         "path": "codex-rs/model-provider-info/src/lib.rs",
-        "sha256": "05e44e6232eebebb27d487bd8c665f55f9d5ab08b3997519af7a464960e17f3e",
+        "sha256": "6ef704ca8b8a68387477d320148434185ae4f3e8e0d5b0653583280f29fe6988",
         "symbol": "to_api_provider"
       },
-      "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
+      "source_tree_sha256": "6057d6bd66ebccafc1666fbbafb1aba219a1d58cd013216d66d972e9086471ab",
       "vendor": "codex",
       "workloads": [
         "butlers-up",
