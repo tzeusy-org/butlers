@@ -96,7 +96,7 @@ The broker enforces the rule (RFC 0038 D5, D10, D13). Admission SHALL record the
 message's account and thread on the goal, once, from the trusted source reader; a goal no Gmail
 message admitted SHALL park every bound call. The cap SHALL count the goal's parked, approved,
 dispatched, committed and unknown effects of the capability, SHALL NOT count failed effects or
-parks that ended rejected, expired or cancelled, and a replay of a live call SHALL be refused as a
+parks that ended rejected, expired or cancelled, and a replay of a live call, even at the cap, SHALL be refused as a
 duplicate without being counted. The domain SHALL refuse with `exposed_modify_refused` a call with
 no lineage or an unknown origin, and an exposed or third-party `INBOX` or `UNREAD` removal that is
 not the owner-approved call itself.

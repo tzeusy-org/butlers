@@ -355,8 +355,11 @@ class Broker:
             raise self._refused(principal, name, Reason.POLICY)
         if gmail_rule_applies(principal, capability):
             # D13 Gmail exposure rule. It only narrows: the cap refuses, and an off-thread
-            # target or an INBOX/UNREAD removal parks for per-event approval.
-            counted = await ledger.counted_effects(principal.goal_id, capability.identity)
+            # target or an INBOX/UNREAD removal parks for per-event approval. The count leaves
+            # out this call's own digest, so a replay at the cap is refused as a duplicate.
+            counted = await ledger.counted_effects(
+                principal.goal_id, capability.identity, arguments_digest(args)
+            )
             if counted >= GMAIL_MODIFY_CAP:
                 raise self._refused(principal, name, Reason.POLICY)
             if gmail_parks(principal, args):

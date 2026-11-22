@@ -158,6 +158,29 @@ async def test_a_replay_never_counts_twice(broker_db_url):
         assert refused.reason is Reason.POLICY
 
 
+async def test_a_replay_at_the_cap_is_refused_as_a_duplicate(broker_db_url):
+    async with world(broker_db_url, catalog=CATALOG) as w:
+        goal, _, token = await _third_party(w)
+        results = [
+            await w.broker.call(goal, token, MODIFY.identity, _label(f"L{n}"))
+            for n in range(GMAIL_MODIFY_CAP)
+        ]
+        assert all(result.status == "committed" for result in results)
+        last = GMAIL_MODIFY_CAP - 1
+        replay = await _refused(w.broker.call(goal, token, MODIFY.identity, _label(f"L{last}")))
+        assert (replay.reason, replay.effect_id) == (Reason.DUPLICATE, results[-1].effect_id)
+        assert len(w.forwarder.calls) == GMAIL_MODIFY_CAP
+        policy = await w.owner.fetchval(
+            "SELECT count(*) FROM switchboard.broker_refusals WHERE goal_id = $1 "
+            "AND reason = 'policy_refused'",
+            goal,
+        )
+        assert policy == 0
+        # A new call at the cap is still refused by the cap.
+        refused = await _refused(w.broker.call(goal, token, MODIFY.identity, _label("L9")))
+        assert refused.reason is Reason.POLICY
+
+
 async def test_a_failed_or_rejected_call_never_burns_the_cap(broker_db_url):
     async with world(broker_db_url, catalog=CATALOG) as w:
         goal, _, token = await _third_party(w)

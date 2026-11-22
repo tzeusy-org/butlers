@@ -33,6 +33,7 @@ from butlers.capability_broker.policy import (
     gmail_rule_applies,
 )
 from butlers.capability_broker.service import Broker
+from butlers.core.capability_json import arguments_digest
 from butlers.core.goal_admission import (
     Evidence,
     EvidenceRefused,
@@ -278,22 +279,29 @@ class _Catalog:
 
 
 class _Ledger:
-    """The per-call transaction's ledger, with ``counted`` prior effects of the capability."""
+    """The per-call transaction's ledger, with ``counted`` prior live effects of the capability.
 
-    def __init__(self, counted: int):
+    ``live`` names the digests of those effects; ``reserve`` refuses a live digest as a
+    duplicate, as the real ledger does.
+    """
+
+    def __init__(self, counted: int, live: tuple[str, ...] = ()):
         self.connection = object()
         self.counted = counted
+        self.live = live
         self.reserved: list[Decision] = []
         self.counted_for: list[tuple[Any, str]] = []
 
-    async def counted_effects(self, goal_id, capability):
+    async def counted_effects(self, goal_id, capability, args_digest):
         self.counted_for.append((goal_id, capability))
-        return self.counted
+        return self.counted - self.live.count(args_digest)
 
     async def owner_law(self, *args, **kwargs):
         return None
 
     async def reserve(self, principal, capability, decision, digest, recipient, channel=None):
+        if digest in self.live:
+            raise BrokerRefused(Reason.DUPLICATE, effect_id=uuid4())
         self.reserved.append(decision)
         return Reservation(principal, capability, decision, uuid4(), uuid4(), digest, recipient)
 
@@ -331,6 +339,18 @@ async def test_the_fifth_call_runs_and_the_sixth_is_refused_before_any_reservati
             await broker._authorize(ledger, _bound(), MODIFY.identity, LABEL)
         assert refused.value.reason is Reason.POLICY
         assert ledger.reserved == []
+
+
+async def test_a_replay_at_the_cap_is_refused_as_a_duplicate_not_by_the_cap():
+    replayed = arguments_digest(LABEL)
+    live = ("d1", "d2", "d3", "d4", replayed)
+    ledger = _Ledger(GMAIL_MODIFY_CAP, live)
+    broker = Broker(object(), _Catalog(), object(), object())
+    with pytest.raises(BrokerRefused) as refused:
+        await broker._authorize(ledger, _bound(), MODIFY.identity, LABEL)
+    assert refused.value.reason is Reason.DUPLICATE
+    assert refused.value.effect_id is not None
+    assert ledger.reserved == []
 
 
 async def test_an_unexposed_owner_goal_is_neither_capped_nor_parked():

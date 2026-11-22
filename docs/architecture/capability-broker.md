@@ -498,7 +498,7 @@ injected mail (`policy.gmail_rule_applies`, `policy.gmail_parks`), applied in
   capability (requested, parked, approved, dispatched, committed, unknown)
   under the goal lock; at five the call is refused `policy_refused` before any
   reservation or budget charge. Failed effects and ended parks do not count; a
-  replay of a live call is refused `effect_already_recorded` before it writes a
+  replay of a live call, even at the cap, is refused `effect_already_recorded` before it writes a
   row. A typed error result from the domain is a committed effect and counts.
 - The Gmail module re-checks the argument-only half: an exposed or third-party
   INBOX/UNREAD removal runs only as the approved call (`approval_ref` set).

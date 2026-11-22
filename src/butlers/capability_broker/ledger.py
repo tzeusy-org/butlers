@@ -150,20 +150,23 @@ class BrokerLedger:
         except (ValueError, KeyError, TypeError, AttributeError):
             raise BrokerRefused(Reason.AUTHENTICATION) from None
 
-    async def counted_effects(self, goal_id: UUID, capability: str) -> int:
-        """The goal's effects of ``capability`` that changed, or may still change, anything.
+    async def counted_effects(self, goal_id: UUID, capability: str, args_digest: str) -> int:
+        """The goal's other effects of ``capability`` that changed, or may still change, anything.
 
         Read under the goal lock this transaction holds, so two calls racing a per-goal cap
         serialise. A failed effect and a park that ended rejected, expired or cancelled changed
-        nothing and is not counted; a replay of a live call is refused as a duplicate before it
-        writes a row, so it is never counted twice.
+        nothing and is not counted. An effect with this call's own ``args_digest`` is left out:
+        a replay of a live call is not a new effect, so even at the cap it reaches
+        :meth:`reserve` and is refused as a duplicate naming the original effect.
         """
         return await self.connection.fetchval(
             "SELECT count(*) FROM switchboard.effects "
-            "WHERE goal_id = $1 AND capability = $2 AND status = ANY($3::text[])",
+            "WHERE goal_id = $1 AND capability = $2 AND status = ANY($3::text[]) "
+            "AND args_digest IS DISTINCT FROM $4",
             goal_id,
             capability,
             list(_LIVE_EFFECTS),
+            args_digest,
         )
 
     async def _join(self, goal_id: UUID, invocation_id: UUID, label: Label, cause: str) -> bool:
