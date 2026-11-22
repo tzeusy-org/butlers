@@ -57,14 +57,16 @@ async def _fact(
     *,
     validity: str = "active",
 ) -> uuid.UUID:
-    metadata = {"value": 80.0, "unit": "kg"}
+    # Real readings carry valid_at (wellness_ingest passes it), which exempts them from the
+    # one-live-fact-per-key unique indexes; without it the fixture rows would collide.
+    metadata = {"source": "home_assistant", "value": 80.0, "unit": "kg"}
     if source_entity_id is not None:
         metadata["source_entity_id"] = source_entity_id
     return await pool.fetchval(
         "INSERT INTO facts (subject, predicate, content, scope, permanence, decay_rate, "
-        "validity, confidence, importance, source_butler, metadata) "
+        "validity, confidence, importance, source_butler, metadata, valid_at) "
         "VALUES ('owner', $1, 'w', 'health', 'permanent', 0.0, $2, 1.0, 5.0, 'health', "
-        "$3::text::jsonb) RETURNING id",
+        "$3::text::jsonb, now()) RETURNING id",
         predicate,
         validity,
         json.dumps(metadata),
