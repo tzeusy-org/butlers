@@ -11,8 +11,9 @@ superseded fact is a closed validity interval, the evidence for "what was true o
 Owner decision run24-keep-history-default = A (2026-11-22): superseded facts are kept forever for
 automatic expiry; ``NULL`` is the keep-forever horizon the purge job now honours.
 
-* Upgrade sets ``ttl_days = NULL`` only where it still holds the seeded ``7``, so a deliberately
-  edited horizon is left alone. The core chain replays per butler schema over this one shared
+* Upgrade sets ``ttl_days = NULL`` only where it still holds the seeded ``7`` and the dashboard
+  did not write it (it stamps ``updated_by = 'owner'``), so a deliberately chosen horizon, even
+  7, is left alone. The core chain replays per butler schema over this one shared
   row; the predicate makes every replay after the first a no-op.
 * Downgrade restores ``7`` only on a row this revision cleared (``updated_by`` carries the
   revision), so it cannot overwrite a horizon an admin set afterwards.
@@ -35,7 +36,7 @@ def upgrade() -> None:
     op.execute(f"""
         UPDATE public.memory_retention_policies
            SET ttl_days = NULL, updated_at = now(), updated_by = '{_MARK}'
-         WHERE kind = 'fact' AND ttl_days = 7
+         WHERE kind = 'fact' AND ttl_days = 7 AND updated_by IS DISTINCT FROM 'owner'
     """)
 
 

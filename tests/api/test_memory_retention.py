@@ -277,6 +277,30 @@ async def test_put_retention_policies_empty_list_returns_400(app):
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("ttl_days", [0, -1, -365])
+async def test_put_retention_policies_rejects_a_non_positive_ttl_before_writing(app, ttl_days):
+    """A zero or negative horizon would make every deletable row eligible; NULL is allowed."""
+    _wire_memory_mock(app)
+
+    with patch("butlers.api.routers.memory._audit.append") as mock_append:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                "/api/memory/retention-policies",
+                json={
+                    "policies": [
+                        {"kind": "event", "ttl_days": None, "max_rows": 10},
+                        {"kind": "fact", "ttl_days": ttl_days, "max_rows": None},
+                    ]
+                },
+            )
+
+    assert resp.status_code == 422
+    assert "fact" in resp.json()["detail"]
+    mock_append.assert_not_called()
+
+
 async def test_put_retention_policies_returns_updated_rows(app):
     """PUT returns the updated policy rows from the DB."""
     _wire_memory_mock(app)

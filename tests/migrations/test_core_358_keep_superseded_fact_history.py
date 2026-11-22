@@ -67,6 +67,25 @@ def test_an_edited_horizon_is_left_alone_both_ways(postgres_container) -> None:
         engine.dispose()
 
 
+def test_an_owner_who_chose_seven_days_keeps_it(postgres_container) -> None:
+    url, command, config = _migrated(postgres_container)
+    engine = create_engine(url)
+    try:
+        with engine.begin() as c:
+            c.execute(
+                text(
+                    "UPDATE public.memory_retention_policies SET ttl_days = 7, "
+                    "updated_by = 'owner' WHERE kind = 'fact'"
+                )
+            )
+        command.upgrade(config, "core_358")
+        with engine.connect() as c:
+            ttl, by = c.execute(_READ).one()
+        assert (ttl, by) == (7, "owner")
+    finally:
+        engine.dispose()
+
+
 def test_a_horizon_an_admin_set_after_the_upgrade_survives_the_downgrade(
     postgres_container,
 ) -> None:
