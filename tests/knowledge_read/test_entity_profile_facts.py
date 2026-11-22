@@ -108,6 +108,8 @@ def test_the_migration_retires_only_the_legacy_echo_rows():
     spec.loader.exec_module(module)
     sql = " ".join(module.RETIRE_STATEMENT.split())
     assert module.down_revision == "rel_045"
-    assert sql.startswith("UPDATE relationship.facts SET validity = 'retracted'")
+    # The memory facts table is optional in a chain run: the UPDATE sits behind a to_regclass guard.
+    assert "IF to_regclass('relationship.facts') IS NOT NULL THEN UPDATE" in sql
+    assert "SET validity = 'retracted'" in sql
     assert "predicate = 'activity'" in sql and "content LIKE 'Set fact %'" in sql
     assert "DELETE" not in sql.upper()

@@ -13,7 +13,7 @@ about the owner's life, so ``superseded`` (which says a newer fact replaced them
 rows leave the projection on its next sync. The match is the exact predicate plus the echo
 prefix, so a real activity fact is never touched.
 
-Idempotent: a second run matches no ``active``/``fading`` row. Downgrade is a no-op, because the
+Skipped when the table is absent. Idempotent: a second run matches no ``active``/``fading`` row. Downgrade is a no-op, because the
 rows cannot be told apart from an owner-retracted activity once retired.
 """
 
@@ -26,12 +26,18 @@ down_revision = "rel_045"
 branch_labels = None
 depends_on = None
 
+# ``relationship.facts`` belongs to the memory module; a chain run without it has nothing to retire.
 RETIRE_STATEMENT = """
-    UPDATE relationship.facts
-    SET validity = 'retracted'
-    WHERE predicate = 'activity'
-      AND content LIKE 'Set fact %'
-      AND validity IN ('active', 'fading')
+    DO $$
+    BEGIN
+        IF to_regclass('relationship.facts') IS NOT NULL THEN
+            UPDATE relationship.facts
+            SET validity = 'retracted'
+            WHERE predicate = 'activity'
+              AND content LIKE 'Set fact %'
+              AND validity IN ('active', 'fading');
+        END IF;
+    END $$
 """
 
 
