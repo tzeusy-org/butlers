@@ -50,7 +50,7 @@ def _declare(
         "steam",
         "google_health",
     }
-    if module in external_modules:
+    if module in external_modules or module == "gmail":
         boundary = f"external:{module}"
         authorization["read_stores"] = (*authorization.get("read_stores", ()), boundary)
         if authorization.get("effect_class") != "read":
@@ -3587,6 +3587,81 @@ TOOL_PRESENTATION_INVENTORY = (
             undeterminable=True,
             undeterminable_condition="always for inherited/implicit party set",
         ),
+        categories=ALL_CATEGORIES,
+    ),
+    # The owner's own Gmail (bu-kqme7f.5), dark until the RFC 0038 switch. Reads return third-party
+    # mail text, so output is untrusted and reading exposes the invocation (D6).
+    # gmail_modify_threads is `record`: archive, read state, star, important and existing user
+    # labels are reversible changes to the owner's own mailbox state (security.md "Approval
+    # Gates"). Under an exposed or third-party invocation it is refused until bu-kqme7f.10 lands
+    # the bound-thread park rule.
+    # It is naturally idempotent (a label set), so it keeps no effect receipts.
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_list_mailboxes",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=(),
+        selection_bound={},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_search",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("account",),
+        selection_bound={"account": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_get_thread",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("account", "thread_id"),
+        selection_bound={"account": False, "thread_id": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_modify_threads",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("account", "thread_ids"),
+        selection_bound={"account": False, "thread_ids": False},
+        safety_args=("account", "thread_ids", "add_labels", "remove_labels"),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
         categories=ALL_CATEGORIES,
     ),
     # Owner-private native Docs and Sheets (dark until the RFC 0038 switch). Class `record`, not
@@ -10852,6 +10927,8 @@ CATEGORY_SPECS = MappingProxyType(
         "email": _spec("module-email"),
         "finance": _spec("butler-finance"),
         "general": _spec("butler-general"),
+        # The unarchived change delta; on archive use _spec("module-gmail").
+        "gmail/mailbox": ("openspec/changes/owner-gmail-actions/specs/module-gmail/spec.md",),
         "google_drive": _spec("module-google-drive"),
         "google_health": _spec("module-google-health"),
         "health": _spec("butler-health"),
@@ -10956,6 +11033,12 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._drive_export_file",
                 "butlers.modules.google_drive.native_tools.NativeDocsMixin._sheet_write",
             ),
+            external_writers=True,
+            unknown_writers=True,
+        ),
+        "external:gmail": StoreWriters(
+            record_capabilities=("gmail_modify_threads",),
+            native_writers=("butlers.modules.gmail.GmailModule._modify_threads",),
             external_writers=True,
             unknown_writers=True,
         ),

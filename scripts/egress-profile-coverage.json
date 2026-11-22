@@ -5843,6 +5843,44 @@
       "workloads": [
         "butlers-up"
       ]
+    },
+    "src/butlers/modules/gmail/__init__.py::<module>::url::0e16c28d2174f5e7232ae63e00ff7f0a6c472ed74d36a28ca3e383e0dd85089f": {
+      "class": "reference",
+      "observed": {
+        "path": "src/butlers/modules/gmail/__init__.py",
+        "scope": "<module>",
+        "kind": "url",
+        "sha256": "0e16c28d2174f5e7232ae63e00ff7f0a6c472ed74d36a28ca3e383e0dd85089f",
+        "authorities": [
+          "www.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1
+      },
+      "reason": "OAuth scope identifier, not an HTTP request destination.",
+      "resolver": null,
+      "sites": [],
+      "workloads": []
+    },
+    "src/butlers/modules/gmail/__init__.py::<module>::url::92ed57bb8b360facc58eb02f725fa685ba4fb969305961788d39dc500a01bdec": {
+      "class": "external",
+      "observed": {
+        "path": "src/butlers/modules/gmail/__init__.py",
+        "scope": "<module>",
+        "kind": "url",
+        "sha256": "92ed57bb8b360facc58eb02f725fa685ba4fb969305961788d39dc500a01bdec",
+        "authorities": [
+          "gmail.googleapis.com:443"
+        ],
+        "config": null,
+        "count": 1
+      },
+      "reason": "Outbound provider base/path at this owning source; each reachable workload must declare this exact host/port.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up"
+      ]
     }
   },
   "local_resolvers": {
@@ -5976,7 +6014,7 @@
       "sha256": "4485479a800ecc7375493d707e06c91039580a33b857852db4a253229a3d443b"
     },
     "roster/messenger/butler.toml": {
-      "sha256": "ae5900295afd06662c810de34693c14252d94ba6d28416699cddb79a786ec5f4"
+      "sha256": "606ea353e8e77e72331263d2058ef2fc5c5be9e2ab77e8c8506282484cc996d9"
     },
     "roster/qa/butler.toml": {
       "sha256": "1846bef76733ba6f7f800a59fb9131a3a6b38a180727c95bc7f86c30abb61821"
