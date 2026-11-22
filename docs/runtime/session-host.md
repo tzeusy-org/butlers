@@ -389,16 +389,35 @@ authenticates from the volume's device-auth document instead of an API key (bu-k
   - id, access and refresh tokens are present and `account_id` is set;
   - the id token's account claim repeats that `account_id`;
   - there is no API key.
-- The document is staged byte for byte as the runtime's `auth.json`. This is the one
-  writable native file, bound with `--bind-fd` from the staged file that was checked
-  (regular, owned, `0600`, one link, staged hash). The rest stays sealed read-only:
-  config, catalog, prompt and the API-key auth file of the other mode.
-  - A bind mount of a single file cannot be renamed over, unlinked or replaced with a
-    link from inside the sandbox. The pinned CLI rewrites it in place, so the runtime
-    can change that file's bytes and nothing else on the host.
-- Only after `settle()` proves the domain gone does the host read the file back
-  (bounded at 64 KiB). It installs the file into the volume by compare-and-set, with
-  the staged digest as the expected value:
+- The document is staged byte for byte as `auth.json`, alone, in a fresh directory
+  the host creates for this invocation (`codex-auth`, mode `0700`, inside the
+  invocation's private stage directory). That directory is the runtime's one writable
+  host mount. It is bound with `--bind-fd` at `/invocation/codex-auth` from the
+  descriptor that was checked (same directory as staged, owned, `0700`, holding only
+  `auth.json`; the file regular, owned, `0600`, one link, staged hash).
+  `$CODEX_HOME/auth.json` is a symlink to `/invocation/codex-auth/auth.json`, and it
+  is the only link into the directory. The rest stays sealed read-only or sandbox
+  tmpfs: config, catalog, prompt, the API-key auth file of the other mode, and all
+  of `HOME`.
+  - Why a directory: pinned Codex 0.170.0 saves `auth.json` by writing a tempfile
+    beside the resolved file and renaming it over (`login/src/auth/storage.rs`). A
+    rename onto a single-file bind mount fails with `EBUSY`, which is what the
+    0.159.2-era single-file bind now does; a native control pins that.
+  - **The claim is weaker than before.** Under 0.159.2 the runtime could change one
+    file's bytes and nothing else on the host. Now it can create, write, rename and
+    remove entries inside that one per-invocation directory. It still cannot reach
+    any other host path, and the host never follows or imports anything there but
+    `auth.json`.
+- Only after `settle()` proves the domain gone does the host read back
+  `codex-auth/auth.json`: by descriptor from the directory it staged, `O_NOFOLLOW`,
+  regular, one link, bounded at 64 KiB. The directory may hold `auth.json` alone, or
+  `auth.json` plus `auth.json.lock`. That lock is the CLI's commit lock: 0.170.0
+  creates it empty beside the resolved auth file on every save and never removes it
+  (`login/src/auth/storage_commit.rs`). It must pass `lstat` as a regular file, not a
+  link, with one link, size 0 and the host's uid, and it is never opened. Any other
+  entry, or a lock in any other shape, fails closed: nothing is collected. The whole directory is then removed, on every path,
+  entries by descriptor and never followed. It installs the file into the volume by
+  compare-and-set, with the staged digest as the expected value:
   - Garbage, an API-key document or a document for another account is `rejected`, and
     the volume is left untouched.
   - A volume that moved on (a dashboard login) wins, as `conflict`.
@@ -531,7 +550,13 @@ The proof fails unless all of these hold:
 The sources check matters. A built-in family the config fails to disable, such as
 multi-agent tools, becomes deferred too and shows up only in that list. Native rows
 pin both directions: dropping `supports_search_tool` fails `broker_only_mcp`, and so
-does a second MCP server, whose tools the same search returns. Three MCP resource
+does a second MCP server, whose tools the same search returns.
+
+Codex 0.170.0 turns `deferred_tool_world_state` on by default (Stable). With it on,
+`tool_search` omits the source list and the deferred namespaces travel in world-state
+input instead, so the checker reads `sources=None` and refuses. The preset disables
+the feature to keep the list where the proof reads it, and a native row
+(`deferred-world-state-on`) pins that dropping the line fails `broker_only_mcp`. Three MCP resource
 tools (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
 stay offered because the pinned CLI has no switch for them. They can only name
 configured servers, so a broker test pins that the goal endpoint serves no
@@ -705,9 +730,13 @@ Production sets neither.
 - If the token endpoint returns an id token for another account, the pinned CLI still
   writes it under the old `account_id`. The claim check rejects that, and the volume
   keeps the staged document.
-- Control: the same staged file mounted read-only (`--ro-bind-fd`) loses the refresh,
-  and the volume keeps the staged document. The writable file is what carries a
-  refresh back.
+- The auth directory is the plan's only writable host mount; `HOME` and `CODEX_HOME`
+  are sandbox tmpfs, and the live mount table matches the plan.
+- Controls, each losing the refresh with the volume keeping the staged document:
+  - the same staged directory mounted read-only (`--ro-bind-fd`), so the writable
+    directory is what carries a refresh back;
+  - the 0.159.2-era plan, the staged `auth.json` alone bound writable at
+    `$CODEX_HOME/auth.json`: the CLI's rename fails with `EBUSY`.
 
 What OAuth mode adds, and does not prove:
 

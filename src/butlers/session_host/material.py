@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .codex import CodexSettings
+from .codex import AUTH_DIR_FILE, AUTH_DIR_NAME, AUTH_NAME, CodexSettings
 from .contracts import LaunchRequest, Refused
 from .opencode import CONFIG_NAME, OpenCodeSettings
 
@@ -34,6 +34,8 @@ class InvocationMaterial:
     content_hashes: dict[str, str] = field(default_factory=dict, repr=False)
 
     _request: LaunchRequest | None = field(default=None, repr=False)
+    # Codex OAuth only: (st_dev, st_ino) of the fresh auth directory staged here.
+    auth_directory: tuple[int, int] | None = field(default=None, repr=False)
 
     def prepare_opencode(self, settings: OpenCodeSettings) -> None:
         """Create only the closed native file inside this existing owner.
@@ -77,7 +79,46 @@ class InvocationMaterial:
         if any(len(content) > 65536 for content in rendered.values()):
             raise Refused("invalid_codex_material")
         for name, content in rendered.items():
-            self.write_native(name, content)
+            if settings.writable_auth and name == AUTH_NAME:
+                self.write_auth_directory(content)
+            else:
+                self.write_native(name, content)
+
+    def write_auth_directory(self, content: bytes) -> None:
+        """Codex OAuth: a fresh 0700 directory holding only ``auth.json``.
+
+        It is the runtime's one writable host mount. Created here, exclusively, so it
+        is never reused or shared; its identity is kept so collection reads this
+        directory and no other.
+        """
+        if self.auth_directory is not None or AUTH_NAME in self.content_hashes:
+            raise Refused("invalid_codex_material")
+        directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            metadata = os.fstat(directory)
+            if (metadata.st_dev, metadata.st_ino) != (self._device, self._inode):
+                raise Refused("stage_identity_changed")
+            os.mkdir(AUTH_DIR_NAME, 0o700, dir_fd=directory)
+            auth = os.open(
+                AUTH_DIR_NAME, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory
+            )
+        finally:
+            os.close(directory)
+        try:
+            os.fchmod(auth, 0o700)
+            metadata = os.fstat(auth)
+            self.auth_directory = (metadata.st_dev, metadata.st_ino)
+            descriptor = os.open(
+                AUTH_DIR_FILE,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=auth,
+            )
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(content)
+            self.content_hashes[AUTH_NAME] = hashlib.sha256(content).hexdigest()
+        finally:
+            os.close(auth)
 
     def write_native(self, name: str, content: bytes) -> None:
         directory = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)

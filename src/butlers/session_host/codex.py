@@ -60,6 +60,10 @@ _DISABLED_FEATURES = (
     "multi_agent",
     "goals",
     "view_image",
+    # Enforcing for the proof's view: 0.170.0 defaults it on, which moves the
+    # deferred-corpus source list out of tool_search into world-state input, so
+    # the sources check could no longer read it and refuses.
+    "deferred_tool_world_state",
     # Layered with the catalog's shell_type.
     "shell_tool",
     "unified_exec",
@@ -80,6 +84,20 @@ _DISABLED_FEATURES = (
 API_KEY = "api_key"
 OAUTH = "oauth"
 AUTH_PATH = CODEX_HOME + "/auth.json"
+# OAuth mode only. Codex 0.170.0 saves auth.json by writing a tempfile beside the
+# resolved file and renaming it over (login/src/auth/storage.rs), which a single-file
+# bind mount refuses with EBUSY. So the host stages auth.json alone in a fresh
+# per-invocation directory, binds that directory writable here, and AUTH_PATH is a
+# symlink to AUTH_TARGET; the CLI follows the link and renames inside the directory.
+AUTH_DIR_NAME = "codex-auth"
+AUTH_DIR_FILE = "auth.json"
+# The CLI's commit lock: created empty beside the resolved auth file on every save
+# and never removed (login/src/auth/storage_commit.rs). The only other entry the
+# auth directory may hold at collection; it is never opened.
+AUTH_DIR_LOCK = "auth.json.lock"
+AUTH_DIR = "/invocation/" + AUTH_DIR_NAME
+AUTH_TARGET = AUTH_DIR + "/" + AUTH_DIR_FILE
+AUTH_LOCK_TARGET = AUTH_DIR + "/" + AUTH_DIR_LOCK
 
 
 @dataclass(frozen=True)
@@ -91,9 +109,12 @@ class CodexSettings:
     * ``api_key`` (default): the staged credential is an OpenAI API key, and the
       auth file is a sealed read-only copy.
     * ``oauth``: the staged credential is the session host's Codex device-auth
-      document (``codex_oauth``). Its auth file is the one writable native file, so
-      the runtime can persist a refreshed token; the host validates and collects
-      it after settlement. Its identity differs, so it needs its own native proof.
+      document (``codex_oauth``). It is staged alone in a fresh per-invocation
+      directory, the one writable host mount (``AUTH_DIR``), and ``AUTH_PATH`` is a
+      symlink into it, so the runtime can persist a refreshed token by the CLI's
+      tempfile-and-rename; the host validates and collects ``auth.json`` after
+      settlement and removes the directory. Its identity differs, so it needs its
+      own native proof.
     """
 
     model: str
@@ -245,5 +266,7 @@ class CodexSettings:
         }
         if self.writable_auth:
             identity["auth_mode"] = "chatgpt-device-auth"
-            identity["writable_native_files"] = [AUTH_PATH]
+            identity["writable_native_files"] = [AUTH_TARGET]
+            identity["writable_native_directory"] = AUTH_DIR
+            identity["native_symlinks"] = [[AUTH_PATH, AUTH_TARGET]]
         return identity

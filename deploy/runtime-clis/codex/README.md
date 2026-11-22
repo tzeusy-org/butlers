@@ -123,15 +123,36 @@ older client are refused with `model_not_found`. 0.170.0 is the first release th
 `gpt-6.2-sol` while keeping `rust-toolchain.toml` at 1.95.0, so the builder and compiler
 pins are unchanged (0.171.0 moves to Rust 1.99.1).
 
-WORK IN PROGRESS (bu-f10puo). Patch 001 was regenerated for the 174 internal packages and
-`prepare_vendor.py` reproduces the recorded `source_tree_sha256`, but that only proves the
-series applies. Patches 002-005 are zero-context, so `patch` placed their 0.159.2 hunks at
-shifted line numbers in 0.170.0's refactored `http-client`: the patched tree does not compile
-(19 errors in `codex-http-client`). They must be re-ported by hand before this series is usable.
-The session-host native proof also fails on stock 0.170.0 (tool_search sources, OAuth refresh).
+Port method. Each 0.159.2 patch was committed on the 0.159.2 tree and three-way
+cherry-picked onto 0.170.0, then regenerated as zero-context hunks; every patch now applies
+at `--fuzz=0` with no offset, and `prepare_vendor.py` reproduces the recorded
+`source_tree_sha256`. Applying the 0.159.2 files directly is not a port: their zero-context
+hunks land at shifted lines in 0.170.0's refactored `http-client` and do not compile.
 
-The paragraphs above describe measurements taken on 0.159.2. The fixed-builder release
-hashes (`native-package-artifacts/build-inputs.json` `codex.binary_sha256` / `tree_sha256`,
-`runtime-inputs.json` `components.codex` and `native_artifacts.codex`) still carry the
-0.159.2 values. They are recorded, not enforced, so the producers log drift rather than
-refuse; replace them with the values the first fixed-builder 0.170.0 build reports.
+Functional deltas from the 0.159.2 series, all inside the same patches:
+
+- 001 normalizes 174 internal packages (was 159) to `0.170.0`.
+- 002 keeps upstream's new `retry_with_rustls(..., reqwest::Error)` shape, since upstream now
+  matches `RouteAwareRequestError::Request` itself; the selected-egress guard (never retry on
+  a native TLS client) is unchanged, and the Windows proxy-auth retry passes non-request
+  errors through. 0.170.0 added `HttpClient::new(reqwest::Client)`, which built a
+  `TransportClient` literal and would have bypassed selected egress; it now goes through
+  `TransportClient::new`, which binds the gateway from the environment like every other
+  transport. One upstream TLS-fallback test unwraps the request error accordingly.
+- 003 and 004 port unchanged in substance. Every WebSocket dial still goes through the
+  patched `websocket-client` dialer, including 0.170.0's new reusable `WebSocketConnector`
+  users (Responses connector, guardian sampler pool).
+- 005's regression helper passes `max_message_bytes: None` to 0.170.0's `WsStream::new`
+  (no limit, the 0.159.2 behavior).
+
+Source checks on the ported tree with Rust 1.95.0: all 460 tests in `codex-http-client`,
+`codex-websocket-client`, `codex-api` and `codex-backend-client` pass, including every
+regression test the series adds (selected executor identity, hop redirect refusal, outage
+without direct fallback, bounded hop error categories, WebSocket gateway handshake, normal
+peer close). These are source-bound results, not a fixed-builder release or image check.
+
+The fixed-builder release hashes (`native-package-artifacts/build-inputs.json`
+`codex.binary_sha256` / `tree_sha256`, `runtime-inputs.json` `components.codex` and
+`native_artifacts.codex`) still carry the 0.159.2 values. They are recorded, not enforced,
+so the producers log drift rather than refuse; replace them with the values the first
+fixed-builder 0.170.0 build reports.

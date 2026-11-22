@@ -67,8 +67,8 @@
     "version": "0.170.0",
     "main_path": "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
     "binary_sha256": "4b42c0febe80a136dc32757f70cde09ac3888996d9eaf9e0639a0ea19044deab",
-    "source_tree_sha256": "6057d6bd66ebccafc1666fbbafb1aba219a1d58cd013216d66d972e9086471ab",
-    "series_sha256": "8d5fdddab10c6ff4b279600d304bcffddd02d2a7619592d06d8bd87182aa346b",
+    "source_tree_sha256": "c24962aecdd7d639b4df8323b4f151be1fa790e5df8dfbdcf99241dc0a724b47",
+    "series_sha256": "f5a4343a0a27f7f864f9abcf2aca54dae77ce5b4cdd5e4a80b1a3e6681fb5d85",
     "tree_sha256": "cd0cb462da5375d7eefee3b43bab18f083352618ea58a044755712ec4d3c7b3f"
   },
   "scope": "Complete original Linux/amd64 target packages and wrapper declarations. Claude remains unmodified; only the Codex main executable is replaced. Other original platform assets and optional target declarations remain intact. Build/native/image parity requires separate execution."

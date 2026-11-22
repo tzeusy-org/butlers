@@ -439,7 +439,7 @@ def export_files(root: Path, output: Path, identity: dict) -> dict:
     versions = read_small(root, VERSIONS, 65536).decode("utf-8")
     require(
         re.search(r"(?m)(?:^|[─├└+` ]+)opencode-ai@1\.17\.7$", versions)
-        and re.search(r"(?m)(?:^|[─├└+` ]+)@openai/codex@0\.159\.2$", versions),
+        and re.search(r"(?m)(?:^|[─├└+` ]+)@openai/codex@0\.170\.0$", versions),
         "installed_versions",
     )
     selected: dict[str, set[str]] = {
