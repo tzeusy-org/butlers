@@ -42,6 +42,8 @@ _CREDENTIALS = tuple(
         "bearer",
         "cookie",
         "auth",
+        "authorization",
+        "authentication",
     )
 )
 _BREADTH = tuple(
@@ -126,9 +128,59 @@ def qualified(source: str) -> str:
     return ".".join(quote(part) for part in source.split("."))
 
 
+# The credential-name rule (bu-y66o00.71). Python is the reference; its SQL twins are
+# public.mcp_json_tokens and public.mcp_json_credential (core_356, which pins these constants) and
+# the owner step's applied-manifest decoder (tokens_sql and CREDENTIAL_PATTERN, rendered from here).
+#
+# 1. Tokenize: split acronym, camel and letter/digit boundaries in this order (APIKey -> API Key,
+#    apiKey -> api Key, cvv2 -> cvv 2, 2fa -> 2 fa), lowercase, then split on . whitespace _ -.
+# 2. A rule matches whole consecutive tokens; its last word may carry a tail of s, key(s),
+#    code(s) or number(s): api_keys, PINCode, card_number, cvv2, password1.
+# 3. A rule of five or more letters, written without separators, also matches at the end of a
+#    token, with the same tail: apikey, accesstoken, clientsecret, awssecretkey, proxyAuthorization.
+#    The short words (otp, cvv, pin, card, auth) never match inside a token, and no word matches
+#    when other letters follow it, so secretary, secretion, tokenization, tokenizer, pinned,
+#    spinach, spin, cardio, postcard, author, authority, hotpot, keyboard and monkey stay
+#    publishable (tests/credential_key_cases.py lists every checked key).
+#    Accepted over-matches, dropped as the fail-closed side: preauthorization, pallbearer, any
+#    whole token followed by a tail (token_count, cards, pins).
+# Known misses: a concatenated short word (creditcard, oauth) and a credential word with mixed
+# case inside it (SEcret splits as s ecret). Response DLP still scans every unmarked leaf.
+_SPLITS = (
+    (r"([A-Z]+)([A-Z][a-z])", r"\1_\2"),
+    (r"([a-z])([A-Z])", r"\1_\2"),
+    (r"([A-Za-z])([0-9])", r"\1_\2"),
+    (r"([0-9])([A-Za-z])", r"\1_\2"),
+)
+_TAIL = "(s|keys?|codes?|numbers?)?"
+
+
+def _credential_pattern(rules: tuple[tuple[str, ...], ...]) -> str:
+    whole = "|".join("_".join(rule) for rule in rules)
+    inner = "|".join(x for x in ("".join(rule) for rule in rules) if len(x) >= 5)
+    return f"(^|_)({whole}){_TAIL}(_|$)|({inner}){_TAIL}(_|$)"
+
+
+# Searched in the tokens joined by "_" (ARE- and re-compatible; the SQL twins use it verbatim).
+CREDENTIAL_PATTERN = _credential_pattern(_CREDENTIALS)
+_CREDENTIAL = re.compile(CREDENTIAL_PATTERN)
+
+
 def _segments(value: str) -> tuple[str, ...]:
-    value = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value)
+    for pattern, replacement in _SPLITS:
+        value = re.sub(pattern, replacement, value)
     return tuple(x.lower() for x in re.split(r"[.\s_-]+", value) if x)
+
+
+def tokens_sql(expression: str) -> str:
+    """SQL text whose value, searched with a token pattern, matches like ``_segments``.
+
+    It yields the tokens joined by "_" (possibly with empty tokens, which every token pattern's
+    ``(^|_)`` and ``(_|$)`` boundaries absorb).
+    """
+    for pattern, replacement in _SPLITS:
+        expression = f"regexp_replace({expression}, '{pattern}', '{replacement}', 'g')"
+    return f"regexp_replace(lower({expression}), '[._[:space:]-]+', '_', 'g')"
 
 
 def _matches(parts: tuple[str, ...], rules: tuple[tuple[str, ...], ...]) -> bool:
@@ -137,7 +189,7 @@ def _matches(parts: tuple[str, ...], rules: tuple[tuple[str, ...], ...]) -> bool
 
 def credential(value: str) -> bool:
     """Match the shared credential tier on column or dotted JSON path segments."""
-    return _matches(_segments(value), _CREDENTIALS)
+    return bool(_CREDENTIAL.search("_".join(_segments(value))))
 
 
 def private_predicate(value: str) -> bool:

@@ -12,6 +12,7 @@ from butlers.knowledge_read.manifest import (
     credential,
     load_manifest,
 )
+from tests.credential_key_cases import BENIGN_KEYS, CREDENTIAL_KEYS
 
 
 def test_packaged_manifest_is_complete_immutable_and_derives_graph_keys():
@@ -141,6 +142,25 @@ def test_credential_segments_keep_allowed_neighbors():
     assert credential("metadata.apiKey") and credential("metadata.access_token")
     assert credential("metadata.pin")
     assert not credential("metadata.fingerprint") and not credential("shipping")
+
+
+# bu-y66o00.71: acronym, concatenated, digit-suffixed and authorization-style keys. The same
+# cases drive the SQL twin in tests/migrations/test_public_projection_source.py.
+@pytest.mark.parametrize("key", CREDENTIAL_KEYS)
+def test_every_credential_key_style_is_refused(key):
+    assert credential(key) and credential(f"metadata.{key}") and credential(f"metadata.{key}.x")
+
+
+@pytest.mark.parametrize("key", BENIGN_KEYS)
+def test_benign_neighbors_of_credential_words_stay_publishable(key):
+    assert not credential(key) and not credential(f"metadata.{key}")
+
+
+@pytest.mark.parametrize("path", ["metadata.APIKey", "metadata.cvv2", "metadata.apikey"])
+def test_a_newly_covered_credential_path_cannot_be_marked(path):
+    data = files("butlers.knowledge_read").joinpath("projection.toml").read_text()
+    with pytest.raises(ManifestError, match="unsafe identifier mark"):
+        load_manifest(data.replace("metadata.external_ref", path, 1).encode())
 
 
 # Task 6.1: a credential-named JSON path cannot be marked dlp = "identifier" (which would skip

@@ -687,28 +687,38 @@ def _applied_decoder_sql() -> str:
     from butlers.knowledge_read.manifest import (
         _BREADTH,
         _CANONICAL_FIELDS,
-        _CREDENTIALS,
         _PRIVATE_TABLES,
         _TYPE,
+        CREDENTIAL_PATTERN,
+        tokens_sql,
     )
 
+    # Every name is tokenized by tokens_sql (the manifest rule) and searched with a pattern over
+    # "_"-joined tokens; credentials use the manifest's own CREDENTIAL_PATTERN (bu-y66o00.71).
     def token_pattern(rules):
-        return (
-            r"(^|[.[:space:]_-])("
-            + "|".join("[.[:space:]_-]+".join(r) for r in rules)
-            + r")([.[:space:]_-]|$)"
-        )
+        return r"(^|_)(" + "|".join("_".join(r) for r in rules) + r")(_|$)"
 
-    credentials = token_pattern(_CREDENTIALS)
+    credentials = CREDENTIAL_PATTERN
     breadth = token_pattern(_BREADTH)
-    private_predicates = token_pattern(
-        (
-            *_CREDENTIALS,
-            ("identity", "document"),
-            *(
-                (x,)
-                for x in ("phone", "email", "address", "handle", "website", "birthday", "passport")
-            ),
+    private_predicates = (
+        CREDENTIAL_PATTERN
+        + "|"
+        + token_pattern(
+            (
+                ("identity", "document"),
+                *(
+                    (x,)
+                    for x in (
+                        "phone",
+                        "email",
+                        "address",
+                        "handle",
+                        "website",
+                        "birthday",
+                        "passport",
+                    )
+                ),
+            )
         )
     )
     fields = "ARRAY[" + ", ".join(literal(x) for x in sorted(_CANONICAL_FIELDS)) + "]"
@@ -805,10 +815,7 @@ BEGIN
            OR NOT (t->'columns') @> (t->'identifiers')
            OR EXISTS(SELECT 1 FROM unnest(cols) c WHERE c !~
         '^[a-z_][a-z0-9_]*$'
-               OR lower(regexp_replace(c, '([a-z0-9])([A-Z])', '\1_\2',
-        'g')) ~
-
-        __CREDENTIALS_EMBEDDING__)
+               OR __TOKENS_C__ ~ __CREDENTIALS_EMBEDDING__)
         THEN
             RAISE EXCEPTION 'applied manifest columns/identity refused';
         END IF;
@@ -873,13 +880,11 @@ BEGIN
                   WHERE x !~ '^[a-z_][a-z0-9_]*$')
            OR EXISTS(SELECT 1 FROM unnest(cols) c WHERE domain NOT IN
         ('finance', 'health')
-               AND c ~ __BREADTH__)
+               AND __TOKENS_C__ ~ __BREADTH__)
            OR EXISTS(SELECT 1 FROM
         jsonb_array_elements_text(t->'json_identifiers') x
                WHERE x !~ '^[a-zA-Z_][a-zA-Z_0-9]*([.][a-zA-Z_0-9-]+)+$'
-                  OR lower(regexp_replace(x, '([a-z0-9])([A-Z])',
-        '\1_\2', 'g')) ~
-        __CREDENTIALS__)
+                  OR __TOKENS_X__ ~ __CREDENTIALS__)
            OR ((jsonb_array_length(t->'identifiers')>0 OR
         jsonb_array_length(t->'json_identifiers')>0)
                AND (domain NOT IN ('finance', 'health') OR
@@ -915,9 +920,7 @@ BEGIN
                      WHERE x IN
         ('contact_phone', 'contact_email', 'birthday', 'lives_in',
         'nickname')
-                       OR lower(regexp_replace(x, '([a-z0-9])([A-Z])',
-        '\1_\2', 'g')) ~
-        __PRIVATE_PREDICATES__) THEN
+                       OR __TOKENS_X__ ~ __PRIVATE_PREDICATES__) THEN
                 RAISE EXCEPTION 'applied memory fact privacy refused';
         END IF;
         END IF;
@@ -976,8 +979,11 @@ $decode$;
         .replace("__PRIVATE__", private)
         .replace("__TYPE__", literal("^" + _TYPE.pattern))
         .replace("__BREADTH__", literal(breadth))
+        .replace("__TOKENS_C__", tokens_sql("c"))
+        .replace("__TOKENS_X__", tokens_sql("x"))
         .replace(
-            "__CREDENTIALS_EMBEDDING__", literal(token_pattern((*_CREDENTIALS, ("embedding",))))
+            "__CREDENTIALS_EMBEDDING__",
+            literal(CREDENTIAL_PATTERN + "|" + token_pattern((("embedding",),))),
         )
         .replace("__CREDENTIALS__", literal(credentials))
         .replace("__PRIVATE_PREDICATES__", literal(private_predicates))

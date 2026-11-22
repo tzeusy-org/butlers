@@ -650,7 +650,13 @@ def test_malformed_or_inconsistent_applied_state_refuses_before_mutation(copied)
             text("SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'")
         ).scalar_one()
     mutations = []
-    for change in ("extra", "private", "filter", "type", "graph", "marks"):
+    # bu-y66o00.71: acronym, concatenated and digit-suffixed names, on a table that may carry marks.
+    credential_marks = {
+        "marks_acronym": "metadata.APIKey",
+        "marks_concatenated": "metadata.accesstoken",
+        "marks_digit": "metadata.cvv2",
+    }
+    for change in ("extra", "private", "filter", "type", "graph", "marks", *credential_marks):
         obj = json.loads(manifest.canonical)
         if change == "extra":
             obj["tables"][0]["ignored"] = True
@@ -666,6 +672,10 @@ def test_malformed_or_inconsistent_applied_state_refuses_before_mutation(copied)
             ] = []
         elif change == "marks":
             obj["tables"][0]["json_identifiers"] = ["metadata.password"]
+        elif change in credential_marks:
+            next(t for t in obj["tables"] if t["json_identifiers"])["json_identifiers"].append(
+                credential_marks[change]
+            )
         mutations.append(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     mutations += [
         " " + manifest.canonical,
