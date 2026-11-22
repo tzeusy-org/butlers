@@ -4120,3 +4120,93 @@ async def test_bill_sweep_does_not_roll_one_time_custom_or_zero_placeholder(
         await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
         for payee in ("One Off", "Custom", "Zero"):
             assert len(await _series(pool, payee)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: payee-variant canonicalization in the recurring roll (bu-swkpoo.15)
+# ---------------------------------------------------------------------------
+
+
+async def _all_bills(pool):
+    return await pool.fetch(
+        "SELECT payee, status, due_date, amount FROM finance.bills ORDER BY payee, due_date"
+    )
+
+
+async def test_bill_sweep_rolls_domain_variants_as_one_series(finance_clone, monkeypatch):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Acme Broadband", due_date=due, status="paid")
+        await _insert_bill(
+            pool,
+            payee="Acme Broadband (acme.example.com)",
+            due_date=due - timedelta(days=30),
+            status="paid",
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        pending = [r for r in await _all_bills(pool) if r["status"] == "pending"]
+        assert len(pending) == 1
+        assert pending[0]["payee"] == "Acme Broadband"
+
+
+async def test_bill_sweep_rolls_cc_and_credit_card_as_one_series(finance_clone, monkeypatch):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Zeta Bank CC", due_date=due, status="paid")
+        await _insert_bill(
+            pool,
+            payee="Zeta Bank Credit Card",
+            due_date=due - timedelta(days=30),
+            status="paid",
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        assert len([r for r in await _all_bills(pool) if r["status"] == "pending"]) == 1
+
+
+async def test_bill_sweep_roll_idempotent_across_payee_variants(finance_clone, monkeypatch):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Acme Broadband", due_date=due, status="paid")
+        await _insert_bill(
+            pool, payee="Acme Broadband (acme.example.com)", due_date=due, status="paid"
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        before = await _all_bills(pool)
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        assert [dict(r) for r in await _all_bills(pool)] == [dict(r) for r in before]
+
+
+async def test_bill_sweep_does_not_merge_bare_name_prefix(finance_clone, monkeypatch):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Quark Fund", due_date=due, status="paid")
+        await _insert_bill(pool, payee="Quark Fund Retirement", due_date=due, status="paid")
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        assert len([r for r in await _all_bills(pool) if r["status"] == "pending"]) == 2
+
+
+async def test_bill_sweep_roll_skips_when_equivalent_payee_has_bill_in_target_period(
+    finance_clone, monkeypatch
+):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    target = fj._advance_due_date(due, due.day, "monthly", 1)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Acme Broadband", due_date=due, status="paid")
+        # A later one-off bill under a variant name already covers the target period.
+        await _insert_bill(
+            pool,
+            payee="Acme Broadband (acme.example.com)",
+            due_date=target + timedelta(days=2),
+            frequency="one_time",
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        assert len(await _all_bills(pool)) == 2

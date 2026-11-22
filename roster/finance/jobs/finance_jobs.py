@@ -43,7 +43,7 @@ from butlers.tools.finance.expected_signals import signal_source_from_metadata
 from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
-from butlers.tools.finance.reconciliation import reconcile_bills
+from butlers.tools.finance.reconciliation import canonical_payee_key, reconcile_bills
 from butlers.tools.finance.spending import spending_summary
 from butlers.tools.finance.transactions import _record_transaction
 from butlers.tools.switchboard.insight.broker import propose_insight_candidate
@@ -1831,6 +1831,9 @@ async def _age_out_stale_bills(conn: Any, today: date) -> dict[str, int]:
 
 
 _RECURRING_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+_RECURRING_FREQUENCIES = ("weekly", "monthly", "quarterly", "yearly")
+# Upper bound of one period, used to decide "same period" for the equivalent-payee guard.
+_PERIOD_SPAN_DAYS = {"weekly": 7, "monthly": 31, "quarterly": 92, "yearly": 366}
 
 
 def _advance_due_date(base: date, anchor_day: int, frequency: str, periods: int) -> date:
@@ -1851,8 +1854,10 @@ async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
     """Ensure each recurring bill series has a ``pending`` bill for its next period.
 
     bu-swkpoo.8. Runs after ``reconcile_bills`` and ``_age_out_stale_bills`` so
-    settlement and aging win first. A series is (payee_key, currency, frequency)
-    over non-predicted weekly/monthly/quarterly/yearly bills. Only the series'
+    settlement and aging win first. A series is (canonical payee, currency,
+    frequency) over non-predicted weekly/monthly/quarterly/yearly bills, where the
+    canonical payee (``canonical_payee_key``, bu-swkpoo.15) folds ``payee_key``
+    variants such as a trailing domain or "cc" vs "credit card" into one payee. Only the series'
     latest bill is a roll source, which makes the roll idempotent: the inserted
     row becomes the latest and is not rollable until it settles or ages out.
     A source rolls when it is ``paid`` or ``overdue``, or is an autopay bill still
@@ -1863,29 +1868,40 @@ async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
     ``custom`` have no deterministic period and are untouched.
     """
     cutoff = today - timedelta(days=_STALE_BILL_GRACE_DAYS)
-    sources = await conn.fetch(
+    rows = await conn.fetch(
         """
-        SELECT * FROM (
-            SELECT DISTINCT ON (key, currency, frequency)
-                   id, payee, key, amount, currency, due_date, frequency, status,
-                   autopay, payment_method, account_id, metadata
-              FROM (
-                  SELECT *, COALESCE(payee_key, rtrim(btrim(
-                         regexp_replace(lower(payee), '\\s+', ' ', 'g')), '.')) AS key
-                    FROM bills
-                   WHERE NOT predicted
-                     AND frequency IN ('weekly', 'monthly', 'quarterly', 'yearly')
-              ) b
-             ORDER BY key, currency, frequency, due_date DESC, created_at DESC
-        ) latest
-         WHERE amount > 0
-           AND (status IN ('paid', 'overdue')
-                OR (status = 'pending' AND autopay AND due_date < $1))
-        """,
-        cutoff,
+        SELECT id, payee, payee_key, COALESCE(payee_key, payee) AS key, amount, currency, due_date,
+               frequency, status, autopay, payment_method, account_id, metadata, created_at
+          FROM bills
+         WHERE NOT predicted
+        """
     )
+    latest: dict[tuple[str, str, str], Any] = {}
+    by_payee: dict[tuple[str, str], list[Any]] = {}
+    for row in rows:
+        ckey = canonical_payee_key(row["key"])
+        by_payee.setdefault((ckey, row["currency"]), []).append(row)
+        if row["frequency"] not in _RECURRING_FREQUENCIES:
+            continue
+        sk = (ckey, row["currency"], row["frequency"])
+        best = latest.get(sk)
+        if best is None or (row["due_date"], row["created_at"]) > (
+            best["due_date"],
+            best["created_at"],
+        ):
+            latest[sk] = row
+    sources = [
+        (sk, row)
+        for sk, row in latest.items()
+        if row["amount"] > 0
+        and (
+            row["status"] in ("paid", "overdue")
+            or (row["status"] == "pending" and row["autopay"] and row["due_date"] < cutoff)
+        )
+    ]
+    sources.sort(key=lambda item: (item[1]["due_date"], item[1]["created_at"]))
     rolled = 0
-    for src in sources:
+    for (ckey, currency, _), src in sources:
         meta = src["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta)
@@ -1895,6 +1911,16 @@ async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
         while due < today:
             periods += 1
             due = _advance_due_date(src["due_date"], anchor, src["frequency"], periods)
+        # An equivalent payee already has a later bill (any frequency, any status)
+        # within one period of the target: never add a second obligation.
+        span = timedelta(days=_PERIOD_SPAN_DAYS[src["frequency"]])
+        if any(
+            other["id"] != src["id"]
+            and other["due_date"] > src["due_date"]
+            and due - span <= other["due_date"] <= due + span
+            for other in by_payee[(ckey, currency)]
+        ):
+            continue
         await conn.execute(
             """
             INSERT INTO bills (payee, payee_key, amount, currency, due_date, frequency,
@@ -1902,7 +1928,7 @@ async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
             VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, false, $10::jsonb)
             """,
             src["payee"],
-            src["key"],
+            src["payee_key"] or canonical_payee_key(src["payee"]),
             src["amount"],
             src["currency"],
             due,
@@ -1910,7 +1936,9 @@ async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
             src["payment_method"],
             src["account_id"],
             src["autopay"],
-            json.dumps({"rolled_from": str(src["id"]), "recurrence_anchor_day": anchor}),
+            # A dict, not json.dumps(): the pool's jsonb codec encodes it, and a
+            # pre-dumped str would be stored as a JSON string scalar.
+            {"rolled_from": str(src["id"]), "recurrence_anchor_day": anchor},
         )
         rolled += 1
     return {"rolled": rolled}
