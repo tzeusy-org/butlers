@@ -242,8 +242,8 @@ class _Recorder:
     ("evidence", "stored"),
     [
         (Evidence("message", "mail", trigger_thread=(ACCOUNT, THREAD)), (ACCOUNT, THREAD)),
-        (Evidence("message", "mail"), (None, None)),
-        (Evidence("feed", "feed"), (None, None)),
+        (Evidence("message", "mail"), None),
+        (Evidence("feed", "feed"), None),
     ],
 )
 async def test_admission_records_the_evidence_binding_on_the_goal(evidence, stored):
@@ -266,8 +266,12 @@ async def test_admission_records_the_evidence_binding_on_the_goal(evidence, stor
         uuid4(), source, "third_party", True, (), None, evidence, 0, budget, now
     )
     sql, args = recorder.statements[0]
-    assert "trigger_gmail_account,trigger_gmail_thread" in sql
-    assert args[-2:] == stored
+    if stored is None:
+        # Unbound: the columns are not named, so admission also runs on a ledger before sw_083.
+        assert "trigger_gmail" not in sql and len(args) == 15
+    else:
+        assert "trigger_gmail_account,trigger_gmail_thread" in sql
+        assert args[-2:] == stored
 
 
 # -- the per-call disposition --------------------------------------------------------

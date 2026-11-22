@@ -192,14 +192,19 @@ class GoalLedger:
     ):
         grants = encode_grants(ceiling)
         # sw_083: the admitting Gmail thread, recorded once from verified evidence (immutable).
-        trigger = getattr(facts, "trigger_thread", None) or (None, None)
+        # Named only when there is one, as deliver() does: an unbound goal leaves both NULL.
+        trigger = getattr(facts, "trigger_thread", None)
+        columns, placeholders, values = "", "", ()
+        if trigger is not None:
+            columns = ",trigger_gmail_account,trigger_gmail_thread"
+            placeholders = ",$16,$17"
+            values = tuple(trigger)
         await self.connection.execute(
             "INSERT INTO switchboard.goals "
             "(id,source_key,source_kind,source_ref,occurrence_key,origin,"
             "admitted_exposed,exposed,ceiling,ceiling_digest,catalog_digest,contract_digest,config_digest,"
-            "caused_by_goal,caused_by_effect,chain_depth,"
-            "trigger_gmail_account,trigger_gmail_thread) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17) "
+            f"caused_by_goal,caused_by_effect,chain_depth{columns}) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15{placeholders}) "
             "ON CONFLICT (source_key) DO NOTHING",
             goal_id,
             source.key,
@@ -216,8 +221,7 @@ class GoalLedger:
             facts.caused_by_goal,
             facts.caused_by_effect,
             chain_depth,
-            trigger[0],
-            trigger[1],
+            *values,
         )
         # The unique source key plus transaction lock is final race authority;
         # an unexpected conflict cannot silently allocate a second budget.
