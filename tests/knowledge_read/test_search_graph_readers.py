@@ -188,6 +188,32 @@ async def test_trips_refuses_out_of_contract_arguments(arguments, argument):
     assert await _code(trips, arguments) == ("invalid_argument", argument)
 
 
+class _TripsOnly:
+    """A snapshot connection with one trip and no legs; any documents read fails the test."""
+
+    def is_in_transaction(self) -> bool:
+        return True
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        assert "travel__documents" not in sql, "read an unpublished source"
+        if "travel__trips" in sql:
+            return [{"source_id": ID, "fields": {"name": "Synthetic trip", "status": "planned"}}]
+        return []
+
+
+async def test_trips_answers_without_documents_when_they_are_not_published(monkeypatch):
+    import butlers.knowledge_read.core as core
+
+    narrowed = core.load_manifest()
+    narrowed = replace(
+        narrowed, tables=tuple(t for t in narrowed.tables if t.source != "travel.documents")
+    )
+    monkeypatch.setattr(core, "_manifest", lambda: narrowed)
+    conn: Any = _TripsOnly()
+    result = await trips(conn, _context(), {})
+    assert [(t["id"], t["legs"], t["documents"]) for t in result["trips"]] == [(ID, [], [])]
+
+
 async def test_describe_takes_no_arguments_and_lists_the_pinned_catalogue():
     assert await _code(describe, {"domain": "x"}) == ("invalid_argument", "domain")
     assert len(TOOLS) == len(set(TOOLS)) == 19
