@@ -1,6 +1,14 @@
+--- a/codex-rs/backend-client/src/client.rs
++++ b/codex-rs/backend-client/src/client.rs
+@@ -142,0 +143 @@ impl From<codex_http_client::HttpError> for RequestError {
++            | codex_http_client::HttpError::GatewayUnavailable(_)
+--- a/codex-rs/exec-server/src/client/connection_failure.rs
++++ b/codex-rs/exec-server/src/client/connection_failure.rs
+@@ -58,0 +59 @@ impl ExecServerError {
++                | RouteAwareRequestError::GatewayUnavailable(_)
 --- a/codex-rs/http-client/src/gateway.rs
 +++ b/codex-rs/http-client/src/gateway.rs
-@@ -136,5 +136,10 @@
+@@ -136,5 +136,10 @@ impl GatewayClient {
 -        let response = self
 -            .client
 -            .execute(request)
@@ -16,7 +24,7 @@
 +                crate::HttpError::Request(error)
 +            }
 +        })?;
-@@ -393,5 +398,8 @@
+@@ -393,5 +398,8 @@ mod tests {
 -        assert!(error.is_connect());
 -        let crate::HttpError::Request(error) = error else {
 -            panic!("native connect category lost");
@@ -30,9 +38,7 @@
 +        assert_eq!(error.to_string(), "selected egress gateway unavailable");
 +        let mut error = error;
 +        assert_eq!(error.url_mut().map(|url| url.clone()), Some(logical));
-@@ -402,0 +411,68 @@
-+    }
-+
+@@ -404,0 +413,68 @@ mod tests {
 +    #[tokio::test]
 +    async fn selected_connect_timeout_uses_bounded_category_but_request_timeout_does_not() {
 +        struct StalledDns;
@@ -99,30 +105,32 @@
 +        assert!(error.is_timeout());
 +        assert!(!error.is_connect());
 +        server.await.unwrap();
++    }
++
 --- a/codex-rs/http-client/src/route_aware_client_pool.rs
 +++ b/codex-rs/http-client/src/route_aware_client_pool.rs
-@@ -91,0 +92,3 @@
+@@ -93,0 +94,3 @@ pub enum RouteAwareRequestError {
 +    // A selected hop is a routing service, not an indefinitely recoverable client network.
 +    #[error("selected egress gateway unavailable")]
 +    GatewayUnavailable(#[source] reqwest::Error),
-@@ -145,0 +149 @@
+@@ -147,0 +151 @@ impl RouteAwareRequestError {
 +            | Self::GatewayUnavailable(_)
-@@ -157,0 +162 @@
+@@ -159,0 +164 @@ impl RouteAwareRequestError {
 +            | Self::GatewayUnavailable(_)
-@@ -188 +193 @@
+@@ -190 +195 @@ impl RouteAwareRequestError {
 -            Self::Request(error) => error.url_mut(),
 +            Self::Request(error) | Self::GatewayUnavailable(error) => error.url_mut(),
-@@ -198,0 +204 @@
+@@ -200,0 +206 @@ impl RouteAwareRequestError {
 +            Self::GatewayUnavailable(error) => Self::GatewayUnavailable(error.without_url()),
 --- a/codex-rs/http-client/src/transport.rs
 +++ b/codex-rs/http-client/src/transport.rs
-@@ -140 +140,2 @@
+@@ -140 +140,2 @@ impl ReqwestTransport {
 -            error @ (RouteAwareRequestError::UnsupportedRedirectScheme(_)
 +            error @ (RouteAwareRequestError::GatewayUnavailable(_)
 +            | RouteAwareRequestError::UnsupportedRedirectScheme(_)
 --- a/codex-rs/http-client/src/transport_tests.rs
 +++ b/codex-rs/http-client/src/transport_tests.rs
-@@ -128,0 +129,132 @@
+@@ -128,0 +129,132 @@ impl Write for TestLogWriter {
 +
 +#[tokio::test]
 +async fn selected_gateway_connect_failures_use_bounded_stream_retry_category() {
@@ -255,11 +263,3 @@
 +        server.await.unwrap();
 +    }
 +}
---- a/codex-rs/backend-client/src/client.rs
-+++ b/codex-rs/backend-client/src/client.rs
-@@ -119,0 +120 @@
-+            | codex_http_client::HttpError::GatewayUnavailable(_)
---- a/codex-rs/exec-server/src/client/connection_failure.rs
-+++ b/codex-rs/exec-server/src/client/connection_failure.rs
-@@ -52,0 +53 @@
-+                | RouteAwareRequestError::GatewayUnavailable(_)

@@ -1,11 +1,11 @@
-# Codex 0.159.2
+# Codex 0.170.0
 
 `series.json` binds upstream commit
-`ff6aec96948b70d94983af2641a6b67c94faeff5` and its public source archive.
+`29eb79e9866b3262a777fdf8195c1b9e63684c91` and its public source archive.
 The five ordered patches have separate purposes:
 
-1. Normalize the 159 internal lockfile package versions from the shipped `0.0.0`
-   to the source workspace's `0.159.2`. External package versions, sources,
+1. Normalize the 174 internal lockfile package versions from the shipped `0.0.0`
+   to the source workspace's `0.170.0`. External package versions, sources,
    checksums, dependency edges and lock metadata remain identical. Stock Cargo
    accepts the resulting lock with `--locked`.
 2. Route the existing HTTP factories, route-aware pool and transport executor
@@ -32,7 +32,7 @@ Build from the prepared source with Rust 1.95.0, the locked graph, default featu
 and the target recorded in the series. The source commit is embedded explicitly:
 
 ```sh
-STABLE_GIT_COMMIT=ff6aec96948b70d94983af2641a6b67c94faeff5 \
+STABLE_GIT_COMMIT=29eb79e9866b3262a777fdf8195c1b9e63684c91 \
   cargo +1.95.0 build --locked --release --manifest-path codex-rs/Cargo.toml \
   -p codex-cli --bin codex --target x86_64-unknown-linux-gnu -j2
 ```
@@ -114,3 +114,45 @@ Existing runtime contexts retain their old identities and are not requalified by
 updating `runtime-inputs.json`. A new aggregate close/install, installed-wrapper
 native checks and image checks remain required; auxiliary native request
 observations and process-exit shutdown remain separately qualified.
+
+## 0.170.0 re-pin status
+
+0.170.0 (`29eb79e9`) replaces 0.159.2 because the bundled model catalog marks
+`gpt-6.2-sol` with `minimal_client_version` 0.166.0, and ChatGPT-login sessions on an
+older client are refused with `model_not_found`. 0.170.0 is the first release that bundles
+`gpt-6.2-sol` while keeping `rust-toolchain.toml` at 1.95.0, so the builder and compiler
+pins are unchanged (0.171.0 moves to Rust 1.99.1).
+
+Port method. Each 0.159.2 patch was committed on the 0.159.2 tree and three-way
+cherry-picked onto 0.170.0, then regenerated as zero-context hunks; every patch now applies
+at `--fuzz=0` with no offset, and `prepare_vendor.py` reproduces the recorded
+`source_tree_sha256`. Applying the 0.159.2 files directly is not a port: their zero-context
+hunks land at shifted lines in 0.170.0's refactored `http-client` and do not compile.
+
+Functional deltas from the 0.159.2 series, all inside the same patches:
+
+- 001 normalizes 174 internal packages (was 159) to `0.170.0`.
+- 002 keeps upstream's new `retry_with_rustls(..., reqwest::Error)` shape, since upstream now
+  matches `RouteAwareRequestError::Request` itself; the selected-egress guard (never retry on
+  a native TLS client) is unchanged, and the Windows proxy-auth retry passes non-request
+  errors through. 0.170.0 added `HttpClient::new(reqwest::Client)`, which built a
+  `TransportClient` literal and would have bypassed selected egress; it now goes through
+  `TransportClient::new`, which binds the gateway from the environment like every other
+  transport. One upstream TLS-fallback test unwraps the request error accordingly.
+- 003 and 004 port unchanged in substance. Every WebSocket dial still goes through the
+  patched `websocket-client` dialer, including 0.170.0's new reusable `WebSocketConnector`
+  users (Responses connector, guardian sampler pool).
+- 005's regression helper passes `max_message_bytes: None` to 0.170.0's `WsStream::new`
+  (no limit, the 0.159.2 behavior).
+
+Source checks on the ported tree with Rust 1.95.0: all 460 tests in `codex-http-client`,
+`codex-websocket-client`, `codex-api` and `codex-backend-client` pass, including every
+regression test the series adds (selected executor identity, hop redirect refusal, outage
+without direct fallback, bounded hop error categories, WebSocket gateway handshake, normal
+peer close). These are source-bound results, not a fixed-builder release or image check.
+
+The fixed-builder release hashes (`native-package-artifacts/build-inputs.json`
+`codex.binary_sha256` / `tree_sha256`, `runtime-inputs.json` `components.codex` and
+`native_artifacts.codex`) still carry the 0.159.2 values. They are recorded, not enforced,
+so the producers log drift rather than refuse; replace them with the values the first
+fixed-builder 0.170.0 build reports.

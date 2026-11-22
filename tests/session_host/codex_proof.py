@@ -30,8 +30,13 @@ from typing import Any
 from butlers.session_host.bubblewrap import BubblewrapDomain, ImageFile
 from butlers.session_host.codex import (
     API_KEY,
+    AUTH_DIR,
+    AUTH_DIR_FILE,
+    AUTH_DIR_NAME,
+    AUTH_LOCK_TARGET,
     AUTH_NAME,
     AUTH_PATH,
+    AUTH_TARGET,
     CATALOG_NAME,
     CONFIG_NAME,
     OAUTH,
@@ -100,8 +105,8 @@ def oauth_document(account: str = OAUTH_ACCOUNT) -> bytes:
     ).encode()
 
 
-# @openai/codex@0.159.2 (Dockerfile.base), x86_64-unknown-linux-musl native binary.
-PINNED_CODEX_SHA256 = "1748767b230ebfc3d4ab7e4e254920d0c0ad9691fd8c11f190e7d44511a4a92e"
+# @openai/codex@0.170.0 (Dockerfile.base), x86_64-unknown-linux-musl native binary.
+PINNED_CODEX_SHA256 = "880819aab735adcf16f36cd628940b9f1e652a36c01d10a5d32f83cc84902971"
 
 # The whole permitted model-visible surface. The three resource tools are runtime
 # built-ins with no off switch in the pinned CLI; they only reach configured MCP
@@ -223,6 +228,12 @@ MUTATIONS = {
     ),
     "multi-agent-on": ({"drop_config_lines": ["multi_agent = false"]}, "broker_only_mcp"),
     "goals-on": ({"drop_config_lines": ["goals = false"]}, "broker_only_mcp"),
+    # 0.170.0 turns this on by default and then drops the source list from
+    # tool_search, so the deferred corpus would go unread: the checker refuses.
+    "deferred-world-state-on": (
+        {"drop_config_lines": ["deferred_tool_world_state = false"]},
+        "broker_only_mcp",
+    ),
     "request-user-input-on": (
         {"drop_config_lines": ["experimental_request_user_input = { enabled = false }"]},
         "broker_only_mcp",
@@ -934,6 +945,11 @@ _VISIBLE_FIXED = frozenset(
         "/dev",
     }
 )
+# OAuth mode's writable auth directory, and the one file it holds.
+_OAUTH_VISIBLE = frozenset({AUTH_DIR, AUTH_TARGET})
+# OAuth mode only: the CLI's commit lock, created beside auth.json on every save
+# and never removed (codex-rs login/src/auth/storage_commit.rs). Visible, not required.
+_OAUTH_MAY_SEE = frozenset({AUTH_LOCK_TARGET})
 # What may run in the domain: the shim as pid 1 and the runtime it executes.
 _PROCESS_IMAGES = frozenset({"/runtime/init", "/runtime/codex"})
 PEER_CANARY = b"PEER-INVOCATION-CANARY-NOT-A-KEY"
@@ -1002,7 +1018,7 @@ _MOUNT_KINDS = {
     "--bind": "bind",
     "--ro-bind": "bind",
     "--dev-bind": "bind",
-    # OAuth mode's one host bind: the staged auth.json, by its checked descriptor.
+    # OAuth mode's one host bind: the staged auth directory, by its checked descriptor.
     "--bind-fd": "fd-rw",
     "--ro-bind-fd": "fd-ro",
 }
@@ -1209,6 +1225,7 @@ def observe_isolation(
     staged auth.json), the one host bind a plan may hold.
     """
     root = Path(f"/proc/{pid}/root")
+    fixed = _VISIBLE_FIXED | _OAUTH_VISIBLE | _OAUTH_MAY_SEE if staged else _VISIBLE_FIXED
     visible: list[str] = []
     canary_seen: list[str] = []
     for directory, subdirectories, files in os.walk(root, followlinks=False):
@@ -1218,7 +1235,7 @@ def observe_isolation(
         if relative in ("/proc", "/dev"):
             subdirectories[:] = []
             continue
-        if relative not in _VISIBLE_FIXED and not relative.startswith("/tmp/"):
+        if relative not in fixed and not relative.startswith("/tmp/"):
             # Already a finding; walking a whole host tree would stall the
             # runtime's first turn past its timeout.
             subdirectories[:] = []
@@ -1234,7 +1251,7 @@ def observe_isolation(
             except OSError:
                 pass
     unexpected = sorted(
-        path for path in visible if path not in _VISIBLE_FIXED and not path.startswith("/tmp/")
+        path for path in visible if path not in fixed and not path.startswith("/tmp/")
     )
     processes: list[str] = []
     peer_seen = False
@@ -1263,7 +1280,9 @@ def observe_isolation(
         "unplanned_mounts": unplanned_mounts(mounts, planned, host_devices, node_device, files)[
             :32
         ],
-        "missing_paths": sorted(_REQUIRED_PATHS - set(visible)),
+        "missing_paths": sorted(
+            (_REQUIRED_PATHS | (_OAUTH_VISIBLE if staged else set())) - set(visible)
+        ),
         "unexpected_paths": unexpected[:32],
         "canary_seen": canary_seen[:32],
         "peer_path_visible": (root / str(peer).lstrip("/")).exists(),
@@ -1363,7 +1382,10 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             for name, content in mutate(
                 settings.render(request.broker, staged), scenario, origin
             ).items():
-                material.write_native(name, content)
+                if lease is not None and name == AUTH_NAME:
+                    material.write_auth_directory(content)
+                else:
+                    material.write_native(name, content)
 
         async def execute(self, material: InvocationMaterial) -> bytes:
             # Refused is content-blind by design; keep the cause for the proof.
@@ -1379,15 +1401,34 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
             # Judged against the production plan, never the mutated one.
             peer["planned"] = planned_mounts(argv)
             if oauth:
-                # The one planned host bind: this invocation's own staged auth.json.
-                peer["staged"] = {AUTH_PATH: material.directory / AUTH_NAME}
+                # The one planned host bind: this invocation's own auth directory.
+                peer["staged"] = {AUTH_DIR: material.directory / AUTH_DIR_NAME}
             # The command itself is the tail of argv, after the shim's "--".
             tail = len(argv) - len(settings.command)
             assert argv[tail:] == list(settings.command)
             argv[tail + 2 : tail + 2] = scenario.get("add_argv", [])
             if scenario.get("readonly_auth"):
-                # Mutation: the same staged file, mounted read-only.
+                # Mutation: the same staged directory, mounted read-only.
                 argv[argv.index("--bind-fd")] = "--ro-bind-fd"
+            if scenario.get("single_file_auth"):
+                # Mutation: the 0.159.2-era plan, the staged auth.json itself bound
+                # writable at AUTH_PATH, which 0.170.0's rename cannot replace.
+                at = argv.index("--bind-fd")
+                assert argv[at : at + 6] == [
+                    "--bind-fd",
+                    argv[at + 1],
+                    AUTH_DIR,
+                    "--symlink",
+                    AUTH_TARGET,
+                    AUTH_PATH,
+                ]
+                single = os.open(
+                    material.directory / AUTH_DIR_NAME / AUTH_DIR_FILE,
+                    os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                )
+                self._fds.add(single)
+                argv[at : at + 6] = ["--bind-fd", str(single), AUTH_PATH]
+                rest[0] = (*rest[0], single)
             if oauth:
                 # Proof-only: point the runtime's token refresh at the fake endpoint.
                 at = argv.index("--tmpfs")
@@ -1518,6 +1559,7 @@ def run(scenario: dict[str, Any], images: Path, work: Path) -> dict[str, Any]:
         )
     outcome.update(server.log)  # type: ignore[attr-defined]
     outcome["settled"] = domain.namespace_dead and domain.direct_child_reaped
+    outcome["planned"] = peer.get("planned")
     outcome["stage_empty"] = not list(stage.iterdir())
     outcome["execution_sha256"] = hashlib.sha256(output).hexdigest()
     if oauth:

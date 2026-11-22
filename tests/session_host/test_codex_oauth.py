@@ -1,7 +1,7 @@
 """Codex OAuth mode on the session host, dark (bu-kiuh8v.16).
 
 Software tests: they run everywhere. The native proof that the pinned CLI refreshes and
-persists through the one writable file is in test_codex_adapter_proof.py (opt-in).
+persists through the one writable auth directory is in test_codex_adapter_proof.py (opt-in).
 Every token and account here is a synthetic marker.
 """
 
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -23,8 +24,13 @@ from butlers.goal_runner.session_host_client import CodexAuthFencedHost, CodexOA
 from butlers.goal_runner.staging import ControlSessionHost, CredentialUnavailable
 from butlers.session_host.bubblewrap import BubblewrapDomain
 from butlers.session_host.codex import (
+    AUTH_DIR,
+    AUTH_DIR_FILE,
+    AUTH_DIR_LOCK,
+    AUTH_DIR_NAME,
     AUTH_NAME,
     AUTH_PATH,
+    AUTH_TARGET,
     CONFIG_NAME,
     NATIVE_FILES,
     OAUTH,
@@ -44,7 +50,7 @@ from tests.session_host.test_core import request
 
 pytestmark = pytest.mark.unit
 
-PROVEN_DEVICE_SETTINGS_SHA256 = "4f89ab269cadb39996f25dab1dbea1a66b6c005c648a2bd80cd873df792edc64"
+PROVEN_DEVICE_SETTINGS_SHA256 = "892b1324fab0e7803538a2af2d6f49b10340ad0ad84882c0a61bdf7a39f13dd0"
 DOCUMENT = codex_proof.oauth_document()
 
 
@@ -207,7 +213,9 @@ def test_oauth_settings_are_their_own_proven_identity():
     identity = settings.identity
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     assert digest == PROVEN_DEVICE_SETTINGS_SHA256
-    assert identity["writable_native_files"] == [AUTH_PATH]
+    assert identity["writable_native_files"] == [AUTH_TARGET]
+    assert identity["writable_native_directory"] == AUTH_DIR
+    assert identity["native_symlinks"] == [[AUTH_PATH, AUTH_TARGET]]
     assert 'forced_login_method = "chatgpt"' in identity["config_utf8"]
     api_key = CodexSettings(codex_proof.MODEL).identity
     assert "writable_native_files" not in api_key
@@ -231,7 +239,7 @@ def test_oauth_render_stages_the_document_byte_for_byte_and_refuses_an_api_key()
             settings.render(req.broker, credential)
 
 
-# ── The domain: one writable file, collected only after proven settlement ─────
+# ── The domain: one fresh writable directory, collected after proven settlement ─
 
 
 def _material(tmp_path, reference: bytes) -> InvocationMaterial:
@@ -268,24 +276,95 @@ def test_oauth_needs_the_lease_and_only_oauth_may_hold_it(tmp_path, lease):
         )
 
 
+def _written(material) -> Path:
+    """Where the runtime's auth.json lands on the host."""
+    return material.directory / AUTH_DIR_NAME / AUTH_DIR_FILE
+
+
 def test_the_plan_makes_only_the_staged_auth_file_writable(tmp_path, lease):
+    """The one writable host mount is a fresh 0700 directory holding only auth.json,
+    bound at its own sandbox path; CODEX_HOME/auth.json is the only link into it.
+
+    Codex 0.170.0 replaces auth.json by tempfile and rename, so the runtime can now
+    create, rename and remove entries inside that directory, not only rewrite one
+    file's bytes. Everything else stays sealed read-only or sandbox tmpfs.
+    """
     domain = _domain(tmp_path, lease)
     material = _material(tmp_path, sha(DOCUMENT).encode())
     try:
         argv, *_ = domain._plan(material)
-        writable = [i for i, item in enumerate(argv) if item in ("--bind", "--bind-fd")]
-        assert len(writable) == 1 and argv[writable[0] + 2] == AUTH_PATH
-        assert not {"--bind-try", "--dev-bind", "--dev-bind-try", "--bind-data"} & set(argv)
-        # The bound descriptor is the staged file itself, holding the leased document.
-        descriptor = int(argv[writable[0] + 1])
-        assert os.pread(descriptor, 65536, 0) == DOCUMENT
-        assert os.fstat(descriptor).st_ino == (material.directory / AUTH_NAME).stat().st_ino
+        plan = argv[: argv.index("--")]
+        writable = [i for i, item in enumerate(plan) if item in ("--bind", "--bind-fd")]
+        assert len(writable) == 1 and plan[writable[0] + 2] == AUTH_DIR
+        assert not {
+            "--bind-try",
+            "--dev-bind",
+            "--dev-bind-try",
+            "--bind-data",
+            "--ro-bind",
+            "--ro-bind-fd",
+            "--file",
+        } & set(plan)
+        # The bound descriptor is the staged directory itself: fresh, private, and
+        # holding only the leased document.
+        descriptor = int(plan[writable[0] + 1])
+        metadata = os.fstat(descriptor)
+        staged = material.directory / AUTH_DIR_NAME
+        assert (metadata.st_dev, metadata.st_ino) == material.auth_directory
+        assert metadata.st_ino == staged.stat().st_ino
+        assert stat.S_IMODE(metadata.st_mode) == 0o700
+        assert os.listdir(descriptor) == [AUTH_DIR_FILE]
+        assert _written(material).read_bytes() == DOCUMENT
+        assert stat.S_IMODE(_written(material).stat().st_mode) == 0o600
+        # Exactly one link, and it is CODEX_HOME/auth.json; nothing else points in.
+        links = [(plan[i + 1], plan[i + 2]) for i, item in enumerate(plan) if item == "--symlink"]
+        assert links == [(AUTH_TARGET, AUTH_PATH)]
+        assert not [p for p in plan if p.startswith(AUTH_DIR) and p not in (AUTH_DIR, AUTH_TARGET)]
+        assert plan.count(AUTH_DIR) == 1 and plan.count(AUTH_TARGET) == 1
         for name, destination in NATIVE_FILES:
             if name == AUTH_NAME:
+                assert destination not in plan[: plan.index("--symlink")]
                 continue
-            at = argv.index(destination)
-            assert argv[at - 4 : at - 1] == ["--perms", "0400", "--ro-bind-data"], name
+            at = plan.index(destination)
+            assert plan[at - 4 : at - 1] == ["--perms", "0400", "--ro-bind-data"], name
         assert "--unshare-net" in argv
+    finally:
+        domain._close_all()
+        material.discard()
+
+
+def test_the_auth_directory_is_never_reused(tmp_path):
+    material = _material(tmp_path, sha(DOCUMENT).encode())
+    try:
+        material.write_auth_directory(DOCUMENT)
+        with pytest.raises(Refused, match="^invalid_codex_material$"):
+            material.write_auth_directory(DOCUMENT)
+        (tmp_path / "again").mkdir()
+        fresh = _material(tmp_path / "again", sha(DOCUMENT).encode())
+        (fresh.directory / AUTH_DIR_NAME).mkdir(mode=0o700)  # left from elsewhere
+        with pytest.raises(FileExistsError):
+            fresh.write_auth_directory(DOCUMENT)
+        fresh.discard()
+    finally:
+        material.discard()
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda d: (d / "extra").write_bytes(b"x"),
+        lambda d: os.chmod(d, 0o755),
+        lambda d: os.link(d / AUTH_DIR_FILE, d.parent / "hard"),
+    ],
+)
+def test_a_staged_directory_that_is_not_exactly_auth_json_is_not_bound(tmp_path, lease, tamper):
+    domain = _domain(tmp_path, lease)
+    material = _material(tmp_path, sha(DOCUMENT).encode())
+    try:
+        real = domain._prepare_native
+        domain._prepare_native = lambda m: (real(m), tamper(m.directory / AUTH_DIR_NAME))  # type: ignore[method-assign]
+        with pytest.raises(Refused, match="^invalid_staged_material$"):
+            domain._plan(material)
     finally:
         domain._close_all()
         material.discard()
@@ -309,9 +388,13 @@ async def test_settlement_collects_the_refresh_and_frees_the_lease(tmp_path, lea
     try:
         domain._plan(material)
         domain._close_all()
-        (material.directory / AUTH_NAME).write_bytes(refreshed())  # what the runtime wrote
+        # What the runtime does: a tempfile beside auth.json, renamed over it.
+        replacement = material.directory / AUTH_DIR_NAME / ".auth-XYZ"
+        replacement.write_bytes(refreshed())
+        replacement.rename(_written(material))
         assert await domain.settle() is True  # nothing spawned: settled
         assert volume.read() == (refreshed(), sha(refreshed()))
+        assert not (material.directory / AUTH_DIR_NAME).exists()
         lease.stage(sha(refreshed()).encode())  # released
     finally:
         material.discard()
@@ -323,9 +406,157 @@ async def test_garbage_written_by_the_runtime_leaves_the_volume(tmp_path, lease,
     try:
         domain._plan(material)
         domain._close_all()
-        (material.directory / AUTH_NAME).write_bytes(b"x" * (70 * 1024))
+        _written(material).write_bytes(b"x" * (70 * 1024))
         assert await domain.settle() is True
         assert volume.read() == (DOCUMENT, sha(DOCUMENT))
+        assert not (material.directory / AUTH_DIR_NAME).exists()
+    finally:
+        material.discard()
+
+
+def _outside(tmp_path) -> Path:
+    target = tmp_path / "outside.json"
+    target.write_bytes(refreshed())
+    return target
+
+
+def _refreshed_in(d: Path) -> None:
+    (d / AUTH_DIR_FILE).write_bytes(refreshed())
+
+
+def _second_file(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    (d / "x").write_text("x")
+
+
+def _leftover_tempfile(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    (d / ".auth-left").write_bytes(refreshed())
+
+
+def _unreadable_subdirectory(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    (d / "sub").mkdir()
+    (d / "sub" / "f").write_text("x")
+    (d / "sub").chmod(0)
+
+
+def _link_out(d: Path, out: Path) -> None:
+    (d / AUTH_DIR_FILE).unlink()
+    (d / AUTH_DIR_FILE).symlink_to(out)
+
+
+def _hard_link(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    os.link(d / AUTH_DIR_FILE, d / "twin")
+
+
+def _gone(d: Path, out: Path) -> None:
+    (d / AUTH_DIR_FILE).unlink()
+
+
+def _a_directory(d: Path, out: Path) -> None:
+    (d / AUTH_DIR_FILE).unlink()
+    (d / AUTH_DIR_FILE).mkdir()
+
+
+def _unreadable_directory(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    d.chmod(0)
+
+
+def _lock(d: Path) -> Path:
+    lock = d / AUTH_DIR_LOCK
+    lock.touch(mode=0o600)
+    return lock
+
+
+def _non_empty_lock(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    _lock(d).write_bytes(refreshed())
+
+
+def _symlink_lock(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    (d / AUTH_DIR_LOCK).symlink_to(out)
+
+
+def _lock_is_a_directory(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    (d / AUTH_DIR_LOCK).mkdir()
+
+
+def _hard_linked_lock(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    os.link(_lock(d), d.parent / "lock-twin")
+
+
+def _extra_file_beside_a_valid_lock(d: Path, out: Path) -> None:
+    _refreshed_in(d)
+    _lock(d)
+    (d / "x").write_text("x")
+
+
+def _lock_alone(d: Path, out: Path) -> None:
+    (d / AUTH_DIR_FILE).unlink()
+    _lock(d)
+
+
+@pytest.mark.parametrize(
+    "leave",
+    [
+        _non_empty_lock,
+        _symlink_lock,
+        _lock_is_a_directory,
+        _hard_linked_lock,
+        _extra_file_beside_a_valid_lock,
+        _lock_alone,
+        _second_file,
+        _leftover_tempfile,
+        _unreadable_subdirectory,
+        _link_out,
+        _hard_link,
+        _gone,
+        _a_directory,
+        _unreadable_directory,
+    ],
+)
+async def test_anything_but_auth_json_alone_fails_closed(tmp_path, lease, volume, leave):
+    """A stray entry is evidence of something the CLI does not do: nothing is collected,
+    nothing is followed, and the whole directory goes anyway."""
+    outside = _outside(tmp_path)
+    domain = _domain(tmp_path, lease)
+    material = _material(tmp_path, sha(DOCUMENT).encode())
+    try:
+        domain._plan(material)
+        domain._close_all()
+        leave(material.directory / AUTH_DIR_NAME, outside)
+        assert await domain.settle() is True
+        assert volume.read() == (DOCUMENT, sha(DOCUMENT))
+        assert not (material.directory / AUTH_DIR_NAME).exists()
+        assert outside.read_bytes() == refreshed()  # never followed, never removed
+        lease.stage(sha(DOCUMENT).encode())  # released
+    finally:
+        material.discard()
+
+
+async def test_the_clis_empty_commit_lock_beside_the_refresh_is_collected(tmp_path, lease, volume):
+    """Codex 0.170.0 leaves an empty auth.json.lock beside auth.json on every save
+    (storage_commit.rs); that one entry, in exactly that shape, does not block the
+    refresh, and goes with the directory."""
+    domain = _domain(tmp_path, lease)
+    material = _material(tmp_path, sha(DOCUMENT).encode())
+    try:
+        domain._plan(material)
+        domain._close_all()
+        directory = material.directory / AUTH_DIR_NAME
+        _lock(directory)
+        replacement = directory / ".auth-XYZ"
+        replacement.write_bytes(refreshed())
+        replacement.rename(_written(material))
+        assert await domain.settle() is True
+        assert volume.read() == (refreshed(), sha(refreshed()))
+        assert not directory.exists()
     finally:
         material.discard()
 
@@ -336,7 +567,7 @@ async def test_unproven_settlement_keeps_the_lease(tmp_path, lease, volume):
     try:
         domain._plan(material)
         domain._close_all()
-        (material.directory / AUTH_NAME).write_bytes(refreshed())
+        _written(material).write_bytes(refreshed())
 
         async def unproven() -> bool:
             return False

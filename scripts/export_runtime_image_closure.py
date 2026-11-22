@@ -29,7 +29,7 @@ VERSIONS = "/opt/cli-versions.txt"
 SHIM = "/usr/local/libexec/butlers/runtime-cli-sandbox-init"
 CA = "/etc/ssl/certs/ca-certificates.crt"
 PACKAGES = ("/usr/lib/node_modules/opencode-ai", "/usr/local/lib/node_modules/opencode-ai")
-PINS = {"opencode": "1.17.7", "codex": "0.159.2"}
+PINS = {"opencode": "1.17.7", "codex": "0.170.0"}
 MAX_FILES = 64
 MAX_FILE = 256 * 1024 * 1024
 MAX_TOTAL = 512 * 1024 * 1024
@@ -439,7 +439,7 @@ def export_files(root: Path, output: Path, identity: dict) -> dict:
     versions = read_small(root, VERSIONS, 65536).decode("utf-8")
     require(
         re.search(r"(?m)(?:^|[─├└+` ]+)opencode-ai@1\.17\.7$", versions)
-        and re.search(r"(?m)(?:^|[─├└+` ]+)@openai/codex@0\.159\.2$", versions),
+        and re.search(r"(?m)(?:^|[─├└+` ]+)@openai/codex@0\.170\.0$", versions),
         "installed_versions",
     )
     selected: dict[str, set[str]] = {

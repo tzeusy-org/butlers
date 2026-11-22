@@ -1,16 +1,6 @@
---- a/codex-rs/websocket-client/src/lib.rs
-+++ b/codex-rs/websocket-client/src/lib.rs
-@@ -176 +176,6 @@
--            let proxy_route = route.await.map_err(WebSocketError::Io)?;
-+            let proxy_route = match codex_http_client::gateway::GatewayConfig::from_environment()
-+                .map_err(WebSocketError::Io)?
-+            {
-+                Some(_) => OutboundProxyRoute::Direct,
-+                None => route.await.map_err(WebSocketError::Io)?,
-+            };
 --- a/codex-rs/websocket-client/src/dialer.rs
 +++ b/codex-rs/websocket-client/src/dialer.rs
-@@ -44,0 +45,14 @@
+@@ -50,0 +51,14 @@ pub(crate) async fn connect(
 +    if !loopback_direct {
 +        if let Some(gateway) = codex_http_client::gateway::GatewayConfig::from_environment()
 +            .map_err(WebSocketError::Io)?
@@ -25,7 +15,7 @@
 +        }
 +    }
 +
-@@ -136,0 +151,41 @@
+@@ -181,0 +196,41 @@ pub(crate) async fn connect(
 +async fn selected_handshake(
 +    mut request: Request,
 +    config: WebSocketConfig,
@@ -69,7 +59,7 @@
 +
 --- a/codex-rs/websocket-client/src/dialer_tests.rs
 +++ b/codex-rs/websocket-client/src/dialer_tests.rs
-@@ -715,0 +716,72 @@
+@@ -715,0 +716,72 @@ fn test_connection(inner: ConnectionInner) -> WebSocketConnection {
 +
 +#[tokio::test]
 +async fn selected_gateway_handshake_keeps_native_key_auth_frames_and_logical_authority() {
@@ -142,3 +132,13 @@
 +    );
 +    server.await.unwrap();
 +}
+--- a/codex-rs/websocket-client/src/lib.rs
++++ b/codex-rs/websocket-client/src/lib.rs
+@@ -190 +190,6 @@ impl WebSocketConnector {
+-            let proxy_route = route.await.map_err(WebSocketError::Io)?;
++            let proxy_route = match codex_http_client::gateway::GatewayConfig::from_environment()
++                .map_err(WebSocketError::Io)?
++            {
++                Some(_) => OutboundProxyRoute::Direct,
++                None => route.await.map_err(WebSocketError::Io)?,
++            };

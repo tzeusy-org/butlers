@@ -68,7 +68,7 @@ def image(tmp_path):
         library: elf_bytes(),
         loader: elf_bytes(),
         helper.CA: b"public synthetic CA bundle\n",
-        helper.VERSIONS: b"v22.1.0\n+-- @openai/codex@0.159.2\n`-- opencode-ai@1.17.7\n",
+        helper.VERSIONS: b"v22.1.0\n+-- @openai/codex@0.170.0\n`-- opencode-ai@1.17.7\n",
         package + "/package.json": json.dumps(
             {"name": "opencode-ai", "version": "1.17.7", "bin": {"opencode": "./bin/opencode.exe"}}
         ).encode(),
@@ -241,7 +241,7 @@ def test_installed_identity_or_manifest_drift_refuses(image, which):
     elif which == "versions":
         (image.root / image.helper.VERSIONS.lstrip("/")).chmod(0o644)
         (image.root / image.helper.VERSIONS.lstrip("/")).write_text(
-            "opencode-ai@1.17.6\n@openai/codex@0.159.2\n"
+            "opencode-ai@1.17.6\n@openai/codex@0.170.0\n"
         )
     elif which == "duplicate":
         image.manifest_path.write_text('{"version":3,"version":3}')
@@ -642,7 +642,7 @@ def test_installed_npm_unicode_tree_format_and_dockerfile_pins_are_accepted(imag
     path.write_text(
         "v22.21.1\n/usr/lib\n"
         "├── @anthropic-ai/claude-code@2.1.309\n├── @google/gemini-cli@0.66.0\n"
-        "├── @openai/codex@0.159.2\n└── opencode-ai@1.17.7\n\n"
+        "├── @openai/codex@0.170.0\n└── opencode-ai@1.17.7\n\n"
         "bubblewrap=0.12.0-1~deb13u1\n"
     )
     dockerfile = Path("Dockerfile.base").read_text()

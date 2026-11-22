@@ -24,7 +24,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
-from .codex import AUTH_NAME, AUTH_PATH, CODEX_HOME, NATIVE_FILES, CodexSettings
+from .codex import (
+    AUTH_DIR,
+    AUTH_DIR_FILE,
+    AUTH_DIR_LOCK,
+    AUTH_DIR_NAME,
+    AUTH_NAME,
+    AUTH_PATH,
+    AUTH_TARGET,
+    CODEX_HOME,
+    NATIVE_FILES,
+    CodexSettings,
+)
 from .codex_oauth import CodexOAuthVolume, StagedOAuth
 from .contracts import CredentialNotStaged, Refused
 from .material import InvocationMaterial
@@ -69,6 +80,47 @@ def _open_source(path: Path) -> int:
         raise Refused("invalid_input_path") from None
     finally:
         os.close(directory)
+
+
+def _only_auth_and_lock(directory: int) -> bool:
+    """The auth directory holds ``auth.json``, and at most the CLI's empty commit lock.
+
+    Codex 0.170.0 creates ``auth.json.lock`` beside the resolved auth file on every
+    save and never removes it (login/src/auth/storage_commit.rs). The lock is judged
+    by lstat only: a regular file, not a link, one link, empty, owned by us.
+    """
+    entries = sorted(os.listdir(directory))
+    if entries == [AUTH_DIR_FILE]:
+        return True
+    if entries != sorted((AUTH_DIR_FILE, AUTH_DIR_LOCK)):
+        return False
+    lock = os.stat(AUTH_DIR_LOCK, dir_fd=directory, follow_symlinks=False)
+    return (
+        stat.S_ISREG(lock.st_mode)
+        and lock.st_nlink == 1
+        and lock.st_size == 0
+        and lock.st_uid == os.geteuid()
+    )
+
+
+def _remove_entry(parent: int, name: str) -> None:
+    """Remove ``name`` under the ``parent`` descriptor, recursively, never following links."""
+    metadata = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.unlink(name, dir_fd=parent)
+        return
+    if stat.S_IMODE(metadata.st_mode) & 0o700 != 0o700:
+        # Not a link (lstat above), and the domain that could swap it is gone.
+        os.chmod(name, 0o700, dir_fd=parent)
+    child = os.open(
+        name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent
+    )
+    try:
+        for entry in os.listdir(child):
+            _remove_entry(child, entry)
+    finally:
+        os.close(child)
+    os.rmdir(name, dir_fd=parent)
 
 
 def _identity(metadata: os.stat_result) -> tuple[int, ...]:
@@ -293,16 +345,36 @@ class BubblewrapDomain:
         elif self._codex is not None:
             material.prepare_codex(self._codex)
 
-    def _writable_auth(self, material: InvocationMaterial) -> int:
-        """The staged auth file, opened once and checked, for ``--bind-fd``.
+    def _auth_directory(self, material: InvocationMaterial) -> int:
+        """The fresh staged auth directory, opened once and checked, for ``--bind-fd``.
 
-        The runtime gets that one file writable, nothing beside it: a bind mount of a
-        single file cannot be renamed over, unlinked or turned into a link from inside.
+        Codex 0.170.0 replaces auth.json by tempfile and rename, which a single-file
+        bind refuses (EBUSY), so the runtime gets this one directory writable: it
+        holds only ``auth.json`` here, and the host reads back only that entry.
         """
-        descriptor = _open_source(material.directory / AUTH_NAME)
+        if material.auth_directory is None:
+            raise Refused("invalid_staged_material")
+        descriptor = _open_source(material.directory / AUTH_DIR_NAME)
         try:
             metadata = os.fstat(descriptor)
-            content = os.pread(descriptor, _MAX_AUTH + 1, 0)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != material.auth_directory
+                or metadata.st_uid != os.geteuid()
+                or stat.S_IMODE(metadata.st_mode) != 0o700
+                or os.listdir(descriptor) != [AUTH_DIR_FILE]
+            ):
+                raise Refused("invalid_staged_material")
+            auth = os.open(
+                AUTH_DIR_FILE,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=descriptor,
+            )
+            try:
+                metadata = os.fstat(auth)
+                content = os.pread(auth, _MAX_AUTH + 1, 0)
+            finally:
+                os.close(auth)
             if (
                 not stat.S_ISREG(metadata.st_mode)
                 or metadata.st_uid != os.geteuid()
@@ -317,17 +389,43 @@ class BubblewrapDomain:
         return descriptor
 
     def _read_written_auth(self) -> bytes | None:
-        """What the settled runtime left in its auth file, bounded; None if unreadable."""
-        if self._material is None:
+        """What the settled runtime left as ``auth.json``, bounded; None fails closed.
+
+        Only that one entry is read, never followed. The CLI's empty commit lock
+        (``auth.json.lock``) may sit beside it; it is checked by lstat and never
+        opened. Any other entry (a link, a second file, a leftover tempfile, a lock
+        that is not empty) is evidence of something the CLI does not do, so nothing
+        is collected.
+        """
+        material = self._material
+        if material is None or material.auth_directory is None:
             return None
         try:
-            descriptor = _open_source(self._material.directory / AUTH_NAME)
+            directory = _open_source(material.directory / AUTH_DIR_NAME)
         except Refused:
             return None
+        try:
+            metadata = os.fstat(directory)
+            if (
+                not stat.S_ISDIR(metadata.st_mode)
+                or (metadata.st_dev, metadata.st_ino) != material.auth_directory
+                or not _only_auth_and_lock(directory)
+            ):
+                return None
+            descriptor = os.open(
+                AUTH_DIR_FILE,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                dir_fd=directory,
+            )
+        except OSError:
+            os.close(directory)
+            return None
+        os.close(directory)
         try:
             metadata = os.fstat(descriptor)
             if (
                 not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
                 or metadata.st_nlink != 1
                 or metadata.st_size > _MAX_AUTH
             ):
@@ -339,13 +437,40 @@ class BubblewrapDomain:
         finally:
             os.close(descriptor)
 
+    def _remove_auth_directory(self) -> None:
+        """Remove the staged auth directory and whatever the runtime left in it.
+
+        Runs only after proven settlement, so nothing else writes there. Entries are
+        removed by descriptor, never followed; a directory the runtime made
+        unreadable is reopened to its owner first.
+        """
+        material = self._material
+        if material is None or material.auth_directory is None:
+            return
+        try:
+            parent = os.open(
+                material.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+            )
+        except OSError:
+            return
+        try:
+            _remove_entry(parent, AUTH_DIR_NAME)
+        except FileNotFoundError:
+            pass
+        finally:
+            os.close(parent)
+
     def _collect_oauth(self) -> None:
         """After proven settlement only: hand the runtime's auth file to the lease."""
         staged, self._staged = self._staged, None
         if staged is None or self._codex_oauth is None:
             return
         try:
-            self._codex_oauth.collect(staged, self._read_written_auth())
+            try:
+                written = self._read_written_auth()
+            finally:
+                self._remove_auth_directory()
+            self._codex_oauth.collect(staged, written)
         except Exception:
             logger.warning("session host codex oauth: collect failed; volume unchanged")
 
@@ -440,11 +565,14 @@ class BubblewrapDomain:
             names += tuple(name for name, _ in native_files)
             mounts.update(native_files)
             if self._codex.writable_auth:
-                # OAuth only: the runtime persists a refreshed token here.
-                descriptor = self._writable_auth(material)
+                # OAuth only: the runtime persists a refreshed token here. The one
+                # writable host mount is the fresh auth directory; auth.json in
+                # CODEX_HOME is the only link into it.
+                descriptor = self._auth_directory(material)
                 self._fds.add(descriptor)
                 inherited.append(descriptor)
-                argv.extend(("--bind-fd", str(descriptor), AUTH_PATH))
+                argv.extend(("--bind-fd", str(descriptor), AUTH_DIR))
+                argv.extend(("--symlink", AUTH_TARGET, AUTH_PATH))
         for name in names:
             descriptor = _open_source(material.directory / name)
             metadata = os.fstat(descriptor)

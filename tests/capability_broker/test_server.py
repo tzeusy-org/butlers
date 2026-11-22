@@ -98,7 +98,7 @@ async def test_duplicate_argument_names_are_refused_before_mcp():
 
 
 async def test_the_runtime_resource_tools_reach_nothing_on_the_broker():
-    """Codex 0.159.2 always offers list/read MCP resource tools (no off switch).
+    """Codex 0.170.0 always offers list/read MCP resource tools (no off switch).
 
     They can only name configured servers, and the broker is the only one, so
     the broker itself must serve no resource, template or prompt.
