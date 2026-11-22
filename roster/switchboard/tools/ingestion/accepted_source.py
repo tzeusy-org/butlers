@@ -20,6 +20,7 @@ from butlers.core.goal_admission import (
     EvidenceRefused,
     SourceRef,
     digest,
+    valid_trigger_thread,
 )
 from butlers.core.reply_scope import scoped_reply_ref
 from butlers.core.resource_pairs import lazy_attachment_refs
@@ -66,6 +67,27 @@ def _connector(channel, provider):
     if channel == provider and channel in VALID_CONNECTOR_TYPES:
         return channel
     raise EvidenceRefused("accepted_source_identity_invalid")
+
+
+_GMAIL_ENDPOINT_PREFIX = "gmail:user:"
+
+
+def gmail_trigger_thread(connector, endpoint, context) -> tuple[str, str] | None:
+    """The admitting Gmail ``(account, thread_id)`` from the verified stored envelope, or None.
+
+    The account is the connector's endpoint identity (``gmail:user:<address>``), the thread its
+    ``external_conversation_id``. Anything else, or an id the exact rule refuses, binds no thread:
+    that only narrows, since an exposed goal then parks every mailbox change.
+    """
+    if connector != "gmail" or not isinstance(endpoint, str):
+        return None
+    if not endpoint.startswith(_GMAIL_ENDPOINT_PREFIX):
+        return None
+    trigger = (
+        endpoint[len(_GMAIL_ENDPOINT_PREFIX) :].strip().lower(),
+        context.get("external_conversation_id"),
+    )
+    return trigger if valid_trigger_thread(trigger) else None
 
 
 async def _live_owner(connection, expected=None):
@@ -234,6 +256,8 @@ class AcceptedSourceEvidence:
             # The request's own lazy refs scope a pair-bound capability's grant (bu-jv1moa.64).
             # More than the cap keeps the first sorted few, which only narrows the goal.
             attachment_refs=lazy_attachment_refs(row["attachments"])[:MAX_ATTACHMENT_REFS],
+            # The admitting thread an exposed goal may change without approval (bu-kqme7f.10).
+            trigger_thread=gmail_trigger_thread(connector, endpoint, context),
         )
 
     async def _reply(self, connection, context, raw, reference, entity):

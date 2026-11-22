@@ -45,7 +45,17 @@ from .contracts import (
 )
 from .domains import DomainReceipt, Domains, ParkReceipt
 from .ledger import UNPUBLISHED_CAPABILITY, BrokerLedger
-from .policy import PER_EVENT, REPLAN, RULE_ELIGIBLE, decide, listable, replan
+from .policy import (
+    GMAIL_MODIFY_CAP,
+    PER_EVENT,
+    REPLAN,
+    RULE_ELIGIBLE,
+    decide,
+    gmail_parks,
+    gmail_rule_applies,
+    listable,
+    replan,
+)
 from .recipients import classify_recipients, communication_channel
 from .typed import TypedRefused, parse_schema, typed_value_label, validate_value
 
@@ -343,6 +353,14 @@ class Broker:
         decision = decide(principal, capability, grant, recipient, risk)
         if decision.disposition is Disposition.REFUSE:
             raise self._refused(principal, name, Reason.POLICY)
+        if gmail_rule_applies(principal, capability):
+            # D13 Gmail exposure rule. It only narrows: the cap refuses, and an off-thread
+            # target or an INBOX/UNREAD removal parks for per-event approval.
+            counted = await ledger.counted_effects(principal.goal_id, capability.identity)
+            if counted >= GMAIL_MODIFY_CAP:
+                raise self._refused(principal, name, Reason.POLICY)
+            if gmail_parks(principal, args):
+                decision = PER_EVENT
         # Owner law (S1 order: after catalog/grant and exposure). It only
         # narrows: never refuses, always_ask parks the exact otherwise
         # permitted effect for per-event approval. A read has no effect to

@@ -105,6 +105,9 @@ class Principal:
     # Why the invocation first became exposed (closed S1 enum), read under the goal lock.
     # None: unexposed, or a row that never recorded one.
     exposure_cause: str | None = None
+    # The goal's admitting Gmail ``(account, thread_id)`` (sw_083), read under the goal lock.
+    # None: no Gmail message admitted the goal, so the Gmail exposure rule binds no thread.
+    trigger_thread: tuple[str, str] | None = None
 
     def grant_for(self, capability: str) -> Grant | None:
         return next((g for g in self.grants if g.capability == capability), None)

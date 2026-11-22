@@ -497,7 +497,10 @@ Rules:
   be admitted with origin `third_party` and needs its own owner decision first.
 
 Admission writes the goal row, origin, cause, exposure, ceiling digest and
-budget, then hands it to the runner. Duplicate submissions of the same ingest
+budget, then hands it to the runner. When a Gmail message admits the goal, the
+row also records, once and immutably, the account and Gmail thread of that
+message, read by the trusted source reader from the stored envelope; this is
+the thread the D13 Gmail exposure rule binds. Any other source records none. Duplicate submissions of the same ingest
 envelope or obligation occurrence return the existing goal.
 
 Known limit: text an owner pastes without quoting markers is owner input. The
@@ -612,7 +615,9 @@ lead epoch matching:
 2. check the capability is in the grant, resource arguments are within the
    grant's resource scope, and the budget allows another call;
 3. apply the two owner rules (D4), exposure, park-only and the tool's approval
-   policy;
+   policy, including the D13 capability exceptions (the calendar replan
+   exception and the Gmail exposure rule, whose park depends on the call's
+   arguments);
 4. for effects, insert the `effects` row and decrement the budget.
 
 Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
@@ -808,6 +813,12 @@ D7 transaction, subject also to the separate research concurrency and daily
 spend caps. Exhaustion refuses new work
 and ends the goal `budget_exhausted` with whatever results and effects exist.
 
+One capability carries its own per-goal call cap, as part of the D13 Gmail
+exposure rule: a goal the rule binds makes at most five `gmail_modify_threads`
+calls. The cap is counted from the goal's own effect rows under the goal lock,
+not from the budget row, and refuses the next call without ending the goal. It
+bounds work only; it grants nothing.
+
 ### D11. State machines
 
 The following goal diagram is the pre-switch `sw_047` representation. The
@@ -961,6 +972,27 @@ the marker existed count as owner-created. `calendar_respond` keeps
 `always_per_event`. The write is bound to the checked event's version, but not
 to the rest of the calendar: an event created in the new slot between the
 overlap check and the write is not caught, and the undo receipt is the remedy.
+
+**Gmail exposure rule (the owner's rule on `bu-kqme7f.5`, reaffirmed
+2026-10-20).** `gmail_modify_threads` changes labels in the owner's own
+mailbox (archive, mark read, star, user labels) and is a `record` capability,
+so D4 would let an exposed goal run it. Injected mail must not archive, mark
+read or relabel other mail, so for this one capability the broker narrows
+that default for every call whose invocation is exposed or whose goal is
+third-party origin. Exposure decides, not origin: an unexposed owner,
+obligation or staffer goal keeps the ordinary `record` disposition. A bound
+call dispatches only when it names exactly the account and the one thread
+whose message admitted the goal (D5) and removes neither `INBOX` nor
+`UNREAD`. Any other target, an `INBOX` or `UNREAD` removal, a malformed call,
+and every call of a goal that no Gmail message admitted park for per-event
+owner approval: no standing rule matches them. A bound goal makes at most five
+such calls (D10); parked, approved and unknown effects count, failed ones and
+parks that ended rejected, expired or cancelled do not, and a replay of a live
+call is refused as a duplicate before it is counted. The rule only narrows: it
+never turns a refusal or a park into a dispatch, and an owner `never` or
+`always_ask` still applies. The owning domain re-checks the part the call alone
+decides and refuses an exposed or third-party `INBOX` or `UNREAD` removal that
+is not the approved call itself.
 
 The owner sees that receipt as one approvals card per goal and block, on the
 existing approvals surfaces; approving it runs the inverse move through the
@@ -1593,6 +1625,7 @@ hard-cutover gates or alter the private-custody boundary.
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
 | 2026-10-20T14:33Z, `bu-qlx055` q12 = B | A replan goal moves directly only owner-only blocks Butlers created, with an undo receipt; anything with attendees, or anything the owner created, parks for approval. | D13 gains the calendar replan exception: a conditional dispatch the calendar domain checks against provider state at execution, declining to a park. `calendar_respond` keeps `always_per_event`. Adopted through the same conformance review. |
+| 2026-10-20T14:32Z, owner's Gmail rule on `bu-kqme7f.5` (recorded 2026-10-15; reaffirmed unchanged in the `bu-o3638f` walkthrough) | Under exposed or third-party lineage, `gmail_modify_threads` touches only the triggering thread; removing `INBOX` or `UNREAD` parks for approval; any other target parks for per-event approval; at most five modify calls per goal. | D5 records the admitting Gmail thread on the goal; D7 step 3 and D13 gain the Gmail exposure rule, an argument-conditional per-event park; D10 gains its per-goal call cap. Built by `bu-kqme7f.10`; adopted through the same conformance review. |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |

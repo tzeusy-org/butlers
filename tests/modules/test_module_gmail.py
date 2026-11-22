@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -515,28 +516,66 @@ class TestModifyThreads:
         assert by_id["t1"]["status"] == "ok" and by_id["t3"]["status"] == "ok"
         assert by_id["t2"] == {"thread_id": "t2", "status": "error", "error": "not_found"}
 
-    # Interim state (ruling A, bu-kqme7f.10): exposed and third-party modify is refused.
-    @pytest.mark.parametrize(
-        "lineage",
-        [
-            _lineage(exposed=True),
-            _lineage(origin="third_party"),
-            _lineage(exposed=True, origin="third_party"),
-            _lineage(origin="some_new_origin"),
-            None,
-        ],
-    )
-    async def test_exposed_third_party_or_missing_lineage_is_refused(
-        self, tools, fake, lineage
-    ) -> None:
+    # Gmail exposure rule, domain half (bu-kqme7f.10). The broker binds the thread, parks and
+    # caps; the domain re-checks only what the call alone decides.
+    @pytest.mark.parametrize("lineage", [_lineage(origin="some_new_origin"), None])
+    async def test_missing_lineage_or_unknown_origin_is_refused(self, tools, fake, lineage) -> None:
         with lineage_scope(lineage):
             result = await tools["gmail_modify_threads"](
                 account=OWNER, thread_ids=["t1"], add_labels=["STARRED"]
             )
         assert result["status"] == "error"
         assert result["error"] == "exposed_modify_refused"
-        assert "bu-kqme7f.10" in result["message"]
         assert fake.modifies == []
+
+    @pytest.mark.parametrize(
+        "lineage",
+        [
+            _lineage(exposed=True),
+            _lineage(origin="third_party"),
+            _lineage(exposed=True, origin="obligation"),
+        ],
+    )
+    @pytest.mark.parametrize("removal", ["INBOX", "UNREAD"])
+    async def test_exposed_or_third_party_archive_or_mark_read_needs_approval(
+        self, tools, fake, lineage, removal
+    ) -> None:
+        with lineage_scope(lineage):
+            result = await tools["gmail_modify_threads"](
+                account=OWNER, thread_ids=["t1"], remove_labels=[removal]
+            )
+        assert result["error"] == "exposed_modify_refused"
+        assert fake.requests == []
+
+    @pytest.mark.parametrize(
+        "lineage", [_lineage(exposed=True), _lineage(exposed=True, origin="third_party")]
+    )
+    async def test_exposed_label_change_runs_as_the_broker_dispatched_it(
+        self, tools, fake, lineage
+    ) -> None:
+        with lineage_scope(lineage):
+            result = await tools["gmail_modify_threads"](
+                account=OWNER, thread_ids=["t1"], add_labels=["Receipts"], remove_labels=["STARRED"]
+            )
+        assert result["status"] == "ok"
+        assert len(fake.modifies) == 1
+
+    async def test_the_owner_approved_archive_runs_under_exposure(self, tools, fake) -> None:
+        approved = replace(_lineage(exposed=True, origin="third_party"), approval_ref="a1")
+        with lineage_scope(approved):
+            result = await tools["gmail_modify_threads"](
+                account=OWNER, thread_ids=["t9"], remove_labels=["INBOX", "UNREAD"]
+            )
+        assert result["status"] == "ok" and len(fake.modifies) == 1
+
+    @pytest.mark.parametrize("origin", ["owner", "obligation", "staffer"])
+    async def test_an_unexposed_goal_keeps_the_record_behavior(self, tools, fake, origin) -> None:
+        # Exposure decides, not origin: an unexposed obligation is owner lineage here.
+        with lineage_scope(_lineage(origin=origin)):
+            result = await tools["gmail_modify_threads"](
+                account=OWNER, thread_ids=["t1"], remove_labels=["INBOX"]
+            )
+        assert result["status"] == "ok" and len(fake.modifies) == 1
 
 
 BAD_IDS = ["../messages/X/trash?", "%2e%2e/x", "a?b", "a#b", "a/b", "", "a b", "x" * 65]

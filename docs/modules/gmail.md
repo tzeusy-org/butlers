@@ -34,8 +34,23 @@ admit no goal. Bodies decode through `butlers.gmail_payload`, shared with the in
 
 Recorded owner rule: under a third-party-origin or exposed invocation `gmail_modify_threads` may
 touch only the thread that triggered the goal; removing INBOX or UNREAD parks for owner approval;
-any other target parks; a per-goal cap of 5 modify calls applies. That path is refused until
-bu-kqme7f.10 lands: until then the call returns `exposed_modify_refused` and changes nothing.
+any other target parks; a per-goal cap of 5 modify calls applies. The capability broker enforces
+it (RFC 0038 D13 "Gmail exposure rule"):
+
+- When a Gmail message admits a goal, admission records that message's account and thread on the
+  goal (`switchboard.goals.trigger_gmail_account` / `trigger_gmail_thread`, immutable).
+- A bound call (exposed invocation, or third-party goal) dispatches only for that account and
+  thread with no INBOX or UNREAD removal. Anything else parks for per-event approval; a goal no
+  Gmail message admitted parks every change.
+- The sixth bound call in a goal is refused. Parked, approved, committed and unknown effects
+  count; failed effects and parks the owner rejected (or that expired or were cancelled) do not;
+  a replay of a live call is refused as a duplicate and not counted. A call answered with a typed
+  error such as `invalid_argument` still counts, since the broker never reads tool results.
+- Exposure decides, not origin: an unexposed owner, obligation or staffer goal is not bound.
+
+The module re-checks what the call alone decides: no lineage or an unknown origin, and an exposed
+or third-party INBOX/UNREAD removal that is not the owner-approved call, return
+`exposed_modify_refused` and change nothing.
 
 ## Owner rollout step
 

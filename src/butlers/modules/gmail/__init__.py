@@ -60,13 +60,14 @@ RETRY_BACKOFF_S = 1.0
 
 #: Gmail ids are short hex or base64url tokens; anything else could escape the URL path.
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
-#: Lineage origins allowed to modify mail; any other or unknown origin is refused.
-_MODIFY_ORIGINS = frozenset({"owner"})
+#: RFC 0038 D5 origins; a lineage naming anything else is refused.
+_KNOWN_ORIGINS = frozenset({"owner", "obligation", "third_party", "staffer"})
+_MODIFY_TOOL = "gmail_modify_threads"
+#: Removals that park under the Gmail exposure rule (the broker's ``GMAIL_PARKED_REMOVALS``).
+_PARKED_REMOVALS = frozenset({"INBOX", "UNREAD"})
 _SCRUB_DOMAIN = "gmail"
 _ALLOWED_SYSTEM_LABELS = ("INBOX", "UNREAD", "STARRED", "IMPORTANT")
 _REFUSED_SYSTEM_LABELS = frozenset({"TRASH", "SPAM", "SENT", "DRAFT", "CHAT"})
-#: The recorded owner rule is restored by this bead; until then exposed modify is refused.
-_EXPOSURE_FOLLOWUP = "bu-kqme7f.10"
 
 
 class GmailConfig(BaseModel):
@@ -399,15 +400,29 @@ class GmailModule(Module):
         }
 
     @staticmethod
-    def _modify_permitted() -> bool:
-        """Interim (ruling A): only an unexposed goal with an allowlisted (owner) origin may modify.
+    def _modify_refusal(remove: list[str]) -> str | None:
+        """Defense in depth for the Gmail exposure rule; the broker is its enforcement point.
 
-        Missing lineage counts as exposed (RFC 0038 D6). The recorded owner rule for exposed
-        goals (triggering-thread binding, a park for INBOX/UNREAD removal, a per-goal cap of 5)
-        needs substrate that lands with bu-kqme7f.10; until then it is refused outright.
+        The broker binds an exposed or third-party goal to its admitting thread, parks any
+        other target or an INBOX/UNREAD removal for per-event approval, and caps the goal at
+        five calls (RFC 0038 D13). The domain cannot see the goal's thread or count, so it
+        re-checks what the call alone decides: missing lineage or an unknown origin is refused,
+        and an exposed or third-party call that removes INBOX or UNREAD runs only as the
+        owner-approved call itself. Exposure decides, not origin: an unexposed owner,
+        obligation or staffer goal keeps the ordinary record behavior.
         """
         lineage = current_lineage()
-        return lineage is not None and not lineage.exposed and lineage.origin in _MODIFY_ORIGINS
+        if lineage is None or lineage.origin not in _KNOWN_ORIGINS:
+            return "Mailbox changes need a verified goal lineage"
+        if not (lineage.exposed or lineage.origin == "third_party"):
+            return None
+        approved = lineage.capability == _MODIFY_TOOL and lineage.approval_ref is not None
+        if not approved and set(remove) & _PARKED_REMOVALS:
+            return (
+                "Archiving or marking read under an exposed or third-party goal needs the "
+                "owner's approval of this exact change"
+            )
+        return None
 
     @staticmethod
     def _static_label_problem(add: list[str], remove: list[str]) -> str | None:
@@ -464,12 +479,9 @@ class GmailModule(Module):
         problem = self._static_label_problem(add, remove)
         if problem:
             return _error("invalid_argument", problem)
-        if not self._modify_permitted():
-            return _error(
-                "exposed_modify_refused",
-                "Mailbox changes are refused under an exposed, third-party or unverified goal "
-                f"until {_EXPOSURE_FOLLOWUP} lands",
-            )
+        refusal = self._modify_refusal(remove)
+        if refusal is not None:
+            return _error("exposed_modify_refused", refusal)
         try:
             acct, token = await self._authorize(account)
             if all(label in _ALLOWED_SYSTEM_LABELS for label in (*add, *remove)):
@@ -589,7 +601,9 @@ class GmailModule(Module):
             Allowed labels: INBOX, UNREAD, STARRED, IMPORTANT and existing user labels by id
             or exact name. Never trashes, deletes, sends or drafts. At most 50 threads per
             call; a partial failure returns per-thread outcomes and ``failed_thread_ids``.
-            Refused under exposed or third-party goals until bu-kqme7f.10 lands.
+            After reading mail or under a third-party goal, only the thread that started the
+            goal changes directly; another thread, or archiving or marking read, waits for
+            the owner's approval, and at most five such calls run per goal.
             """
             return await module._modify_threads(account, thread_ids, add_labels, remove_labels)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -46,6 +47,25 @@ def retry_source_allowed(source_id: str) -> bool:
 #: At most this many lazy attachment refs scope one goal; a source reader keeps the first few
 #: (sorted) of a larger set, which only narrows what the goal can fetch.
 MAX_ATTACHMENT_REFS = 64
+
+#: A Gmail thread id (hex or base64url) and the longest mailbox address admission records.
+_GMAIL_THREAD_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_MAX_ACCOUNT_LENGTH = 320
+
+
+def valid_trigger_thread(value: object) -> bool:
+    """An exact ``(account, thread_id)``: a lowercased address and a Gmail thread id."""
+    if type(value) is not tuple or len(value) != 2:
+        return False
+    account, thread_id = value
+    return (
+        type(account) is str
+        and 0 < len(account) <= _MAX_ACCOUNT_LENGTH
+        and account == account.strip().lower()
+        and "@" in account
+        and type(thread_id) is str
+        and _GMAIL_THREAD_ID.fullmatch(thread_id) is not None
+    )
 
 
 class EvidenceRefused(ValueError):
@@ -267,8 +287,16 @@ class Evidence:
     # The admitting message's lazy attachment refs, ``(message_id, attachment_id)``, from the
     # stored message the source reader verified. Only a message's evidence may carry them.
     attachment_refs: tuple[tuple[str, str], ...] = ()
+    # The admitting Gmail message's ``(account, thread_id)``, from the stored envelope the source
+    # reader verified (RFC 0038 D5, Gmail exposure rule). Only a message's evidence may carry it;
+    # the broker lets an exposed goal change only this thread without a per-event approval.
+    trigger_thread: tuple[str, str] | None = None
 
     def __post_init__(self):
+        if self.trigger_thread is not None and (
+            self.kind != "message" or not valid_trigger_thread(self.trigger_thread)
+        ):
+            raise EvidenceRefused("source_context_invalid")
         refs = self.attachment_refs
         if (
             type(refs) is not tuple

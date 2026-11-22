@@ -3,7 +3,10 @@
 Pure and deterministic. The grant, resource scope and budget were already
 checked; this applies the two owner rules, exposure, park-only, the approval
 mode and the tool's approval policy. Order matters: a refusal can never be
-turned into a park, and a park can never be turned into a dispatch.
+turned into a park, and a park can never be turned into a dispatch. The two
+capability exceptions of D13 live here too: the calendar replan (a park first
+offered as a conditional move) and the Gmail exposure rule (a dispatch that
+becomes a per-event park, by the call's arguments).
 """
 
 from __future__ import annotations
@@ -30,6 +33,54 @@ REPLAN_MOVES_LIVE = False
 #: ``request_id`` is absent so a declined move leaves no replayable receipt.
 REPLAN_CAPABILITY = "calendar_update_event"
 REPLAN_MOVE_ARGS = frozenset({"event_id", "start_at", "end_at", "timezone", "calendar_id"})
+
+
+#: Gmail exposure rule (D13; the owner's rule recorded on bu-kqme7f.5, built by bu-kqme7f.10).
+#: An exposed or third-party goal may change only the Gmail thread that admitted it, never
+#: removes INBOX or UNREAD without a per-event approval, and makes at most this many calls.
+GMAIL_MODIFY = "gmail_modify_threads"
+GMAIL_MODIFY_CAP = 5
+GMAIL_PARKED_REMOVALS = frozenset({"INBOX", "UNREAD"})
+
+
+def gmail_rule_applies(principal: Principal, capability: Capability) -> bool:
+    """Whether the Gmail exposure rule binds this call: judged by exposure, not origin.
+
+    Third-party origin is always bound (its goals start exposed). An unexposed owner,
+    obligation or staffer goal keeps the ordinary ``record`` disposition.
+    """
+    return capability.name == GMAIL_MODIFY and (
+        principal.exposed or principal.origin == "third_party"
+    )
+
+
+def gmail_parks(principal: Principal, args: Mapping[str, Any]) -> bool:
+    """Whether a bound call parks for per-event approval rather than dispatching.
+
+    It dispatches only when it names exactly the goal's admitting account and only threads of
+    that one thread, and removes neither INBOX nor UNREAD. Anything malformed, any other
+    account or thread, and a goal no Gmail message admitted all park. The domain validates the
+    call itself; this only decides who must approve it.
+    """
+    trigger = principal.trigger_thread
+    if trigger is None:
+        return True
+    account, thread_ids, remove = (
+        args.get("account"),
+        args.get("thread_ids"),
+        args.get("remove_labels"),
+    )
+    if not isinstance(account, str) or account.strip().lower() != trigger[0]:
+        return True
+    if not isinstance(thread_ids, list) or not thread_ids:
+        return True
+    if any(thread_id != trigger[1] for thread_id in thread_ids):
+        return True
+    if remove is None:
+        return False
+    if not isinstance(remove, list):
+        return True
+    return any(not isinstance(label, str) or label in GMAIL_PARKED_REMOVALS for label in remove)
 
 
 def listable(capability: Capability, depth: int) -> bool:
