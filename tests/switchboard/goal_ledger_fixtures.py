@@ -107,6 +107,11 @@ async def reset_ledger(owner):
             await connection.execute(
                 f"ALTER TABLE switchboard.{guard['relname']} ENABLE TRIGGER {guard['tgname']}"
             )
+        # sw_084's spend pools carry no goal foreign key, so the CASCADE above never reaches
+        # them; their rows would leak into the next test's counts.
+        for table in ("pool_reservations", "budget_pools"):
+            if await connection.fetchval("SELECT to_regclass($1)", f"switchboard.{table}"):
+                await connection.execute(f"DELETE FROM switchboard.{table}")
 
 
 @pytest.fixture
