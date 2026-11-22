@@ -83,9 +83,9 @@ priority = 0
 enabled = true
 
 # ---------------------------------------------------------------------------
-# Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.1 Sol low for
-# sub-medium work (workhorse), and GPT-6.1 Sol high for medium/high work
-# (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.1
+# Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.2 Sol low for
+# sub-medium work (workhorse), and GPT-6.2 Sol high for medium/high work
+# (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.2
 # Sol supersedes GPT-6 Sol and accepts low/medium/high/xhigh/max effort; routing
 # stays at high by policy, not because a higher effort is unavailable.
 # Luna max and the specialty row rank below the direct-API rows so
@@ -102,27 +102,27 @@ priority = 26
 enabled = true
 
 [[models]]
-alias = "gpt-6.1-sol-low"
+alias = "gpt-6.2-sol-low"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"low\""]
 complexity_tier = "workhorse"
 priority = 31
 enabled = true
 
 [[models]]
-alias = "gpt-6.1-sol-high"
+alias = "gpt-6.2-sol-high"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "reasoning"
 priority = 30
 enabled = true
 
 [[models]]
-alias = "healing-gpt-6.1-sol"
+alias = "healing-gpt-6.2-sol"
 runtime_type = "codex"
-model_id = "gpt-6.1-sol"
+model_id = "gpt-6.2-sol"
 extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "specialty"
 priority = 5

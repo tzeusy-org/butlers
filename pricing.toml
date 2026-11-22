@@ -110,6 +110,16 @@ output_price_per_token = 0.00001    # $10.00 / 1M tokens
 # GPT-5.6 rates: https://developers.openai.com/api/docs/pricing (2026-08-01).
 # GPT-6.1 Sol (released 2026-09-29) supersedes GPT-6 Sol at the same input/output rates
 # with cheaper cache reads: https://developers.openai.com/api/docs/pricing (2026-10-14).
+# GPT-6.2 Sol supersedes GPT-6.1 Sol at the same published rates. Sourced from third-party
+# trackers (2026-11-22), not yet confirmed on OpenAI's pricing page; the cache-write rate
+# is carried over from gpt-6.1-sol because sources disagree on it.
+[models."gpt-6.2-sol"]
+billing_class = "metered"
+input_price_per_token = 0.000002  # $2.00 / 1M tokens (<=272K context)
+cached_input_price_per_token = 0.0000001  # $0.10 / 1M tokens
+cache_creation_price_per_token = 0.0000025  # $2.50 / 1M tokens (unverified)
+output_price_per_token = 0.00001  # $10.00 / 1M tokens
+
 [models."gpt-6.1-sol"]
 billing_class = "metered"
 input_price_per_token = 0.000002  # $2.00 / 1M tokens (<=272K context)
