@@ -64,6 +64,8 @@ from butlers.core.runtime_probe_control.service_call import (
     verify_deployed_service_call,
 )
 from butlers.core.service_plane.dashboard_call import routes_through_control_plane
+from butlers.core.service_plane.health_peer import health_medication_transport
+from butlers.core.switchboard_tls import health_http_options, scoped_mcp_httpx_factory
 from butlers.mcp_liveness import LivenessClient
 
 logger = logging.getLogger(__name__)
@@ -224,11 +226,15 @@ def assertion_call_fn(
         payload = dashboard_assertion_payload(
             audience=audience, capability=tool, arguments=sent, now=int(clock())
         )
-        transport = StreamableHttpTransport(
-            endpoint_url,
-            headers={ASSERTION_HEADER: signer.sign(payload)},
-            httpx_client_factory=httpx_client_factory,
-        )
+        headers = {ASSERTION_HEADER: signer.sign(payload)}
+        transport = health_medication_transport(endpoint_url, tool, "switchboard", headers=headers)
+        if transport is None:
+            factory = httpx_client_factory
+            if factory is None and (options := health_http_options(endpoint_url)):
+                factory = scoped_mcp_httpx_factory(options)
+            transport = StreamableHttpTransport(
+                endpoint_url, headers=headers, httpx_client_factory=factory
+            )
         async with LivenessClient(transport) as client:
             result = await client.call_tool_mcp(tool, sent)
         return result.model_dump(mode="json", by_alias=True, exclude_none=True)

@@ -165,6 +165,19 @@ class DashboardButlerClient(MCPClient):
         meta: dict[str, Any] | None = None,
     ) -> mcp.types.CallToolResult:
         if not control_plane_carries(name, meta):
+            if self.butler_name == "health":
+                from butlers.core.service_plane.health_peer import (
+                    MEDICATION_SERVICE_TOOL,
+                    call_dashboard_health_service,
+                )
+
+                url = getattr(self.transport, "url", None)
+                if name == MEDICATION_SERVICE_TOOL and url is not None:
+                    protected = await call_dashboard_health_service(
+                        str(url), arguments, progress_handler, timeout, meta
+                    )
+                    if protected is not None:
+                        return protected
             return await super().call_tool_mcp(name, arguments, progress_handler, timeout, meta)
         if meta:
             raise ToolError("the control plane carries no request meta")

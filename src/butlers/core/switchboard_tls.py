@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import ssl
+from collections.abc import Callable
 from typing import Any, TypedDict
 from urllib.parse import urlsplit
 
@@ -136,6 +137,15 @@ def _mcp_transport(url: str, options: _HTTPOptions) -> Any:
 
     from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import infer_transport_type_from_url
+
+    transport = (
+        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
+    )
+    return transport(url, httpx_client_factory=scoped_mcp_httpx_factory(options))
+
+
+def scoped_mcp_httpx_factory(options: _HTTPOptions) -> Callable[..., httpx.AsyncClient]:
+    """Keep FastMCP on a validated peer origin even when it requests redirects."""
     from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
     def client_factory(
@@ -145,7 +155,6 @@ def _mcp_transport(url: str, options: _HTTPOptions) -> Any:
         *,
         follow_redirects: bool = False,
     ) -> httpx.AsyncClient:
-        # FastMCP can request redirects. Keep this client on the configured origin.
         return httpx.AsyncClient(
             headers=headers,
             timeout=timeout
@@ -155,7 +164,4 @@ def _mcp_transport(url: str, options: _HTTPOptions) -> Any:
             **options,
         )
 
-    transport = (
-        SSETransport if infer_transport_type_from_url(url) == "sse" else StreamableHttpTransport
-    )
-    return transport(url, httpx_client_factory=client_factory)
+    return client_factory

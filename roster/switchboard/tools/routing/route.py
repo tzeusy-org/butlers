@@ -16,6 +16,7 @@ from butlers.core.control_plane_identity import PROBE_DEADLINE_S, probe_once
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
+from butlers.core.service_plane.health_peer import health_medication_transport
 from butlers.core.switchboard_tls import internal_service_http_options
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
@@ -254,6 +255,10 @@ async def _call_tool_with_router_client(
 
     for reconnect in (False, True):
         try:
+            transport = health_medication_transport(endpoint_url, tool_name, "switchboard")
+            if transport is not None:
+                async with MCPClient(transport) as client:
+                    return await client.call_tool(tool_name, args, raise_on_error=False)
             client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:

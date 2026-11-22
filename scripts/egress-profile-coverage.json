@@ -4320,6 +4320,26 @@
         "butlers-up"
       ]
     },
+    "src/butlers/core/mcp_urls.py::resolve_cross_container_mcp_url::config::c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0": {
+      "class": "internal",
+      "observed": {
+        "authorities": [],
+        "config": "HEALTH_MCP_URL",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/core/mcp_urls.py",
+        "scope": "resolve_cross_container_mcp_url",
+        "sha256": "c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0"
+      },
+      "reason": "The Health override keeps the configured butlers-up Service and exact port 41103 for registered cross-container MCP; native runtime uses loopback.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up",
+        "butlers-control",
+        "dashboard-api"
+      ]
+    },
     "src/butlers/core/mcp_urls.py::runtime_mcp_url::url::8c8dac95aa0a16cdc1d9219faf6edef368449abe8bc11404601ca000013efe9d": {
       "class": "reference",
       "observed": {
@@ -4674,6 +4694,26 @@
       "sites": [],
       "workloads": [
         "butlers-up"
+      ]
+    },
+    "src/butlers/core/switchboard_tls.py::health_http_options::config::c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0": {
+      "class": "internal",
+      "observed": {
+        "authorities": [],
+        "config": "HEALTH_MCP_URL",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/core/switchboard_tls.py",
+        "scope": "health_http_options",
+        "sha256": "c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0"
+      },
+      "reason": "The private Health CA applies to the configured internal Health Service origin and exact port 41103 only. Other peers retain normal trust.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up",
+        "butlers-control",
+        "dashboard-api"
       ]
     },
     "src/butlers/core/switchboard_tls.py::switchboard_http_options::config::6fc85ab0d798e8a3cd594aaf71ff3baa8a7e4766fa7c496152c66df1edd2c05c": {
