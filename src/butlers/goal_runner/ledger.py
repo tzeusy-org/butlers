@@ -39,6 +39,7 @@ from butlers.core.goal_admission import Grant, decode_grants, digest, encode_gra
 from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.goal_waiting import WaitLedger
 from butlers.core.goal_wake import WakeAdmission
+from butlers.core.spend_pools import SpendPools
 
 from . import evidence as evidence_rules
 from .contracts import (
@@ -2109,6 +2110,8 @@ class RunnerLedger:
             tokens,
             spend,
         )
+        # The monthly pools move in this transaction too (bu-jv1moa.1).
+        await SpendPools(self.connection).charge(goal_id, spend, tokens=tokens)
         await self.connection.execute(
             "UPDATE switchboard.invocations SET used_turns = least(used_turns + $3, max_turns), "
             "used_tokens = least(used_tokens + $4, max_tokens), updated_at = now() "

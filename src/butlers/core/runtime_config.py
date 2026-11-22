@@ -56,11 +56,21 @@ class OriginAdmissionLimits(BaseModel):
     budget: GoalBudgetLimits
 
 
+class SpendPolicyConfig(BaseModel):
+    """The owner reserve and the lanes switch for the monthly spend pools (bu-jv1moa.1)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+    owner_reserve_pct: Decimal = Field(default=Decimal("0.20"), ge=0, le=1)
+    lanes_enabled: bool = True
+
+
 class GoalAdmissionConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     version: str = Field(min_length=1)
     chain_limit: int = Field(default=2, ge=0, le=2**31 - 1, strict=True)
     origins: tuple[OriginAdmissionLimits, ...]
+    # Left out of the dump (and so of the config digest) so existing digests do not change.
+    spend: SpendPolicyConfig = Field(default_factory=SpendPolicyConfig, exclude=True)
 
     @model_validator(mode="after")
     def all_origins_once(self) -> GoalAdmissionConfig:

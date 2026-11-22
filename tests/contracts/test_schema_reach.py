@@ -975,6 +975,18 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.butler_registry_control_plane",
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
     (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.budget_pools",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
+    (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.pool_reservations",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
+    (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.charge_goal_reservation",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
+    (
         "src/butlers/core/goal_ledger.py",
         "switchboard.admission_attempt_bindings",
     ): "sanctioned:RFC-0038: D1/D17 Switchboard-owned immutable admission retry identity; same ledger transaction and runtime role as canonical decisions (bu-lb99gq)",
