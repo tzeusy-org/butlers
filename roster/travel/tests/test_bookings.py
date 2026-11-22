@@ -796,6 +796,163 @@ class TestRecordBookingIdentity:
         assert {row["confidence"] for row in confidences} == {"weak"}
 
 
+class TestPnrlessJourneyGrouping:
+    """Legs without a booking record still group by journey evidence (bu-swkpoo.7)."""
+
+    _DEP1 = datetime(2030, 3, 12, 9, 15, tzinfo=UTC)
+
+    def _leg(
+        self, *, dep: datetime, arr: datetime, carrier="Example Air", pnr=None, **extra
+    ) -> dict:
+        payload = {
+            "entity_type": "leg",
+            "provider": carrier,
+            "carrier": carrier,
+            "departure_at": dep.isoformat(),
+            "arrival_at": arr.isoformat(),
+            "arrival_city": "Somewhere",
+            "metadata": {"flight_number": "EX 101"},
+        }
+        if pnr:
+            payload["pnr"] = pnr
+        payload.update(extra)
+        return payload
+
+    async def test_shared_pnr_with_carrier_attaches_to_one_trip(self, travel_pool):
+        from butlers.roster_imports import roster_module
+
+        record_booking = roster_module("travel", "tools/bookings").record_booking
+
+        first = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1,
+                arr=self._DEP1 + timedelta(hours=5),
+                pnr="ZZ9ABC",
+                arrival_city="Alpha City",
+            ),
+        )
+        # Next leg departs well outside the 72h window; only the PNR links it.
+        second = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1 + timedelta(days=9),
+                arr=self._DEP1 + timedelta(days=9, hours=3),
+                pnr="zz9abc",
+                arrival_city="Beta City",
+            ),
+        )
+        assert second["trip_id"] == first["trip_id"]
+        assert second["trip_created"] is False
+
+    async def test_same_pnr_other_carrier_does_not_attach(self, travel_pool):
+        from butlers.roster_imports import roster_module
+
+        record_booking = roster_module("travel", "tools/bookings").record_booking
+
+        first = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1,
+                arr=self._DEP1 + timedelta(hours=5),
+                pnr="ZZ9ABC",
+                arrival_city="Alpha City",
+            ),
+        )
+        other = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1 + timedelta(days=40),
+                arr=self._DEP1 + timedelta(days=40, hours=3),
+                carrier="Other Air",
+                pnr="ZZ9ABC",
+                arrival_city="Delta City",
+            ),
+        )
+        assert other["trip_id"] != first["trip_id"]
+
+    async def test_departure_within_72h_of_previous_arrival_attaches(self, travel_pool):
+        from butlers.roster_imports import roster_module
+
+        record_booking = roster_module("travel", "tools/bookings").record_booking
+
+        first = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1, arr=self._DEP1 + timedelta(hours=5), arrival_city="Alpha City"
+            ),
+        )
+        nxt = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1 + timedelta(hours=8),
+                arr=self._DEP1 + timedelta(hours=11),
+                arrival_city="Beta City",
+            ),
+        )
+        assert nxt["trip_id"] == first["trip_id"]
+
+    async def test_departure_beyond_72h_makes_new_trip(self, travel_pool):
+        from butlers.roster_imports import roster_module
+
+        record_booking = roster_module("travel", "tools/bookings").record_booking
+
+        first = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1, arr=self._DEP1 + timedelta(hours=5), arrival_city="Alpha City"
+            ),
+        )
+        later = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1 + timedelta(days=20),
+                arr=self._DEP1 + timedelta(days=20, hours=3),
+                arrival_city="Beta City",
+            ),
+        )
+        assert later["trip_id"] != first["trip_id"]
+
+    async def test_reingest_same_segment_updates_instead_of_duplicating(self, travel_pool):
+        from butlers.roster_imports import roster_module
+
+        record_booking = roster_module("travel", "tools/bookings").record_booking
+
+        first = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1,
+                arr=self._DEP1 + timedelta(hours=5),
+                carrier="Sample Wings",
+                arrival_city="Gamma City",
+                metadata={"flight_number": "SW 200", "cabin": "Economy"},
+            ),
+        )
+        again = await record_booking(
+            pool=travel_pool,
+            payload=self._leg(
+                dep=self._DEP1,
+                arr=self._DEP1 + timedelta(hours=6),
+                carrier="Sample Wings",
+                arrival_city="Gamma City",
+                seat="41A",
+                metadata={"flight_number": "SW200", "baggage": "25kg"},
+            ),
+        )
+        assert again["trip_id"] == first["trip_id"]
+        assert again["entity_id"] == first["entity_id"]
+        assert again["created"] is False
+        rows = await travel_pool.fetch(
+            "SELECT seat, arrival_at, metadata FROM travel.legs WHERE trip_id = $1::uuid",
+            first["trip_id"],
+        )
+        assert len(rows) == 1
+        assert rows[0]["seat"] == "41A"
+        assert rows[0]["arrival_at"] == self._DEP1 + timedelta(hours=6)
+        assert rows[0]["metadata"]["cabin"] == "Economy"
+        assert rows[0]["metadata"]["baggage"] == "25kg"
+
+
 # ---------------------------------------------------------------------------
 # record_booking — accommodation entity
 # ---------------------------------------------------------------------------
