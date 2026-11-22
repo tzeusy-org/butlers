@@ -3998,3 +3998,125 @@ async def test_bill_sweep_stale_bill_lifecycle_is_idempotent(finance_clone, monk
         after = await pool.fetch("SELECT payee, status, metadata, updated_at FROM finance.bills")
 
         assert [dict(r) for r in before] == [dict(r) for r in after]
+
+
+# ---------------------------------------------------------------------------
+# Tests: recurring bill roll in the bill sweep (bu-swkpoo.8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("base", "anchor", "frequency", "periods", "expected"),
+    [
+        (date(2031, 3, 10), 10, "weekly", 2, date(2031, 3, 24)),
+        (date(2031, 1, 15), 15, "monthly", 1, date(2031, 2, 15)),
+        (date(2031, 1, 31), 31, "monthly", 1, date(2031, 2, 28)),
+        (date(2032, 1, 31), 31, "monthly", 1, date(2032, 2, 29)),
+        (date(2031, 2, 28), 31, "monthly", 1, date(2031, 3, 31)),
+        (date(2031, 11, 30), 30, "monthly", 3, date(2032, 2, 29)),
+        (date(2031, 11, 30), 30, "quarterly", 1, date(2032, 2, 29)),
+        (date(2032, 2, 29), 29, "yearly", 1, date(2033, 2, 28)),
+    ],
+)
+def test_advance_due_date_clamps_to_month_end(base, anchor, frequency, periods, expected):
+    fj = _fj_module()
+    assert fj._advance_due_date(base, anchor, frequency, periods) == expected
+
+
+async def _series(pool, payee: str):
+    return await pool.fetch(
+        "SELECT status, amount, currency, due_date, frequency, autopay, predicted, "
+        "payment_method, payee_key FROM finance.bills WHERE payee = $1 ORDER BY due_date",
+        payee,
+    )
+
+
+@pytest.mark.parametrize("frequency", ["weekly", "monthly", "quarterly", "yearly"])
+async def test_bill_sweep_rolls_paid_recurring_bill(finance_clone, monkeypatch, frequency):
+    fj = _fj_module()
+    due = _today() + timedelta(days=1)
+    async with finance_clone() as pool:
+        await _insert_bill(
+            pool, payee="Roll Me", amount="42.00", due_date=due, frequency=frequency, status="paid"
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        rows = await _series(pool, "Roll Me")
+        assert len(rows) == 2
+        nxt = rows[1]
+        assert nxt["status"] == "pending"
+        assert nxt["due_date"] == fj._advance_due_date(due, due.day, frequency, 1)
+        assert (nxt["amount"], nxt["currency"], nxt["frequency"]) == (
+            rows[0]["amount"],
+            "USD",
+            frequency,
+        )
+        assert nxt["predicted"] is False
+
+
+async def test_bill_sweep_roll_is_idempotent(finance_clone, monkeypatch):
+    fj = _fj_module()
+    async with finance_clone() as pool:
+        await _insert_bill(
+            pool, payee="Roll Me", due_date=_today() + timedelta(days=1), status="paid"
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        before = await _series(pool, "Roll Me")
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        assert [dict(r) for r in await _series(pool, "Roll Me")] == [dict(r) for r in before]
+
+
+async def test_bill_sweep_roll_does_not_duplicate_existing_next_period(finance_clone, monkeypatch):
+    fj = _fj_module()
+    due = _today() - timedelta(days=3)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Roll Me", due_date=due, status="paid")
+        await _insert_bill(
+            pool, payee="Roll Me", due_date=fj._advance_due_date(due, due.day, "monthly", 1)
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        assert len(await _series(pool, "Roll Me")) == 2
+
+
+async def test_bill_sweep_rolls_autopay_and_carries_fields(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 5)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Autopay Card", amount="42.00", due_date=old)
+        await pool.execute(
+            "UPDATE finance.bills SET autopay = true, payment_method = 'giro' "
+            "WHERE payee = 'Autopay Card'"
+        )
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        rows = await _series(pool, "Autopay Card")
+        assert [r["status"] for r in rows] == ["pending", "pending"]
+        assert rows[1]["autopay"] is True and rows[1]["payment_method"] == "giro"
+        assert rows[1]["due_date"] >= _today()
+
+
+async def test_bill_sweep_rolls_overdue_bill_to_current_period(finance_clone, monkeypatch):
+    fj = _fj_module()
+    old = _today() - timedelta(days=fj._STALE_BILL_GRACE_DAYS + 70)
+    async with finance_clone() as pool:
+        await _insert_bill(pool, payee="Old Bill", amount="42.00", due_date=old)
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+
+        rows = await _series(pool, "Old Bill")
+        assert [r["status"] for r in rows] == ["overdue", "pending"]
+        assert _today() <= rows[1]["due_date"] <= _today() + timedelta(days=31)
+
+
+async def test_bill_sweep_does_not_roll_one_time_custom_or_zero_placeholder(
+    finance_clone, monkeypatch
+):
+    fj = _fj_module()
+    async with finance_clone() as pool:
+        due = _today() - timedelta(days=2)
+        await _insert_bill(pool, payee="One Off", due_date=due, frequency="one_time", status="paid")
+        await _insert_bill(pool, payee="Custom", due_date=due, frequency="custom", status="paid")
+        await _insert_bill(pool, payee="Zero", amount="0.00", due_date=due, status="paid")
+        await _sweep_with_noop_reconcile(fj, pool, monkeypatch)
+        for payee in ("One Off", "Custom", "Zero"):
+            assert len(await _series(pool, payee)) == 1

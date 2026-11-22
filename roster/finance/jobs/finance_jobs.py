@@ -10,6 +10,7 @@ Each job handler:
 
 from __future__ import annotations
 
+import calendar
 import json
 import logging
 import re
@@ -1829,6 +1830,92 @@ async def _age_out_stale_bills(conn: Any, today: date) -> dict[str, int]:
     return {"placeholders_closed": len(closed), "marked_overdue": len(overdue)}
 
 
+_RECURRING_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+
+
+def _advance_due_date(base: date, anchor_day: int, frequency: str, periods: int) -> date:
+    """Return ``base`` advanced by ``periods`` of ``frequency``, clamped to month end.
+
+    ``anchor_day`` is the intended day-of-month (kept across clamped periods so a
+    31st bill returns to the 31st after a short month). Weekly ignores it.
+    """
+    if frequency == "weekly":
+        return base + timedelta(days=7 * periods)
+    months = base.year * 12 + (base.month - 1) + _RECURRING_MONTHS[frequency] * periods
+    year, month = divmod(months, 12)
+    month += 1
+    return date(year, month, min(anchor_day, calendar.monthrange(year, month)[1]))
+
+
+async def _roll_recurring_bills(conn: Any, today: date) -> dict[str, int]:
+    """Ensure each recurring bill series has a ``pending`` bill for its next period.
+
+    bu-swkpoo.8. Runs after ``reconcile_bills`` and ``_age_out_stale_bills`` so
+    settlement and aging win first. A series is (payee_key, currency, frequency)
+    over non-predicted weekly/monthly/quarterly/yearly bills. Only the series'
+    latest bill is a roll source, which makes the roll idempotent: the inserted
+    row becomes the latest and is not rollable until it settles or ages out.
+    A source rolls when it is ``paid`` or ``overdue``, or is an autopay bill still
+    ``pending`` past the stale grace (autopay never becomes ``overdue``). ``$0``
+    placeholders never roll. The new due date is the first period boundary on or
+    after ``today`` (an early-paid bill gets its next period; a long-stale series
+    skips to the current one instead of back-filling dead rows). ``one_time`` and
+    ``custom`` have no deterministic period and are untouched.
+    """
+    cutoff = today - timedelta(days=_STALE_BILL_GRACE_DAYS)
+    sources = await conn.fetch(
+        """
+        SELECT * FROM (
+            SELECT DISTINCT ON (key, currency, frequency)
+                   id, payee, key, amount, currency, due_date, frequency, status,
+                   autopay, payment_method, account_id, metadata
+              FROM (
+                  SELECT *, COALESCE(payee_key, rtrim(btrim(
+                         regexp_replace(lower(payee), '\\s+', ' ', 'g')), '.')) AS key
+                    FROM bills
+                   WHERE NOT predicted
+                     AND frequency IN ('weekly', 'monthly', 'quarterly', 'yearly')
+              ) b
+             ORDER BY key, currency, frequency, due_date DESC, created_at DESC
+        ) latest
+         WHERE amount > 0
+           AND (status IN ('paid', 'overdue')
+                OR (status = 'pending' AND autopay AND due_date < $1))
+        """,
+        cutoff,
+    )
+    rolled = 0
+    for src in sources:
+        meta = src["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        anchor = int((meta or {}).get("recurrence_anchor_day") or src["due_date"].day)
+        periods = 1
+        due = _advance_due_date(src["due_date"], anchor, src["frequency"], periods)
+        while due < today:
+            periods += 1
+            due = _advance_due_date(src["due_date"], anchor, src["frequency"], periods)
+        await conn.execute(
+            """
+            INSERT INTO bills (payee, payee_key, amount, currency, due_date, frequency,
+                               status, payment_method, account_id, autopay, predicted, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, false, $10::jsonb)
+            """,
+            src["payee"],
+            src["key"],
+            src["amount"],
+            src["currency"],
+            due,
+            src["frequency"],
+            src["payment_method"],
+            src["account_id"],
+            src["autopay"],
+            json.dumps({"rolled_from": str(src["id"]), "recurrence_anchor_day": anchor}),
+        )
+        rolled += 1
+    return {"rolled": rolled}
+
+
 async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the weekly bill-reconciliation sweep and surface results as insights.
 
@@ -1877,6 +1964,11 @@ async def run_bill_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]
     async with _finance_scoped_connection(db_pool) as conn:
         aged = await _age_out_stale_bills(conn, today)
     logger.info("Finance bill sweep aged out stale bills: %s", aged)
+
+    # bu-swkpoo.8: roll settled/passed recurring bills to their next period.
+    async with _finance_scoped_connection(db_pool) as conn:
+        rolled = await _roll_recurring_bills(conn, today)
+    logger.info("Finance bill sweep rolled recurring bills: %s", rolled)
 
     async with _finance_scoped_connection(db_pool) as conn:
         predict_result = await predict_bills(conn, days_ahead=30)
