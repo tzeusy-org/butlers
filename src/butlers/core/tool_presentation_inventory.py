@@ -10927,6 +10927,8 @@ CATEGORY_SPECS = MappingProxyType(
         "email": _spec("module-email"),
         "finance": _spec("butler-finance"),
         "general": _spec("butler-general"),
+        # The unarchived change delta; on archive use _spec("module-gmail").
+        "gmail/mailbox": ("openspec/changes/owner-gmail-actions/specs/module-gmail/spec.md",),
         "google_drive": _spec("module-google-drive"),
         "google_health": _spec("module-google-health"),
         "health": _spec("butler-health"),
@@ -11000,16 +11002,6 @@ NARROWED_CATEGORIES = MappingProxyType(
         "module.states": "module names and enable/health states",
         "list_butlers": "registry rows: name, endpoint, modules, liveness and eligibility",
         "pending_action_count": "pending-action totals by status",
-    }
-)
-
-
-# module-gmail is still the delta of the unarchived change owner-gmail-actions; on archive, move it
-# into the literal above as _spec("module-gmail") and delete this line.
-CATEGORY_SPECS = MappingProxyType(
-    {
-        **CATEGORY_SPECS,
-        "gmail": ("openspec/changes/owner-gmail-actions/specs/module-gmail/spec.md",),
     }
 )
 

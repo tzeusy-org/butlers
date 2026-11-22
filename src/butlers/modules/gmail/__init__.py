@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -57,6 +58,10 @@ BODY_CHAR_LIMIT = 20_000
 #: Reads retry once on 429 and 5xx after this many seconds.
 RETRY_BACKOFF_S = 1.0
 
+#: Gmail ids are short hex or base64url tokens; anything else could escape the URL path.
+_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+#: Lineage origins allowed to modify mail; any other or unknown origin is refused.
+_MODIFY_ORIGINS = frozenset({"owner"})
 _SCRUB_DOMAIN = "gmail"
 _ALLOWED_SYSTEM_LABELS = ("INBOX", "UNREAD", "STARRED", "IMPORTANT")
 _REFUSED_SYSTEM_LABELS = frozenset({"TRASH", "SPAM", "SENT", "DRAFT", "CHAT"})
@@ -375,6 +380,8 @@ class GmailModule(Module):
         return rendered
 
     async def _get_thread(self, account: str, thread_id: str) -> dict[str, Any]:
+        if not _valid_id(thread_id):
+            return _error("invalid_argument", "thread_id is not a valid Gmail id")
         try:
             acct, token = await self._authorize(account)
             data = await self._request(
@@ -393,14 +400,14 @@ class GmailModule(Module):
 
     @staticmethod
     def _modify_permitted() -> bool:
-        """Interim (ruling A): only an unexposed, non-third-party goal may modify.
+        """Interim (ruling A): only an unexposed goal with an allowlisted (owner) origin may modify.
 
         Missing lineage counts as exposed (RFC 0038 D6). The recorded owner rule for exposed
         goals (triggering-thread binding, a park for INBOX/UNREAD removal, a per-goal cap of 5)
         needs substrate that lands with bu-kqme7f.10; until then it is refused outright.
         """
         lineage = current_lineage()
-        return lineage is not None and not lineage.exposed and lineage.origin != "third_party"
+        return lineage is not None and not lineage.exposed and lineage.origin in _MODIFY_ORIGINS
 
     @staticmethod
     def _static_label_problem(add: list[str], remove: list[str]) -> str | None:
@@ -452,6 +459,8 @@ class GmailModule(Module):
             return _error(
                 "invalid_argument", f"at most {MAX_THREADS_PER_MODIFY} thread ids per call"
             )
+        if not all(_valid_id(thread_id) for thread_id in ids):
+            return _error("invalid_argument", "a thread id is not a valid Gmail id")
         problem = self._static_label_problem(add, remove)
         if problem:
             return _error("invalid_argument", problem)
@@ -583,6 +592,10 @@ class GmailModule(Module):
             Refused under exposed or third-party goals until bu-kqme7f.10 lands.
             """
             return await module._modify_threads(account, thread_ids, add_labels, remove_labels)
+
+
+def _valid_id(value: Any) -> bool:
+    return isinstance(value, str) and _ID_RE.fullmatch(value) is not None
 
 
 def _internal_date(message: dict[str, Any]) -> int:

@@ -13,4 +13,5 @@
 ## 3. Archive
 
 - [ ] 3.1 On archive, move the delta to `openspec/specs/module-gmail/spec.md` and repoint
-  `CATEGORY_SPECS["gmail"]` in `tool_presentation_inventory.py` to it.
+  the `"gmail/mailbox"` key of `CATEGORY_SPECS` in `tool_presentation_inventory.py` to it
+  (keep the `module/group` key; a bare `"gmail"` key trips the connector-identity guard).

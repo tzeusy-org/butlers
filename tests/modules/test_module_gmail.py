@@ -522,6 +522,7 @@ class TestModifyThreads:
             _lineage(exposed=True),
             _lineage(origin="third_party"),
             _lineage(exposed=True, origin="third_party"),
+            _lineage(origin="some_new_origin"),
             None,
         ],
     )
@@ -536,6 +537,28 @@ class TestModifyThreads:
         assert result["error"] == "exposed_modify_refused"
         assert "bu-kqme7f.10" in result["message"]
         assert fake.modifies == []
+
+
+BAD_IDS = ["../messages/X/trash?", "%2e%2e/x", "a?b", "a#b", "a/b", "", "a b", "x" * 65]
+
+
+class TestIdValidation:
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    async def test_get_thread_refuses_path_injection_before_any_call(
+        self, tools, fake, bad
+    ) -> None:
+        result = await tools["gmail_get_thread"](account=OWNER, thread_id=bad)
+        assert result["status"] == "error" and result["error"] == "invalid_argument"
+        assert fake.requests == []
+
+    @pytest.mark.parametrize("bad", BAD_IDS)
+    async def test_modify_refuses_path_injection_before_any_call(self, tools, fake, bad) -> None:
+        with lineage_scope(_lineage()):
+            result = await tools["gmail_modify_threads"](
+                account=OWNER, thread_ids=["t1", bad], remove_labels=["INBOX"]
+            )
+        assert result["status"] == "error" and result["error"] == "invalid_argument"
+        assert fake.requests == []
 
 
 # ---------------------------------------------------------------------------
