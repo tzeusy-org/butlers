@@ -5848,9 +5848,13 @@ export function getQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerStatus>
 }
 
 /** POST /api/qa/circuit-breaker/reset — reset a tripped circuit breaker */
-export function resetQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerResetResponse>> {
+export function resetQaCircuitBreaker(
+  causeRef: string,
+): Promise<ApiResponse<CircuitBreakerResetResponse>> {
   return apiFetch<ApiResponse<CircuitBreakerResetResponse>>("/qa/circuit-breaker/reset", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cause_ref: causeRef }),
   });
 }
 

@@ -6553,8 +6553,18 @@ export interface QaActiveBreakdown {
 }
 
 /** QA staffer summary — GET /api/qa/summary */
+export interface QaLoopCondition {
+  source: string;
+  summary: string | null;
+  cause: string | null;
+  first_detected_at: string | null;
+}
+
 export interface QaSummary {
   staffer_status: string;
+  /** Active remediation-loop liveness conditions; non-empty means never "healthy". */
+  loop_conditions?: QaLoopCondition[];
+  loop_conditions_known?: boolean;
   last_patrol_at: string | null;
   next_patrol_at: string | null;
   last_patrol: QaPatrolSummary | null;
@@ -6781,6 +6791,7 @@ export interface CircuitBreakerStatus {
 export interface CircuitBreakerResetResponse {
   reset: boolean;
   message: string;
+  refusal_reason?: string | null;
 }
 
 /** QA repository configuration — GET /api/qa/settings/repo */

@@ -19,6 +19,11 @@ sources in ``public.infra_conditions``:
     configured cadence. When QA is held by owner policy the same absence is
     recorded as the distinct ``patrol_stopped_by_policy`` identity.
 
+QA remediation-loop liveness (REQ-qa-remediation-liveness-001): every pass also records the
+conditions of ``butlers.core.qa.remediation_liveness`` (capability below target, breaker open too
+long, proposal unadopted, no verified fix). They are dashboard conditions; paging them needs the
+bootstrap-owned producer allowlist extended and is a separate owner-run step.
+
 Owner attention (REQ-butler-control-plane-liveness-007): every pass also asks
 the fixed ``public.append_runtime_attention_condition`` producer, under
 Switchboard's role, for one outbox episode per active fleet or overdue-QA
@@ -66,6 +71,7 @@ from butlers.core.qa.patrol_provenance import (
     QaPatrolContract,
     qa_patrol_contract,
 )
+from butlers.core.qa.remediation_liveness import reconcile_remediation_loop
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +486,11 @@ async def run_controller_pass(
         except Exception:
             mark_tick_incomplete()
             logger.exception("Fleet condition controller: QA patrol assurance failed")
+    try:
+        await reconcile_remediation_loop(pool)
+    except Exception:
+        mark_tick_incomplete()
+        logger.exception("Fleet condition controller: QA remediation-loop liveness failed")
     try:
         await append_due_condition_attention(pool, policy_reader)
     except Exception:

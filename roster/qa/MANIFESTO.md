@@ -249,7 +249,20 @@ OTel spans per patrol cycle:
 
 Circuit breaker trips (N consecutive failures):
 - Log WARNING
-- Dashboard alert via `qa_investigations_active` gauge and patrol status
+- The dashboard shows the breaker and `staffer_status` (`circuit_breaker_tripped`); no metric
+  alert is claimed (the `qa_investigations_active` gauge is not scraped for this)
+- A breaker open longer than 6 hours is a durable `breaker_open_too_long` condition
+- A manual reset must name the cause it addresses (`<cause_code>:<reference>`); while the failure
+  streak's dominant cause is structural (for example `publisher_unconfigured`), the reset must
+  name that cause, and a reference whose claim was already disproved is refused
+
+QA remediation-loop liveness (the independent control plane records these; QA does not
+investigate itself):
+- Capability below target, with its cause (for example `publisher_unconfigured`)
+- A retained proposal unadopted for 7 days
+- No merged fix in 14 days despite at least 3 investigations that reached publication
+  (unmeasurable, never "absent", when there is no opportunity to measure against)
+- While any is active, `staffer_status` reads `degraded`, never `healthy`
 
 Repeated anonymization failures:
 - PR pipeline halted

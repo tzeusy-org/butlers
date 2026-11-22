@@ -60,6 +60,13 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
     }
   }
 
+  for (const condition of summary.loop_conditions ?? []) {
+    clauses.push({
+      key: `loop-${condition.source}`,
+      text: condition.summary ?? `remediation loop degraded (${condition.cause ?? condition.source})`,
+    });
+  }
+
   const overdueClause = buildOverduePatrolClause(summary);
   if (overdueClause) clauses.push(overdueClause);
 

@@ -64,7 +64,10 @@ def _app_for(pool: asyncpg.Pool):
 async def _post_reset(app) -> httpx.Response:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url=_BASE_URL) as client:
-        return await client.post("/api/qa/circuit-breaker/reset")
+        return await client.post(
+            "/api/qa/circuit-breaker/reset",
+            json={"cause_ref": "execution_failure:retry-after-fix"},
+        )
 
 
 @pytest.mark.pg_clock

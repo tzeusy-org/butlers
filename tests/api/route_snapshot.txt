@@ -602,7 +602,7 @@ OP POST /api/owner-policy/terms/{term_id}/loosen a97524d5ed92
 OP POST /api/owner-policy/terms/{term_id}/tighten c79d9a805a95
 OP POST /api/projections 58c43352cca6
 OP POST /api/projections/{projection_id}/rotate 3a12d90d65bb
-OP POST /api/qa/circuit-breaker/reset 5fb5e25e6746
+OP POST /api/qa/circuit-breaker/reset abb5b2f66997
 OP POST /api/qa/dev/synthetic-findings 7c3867151090
 OP POST /api/qa/force-patrol e061d785d64e
 OP POST /api/qa/known-issues/{fingerprint}/dismiss 5076b8ce2a52
@@ -1870,7 +1870,8 @@ SCHEMA ChroniclesStateClass e8ee7c2708c1
 SCHEMA ChroniclesStreaks 575063c293e4
 SCHEMA ChroniclesVoiceSource bcf3d2867e3b
 SCHEMA CircuitBreakerAttempt fa4804ada6f1
-SCHEMA CircuitBreakerResetResponse 1f4e75693cfd
+SCHEMA CircuitBreakerResetRequest 332d48b02535
+SCHEMA CircuitBreakerResetResponse 0ee49796f67b
 SCHEMA Claim 965511cc2e61
 SCHEMA ClearPreferredChannelResponse d918dcb32c8f
 SCHEMA CliCredentialDetail 6da1df758f2f
@@ -2408,6 +2409,7 @@ SCHEMA QaGitAuthorUpdate ad009dd109f0
 SCHEMA QaInvestigation 371ef9cc455e
 SCHEMA QaJournalEvent fa1859cb8e91
 SCHEMA QaKpiBlock 3d42bd9431cb
+SCHEMA QaLoopCondition 147cc33769bb
 SCHEMA QaMetaReviewFinding 1a712e44641b
 SCHEMA QaPatrolDetail 3ac47f939438
 SCHEMA QaPatrolSummary 18731d088730
@@ -2417,7 +2419,7 @@ SCHEMA QaRepoConfigUpdate 200637e918ed
 SCHEMA QaRepoSyncResponse 926bbbab295c
 SCHEMA QaSourceBreakdown ec54c124482b
 SCHEMA QaStats24h 5c8a9f790694
-SCHEMA QaSummary 2e232643da9a
+SCHEMA QaSummary 85108147af33
 SCHEMA QaTrends d7f92c83ca00
 SCHEMA QaTrendsDay fc8506ba0cc5
 SCHEMA QueueEntry 3c18fee920db

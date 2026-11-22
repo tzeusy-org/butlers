@@ -86,6 +86,13 @@ from butlers.core.qa.patrol_status import (
     is_valid_patrol_status,
     require_patrol_status,
 )
+from butlers.core.qa.remediation_liveness import (
+    STREAK_SQL as _LOOP_STREAK_SQL,
+)
+from butlers.core.qa.remediation_liveness import (
+    active_loop_conditions,
+    evaluate_reset,
+)
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
     escalated_open_cases_sql,
@@ -630,10 +637,30 @@ class QaCredentialsStatus(BaseModel):
     """
 
 
+class QaLoopCondition(BaseModel):
+    """One active remediation-loop liveness condition (REQ-qa-remediation-liveness-001)."""
+
+    source: str
+    summary: str | None = None
+    cause: str | None = None
+    first_detected_at: datetime | None = None
+
+
 class QaSummary(BaseModel):
     """QA staffer status summary for the dashboard."""
 
     staffer_status: str = "unknown"
+    loop_conditions: list[QaLoopCondition] = Field(
+        default_factory=list,
+        description=(
+            "Active remediation-loop liveness conditions. A non-empty list means "
+            "staffer_status is never 'healthy'."
+        ),
+    )
+    loop_conditions_known: bool = Field(
+        default=True,
+        description="False when the condition ledger could not be read; never read as none.",
+    )
     last_patrol_at: datetime | None = None
     next_patrol_at: datetime | None = None
     last_patrol: QaPatrolSummary | None = None
@@ -869,6 +896,16 @@ class CircuitBreakerResetResponse(BaseModel):
 
     reset: bool
     message: str
+    refusal_reason: str | None = None
+
+
+class CircuitBreakerResetRequest(BaseModel):
+    """Body of a manual breaker reset: the cause it claims to address."""
+
+    cause_ref: str | None = Field(
+        default=None,
+        description="'<cause_code>:<reference>', for example 'publisher_unconfigured:PR-1234'.",
+    )
 
 
 class QaRepoConfig(BaseModel):
@@ -1768,6 +1805,20 @@ async def get_qa_summary(
     else:
         staffer_status = "healthy"
 
+    # Remediation-loop liveness conditions (REQ-qa-dashboard-801). A condition
+    # downgrades "healthy"; an unreadable ledger is unknown, never none.
+    try:
+        loop_rows = await active_loop_conditions(pool)
+    except Exception:
+        logger.warning("get_qa_summary: loop conditions unreadable (non-fatal)", exc_info=True)
+        loop_rows = None
+    loop_conditions = [QaLoopCondition(**row) for row in (loop_rows or [])]
+    if staffer_status == "healthy":
+        if loop_rows is None:
+            staffer_status = "unknown"
+        elif loop_conditions:
+            staffer_status = "degraded"
+
     # Credentials status — populated when daemon wires credentials_status_fn
     credentials_status = QaCredentialsStatus()
     if credentials_status_fn is not None:
@@ -1843,6 +1894,8 @@ async def get_qa_summary(
 
     summary = QaSummary(
         staffer_status=staffer_status,
+        loop_conditions=loop_conditions,
+        loop_conditions_known=loop_rows is not None,
         last_patrol_at=last_patrol_at,
         next_patrol_at=None,  # Requires scheduler integration; not available via DB
         last_patrol=last_patrol,
@@ -3443,9 +3496,15 @@ async def get_circuit_breaker_status(
 async def reset_circuit_breaker(
     *,
     db: Db,
+    body: CircuitBreakerResetRequest | None = Body(default=None),
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
     """Reset the QA circuit breaker by recording an auditable reset marker.
+
+    The reset must name the cause it addresses (``cause_ref``). While the streak's dominant
+    cause is structural (for example no publisher), the reset must name that cause, and a
+    reference that already bought a reset followed by the same structural failure is refused
+    (REQ-qa-remediation-liveness-003).
 
     Writes one ``public.breaker_resets`` row (who/when/why). The dispatch
     admission gate and every dashboard breaker query only count investigation
@@ -3475,12 +3534,34 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
+    streak = await pool.fetch(_LOOP_STREAK_SQL, _CIRCUIT_BREAKER_THRESHOLD)
+    decision = await evaluate_reset(
+        pool,
+        body.cause_ref if body is not None else None,
+        [row["error_detail"] for row in streak],
+    )
+    if not decision.allowed:
+        logger.warning("QA circuit breaker reset refused (reason=%s)", decision.reason)
+        return ApiResponse(
+            data=CircuitBreakerResetResponse(
+                reset=False,
+                message=(
+                    "Reset refused: name the cause it addresses as '<cause_code>:<reference>' "
+                    "and resolve any structural cause first."
+                ),
+                refusal_reason=decision.reason,
+            ),
+            meta=ApiMeta(),
+        )
+
     await pool.execute(
         """
-        INSERT INTO public.breaker_resets (breaker, reset_by, reason)
-        VALUES ('qa', 'dashboard', $1)
+        INSERT INTO public.breaker_resets (breaker, reset_by, reason, cause_code, cause_ref)
+        VALUES ('qa', 'dashboard', $1, $2, $3)
         """,
         "Manual reset via QA dashboard",
+        decision.cause_code,
+        decision.cause_ref,
     )
 
     # The cached briefing can otherwise retain the pre-reset urgent verdict for

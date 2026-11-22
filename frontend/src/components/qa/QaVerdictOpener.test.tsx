@@ -105,6 +105,23 @@ describe("QaVerdictOpener -- clauses", () => {
     expect(html).toContain("circuit breaker tripped after 5 consecutive failures");
   });
 
+  it("names an active remediation-loop condition instead of reading healthy", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "degraded",
+      loop_conditions: [
+        {
+          source: "qa_loop_capability",
+          summary: "QA remediation capability is below target: publisher_unconfigured",
+          cause: "publisher_unconfigured",
+          first_detected_at: "2026-11-20T00:00:00Z",
+        },
+      ],
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("below target: publisher_unconfigured");
+  });
+
   it("names a failed last patrol and doors to its patrol detail page", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,

@@ -282,7 +282,9 @@ class TestQaCircuitBreakerResetInvalidatesBriefingCache:
     async def test_successful_reset_invalidates_cached_briefings(self):
         """A committed reset must make the next briefing recompute immediately."""
         pool = AsyncMock()
-        pool.fetch = AsyncMock(return_value=[{"status": "failed"} for _ in range(5)])
+        pool.fetch = AsyncMock(
+            return_value=[{"status": "failed", "error_detail": None} for _ in range(5)]
+        )
         pool.execute = AsyncMock()
 
         cache = BriefingCache(ttl_seconds=300)
@@ -292,7 +294,10 @@ class TestQaCircuitBreakerResetInvalidatesBriefingCache:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.post("/api/qa/circuit-breaker/reset")
+            response = await client.post(
+                "/api/qa/circuit-breaker/reset",
+                json={"cause_ref": "execution_failure:retry-after-fix"},
+            )
 
         assert response.status_code == 200
         assert response.json()["data"]["reset"] is True
@@ -311,7 +316,10 @@ class TestQaCircuitBreakerResetInvalidatesBriefingCache:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            response = await client.post("/api/qa/circuit-breaker/reset")
+            response = await client.post(
+                "/api/qa/circuit-breaker/reset",
+                json={"cause_ref": "execution_failure:retry-after-fix"},
+            )
 
         assert response.status_code == 200
         assert response.json()["data"]["reset"] is False
@@ -320,7 +328,9 @@ class TestQaCircuitBreakerResetInvalidatesBriefingCache:
     async def test_failed_reset_marker_write_preserves_cached_briefings(self):
         """A failed write must not make the UI look reset before it actually is."""
         pool = AsyncMock()
-        pool.fetch = AsyncMock(return_value=[{"status": "failed"} for _ in range(5)])
+        pool.fetch = AsyncMock(
+            return_value=[{"status": "failed", "error_detail": None} for _ in range(5)]
+        )
         pool.execute = AsyncMock(side_effect=RuntimeError("breaker reset write failed"))
 
         cache = BriefingCache(ttl_seconds=300)
@@ -331,7 +341,10 @@ class TestQaCircuitBreakerResetInvalidatesBriefingCache:
             transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
             base_url="http://test",
         ) as client:
-            response = await client.post("/api/qa/circuit-breaker/reset")
+            response = await client.post(
+                "/api/qa/circuit-breaker/reset",
+                json={"cause_ref": "execution_failure:retry-after-fix"},
+            )
 
         assert response.status_code == 500
         assert cache.get("owner") is not None

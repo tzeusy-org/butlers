@@ -858,6 +858,8 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
     monkeypatch.setattr(fleet_conditions, "get_active_condition", AsyncMock(return_value=None))
     reconcile = AsyncMock(return_value=[])
     monkeypatch.setattr(fleet_conditions, "reconcile_snapshot", reconcile)
+    # QA remediation-loop liveness has its own proofs; this pool only scripts fleet/patrol SQL.
+    monkeypatch.setattr(fleet_conditions, "reconcile_remediation_loop", AsyncMock(return_value=[]))
     configs = [
         SimpleNamespace(
             name="qa",
