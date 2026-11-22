@@ -8,6 +8,26 @@ until process isolation is proven (bu-mc01y5.7). The governing requirements are
 reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery) in
 `openspec/changes/confine-qa-publication-authority`.
 
+## Credentials and containment (bu-ejow5p.1)
+
+Investigator containment is **not enforced**: investigators run as root in the daemon's pod and
+process namespace, so every credential and environment value the daemon can read is reachable by
+them. The daemon therefore holds no GitHub write credential:
+
+- PR-status polling, the dashboard PR panel and the credential-status endpoint use only
+  `BUTLERS_QA_GH_READ_TOKEN` (fine-grained: Pull requests, Commit statuses and Metadata read).
+  Without it PR state stays `unknown`; it is never reported `closed`.
+- `BUTLERS_QA_GH_TOKEN` (write scope) is never resolved. If the key still exists in the secrets
+  store the QA module only checks its presence, logs and notifies once per patrol, and the
+  dashboard credential status shows `gh_write_token_present`.
+- Investigation dispatch receives no token at all.
+
+Owner steps (tracked in `bu-ejow5p.16`; no code change does them): provision the read-only token as
+`BUTLERS_QA_GH_READ_TOKEN`, delete `BUTLERS_QA_GH_TOKEN` from the secrets store and rotate that
+token. Re-adding the old key re-enables nothing, because no publisher exists.
+`scripts/qa_reconcile_publications.py` reads its token from the operator's own environment and is
+unaffected.
+
 ## Publisher architecture
 
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls

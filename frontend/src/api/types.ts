@@ -6572,6 +6572,7 @@ export interface QaSummary {
   };
   credentials_status: {
     gh_token_present: boolean | null;
+    gh_write_token_present?: boolean | null;
     git_author_name_present: boolean | null;
     git_author_email_present: boolean | null;
     provisioning_hint: string | null;

@@ -7,7 +7,7 @@ background sync (higher-risk), this module fetches PR lifecycle, CI status + dif
 in-process TTL cache keyed by ``(owner, repo, pr_number)``.
 
 Auth: a conventional GitHub token is resolved by the caller (CredentialStore
-``BUTLERS_QA_GH_TOKEN`` first, then ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the
+``BUTLERS_QA_GH_READ_TOKEN`` first, then ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the
 environment) and passed in. When no token is available — or GitHub is
 unreachable, rate-limited, or returns 401/403/404 — every accessor degrades
 gracefully to ``None`` fields. The dossier never breaks because GitHub is
