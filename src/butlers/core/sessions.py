@@ -20,6 +20,7 @@ import asyncpg
 from croniter import CroniterBadDateError, croniter
 
 from butlers.core import session_timing
+from butlers.core.tool_call_capture import MANUAL_DAY_CLOSE_TRIGGER_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,18 @@ def _is_valid_trigger_source(trigger_source: str) -> bool:
     - "qa"
     - "schedule:<task-name>" where task-name is any non-empty string
     - "deadline:<task-name>" where task-name is any non-empty string
+    - "api:day_close_refresh:<YYYY-MM-DD>", the Chronicler manual day-close refresh
+      (the tool policy in ``mcp_wrappers`` keys on this exact prefix); the suffix must be
+      a real calendar date, and no other ``api:`` source is accepted
     """
     if trigger_source in TRIGGER_SOURCES:
         return True
+    if trigger_source.startswith(MANUAL_DAY_CLOSE_TRIGGER_PREFIX):
+        suffix = trigger_source[len(MANUAL_DAY_CLOSE_TRIGGER_PREFIX) :]
+        try:
+            return len(suffix) == 10 and date.fromisoformat(suffix).isoformat() == suffix
+        except ValueError:
+            return False
     if trigger_source.startswith("schedule:") and len(trigger_source) > 9:
         return True
     if trigger_source.startswith("deadline:") and len(trigger_source) > 9:
@@ -235,7 +245,8 @@ async def session_create(
         trigger_source: What caused this session. Must be one of:
             ``"tick"``, ``"classification"``, ``"external"``, ``"trigger"``,
             ``"route"``, ``"healing"``, ``"dashboard"``,
-            ``"schedule:<task-name>"``, or ``"deadline:<task-name>"``.
+            ``"schedule:<task-name>"``, ``"deadline:<task-name>"``, or
+            ``"api:day_close_refresh:<YYYY-MM-DD>"``.
         trace_id: Optional OpenTelemetry trace ID for correlation.
         model: Optional model identifier used for this invocation.
         request_id: Required request ID for this session (UUIDv7 format).
@@ -279,7 +290,8 @@ async def session_create(
         raise ValueError(
             f"Invalid trigger_source {trigger_source!r}; must be 'tick', "
             f"'classification', 'external', 'trigger', 'route', 'healing', "
-            f"'dashboard', 'qa', 'schedule:<task-name>', or 'deadline:<task-name>'"
+            f"'dashboard', 'qa', 'schedule:<task-name>', 'deadline:<task-name>', "
+            f"or 'api:day_close_refresh:<YYYY-MM-DD>'"
         )
 
     receipt_values = (effective_system_prompt, prompt_digest, prompt_provenance)

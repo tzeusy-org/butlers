@@ -18,7 +18,8 @@ runtime adapter. Columns come from `core_001_foundation` plus later core migrati
 authoritative field list. Invariants:
 
 - **`trigger_source`** must be one of `TRIGGER_SOURCES` in `sessions.py`, or
-  `schedule:<task-name>` / `deadline:<task-name>`.
+  `schedule:<task-name>` / `deadline:<task-name>`, or the Chronicler manual refresh
+  `api:day_close_refresh:<YYYY-MM-DD>` (a real calendar date; no other `api:` source is accepted).
 - **`request_id`** is required: the ingestion UUIDv7 for connector traffic, freshly generated
   otherwise.
 - **`purpose_lane`** is a closed `standard` / `private_content` value taken from trusted routing or
