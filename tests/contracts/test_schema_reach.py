@@ -723,6 +723,26 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{source}>",
     ): "dynamic-review: closed memory-relation export source expanded per butler on its own pool",
     (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.budgets",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.effects",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.goal_outcomes",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.goals",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.invocations",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
         "src/butlers/api/routers/identity.py",
         "relationship.entity_facts",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",

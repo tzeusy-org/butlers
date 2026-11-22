@@ -212,6 +212,9 @@ OP GET /api/general/entities/{entity_id} 9889d2803a32
 OP GET /api/general/projects 49de71e1875b
 OP GET /api/general/projects/{project_id} 9fe8bd260b21
 OP GET /api/general/stats 1a5709ce3ef1
+OP GET /api/goals da7b15d239e2
+OP GET /api/goals/regions 98a61f85e7e0
+OP GET /api/goals/{goal_id} b6da13beebd4
 OP GET /api/healing/attempts 2cd5f66a765d
 OP GET /api/healing/attempts/{attempt_id} 2fff19aab7b1
 OP GET /api/healing/circuit-breaker 4bc615f5549c
@@ -926,6 +929,9 @@ ROUTE APIRoute GET '/api/general/entities/{entity_id}' name=get_entity op=get_en
 ROUTE APIRoute GET '/api/general/projects' name=list_projects op=list_projects_api_general_projects_get tags=general schema=True
 ROUTE APIRoute GET '/api/general/projects/{project_id}' name=get_project op=get_project_api_general_projects__project_id__get tags=general schema=True
 ROUTE APIRoute GET '/api/general/stats' name=get_stats op=get_stats_api_general_stats_get tags=general schema=True
+ROUTE APIRoute GET '/api/goals' name=list_goals op=list_goals_api_goals_get tags=goals schema=True
+ROUTE APIRoute GET '/api/goals/regions' name=region_summaries op=region_summaries_api_goals_regions_get tags=goals schema=True
+ROUTE APIRoute GET '/api/goals/{goal_id}' name=goal_detail op=goal_detail_api_goals__goal_id__get tags=goals schema=True
 ROUTE APIRoute GET '/api/healing/attempts' name=list_healing_attempts op=list_healing_attempts_api_healing_attempts_get tags=healing schema=True
 ROUTE APIRoute GET '/api/healing/attempts/{attempt_id}' name=get_healing_attempt op=get_healing_attempt_api_healing_attempts__attempt_id__get tags=healing schema=True
 ROUTE APIRoute GET '/api/healing/circuit-breaker' name=get_circuit_breaker_status op=get_circuit_breaker_status_api_healing_circuit_breaker_get tags=healing schema=True
@@ -1546,6 +1552,7 @@ SCHEMA ApiResponse_ForecastResponse_ ae84e3ab51d0
 SCHEMA ApiResponse_FrictionSummary_ 177d3e920d4e
 SCHEMA ApiResponse_GeneralSettingsResponse_ 6f64240f5d85
 SCHEMA ApiResponse_Glance_ bf01a7af7311
+SCHEMA ApiResponse_GoalDetail_ c491f0eea176
 SCHEMA ApiResponse_HeartbeatFacts_ ec165b10ebef
 SCHEMA ApiResponse_HourlyActivity_ bf207375eceb
 SCHEMA ApiResponse_IngestionEventDetail_ 27e8ae7b7efa
@@ -1602,6 +1609,7 @@ SCHEMA ApiResponse_QuickAddParseResponse_ 172814005008
 SCHEMA ApiResponse_ReauthorizeResponse_ c9d0599713dc
 SCHEMA ApiResponse_ReembedPendingCounts_ 32d416163287
 SCHEMA ApiResponse_ReembedRunResult_ 67e8c15d8dbd
+SCHEMA ApiResponse_RegionSummaries_ acffd531f3a2
 SCHEMA ApiResponse_ResolveModelResponse_ 0900e7f40eca
 SCHEMA ApiResponse_RollupsResponse_ 2676400e6354
 SCHEMA ApiResponse_RoutingInstruction_ d8300f7ab486
@@ -2087,6 +2095,13 @@ SCHEMA GeneralStats 80259c3a9a8e
 SCHEMA Glance 219342903f13
 SCHEMA GlanceCoverage b6215d9a0136
 SCHEMA GlanceTopItem 591a6ef49f3e
+SCHEMA GoalApprovalLineage f164ea869d73
+SCHEMA GoalBudget 5cccf2e12844
+SCHEMA GoalDetail 7240d8141c5b
+SCHEMA GoalEffect 29e8d69e4dc1
+SCHEMA GoalInvocation c5bf1d5a767a
+SCHEMA GoalOutcome 7aae60b0fa1e
+SCHEMA GoalSummary 4234fc90c6f2
 SCHEMA GoogleAccountResponse dc27b80e012d
 SCHEMA GoogleAccountStatus 94d21c5e38cd
 SCHEMA GoogleCredentialStatusResponse b33490003982
@@ -2274,6 +2289,7 @@ SCHEMA Page_CaptureStatus_ 71149e250264
 SCHEMA Page_DoorView_ 7c8d059923a7
 SCHEMA Page_EntityFactEntry_ 11ad68f8a95a
 SCHEMA Page_FleetCaseSummary_ 594f7698dd4e
+SCHEMA Page_GoalSummary_ 43aff081123a
 SCHEMA Page_IngestionEventSummary_ 307e0f0b28bc
 SCHEMA Page_MemoryGap_ 32385070b1b5
 SCHEMA Page_MessageSearchResult_ f178406171a6
@@ -2417,6 +2433,10 @@ SCHEMA ReauthorizeResponse 8e2463297818
 SCHEMA ReembedPendingCounts 417988560886
 SCHEMA ReembedRunRequest 76c41a45f346
 SCHEMA ReembedRunResult 133de3befd50
+SCHEMA RegionGoal cc57e5f829cc
+SCHEMA RegionObligation 7cbecba326dc
+SCHEMA RegionSummaries b9d7a35bb816
+SCHEMA RegionSummary 88f8cd23bf7f
 SCHEMA RegistryEntry 9bf0c2911a51
 SCHEMA RemoveGroupLabelResponse b4cca6cd392c
 SCHEMA ReplayHistoryEntry 549f42ff9bea
