@@ -161,3 +161,38 @@ async def test_an_empty_result_is_uncertain_not_delivered(monkeypatch, routing) 
     monkeypatch.setattr(routing, "_call_tool_with_router_client", call_tool)
     with pytest.raises(routing.TransportUncertain):
         await wiring.relay_call_fn(routing)("http://t/mcp", "memory_get_service", dict(_ARGS))
+
+
+@pytest.mark.parametrize("named", [False, True], ids=["legacy", "named"])
+async def test_switchboard_wraps_the_travel_medication_snapshot(
+    monkeypatch, routing, named
+) -> None:
+    snapshot = {
+        "schema_version": "health.medication-travel.v1",
+        "status": "ok",
+        "medications": [],
+        "error": None,
+    }
+    tool_name = "medication_travel_snapshot_service" if named else "medication_travel_snapshot"
+    server = FastMCP("health")
+
+    @server.tool(name=tool_name)
+    def medication_snapshot() -> dict[str, Any]:
+        return snapshot
+
+    sent = _connect(monkeypatch, routing, server)
+    if named:
+        endpoint = RelayEndpoint(
+            name="medication.travel_snapshot",
+            allowed_callers=frozenset(),
+            target_butlers=frozenset({"health"}),
+            target_tool=tool_name,
+            args_model=BaseModel,
+        )
+        result = await wiring.relay_dispatch("POOL", endpoint)("health", tool_name, {})
+    else:
+        result = await routing.route("POOL", "health", tool_name, {}, source_butler="travel")
+
+    assert result["transport"]["outcome"] == "confirmed"
+    assert result["result"] == {"data": snapshot, "is_error": False}
+    assert sent == [{}]

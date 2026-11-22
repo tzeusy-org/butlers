@@ -743,6 +743,13 @@ async def route(
                 telemetry=telemetry,
                 metric_base_attrs=metric_base_attrs,
             )
+            # The two Travel snapshot entry points expect the MCP result
+            # wrapper around Health's unwrapped, JSON-decoded payload.
+            if target_butler == "health" and (source_butler, tool_name) in {
+                ("travel", "medication_travel_snapshot"),
+                ("relay:medication.travel_snapshot", "medication_travel_snapshot_service"),
+            }:
+                result = {"data": result, "is_error": False}
             return {"result": result, "transport": CONFIRMED.as_dict()}
 
 
