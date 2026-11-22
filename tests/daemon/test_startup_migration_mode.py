@@ -9,7 +9,7 @@ Unset (or ``run``) keeps today's behaviour exactly.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,9 +24,13 @@ class _Module:
         self.name = name
 
 
+class _Migrated(Exception):
+    """Raised where the real ``run_migrations`` would start touching the database."""
+
+
 def _daemon() -> SimpleNamespace:
     daemon = SimpleNamespace(
-        config=SimpleNamespace(name="general", db_schema="general"),
+        config=SimpleNamespace(name="switchboard", db_schema="switchboard"),
         _build_db_url=lambda: "postgresql://runtime@db/butlers",
         _modules=[_Module("memory")],
         _module_statuses={},
@@ -37,16 +41,30 @@ def _daemon() -> SimpleNamespace:
 
 
 @pytest.fixture
-def chains(monkeypatch: pytest.MonkeyPatch) -> tuple[AsyncMock, MagicMock]:
-    run = AsyncMock()
-    check = MagicMock()
-    monkeypatch.setattr(lifecycle, "run_migrations", run)
-    monkeypatch.setattr(lifecycle, "check_chain_at_head", check)
-    monkeypatch.setattr(lifecycle, "has_butler_chain", lambda name: True)
+def catalog(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Fake chain heads and version-table rows inside ``butlers.migrations`` only.
+
+    The lifecycle itself is never patched (scripts/check_test_boot_patches.py): the real
+    ``run_migrations`` stops at its first database step, and the real
+    ``check_chain_at_head`` reads these fakes.
+    """
+    state: dict = {"applied": {"core_head", "switchboard_head", "memory_head"}, "reads": []}
+
+    def migrated(db_url: str) -> None:
+        raise _Migrated
+
+    def applied(db_url: str, schema: str | None) -> set[str]:
+        state["reads"].append(schema)
+        return set(state["applied"])
+
+    monkeypatch.setattr(migrations, "check_bootstrap_database", migrated)
     monkeypatch.setattr(
-        lifecycle, "get_module_migration_chains", lambda modules, name: {"memory": "memory"}
+        migrations,
+        "_chain_heads",
+        lambda chain, chain_dir: ((f"{chain}_head",), frozenset({f"{chain}_old", f"{chain}_head"})),
     )
-    return run, check
+    monkeypatch.setattr(migrations, "_applied_revisions", applied)
+    return state
 
 
 async def _start(daemon: SimpleNamespace) -> None:
@@ -56,54 +74,42 @@ async def _start(daemon: SimpleNamespace) -> None:
 
 
 @pytest.mark.parametrize("value", [None, "", "run", " run "])
-async def test_default_runs_every_chain_and_never_checks(
-    monkeypatch: pytest.MonkeyPatch, chains, value: str | None
+async def test_default_migrates_as_before(
+    monkeypatch: pytest.MonkeyPatch, catalog: dict, value: str | None
 ) -> None:
     if value is None:
         monkeypatch.delenv(lifecycle.STARTUP_MIGRATIONS_ENV, raising=False)
     else:
         monkeypatch.setenv(lifecycle.STARTUP_MIGRATIONS_ENV, value)
-    run, check = chains
-    await _start(_daemon())
-    assert [c.kwargs["chain"] for c in run.await_args_list] == ["core", "general", "memory"]
-    check.assert_not_called()
+    with pytest.raises(_Migrated):
+        await _start(_daemon())
+    assert catalog["reads"] == []
 
 
-async def test_check_mode_checks_every_chain_and_never_migrates(
-    monkeypatch: pytest.MonkeyPatch, chains
+async def test_check_mode_reads_every_chain_and_never_migrates(
+    monkeypatch: pytest.MonkeyPatch, catalog: dict
 ) -> None:
     monkeypatch.setenv(lifecycle.STARTUP_MIGRATIONS_ENV, "check")
-    run, check = chains
-    await _start(_daemon())
-    run.assert_not_awaited()
-    assert [(c.args[1], c.args[2]) for c in check.call_args_list] == [
-        ("core", "general"),
-        ("general", "general"),
-        ("memory", "general"),
-    ]
+    daemon = _daemon()
+    await _start(daemon)
+    assert catalog["reads"] == ["switchboard", "switchboard", "switchboard"]
+    assert daemon._module_statuses == {}
 
 
 async def test_check_mode_refuses_to_start_when_core_is_behind(
-    monkeypatch: pytest.MonkeyPatch, chains
+    monkeypatch: pytest.MonkeyPatch, catalog: dict
 ) -> None:
     monkeypatch.setenv(lifecycle.STARTUP_MIGRATIONS_ENV, "check")
-    _run, check = chains
-    check.side_effect = MigrationsNotAtHeadError("core", "general", ["core_001"], ["core_002"])
+    catalog["applied"] = {"core_old", "switchboard_head", "memory_head"}
     with pytest.raises(MigrationsNotAtHeadError, match="core.*not at head"):
         await _start(_daemon())
 
 
 async def test_check_mode_disables_only_a_module_that_is_behind(
-    monkeypatch: pytest.MonkeyPatch, chains
+    monkeypatch: pytest.MonkeyPatch, catalog: dict
 ) -> None:
     monkeypatch.setenv(lifecycle.STARTUP_MIGRATIONS_ENV, "check")
-    _run, check = chains
-
-    def behind_memory(db_url: str, chain: str, schema: str | None) -> None:
-        if chain == "memory":
-            raise MigrationsNotAtHeadError("memory", schema, [], ["mem_010"])
-
-    check.side_effect = behind_memory
+    catalog["applied"] = {"core_head", "switchboard_head"}
     daemon = _daemon()
     await _start(daemon)
     status = daemon._module_statuses["memory"]
@@ -111,13 +117,13 @@ async def test_check_mode_disables_only_a_module_that_is_behind(
     assert "not at head" in status.error
 
 
-async def test_an_unknown_mode_refuses_to_start(monkeypatch: pytest.MonkeyPatch, chains) -> None:
+async def test_an_unknown_mode_refuses_to_start(
+    monkeypatch: pytest.MonkeyPatch, catalog: dict
+) -> None:
     monkeypatch.setenv(lifecycle.STARTUP_MIGRATIONS_ENV, "skip")
-    run, check = chains
     with pytest.raises(ValueError, match="BUTLERS_STARTUP_MIGRATIONS"):
         await _start(_daemon())
-    run.assert_not_awaited()
-    check.assert_not_called()
+    assert catalog["reads"] == []
 
 
 def _heads(monkeypatch: pytest.MonkeyPatch, applied: set[str] | None, heads=("core_002",)):
