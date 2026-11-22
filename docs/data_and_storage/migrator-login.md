@@ -62,8 +62,9 @@ their configured migration role in a `bootstrap_configuration` singleton and ref
 replay that names a different one ("bootstrap configuration differs"):
 `dashboard_attention`, `dashboard_stepup`, `dnd_generation_admin`, `perception_admin`,
 `restore_drill_executor_admin` and `runtime_attention_admin`. The runtime-attention
-upgrades also require that role. Once the transfer runs, any init-db replay refuses,
-whichever login it names. So steps 3 and 4 wait for the bunker-deletion slice, or for an
+upgrades also require that role. Once the transfer runs, a replay that names the shared
+login is expected to refuse as well, because the `insight_amendments` owner preflight only
+accepts the configured login; this case is untested. So steps 3 and 4 wait for the bunker-deletion slice, or for an
 explicit migration-role rotation there.
 
 **Also not yet activatable.** The daemons still run their Alembic chains at startup as the
