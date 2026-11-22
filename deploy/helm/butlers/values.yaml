@@ -40,6 +40,14 @@ database:
   # the step fails (fail-closed when true, ignored when false) so enable it only after
   # the chart's image tag includes that command.
   applyGrants: false
+  # bu-dss7he.6 S3: when true the migrations initContainer connects as the dedicated
+  # migrator login (externalSecrets.migratorData) instead of the shared runtime login;
+  # every other container keeps the shared login. Off by default. Enable only after the
+  # owner steps in docs/data_and_storage/migrator-login.md: the login exists, its BWS keys
+  # exist, and `butlers db transfer-ownership --execute` plus an init-db.sql replay with
+  # butlers.connecting_user set to the migrator have run.
+  migratorLogin:
+    enabled: false
 
 # Bitwarden Secrets Manager -> Secret `<release>-bws` via External Secrets.
 # Map of env var name -> BWS secret key. Only these keys are synced; the BWS
@@ -52,6 +60,11 @@ externalSecrets:
     POSTGRES_USER: BUTLERS_RUNTIME_DB_USER
     POSTGRES_PASSWORD: BUTLERS_RUNTIME_DB_PASSWORD
     DASHBOARD_AUTH_DB_PASSWORD: BUTLERS_RUNTIME_DASHBOARD_AUTH_DB_PASSWORD
+  # Synced into the same Secret only when database.migratorLogin.enabled (bu-dss7he.21
+  # provisions these keys and the butlers_migrator login they name).
+  migratorData:
+    MIGRATOR_POSTGRES_USER: BUTLERS_RUNTIME_MIGRATOR_DB_USER
+    MIGRATOR_POSTGRES_PASSWORD: BUTLERS_RUNTIME_MIGRATOR_DB_PASSWORD
   # Used only when localSecrets.source=bws: BWS key names (never values) for the
   # two Secrets below. Each key is listed explicitly; nothing is wildcard-synced.
   runtimeProbeControl:
