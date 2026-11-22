@@ -288,11 +288,15 @@ def _leg_insert_fields(
         _nonblank_text(payload.get("carrier")) or _nonblank_text(payload.get("provider")),
         _nonblank_text(payload.get("departure_airport_station"))
         or _nonblank_text(payload.get("departure")),
-        _nonblank_text(payload.get("departure_city")),
+        _nonblank_text(payload.get("departure_city"))
+        or _nonblank_text(payload.get("departure_airport_station"))
+        or _nonblank_text(payload.get("departure")),
         departure_at,
         _nonblank_text(payload.get("arrival_airport_station"))
         or _nonblank_text(payload.get("arrival")),
-        _nonblank_text(payload.get("arrival_city")),
+        _nonblank_text(payload.get("arrival_city"))
+        or _nonblank_text(payload.get("arrival_airport_station"))
+        or _nonblank_text(payload.get("arrival")),
         arrival_at,
         _nonblank_text(payload.get("confirmation_number")),
         meta,
@@ -343,6 +347,22 @@ def _validate_leg_payload(payload: dict[str, Any]) -> None:
         json.dumps(fields[9])
     except (TypeError, ValueError) as exc:
         raise ValueError("record_booking: leg metadata must be JSON-serializable") from exc
+
+
+def _apply_leg_city_fallback(row: Any, updates: dict[str, Any], prior: dict[str, Any]) -> None:
+    """Keep leg endpoints named: a blank city falls back to its airport/station.
+
+    Mutates ``updates``/``prior`` in place. A real city is never replaced by a code.
+    """
+    for side in ("departure", "arrival"):
+        city_key, station_key = f"{side}_city", f"{side}_airport_station"
+        station = _nonblank_text(updates.get(station_key, row[station_key]))
+        if city_key in updates:
+            if _nonblank_text(updates[city_key]) is None:
+                updates[city_key] = station
+        elif station_key in updates and _nonblank_text(row[city_key]) is None and station:
+            prior[city_key] = row[city_key]
+            updates[city_key] = station
 
 
 async def _insert_leg_by_segment(
@@ -401,12 +421,16 @@ async def _insert_leg_by_segment(
             departure_airport_station = COALESCE(
                 EXCLUDED.departure_airport_station, travel.legs.departure_airport_station
             ),
-            departure_city = COALESCE(EXCLUDED.departure_city, travel.legs.departure_city),
+            departure_city = COALESCE(
+                $17, NULLIF(btrim(travel.legs.departure_city), ''), EXCLUDED.departure_city
+            ),
             departure_at = travel.legs.departure_at,
             arrival_airport_station = COALESCE(
                 EXCLUDED.arrival_airport_station, travel.legs.arrival_airport_station
             ),
-            arrival_city = COALESCE(EXCLUDED.arrival_city, travel.legs.arrival_city),
+            arrival_city = COALESCE(
+                $18, NULLIF(btrim(travel.legs.arrival_city), ''), EXCLUDED.arrival_city
+            ),
             arrival_at = travel.legs.arrival_at,
             confirmation_number = COALESCE(
                 EXCLUDED.confirmation_number, travel.legs.confirmation_number
@@ -433,6 +457,8 @@ async def _insert_leg_by_segment(
         booking_record_id,
         segment_index,
         _nonblank_text(payload.get("carrier")),
+        _nonblank_text(payload.get("departure_city")),
+        _nonblank_text(payload.get("arrival_city")),
     )
     entity_id = str(row["id"])
     created = bool(row["inserted"])
@@ -1552,6 +1578,9 @@ async def update_itinerary(
                     if field in dt_fields:
                         new_val = _normalize_datetime(new_val)
                     entity_updates[field] = new_val
+
+                if entity_type == "leg":
+                    _apply_leg_city_fallback(entity_row, entity_updates, entity_prior)
 
                 if entity_updates:
                     entity_meta_raw = entity_row["metadata"]
