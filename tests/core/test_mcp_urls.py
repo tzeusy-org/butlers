@@ -128,6 +128,27 @@ def test_resolve_cross_container_mcp_url_uses_configured_switchboard_tls(monkeyp
     )
 
 
+def test_health_service_tls_upgrades_only_cross_container_health(monkeypatch):
+    monkeypatch.setenv("HEALTH_MCP_URL", "https://butlers-up:41103/sse")
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41103/mcp")
+        == "https://butlers-up:41103/mcp"
+    )
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41104/mcp")
+        == "http://butlers-up:41104/mcp"
+    )
+    monkeypatch.setenv("HEALTH_MCP_URL", "https://other-service:41103/sse")
+    with pytest.raises(ValueError, match="HEALTH_MCP_URL"):
+        resolve_cross_container_mcp_url("http://localhost:41103/mcp")
+    monkeypatch.delenv("BUTLERS_HOST")
+    assert (
+        resolve_cross_container_mcp_url("http://localhost:41103/mcp")
+        == "http://localhost:41103/mcp"
+    )
+
+
 def test_resolve_cross_container_mcp_url_noop_when_butlers_host_unset(monkeypatch):
     """Inside butlers-up itself (or any test env) BUTLERS_HOST is unset, so
     every daemon-to-daemon call keeps its bare localhost URL unchanged."""

@@ -20,6 +20,9 @@ spec:
     spec:
       {{- $egress := dict "root" . "component" "dashboard-api" }}
       {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
+      {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+      serviceAccountName: dashboard-api
+      {{- end }}
       {{- include "butlers.hostServedNodeSelector" . | nindent 6 }}
       initContainers:
         - name: migrations
@@ -59,6 +62,7 @@ spec:
             {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
             - {name: BUTLERS_HOST, value: butlers-up}
             {{- include "butlers.switchboardClientEnv" . | nindent 12 }}
+            {{- with (include "butlers.healthClientEnv" .) }}{{ . | nindent 12 }}{{- end }}
             {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_BACKUP_DIR, value: /backups}
@@ -126,6 +130,10 @@ spec:
             {{- end }}
           volumeMounts:
             {{- with (include "butlers.switchboardCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.healthCAMount" .) }}{{ . | nindent 12 }}{{- end }}
+            {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+            - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
+            {{- end }}
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
             - {name: backups, mountPath: /backups, readOnly: true}
@@ -137,6 +145,13 @@ spec:
         {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
         {{- with (include "butlers.switchboardCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- with (include "butlers.healthCAVolume" .) }}{{ . | nindent 8 }}{{- end }}
+        {{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+        - name: workload-token
+          projected:
+            sources:
+              {{- include "butlers.healthPeerTokenSource" . | nindent 14 }}
+        {{- end }}
         {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge

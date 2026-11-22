@@ -65,10 +65,18 @@ deployment. A source render does not prove this transition has happened.
 Google Health's `waitForHealthRoutes: true` adds `wait-for-health-routes` after its
 existing `oauth-gate` and Switchboard `wait-for-butlers-up` init containers. It
 uses the application image's `scripts/wait_for_butler_routes.py` to poll
-`http://butlers-up:41103/internal/control-plane/identity`. Health stays on
-`butlers-up` when `butlersControl.enabled` splits Switchboard into
-`butlers-control`; the existing Switchboard gate follows that split as before.
-Other connectors retain their existing startup gates.
+`http://butlers-up:41103/internal/control-plane/identity` by default. Health
+stays on `butlers-up` when `butlersControl.enabled` splits Switchboard into
+`butlers-control`. The existing Switchboard gate follows that split, and other
+connectors retain their startup gates.
+
+In the split deployment with service-plane authentication, setting
+`servicePlaneAuth.healthTLS.enabled: true` changes the Google Health probe to
+`https://butlers-up:41103/internal/control-plane/identity`. The init container
+verifies the Health certificate and the `butlers-up` DNS name over TLS 1.3
+using the CA mounted at `/var/run/butlers-health-ca/ca.crt` from the configured
+Health CA ConfigMap. Missing or invalid trust material or a certificate that
+fails verification keeps polling stopped.
 
 HTTP 200 alone cannot release polling. The response must identify schema
 `butler.control.v1` and butler `health`, have an exact integer positive

@@ -1046,23 +1046,23 @@
   },
   "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 98,
+    "direct": 103,
     "direct_files": 42,
-    "container": 122,
+    "container": 128,
     "supplementary": 45,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 66,
       "NON_NAME_ENUM_OR_MODULE": 32,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 46,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 40,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
       "SCHEMA_OWNERSHIP": 14
     },
     "direct_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
       "NON_NAME_ENUM_OR_MODULE": 7,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 29,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
-      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
       "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
       "SCHEMA_OWNERSHIP": 8
     }
@@ -1187,6 +1187,28 @@
       ],
       "reason": "Retained selector and category; line offsets are informational and do not change identity.",
       "public_source_commit": "cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46"
+    },
+    {
+      "id": "b16a7f7ddf35df6bc9fb393677447cb406642161bdf00c986a0ff03d1c74adf5",
+      "path": "src/butlers/api/deps.py",
+      "symbol": "DashboardButlerClient.call_tool_mcp",
+      "kind": "compare",
+      "expression": "self.butler_name == 'health'",
+      "occurrence": 1,
+      "line": 168,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Scope the protected direct call to the registered Health service twin.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Travel Medication Snapshot MCP Provider"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "The Dashboard still classifies the call before choosing its existing direct path and sends Health credentials only for that service tool.",
+      "public_source_commit": null
     },
     {
       "id": "a48de3e01158f0dc34925ddbaacc5135cc8e5b85df8538d14ca0d228b2f1eab5",
@@ -4378,6 +4400,50 @@
       "symbol": "_prepare_chronicler_memory"
     },
     {
+      "id": "603c60919f79402e3332d7cd37bcf0ad6a2a53f92bf783f29989265babacfe9a",
+      "path": "src/butlers/cli.py",
+      "symbol": "up",
+      "kind": "compare",
+      "expression": "'health' not in configs",
+      "occurrence": 1,
+      "line": 131,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Require Health to be present when its listener TLS options are set.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Health Butler Identity and Runtime"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Opt-in settings cannot configure an absent daemon or another service.",
+      "public_source_commit": null
+    },
+    {
+      "id": "c162c6c35bde8bdfe8faf6eb39313c2df18b993b5ce6bc300ec1f40fc1dc7b79",
+      "path": "src/butlers/cli.py",
+      "symbol": "_start_all",
+      "kind": "compare",
+      "expression": "name == 'health'",
+      "occurrence": 1,
+      "line": 1441,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Pass Health listener TLS settings only to the Health daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Health Butler Identity and Runtime"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Each other daemon retains its separately configured listener and authority.",
+      "public_source_commit": null
+    },
+    {
       "id": "aa2338aae8ba30b5c5fb4bd3b74f9e8c8db9c6575fce7d5a60ce726794ba3a0d",
       "path": "src/butlers/migrations/__init__.py",
       "symbol": "run_migrations",
@@ -5061,6 +5127,72 @@
       ],
       "baseline_ids": [],
       "public_source_commit": "5003c289cc"
+    },
+    {
+      "id": "c6bdcd14f126c8280db47508a01cbd58e74ba09c514184031410b1d2a4078828",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon.__init__",
+      "kind": "compare",
+      "expression": "configured_name != 'health'",
+      "occurrence": 1,
+      "line": 265,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Permit domain Service TLS only for the Health daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Health Butler Identity and Runtime"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "The existing Switchboard control-profile requirement remains fixed. Service listener material can be used only for its configured recipient.",
+      "public_source_commit": null
+    },
+    {
+      "id": "0aa17408651a1e3f842d3a697b017ab74c9193d0f278eb3c719999266dabf74a",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._start_mcp_server",
+      "kind": "compare",
+      "expression": "self.config.name == 'health'",
+      "occurrence": 1,
+      "line": 634,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Apply Health workload admission only on the opted-in Health listener.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Travel Medication Snapshot MCP Provider"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "The listener identity scopes the medication admission middleware and holds the existing loopback behavior.",
+      "public_source_commit": null
+    },
+    {
+      "id": "fdb0865e1f30dd71c7f333deb44b23d6c112a9d2a652c884a12a84d52f378bae",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._service_listener_tls",
+      "kind": "compare",
+      "expression": "(config.name, config.port) != ('health', 41103)",
+      "occurrence": 1,
+      "line": 834,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Bind the Health certificate only to the canonical Health listener on TCP 41103.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-health/spec.md",
+          "requirement": "Health Butler Identity and Runtime"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "The fixed daemon and port identify the certificate recipient. Switchboard retains its existing exact 41100 selection.",
+      "public_source_commit": null
     },
     {
       "id": "be6567eefe7eda008b5511eee4898d2460aaae662dd50828869a2ef9618dd998",

@@ -1,6 +1,8 @@
 """Tests for the CLI commands."""
 
 import logging
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from click.testing import CliRunner
@@ -313,6 +315,35 @@ class TestChroniclerMemoryPreparation:
 
 
 class TestUpCommand:
+    @pytest.mark.parametrize("service_auth", ["0", "1"])
+    def test_up_requires_service_auth_for_health_tls(
+        self, runner, tmp_path, monkeypatch, service_auth
+    ):
+        start = AsyncMock()
+        monkeypatch.setattr("butlers.cli._start_all", start)
+        monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", service_auth)
+        result = runner.invoke(
+            cli,
+            [
+                "up",
+                "--only",
+                "health",
+                "--health-tls-dir",
+                str(tmp_path),
+                "--health-tls-bind",
+                "192.0.2.80",
+            ],
+        )
+        if service_auth == "1":
+            assert result.exit_code == 0, result.exception
+            start.assert_awaited_once_with(
+                {"health": Path("roster/health")}, health_tls=(tmp_path, "192.0.2.80")
+            )
+        else:
+            assert result.exit_code != 0
+            assert "requires BUTLERS_SERVICE_PLANE_AUTH=1" in result.output
+            start.assert_not_awaited()
+
     def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
         """up fails with no configs and with nonexistent --only target."""
         empty = tmp_path / "empty"

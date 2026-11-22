@@ -14,7 +14,13 @@ from fastmcp.client.transports import SSETransport, StreamableHttpTransport
 from butlers.core import fact_authority
 from butlers.core.control_plane_identity import ExpectedDaemon, ProbeOutcome
 from butlers.core.service_plane.client import RelayUnavailable, call_relay
-from butlers.core.switchboard_tls import switchboard_http_options, switchboard_mcp_transport
+from butlers.core.switchboard_tls import (
+    health_http_options,
+    internal_service_http_options,
+    internal_service_mcp_transport,
+    switchboard_http_options,
+    switchboard_mcp_transport,
+)
 from butlers.tools.switchboard.registry.registry import ControlPlaneTargetDecision
 
 ORIGIN = "https://butlers-control:41100"
@@ -36,6 +42,40 @@ def test_ca_is_scoped_to_the_configured_origin(switchboard_ca: None) -> None:
     assert options["trust_env"] is False
     assert switchboard_http_options("http://butlers-up:41101/mcp") == {}
     assert list(switchboard_http_options()["mounts"]) == [ORIGIN]
+
+
+async def test_health_trust_does_not_change_a_sibling_service(
+    switchboard_ca: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    health = "https://butlers-up:41103"
+    monkeypatch.setenv("HEALTH_MCP_URL", f"{health}/sse")
+    monkeypatch.setenv("BUTLERS_HEALTH_CA_FILE", certifi.where())
+    assert set(internal_service_http_options()["mounts"]) == {ORIGIN, health}
+    assert internal_service_http_options("http://butlers-up:41102/mcp") == {}
+    assert internal_service_http_options("http://localhost:41103/mcp") == {}
+    with pytest.raises(httpx.RequestError, match="Health TLS configuration"):
+        health_http_options("http://butlers-up:41103/mcp", require_origin=True)
+    with pytest.raises(httpx.RequestError, match="Health TLS configuration"):
+        health_http_options("https://butlers-up:41102/mcp", require_origin=True)
+    transport = internal_service_mcp_transport(f"{health}/sse")
+    assert isinstance(transport, SSETransport)
+    async with transport.httpx_client_factory(follow_redirects=True) as client:
+        assert not client.follow_redirects
+        assert not client.trust_env
+
+
+@pytest.mark.parametrize("missing", ["HEALTH_MCP_URL", "BUTLERS_HEALTH_CA_FILE"])
+def test_partial_health_configuration_refuses_only_health_peers(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    health = "https://butlers-up:41103/mcp"
+    monkeypatch.setenv("HEALTH_MCP_URL", health)
+    monkeypatch.setenv("BUTLERS_HEALTH_CA_FILE", certifi.where())
+    monkeypatch.delenv(missing)
+    assert internal_service_http_options("http://127.0.0.1:41103/mcp") == {}
+    assert internal_service_http_options("http://butlers-up:41101/mcp") == {}
+    with pytest.raises(httpx.RequestError, match="Health TLS configuration is incomplete"):
+        internal_service_http_options(health)
 
 
 @pytest.mark.parametrize(

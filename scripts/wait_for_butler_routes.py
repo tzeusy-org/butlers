@@ -11,7 +11,10 @@ import argparse
 import asyncio
 import json
 import math
+import ssl
 import sys
+from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -48,15 +51,32 @@ async def wait_for_routes(
     url: str,
     butler: str,
     *,
+    ca_file: Path | None = None,
     timeout_seconds: float = 300,
     interval_seconds: float = 5,
     request_timeout_seconds: float = 5,
 ) -> bool:
     """Observe readiness within finite whole-request and overall deadlines."""
+    verify: ssl.SSLContext | bool = True
+    try:
+        scheme = urlsplit(url).scheme
+        if scheme not in {"http", "https"} or (scheme == "https") != (ca_file is not None):
+            raise ValueError("invalid route gate transport")
+        if ca_file is not None:
+            verify = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            verify.minimum_version = ssl.TLSVersion.TLSv1_3
+            verify.hostname_checks_common_name = False
+            verify.load_verify_locations(cafile=ca_file)
+    except (OSError, ValueError):
+        print("route-gate: invalid transport configuration", file=sys.stderr, flush=True)
+        return False
+
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     try:
         async with asyncio.timeout(timeout_seconds):
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+            async with httpx.AsyncClient(
+                verify=verify, trust_env=False, follow_redirects=False
+            ) as client:
                 while True:
                     remaining = deadline - asyncio.get_running_loop().time()
                     if remaining <= 0:
@@ -96,6 +116,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--butler", required=True)
+    parser.add_argument("--ca-file", type=Path, help="Trusted CA for the HTTPS identity endpoint")
     parser.add_argument("--timeout-seconds", type=_positive_seconds, default=300)
     parser.add_argument("--interval-seconds", type=_positive_seconds, default=5)
     parser.add_argument("--request-timeout-seconds", type=_positive_seconds, default=5)
@@ -104,6 +125,7 @@ def main() -> int:
         wait_for_routes(
             args.url,
             args.butler,
+            ca_file=args.ca_file,
             timeout_seconds=args.timeout_seconds,
             interval_seconds=args.interval_seconds,
             request_timeout_seconds=args.request_timeout_seconds,

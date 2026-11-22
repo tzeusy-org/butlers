@@ -285,6 +285,48 @@
         "dashboard-api"
       ]
     },
+    "deploy/helm/butlers/templates/_helpers.tpl::<deployment-scalar>::deployment::ee491987b9da58c688e1db93eb72be3224f2b81beb6a09565baed204157b5add": {
+      "class": "internal",
+      "observed": {
+        "authorities": [
+          "butlers-up:41103"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "deploy/helm/butlers/templates/_helpers.tpl",
+        "scope": "<deployment-scalar>",
+        "sha256": "ee491987b9da58c688e1db93eb72be3224f2b81beb6a09565baed204157b5add"
+      },
+      "reason": "Opt-in Health service origin on the existing internal port for Switchboard, Dashboard, and the Google Health startup gate.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-control",
+        "dashboard-api",
+        "connector-google-health"
+      ]
+    },
+    "deploy/helm/butlers/templates/_helpers.tpl::<deployment-scalar>::deployment::ef54d0890945432264b2061bd6cf393e55f9c0417d78695e9b0c28247528556e": {
+      "class": "internal",
+      "observed": {
+        "authorities": [
+          "butlers-up:41103"
+        ],
+        "config": null,
+        "count": 1,
+        "kind": "deployment",
+        "path": "deploy/helm/butlers/templates/_helpers.tpl",
+        "scope": "<deployment-scalar>",
+        "sha256": "ef54d0890945432264b2061bd6cf393e55f9c0417d78695e9b0c28247528556e"
+      },
+      "reason": "Default Google Health startup gate reads the existing internal Health identity endpoint before polling.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "connector-google-health"
+      ]
+    },
     "deploy/helm/butlers/templates/butlers-control.yaml::<deployment-scalar>::deployment::4195acaf13cee2453c5a49fc33b5b2e67b888449834d5c387ecff0ba20f62d26": {
       "class": "internal",
       "observed": {
@@ -411,36 +453,6 @@
         "path": "deploy/helm/butlers/templates/connectors.yaml",
         "scope": "<deployment-scalar>",
         "sha256": "f8eeb89dfc3b65a428dcaf9849f0c4eb50c1077c443305d51d790ad156937fa0"
-      },
-      "reason": "Helm-owned local/service URL or templated internal identity; workload reachability is bounded by the chart, not an external gateway grant.",
-      "resolver": null,
-      "sites": [],
-      "workloads": [
-        "connector-telegram-bot",
-        "connector-whatsapp-user",
-        "connector-google-calendar",
-        "connector-spotify",
-        "connector-steam",
-        "connector-owntracks",
-        "connector-activitywatch",
-        "connector-home-assistant",
-        "connector-gmail",
-        "connector-google-drive",
-        "connector-google-health"
-      ]
-    },
-    "deploy/helm/butlers/templates/connectors.yaml::<deployment-scalar>::deployment::ffedd11356468134821665c24de7e518b430bc5aabe819309498cad70cbef666": {
-      "class": "internal",
-      "observed": {
-        "authorities": [
-          "butlers-up:41103"
-        ],
-        "config": null,
-        "count": 1,
-        "kind": "deployment",
-        "path": "deploy/helm/butlers/templates/connectors.yaml",
-        "scope": "<deployment-scalar>",
-        "sha256": "ffedd11356468134821665c24de7e518b430bc5aabe819309498cad70cbef666"
       },
       "reason": "Helm-owned local/service URL or templated internal identity; workload reachability is bounded by the chart, not an external gateway grant.",
       "resolver": null,
@@ -4320,6 +4332,26 @@
         "butlers-up"
       ]
     },
+    "src/butlers/core/mcp_urls.py::resolve_cross_container_mcp_url::config::c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0": {
+      "class": "internal",
+      "observed": {
+        "authorities": [],
+        "config": "HEALTH_MCP_URL",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/core/mcp_urls.py",
+        "scope": "resolve_cross_container_mcp_url",
+        "sha256": "c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0"
+      },
+      "reason": "The Health override keeps the configured butlers-up Service and exact port 41103 for registered cross-container MCP; native runtime uses loopback.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up",
+        "butlers-control",
+        "dashboard-api"
+      ]
+    },
     "src/butlers/core/mcp_urls.py::runtime_mcp_url::url::8c8dac95aa0a16cdc1d9219faf6edef368449abe8bc11404601ca000013efe9d": {
       "class": "reference",
       "observed": {
@@ -4674,6 +4706,26 @@
       "sites": [],
       "workloads": [
         "butlers-up"
+      ]
+    },
+    "src/butlers/core/switchboard_tls.py::health_http_options::config::c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0": {
+      "class": "internal",
+      "observed": {
+        "authorities": [],
+        "config": "HEALTH_MCP_URL",
+        "count": 1,
+        "kind": "config",
+        "path": "src/butlers/core/switchboard_tls.py",
+        "scope": "health_http_options",
+        "sha256": "c2113817167f782523d58346e9aba07fce8a643c7ca96aa6278a7b38e77e3db0"
+      },
+      "reason": "The private Health CA applies to the configured internal Health Service origin and exact port 41103 only. Other peers retain normal trust.",
+      "resolver": null,
+      "sites": [],
+      "workloads": [
+        "butlers-up",
+        "butlers-control",
+        "dashboard-api"
       ]
     },
     "src/butlers/core/switchboard_tls.py::switchboard_http_options::config::6fc85ab0d798e8a3cd594aaf71ff3baa8a7e4766fa7c496152c66df1edd2c05c": {
@@ -5890,25 +5942,25 @@
   "schema": "butlers.egress-profile-coverage/v2",
   "topology": {
     "deploy/helm/butlers/templates/_helpers.tpl": {
-      "sha256": "af922365f755dc79e14d1f44a06e2f70c9487e525b3b2b74e7e9af716f106ee2"
+      "sha256": "6bcb00018116e90665b87fb060d906547889822825f722db2b4b5592c49c0709"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
-      "sha256": "750a4ed35389627d4805a20793985f363e2835376d311589f890cb5965eb55e8"
+      "sha256": "744448dcaa3b8babad381a43dc8d875394760759cc29fb528069105c9f2b0d76"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "531947ca1d36161597bfabfd3e8a9d4adc75aa7ba35916e4c5c73efce7400992"
+      "sha256": "8c09cd242bd9351925c496393eaddf9af93ca911cdb24e777b5e86a3781cd237"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
     },
     "deploy/helm/butlers/templates/connectors.yaml": {
-      "sha256": "2d97158d743b85df479585dfdf507aa61aa746cde619d867482b54d60e10c91c"
+      "sha256": "6fde06aa81b59879f26f5147abdb7afb4ffd41fb7a59a1823a7c31b54ed24728"
     },
     "deploy/helm/butlers/templates/cronjobs.yaml": {
       "sha256": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697"
     },
     "deploy/helm/butlers/templates/dashboard-api.yaml": {
-      "sha256": "420955f101624d808ef7f3ad816fa21765774e0a22b264f26651f654bdfb5cb6"
+      "sha256": "698ee50c99d1bd427ae28fcf6391b106597c2ad3df23e818cebb229828f071f9"
     },
     "deploy/helm/butlers/templates/egress-gateway.yaml": {
       "sha256": "bfe395a84807d6c5d586932d21e84c7fdefb4203ce67d61812372c9715551d5a"
@@ -5932,7 +5984,7 @@
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
     },
     "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
-      "sha256": "25c52b6ea66d68f2844f37f9ee64b927c1d0c4ccdc450e1f9f99e4876fef0a8b"
+      "sha256": "0d0e63bb8391a8d2ef826855c90517e143e56f9845dae849b0b4383ba4ca7aaf"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
       "sha256": "10d1ef5fb29422af790857f4ed68a0d4c85cad220f3b925847c4f60b2e35ab95"

@@ -211,7 +211,7 @@ class LocalSwitchboardClient:
             return await client.call_tool(name, arguments)
 
 
-class _SwitchboardServiceServer(uvicorn.Server):
+class _SplitServiceServer(uvicorn.Server):
     """Serve Service TLS and private runtime HTTP with one ASGI lifespan."""
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
@@ -261,14 +261,15 @@ class ButlerDaemon:
             raise ValueError("Either config_dir or butler_name must be provided")
         if config_dir is not None and butler_name is not None:
             raise ValueError("Cannot provide both config_dir and butler_name")
-        if service_tls_dir is not None and control_profile is None:
+        configured_name = config_dir.name if config_dir is not None else butler_name
+        if service_tls_dir is not None and control_profile is None and configured_name != "health":
             raise ValueError("Switchboard service TLS requires a control profile")
         if (service_tls_dir is None) != (service_tls_bind is None):
-            raise ValueError("Switchboard service TLS requires both material and a pod IP bind")
+            raise ValueError("Service TLS requires both material and a pod IP bind")
         if service_tls_bind is not None:
             address = IPv4Address(service_tls_bind)
             if address.is_loopback or address.is_unspecified or address.is_multicast:
-                raise ValueError("Switchboard service TLS requires a non-loopback IPv4 pod IP")
+                raise ValueError("Service TLS requires a non-loopback IPv4 pod IP")
 
         # If butler_name is provided, derive config_dir from roster/
         if butler_name is not None:
@@ -628,7 +629,14 @@ class ButlerDaemon:
         """
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
+        assert self.config is not None and self.mcp is not None
         service_tls = self._service_listener_tls()
+        if service_tls is not None and self.config.name == "health":
+            from butlers.core.service_plane.health_peer_admission import (
+                HealthMedicationPeerAdmission,
+            )
+
+            self.mcp.add_middleware(HealthMedicationPeerAdmission())
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
         if self.config.name in {"finance", "switchboard"}:
             from butlers.config import list_butlers
@@ -692,7 +700,7 @@ class ButlerDaemon:
             sock.close()
             raise
         self._mcp_socket = sock
-        server_type = _SwitchboardServiceServer if service_tls is not None else uvicorn.Server
+        server_type = _SplitServiceServer if service_tls is not None else uvicorn.Server
         self._server = server_type(config)
         self._server_task = asyncio.create_task(self._server.serve(sockets=[sock]))
         deadline = time.monotonic() + _MCP_SERVER_START_TIMEOUT_S
@@ -822,8 +830,13 @@ class ButlerDaemon:
         if directory is None:
             return None
         config = self.config
-        if config is None or (config.name, config.port) != ("switchboard", 41100):
-            raise ValueError("Service TLS is configured outside the Switchboard service listener")
+        if self._control_profile is not None:
+            if config is None or (config.name, config.port) != ("switchboard", 41100):
+                raise ValueError(
+                    "Service TLS is configured outside the Switchboard service listener"
+                )
+        elif config is None or (config.name, config.port) != ("health", 41103):
+            raise ValueError("Service TLS is configured outside the Health service listener")
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_3
         try:
@@ -832,7 +845,7 @@ class ButlerDaemon:
             )
         except OSError:
             raise RuntimeError(
-                "Switchboard service TLS material is unavailable or invalid"
+                f"{config.name.capitalize()} service TLS material is unavailable or invalid"
             ) from None
         return context
 

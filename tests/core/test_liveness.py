@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import certifi
 import httpx
 import pytest
 
@@ -382,6 +384,48 @@ async def test_internal_route_preflight_coalesces_and_invalidates_cached_policy(
     assert len(requests) == 1
     pool.execute.assert_not_awaited()
     pool.fetchval.assert_not_awaited()  # no reserve/record operation
+
+
+async def test_internal_preflight_uses_scoped_trust_for_health(monkeypatch):
+    from butlers.tools.switchboard.routing.preflight import RoutePreflight
+
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    monkeypatch.setenv("HEALTH_MCP_URL", "https://butlers-up:41103/sse")
+    monkeypatch.setenv("BUTLERS_HEALTH_CA_FILE", certifi.where())
+    instance_id = uuid.UUID(generate_uuid7_string())
+    pool = AsyncMock()
+    pool.fetch.return_value = [{"name": "health", "policy_state": "active"}]
+    pool.fetchrow.return_value = _ready_control_plane_row(instance_id, now=_NOW)
+    observed = []
+    original_client = httpx.AsyncClient
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        observed.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "butler.control.v1",
+                "butler_name": "health",
+                "boot_instance_id": str(instance_id),
+                "boot_epoch": 7,
+                "route_contract": {"min": 1, "max": 1},
+                "accepting_routes": True,
+            },
+        )
+
+    def observe_client(**options):
+        verify = options.get("verify")
+        assert isinstance(verify, ssl.SSLContext)
+        assert verify.check_hostname and verify.verify_mode == ssl.CERT_REQUIRED
+        assert options["trust_env"] is False
+        return original_client(transport=httpx.MockTransport(respond), **options)
+
+    monkeypatch.setattr(httpx, "AsyncClient", observe_client)
+    preflight = RoutePreflight(
+        pool, [SimpleNamespace(name="health", port=41103, type=SimpleNamespace(value="butler"))]
+    )
+    assert (await preflight.check()).ready
+    assert observed == ["https://butlers-up:41103/internal/control-plane/identity"]
 
 
 async def test_internal_preflight_fixed_target_malformed_and_timeout_fail_closed():

@@ -303,3 +303,131 @@ def test_switchboard_tls_requires_service_plane_auth_and_explicit_trust():
         result = _helm(*_SWITCHBOARD_TLS, override)
         assert result.returncode != 0
         assert reason in result.stderr
+
+
+_HEALTH_TLS = (
+    "servicePlaneAuth.enabled=true",
+    "servicePlaneAuth.healthTLS.enabled=true",
+    "servicePlaneAuth.healthTLS.servingSecretName=test-health-identity",
+    "servicePlaneAuth.healthTLS.caConfigMapName=test-health-ca",
+)
+
+
+def test_health_tls_scopes_serving_material_trust_and_tokens():
+    docs = _render(*_HEALTH_TLS, *_SWITCHBOARD_TLS)
+    ca_path = "/var/run/butlers-health-ca/ca.crt"
+    audience = "butlers.health-medication-peer.v1"
+    callers = {"butlers-control", "dashboard-api"}
+    for doc in docs:
+        if doc["kind"] != "Deployment":
+            continue
+        name = doc["metadata"]["name"]
+        pod = doc["spec"]["template"]["spec"]
+        volumes = {volume["name"]: volume for volume in pod.get("volumes", [])}
+        env = _env(pod)
+        assert ("health-serving-tls" in volumes) == (name == "butlers-up")
+        has_ca = name in callers or name == "connector-google-health"
+        assert ("health-ca" in volumes) == has_ca
+        if has_ca:
+            assert volumes["health-ca"]["configMap"] == {
+                "name": "test-health-ca",
+                "items": [{"key": "ca.crt", "path": "ca.crt"}],
+            }
+        audiences = {
+            token["audience"]: token["path"]
+            for volume in volumes.values()
+            for source in volume.get("projected", {}).get("sources", [])
+            if (token := source.get("serviceAccountToken"))
+        }
+        assert (audience in audiences) == (name in callers)
+        if name in callers:
+            assert audiences[audience] == audience
+            assert pod["serviceAccountName"] == name
+            assert env["HEALTH_MCP_URL"] == "https://butlers-up:41103/mcp"
+            assert env["BUTLERS_HEALTH_CA_FILE"] == ca_path
+        else:
+            assert "HEALTH_MCP_URL" not in env and "BUTLERS_HEALTH_CA_FILE" not in env
+        ca_mounts = [
+            (container["name"], mount)
+            for container in [*pod.get("initContainers", []), *pod["containers"]]
+            for mount in container.get("volumeMounts", [])
+            if mount["name"] == "health-ca"
+        ]
+        if has_ca:
+            receiver = name if name in callers else "wait-for-health-routes"
+            assert ca_mounts == [
+                (
+                    receiver,
+                    {
+                        "name": "health-ca",
+                        "mountPath": "/var/run/butlers-health-ca",
+                        "readOnly": True,
+                    },
+                )
+            ]
+        else:
+            assert ca_mounts == []
+
+    up_pod = _pod(docs, "butlers-up")
+    up = up_pod["containers"][0]
+    assert up["command"][-4:] == [
+        "--health-tls-dir",
+        "/var/run/butlers-health-tls",
+        "--health-tls-bind",
+        "$(BUTLERS_UP_POD_IP)",
+    ]
+    pod_ip = next(env for env in up["env"] if env["name"] == "BUTLERS_UP_POD_IP")
+    assert pod_ip["valueFrom"] == {"fieldRef": {"fieldPath": "status.podIP"}}
+    serving = next(volume for volume in up_pod["volumes"] if volume["name"] == "health-serving-tls")
+    assert serving["secret"]["secretName"] == "test-health-identity"
+    assert serving["secret"]["items"] == [
+        {"key": "tls.crt", "path": "tls.crt"},
+        {"key": "tls.key", "path": "tls.key"},
+    ]
+    assert {
+        "name": "health-serving-tls",
+        "mountPath": "/var/run/butlers-health-tls",
+        "readOnly": True,
+    } in up["volumeMounts"]
+    dashboard = next(
+        doc
+        for doc in docs
+        if doc["kind"] == "ServiceAccount" and doc["metadata"]["name"] == "dashboard-api"
+    )
+    assert dashboard["automountServiceAccountToken"] is False
+    control = _pod(docs, "butlers-control")
+    projections = next(
+        volume["projected"] for volume in control["volumes"] if volume["name"] == "workload-token"
+    )
+    assert {source["serviceAccountToken"]["audience"] for source in projections["sources"]} == {
+        audience,
+        "butlers.messenger-delivery.v1",
+    }
+    connectors = _connector_pods(docs)
+    for name, pod in connectors.items():
+        gates = [c for c in pod["initContainers"] if c["name"] == "wait-for-health-routes"]
+        if name == "connector-google-health":
+            assert len(gates) == 1
+            assert pod["initContainers"][-1] == gates[0]
+            assert gates[0]["args"] == [
+                "--url",
+                "https://butlers-up:41103/internal/control-plane/identity",
+                "--butler",
+                "health",
+                "--ca-file",
+                ca_path,
+            ]
+        else:
+            assert gates == []
+
+
+def test_health_tls_requires_split_service_plane_and_explicit_trust():
+    for override, reason in (
+        ("servicePlaneAuth.enabled=false", "requires butlersControl.enabled"),
+        ("butlersControl.enabled=false", "requires butlersControl.enabled"),
+        ("servicePlaneAuth.healthTLS.servingSecretName=", "requires servingSecretName"),
+        ("servicePlaneAuth.healthTLS.caConfigMapName=", "requires caConfigMapName"),
+    ):
+        result = _helm(*_HEALTH_TLS, override)
+        assert result.returncode != 0
+        assert reason in result.stderr
