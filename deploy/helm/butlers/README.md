@@ -53,6 +53,19 @@ from the owner fleet budget 5. Invalid/nonpositive staged partitions or budgets
 above five refuse rendering. The production default remains disabled/unsplit at
 five. No GOAL private key is provisioned or mounted in this stage.
 
+The optional `servicePlaneAuth.switchboardTLS.enabled` mode requires the split
+stage and service-plane workload authentication. It publishes
+`https://butlers-control:41100` as the Switchboard origin. Set
+`servingSecretName` to a Secret with `tls.crt` and `tls.key`. Only the control
+workload mounts the serving key. The certificate needs a DNS SAN for
+`butlers-control`. Set `caConfigMapName` to a ConfigMap with the dedicated public
+Switchboard CA in `ca.crt`. The chart mounts this CA for the service callers and
+connector startup checks. Application clients scope the CA to the configured
+Switchboard origin and use TLS 1.3. Kubelet HTTPS health probes measure availability.
+The Service listener binds the control pod IP. Local runtime MCP uses the same
+port on IPv4 loopback.
+The mode defaults to false. Provision the TLS resources before enabling it.
+
 When the split stage is selected, `butlers-control-ingress` permits service callers within the namespace on 41100.
 Port 41199 permits only pods with this release's instance label and component
 `control-session-health` (operator/test caller) or `session-host`. These labels are

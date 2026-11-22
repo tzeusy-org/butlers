@@ -157,15 +157,27 @@ def run(config_path: Path) -> None:
     type=click.Path(file_okay=False, path_type=Path),
     help="Mounted TLS certificate and key for the Switchboard service listener",
 )
+@click.option(
+    "--service-tls-bind",
+    help="IPv4 pod address for Service TLS. The runtime MCP listener stays on loopback.",
+)
 def control(
-    profile: str, config_path: Path, session_host: str, service_tls_dir: Path | None
+    profile: str,
+    config_path: Path,
+    session_host: str,
+    service_tls_dir: Path | None,
+    service_tls_bind: str | None,
 ) -> None:
     """Run Switchboard separately, without any goal signing key or broker."""
     from butlers.control import run_control
 
     asyncio.run(
         run_control(
-            config_path, profile=profile, session_host=session_host, service_tls_dir=service_tls_dir
+            config_path,
+            profile=profile,
+            session_host=session_host,
+            service_tls_dir=service_tls_dir,
+            service_tls_bind=service_tls_bind,
         )
     )
 

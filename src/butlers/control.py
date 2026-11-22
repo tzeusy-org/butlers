@@ -163,7 +163,12 @@ class SessionRefusalListener:
 
 
 async def run_control(
-    config_dir: Path, *, profile: str, session_host: str, service_tls_dir: Path | None = None
+    config_dir: Path,
+    *,
+    profile: str,
+    session_host: str,
+    service_tls_dir: Path | None = None,
+    service_tls_bind: str | None = None,
 ) -> None:
     """Run today's service and the refusal listener under one trusted profile.
 
@@ -174,7 +179,12 @@ async def run_control(
     check_private_key_absent(profile)
     from butlers.daemon import ButlerDaemon
 
-    daemon = ButlerDaemon(config_dir, control_profile=profile, service_tls_dir=service_tls_dir)
+    daemon = ButlerDaemon(
+        config_dir,
+        control_profile=profile,
+        service_tls_dir=service_tls_dir,
+        service_tls_bind=service_tls_bind,
+    )
     listener = SessionRefusalListener(host=session_host)
     shutdown = asyncio.Event()
     loop = asyncio.get_running_loop()

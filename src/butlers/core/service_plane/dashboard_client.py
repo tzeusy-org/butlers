@@ -28,6 +28,7 @@ from butlers.core.runtime_probe_control.capability import CapabilityRejected
 from butlers.core.runtime_probe_control.keys import SignerSnapshot
 from butlers.core.runtime_probe_control.service_call import sign_service_call
 from butlers.core.service_plane.dashboard_route import SERVICE_CALL_PATH
+from butlers.core.switchboard_tls import switchboard_http_options
 
 #: A routed call has no deadline of its own beyond the caller's; this bounds a
 #: caller that set none, past Switchboard's own route timeouts.
@@ -85,11 +86,14 @@ async def call_via_control_plane(
         raise ServiceCallUnavailable("service call could not be signed") from exc
 
     try:
+        url = f"{base_url().rstrip('/')}{SERVICE_CALL_PATH}"
         async with httpx.AsyncClient(
-            transport=transport, timeout=_seconds(request_timeout)
+            transport=transport,
+            timeout=_seconds(request_timeout),
+            **switchboard_http_options(url, require_origin=True),
         ) as client:
             response = await client.post(
-                f"{base_url().rstrip('/')}{SERVICE_CALL_PATH}",
+                url,
                 headers={"Authorization": f"Bearer {compact}"},
                 json={"butler": butler, "tool": tool, "args": args},
             )

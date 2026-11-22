@@ -23,6 +23,7 @@ from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
 
 from butlers.core.scheduler.cancel import raise_if_task_cancelled
+from butlers.core.switchboard_tls import switchboard_http_options, switchboard_mcp_transport
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,9 @@ async def wait_for_switchboard_ready(
         _safe_url,
     )
 
-    async with httpx.AsyncClient(timeout=http_timeout_s) as client:
+    async with httpx.AsyncClient(
+        timeout=http_timeout_s, **switchboard_http_options(health_url)
+    ) as client:
         for attempt in range(1, max_attempts + 1):
             try:
                 resp = await client.get(health_url)
@@ -218,7 +221,9 @@ class CachedMCPClient:
         # fastmcp gives ``initialize`` no deadline by default; bound it by the connect deadline so
         # the handshake itself ends, and the client cleans up, instead of leaning on the outer wait.
         client_ctx = MCPClient(
-            self._endpoint_url, name=self._client_name, init_timeout=self._connect_timeout_s
+            switchboard_mcp_transport(self._endpoint_url),
+            name=self._client_name,
+            init_timeout=self._connect_timeout_s,
         )
         entered = await client_ctx.__aenter__()
         self._client_ctx = client_ctx

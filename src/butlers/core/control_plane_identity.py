@@ -23,6 +23,7 @@ import httpx
 
 from butlers.core.job_health import record_tick
 from butlers.core.mcp_urls import resolve_cross_container_mcp_url
+from butlers.core.switchboard_tls import switchboard_http_options
 
 IDENTITY_PATH = "/internal/control-plane/identity"
 IDENTITY_SCHEMA = "butler.control.v1"
@@ -469,7 +470,9 @@ async def run_shadow_observer_loop(
     if not expected:
         raise RuntimeError("no exact Git-roster targets for shadow observer")
     role_view = DashboardProbeRoleView(pool)
-    async with httpx.AsyncClient(trust_env=False, timeout=PROBE_DEADLINE_S) as client:
+    async with httpx.AsyncClient(
+        trust_env=False, timeout=PROBE_DEADLINE_S, **switchboard_http_options()
+    ) as client:
         prober = SingleFlightProber(role_view, client=client)
         try:
             loop = asyncio.get_running_loop()

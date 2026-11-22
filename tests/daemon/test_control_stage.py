@@ -37,6 +37,8 @@ def test_control_command_passes_the_optional_service_tls_directory(monkeypatch, 
             "roster/switchboard",
             "--service-tls-dir",
             str(tmp_path),
+            "--service-tls-bind",
+            "192.0.2.80",
         ],
     )
     assert result.exit_code == 0, result.exception
@@ -45,6 +47,7 @@ def test_control_command_passes_the_optional_service_tls_directory(monkeypatch, 
         profile=butlers.control.KEY_ABSENT_STAGE,
         session_host="127.0.0.1",
         service_tls_dir=tmp_path,
+        service_tls_bind="192.0.2.80",
     )
 
 
@@ -56,9 +59,23 @@ def test_switchboard_service_tls_is_optional_and_requires_its_own_material(tmp_p
     assert current._service_listener_tls() is None
     with pytest.raises(ValueError, match="requires a control profile"):
         ButlerDaemon(butler_name="switchboard", service_tls_dir=tmp_path)
+    with pytest.raises(ValueError, match="both material and a pod IP bind"):
+        ButlerDaemon(
+            butler_name="switchboard", control_profile=KEY_ABSENT_STAGE, service_tls_dir=tmp_path
+        )
+    with pytest.raises(ValueError, match="non-loopback IPv4 pod IP"):
+        ButlerDaemon(
+            butler_name="switchboard",
+            control_profile=KEY_ABSENT_STAGE,
+            service_tls_dir=tmp_path,
+            service_tls_bind="127.0.0.1",
+        )
 
     staged = ButlerDaemon(
-        butler_name="switchboard", control_profile=KEY_ABSENT_STAGE, service_tls_dir=tmp_path
+        butler_name="switchboard",
+        control_profile=KEY_ABSENT_STAGE,
+        service_tls_dir=tmp_path,
+        service_tls_bind="192.0.2.80",
     )
     staged.config = ButlerConfig(name="switchboard", port=41199)
     with pytest.raises(ValueError, match="outside the Switchboard service listener"):

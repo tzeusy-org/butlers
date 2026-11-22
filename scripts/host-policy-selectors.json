@@ -4989,6 +4989,28 @@
       "public_source_commit": "5003c289cc"
     },
     {
+      "id": "910abb90a14dad80f4685dd74d207e424eb64af2bcf915fba42ba3f2055d64ba",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._service_listener_tls",
+      "kind": "compare",
+      "expression": "(config.name, config.port) != ('switchboard', 41100)",
+      "occurrence": 1,
+      "line": 827,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Bind opt-in service TLS only on the canonical Switchboard service listener at TCP 41100.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-switchboard/spec.md",
+          "requirement": "Domain Butler Registry"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "The split control workload owns the shared Switchboard service and its certificate. The selector preserves its fixed daemon and listener identity.",
+      "public_source_commit": null
+    },
+    {
       "id": "23359d5249ff04ba23984964666888c57cf925e0a039b622e6f4977f1dd93558",
       "path": "src/butlers/daemon.py",
       "symbol": "ButlerDaemon._build_service_relay_route",

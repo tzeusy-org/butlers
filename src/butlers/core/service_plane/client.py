@@ -21,6 +21,7 @@ from butlers.core.service_plane.workload_identity import (
     TOKEN_DIR,
     TOKEN_HEADER,
 )
+from butlers.core.switchboard_tls import switchboard_http_options
 
 
 class RelayUnavailable(Exception):
@@ -70,13 +71,15 @@ async def call_relay(
     ``RelayRefused`` carries the relay's refusal code; nothing was sent to the
     target. ``RelayUnavailable`` means the outcome is not known to be a refusal.
     """
-    token = (token_dir / RELAY_AUDIENCE).read_text(encoding="utf-8").strip()
-    headers = {TOKEN_HEADER: token, DAEMON_HEADER: daemon}
     try:
-        async with httpx.AsyncClient(transport=transport, timeout=request_timeout_s) as client:
-            response = await client.post(
-                relay_url(switchboard_url, name), json={"args": args}, headers=headers
-            )
+        url = relay_url(switchboard_url, name)
+        options = switchboard_http_options(url, require_origin=True)
+        token = (token_dir / RELAY_AUDIENCE).read_text(encoding="utf-8").strip()
+        headers = {TOKEN_HEADER: token, DAEMON_HEADER: daemon}
+        async with httpx.AsyncClient(
+            transport=transport, timeout=request_timeout_s, **options
+        ) as client:
+            response = await client.post(url, json={"args": args}, headers=headers)
         body = response.json()
     except (httpx.HTTPError, ValueError) as exc:
         raise RelayUnavailable(type(exc).__name__) from None

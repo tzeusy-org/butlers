@@ -27,6 +27,8 @@ import mcp.types
 from fastmcp import Client
 from fastmcp.client.progress import ProgressHandler
 
+from butlers.core.switchboard_tls import switchboard_mcp_transport
+
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
@@ -56,6 +58,7 @@ class LivenessClient(Client):
 
     def __init__(
         self,
+        transport: Any,
         *args: Any,
         ping_interval_s: float = DEFAULT_PING_INTERVAL_S,
         ping_timeout_s: float = DEFAULT_PING_TIMEOUT_S,
@@ -63,7 +66,9 @@ class LivenessClient(Client):
         init_timeout: float | None = DEFAULT_INIT_TIMEOUT_S,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, init_timeout=init_timeout, **kwargs)
+        if isinstance(transport, str) and transport.startswith(("http://", "https://")):
+            transport = switchboard_mcp_transport(transport)
+        super().__init__(transport, *args, init_timeout=init_timeout, **kwargs)
         self._ping_interval_s = ping_interval_s
         self._ping_timeout_s = ping_timeout_s
         self._max_missed_pings = max_missed_pings
