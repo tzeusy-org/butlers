@@ -21,6 +21,8 @@ them. The daemon therefore holds no GitHub write credential:
   store the QA module only checks its presence, logs and notifies once per patrol, and the
   dashboard credential status shows `gh_write_token_present`.
 - Investigation dispatch receives no token at all.
+- `GITHUB_TOKEN` / `GH_TOKEN` in the daemon environment are ignored by the dashboard PR panel: an
+  env-injected token may be write-capable and the secrets-store presence check cannot see it.
 
 Owner steps (tracked in `bu-ejow5p.16`; no code change does them): provision the read-only token as
 `BUTLERS_QA_GH_READ_TOKEN`, delete `BUTLERS_QA_GH_TOKEN` from the secrets store and rotate that

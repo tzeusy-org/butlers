@@ -207,7 +207,7 @@ access.
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
 - **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
-- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; publication runs only through the trusted publisher, which is disabled until isolation is proven
+- **GitHub API (`BUTLERS_QA_GH_READ_TOKEN`):** read-only PR-status polling by the dispatcher and the dashboard PR panel (environment tokens are ignored); publication runs only through the trusted publisher, which is disabled until isolation is proven
 
 ### Depends On QA Staffer
 
