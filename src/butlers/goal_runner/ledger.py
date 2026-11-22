@@ -2111,7 +2111,7 @@ class RunnerLedger:
             spend,
         )
         # The monthly pools move in this transaction too (bu-jv1moa.1).
-        await SpendPools(self.connection).charge(goal_id, spend)
+        await SpendPools(self.connection).charge(goal_id, spend, tokens=tokens)
         await self.connection.execute(
             "UPDATE switchboard.invocations SET used_turns = least(used_turns + $3, max_turns), "
             "used_tokens = least(used_tokens + $4, max_tokens), updated_at = now() "

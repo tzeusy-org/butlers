@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX
 from butlers.core.runtime_config import GoalAdmissionConfig
 from butlers.core.spend_pools import (
     CEILING_REACHED,
@@ -14,7 +15,11 @@ from butlers.core.spend_pools import (
     SpendPolicy,
     SpendPools,
 )
-from butlers.goal_runner.owner_failure import SPEND_UNREADABLE_LINE, line_for
+from butlers.goal_runner.owner_failure import (
+    CEILING_REACHED_LINE,
+    SPEND_UNREADABLE_LINE,
+    line_for,
+)
 from tests.switchboard.goal_admission_fixtures import limits
 
 pytestmark = pytest.mark.unit
@@ -122,3 +127,37 @@ def test_spend_policy_is_read_from_config_without_changing_the_digest():
 
 def test_the_owner_hears_a_spend_state_reason():
     assert line_for("admission_refused", "spend_state_unreadable") == SPEND_UNREADABLE_LINE
+
+
+def test_a_ceiling_refusal_has_its_own_owner_line_and_is_retryable():
+    from butlers.core.goal_ledger import RETRYABLE_REFUSALS
+
+    assert line_for("admission_refused", "ceiling_reached") == CEILING_REACHED_LINE
+    assert CEILING_DENIAL_REASON_PREFIX in CEILING_REACHED_LINE
+    assert "ceiling_reached" in RETRYABLE_REFUSALS
+
+
+class ExplodingPools(FakeConnection):
+    """A pool read that fails after the ceiling is read, as a missing table or lock timeout."""
+
+    def __init__(self):
+        super().__init__()
+        self.savepoints = 0
+
+    @asynccontextmanager
+    async def transaction(self):
+        self.savepoints += 1
+        yield
+
+    async def fetch(self, sql, *args):
+        if "token_usage_ledger" in sql:
+            return []
+        raise RuntimeError("relation switchboard.budget_pools does not exist")
+
+
+async def test_a_pool_error_inside_reserve_is_contained_by_its_savepoint():
+    conn = ExplodingPools()
+    reason = await SpendPools(conn).reserve(uuid4(), "owner", Decimal(1))
+    assert reason == SPEND_UNREADABLE
+    # reserve opened its own savepoint (plus ceiling's), so the error never reaches the caller.
+    assert conn.savepoints >= 2

@@ -16,8 +16,8 @@ before it creates the goal, in the same transaction, and a refusal leaves neithe
 
 ``charge_goal_reservation`` moves priced spend from reserved to spent in the caller's transaction,
 never past the reservation. A trigger on ``goals`` settles the rest when a goal reaches a terminal
-status: a goal that used tokens but recorded no priced spend keeps its full reservation charged
-(unpriced usage is never counted as zero); any other goal releases its unspent remainder.
+status: a goal with any unpriced usage (tokens metered with no priced spend, even after priced calls)
+keeps its full reservation charged (unpriced usage is never counted as zero); any other goal releases its unspent remainder.
 
 The downgrade refuses while any reservation exists, and the reason constraint then drops the new
 reasons only if no decision uses them.
@@ -84,6 +84,7 @@ def upgrade() -> None:
             charged_usd NUMERIC NOT NULL DEFAULT 0
                 CHECK (charged_usd >= 0 AND charged_usd <= amount_usd),
             lane BOOLEAN NOT NULL,
+            unpriced BOOLEAN NOT NULL DEFAULT false,
             settled_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
@@ -91,14 +92,15 @@ def upgrade() -> None:
     for table in ("budget_pools", "pool_reservations"):
         op.execute(_SECURE.replace("__TABLE__", table).replace("__ROLE__", _RUNTIME))
     op.execute(f"""
-        CREATE FUNCTION switchboard.charge_goal_reservation(p_goal UUID, p_spend NUMERIC)
+        CREATE FUNCTION switchboard.charge_goal_reservation(
+            p_goal UUID, p_spend NUMERIC, p_unpriced BOOLEAN DEFAULT false)
         RETURNS NUMERIC LANGUAGE plpgsql SECURITY DEFINER
         SET search_path = pg_catalog, pg_temp AS $$
         DECLARE
             r switchboard.pool_reservations;
             moved NUMERIC;
         BEGIN
-            IF p_spend IS NULL OR p_spend <= 0 THEN
+            IF COALESCE(p_spend, 0) <= 0 AND NOT COALESCE(p_unpriced, false) THEN
                 RETURN 0;
             END IF;
             SELECT * INTO r FROM switchboard.pool_reservations
@@ -106,10 +108,19 @@ def upgrade() -> None:
             IF NOT FOUND THEN
                 RETURN 0;
             END IF;
-            moved := least(p_spend, r.amount_usd - r.charged_usd);
+            IF COALESCE(p_unpriced, false) THEN
+                -- Usage with no price is never counted as zero: hold the reservation in full.
+                UPDATE switchboard.pool_reservations SET unpriced = true WHERE goal_id = p_goal;
+            END IF;
+            moved := least(COALESCE(p_spend, 0), r.amount_usd - r.charged_usd);
             IF moved <= 0 THEN
                 RETURN 0;
             END IF;
+            -- Pool rows lock in pool_key order, as admission does, so no two paths deadlock.
+            PERFORM 1 FROM switchboard.budget_pools
+                WHERE month = r.month
+                  AND (pool_key = 'fleet_month' OR (pool_key = 'background' AND r.lane))
+                ORDER BY pool_key FOR UPDATE;
             UPDATE switchboard.pool_reservations SET charged_usd = charged_usd + moved
                 WHERE goal_id = p_goal;
             UPDATE switchboard.budget_pools
@@ -119,8 +130,9 @@ def upgrade() -> None:
                   AND (pool_key = 'fleet_month' OR (pool_key = 'background' AND r.lane));
             RETURN moved;
         END $$;
-        REVOKE ALL ON FUNCTION switchboard.charge_goal_reservation(UUID, NUMERIC) FROM PUBLIC;
-        GRANT EXECUTE ON FUNCTION switchboard.charge_goal_reservation(UUID, NUMERIC)
+        REVOKE ALL ON FUNCTION switchboard.charge_goal_reservation(UUID, NUMERIC, BOOLEAN)
+            FROM PUBLIC;
+        GRANT EXECUTE ON FUNCTION switchboard.charge_goal_reservation(UUID, NUMERIC, BOOLEAN)
             TO {_RUNTIME};
 
         CREATE FUNCTION switchboard.settle_goal_reservation()
@@ -128,7 +140,6 @@ def upgrade() -> None:
         SET search_path = pg_catalog, pg_temp AS $$
         DECLARE
             r switchboard.pool_reservations;
-            unpriced BOOLEAN;
             rest NUMERIC;
         BEGIN
             SELECT * INTO r FROM switchboard.pool_reservations
@@ -136,18 +147,19 @@ def upgrade() -> None:
             IF NOT FOUND THEN
                 RETURN NULL;
             END IF;
-            SELECT b.used_spend = 0 AND b.used_tokens > 0 INTO unpriced
-                FROM switchboard.budgets b WHERE b.goal_id = NEW.id;
             rest := r.amount_usd - r.charged_usd;
+            PERFORM 1 FROM switchboard.budget_pools
+                WHERE month = r.month
+                  AND (pool_key = 'fleet_month' OR (pool_key = 'background' AND r.lane))
+                ORDER BY pool_key FOR UPDATE;
             UPDATE switchboard.budget_pools
                 SET reserved_usd = greatest(reserved_usd - rest, 0),
-                    spent_usd = spent_usd + CASE WHEN COALESCE(unpriced, false) THEN rest ELSE 0 END,
+                    spent_usd = spent_usd + CASE WHEN r.unpriced THEN rest ELSE 0 END,
                     updated_at = now()
                 WHERE month = r.month
                   AND (pool_key = 'fleet_month' OR (pool_key = 'background' AND r.lane));
             UPDATE switchboard.pool_reservations
-                SET charged_usd = CASE WHEN COALESCE(unpriced, false)
-                        THEN amount_usd ELSE charged_usd END,
+                SET charged_usd = CASE WHEN r.unpriced THEN amount_usd ELSE charged_usd END,
                     settled_at = clock_timestamp()
                 WHERE goal_id = NEW.id;
             RETURN NULL;
@@ -178,7 +190,7 @@ def downgrade() -> None:
         END $$;
         DROP TRIGGER IF EXISTS settle_goal_reservation ON switchboard.goals;
         DROP FUNCTION IF EXISTS switchboard.settle_goal_reservation();
-        DROP FUNCTION IF EXISTS switchboard.charge_goal_reservation(UUID, NUMERIC);
+        DROP FUNCTION IF EXISTS switchboard.charge_goal_reservation(UUID, NUMERIC, BOOLEAN);
         DROP TABLE IF EXISTS switchboard.pool_reservations;
         DROP TABLE IF EXISTS switchboard.budget_pools;
         ALTER TABLE switchboard.admission_decisions

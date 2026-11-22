@@ -68,6 +68,7 @@ async def test_only_owner_messages_and_retryable_reasons_leave_an_ask(world):  #
         "quota_exhausted",
         "limits_unavailable",
         "spend_state_unreadable",
+        "ceiling_reached",
     }
     for reason in ("cause_invalid", "causal_chain_limit", "recorded_without_goal"):
         goals = GoalLedger(runtime)

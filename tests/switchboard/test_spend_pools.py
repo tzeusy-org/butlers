@@ -112,14 +112,13 @@ async def test_usage_charges_in_the_goal_transaction_and_the_end_settles_the_res
     priced = await admit(runtime, OWNER)
     unpriced = await admit(runtime, OWNER)
     async with runtime.acquire() as connection, connection.transaction():
-        await SpendPools(connection).charge(priced.goal_id, Decimal("0.50"))
+        await SpendPools(connection).charge(priced.goal_id, Decimal("0.50"), tokens=40)
         await SpendPools(connection).charge(priced.goal_id, Decimal("9"))  # never past the hold
     fleet = await pool_row(owner, "fleet_month")
     assert (fleet["reserved_usd"], fleet["spent_usd"]) == (Decimal("1.25"), Decimal("1.25"))
-    # An unpriced goal that used tokens keeps its whole reservation charged at its end.
-    await owner.execute(
-        "UPDATE switchboard.budgets SET used_tokens = 10 WHERE goal_id = $1", unpriced.goal_id
-    )
+    # Unpriced usage (tokens, no price) keeps the whole reservation charged at the goal's end.
+    async with runtime.acquire() as connection, connection.transaction():
+        await SpendPools(connection).charge(unpriced.goal_id, Decimal(0), tokens=10)
     await owner.execute(
         "UPDATE switchboard.goals SET status='failed' WHERE id=$1", unpriced.goal_id
     )
@@ -140,3 +139,15 @@ async def test_lanes_off_keeps_the_fleet_pool_and_drops_the_reserve(ledger):
     refused = await admit(runtime, THIRD_PARTY)
     assert (refused.result, refused.reason) == ("refused", "ceiling_reached")
     assert await owner.fetchval("SELECT bool_or(lane) FROM switchboard.pool_reservations") is False
+
+
+async def test_unpriced_usage_after_a_priced_call_still_holds_the_whole_reservation(ledger):
+    owner, runtime = ledger
+    await set_ceiling(owner, "10")
+    goal = await admit(runtime, OWNER)
+    async with runtime.acquire() as connection, connection.transaction():
+        await SpendPools(connection).charge(goal.goal_id, Decimal("0.25"), tokens=40)
+        await SpendPools(connection).charge(goal.goal_id, Decimal(0), tokens=40)  # unpriced
+    await owner.execute("UPDATE switchboard.goals SET status='completed' WHERE id=$1", goal.goal_id)
+    fleet = await pool_row(owner, "fleet_month")
+    assert (fleet["reserved_usd"], fleet["spent_usd"]) == (Decimal(0), Decimal("1.25"))

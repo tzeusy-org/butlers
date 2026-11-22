@@ -106,7 +106,7 @@ class SpendPools:
         """Seed the month's pools (caps follow the ceiling) and lock them in a fixed order."""
         reserve = self.policy.owner_reserve_pct if self.policy.lanes_enabled else Decimal(0)
         caps = {FLEET_POOL: ceiling.usd, BACKGROUND_POOL: ceiling.usd * (1 - reserve)}
-        for key, cap in caps.items():
+        for key, cap in sorted(caps.items()):  # the one lock order: pool_key
             await self.connection.execute(
                 "INSERT INTO switchboard.budget_pools (pool_key, month, cap_usd) "
                 "VALUES ($1, $2, $3) ON CONFLICT (pool_key, month) DO UPDATE "
@@ -128,24 +128,29 @@ class SpendPools:
         """Reserve ``amount`` for a goal; return the refusal reason, or ``None`` when held.
 
         Idempotent per goal: a repeat (duplicate admission, recovery epoch) reuses the one
-        reservation and moves nothing.
+        reservation and moves nothing. Everything runs in one savepoint, so any pool error
+        (missing table, lock timeout, deadlock) rolls back to it and refuses
+        ``spend_state_unreadable`` without aborting the admission transaction: the caller can
+        still record the refusal and answer the owner.
         """
         try:
-            ceiling = await self.ceiling()
-            if ceiling is None:
-                return None
-            month = await self._month()
-            existing = await self.connection.fetchval(
-                "SELECT 1 FROM switchboard.pool_reservations WHERE goal_id = $1", goal_id
-            )
-            if existing:
-                return None
-            pools = await self._locked_pools(month, ceiling)
-        except SpendUnreadable:
-            return SPEND_UNREADABLE
+            async with self.connection.transaction():
+                return await self._reserve(goal_id, origin, amount)
         except Exception:
             logger.error("spend pools unreadable; refusing", exc_info=True)
             return SPEND_UNREADABLE
+
+    async def _reserve(self, goal_id: UUID, origin: Origin, amount: Decimal) -> str | None:
+        ceiling = await self.ceiling()
+        if ceiling is None:
+            return None
+        month = await self._month()
+        existing = await self.connection.fetchval(
+            "SELECT 1 FROM switchboard.pool_reservations WHERE goal_id = $1", goal_id
+        )
+        if existing:
+            return None
+        pools = await self._locked_pools(month, ceiling)
         fleet = pools[FLEET_POOL]
         if (
             ceiling.frozen_mtd_usd + fleet["reserved_usd"] + fleet["spent_usd"] + amount
@@ -176,33 +181,43 @@ class SpendPools:
         )
         return None
 
-    async def charge(self, goal_id: UUID, spend: Decimal) -> None:
+    async def charge(self, goal_id: UUID, spend: Decimal, *, tokens: int = 0) -> None:
         """Move priced spend from the goal's reservation to spent, in the caller's transaction.
 
         Never charges past the reservation, and a goal with no reservation (no ceiling, or one
-        admitted before the ceiling was set) moves nothing.
+        admitted before the ceiling was set) moves nothing. Usage with tokens but no priced
+        spend marks the reservation unpriced: it is then held in full at the goal's end, so
+        unpriced usage is never counted as zero, even after earlier priced calls.
         """
-        if spend <= 0:
+        unpriced = tokens > 0 and spend <= 0
+        if spend <= 0 and not unpriced:
             return
         await self.connection.execute(
-            "SELECT switchboard.charge_goal_reservation($1, $2)", goal_id, spend
+            "SELECT switchboard.charge_goal_reservation($1, $2, $3)",
+            goal_id,
+            max(spend, Decimal(0)),
+            unpriced,
         )
 
     async def launch_refusal(self) -> str | None:
         """``"ceiling_reached"`` when the fleet pool has no room left for any origin, else ``None``.
 
-        Reservations are not counted here (a goal launching owns its own); only spend is.
+        Reservations are not counted here (a goal launching owns its own); only spend is. An
+        unreadable state refuses as ``spend_state_unreadable`` without aborting the caller's
+        transaction.
         """
         try:
-            ceiling = await self.ceiling()
-            if ceiling is None:
-                return None
-            month = await self._month()
-            spent = await self.connection.fetchval(
-                "SELECT spent_usd FROM switchboard.budget_pools WHERE pool_key = $1 AND month = $2",
-                FLEET_POOL,
-                month,
-            )
+            async with self.connection.transaction():
+                ceiling = await self.ceiling()
+                if ceiling is None:
+                    return None
+                month = await self._month()
+                spent = await self.connection.fetchval(
+                    "SELECT spent_usd FROM switchboard.budget_pools "
+                    "WHERE pool_key = $1 AND month = $2",
+                    FLEET_POOL,
+                    month,
+                )
         except Exception:
             return SPEND_UNREADABLE
         total = ceiling.frozen_mtd_usd + (spent or Decimal(0))
