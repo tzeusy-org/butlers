@@ -205,6 +205,13 @@ inline match.
 - **AND** ambiguous confirm-tier matches SHALL be proposed as a `bill-reconcile-candidate` insight candidate (priority 55) needing owner confirmation
 - **AND** these SHALL be proposed via `propose_insight_candidate()` for delivery through the insight broker, not sent via a direct `notify()` digest
 
+#### Scenario: bill-reconciliation-sweep ages out stale pending bills
+- **WHEN** the `bill-reconciliation-sweep` job runs, after `reconcile_bills`
+- **THEN** a `pending` bill with `amount = 0` whose `due_date` is more than 7 days past SHALL be set to `status='paid'` with `paid_at` left NULL and `metadata.closed_reason='stale_zero_placeholder'` (there is no `closed` status; nothing was owed, so the NULL `paid_at` marks it as not a real settlement)
+- **AND** a `pending` bill with `amount > 0`, `autopay = false` and `predicted = false` whose `due_date` is more than 7 days past SHALL be set to `status='overdue'`
+- **AND** `autopay` bills SHALL remain `pending` and a `$0` bill SHALL never become `overdue`
+- **AND** re-running the sweep SHALL change nothing further
+
 #### Scenario: Payment recorded before its bill is reconciled by the sweep
 - **WHEN** a debit transaction was recorded before any matching bill existed
 - **AND** a matching bill is later created (e.g. from a statement email)
