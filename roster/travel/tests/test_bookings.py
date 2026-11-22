@@ -21,6 +21,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.deps import get_db
+from butlers.roster_imports import roster_module
 
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -1397,3 +1398,120 @@ class TestAddDocument:
         )
         assert row is not None
         assert str(row["trip_id"]) == trip_id
+
+
+# ---------------------------------------------------------------------------
+# Leg endpoint city fallback (bu-swkpoo.3)
+# ---------------------------------------------------------------------------
+
+
+def _city_leg_payload(**overrides) -> dict:
+    base = {
+        "entity_type": "leg",
+        "provider": "Test Air",
+        "departure_airport_station": "LHR",
+        "arrival_airport_station": "JFK",
+        "departure_at": (_utcnow() + timedelta(days=2000)).isoformat(),
+        "arrival_at": (_utcnow() + timedelta(days=2000, hours=5)).isoformat(),
+    }
+    base.update(overrides)
+    return base
+
+
+async def _leg_cities(pool, leg_id: str):
+    return await pool.fetchrow(
+        "SELECT departure_city, arrival_city FROM travel.legs WHERE id = $1::uuid", leg_id
+    )
+
+
+class TestLegCityFallback:
+    async def test_insert_falls_back_to_station(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+
+        result = await record_booking(pool=travel_pool, payload=_city_leg_payload())
+        row = await _leg_cities(travel_pool, result["entity_id"])
+        assert (row["departure_city"], row["arrival_city"]) == ("LHR", "JFK")
+
+    async def test_insert_keeps_real_city(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+
+        result = await record_booking(
+            pool=travel_pool,
+            payload=_city_leg_payload(departure_city="London", arrival_city="  "),
+        )
+        row = await _leg_cities(travel_pool, result["entity_id"])
+        assert (row["departure_city"], row["arrival_city"]) == ("London", "JFK")
+
+    async def test_upsert_falls_back_and_never_overwrites_real_city(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+
+        payload = _city_leg_payload(
+            record_locator="CITYFB", segment_index=0, departure_city="London"
+        )
+        first = await record_booking(pool=travel_pool, payload=payload)
+        # Re-record without cities: real city kept, blank arrival filled from station.
+        payload2 = {k: v for k, v in payload.items() if k != "departure_city"}
+        second = await record_booking(pool=travel_pool, payload=payload2)
+        assert second["entity_id"] == first["entity_id"]
+        row = await _leg_cities(travel_pool, first["entity_id"])
+        assert (row["departure_city"], row["arrival_city"]) == ("London", "JFK")
+
+    async def test_upsert_fills_previously_null_city(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+
+        payload = _city_leg_payload(record_locator="CITYNULL", segment_index=0)
+        first = await record_booking(pool=travel_pool, payload=payload)
+        await travel_pool.execute(
+            "UPDATE travel.legs SET departure_city = NULL WHERE id = $1::uuid",
+            first["entity_id"],
+        )
+        await record_booking(pool=travel_pool, payload=payload)
+        row = await _leg_cities(travel_pool, first["entity_id"])
+        assert row["departure_city"] == "LHR"
+
+    async def test_update_itinerary_blank_city_falls_back_to_station(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+        update_itinerary = bookings.update_itinerary
+
+        result = await record_booking(
+            pool=travel_pool,
+            payload=_city_leg_payload(departure_city="London", arrival_city="New York"),
+        )
+        await update_itinerary(
+            pool=travel_pool,
+            trip_id=result["trip_id"],
+            patch={"leg_id": result["entity_id"], "arrival_city": "", "departure_city": None},
+            reason="blank cities",
+        )
+        row = await _leg_cities(travel_pool, result["entity_id"])
+        assert (row["departure_city"], row["arrival_city"]) == ("LHR", "JFK")
+
+    async def test_update_itinerary_station_change_fills_blank_city_only(self, travel_pool):
+        bookings = roster_module("travel", "tools/bookings")
+        record_booking = bookings.record_booking
+        update_itinerary = bookings.update_itinerary
+
+        result = await record_booking(
+            pool=travel_pool, payload=_city_leg_payload(departure_city="London")
+        )
+        await travel_pool.execute(
+            "UPDATE travel.legs SET arrival_city = NULL WHERE id = $1::uuid",
+            result["entity_id"],
+        )
+        await update_itinerary(
+            pool=travel_pool,
+            trip_id=result["trip_id"],
+            patch={
+                "leg_id": result["entity_id"],
+                "departure_airport_station": "LGW",
+                "arrival_airport_station": "CDG",
+            },
+            reason="station change",
+        )
+        row = await _leg_cities(travel_pool, result["entity_id"])
+        assert (row["departure_city"], row["arrival_city"]) == ("London", "CDG")
