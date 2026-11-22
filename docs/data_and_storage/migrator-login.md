@@ -57,21 +57,31 @@ below. It needs Docker, so CI runs it.
 
 ## Activation (owner acts, in order)
 
-**Not yet activatable: init-db pins the migration role.** Six init-db bunkers record
-their configured migration role in a `bootstrap_configuration` singleton and refuse a
-replay that names a different one ("bootstrap configuration differs"):
-`dashboard_attention`, `dashboard_stepup`, `dnd_generation_admin`, `perception_admin`,
-`restore_drill_executor_admin` and `runtime_attention_admin`. The runtime-attention
-upgrades also require that role. Once the transfer runs, a replay that names the shared
-login is expected to refuse as well, because the `insight_amendments` owner preflight only
-accepts the configured login; this case is untested. So steps 3 and 4 wait for the bunker-deletion slice, or for an
-explicit migration-role rotation there.
+**Not yet activatable.** Step 3 (the transfer) waits for every precondition below.
+After the transfer the shared login owns nothing, so it loses whatever it could do only
+as an owner.
 
-**Also not yet activatable.** The daemons still run their Alembic chains at startup as the
-runtime login (`_startup_core_migrations` in `src/butlers/lifecycle.py`). Once the
-transfer runs, the runtime login no longer owns the `alembic_version` tables or the
-schemas' objects, so startup migrations must first become a read-only head check. That
-change is the next bu-dss7he.6 slice. Do not run step 3 before it lands.
+- **Daemon startup must not migrate.** The daemons still run their Alembic chains at
+  startup as the runtime login (`_startup_core_migrations` in `src/butlers/lifecycle.py`).
+  Startup must first become a read-only head check (bu-dss7he.6 S4).
+- **Runtime code must not rely on owner-only operations.** The shared login can no longer
+  run `ALTER`, `TRUNCATE`, `REFRESH MATERIALIZED VIEW` or `DROP`, or enable and disable
+  triggers, on objects it used to own. Any runtime path that does must move to a
+  migration or to a purpose-owned definer first.
+- **Runtime code must not rely on owner RLS bypass.** A table's owner bypasses its
+  row-level security unless the table is `FORCE ROW LEVEL SECURITY`. On non-FORCE RLS
+  tables the shared login owned, it becomes subject to the policies. Runtime reads and
+  writes there must pass the policies on their own.
+- **The ownership-based bunkers must be gone.** These are the `*_admin` bunkers, their
+  `bootstrap_configuration` singletons and the runtime-attention v2–v5 ladder, all
+  deleted by a later bu-dss7he.6 slice. Six of them pin the configured migration role
+  and refuse an init-db replay that names a different one ("bootstrap configuration
+  differs"): `dashboard_attention`, `dashboard_stepup`, `dnd_generation_admin`,
+  `perception_admin`, `restore_drill_executor_admin` and `runtime_attention_admin`. The
+  runtime-attention upgrades also require that role. Step 4 is impossible until they
+  are deleted. A replay that names the shared login after the transfer is expected to
+  refuse as well, because the `insight_amendments` owner preflight only accepts the
+  configured login; this case is untested.
 
 1. Provision the `butlers_migrator` login and its two BWS keys (bu-dss7he.21). Leave
    `BUTLERS_RUNTIME_DB_USER`/`_PASSWORD` in place: they remain the runtime login, and

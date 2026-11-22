@@ -150,6 +150,8 @@ def test_transfer_moves_only_the_shared_logins_objects_and_activation_migrates(
 
     # The known activation blocker: the init-db bunkers pin their configured migration
     # role, so naming the migrator is refused until the bunker-deletion slice lands. When
-    # this stops raising, extend the test to migrate as the migrator (migrator-login.md).
+    # this stops raising, extend the test: migrate as the migrator, and assert the migrator's
+    # (schema, objtype, grantee, privilege) default-privilege set after the replay covers
+    # the shared login's, so drift between core_001 and init-db cannot strand new objects.
     with pytest.raises(Exception, match="bootstrap configuration differs"):
         _replay_init_db(bootstrap_url, migrator)
