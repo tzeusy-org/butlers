@@ -447,7 +447,9 @@ async def test_feeder_dark_suppresses_sleep_missing(monkeypatch) -> None:
     upserted_by_type = {u["flag_type"]: u for u in fake.upserted}
     assert set(upserted_by_type) == {FLAG_FEEDER_DARK}
     assert upserted_by_type[FLAG_FEEDER_DARK]["detail"] == {
-        "dark_sources": ["google_health.measurements"]
+        "dark_sources": ["google_health.measurements"],
+        "retired_sources": [],
+        "configured_absent_sources": [],
     }
     # sleep_missing must be actively deleted (reconciled away), not just
     # never-upserted, in case a prior run had flagged it.

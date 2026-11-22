@@ -52,9 +52,10 @@ over already-materialized rows plus ``source_adapter_state``/
 
 from __future__ import annotations
 
+import json
 import statistics
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -259,6 +260,43 @@ def is_source_configured_absent(
     )
 
 
+AVAILABLE = "available"
+DARK = "dark"
+CONFIGURED_ABSENT = "configured_absent"
+RETIRED = "retired"
+AVAILABILITY_STATES = (AVAILABLE, DARK, CONFIGURED_ABSENT, RETIRED)
+
+#: A day is snapshotted by the first ``chronicler_rollup_daily`` run after it closes, with slack
+#: for a missed run. A day that closed longer ago with no snapshot is never snapshotted: its
+#: availability can no longer be observed, so it stays unknown (bu-uhbhzq.2).
+AVAILABILITY_SETTLE_HORIZON = timedelta(hours=36)
+
+
+def classify_source_availability(
+    state: SourceAdapterState | None,
+    checkpoint: ProjectionCheckpoint | None,
+    *,
+    on_date: date,
+    cron_minutes: int,
+    now: datetime,
+) -> str:
+    """One of ``available | dark | configured_absent | retired`` for ``on_date``.
+
+    ``retired`` takes precedence from the source's declared ``retired_at`` date onward: a source
+    that is no longer expected to project is never an outage. Before that date the same source
+    is judged by :func:`is_source_dark` and :func:`is_source_configured_absent`.
+
+    Pure deterministic function: no I/O, no LLM, no side effects.
+    """
+    if state is not None and state.retired_at is not None and on_date >= state.retired_at:
+        return RETIRED
+    if not is_source_dark(state, checkpoint, cron_minutes=cron_minutes, now=now):
+        return AVAILABLE
+    if is_source_configured_absent(state, checkpoint):
+        return CONFIGURED_ABSENT
+    return DARK
+
+
 def compute_sleep_missing(sleep_seconds: int, *, sleep_source_dark: bool) -> bool:
     """Whether ``sleep_missing`` should fire for the day.
 
@@ -394,28 +432,156 @@ async def _occupation_block_covers_window(
     return bool(rows)
 
 
-async def _unavailable_sources(
+async def observe_source_availability(
     pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
+    on_date: date,
     now: datetime,
-) -> tuple[set[str], set[str]]:
-    """Return ``(dark, configured_absent)`` source names.
-
-    Both sets are unavailable for gating behavioral flags; only ``dark`` is a
-    feeder outage worth a ``feeder_dark`` flag.
-    """
-    dark: set[str] = set()
-    configured_absent: set[str] = set()
+) -> list[dict[str, Any]]:
+    """One observation per ``SOURCE_CRON_MINUTES`` source, classified for ``on_date``."""
+    observed: list[dict[str, Any]] = []
     for source_name, cron_minutes in SOURCE_CRON_MINUTES.items():
         state = await get_source_state(pool, source_name)
         checkpoint = await get_checkpoint(pool, source_name)
-        if not is_source_dark(state, checkpoint, cron_minutes=cron_minutes, now=now):
-            continue
-        if is_source_configured_absent(state, checkpoint):
-            configured_absent.add(source_name)
-        else:
-            dark.add(source_name)
-    return dark, configured_absent
+        observed.append(
+            {
+                "source_name": source_name,
+                "state": classify_source_availability(
+                    state, checkpoint, on_date=on_date, cron_minutes=cron_minutes, now=now
+                ),
+                "last_success_at": checkpoint.last_success_at if checkpoint else None,
+                "watermark": checkpoint.watermark if checkpoint else None,
+                "retired_at": state.retired_at if state else None,
+            }
+        )
+    return observed
+
+
+def partition_availability(
+    availability: Mapping[str, str],
+) -> tuple[set[str], set[str], set[str]]:
+    """``(dark, configured_absent, retired)`` source-name sets.
+
+    All three are unavailable for gating behavioral flags; only ``dark`` is a feeder outage
+    worth a ``feeder_dark`` flag.
+    """
+    return (
+        {name for name, state in availability.items() if state == DARK},
+        {name for name, state in availability.items() if state == CONFIGURED_ABSENT},
+        {name for name, state in availability.items() if state == RETIRED},
+    )
+
+
+async def freeze_day_availability(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    *,
+    local_date: date,
+    timezone: str,
+    now: datetime,
+) -> str:
+    """Record one local day's source availability once, shortly after the day closes.
+
+    Returns ``"exists"`` when the day already has a snapshot, ``"not_closed"`` before the day
+    ends, ``"past_horizon"`` when the day closed longer than :data:`AVAILABILITY_SETTLE_HORIZON`
+    ago (it is then never snapshotted), else ``"frozen"``. Append-only: the row key plus
+    ``ON CONFLICT DO NOTHING`` make a concurrent or repeated write a no-op.
+    """
+    existing = await conn.fetchval(
+        "SELECT count(*) FROM chronicler.day_source_availability "
+        "WHERE local_date = $1 AND timezone = $2",
+        local_date,
+        timezone,
+    )
+    if existing:
+        return "exists"
+    day_end = datetime.combine(local_date + timedelta(days=1), time.min, ZoneInfo(timezone))
+    if now < day_end:
+        return "not_closed"
+    if now - day_end > AVAILABILITY_SETTLE_HORIZON:
+        return "past_horizon"
+    for row in await observe_source_availability(conn, on_date=local_date, now=now):
+        await conn.execute(
+            "INSERT INTO chronicler.day_source_availability "
+            "(local_date, timezone, source_name, state, last_success_at, watermark, retired_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+            local_date,
+            timezone,
+            row["source_name"],
+            row["state"],
+            row["last_success_at"],
+            row["watermark"],
+            row["retired_at"],
+        )
+    await conn.execute(
+        "UPDATE chronicler.daily_repair_days SET historical_flags_status = 'frozen', "
+        "updated_at = now() WHERE local_date = $1",
+        local_date,
+    )
+    return "frozen"
+
+
+async def load_day_availability(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    *,
+    local_date: date,
+    timezone: str,
+) -> dict[str, str] | None:
+    """The frozen ``{source_name: state}`` for a local day, or ``None`` when never frozen."""
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (source_name) source_name, state "
+        "FROM chronicler.day_source_availability WHERE local_date = $1 AND timezone = $2 "
+        "ORDER BY source_name, revision DESC",
+        local_date,
+        timezone,
+    )
+    if not rows:
+        return None
+    return {row["source_name"]: row["state"] for row in rows}
+
+
+async def correct_retired_feeder_dark(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> dict[str, int]:
+    """One-shot, idempotent: drop a retired source from past ``feeder_dark`` flags.
+
+    For each registered source with a ``retired_at``, a ``feeder_dark`` flag dated on or after
+    it stops naming that source; a flag left with no dark source is deleted. Other dark sources
+    are kept, and the stored detail records ``corrected_by = 'retired_source'``. No past
+    narrative is regenerated. A second run changes nothing.
+    """
+    corrected = deleted = 0
+    retired = await conn.fetch(
+        "SELECT source_name, retired_at FROM chronicler.source_adapter_state "
+        "WHERE retired_at IS NOT NULL"
+    )
+    for source in retired:
+        rows = await conn.fetch(
+            "SELECT local_date, severity, detail FROM chronicler.daily_rollup_flags "
+            "WHERE flag_type = $1 AND local_date >= $2 AND detail -> 'dark_sources' ? $3",
+            FLAG_FEEDER_DARK,
+            source["retired_at"],
+            source["source_name"],
+        )
+        for row in rows:
+            detail = row["detail"]
+            if isinstance(detail, str):
+                detail = json.loads(detail)
+            remaining = [d for d in detail.get("dark_sources", []) if d != source["source_name"]]
+            if not remaining:
+                await delete_daily_rollup_flag(
+                    conn, local_date=row["local_date"], flag_type=FLAG_FEEDER_DARK
+                )
+                deleted += 1
+                continue
+            await upsert_daily_rollup_flag(
+                conn,
+                local_date=row["local_date"],
+                flag_type=FLAG_FEEDER_DARK,
+                severity=row["severity"],
+                detail={**detail, "dark_sources": remaining, "corrected_by": "retired_source"},
+            )
+            corrected += 1
+    return {"corrected": corrected, "deleted": deleted}
 
 
 async def _routine_break_candidates(
@@ -474,6 +640,7 @@ async def evaluate_and_write_daily_flags(
     local_date: date,
     timezone: str,
     now: datetime | None = None,
+    availability: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate all four anomaly-flag rules for one already-materialized
     local day and reconcile ``chronicler.daily_rollup_flags`` to match.
@@ -487,6 +654,11 @@ async def evaluate_and_write_daily_flags(
     every run — a re-run after a late correction converges to the current
     truth rather than accumulating stale rows.
 
+    ``availability`` is the day's frozen ``{source_name: state}`` record
+    (:func:`load_day_availability`); ``chronicler_rollup_daily`` always passes it, so a source
+    that recovers later never erases the days it was down. Without it the current state is
+    observed as of ``local_date`` (direct callers and tests).
+
     Returns a plain summary dict suitable as part of a scheduled-job result
     payload.
     """
@@ -495,10 +667,15 @@ async def evaluate_and_write_daily_flags(
     rollup_rows = await list_daily_rollups(pool, local_date=local_date)
     seconds_by_lane: dict[str, float] = {r.lane: r.seconds for r in rollup_rows}
 
-    dark_sources, configured_absent_sources = await _unavailable_sources(pool, now=now)
-    unavailable_sources = dark_sources | configured_absent_sources
+    if availability is None:
+        availability = {
+            row["source_name"]: row["state"]
+            for row in await observe_source_availability(pool, on_date=local_date, now=now)
+        }
+    dark_sources, configured_absent_sources, retired_sources = partition_availability(availability)
+    unavailable_sources = dark_sources | configured_absent_sources | retired_sources
 
-    # feeder_dark: outages only. A configured-absent source is not an outage.
+    # feeder_dark: outages only. A configured-absent or retired source is not an outage.
     feeder_dark_holds = bool(dark_sources)
     await _reconcile_flag(
         pool,
@@ -506,7 +683,11 @@ async def evaluate_and_write_daily_flags(
         flag_type=FLAG_FEEDER_DARK,
         should_exist=feeder_dark_holds,
         severity="warning",
-        detail={"dark_sources": sorted(dark_sources)},
+        detail={
+            "dark_sources": sorted(dark_sources),
+            "retired_sources": sorted(retired_sources),
+            "configured_absent_sources": sorted(configured_absent_sources),
+        },
     )
 
     # sleep_missing
@@ -563,6 +744,7 @@ async def evaluate_and_write_daily_flags(
         "local_date": local_date.isoformat(),
         "dark_sources": sorted(dark_sources),
         "configured_absent_sources": sorted(configured_absent_sources),
+        "retired_sources": sorted(retired_sources),
         "flags": {
             FLAG_FEEDER_DARK: feeder_dark_holds,
             FLAG_SLEEP_MISSING: sleep_missing_holds,
@@ -573,6 +755,12 @@ async def evaluate_and_write_daily_flags(
 
 
 __all__ = [
+    "AVAILABILITY_SETTLE_HORIZON",
+    "AVAILABILITY_STATES",
+    "AVAILABLE",
+    "CONFIGURED_ABSENT",
+    "DARK",
+    "RETIRED",
     "FEEDER_STALE_MULTIPLE",
     "FLAG_FEEDER_DARK",
     "FLAG_LANE_SHARE_OUTLIER",
@@ -584,7 +772,13 @@ __all__ = [
     "MIN_EVIDENCE_FLOOR_SECONDS",
     "MIN_TRAILING_DAYS_FOR_MEDIAN",
     "SOURCE_CRON_MINUTES",
+    "classify_source_availability",
     "compute_lane_share_outliers",
+    "correct_retired_feeder_dark",
+    "freeze_day_availability",
+    "load_day_availability",
+    "observe_source_availability",
+    "partition_availability",
     "compute_routine_breaks",
     "compute_sleep_missing",
     "evaluate_and_write_daily_flags",

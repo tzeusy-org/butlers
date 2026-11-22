@@ -883,6 +883,26 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "chronicler.v_episodes_corrected",
     ): "sanctioned:Chronicler_030: fixed-schema corrected episode view used by historical repair; schema and relation are constants, not caller-selected",
     (
+        "src/butlers/chronicler/flags.py",
+        "chronicler.day_source_availability",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): append-only frozen per-day source availability written once after a day closes and read by flag evaluation; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/flags.py",
+        "chronicler.daily_repair_days",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): marks a repaired day's historical flag status frozen once its availability is recorded; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/flags.py",
+        "chronicler.daily_rollup_flags",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): one-shot correction drops a retired source from past feeder_dark flags; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/flags.py",
+        "chronicler.source_adapter_state",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): reads the declared retired sources for the one-shot flag correction; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/history_repair.py",
+        "chronicler.day_source_availability",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): a rebuilt day keeps historical_flags_status frozen when its availability snapshot exists; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
         "src/butlers/chronicler/jobs.py",
         "chronicler.daily_repair_control",
     ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control gates rollup work; schema and relation are constants, not caller-selected",

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import replace
+from datetime import date
 
 import asyncpg
 
@@ -189,6 +190,10 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
             "eaten_at only (no end_at) — point events, not episodes"
         ),
         optional_schema=True,
+        # The meals table was dropped (d9c4e3abf); last projection 2026-08-13 per the
+        # bu-uhbhzq.2 baseline. A retired source is never a feeder outage from this date.
+        retired_at=date(2026, 8, 13),
+        retired_reason="evidence surface dropped (d9c4e3abf)",
     ),
     # Inferred chronicler-derived sources (bu-i29ix). Both read from
     # chronicler's own episodes table to derive higher-level shapes

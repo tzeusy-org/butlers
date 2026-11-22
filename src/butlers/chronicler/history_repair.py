@@ -478,7 +478,12 @@ async def rebuild_day(conn: Connection, state: Any, *, as_of: datetime | None = 
     await conn.execute(
         """UPDATE chronicler.daily_repair_days
            SET built_generation = dirty_generation, totals_pending = FALSE,
-               outlier_pending = FALSE, historical_flags_status = 'unknown',
+               outlier_pending = FALSE,
+               historical_flags_status = CASE WHEN EXISTS (
+                   SELECT 1 FROM chronicler.day_source_availability a
+                   WHERE a.local_date = $1
+                     AND a.timezone = chronicler.daily_repair_days.timezone)
+                   THEN 'frozen' ELSE 'unknown' END,
                prose_status = 'superseded', published_revision = published_revision + 1,
                updated_at = now()
            WHERE local_date = $1 AND dirty_generation = $2""",

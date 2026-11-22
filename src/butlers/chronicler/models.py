@@ -106,6 +106,11 @@ class SourceAdapterState:
     schema_version: int = 1
     registered_at: datetime | None = None
     updated_at: datetime | None = None
+    #: First local date this source is no longer expected to project. Declared in
+    #: ``contracts.INITIAL_SOURCES`` (never set by an adapter): a retired source is
+    #: not an outage from this date on (bu-uhbhzq.2).
+    retired_at: date | None = None
+    retired_reason: str | None = None
 
 
 @dataclass

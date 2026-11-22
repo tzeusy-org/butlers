@@ -109,8 +109,14 @@ async def test_run_rollup_daily_accepts_no_job_args(monkeypatch) -> None:
     assert captured == {"timezone": "Asia/Singapore", "lookback_days": 7}
     # No days_processed in the fake materializer result -> no flag evaluation
     # runs, but run_rollup_daily always adds the (possibly empty) "flags" key
-    # (bu-v76a7, chained anomaly-flag step).
-    assert result == {"timezone": "Asia/Singapore", "lookback_days": 7, "flags": {}}
+    # (bu-v76a7, chained anomaly-flag step), and the retired-source flag correction summary
+    # (bu-uhbhzq.2).
+    assert result == {
+        "timezone": "Asia/Singapore",
+        "lookback_days": 7,
+        "flags": {},
+        "retired_flag_correction": {"corrected": 0, "deleted": 0},
+    }
 
 
 async def test_run_rollup_daily_honors_explicit_overrides(monkeypatch) -> None:
@@ -186,3 +192,35 @@ async def test_run_rollup_daily_waits_for_retention_before_materializing(monkeyp
 
     assert result == {"status": "waiting_repair", "days_processed": []}
     assert materialized is False
+
+
+async def _run_with_days(monkeypatch, *, availability) -> tuple[dict[str, Any], AsyncMock]:
+    async def _fake_materialize(pool, *, timezone, lookback_days):
+        return {"days_processed": ["2026-11-19"]}
+
+    evaluate = AsyncMock(return_value={"flags": {}})
+    monkeypatch.setattr("butlers.chronicler.rollups.materialize_daily_rollups", _fake_materialize)
+    monkeypatch.setattr("butlers.chronicler.flags.freeze_day_availability", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.chronicler.flags.load_day_availability", AsyncMock(return_value=availability)
+    )
+    monkeypatch.setattr("butlers.chronicler.flags.evaluate_and_write_daily_flags", evaluate)
+    monkeypatch.setattr(
+        "butlers.chronicler.flags.correct_retired_feeder_dark",
+        AsyncMock(return_value={"corrected": 0, "deleted": 0}),
+    )
+    return await run_rollup_daily(_ready_pool(), job_args=None), evaluate
+
+
+async def test_a_day_without_a_snapshot_is_unknown_and_never_evaluated_from_now(
+    monkeypatch,
+) -> None:
+    result, evaluate = await _run_with_days(monkeypatch, availability=None)
+    assert result["flags"]["2026-11-19"] == {"status": "historical_health_unknown"}
+    evaluate.assert_not_awaited()
+
+
+async def test_a_day_with_a_snapshot_is_evaluated_from_it(monkeypatch) -> None:
+    frozen = {"core.sessions": "available"}
+    _result, evaluate = await _run_with_days(monkeypatch, availability=frozen)
+    assert evaluate.await_args.kwargs["availability"] == frozen
