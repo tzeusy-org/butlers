@@ -226,3 +226,25 @@ async def test_a_cancelled_write_is_unavailable_and_rolls_back():
     assert (error["code"], error["retryable"]) == ("unavailable", True)
     assert "canceling" not in json.dumps(error)
     assert exits == [asyncpg.QueryCanceledError]  # the transaction saw the error: rollback
+
+
+def test_every_manifest_table_template_yields_a_real_kind():
+    from butlers.knowledge_read.core import _manifest
+
+    for table in _manifest().tables:
+        if not table.uri:  # aggregate and control tables publish no record uri
+            continue
+        kind, uri = record_uri(table, "k1")
+        assert kind and "{" not in kind and "/" not in kind, table.source
+        assert uri.endswith(f"/{kind}/k1")
+
+
+def test_a_template_without_a_kind_segment_is_refused():
+    table, _ = published("public.entities", "entity_lookup")
+    with pytest.raises(ValueError):
+        record_uri(replace(table, uri="butlers://proposal/{proposal_id}"), "p1")
+
+
+def test_a_proposal_reports_kind_proposal():
+    table, _ = published("relationship.external_fact_proposals", "fetch")
+    assert record_uri(table, "p1") == ("proposal", "butlers://proposals/proposal/p1")

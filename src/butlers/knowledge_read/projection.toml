@@ -523,7 +523,7 @@ key = ["proposal_id"]
 replica_identity = ["proposal_id"]
 tools = ["fetch"]
 time_column = "decided_at"
-uri = "butlers://proposal/{proposal_id}"
+uri = "butlers://proposals/proposal/{proposal_id}"
 
 [[table]]
 source = "relationship.facts"
