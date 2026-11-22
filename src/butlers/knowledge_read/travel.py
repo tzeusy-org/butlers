@@ -20,6 +20,7 @@ from butlers.knowledge_read.core import (
     in_snapshot,
     published,
     record_uri,
+    tables_for,
 )
 
 TRIPS_LIMIT = 50
@@ -47,7 +48,13 @@ async def trips(
     context.require("travel")
     trip_table, trip_view = published("travel.trips", "trips")
     leg_table, leg_view = published("travel.legs", "trips")
-    document_table, document_view = published("travel.documents", "trips")
+    # Documents are optional: a manifest that narrows them away leaves every trip with an empty
+    # list instead of failing the tool.
+    document_table, document_view = (
+        published("travel.documents", "trips")
+        if any(t.source == "travel.documents" for t in tables_for("trips"))
+        else (None, None)
+    )
 
     async def read() -> tuple[list[asyncpg.Record], list[asyncpg.Record], list[asyncpg.Record]]:
         rows = await conn.fetch(
@@ -65,6 +72,8 @@ async def trips(
             ORDER BY (fields->>'departure_at')::timestamptz NULLS LAST, source_id""",
             ids,
         )
+        if document_view is None:
+            return rows, legs, []
         documents = await conn.fetch(
             f"""SELECT source_id, fields FROM {document_view} WHERE fields->>'trip_id' = ANY($1)
             ORDER BY (fields->>'expiry_date')::date NULLS LAST, source_id""",
@@ -88,6 +97,7 @@ async def trips(
             }
         )
     for row in documents:
+        assert document_table is not None  # read() returns no documents without a source
         data = fields(row["fields"])
         by_trip[data["trip_id"]]["documents"].append(
             {
