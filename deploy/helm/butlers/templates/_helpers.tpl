@@ -134,18 +134,112 @@ https://{{ .Values.publicUrl.host }}
 {{- if eq $v "true" -}}true{{- end -}}
 {{- end -}}
 
-{{/* Explicit request-executor configuration for this workload listener. Internal
-     clients stay separate; no ambient HTTP(S)_PROXY fallback is configured. */}}
-{{- define "butlers.egressProxyEnv" -}}
+{{- define "butlers.egressListener" -}}
 {{- if include "butlers.egressProfilesEnabled" .root -}}
 {{- $p := get (.root.Files.Get "files/egress-profiles.json" | fromJson).workloads .component -}}
-{{- if and $p $p.gateway_port }}
+{{- if and $p $p.gateway_port (not $p.held) -}}
+{{- int $p.gateway_port -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The request-v1 clients keep their canonical loopback alias. */}}
+{{- define "butlers.egressProxyEnv" -}}
+{{- with (include "butlers.egressListener" .) }}
 - name: BUTLERS_EGRESS_MODE
   value: "request-v1"
 - name: BUTLERS_EGRESS_GATEWAY
-  value: "http://egress-gateway:{{ int $p.gateway_port }}"
+  value: "http://egress-gateway:{{ . }}"
 {{- end -}}
 {{- end -}}
+
+{{- define "butlers.egressRelayPod" -}}
+{{- if include "butlers.egressListener" . }}
+automountServiceAccountToken: false
+shareProcessNamespace: false
+hostAliases:
+  - ip: "127.0.0.1"
+    hostnames: ["egress-gateway"]
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.egressRelayContainer" -}}
+{{- $port := include "butlers.egressListener" . -}}
+{{- if $port -}}
+{{- $root := .root -}}
+{{- $g := $root.Values.egressProfiles.gateway -}}
+{{- $dnsLabel := "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?" -}}
+{{- if not (and (kindIs "string" $g.clusterDomain) (regexMatch (printf "^%s(\\.%s)*$" $dnsLabel $dnsLabel) (toString $g.clusterDomain))) -}}
+{{- fail "egressProfiles.gateway.clusterDomain must be a DNS domain" -}}
+{{- end -}}
+{{- $name := printf "egress-gateway.%s.svc.%s" $root.Release.Namespace $g.clusterDomain -}}
+{{- if gt (len $name) 253 -}}
+{{- fail "the egress gateway Service name exceeds the DNS length limit" -}}
+{{- end }}
+- name: egress-relay
+  image: {{ include "butlers.image" $root }}
+  imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+  command: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "-m", "butlers.egress.relay"]
+  args: ["--gateway-name", {{ $name | quote }}, "--port", {{ $port | quote }}]
+  readinessProbe:
+    exec:
+      command: ["/usr/local/bin/python", "-I", "-c", "import socket; socket.create_connection(('127.0.0.1', 3100), 1).close()"]
+    periodSeconds: 5
+    timeoutSeconds: 2
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities: {drop: [ALL]}
+  resources:
+    {{- toYaml $g.relayResources | nindent 4 }}
+  volumeMounts:
+    - {name: egress-tls, mountPath: /var/run/butlers-egress-tls, readOnly: true}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.egressRelayVolume" -}}
+{{- if include "butlers.egressListener" . -}}
+{{- include "butlers.egressTLSVolume" (get .root.Values.egressProfiles.gateway.clientSecrets .component) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Keep the API server discovery files on the existing verifier container
+     when pod-wide automounting is disabled to isolate the egress relay. */}}
+{{- define "butlers.servicePlaneAccountMount" -}}
+{{- if and .root.Values.servicePlaneAuth.enabled .root.Values.butlersControl.enabled (include "butlers.egressListener" .) -}}
+- name: api-server-account
+  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+  readOnly: true
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.servicePlaneAccountVolume" -}}
+{{- if include "butlers.servicePlaneAccountMount" . -}}
+- name: api-server-account
+  projected:
+    sources:
+      - serviceAccountToken:
+          path: token
+          expirationSeconds: 3600
+      - configMap:
+          name: kube-root-ca.crt
+          items: [{key: ca.crt, path: ca.crt}]
+      - downwardAPI:
+          items:
+            - path: namespace
+              fieldRef: {fieldPath: metadata.namespace}
+{{- end -}}
+{{- end -}}
+
+{{- define "butlers.egressTLSVolume" -}}
+- name: egress-tls
+  secret:
+    secretName: {{ . | quote }}
+    defaultMode: 0400
+    items:
+      - {key: ca.crt, path: ca.crt}
+      - {key: tls.crt, path: tls.crt}
+      - {key: tls.key, path: tls.key}
 {{- end -}}
 
 {{/* Every workload component this release renders, as a JSON list. Each must have a

@@ -1,0 +1,28 @@
+# Synthetic Secret references and public fingerprints for offline Helm tests.
+egressProfiles:
+  gateway:
+    tlsSecret: test-gateway-server
+    clientSecrets:
+      butlers-control: test-gateway-butlers-control
+      butlers-up: test-gateway-butlers-up
+      connector-gmail: test-gateway-connector-gmail
+      connector-google-calendar: test-gateway-connector-google-calendar
+      connector-google-drive: test-gateway-connector-google-drive
+      connector-google-health: test-gateway-connector-google-health
+      connector-spotify: test-gateway-connector-spotify
+      connector-steam: test-gateway-connector-steam
+      connector-telegram-bot: test-gateway-connector-telegram-bot
+      dashboard-api: test-gateway-dashboard-api
+      session-host: test-gateway-session-host
+    clientPins:
+      butlers-control: "0000000000000000000000000000000000000000000000000000000000000001"
+      butlers-up: "0000000000000000000000000000000000000000000000000000000000000002"
+      connector-gmail: "0000000000000000000000000000000000000000000000000000000000000003"
+      connector-google-calendar: "0000000000000000000000000000000000000000000000000000000000000004"
+      connector-google-drive: "0000000000000000000000000000000000000000000000000000000000000005"
+      connector-google-health: "0000000000000000000000000000000000000000000000000000000000000006"
+      connector-spotify: "0000000000000000000000000000000000000000000000000000000000000007"
+      connector-steam: "0000000000000000000000000000000000000000000000000000000000000008"
+      connector-telegram-bot: "0000000000000000000000000000000000000000000000000000000000000009"
+      dashboard-api: "000000000000000000000000000000000000000000000000000000000000000a"
+      session-host: "000000000000000000000000000000000000000000000000000000000000000b"

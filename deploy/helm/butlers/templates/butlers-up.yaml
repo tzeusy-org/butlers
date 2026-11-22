@@ -17,6 +17,8 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 8 }}
     spec:
+      {{- $egress := dict "root" . "component" "butlers-up" }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
       {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
       serviceAccountName: butlers-up
       {{- end }}
@@ -47,7 +49,7 @@ spec:
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
             - {name: BUTLERS_SHUTDOWN_BUDGET_S, value: "{{ .Values.shutdown.budgetSeconds }}"}
             {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
-            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-up") | trim) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: daemon}
             periodSeconds: 5
@@ -68,13 +70,17 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- with (include "butlers.servicePlaneAccountMount" $egress) }}{{ . | nindent 12 }}{{- end }}
             {{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
             - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
             {{- end }}
             # Public MCP proposal importer (RFC 0039 D9/D13): the mcp_proposals_reader
             # password, read from a file by the Relationship job, never an env var.
             - {name: mcp-proposals-reader, mountPath: /etc/butlers/mcp-proposals-reader, readOnly: true}
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
+        {{- with (include "butlers.servicePlaneAccountVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}

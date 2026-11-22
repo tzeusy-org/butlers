@@ -26,6 +26,10 @@ def _render(*settings: str) -> list[dict]:
 def _helm(*settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART)]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
+    command += [
+        "-f",
+        str(Path(__file__).resolve().parents[1] / "fixtures/egress-gateway-values.yaml"),
+    ]
     for setting in (
         "image.tag=t",
         "frontendImage.tag=t",
@@ -177,6 +181,50 @@ def test_the_api_server_site_admits_only_the_jwks_port_from_both_verifiers() -> 
         assert _egress_to(docs, workload, "198.51.100.20/32") == [{"port": 6443, "protocol": "TCP"}]
     # Without the switch the optional site stays unadmitted unless located.
     assert _helm(*_PROFILED).returncode == 0
+
+
+def test_profiled_service_plane_verifiers_keep_their_api_account_files() -> None:
+    docs = _render(
+        "servicePlaneAuth.enabled=true",
+        *_PROFILED,
+        "egressProfiles.sites.kube-apiserver.cidr=198.51.100.20/32",
+    )
+    for workload in ("butlers-up", "butlers-control"):
+        pod = _pod(docs, workload)
+        assert pod["automountServiceAccountToken"] is False
+        account = next(v for v in pod["volumes"] if v["name"] == "api-server-account")
+        assert account["projected"]["sources"] == [
+            {"serviceAccountToken": {"path": "token", "expirationSeconds": 3600}},
+            {
+                "configMap": {
+                    "name": "kube-root-ca.crt",
+                    "items": [{"key": "ca.crt", "path": "ca.crt"}],
+                }
+            },
+            {
+                "downwardAPI": {
+                    "items": [
+                        {"path": "namespace", "fieldRef": {"fieldPath": "metadata.namespace"}}
+                    ]
+                }
+            },
+        ]
+        mounted = [
+            (c["name"], mount)
+            for c in [*pod["containers"], *pod["initContainers"]]
+            for mount in c.get("volumeMounts", [])
+            if mount["name"] == account["name"]
+        ]
+        assert mounted == [
+            (
+                workload,
+                {
+                    "name": "api-server-account",
+                    "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                    "readOnly": True,
+                },
+            )
+        ]
 
 
 def test_the_owntracks_connector_runs_its_retention_worker() -> None:

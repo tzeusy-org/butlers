@@ -175,7 +175,7 @@
     }
   },
   "declarations": {
-    "deploy/helm/butlers/templates/_helpers.tpl::<deployment-scalar>::deployment::aad2d541fa1a976c69b5e0048fa471e4ad349093fea800bc345502f81e4ff12e": {
+    "deploy/helm/butlers/templates/_helpers.tpl::<deployment-scalar>::deployment::938891558b7203b6b3dbb78d037b329809424ed0f45d400a07fd7ff12ce34be7": {
       "class": "internal",
       "observed": {
         "authorities": [],
@@ -184,15 +184,23 @@
         "kind": "deployment",
         "path": "deploy/helm/butlers/templates/_helpers.tpl",
         "scope": "<deployment-scalar>",
-        "sha256": "aad2d541fa1a976c69b5e0048fa471e4ad349093fea800bc345502f81e4ff12e"
+        "sha256": "938891558b7203b6b3dbb78d037b329809424ed0f45d400a07fd7ff12ce34be7"
       },
-      "reason": "Helm-owned local/service URL or templated internal identity; workload reachability is bounded by the chart, not an external gateway grant.",
+      "reason": "Helm configures the workload's local request-v1 relay on its declared port. The relay uses the authenticated gateway Service and the gateway enforces the reviewed destination profile.",
       "resolver": null,
       "sites": [],
       "workloads": [
-        "butlers-up",
         "butlers-control",
-        "dashboard-api"
+        "butlers-up",
+        "connector-gmail",
+        "connector-google-calendar",
+        "connector-google-drive",
+        "connector-google-health",
+        "connector-spotify",
+        "connector-steam",
+        "connector-telegram-bot",
+        "dashboard-api",
+        "session-host"
       ]
     },
     "deploy/helm/butlers/templates/_helpers.tpl::<deployment-scalar>::deployment::cf45de1aae135f239263750a6ca136be4fb0d47b99f9d00c3bc5ce0be04dc7b8": {
@@ -5893,28 +5901,28 @@
   "schema": "butlers.egress-profile-coverage/v2",
   "topology": {
     "deploy/helm/butlers/templates/_helpers.tpl": {
-      "sha256": "145366fc1f2432c25e94fbf171eb1e22a86fd18218bbc5d079203ab945b1f5cd"
+      "sha256": "6d417dbd4c73f12d2ca87ad67b461d7e2362ad8393af99033a38aea3c9de00f8"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
-      "sha256": "dc093bc68e3f600d419af5950fa85d07f15c69a4441b7a8877184e2a194dd752"
+      "sha256": "fc16033ead9bfb38c88f83c53c7020f7736376c149b3a4e22bd254072c72a67f"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "3a705d33726eb549f5c2340a8bc8c6689f897a8b5aecb5d5d5ad0651ce6b87f1"
+      "sha256": "97975f3bad002f27c556ec27fa632680ea172733aadd294d9ad450d672204372"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"
     },
     "deploy/helm/butlers/templates/connectors.yaml": {
-      "sha256": "d4e51ba52dca7a6ebb269065daa14a2ff9588d708f6621545e344c89322713dc"
+      "sha256": "2b64de9679ba6741ed699c6ed708e535ebfffd45b24b1c5aed3cb2f21ec3582f"
     },
     "deploy/helm/butlers/templates/cronjobs.yaml": {
       "sha256": "174eccfe628196cc18d86b6175b4284301d5adb67169e1751313505d12b19697"
     },
     "deploy/helm/butlers/templates/dashboard-api.yaml": {
-      "sha256": "be9aaa12e78c54d72b437411caf00bb577e9594589861465b707f87276bd6601"
+      "sha256": "a9aa366e38bf4386ea99997e418cfde06225a4b21480675184c0e618ebc2b3f7"
     },
     "deploy/helm/butlers/templates/egress-gateway.yaml": {
-      "sha256": "46726ddc9aa6cb92b69054cca56e5772923848af373dc68022d239cf8f4544bd"
+      "sha256": "bfe395a84807d6c5d586932d21e84c7fdefb4203ce67d61812372c9715551d5a"
     },
     "deploy/helm/butlers/templates/egress-profiles.yaml": {
       "sha256": "2830a68984f9d54a652a31f0d72f221fa28c94924c7104ac29be9a6e41aca948"
@@ -5938,7 +5946,7 @@
       "sha256": "25c52b6ea66d68f2844f37f9ee64b927c1d0c4ccdc450e1f9f99e4876fef0a8b"
     },
     "deploy/helm/butlers/templates/session-host.yaml": {
-      "sha256": "531f84a19f883f63b083ad88e8f0af350c5f42c6a6e1c3c74d970c15d4a475ba"
+      "sha256": "10d1ef5fb29422af790857f4ed68a0d4c85cad220f3b925847c4f60b2e35ab95"
     },
     "deploy/helm/butlers/templates/tracker-egress.yaml": {
       "sha256": "da5c9d1b5636373dc93e8259fa73c8b1955f23971c02a322a61a0c3fca16366c"

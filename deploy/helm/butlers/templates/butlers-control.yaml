@@ -18,6 +18,8 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 8 }}
     spec:
+      {{- $egress := dict "root" . "component" "butlers-control" }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
       {{- if .Values.servicePlaneAuth.enabled }}
       serviceAccountName: butlers-control
       {{- end }}
@@ -48,7 +50,7 @@ spec:
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "1"}
             {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
-            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "butlers-control") | trim) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
           readinessProbe:
             httpGet: {path: /health, port: service}
             periodSeconds: 5
@@ -68,10 +70,14 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
+            {{- with (include "butlers.servicePlaneAccountMount" $egress) }}{{ . | nindent 12 }}{{- end }}
             {{- if .Values.servicePlaneAuth.enabled }}
             - {name: workload-token, mountPath: /var/run/secrets/butlers/workload, readOnly: true}
             {{- end }}
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
+        {{- with (include "butlers.servicePlaneAccountVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}

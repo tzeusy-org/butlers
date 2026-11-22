@@ -1,6 +1,6 @@
 """Per-workload HTTPS request execution (RFC0038 S7).
 
-The gateway receives allowed HTTP requests transiently. It derives origin Host
+The gateway authenticates a workload before accepting its HTTP request. It derives origin Host
 and verified TLS identity from one exact profile destination, and refuses every
 redirect before exposing response headers. Paths, headers, bodies and exception
 text never enter audit logs. There is no CONNECT or opaque upgraded TCP route;
@@ -11,13 +11,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
+import re
 import socket
 import ssl
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +31,8 @@ from butlers.egress.profiles import RENDERED_PATH, ProfileError, validate_render
 
 AUDIT_LOGGER = "butlers.egress.audit"
 HEALTH_PORT = 3100
+_CLIENT_PINS_PATH = Path("/etc/butlers-egress/client-pins.json")
+_TLS_DIR = Path("/var/run/butlers-egress-tls")
 _HEAD_LIMIT = 8192
 _HEAD_TIMEOUT_S = 10.0
 _CONNECT_TIMEOUT_S = 10.0
@@ -583,53 +589,120 @@ async def handle_request(
             _audit(route, host, port, verdict, reason, up, down, started)
 
 
-async def serve(routes: Mapping[int, Route], host: str = "0.0.0.0") -> None:
-    servers = []
+async def serve(
+    routes: Mapping[int, Route],
+    host: str,
+    *,
+    tls: ssl.SSLContext,
+    client_pins: Mapping[str, bytes],
+) -> None:
     active = asyncio.Semaphore(_MAX_ACTIVE_REQUESTS)
-    for port, route in routes.items():
-        slots = asyncio.Semaphore(_MAX_TUNNELS_PER_WORKLOAD)
-
-        async def on_connect(reader, writer, route=route, slots=slots):
-            await handle_request(reader, writer, route, slots=slots, global_slots=active)
-
-        servers.append(await asyncio.start_server(on_connect, host, port, limit=_HEAD_LIMIT))
 
     async def health(_reader, writer):
         writer.close()
 
-    servers.append(await asyncio.start_server(health, host, HEALTH_PORT))
-    log.info("egress gateway serving %d workload ports", len(routes))
-    await asyncio.gather(*(server.serve_forever() for server in servers))
+    async with AsyncExitStack() as stack:
+        servers = []
+        for port, route in routes.items():
+            slots = asyncio.Semaphore(_MAX_TUNNELS_PER_WORKLOAD)
+            pin = client_pins[route.workload]
+
+            async def on_connect(reader, writer, route=route, slots=slots, pin=pin):
+                started = time.monotonic()
+                peer = writer.get_extra_info("ssl_object")
+                leaf = peer.getpeercert(binary_form=True) if peer else None
+                if not leaf or not hmac.compare_digest(hashlib.sha256(leaf).digest(), pin):
+                    _audit(route, None, None, "refused", "workload_identity_refused", 0, 0, started)
+                    await _settle_writers(writer)
+                    return
+                await handle_request(reader, writer, route, slots=slots, global_slots=active)
+
+            server = await asyncio.start_server(
+                on_connect,
+                host,
+                port,
+                ssl=tls,
+                limit=_HEAD_LIMIT,
+                ssl_handshake_timeout=_CONNECT_TIMEOUT_S,
+                ssl_shutdown_timeout=_CONNECT_TIMEOUT_S,
+                start_serving=False,
+            )
+            servers.append(await stack.enter_async_context(server))
+
+        for server in servers:
+            await server.start_serving()
+        health_server = await stack.enter_async_context(
+            await asyncio.start_server(health, host, HEALTH_PORT)
+        )
+        log.info("egress gateway serving %d authenticated workload ports", len(routes))
+        await health_server.serve_forever()
 
 
-def _profile_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result = dict(pairs)
     if len(result) != len(pairs):
-        raise ProfileError("duplicate profile keys")
+        raise ValueError("duplicate configuration keys")
     return result
+
+
+def _client_pins(path: Path, routes: Mapping[int, Route]) -> dict[str, bytes]:
+    document = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object)
+    workloads = {route.workload for route in routes.values()}
+    if not workloads or not isinstance(document, dict) or document.keys() != workloads:
+        raise ValueError("client pins must cover every workload listener exactly")
+    pins: dict[str, bytes] = {}
+    for workload, fingerprint in document.items():
+        if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+            raise ValueError("client pins must be lowercase SHA-256 fingerprints")
+        pins[workload] = bytes.fromhex(fingerprint)
+    if len(set(pins.values())) != len(pins):
+        raise ValueError("a client pin cannot be shared by workload listeners")
+    return pins
+
+
+def _server_tls(directory: Path) -> ssl.SSLContext:
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.minimum_version = ssl.TLSVersion.TLSv1_3
+    tls.load_cert_chain(directory / "tls.crt", directory / "tls.key", password=lambda: b"")
+    tls.load_verify_locations(cafile=directory / "ca.crt")
+    tls.verify_mode = ssl.CERT_REQUIRED
+    return tls
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Serve the shared egress gateway.")
     parser.add_argument("--profiles", type=Path, default=RENDERED_PATH)
+    parser.add_argument("--client-pins", type=Path, default=_CLIENT_PINS_PATH)
+    parser.add_argument("--tls-dir", type=Path, default=_TLS_DIR)
     parser.add_argument("--host", default="0.0.0.0")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         document = json.loads(
-            args.profiles.read_text(encoding="utf-8"), object_pairs_hook=_profile_object
+            args.profiles.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
         )
         routes = routes_from_rendered(document)
     except OSError:
         log.error("could not read egress gateway profile configuration")
+        return 1
     except (UnicodeError, json.JSONDecodeError, RecursionError):
         log.error("egress gateway profile configuration is malformed")
+        return 1
     except ValueError:
         log.error("egress gateway profile configuration is invalid")
-    else:
-        asyncio.run(serve(routes, args.host))
-        return 0
-    return 1
+        return 1
+    try:
+        pins = _client_pins(args.client_pins, routes)
+        tls = _server_tls(args.tls_dir)
+    except (OSError, ValueError, RecursionError):
+        log.error("egress gateway TLS identity configuration is invalid or unavailable")
+        return 1
+    try:
+        asyncio.run(serve(routes, args.host, tls=tls, client_pins=pins))
+    except OSError:
+        log.error("could not start egress gateway listeners")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ The file's header documents each key. In short:
 | `internal` | Exact chart peers: destination component, port or `port`..`end_port`, protocol. |
 | `sites` | Peers outside the chart (Postgres, the OTLP collector, Home Assistant, the off-node backup device). The profile owns the port; the deployment supplies only the location. |
 | `external` | Exact public `hostname:port` entries, reachable only through the shared gateway. |
-| `gateway_port` | This workload's port on the gateway. Unique per workload: it is the workload's identity there. |
+| `gateway_port` | The unique listener port that selects the workload's gateway route. The gateway verifies its client certificate separately. |
 | `dynamic` | Configured destinations deliberately **not** admitted, with the reason. |
 | `held` | A reason the workload cannot be enforced yet. A held workload admits nothing. |
 
@@ -79,6 +79,8 @@ Rendering fails, naming the workload or site, when:
   IPv4 `/32`, or a tracker, metadata, loopback, unspecified, multicast or reserved
   address;
 - `trackerEgress.deniedCidrs` is empty, or `egressProfiles.enabled` is not a boolean.
+- Gateway trust inputs omit a listener, have extra workload entries, or reuse a
+  fingerprint or Secret across identities.
 
 `tests/scripts/test_chart_egress_profiles.py` evaluates the rendered union for every pod.
 That is rendered intent, not enforcement evidence.
@@ -109,16 +111,21 @@ cluster issuer's JWKS. With `servicePlaneAuth.enabled` the chart requires it; se
 `src/butlers/egress/gateway.py`, rendered by `templates/egress-gateway.yaml` only with
 `egressProfiles.enabled`: a Deployment `egress-gateway` (`egressProfiles.gateway.replicas`,
 default 2, no service-account token), a Service with one port per profiled workload, and
-the profile rendering mounted from a ConfigMap (a checksum annotation rolls the pods on
-change).
+a ConfigMap with the rendered profiles and public client fingerprints. Changing either
+configuration rolls the gateway pods.
 
 The gateway validates the mounted JSON against the same workload and route rules as
 the TOML source. A missing or invalid file, including repeated JSON keys, causes
 startup to fail before it opens workload or readiness ports. The startup error
 reports whether reading, decoding or validation failed, and omits the file contents.
+The gateway also requires every listener to have a distinct client certificate
+fingerprint and loads its server certificate, private key and client CA before binding.
 
-- **Identity is the port.** Only the workload's pods may reach its dedicated listener.
-  No header can claim a different workload. CONNECT and opaque upgraded TCP are refused.
+- **Workload identity:** the listener selects the route and requires TLS 1.3 client
+  authentication. The verified client leaf's SHA-256 fingerprint must match the
+  workload bound to that port before request parsing, DNS or an origin connection.
+  Both pod and gateway NetworkPolicies constrain the same listener. No header can
+  claim another workload. CONNECT and opaque upgraded TCP are refused.
 - **Request execution:** an explicit internal HTTP/1.1 hop targets
   `/_butlers/egress/v1/https/<host>/<port>/<path>?<query>`, with hop Host
   `egress-gateway:<listener-port>`. The exact profile-approved origin supplies both
@@ -169,7 +176,30 @@ reports whether reading, decoding or validation failed, and omits the file conte
   remains gated separately.
 
 Profiled workloads receive paired nonsecret `BUTLERS_EGRESS_MODE=request-v1` and
-`BUTLERS_EGRESS_GATEWAY=http://egress-gateway:<port>`. Shared external HTTPX/SDK
+`BUTLERS_EGRESS_GATEWAY=http://egress-gateway:<port>`. A pod host alias resolves the
+bare gateway name to IPv4 loopback. The relay binds only loopback and uses its own
+client identity to reach the same port at
+`egress-gateway.<release namespace>.svc.<clusterDomain>`. The relay verifies the
+gateway CA and requires the configured service name as a literal DNS SAN before forwarding
+the request. The relay can finish sending a response after the client closes its send side,
+within the exchange deadline. A missing relay or failed connection leaves the request unavailable.
+
+Configure `egressProfiles.gateway.tlsSecret` for the server and
+`clientSecrets` and `clientPins` by workload for every external profile. Each
+Secret mount selects `tls.crt`, `tls.key` and `ca.crt`. The server trusts the client
+issuer. Each relay trusts the server issuer and receives its own client key.
+Use separate keys for each identity. The application containers have no TLS
+Secret mounts, and process namespace sharing is disabled. The two service-plane
+verifiers receive their existing API server discovery files in their own
+containers when service-plane authentication is enabled. The Session Host
+container keeps its existing control identity. Its network-unshared runtime still
+requires a separate reachability proof before launch.
+
+For a credential change, use new, dedicated Secret names and coordinate the
+client pin map and certificate rollout together. Processes load credentials on
+startup. A relay and gateway with different pins refuse the exchange.
+
+Shared external HTTPX/SDK
 construction selects the request transport; incomplete configuration refuses.
 Internal/site-local clients remain separate. Off-mode preserves existing caller
 proxy behavior. No ambient proxy variable forwards into selected mode.
@@ -302,8 +332,9 @@ Not authorized by this source change. Each step needs its own authorization:
    workload reaches a declared service, and is refused an undeclared public host,
    private/link-local/metadata destinations, another workload's gateway port and an
    SNI/authority mismatch. Delete the throwaway pods and policies afterwards.
-3. Owner-authorized dev enable: supply `egressProfiles.sites` for dev, disable or resolve
-   held workloads, set `egressPolicy.enabled=false`, `egressProfiles.enabled=true`.
+3. For owner-authorized dev enablement, supply `egressProfiles.sites` and the
+   dedicated gateway TLS references and fingerprints. Disable or resolve held
+   workloads, set `egressPolicy.enabled=false`, and set `egressProfiles.enabled=true`.
 
 ## Rollback
 

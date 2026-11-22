@@ -9,14 +9,15 @@
 # default. It installs no reviewed runtime profile, so it refuses every launch; it
 # serves the Codex credential volume to the pinned control-plane caller over mTLS on
 # the control port, and the ingress policy below admits only butlers-control there.
-# It carries no database, domain or connector credential. Its only secret is its
-# own PKI (sessionHost.pkiSecret: tls.crt, tls.key, client-ca.crt, server.sha256,
+# The host container's only secret is its own control PKI
+# (sessionHost.pkiSecret: tls.crt, tls.key, client-ca.crt, server.sha256,
 # caller.sha256), provisioned out of band; without it the pod does not start. The
 # composition is pinned by tests/scripts/test_session_host_env_guard.py.
 # Egress is NOT restricted here: trackerEgress selects every pod and allows all
 # destinations, and policies union. egressProfiles.enabled (default off) replaces that
-# policy with the session-host profile in deploy/egress-profiles.toml; proving the
-# reachability (RFC 0038 D3) remains bu-kiuh8v.4's.
+# policy with the session-host profile in deploy/egress-profiles.toml. The relay
+# holds its own gateway-only TLS identity. The host still installs no runtime
+# profile, and reachability inside Bubblewrap remains bu-kiuh8v.4's proof.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,7 +35,11 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "session-host") | nindent 8 }}
     spec:
+      {{- $egress := dict "root" . "component" "session-host" }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}
+      {{- else }}
       automountServiceAccountToken: false
+      {{- end }}
       containers:
         - name: session-host
           image: {{ include "butlers.image" . }}
@@ -52,7 +57,7 @@ spec:
             - {name: control, containerPort: {{ .Values.sessionHost.port }}, protocol: TCP}
           env:
             - {name: HOME, value: /root}
-            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "session-host") | trim) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
           volumeMounts:
             - {name: pki, mountPath: /run/session-host/pki, readOnly: true}
             - {name: staging, mountPath: /var/lib/session-host/staging}
@@ -64,7 +69,9 @@ spec:
           securityContext:
             seccompProfile: {type: Localhost, localhostProfile: {{ . | quote }}}
           {{- end }}
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         - name: pki
           secret:
             secretName: {{ .Values.sessionHost.pkiSecret }}

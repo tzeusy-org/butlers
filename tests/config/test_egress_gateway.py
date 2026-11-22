@@ -5,18 +5,21 @@ from __future__ import annotations
 import asyncio
 import datetime
 import json
+import shutil
 import socket
 import ssl
 from contextlib import asynccontextmanager
+from unittest.mock import Mock
 
 import h11
+import httpx
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from butlers.egress import gateway
+from butlers.egress import gateway, relay
 from butlers.egress.gateway import (
     AUDIT_LOGGER,
     HEALTH_PORT,
@@ -25,6 +28,7 @@ from butlers.egress.gateway import (
     routes_from_rendered,
     system_resolver,
 )
+from butlers.egress.http_transport import external_async_client
 from butlers.egress.profiles import RENDERED_PATH, load_profiles
 
 pytestmark = pytest.mark.unit
@@ -32,6 +36,8 @@ HOST = "gmail.googleapis.com"
 ROUTE = Route("connector-gmail", 3115, frozenset({(HOST, 443)}))
 PUBLIC = "93.184.216.34"
 _PUBLIC = PUBLIC
+_GATEWAY_NAME = "egress-gateway.butlers.svc.cluster.local"
+_OTHER_WORKLOAD = "connector-google-drive"
 
 
 def test_routes_come_from_the_rendered_profiles_and_skip_held_or_internal_only_workloads():
@@ -159,6 +165,148 @@ def tls_contexts(tmp_path_factory):
     server = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     server.load_cert_chain(cert, private)
     return server, ssl.create_default_context(cafile=str(cert))
+
+
+@pytest.fixture
+def gateway_identity(tmp_path):
+    directory = tmp_path / "tls"
+    directory.mkdir()
+
+    def issue(name, *, issuer=None, usage=None):
+        key = ec.generate_private_key(ec.SECP256R1())
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        now = datetime.datetime.now(datetime.UTC)
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(subject if issuer is None else issuer[0].subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=1))
+            .not_valid_after(now + datetime.timedelta(hours=1))
+            .add_extension(x509.BasicConstraints(ca=issuer is None, path_length=None), True)
+        )
+        if usage is not None:
+            builder = builder.add_extension(x509.ExtendedKeyUsage([usage]), False)
+        if usage == ExtendedKeyUsageOID.SERVER_AUTH:
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName([x509.DNSName(name)]), False
+            )
+        return builder.sign(key if issuer is None else issuer[1], hashes.SHA256()), key
+
+    def write_chain(cert_path, key_path, pair):
+        leaf, key = pair
+        cert_path.write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
+        key_path.write_bytes(
+            key.private_bytes(
+                serialization.Encoding.PEM,
+                serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            )
+        )
+        key_path.chmod(0o600)
+
+    issuer = issue("gateway test CA")
+    ca_path = directory / "ca.crt"
+    ca_path.write_bytes(issuer[0].public_bytes(serialization.Encoding.PEM))
+    write_chain(
+        directory / "tls.crt",
+        directory / "tls.key",
+        issue(_GATEWAY_NAME, issuer=issuer, usage=ExtendedKeyUsageOID.SERVER_AUTH),
+    )
+
+    pins = {}
+    clients = {"absent": ssl.create_default_context(cafile=str(ca_path))}
+    for workload in (ROUTE.workload, _OTHER_WORKLOAD, "unpinned"):
+        pair = issue(workload, issuer=issuer, usage=ExtendedKeyUsageOID.CLIENT_AUTH)
+        cert_path, key_path = tmp_path / f"{workload}.crt", tmp_path / f"{workload}.key"
+        write_chain(cert_path, key_path, pair)
+        client = ssl.create_default_context(cafile=str(ca_path))
+        client.load_cert_chain(cert_path, key_path)
+        clients[workload] = client
+        if workload != "unpinned":
+            pins[workload] = pair[0].fingerprint(hashes.SHA256()).hex()
+
+    profiles = tmp_path / "profiles.json"
+    profiles.write_text(
+        json.dumps(
+            {
+                "schema": "butlers-egress-profiles/v1",
+                "generated_from": "test-fixture",
+                "workloads": {
+                    name: {
+                        "summary": "Synthetic gateway client",
+                        "gateway_port": port,
+                        "external": [{"host": HOST, "port": 443}],
+                    }
+                    for port, name in ((ROUTE.port, ROUTE.workload), (3116, _OTHER_WORKLOAD))
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    pins_path = tmp_path / "client-pins.json"
+    pins_path.write_text(json.dumps(pins), encoding="utf-8")
+    return profiles, pins_path, directory, clients
+
+
+@pytest.mark.parametrize(
+    "problem",
+    (
+        "absent_pins",
+        "duplicate_key",
+        "incomplete",
+        "undeclared",
+        "shared",
+        "bad_pin",
+        "bad_ca",
+        "mismatched_key",
+    ),
+)
+def test_gateway_refuses_invalid_tls_startup(problem, gateway_identity, monkeypatch, caplog):
+    profiles, pins_path, directory, _ = gateway_identity
+    pins = json.loads(pins_path.read_text(encoding="utf-8"))
+    if problem == "absent_pins":
+        pins_path.unlink()
+    elif problem == "duplicate_key":
+        pins_path.write_text(json.dumps(pins)[:-1] + f', "{ROUTE.workload}": "bad"}}')
+    elif problem == "incomplete":
+        pins.pop(_OTHER_WORKLOAD)
+    elif problem == "undeclared":
+        pins["other"] = "a" * 64
+    elif problem == "shared":
+        pins[_OTHER_WORKLOAD] = pins[ROUTE.workload]
+    elif problem == "bad_pin":
+        pins[_OTHER_WORKLOAD] = "b" * 63
+    elif problem == "bad_ca":
+        (directory / "ca.crt").write_bytes(b"not a certificate")
+    else:
+        (directory / "tls.key").write_bytes(
+            (directory.parent / f"{ROUTE.workload}.key").read_bytes()
+        )
+    if problem in {"incomplete", "undeclared", "shared", "bad_pin"}:
+        pins_path.write_text(json.dumps(pins), encoding="utf-8")
+
+    async def serve(*_args, **_kwargs):
+        pytest.fail("invalid TLS configuration reached listener startup")
+
+    monkeypatch.setattr(gateway, "serve", serve)
+    assert (
+        gateway.main(
+            [
+                "--profiles",
+                str(profiles),
+                "--client-pins",
+                str(pins_path),
+                "--tls-dir",
+                str(directory),
+            ]
+        )
+        == 1
+    )
+    assert caplog.messages == [
+        "egress gateway TLS identity configuration is invalid or unavailable"
+    ]
 
 
 class Origin:
@@ -305,10 +453,12 @@ def wire(*, host=HOST, target=b"/test", headers=(), body=b"", method=b"POST"):
     )
 
 
-async def exchange(port, payload):
-    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+async def exchange(port, payload, *, tls=None, name=None, finish_upload=False):
+    reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=tls, server_hostname=name)
     try:
         writer.write(payload)
+        if finish_upload:
+            writer.write_eof()
         await writer.drain()
         response = bytearray()
         while True:
@@ -326,6 +476,279 @@ async def exchange(port, payload):
             await writer.wait_closed()
         except ConnectionError:
             pass
+
+
+@asynccontextmanager
+async def running_egress_command(command, args, monkeypatch):
+    actual_bind = asyncio.start_server
+    ready = asyncio.Event()
+    sockets = {}
+    tasks = []
+
+    async def bind(callback, host, port, **kwargs):
+        # Keep the listener selection but let the OS choose isolated test ports.
+        server = await actual_bind(callback, host, 0, **kwargs)
+        sockets[port] = server.sockets[0].getsockname()[1]
+        if port == HEALTH_PORT:
+            ready.set()
+        return server
+
+    with monkeypatch.context() as binding:
+        binding.setattr(asyncio, "start_server", bind)
+        with monkeypatch.context() as invoking:
+            invoking.setattr(
+                asyncio, "run", lambda coroutine: tasks.append(asyncio.create_task(coroutine))
+            )
+            assert command(args) == 0
+        (task,) = tasks
+        try:
+            await asyncio.wait_for(ready.wait(), 5)
+        except BaseException:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+    try:
+        yield sockets
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5)
+
+
+@asynccontextmanager
+async def running_authenticated_gateway(
+    gateway_identity, tls_contexts, monkeypatch, *, origin=None
+):
+    profiles, pins_path, directory, _ = gateway_identity
+    if origin is None:
+        origin = Origin(chunks=(b"authenticated",))
+    origin_server, origin_client = tls_contexts
+    resolutions = []
+    settled = asyncio.Queue()
+    execute = gateway.handle_request
+
+    async def resolve(host, port):
+        resolutions.append((host, port))
+        return [PUBLIC]
+
+    async with await asyncio.start_server(
+        origin.respond, "127.0.0.1", 0, ssl=origin_server
+    ) as upstream:
+
+        async def dial(address, port, host, tls):
+            origin.dials.append((address, port, host))
+            return await asyncio.open_connection(
+                "127.0.0.1", upstream.sockets[0].getsockname()[1], ssl=tls, server_hostname=host
+            )
+
+        async def with_local_origin(reader, writer, route, **kwargs):
+            try:
+                await execute(
+                    reader,
+                    writer,
+                    route,
+                    resolve=resolve,
+                    open_upstream=dial,
+                    tls_context=origin_client,
+                    **kwargs,
+                )
+            finally:
+                settled.put_nowait(None)
+
+        args = [
+            "--host",
+            "127.0.0.1",
+            "--profiles",
+            str(profiles),
+            "--client-pins",
+            str(pins_path),
+            "--tls-dir",
+            str(directory),
+        ]
+        with monkeypatch.context() as remote:
+            remote.setattr(gateway, "handle_request", with_local_origin)
+            async with running_egress_command(gateway.main, args, remote) as sockets:
+                yield sockets, origin, resolutions, settled
+
+
+async def test_gateway_command_authenticates_workload_before_origin(
+    gateway_identity, tls_contexts, monkeypatch, caplog
+):
+    clients = gateway_identity[3]
+    caplog.set_level("INFO", logger=AUDIT_LOGGER)
+    async with running_authenticated_gateway(
+        gateway_identity, tls_contexts, monkeypatch
+    ) as running:
+        sockets, origin, resolutions, settled = running
+        assert set(sockets) == {ROUTE.port, 3116, HEALTH_PORT}
+        assert await exchange(sockets[HEALTH_PORT], b"") == b""
+        claimed_port = sockets[ROUTE.port]
+        payload = wire(target=b"/private-path")
+
+        assert await exchange(claimed_port, payload) == b""
+        for wrong in (_OTHER_WORKLOAD, "unpinned", "absent"):
+            try:
+                result = await exchange(
+                    claimed_port, payload, tls=clients[wrong], name=_GATEWAY_NAME
+                )
+            except ConnectionError:
+                result = b""
+            assert result == b""
+        assert not resolutions and not origin.dials
+
+        correct = clients[ROUTE.workload]
+        forbidden = await exchange(
+            claimed_port, wire(host="undeclared.example"), tls=correct, name=_GATEWAY_NAME
+        )
+        assert b"403 Forbidden" in forbidden
+        await asyncio.wait_for(settled.get(), 5)
+        assert not resolutions and not origin.dials
+        result = await exchange(claimed_port, payload, tls=correct, name=_GATEWAY_NAME)
+        assert b"200 " in result and b"authenticated" in result
+        await asyncio.wait_for(settled.get(), 5)
+        assert resolutions == [(HOST, 443)]
+        assert origin.dials == [(PUBLIC, 443, HOST)]
+        assert len(origin.requests) == 1
+        receipts = [
+            json.loads(record.message) for record in caplog.records if record.name == AUDIT_LOGGER
+        ]
+        assert [entry["reason"] for entry in receipts] == [
+            "workload_identity_refused",
+            "workload_identity_refused",
+            "undeclared_destination",
+            "closed",
+        ]
+        assert all(entry["host"] is None and entry["bytes_up"] == 0 for entry in receipts[:2])
+        assert "private-path" not in caplog.text
+
+
+@pytest.fixture
+def relay_tls_directory(gateway_identity):
+    _, _, server_dir, _ = gateway_identity
+    relay_dir = server_dir.parent / "relay"
+    relay_dir.mkdir()
+    shutil.copyfile(server_dir / "ca.crt", relay_dir / "ca.crt")
+    for extension in ("crt", "key"):
+        file = relay_dir / f"tls.{extension}"
+        shutil.copyfile(server_dir.parent / f"{ROUTE.workload}.{extension}", file)
+        file.chmod(0o600)
+    return relay_dir
+
+
+def test_relay_requires_literal_dns_san():
+    upstream = Mock(spec=asyncio.StreamWriter)
+    upstream.get_extra_info.return_value = {"subjectAltName": (("DNS", _GATEWAY_NAME.upper()),)}
+    relay._require_gateway_name(upstream, _GATEWAY_NAME)
+
+    for san in ((), (("DNS", "*.butlers.svc.cluster.local"),), (("URI", _GATEWAY_NAME),)):
+        upstream.get_extra_info.return_value = {"subjectAltName": san}
+        with pytest.raises(ssl.SSLCertVerificationError, match="gateway DNS SAN mismatch"):
+            relay._require_gateway_name(upstream, _GATEWAY_NAME)
+
+
+async def test_relay_checks_service_name_and_preserves_provider_response(
+    gateway_identity, relay_tls_directory, tls_contexts, monkeypatch, caplog
+):
+    monkeypatch.setenv("BUTLERS_EGRESS_MODE", "request-v1")
+    monkeypatch.setenv("BUTLERS_EGRESS_GATEWAY", f"http://egress-gateway:{ROUTE.port}")
+    wrong_name = "egress-gateway.other.svc.cluster.local"
+    client_port = None
+    discovery = []
+    loop = asyncio.get_running_loop()
+    getaddrinfo = loop.getaddrinfo
+
+    async with running_authenticated_gateway(
+        gateway_identity, tls_contexts, monkeypatch
+    ) as running:
+        sockets, origin, resolutions, settled = running
+
+        async def resolve(host, port, **kwargs):
+            if host == "egress-gateway":
+                port = client_port
+            elif host in (_GATEWAY_NAME + ".", wrong_name + "."):
+                discovery.append((host, port))
+                port = sockets[port]
+            else:
+                pytest.fail("gateway client attempted another name")
+            return await getaddrinfo("127.0.0.1", port, **kwargs)
+
+        monkeypatch.setattr(loop, "getaddrinfo", resolve)
+        async with external_async_client(timeout=3) as client:
+            url = f"https://{HOST}/stream"
+            args = ["--port", str(ROUTE.port), "--tls-dir", str(relay_tls_directory)]
+            async with running_egress_command(
+                relay.main, [*args, "--gateway-name", wrong_name], monkeypatch
+            ) as local:
+                client_port = local[ROUTE.port]
+                with pytest.raises(httpx.TransportError):
+                    await client.get(url)
+            assert "egress relay gateway identity refused" in caplog.messages
+            assert not resolutions and not origin.dials
+
+            async with running_egress_command(
+                relay.main, [*args, "--gateway-name", _GATEWAY_NAME], monkeypatch
+            ) as local:
+                client_port = local[ROUTE.port]
+                response = await client.get(url)
+                assert response.status_code == 200 and response.content == b"authenticated"
+                await asyncio.wait_for(settled.get(), 5)
+
+                origin.status = 429
+                origin.headers = [(b"Retry-After", b"30")]
+                response = await client.get(url)
+                assert response.status_code == 429 and response.headers["retry-after"] == "30"
+                await asyncio.wait_for(settled.get(), 5)
+
+            with pytest.raises(httpx.TransportError):
+                await client.get(url)
+            assert discovery == [
+                (wrong_name + ".", ROUTE.port),
+                (_GATEWAY_NAME + ".", ROUTE.port),
+                (_GATEWAY_NAME + ".", ROUTE.port),
+            ]
+            assert resolutions == [(HOST, 443), (HOST, 443)]
+            assert origin.dials == [(PUBLIC, 443, HOST), (PUBLIC, 443, HOST)]
+
+
+@pytest.mark.parametrize("status", [200, 413])
+async def test_relay_drains_response_after_client_finishes_upload(
+    gateway_identity, relay_tls_directory, tls_contexts, monkeypatch, status
+):
+    origin = Origin(
+        status=status, chunks=(b"response-after-upload",), delay=0.05, early=status == 413
+    )
+    body = b"fixture-upload"
+    request = wire(body=body)
+    if origin.early:
+        request = request[: -len(body)]
+
+    loop = asyncio.get_running_loop()
+    getaddrinfo = loop.getaddrinfo
+    async with running_authenticated_gateway(
+        gateway_identity, tls_contexts, monkeypatch, origin=origin
+    ) as (sockets, _, resolutions, settled):
+
+        async def resolve(host, port, **kwargs):
+            assert (host, port) == (_GATEWAY_NAME + ".", ROUTE.port)
+            return await getaddrinfo("127.0.0.1", sockets[port], **kwargs)
+
+        monkeypatch.setattr(loop, "getaddrinfo", resolve)
+        args = [
+            "--port",
+            str(ROUTE.port),
+            "--gateway-name",
+            _GATEWAY_NAME,
+            "--tls-dir",
+            str(relay_tls_directory),
+        ]
+        async with running_egress_command(relay.main, args, monkeypatch) as local:
+            response = await exchange(local[ROUTE.port], request, finish_upload=True)
+            assert response.startswith(f"HTTP/1.1 {status} ".encode())
+            assert b"response-after-upload" in response
+            await asyncio.wait_for(settled.get(), 5)
+
+    assert resolutions == [(HOST, 443)]
+    assert [content for _, content in origin.requests] == [b"" if origin.early else body]
 
 
 async def test_request_execution_binds_verified_tls_host_and_preserves_content(
@@ -963,6 +1386,55 @@ class FrameOrigin(Origin):
             except OSError:
                 pass
             self.tasks.discard(task)
+
+
+async def test_authenticated_relay_preserves_websocket_frames_and_close(
+    gateway_identity, relay_tls_directory, tls_contexts, monkeypatch
+):
+    from websockets.frames import Frame, Opcode
+
+    close = b"\x03\xe8"
+    frames = Frame(Opcode.TEXT, b"fixture frame").serialize(mask=False)
+    frames += Frame(Opcode.CLOSE, close).serialize(mask=False)
+    origin = FrameOrigin(frames)
+    async with running_authenticated_gateway(
+        gateway_identity, tls_contexts, monkeypatch, origin=origin
+    ) as (sockets, _, resolutions, settled):
+        loop = asyncio.get_running_loop()
+        getaddrinfo = loop.getaddrinfo
+
+        async def resolve(host, port, **kwargs):
+            assert (host, port) == (_GATEWAY_NAME + ".", ROUTE.port)
+            return await getaddrinfo("127.0.0.1", sockets[port], **kwargs)
+
+        monkeypatch.setattr(loop, "getaddrinfo", resolve)
+        args = [
+            "--port",
+            str(ROUTE.port),
+            "--tls-dir",
+            str(relay_tls_directory),
+            "--gateway-name",
+            _GATEWAY_NAME,
+        ]
+        async with running_egress_command(relay.main, args, monkeypatch) as local:
+            reader, writer = await asyncio.open_connection("127.0.0.1", local[ROUTE.port])
+            reply = Frame(Opcode.CLOSE, close).serialize(mask=True)
+            try:
+                async with asyncio.timeout(5):
+                    writer.write(ws_wire())
+                    await writer.drain()
+                    assert (await reader.readuntil(b"\r\n\r\n")).startswith(b"HTTP/1.1 101")
+                    assert await reader.readexactly(len(frames)) == frames
+                    writer.write(reply)
+                    await writer.drain()
+                    assert await reader.read() == b""
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            await asyncio.wait_for(settled.get(), 5)
+        assert origin.received == reply
+        assert resolutions == [(HOST, 443)]
+        assert origin.dials == [(PUBLIC, 443, HOST)]
 
 
 @pytest.mark.parametrize(

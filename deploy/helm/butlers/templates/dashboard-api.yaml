@@ -18,6 +18,8 @@ spec:
       labels:
         {{- include "butlers.selector" (dict "root" . "component" "dashboard-api") | nindent 8 }}
     spec:
+      {{- $egress := dict "root" . "component" "dashboard-api" }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
       {{- include "butlers.hostServedNodeSelector" . | nindent 6 }}
       initContainers:
         - name: migrations
@@ -54,7 +56,7 @@ spec:
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: BUTLERS_DISABLE_FILE_LOGGING, value: "1"}
-            {{- with (include "butlers.egressProxyEnv" (dict "root" . "component" "dashboard-api") | trim) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
             - {name: BUTLERS_HOST, value: butlers-up}
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
             {{- include "butlers.servicePlaneEnv" . | nindent 12 }}
@@ -131,7 +133,9 @@ spec:
               mountPath: /run/secrets/runtime_probe_control_signing_key
               subPath: runtime_probe_control_signing_key
               readOnly: true
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}

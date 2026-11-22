@@ -8,6 +8,7 @@ from deploy/egress-profiles.toml; it is not evidence that a CNI enforces it.
 from __future__ import annotations
 
 import ipaddress
+import json
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ pytestmark = [
 ]
 
 _CHART = Path(__file__).resolve().parents[2] / "deploy" / "helm" / "butlers"
+_TLS_VALUES = Path(__file__).resolve().parents[1] / "fixtures" / "egress-gateway-values.yaml"
 _NS = "butlers-dev"
 _TRACKER = "192.0.2.1"
 _OTLP = "198.51.100.9"
@@ -69,6 +71,7 @@ _GATEWAY = _component("egress-gateway")
 def _render(*settings: str) -> subprocess.CompletedProcess[str]:
     command = ["helm", "template", "butlers", str(_CHART), "--namespace", _NS]
     command += ["-f", str(_CHART / "values.yaml"), "-f", str(_CHART / "values.dev.yaml")]
+    command += ["-f", str(_TLS_VALUES)]
     # Declare test topology/mode rather than inheriting the environment's dev enable.
     # Explicit per-case settings below can select the predecessor policy instead.
     site = (
@@ -424,6 +427,89 @@ def test_the_gateway_runs_two_replicas_with_no_service_account_token(everything)
     pod = deployment["spec"]["template"]["spec"]
     assert pod["automountServiceAccountToken"] is False
     assert "--profiles" in pod["containers"][0]["command"]
+
+
+def test_each_profile_binds_its_pin_service_listener_and_relay_only_secret(everything):
+    profiles = load_profiles().workloads
+    listeners = {name: p.gateway_port for name, p in profiles.items() if p.gateway_port}
+    gateway_config = next(
+        d for d in everything if d["metadata"]["name"] == "butlers-egress-profiles"
+    )
+    pins = json.loads(gateway_config["data"]["client-pins.json"])
+    assert pins.keys() == listeners.keys()
+    assert len(set(pins.values())) == len(pins)
+
+    service = next(
+        d
+        for d in everything
+        if d["kind"] == "Service" and d["metadata"]["name"] == "egress-gateway"
+    )
+    assert {item["port"]: item["targetPort"] for item in service["spec"]["ports"]} == {
+        port: port for port in listeners.values()
+    }
+
+    secret_users = {}
+    for doc in everything:
+        if doc["kind"] != "Deployment":
+            continue
+        template = doc["spec"]["template"]
+        component = template["metadata"]["labels"]["app.kubernetes.io/component"]
+        pod = template["spec"]
+        relay = next((c for c in pod["containers"] if c["name"] == "egress-relay"), None)
+        if component in listeners:
+            assert relay["command"][-2:] == ["-m", "butlers.egress.relay"]
+            assert relay["args"] == [
+                "--gateway-name",
+                f"egress-gateway.{_NS}.svc.cluster.local",
+                "--port",
+                str(listeners[component]),
+            ]
+            assert pod["hostAliases"] == [{"ip": "127.0.0.1", "hostnames": ["egress-gateway"]}]
+            assert pod["shareProcessNamespace"] is False
+            assert pod["automountServiceAccountToken"] is False
+        else:
+            assert relay is None
+            assert not pod.get("hostAliases")
+            if component != "egress-gateway":
+                continue
+        volume = next(v["secret"] for v in pod["volumes"] if v["name"] == "egress-tls")
+        assert {item["key"]: item["path"] for item in volume["items"]} == {
+            name: name for name in ("ca.crt", "tls.crt", "tls.key")
+        }
+        assert volume["defaultMode"] == 0o400
+        owners = [
+            (c["name"], mount["readOnly"])
+            for c in [*pod["containers"], *pod.get("initContainers", [])]
+            for mount in c.get("volumeMounts", [])
+            if mount["name"] == "egress-tls"
+        ]
+        assert owners == [("gateway" if component == "egress-gateway" else "egress-relay", True)]
+        secret_users[component] = volume["secretName"]
+    assert secret_users.keys() == listeners.keys() | {"egress-gateway"}
+    assert len(set(secret_users.values())) == len(secret_users)
+    assert secret_users["egress-gateway"] == "test-gateway-server"
+    assert all(secret_users[component] == f"test-gateway-{component}" for component in listeners)
+
+
+@pytest.mark.parametrize(
+    ("setting", "error"),
+    [
+        ("tlsSecret=null", "must name gateway TLS Secrets"),
+        ("clientPins.connector-gmail=null", "requires a SHA-256 fingerprint for connector-gmail"),
+        ("clientPins.extra=bad", "cover every workload listener exactly"),
+        ("clientPins.connector-gmail=bad", "requires a SHA-256 fingerprint for connector-gmail"),
+        (
+            "clientSecrets.connector-gmail=test-gateway-connector-spotify",
+            "must name distinct gateway-only Secrets",
+        ),
+        ("tlsSecret=butlers-bws", "must name distinct gateway-only Secrets"),
+        ("clusterDomain=cluster_local", "clusterDomain must be a DNS domain"),
+    ],
+)
+def test_profiles_require_complete_exclusive_gateway_trust(setting, error):
+    result = _render(*_EVERYTHING, f"egressProfiles.gateway.{setting}")
+    assert result.returncode != 0
+    assert error in result.stderr, result.stderr
 
 
 def _env(docs: list[dict]) -> dict[str, dict[str, str]]:

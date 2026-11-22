@@ -36,6 +36,8 @@ spec:
         prometheus.io/path: /metrics
       {{- end }}
     spec:
+      {{- $egress := dict "root" $ "component" (printf "connector-%s" $name) }}
+      {{- with (include "butlers.egressRelayPod" $egress) }}{{ . | nindent 6 }}{{- end }}
       {{- if $relayCaller }}
       serviceAccountName: connector-owntracks
       {{- end }}
@@ -69,7 +71,7 @@ spec:
             - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" $ }}:41100/sse"}
             - {name: CONNECTOR_PROVIDER, value: {{ $c.provider | quote }}}
             - {name: CONNECTOR_CHANNEL, value: {{ $c.channel | quote }}}
-            {{- with (include "butlers.egressProxyEnv" (dict "root" $ "component" (printf "connector-%s" $name)) | trim) }}{{ . | nindent 12 }}{{- end }}
+            {{- with (include "butlers.egressProxyEnv" $egress | trim) }}{{ . | nindent 12 }}{{- end }}
             {{- if $c.healthPort }}
             - {name: CONNECTOR_HEALTH_PORT, value: {{ $c.healthPort | quote }}}
             {{- end }}
@@ -117,7 +119,9 @@ spec:
           resources:
             {{- toYaml $metrics.resources | nindent 12 }}
         {{- end }}
+        {{- with (include "butlers.egressRelayContainer" $egress | trim) }}{{ . | nindent 8 }}{{- end }}
       volumes:
+        {{- with (include "butlers.egressRelayVolume" $egress) }}{{ . | nindent 8 }}{{- end }}
         {{- include "butlers.logsVolume" $ | nindent 8 }}
         {{- if $c.waBridge }}
         - name: wa-bridge

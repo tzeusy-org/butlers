@@ -324,7 +324,7 @@ def _profile_document(value: object, *, rendered: bool) -> EgressProfiles:
         if profile.gateway_port in ports:
             raise ProfileError(
                 f"gateway_port {profile.gateway_port} is shared by "
-                f"{ports[profile.gateway_port]} and {profile.name}: it is the workload identity"
+                f"{ports[profile.gateway_port]} and {profile.name}: use distinct listeners"
             )
         ports[profile.gateway_port] = profile.name
     return EgressProfiles(workloads=workloads)
