@@ -1919,6 +1919,58 @@ async def test_finance_health_json_paths_credentials_and_lifecycle(
 
 
 @pytest.mark.asyncio
+async def test_health_metadata_credential_paths_never_materialize(
+    finance_health_projection: Projection,
+) -> None:
+    """Task 6.1: credential-named health ``metadata`` keys, in every key style, stay unpublished.
+
+    The finance twin is the test above; this one writes as the Health runtime role and checks
+    the leaves on the primary and on the subscriber after a barrier.
+    """
+    p = finance_health_projection
+    omitted = (
+        "api_key",
+        "apiKey",
+        "api-key",
+        "access_token",
+        "accessToken",
+        "access-token",
+        "client_secret",
+        "clientSecret",
+        "Client-Secret",
+        "portal_password",
+        "portalPassword",
+        "portal-password",
+        "session cookie",
+    )
+    metadata: dict[str, object] = {key: "synthetic-omit" for key in omitted}
+    metadata["clinic"] = "Example Clinic"
+    metadata["portal"] = {"url_label": "kept", "loginToken": "synthetic-omit"}
+    metadata["visits"] = [{"room": "2B", "authCode": "synthetic-omit"}]
+    async with p.source() as source:
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_health_rw")
+            fact = await _health_fact(source, "condition", metadata)
+        query = (
+            "SELECT path, value_text FROM health.json_fields_public "
+            "WHERE source_table='health.facts' AND row_id=$1 AND starts_with(path, 'metadata.') "
+            "ORDER BY path"
+        )
+        rows = await source.fetch(query, str(fact))
+        assert {r["path"] for r in rows} == {
+            "metadata.clinic",
+            "metadata.portal.url_label",
+            "metadata.visits.[0].room",
+        }
+        assert all(r["value_text"] != "synthetic-omit" for r in rows)
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        assert await source.fetch(query, str(fact)) == await subscriber.fetch(query, str(fact))
+        await source.execute("DELETE FROM health.facts WHERE id=$1", fact)
+    await p.caught_up()
+
+
+@pytest.mark.asyncio
 async def test_health_typed_shapes_and_qualification(finance_health_projection: Projection) -> None:
     p = finance_health_projection
     async with p.source() as source:

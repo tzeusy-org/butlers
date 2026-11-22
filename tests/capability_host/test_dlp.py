@@ -72,6 +72,33 @@ def test_separators_and_invisible_characters_do_not_defeat_the_scan():
     assert text == "card: [redacted:luhn]." and scan.counted == 1
 
 
+# Task 6.1 DLP evasion: every Cf invisible a writer could slip between digit groups.
+@pytest.mark.parametrize(
+    "invisible",
+    ["\u200b", "\u200c", "\u200d", "\u2060", "\ufeff", "\u00ad", "\u180e", "\u2063"],
+    ids=["zwsp", "zwnj", "zwj", "word-joiner", "bom", "soft-hyphen", "mvs", "invisible-sep"],
+)
+def test_zero_width_characters_inside_a_card_number_are_removed_before_the_scan(invisible):
+    hidden = invisible.join(CARD[i : i + 4] for i in range(0, 16, 4))
+    text, scan = _text("search", None, f"card: {hidden}.")
+    assert text == "card: [redacted:luhn]." and scan.counted == 1
+
+
+# "Matched after removing spaces and dashes" (REQ-public-mcp-authorization-010): a typographic
+# dash is a dash, and NFKC maps the full-width and no-break forms onto these.
+@pytest.mark.parametrize(
+    "separator",
+    ["-", " ", "\u00a0", "\u3000", "\uff0d", "\u2010", "\u2011", "\u2012", "\u2013", "\u2014"]
+    + ["\u2212"],
+    ids=["hyphen-minus", "space", "nbsp", "ideographic-space", "fullwidth-hyphen", "hyphen"]
+    + ["nb-hyphen", "figure-dash", "en-dash", "em-dash", "minus"],
+)
+def test_space_and_dash_separators_do_not_defeat_the_luhn_rule(separator):
+    grouped = separator.join(CARD[i : i + 4] for i in range(0, 16, 4))
+    text, scan = _text("search", None, f"card: {grouped}.")
+    assert text == "card: [redacted:luhn]." and scan.counted == 1
+
+
 def test_normalization_keeps_tab_and_newline():
     assert normalize("a\tb\nc\x00d​e f") == "a\tb\ncde f"
 
@@ -193,6 +220,33 @@ def test_signed_and_userinfo_urls_are_redacted_on_marked_columns():
     out, scan = scan_result("finance_records", "finance", {"items": rows})
     assert out["items"][0]["fields"]["receipt_url"] == "[redacted:url_secret]"
     assert out["items"][1]["fields"]["receipt_url"] == "[redacted:url_userinfo]"
+    assert scan.counted == 2
+
+
+# Task 6.1: the marks skip only the entropy and path-segment rules, so each provider's signed
+# URL and every userinfo-with-password form is still redacted, on a marked column and on a
+# marked JSON path alike.
+_SIGNED_OR_USERINFO = {
+    "s3": (PRESIGNED, "url_secret"),
+    "s3-upper": ("https://b.example/o?X-AMZ-SIGNATURE=abc&X-AMZ-DATE=20300101", "url_secret"),
+    "gcs": ("https://storage.example/b/o?X-Goog-Signature=abc&X-Goog-Expires=60", "url_secret"),
+    "azure-sas": ("https://acct.blob.example/c/b?sv=2030-01-01&sp=r&sig=abc", "url_secret"),
+    "cloudfront": ("https://cdn.example/o?Expires=1&Signature=abc&Key-Pair-Id=K1", "url_secret"),
+    "camel-token": ("https://r.example/x?accessToken=abc", "url_secret"),
+    "userinfo": ("https://alice:hunter2@bridge.example/simplefin", "url_userinfo"),
+    "userinfo-empty-user": ("https://:hunter2@bridge.example/x", "url_userinfo"),
+}
+
+
+@pytest.mark.parametrize(
+    ("url", "rule"), list(_SIGNED_OR_USERINFO.values()), ids=list(_SIGNED_OR_USERINFO)
+)
+def test_signed_and_userinfo_urls_are_redacted_on_marked_columns_and_paths(url, rule):
+    column = {"kind": "transactions", "id": "a", "fields": {"receipt_url": url}}
+    path = {"kind": "facts", "id": "f", "fields": {}, "json_fields": {"metadata.external_ref": url}}
+    out, scan = scan_result("finance_records", "finance", {"items": [column, path]})
+    assert out["items"][0]["fields"]["receipt_url"] == f"[redacted:{rule}]"
+    assert out["items"][1]["json_fields"]["metadata.external_ref"] == f"[redacted:{rule}]"
     assert scan.counted == 2
 
 

@@ -67,6 +67,12 @@ def test_text_is_nfc_normalized_and_typed_values_are_strict():
     assert _code(lambda: times.instant("b")) == "invalid_argument"
 
 
+def test_a_nul_in_text_or_a_subset_item_is_invalid_not_a_database_error():
+    args = Arguments({"q": "a\x00b", "kinds": ["ok", "b\x00"]}, {"q", "kinds"})
+    assert _code(lambda: args.text("q", max_length=10)) == "invalid_argument"
+    assert _code(lambda: args.subset("kinds", max_items=5, max_length=10)) == "invalid_argument"
+
+
 def test_span_limits_and_inversion():
     span(date(2026, 1, 1), date(2026, 4, 3), max_days=92)
     assert _code(lambda: span(date(2026, 1, 1), date(2026, 4, 4), max_days=92)) == (
