@@ -62,7 +62,7 @@ def test_the_index_spans_only_the_four_searchable_domains():
     assert {s.table.domain for s in sources} == set(INDEX_DOMAINS)
     assert not any(s.table.domain in {"finance", "health", "proposals"} for s in sources)
     assert all(s.prefix.startswith(f"butlers://{s.table.domain}/") for s in sources)
-    assert index_kinds() == ("document", "entity", "episode", "fact", "leg", "trip")
+    assert index_kinds() == ("entity", "episode", "fact", "leg", "trip")
     # Every manifest source of fetch is an index source, except the proposal state.
     fetchable = {t.source for t in tables_for("fetch")}
     assert fetchable - {s.table.source for s in sources} == {"relationship.external_fact_proposals"}

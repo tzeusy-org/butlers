@@ -17,14 +17,14 @@ from butlers.knowledge_read.manifest import (
 def test_packaged_manifest_is_complete_immutable_and_derives_graph_keys():
     manifest = load_manifest()
     assert "relationship.external_fact_proposals" in {t.source for t in manifest.tables}
-    assert len(manifest.tables) == 47
-    assert sum(len(t.columns) for t in manifest.tables) == 482
+    assert len(manifest.tables) == 46
+    assert sum(len(t.columns) for t in manifest.tables) == 478
     assert manifest.digest == load_manifest().digest
     tables = {t.source: t for t in manifest.tables}
     # D4/REQ012 source membership is independent of aggregate table/column counts.
     expected = {
         "knowledge": {f"{schema}.facts" for schema in ("general", "lifestyle", "education")},
-        "travel": {f"travel.{name}" for name in ("facts", "trips", "legs", "documents")},
+        "travel": {f"travel.{name}" for name in ("facts", "trips", "legs")},
         "relationship": {
             "public.entities",
             "relationship.entity_facts",
