@@ -398,6 +398,56 @@ def _chain_at_head(db_url: str, chain: str, schema: str | None) -> bool:
     return applied & revisions == set(heads)
 
 
+class MigrationsNotAtHeadError(RuntimeError):
+    """A chain's applied revisions are not exactly its head; nothing was migrated.
+
+    Raised by :func:`check_chain_at_head`. It names the chain, schema and revision ids
+    only, never the database URL.
+    """
+
+    def __init__(
+        self,
+        chain: str,
+        schema: str | None,
+        applied: Iterable[str] | None,
+        expected: Iterable[str],
+    ) -> None:
+        self.chain = chain
+        self.schema = schema
+        self.applied = None if applied is None else tuple(sorted(applied))
+        self.expected = tuple(sorted(expected))
+        where = f"chain {chain!r} (schema={schema or '<default>'})"
+        if self.applied is None:
+            detail = "its version table could not be read"
+        else:
+            detail = f"applied {list(self.applied)}, expected {list(self.expected)}"
+        super().__init__(
+            f"Migration {where} is not at head: {detail}. The migrations step "
+            "(`butlers db migrate`) owns upgrades; run it, then restart."
+        )
+
+
+def check_chain_at_head(db_url: str, chain: str, schema: str | None = None) -> None:
+    """Raise :class:`MigrationsNotAtHeadError` unless *chain* is exactly at its head.
+
+    Read-only: one read of the schema's version table, no Alembic environment, no DDL
+    and no extension bootstrap, so a login that owns nothing can run it. Rows other
+    chains keep in the same version table are ignored. A chain with several heads is
+    never "at head".
+    """
+    chain_dir = _resolve_chain_dir(chain)
+    if chain_dir is None:
+        raise ValueError(f"Unknown migration chain: {chain!r}")
+    normalized = _normalize_schema(schema)
+    heads, revisions = _chain_heads(chain, chain_dir)
+    applied = _applied_revisions(db_url, normalized)
+    if applied is None:
+        raise MigrationsNotAtHeadError(chain, normalized, None, heads)
+    in_chain = applied & revisions
+    if len(heads) != 1 or in_chain != set(heads):
+        raise MigrationsNotAtHeadError(chain, normalized, in_chain, heads)
+
+
 def chain_has_applied_revision(db_url: str, chain: str, schema: str | None) -> bool:
     """Whether the schema's version table already records any revision of *chain*.
 

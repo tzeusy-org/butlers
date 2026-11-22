@@ -66,6 +66,9 @@ x-postgres-env: &postgres-env
   POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
   BUTLERS_DB_POOL_MIN_SIZE: ${BUTLERS_DB_POOL_MIN_SIZE:-0}
   BUTLERS_DB_POOL_MAX_SIZE: ${BUTLERS_DB_POOL_MAX_SIZE:-4}
+  # Set "check" together with BUTLERS_MIGRATOR_DB_USER: daemons then only verify their
+  # chains are at head (docs/data_and_storage/migrator-login.md). Default "run".
+  BUTLERS_STARTUP_MIGRATIONS: ${BUTLERS_STARTUP_MIGRATIONS:-run}
 
 x-connector-env: &connector-env
   <<: *postgres-env

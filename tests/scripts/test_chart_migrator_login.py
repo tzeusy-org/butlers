@@ -22,6 +22,7 @@ _SITE = [
     "--set", "egressPolicy.allowedCidrs={198.51.100.7/32}",
 ]  # fmt: skip
 _ON = ("--set", "database.migratorLogin.enabled=true")
+_MODE = "BUTLERS_STARTUP_MIGRATIONS"
 _MIGRATOR_KEYS = {
     "MIGRATOR_POSTGRES_USER": "BUTLERS_RUNTIME_MIGRATOR_DB_USER",
     "MIGRATOR_POSTGRES_PASSWORD": "BUTLERS_RUNTIME_MIGRATOR_DB_PASSWORD",
@@ -113,8 +114,31 @@ def test_enabled_moves_only_the_migrations_init_container_to_the_migrator() -> N
             }, name
 
 
+def _startup_mode(container: dict) -> str | None:
+    values = [e.get("value") for e in container.get("env", []) if e["name"] == _MODE]
+    assert len(values) <= 1
+    return values[0] if values else None
+
+
+@needs_helm
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_runtime_containers_head_check_only_when_enabled(env: str) -> None:
+    for name, container in _containers(_render(env)):
+        assert _startup_mode(container) is None, name
+    checked = set()
+    for name, container in _containers(_render(env, *_ON)):
+        if not _login_keys(container):
+            continue
+        if name == "dashboard-api/migrations":
+            assert _startup_mode(container) is None
+        else:
+            assert _startup_mode(container) == "check", name
+            checked.add(name)
+    assert any(name.startswith("butlers-up/") for name in checked), checked
+
+
 def _strip_split(docs: list[dict]) -> list[dict]:
-    """Remove exactly what the flag may change: the migrator keys and the migrations login."""
+    """Remove exactly what the flag may change: migrator keys and login, startup mode."""
     docs = copy.deepcopy(docs)
     for doc in docs:
         if doc["kind"] == "ExternalSecret":
@@ -122,6 +146,8 @@ def _strip_split(docs: list[dict]) -> list[dict]:
                 e for e in doc["spec"]["data"] if e["secretKey"] not in _MIGRATOR_KEYS
             ]
     for _name, pod in _pod_specs(docs):
+        for c in [*pod.get("initContainers", []), *pod.get("containers", [])]:
+            c["env"] = [e for e in c.get("env", []) if e["name"] != _MODE]
         for c in pod.get("initContainers", []):
             if c["name"] == "migrations":
                 c["env"] = [
@@ -157,3 +183,8 @@ def test_compose_moves_only_the_migrations_service_and_falls_back_to_the_shared_
     for name, service in compose["services"].items():
         if name != "migrations":
             assert "BUTLERS_MIGRATOR" not in yaml.safe_dump(service), name
+
+
+def test_compose_passes_the_startup_mode_through_defaulting_to_run() -> None:
+    compose = yaml.safe_load((_REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert compose["x-postgres-env"][_MODE] == "${BUTLERS_STARTUP_MIGRATIONS:-run}"

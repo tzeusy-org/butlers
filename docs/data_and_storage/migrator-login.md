@@ -1,7 +1,7 @@
 # Migrator Login
 
 > **Status:** dark. Nothing here changes a running deployment until the owner runs the
-> steps below. Tracked by bu-dss7he.6 (slice S3); the owner provisioning is bu-dss7he.21.
+> steps below. Tracked by bu-dss7he.6 (slices S3 and S4); the owner provisioning is bu-dss7he.21.
 
 Today one shared login migrates, serves the dashboard and runs the daemons, and it owns
 the tables. An owner can disable triggers, alter policies and drop objects, so runtime
@@ -18,10 +18,28 @@ shared login stays the runtime login: it keeps its role memberships (the daemons
 | `database.migratorLogin.enabled` | `deploy/helm/butlers/values.yaml` | `false` |
 | `externalSecrets.migratorData` | same file; synced only when enabled | `BUTLERS_RUNTIME_MIGRATOR_DB_USER`, `BUTLERS_RUNTIME_MIGRATOR_DB_PASSWORD` |
 | `BUTLERS_MIGRATOR_DB_USER` / `_PASSWORD` | `docker-compose.yml` `migrations` service | unset: shared login |
+| `BUTLERS_STARTUP_MIGRATIONS` (`run` or `check`) | `src/butlers/lifecycle.py`; chart and compose env | `run` |
 
 With the flag on, only the `dashboard-api` pod's `migrations` initContainer connects as
-the migrator; every other container keeps the shared login
-(`tests/scripts/test_chart_migrator_login.py`).
+the migrator. Every other container keeps the shared login and gets
+`BUTLERS_STARTUP_MIGRATIONS=check` (`tests/scripts/test_chart_migrator_login.py`).
+
+## Daemon startup: head check instead of migrating
+
+In `run` mode (the default) a daemon upgrades its own core, butler and module chains at
+startup, as it did before the split. In `check` mode it never migrates.
+`butlers.migrations.check_chain_at_head` reads each schema's version table once, with no
+Alembic environment, DDL or extension bootstrap, so a login that owns nothing can run
+it. If a core or butler chain is not exactly at its head, the daemon refuses to start
+with `MigrationsNotAtHeadError`. The error names the chain, the schema, and the applied
+and expected revisions, and says to run `butlers db migrate`. A module chain that is
+behind disables only that module, as a failed module migration does today. An unknown
+mode value refuses to start. With Compose, set `BUTLERS_STARTUP_MIGRATIONS=check`
+together with `BUTLERS_MIGRATOR_DB_USER`.
+
+The daemon pods wait for `dashboard-api` health, so its migrations initContainer has
+normally finished first. If a daemon still finds the database behind, it fails, and
+Kubernetes restarts it until the migrations step has run.
 
 ## The transfer
 
@@ -61,9 +79,8 @@ below. It needs Docker, so CI runs it.
 After the transfer the shared login owns nothing, so it loses whatever it could do only
 as an owner.
 
-- **Daemon startup must not migrate.** The daemons still run their Alembic chains at
-  startup as the runtime login (`_startup_core_migrations` in `src/butlers/lifecycle.py`).
-  Startup must first become a read-only head check (bu-dss7he.6 S4).
+- **Daemon startup must not migrate.** This one is met: with the flag on, the daemons
+  run the head check described above.
 - **Runtime code must not rely on owner-only operations.** The shared login can no longer
   run `ALTER`, `TRUNCATE`, `REFRESH MATERIALIZED VIEW` or `DROP`, or enable and disable
   triggers, on objects it used to own. Any runtime path that does must move to a
@@ -86,20 +103,22 @@ as an owner.
 1. Provision the `butlers_migrator` login and its two BWS keys (bu-dss7he.21). Leave
    `BUTLERS_RUNTIME_DB_USER`/`_PASSWORD` in place: they remain the runtime login, and
    rollback needs them.
-2. Stop the migrations step from running mid-change, for example by scaling
-   `dashboard-api` to 0.
+2. Suspend the release (`suspend: true`). Every Deployment scales to 0 and CronJobs
+   stop. No daemon can restart in `run` mode against a database its login no longer
+   owns, and no migrations step can run mid-change.
 3. Run `butlers db transfer-ownership --from-login <shared> --to-login butlers_migrator`
    with superuser connection env. Read the dry run, then repeat it with `--execute`.
 4. Replay `scripts/init-db.sql` as the superuser with the migrator as the connecting user:
    `PGOPTIONS="-c butlers.connecting_user=butlers_migrator" psql ... -f scripts/init-db.sql`.
    This records the migrator as the migration role in the bootstrap configuration and
    grants it schema `CREATE`/`USAGE` and the default privileges.
-5. Set `database.migratorLogin.enabled: true` in `values.dev.yaml` (a PR), deploy, and
-   confirm the `migrations` initContainer succeeds. Then run
+5. Set `database.migratorLogin.enabled: true` in `values.dev.yaml` (a PR) and deploy
+   with `suspend: false`. Confirm the `migrations` initContainer succeeds and the daemons
+   pass their head check. Then run
    `butlers db check-grants --after-init-db-replay`. The replay re-widens grants, and
    `apply-grants` narrows them again when `database.applyGrants` is on.
 
-**Rollback:** set the flag back to `false`. Then transfer the other way
+**Rollback:** suspend, then set the flag back to `false`. Then transfer the other way
 (`--from-login butlers_migrator --to-login <shared>`) and replay init-db with the shared
 login as the connecting user.
 
