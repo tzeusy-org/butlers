@@ -10,6 +10,7 @@ from datetime import date
 import pytest
 
 from butlers.jobs._roster_loader import load_roster_jobs
+from butlers.testing.fake_pool import fake_pool
 
 TODAY = date(2030, 11, 22)
 
@@ -158,47 +159,6 @@ async def test_rerun_is_idempotent(travel_pool) -> None:
 # --- fake-pool flow check (runs without Docker) ----------------------------
 
 
-class _FakeConn:
-    def __init__(self, rows):
-        self.rows = rows
-        self.updates: list[tuple] = []
-
-    def transaction(self):
-        conn = self
-
-        class _Tx:
-            async def __aenter__(self):
-                return conn
-
-            async def __aexit__(self, *exc):
-                return False
-
-        return _Tx()
-
-    async def fetch(self, sql, *args):
-        return self.rows
-
-    async def execute(self, sql, *args):
-        self.updates.append(args)
-
-
-class _FakePool:
-    def __init__(self, conn):
-        self.conn = conn
-
-    def acquire(self):
-        conn = self.conn
-
-        class _Acq:
-            async def __aenter__(self):
-                return conn
-
-            async def __aexit__(self, *exc):
-                return False
-
-        return _Acq()
-
-
 async def test_advance_flow_updates_only_advancing_rows() -> None:
     rows = [
         {
@@ -221,8 +181,9 @@ async def test_advance_flow_updates_only_advancing_rows() -> None:
         },
         {"id": uuid.uuid4(), "status": "planned", "start_date": None, "end_date": None},
     ]
-    conn = _FakeConn(rows)
-    result = await _jobs().run_trip_lifecycle_advance(_FakePool(conn), today=TODAY)
+    pool = fake_pool(fetch=rows, execute=None)
+    result = await _jobs().run_trip_lifecycle_advance(pool, today=TODAY)
     assert result == {"trips_checked": 4, "activated": 1, "completed": 1}
-    assert [u[1] for u in conn.updates] == ["active", "completed"]
-    assert json.loads(conn.updates[1][2])[0]["prior_values"] == {"status": "active"}
+    updates = [call.args for call in pool.execute.await_args_list]
+    assert [u[2] for u in updates] == ["active", "completed"]
+    assert [u[3] for u in updates] == ["planned", "active"]

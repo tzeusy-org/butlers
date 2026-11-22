@@ -10,7 +10,6 @@ Each job handler:
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -724,13 +723,8 @@ async def run_trip_lifecycle_advance(
                 )
                 if target is None:
                     continue
-                entry = {
-                    "prior_values": {"status": row["status"]},
-                    "source_message_id": None,
-                    "updated_by": "trip_lifecycle_advance",
-                    "reason": f"date-driven lifecycle advance on {today.isoformat()}",
-                    "updated_at": now_iso,
-                }
+                # Built in SQL from text params so the write is correct whether or not
+                # the pool registers a jsonb codec (a pre-encoded str would be double-encoded).
                 await conn.execute(
                     """
                     UPDATE travel.trips
@@ -738,14 +732,23 @@ async def run_trip_lifecycle_advance(
                         metadata = jsonb_set(
                             metadata,
                             '{change_history}',
-                            COALESCE(metadata->'change_history', '[]'::jsonb) || $3::jsonb
+                            COALESCE(metadata->'change_history', '[]'::jsonb)
+                            || jsonb_build_array(jsonb_build_object(
+                                'prior_values', jsonb_build_object('status', $3::text),
+                                'source_message_id', NULL::text,
+                                'updated_by', 'trip_lifecycle_advance',
+                                'reason', $4::text,
+                                'updated_at', $5::text
+                            ))
                         ),
                         updated_at = now()
                     WHERE id = $1
                     """,
                     row["id"],
                     target,
-                    json.dumps([entry]),
+                    row["status"],
+                    f"date-driven lifecycle advance on {today.isoformat()}",
+                    now_iso,
                 )
                 (completed if target == "completed" else activated).append(str(row["id"]))
 
