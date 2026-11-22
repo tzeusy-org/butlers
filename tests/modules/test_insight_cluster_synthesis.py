@@ -22,6 +22,18 @@ import pytest
 pytestmark = [pytest.mark.asyncio(loop_scope="session"), pytest.mark.unit]
 
 
+@pytest.fixture(autouse=True)
+def _readable_ceiling():
+    """An unset, readable monthly ceiling (bu-svqpzo.14): the synthesis gate lets calls through."""
+    from butlers.core.model_routing import CeilingStatus
+
+    with patch(
+        "butlers.core.model_routing.check_monthly_ceiling",
+        AsyncMock(return_value=CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)),
+    ):
+        yield
+
+
 def _catalog_result(runtime_type: str = "api"):
     # (runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s, effective_tier)
     return (runtime_type, "test-cheap-model", [], uuid4(), 30, "cheap")
@@ -299,3 +311,44 @@ class TestDailyHoldFallbackDeadline:
 
         now = datetime(2026, 7, 26, 23, 0, tzinfo=UTC)
         assert _daily_hold_fallback_reached(now) is True
+
+
+class TestMonthlyCeilingGate:
+    """Synthesis spends, so the owner's monthly ceiling caps it (bu-svqpzo.14)."""
+
+    @pytest.mark.parametrize("unavailable", [False, True], ids=["reached", "unreadable"])
+    async def test_a_refused_ceiling_skips_synthesis_without_invoking_the_adapter(
+        self, unavailable
+    ):
+        from butlers.core.model_routing import CeilingStatus
+        from butlers.tools.switchboard.insight.broker import _synthesize_cluster_sentence
+
+        cluster = [
+            {"origin_butler": "a", "message": "x"},
+            {"origin_butler": "b", "message": "y"},
+        ]
+        ceiling = CeilingStatus(
+            allowed=False,
+            mtd_usd=0.0 if unavailable else 12.0,
+            ceiling_usd=None if unavailable else 10.0,
+            unavailable=unavailable,
+        )
+        with (
+            patch(
+                "butlers.core.model_routing.resolve_model_with_effective_tier",
+                new=AsyncMock(return_value=_catalog_result()),
+            ),
+            patch(
+                "butlers.core.model_routing.check_token_quota",
+                new=AsyncMock(return_value=_quota()),
+            ),
+            patch(
+                "butlers.core.model_routing.check_monthly_ceiling",
+                new=AsyncMock(return_value=ceiling),
+            ),
+            patch("butlers.core.runtimes.base.create_adapter") as mock_create_adapter,
+        ):
+            result = await _synthesize_cluster_sentence(object(), cluster)
+
+        assert result is None
+        mock_create_adapter.assert_not_called()

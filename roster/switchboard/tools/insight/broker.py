@@ -1706,7 +1706,8 @@ async def _synthesize_cluster_sentence(
     budget — no separate accounting is needed.
 
     Fails open to ``None`` on ANY error: no model resolved for the "cheap"
-    tier, a non-"api" resolved runtime, over quota, a timeout, or a blank
+    tier, a non-"api" resolved runtime, over quota, the monthly spend ceiling reached or
+    unreadable (bu-svqpzo.14), a timeout, or a blank
     response. The caller falls back to the pre-slice-3 plain bullet list —
     synthesis is a cosmetic enhancement, never a correctness-relevant
     dependency of digest delivery.
@@ -1714,6 +1715,7 @@ async def _synthesize_cluster_sentence(
     try:
         from butlers.core.model_routing import (
             Complexity,
+            ceiling_refusal_reason,
             check_token_quota,
             record_token_usage,
             resolve_model_with_effective_tier,
@@ -1738,6 +1740,13 @@ async def _synthesize_cluster_sentence(
 
         quota = await check_token_quota(pool, catalog_entry_id)
         if not quota.allowed:
+            return None
+
+        # The owner's monthly spend ceiling caps this lane too (bu-svqpzo.14): reached or
+        # unreadable skips synthesis this cycle; the digest keeps its plain bullet list.
+        refusal = await ceiling_refusal_reason(pool)
+        if refusal is not None:
+            logger.warning("insight-delivery-cycle: cluster synthesis skipped: %s", refusal)
             return None
 
         bullets = "\n".join(f"- [{c.get('origin_butler', '')}] {c['message']}" for c in cluster)

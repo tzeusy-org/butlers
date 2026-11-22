@@ -23,12 +23,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.core.model_routing import QuotaStatus
+from butlers.core.model_routing import (
+    CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
+    CeilingStatus,
+    QuotaStatus,
+)
 from butlers.tools.switchboard.routing import structured_classify as sc
 
 pytestmark = pytest.mark.unit
 
 _MODULE = "butlers.tools.switchboard.routing.structured_classify"
+
+
+@pytest.fixture(autouse=True)
+def _readable_ceiling():
+    """An unset, readable monthly ceiling (bu-svqpzo.14): the lane's gate lets calls through."""
+    with patch(
+        "butlers.core.model_routing.check_monthly_ceiling",
+        AsyncMock(return_value=CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)),
+    ):
+        yield
 
 
 def _catalog(runtime_type: str = "api", tier: str = "cheap") -> tuple:
@@ -603,3 +618,60 @@ class TestValidateToolCall:
 
     def test_empty_tool_calls_list_invalid(self):
         assert sc._validate_tool_calls([]) is False
+
+
+# --- monthly spend ceiling (bu-svqpzo.14) -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "reason"),
+    [
+        (
+            CeilingStatus(allowed=False, mtd_usd=12.0, ceiling_usd=10.0),
+            CEILING_DENIAL_REASON_PREFIX,
+        ),
+        (
+            CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True),
+            CEILING_UNAVAILABLE_REASON,
+        ),
+    ],
+    ids=["reached", "unreadable"],
+)
+async def test_a_refused_ceiling_never_invokes_the_adapter_and_falls_back_to_the_cli_path(
+    ceiling: CeilingStatus, reason: str, caplog
+) -> None:
+    """The caller's dispatch_fn path (the Spawner) then enforces and records the refusal."""
+    pool = MagicMock()
+    mcp = _make_mcp_server({})
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch("butlers.core.model_routing.check_monthly_ceiling", AsyncMock(return_value=ceiling)),
+        patch(f"{_MODULE}.create_adapter") as mock_create_adapter,
+        patch(f"{_MODULE}.next_same_tier_candidate") as mock_next,
+        caplog.at_level("WARNING"),
+    ):
+        result = await sc.try_structured_classification(
+            pool, mcp_server=mcp, prompt="hi", include_bug_report=False
+        )
+
+    assert result is None
+    mock_create_adapter.assert_not_called()
+    mock_next.assert_not_called()
+    assert reason in caplog.text
+
+
+async def test_a_readable_ceiling_still_runs_the_structured_call() -> None:
+    pool = MagicMock()
+    adapter = _make_adapter(side_effect=[([_route_call("health")], "ok", None)])
+    with (
+        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=_catalog())),
+        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_MODULE}.create_adapter", return_value=adapter),
+    ):
+        result = await sc.try_structured_classification(
+            pool, mcp_server=_make_mcp_server({}), prompt="hi", include_bug_report=False
+        )
+
+    assert result is not None
+    adapter.invoke_structured.assert_awaited_once()
