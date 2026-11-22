@@ -160,9 +160,9 @@ database against the manifest, before and after an `init-db.sql` replay.
 `butlers db check-grants` runs the same read-only, content-blind diff against
 a real database (`--database`, default `butlers`) and exits non-zero on any
 difference. A deployed database has been through init-db replays, so pass
-`--after-init-db-replay` to compare with the replay result. The manifest is not yet
-applied: converging grants to it under the migrate initContainer, and removing
-init-db's blanket grants, are the next slices of bu-dss7he.6.
+`--after-init-db-replay` to compare with the replay result. `butlers db apply-grants`
+(below) converges a database to the manifest; removing init-db's blanket grants is a
+later slice of bu-dss7he.6.
 
 The CNPG-managed `butlers_projection_publisher` (RFC 0039 D9) is declared beside the runtime
 roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state that it holds
@@ -184,7 +184,8 @@ REVOKE/GRANT line per change (relation, role and privilege names only);
 unless a re-plan is empty. Relations the connecting login neither owns nor is a
 member of (definer-owned boundary tables) cannot be revoked by it, so their
 changes print as `SKIPPED (login does not own it)` and are never claimed;
-moving ownership is the login-split slice. Column-level grants are outside the
+the [migrator login](migrator-login.md) transfer leaves purpose-owned relations
+with their owners, so these stay skipped. Column-level grants are outside the
 manifest: a table-level REVOKE drops them, so apply snapshots and restores them
 and fails if they differ afterwards. A plan containing GRANT lines (widening) is
 refused under `--execute` unless `--allow-grants` is passed. The migrations initContainer runs the dry run on every

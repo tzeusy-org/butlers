@@ -1297,3 +1297,37 @@ and private retention-capable note/evidence fields. The manifest exposes only
 `proposal_id`, `state` and `decided_at` in the `proposals` domain. `rel_043` adds the
 importer's payload and bookkeeping columns without changing that column list; the importer,
 approval reconciliation and 30-day text clearing are described in section 9.
+
+## Adversarial case coverage (task 6.1)
+
+Each adversarial case from `tasks.md` 6.1 maps to an executing test. "PG17" tests need Docker and
+run in the CI integration lane (`BUTLERS_REQUIRE_DOCKER=1` there turns a skip into a failure); the
+rest are unit tests. The alert-rule cases need the pinned `promtool` (`make install-lint-tools`).
+Paths are under `tests/` unless they start with `roster/`.
+
+| Case | Executing tests | Kind |
+| --- | --- | --- |
+| Replayed assertion | `capability_host/test_assertion.py::test_replayed_assertion_is_refused`, `::test_assertion_from_before_a_restart_is_refused` | unit |
+| Expired or future assertion | `capability_host/test_assertion.py::test_expired_assertion_is_refused`, `::test_clock_bounds` | unit |
+| Body swap (`bsha`) | `capability_host/test_assertion.py::test_body_swap_is_refused`, `::test_method_and_tool_are_bound`, `::test_query_string_is_bound_and_path_is_not` | unit |
+| Forged identity headers | `capability_host/test_transport.py::test_forged_identity_headers_without_an_assertion_are_refused`, `::test_forged_identity_headers_never_override_the_assertion`, `::test_a_bad_assertion_on_an_exempt_method_is_refused`; `capability_host/test_write_path.py::test_the_write_sees_sub_and_cid_from_the_assertion_only` | unit |
+| Bearer-only call | `capability_host/test_transport.py::test_bearer_alone_cannot_call_a_tool`, `::test_tool_call_without_assertion_is_refused_with_no_query` | unit |
+| Oversized body | `capability_host/test_transport.py::test_oversized_body_is_refused`, `::test_a_non_ascii_content_length_is_a_size_refusal`; `mcp_public/test_app.py::test_an_oversized_streamed_body_stops_being_read_past_the_limit` | unit |
+| JSON-RPC batch body | `capability_host/test_transport.py::test_batch_request_is_refused`, `::test_duplicate_keys_are_refused` | unit |
+| Denylisted manifest edit | `knowledge_read/test_projection_manifest.py::test_closed_manifest_refuses_positioned_policy_mutations`, `::test_credential_guard_has_a_type_consistent_control`, `::test_marks_and_entity_flags_cannot_expand_privacy`; `knowledge_read/test_projection_drift_contract.py::test_check_1_and_3_bad_manifest_edit_goes_red` | unit |
+| Credential-named JSON paths (snake, camel, kebab) | Finance: `migrations/test_public_projection_source.py::test_finance_health_json_paths_credentials_and_lifecycle`. Health: `::test_health_metadata_credential_paths_never_materialize`, `::test_health_typed_shapes_and_qualification`. Marks: `knowledge_read/test_projection_manifest.py::test_a_credential_json_path_cannot_be_marked_in_any_key_style` | PG17, unit |
+| Credential-named JSON paths (acronym, concatenated, digit-suffixed, `authorization`; bu-y66o00.71) | Shared cases: `tests/credential_key_cases.py`. Python rule: `knowledge_read/test_projection_manifest.py::test_every_credential_key_style_is_refused`, `::test_benign_neighbors_of_credential_words_stay_publishable`, `::test_a_newly_covered_credential_path_cannot_be_marked`; frozen SQL twin and owner guard: `knowledge_read/test_credential_tokenizer.py`. SQL rule and trigger: `migrations/test_public_projection_source.py::test_sql_credential_rule_agrees_with_python_on_the_shared_cases`, `::test_every_credential_key_style_stays_out_of_the_materialized_leaves`. Re-materialization: `migrations/test_core_356_credential_tokenizer.py`. Owner guard: `integration/test_public_mcp_owner_lifecycle.py::test_malformed_or_inconsistent_applied_state_refuses_before_mutation` | unit, PG17 |
+| Pre-signed and userinfo URLs in marked columns | `capability_host/test_dlp.py::test_signed_and_userinfo_urls_are_redacted_on_marked_columns`, `::test_signed_and_userinfo_urls_are_redacted_on_marked_columns_and_paths` | unit |
+| Canary leak | `capability_host/test_containment.py::test_a_canary_in_a_response_latches_the_surface_off`, `::test_canaries_are_found_through_normalization_and_in_keys`, `::test_the_canary_check_runs_before_dlp_could_hide_it`; `integration/test_capability_host_projection.py::test_a_canary_in_the_projection_latches_on_the_probe`; `integration/test_public_mcp_owner_lifecycle.py::test_canaries_in_excluded_sources_are_absent_after_a_full_sync` | unit, PG17 |
+| DLP evasion (full-width digits, zero-width characters, separators) | `capability_host/test_dlp.py::test_separators_and_invisible_characters_do_not_defeat_the_scan`, `::test_zero_width_characters_inside_a_card_number_are_removed_before_the_scan`, `::test_space_and_dash_separators_do_not_defeat_the_luhn_rule` | unit |
+| `test_decoding` slot created as the publisher | `integration/test_public_mcp_owner_lifecycle.py::test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses[test_decoding]` (owner step refuses); `scripts/test_public_mcp_alert_rules.py::test_condition_drives_its_flag[foreign logical slot]` (critical alert); `integration/test_public_mcp_owner_lifecycle.py::test_actual_tcp_principals_and_no_credential_guards` (no role can become the publisher) | PG17, promtool |
+| Temporary-table shadowing as `mcp_public_ro` | `integration/test_public_mcp_owner_lifecycle.py::test_real_privileges_inbox_cap_and_definer_search_path` (`CREATE TEMPORARY TABLE` refused; definer functions pin `search_path`), `::test_actual_full_copy_catalog_views_freshness_and_noop` (no `TEMPORARY` privilege); `integration/test_public_mcp_server.py::test_the_reader_pool_pins_search_path` | PG17 |
+| Evidence URL carrying instructions | `mcp_public/test_proposals.py::test_an_evidence_url_carrying_prose_instructions_is_refused`, `::test_an_encoded_instruction_url_is_stored_only_as_a_bound_value`; `roster/relationship/tests/test_public_mcp_proposal_import_unit.py::test_an_instruction_bearing_evidence_url_reaches_the_owner_as_scheme_and_host_only`; `integration/test_public_mcp_proposal_import.py::test_an_instruction_carrying_proposal_parks_as_inert_data` | unit, PG17 |
+| Proposal targeting the owner or a family predicate | `mcp_public/test_proposals.py::test_only_the_allowlist_is_proposable`; `knowledge_read/test_proposable.py::test_no_proposable_predicate_is_family_gated_contact_or_override`; `integration/test_public_mcp_proposal_import.py::test_each_validation_outcome` (owner subject and family predicate are `invalid`) | unit, PG17 |
+
+Known gap, filed rather than fixed here because it changes a stated rule: `bu-y66o00.70`
+(token-only userinfo, `secret`/`apikey` query names and non-Cf invisible fillers in response DLP).
+`bu-y66o00.71` widened the credential key rule (RFC 0039 D4; the rule and its accepted misses,
+such as a concatenated short word like `creditcard`, are documented at
+`butlers.knowledge_read.manifest.credential`). `core_356` replaced the SQL twin and recomputed
+the leaves each schema had already materialized.

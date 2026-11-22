@@ -1,0 +1,112 @@
+"""Shared credential-name cases for the public MCP tokenizer (bu-y66o00.71).
+
+One case list drives the Python rule (``butlers.knowledge_read.manifest.credential``) and its SQL
+twin (``public.mcp_json_tokens`` + ``public.mcp_json_credential``) so the two cannot drift. Every
+key is synthetic.
+"""
+
+# Keys whose leaf must never be published.
+CREDENTIAL_KEYS = (
+    # Separator and camel styles (already dropped before bu-y66o00.71; must stay dropped).
+    "api_key",
+    "apiKey",
+    "api-key",
+    "access_token",
+    "accessToken",
+    "access-token",
+    "client_secret",
+    "clientSecret",
+    "Client-Secret",
+    "portal_password",
+    "portalPassword",
+    "session cookie",
+    "private key",
+    "simplefin_access_url",
+    "secret",
+    "token",
+    "otp",
+    "cvv",
+    "card",
+    "pin",
+    "auth",
+    "PIN",
+    # Acronym-prefixed PascalCase.
+    "APIKey",
+    "APIToken",
+    "AWSSecretKey",
+    "OTPSecret",
+    "PINCode",
+    "IDToken",
+    "CVVCode",
+    # Concatenated lowercase.
+    "apikey",
+    "accesstoken",
+    "clientsecret",
+    "awssecretkey",
+    "secretkey",
+    "privatekey",
+    "refreshtoken",
+    "pincode",
+    "authcode",
+    "cardnumber",
+    # Digit-suffixed.
+    "cvv2",
+    "CVV2",
+    "password1",
+    "pin2",
+    "Pin4Digits",
+    "otp6",
+    # Authorization-style.
+    "authorization",
+    "Authorization",
+    "proxyAuthorization",
+    "authentication",
+    # Plurals and tails.
+    "api_keys",
+    "accessTokens",
+    "passwords",
+    "credentials",
+    "cookies",
+    # Deliberate over-matches: dropping a benign leaf is the fail-closed side.
+    "preauthorization",
+    "token_count",
+)
+
+# Keys that look close to a credential word but are ordinary data and stay published.
+BENIGN_KEYS = (
+    "secretary",
+    "secretion",
+    "tokenization",
+    "tokenizer_version",
+    "keyboard",
+    "monkey",
+    "turkey",
+    "keynote",
+    "keys",
+    "pinned",
+    "pinyin",
+    "spinach",
+    "spin",
+    "shipping",
+    "fingerprint",
+    "cardio",
+    "cardiology",
+    "discard",
+    "postcard",
+    "author",
+    "authority",
+    "authored",
+    "hotpot",
+    "access",
+    "accessibility",
+    "api",
+    "url_label",
+    "spo2",
+    "vo2_max",
+    "HbA1c",
+    "last_four",
+    "contact",
+    "description",
+    "notes",
+    "Room2B",
+)

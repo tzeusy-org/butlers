@@ -1,3 +1,160 @@
+--- a/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
++++ b/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
+@@ -491,0 +492,10 @@ mod tests {
++
++/// The selected executor asks this same store with the original logical URL.
++pub(crate) fn gateway_cookie_store(
++    configured: Option<Arc<ChatGptCookieStore>>,
++) -> Arc<dyn CookieStore> {
++    match configured {
++        Some(store) => store,
++        None => SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE.clone(),
++    }
++}
+--- a/codex-rs/http-client/src/client.rs
++++ b/codex-rs/http-client/src/client.rs
+@@ -39,0 +40,2 @@ pub(crate) struct TransportClient {
++    gateway: Result<Option<crate::gateway::GatewayClient>, String>,
++    gateway_cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
+@@ -54 +56,3 @@ impl HttpClient {
+-            backend: HttpClientBackend::Direct(TransportClient {
++            // Through TransportClient::new so a caller-supplied client still executes on
++            // the selected egress gateway when one is configured.
++            backend: HttpClientBackend::Direct(TransportClient::new(
+@@ -56,3 +60,3 @@ impl HttpClient {
+-                request_logging: RequestLogging::Enabled,
+-                default_headers: Arc::new(HeaderMap::new()),
+-            }),
++                RequestLogging::Enabled,
++                HeaderMap::new(),
++            )),
+@@ -91,0 +96,12 @@ impl HttpClient {
++    pub(crate) fn with_gateway_configuration(
++        mut self,
++        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
++        timeout: Option<std::time::Duration>,
++    ) -> Self {
++        if let HttpClientBackend::Direct(client) = self.backend {
++            self.backend =
++                HttpClientBackend::Direct(client.with_gateway_configuration(cookies, timeout));
++        }
++        self
++    }
++
+@@ -117,0 +134,3 @@ impl HttpClient {
++        if crate::gateway::selected() {
++            return false;
++        }
+@@ -146,0 +166,2 @@ impl TransportClient {
++            gateway: crate::gateway::GatewayClient::from_environment(None),
++            gateway_cookies: None,
+@@ -149,0 +171,10 @@ impl TransportClient {
++    pub(crate) fn with_gateway_configuration(
++        mut self,
++        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
++        timeout: Option<std::time::Duration>,
++    ) -> Self {
++        self.gateway_cookies = cookies;
++        self.gateway = crate::gateway::GatewayClient::from_environment(timeout);
++        self
++    }
++
+@@ -153 +184 @@ impl TransportClient {
+-    ) -> Result<reqwest::Response, reqwest::Error> {
++    ) -> Result<reqwest::Response, HttpError> {
+@@ -173 +204 @@ impl TransportClient {
+-    ) -> Result<reqwest::Response, reqwest::Error> {
++    ) -> Result<reqwest::Response, HttpError> {
+@@ -176 +207,7 @@ impl TransportClient {
+-        self.inner.execute(request).await
++        match &self.gateway {
++            Ok(Some(client)) => client.execute(request, self.gateway_cookies.as_ref()).await,
++            Ok(None) => Ok(self.inner.execute(request).await?),
++            Err(_) => Err(HttpError::Build(
++                "invalid selected egress configuration".to_string(),
++            )),
++        }
+@@ -180 +217 @@ impl TransportClient {
+-        if self.request_logging == RequestLogging::Enabled {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+@@ -192,2 +229,2 @@ impl TransportClient {
+-    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &reqwest::Error) {
+-        if self.request_logging == RequestLogging::Enabled {
++    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &HttpError) {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+@@ -204 +241 @@ impl TransportClient {
+-        if self.request_logging == RequestLogging::Enabled {
++        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
+--- a/codex-rs/http-client/src/client_builder.rs
++++ b/codex-rs/http-client/src/client_builder.rs
+@@ -45 +45 @@ pub struct HttpClientBuilder {
+-    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
++    pub(crate) chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
+@@ -217,0 +218,2 @@ impl HttpClientBuilder {
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -221,5 +223,4 @@ impl HttpClientBuilder {
+-        Ok(HttpClient::from_parts(
+-            inner,
+-            request_logging,
+-            default_headers,
+-        ))
++        Ok(
++            HttpClient::from_parts(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout),
++        )
+@@ -236,0 +238,2 @@ impl HttpClientBuilder {
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -249,5 +252,4 @@ impl HttpClientBuilder {
+-        Ok(TransportClient::new(
+-            inner,
+-            request_logging,
+-            default_headers,
+-        ))
++        Ok(
++            TransportClient::new(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout),
++        )
+@@ -332,0 +335,2 @@ impl HttpClientBuilder {
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -335,2 +339,4 @@ impl HttpClientBuilder {
+-        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing))
+-            .map(|inner| HttpClient::from_parts(inner, request_logging, default_headers))
++        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing)).map(|inner| {
++            HttpClient::from_parts(inner, request_logging, default_headers)
++                .with_gateway_configuration(gateway_cookies, gateway_timeout)
++        })
+@@ -353,0 +360,2 @@ impl HttpClientBuilder {
++        let gateway_cookies = self.gateway_cookie_store();
++        let gateway_timeout = self.connect_timeout;
+@@ -377,0 +386,25 @@ impl HttpClientBuilder {
++            .with_gateway_configuration(gateway_cookies, gateway_timeout)
++    }
++
++    fn gateway_cookie_store(&self) -> Option<Arc<dyn reqwest::cookie::CookieStore>> {
++        self.chatgpt_cloudflare_cookie_store.then(|| {
++            crate::chatgpt_cloudflare_cookies::gateway_cookie_store(
++                self.chatgpt_cookie_store.clone(),
++            )
++        })
++    }
++
++    pub(crate) fn build_gateway_transport(mut self) -> Result<TransportClient, crate::HttpError> {
++        let cookies = self.gateway_cookie_store();
++        let timeout = self.connect_timeout;
++        let defaults = self.default_headers.take().unwrap_or_default();
++        // Only used for logical request construction. No system/PAC/proxy/CA
++        // factory is consulted; the selected executor owns the sole wire hop.
++        let inner = reqwest::Client::builder()
++            .no_proxy()
++            .redirect(reqwest::redirect::Policy::none())
++            .build()?;
++        Ok(
++            TransportClient::new(inner, RequestLogging::Disabled, defaults)
++                .with_gateway_configuration(cookies, timeout),
++        )
 --- /dev/null
 +++ b/codex-rs/http-client/src/gateway.rs
 @@ -0,0 +1,518 @@
@@ -521,157 +678,11 @@
 +}
 --- a/codex-rs/http-client/src/lib.rs
 +++ b/codex-rs/http-client/src/lib.rs
-@@ -7,0 +8 @@
+@@ -11,0 +12 @@ mod error;
 +pub mod gateway;
---- a/codex-rs/http-client/src/client.rs
-+++ b/codex-rs/http-client/src/client.rs
-@@ -39,0 +40,2 @@
-+    gateway: Result<Option<crate::gateway::GatewayClient>, String>,
-+    gateway_cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
-@@ -85,0 +88,12 @@
-+    pub(crate) fn with_gateway_configuration(
-+        mut self,
-+        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
-+        timeout: Option<std::time::Duration>,
-+    ) -> Self {
-+        if let HttpClientBackend::Direct(client) = self.backend {
-+            self.backend =
-+                HttpClientBackend::Direct(client.with_gateway_configuration(cookies, timeout));
-+        }
-+        self
-+    }
-+
-@@ -111,0 +126,3 @@
-+        if crate::gateway::selected() {
-+            return false;
-+        }
-@@ -141 +158,13 @@
--        }
-+            gateway: crate::gateway::GatewayClient::from_environment(None),
-+            gateway_cookies: None,
-+        }
-+    }
-+
-+    pub(crate) fn with_gateway_configuration(
-+        mut self,
-+        cookies: Option<Arc<dyn reqwest::cookie::CookieStore>>,
-+        timeout: Option<std::time::Duration>,
-+    ) -> Self {
-+        self.gateway_cookies = cookies;
-+        self.gateway = crate::gateway::GatewayClient::from_environment(timeout);
-+        self
-@@ -147 +176 @@
--    ) -> Result<reqwest::Response, reqwest::Error> {
-+    ) -> Result<reqwest::Response, HttpError> {
-@@ -166 +195 @@
--    ) -> Result<reqwest::Response, reqwest::Error> {
-+    ) -> Result<reqwest::Response, HttpError> {
-@@ -169 +198,7 @@
--        self.inner.execute(request).await
-+        match &self.gateway {
-+            Ok(Some(client)) => client.execute(request, self.gateway_cookies.as_ref()).await,
-+            Ok(None) => Ok(self.inner.execute(request).await?),
-+            Err(_) => Err(HttpError::Build(
-+                "invalid selected egress configuration".to_string(),
-+            )),
-+        }
-@@ -173 +208 @@
--        if self.request_logging == RequestLogging::Enabled {
-+        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
-@@ -185,2 +220,2 @@
--    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &reqwest::Error) {
--        if self.request_logging == RequestLogging::Enabled {
-+    pub(crate) fn log_error(&self, method: &Method, url: &str, error: &HttpError) {
-+        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
-@@ -197 +232 @@
--        if self.request_logging == RequestLogging::Enabled {
-+        if !crate::gateway::selected() && self.request_logging == RequestLogging::Enabled {
---- a/codex-rs/http-client/src/client_builder.rs
-+++ b/codex-rs/http-client/src/client_builder.rs
-@@ -43 +43 @@
--    chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
-+    pub(crate) chatgpt_cookie_store: Option<Arc<ChatGptCookieStore>>,
-@@ -185,0 +186,2 @@
-+        let gateway_cookies = self.gateway_cookie_store();
-+        let gateway_timeout = self.connect_timeout;
-@@ -188,5 +190,4 @@
--        Ok(HttpClient::from_parts(
--            inner,
--            request_logging,
--            default_headers,
--        ))
-+        Ok(
-+            HttpClient::from_parts(inner, request_logging, default_headers)
-+                .with_gateway_configuration(gateway_cookies, gateway_timeout),
-+        )
-@@ -203,0 +205,2 @@
-+        let gateway_cookies = self.gateway_cookie_store();
-+        let gateway_timeout = self.connect_timeout;
-@@ -217,5 +220,4 @@
--        Ok(TransportClient::new(
--            inner,
--            request_logging,
--            default_headers,
--        ))
-+        Ok(
-+            TransportClient::new(inner, request_logging, default_headers)
-+                .with_gateway_configuration(gateway_cookies, gateway_timeout),
-+        )
-@@ -291,0 +294,2 @@
-+        let gateway_cookies = self.gateway_cookie_store();
-+        let gateway_timeout = self.connect_timeout;
-@@ -294,2 +298,4 @@
--        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing))
--            .map(|inner| HttpClient::from_parts(inner, request_logging, default_headers))
-+        build_reqwest_client_with_custom_ca(self.reqwest_builder(proxy_routing)).map(|inner| {
-+            HttpClient::from_parts(inner, request_logging, default_headers)
-+                .with_gateway_configuration(gateway_cookies, gateway_timeout)
-+        })
-@@ -312,0 +319,2 @@
-+        let gateway_cookies = self.gateway_cookie_store();
-+        let gateway_timeout = self.connect_timeout;
-@@ -336,0 +345,25 @@
-+            .with_gateway_configuration(gateway_cookies, gateway_timeout)
-+    }
-+
-+    fn gateway_cookie_store(&self) -> Option<Arc<dyn reqwest::cookie::CookieStore>> {
-+        self.chatgpt_cloudflare_cookie_store.then(|| {
-+            crate::chatgpt_cloudflare_cookies::gateway_cookie_store(
-+                self.chatgpt_cookie_store.clone(),
-+            )
-+        })
-+    }
-+
-+    pub(crate) fn build_gateway_transport(mut self) -> Result<TransportClient, crate::HttpError> {
-+        let cookies = self.gateway_cookie_store();
-+        let timeout = self.connect_timeout;
-+        let defaults = self.default_headers.take().unwrap_or_default();
-+        // Only used for logical request construction. No system/PAC/proxy/CA
-+        // factory is consulted; the selected executor owns the sole wire hop.
-+        let inner = reqwest::Client::builder()
-+            .no_proxy()
-+            .redirect(reqwest::redirect::Policy::none())
-+            .build()?;
-+        Ok(
-+            TransportClient::new(inner, RequestLogging::Disabled, defaults)
-+                .with_gateway_configuration(cookies, timeout),
-+        )
---- a/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
-+++ b/codex-rs/http-client/src/chatgpt_cloudflare_cookies.rs
-@@ -491,0 +492,10 @@
-+
-+/// The selected executor asks this same store with the original logical URL.
-+pub(crate) fn gateway_cookie_store(
-+    configured: Option<Arc<ChatGptCookieStore>>,
-+) -> Arc<dyn CookieStore> {
-+    match configured {
-+        Some(store) => store,
-+        None => SHARED_CHATGPT_CLOUDFLARE_COOKIE_STORE.clone(),
-+    }
-+}
 --- a/codex-rs/http-client/src/outbound_proxy.rs
 +++ b/codex-rs/http-client/src/outbound_proxy.rs
-@@ -490,0 +491,5 @@
+@@ -480,0 +481,5 @@ fn configure_proxy_for_route(
 +    if crate::gateway::selected() {
 +        return Ok(builder
 +            .no_proxy()
@@ -679,12 +690,12 @@
 +    }
 --- a/codex-rs/http-client/src/route_aware_client_pool.rs
 +++ b/codex-rs/http-client/src/route_aware_client_pool.rs
-@@ -206 +206 @@
+@@ -208 +208 @@ impl RouteAwareClientPool {
 -        self.client_builder.request_logging_enabled()
 +        !crate::gateway::selected() && self.client_builder.request_logging_enabled()
 --- a/codex-rs/http-client/src/route_aware_client_pool/execution.rs
 +++ b/codex-rs/http-client/src/route_aware_client_pool/execution.rs
-@@ -61,0 +62,14 @@
+@@ -69,0 +70,14 @@ impl RouteAwareClientPool {
 +        if crate::gateway::GatewayConfig::from_environment()
 +            .map_err(|_| {
 +                RouteAwareRequestError::Build("invalid selected egress configuration".to_string())
@@ -699,14 +710,8 @@
 +            let response = permit.run(client.execute(request)).await??;
 +            return Ok(HttpResponse::new(response, permit));
 +        }
-@@ -209 +223 @@
--        error: reqwest::Error,
-+        error: RouteAwareRequestError,
-@@ -211,0 +226,12 @@
-+        let error = match error {
-+            RouteAwareRequestError::Request(error) => error,
-+            other => return Err(other),
-+        };
+@@ -234,0 +249,9 @@ impl RouteAwareClientPool {
++        // Selected egress owns the only wire hop: never retry on a native TLS client.
 +        if crate::gateway::GatewayConfig::from_environment()
 +            .map_err(|_| {
 +                RouteAwareRequestError::Build("invalid selected egress configuration".to_string())
@@ -715,3 +720,14 @@
 +        {
 +            return Err(error.into());
 +        }
+@@ -333 +356 @@ impl RouteAwareClientPool {
+-            Err(error) => {
++            Err(RouteAwareRequestError::Request(error)) => {
+@@ -343,0 +367 @@ impl RouteAwareClientPool {
++            Err(other) => Err(other),
+--- a/codex-rs/http-client/src/route_aware_tls_fallback_tests.rs
++++ b/codex-rs/http-client/src/route_aware_tls_fallback_tests.rs
+@@ -143,0 +144,3 @@ async fn retries_a_native_tls_failure_after_another_request_caches_rustls() {
++    let RouteAwareRequestError::Request(error) = error else {
++        panic!("native TLS handshake should fail as a request error");
++    };

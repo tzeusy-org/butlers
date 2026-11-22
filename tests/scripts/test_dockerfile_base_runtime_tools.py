@@ -104,7 +104,7 @@ def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> 
         "uv": "0.12.22",
         "claude": "2.1.309",
         "gemini": "0.66.0",
-        "codex": "0.159.2",
+        "codex": "0.170.0",
         "opencode": "1.17.7",
     }
     assert set(runtime["components"]) == {"node", "uv", "claude", "gemini", "codex", "opencode"}
@@ -116,10 +116,12 @@ def test_compose_base_freshness_uses_pinned_dockerfile_not_live_npm_latest() -> 
     assert "CLI_PKGS=" not in compose_text
 
 
-def test_codex_cli_pin_supports_gpt_6_sol_and_luna() -> None:
+def test_codex_cli_pin_supports_gpt_6_2_sol() -> None:
     runtime = json.loads(Path("deploy/runtime-clis/runtime-inputs.json").read_text())
-    assert tuple(map(int, runtime["versions"]["codex"].split("."))) >= (0, 159, 2), (
-        "gpt-6-sol and gpt-6-luna require Codex CLI 0.159.2 or newer"
+    # The bundled model catalog marks gpt-6.2-sol minimal_client_version 0.166.0; ChatGPT-login
+    # sessions on an older client get "model is not supported" (model_not_found).
+    assert tuple(map(int, runtime["versions"]["codex"].split("."))) >= (0, 166, 0), (
+        "gpt-6.2-sol requires Codex CLI 0.166.0 or newer"
     )
 
 

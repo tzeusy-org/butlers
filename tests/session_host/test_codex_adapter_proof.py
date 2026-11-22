@@ -18,6 +18,7 @@ import pytest
 
 from butlers.session_host.bubblewrap import BubblewrapDomain, ImageFile
 from butlers.session_host.codex import (
+    AUTH_DIR,
     AUTH_NAME,
     CATALOG_NAME,
     CONFIG_NAME,
@@ -31,7 +32,7 @@ from tests.session_host import codex_proof, exact_image_codex_proof
 from tests.session_host.test_core import request
 
 REPO = Path(__file__).resolve().parents[2]
-PROVEN_SETTINGS_SHA256 = "58abe0e9d1963a7d59590485d9aa0d61318421246fe9726e23647af7f1c6f437"
+PROVEN_SETTINGS_SHA256 = "50f8d8fe144cafd3843cce4f15e7516ba060869e5dc68f4bb07301a97875185e"
 BYPASS_FLAGS = (
     "--dangerously-bypass-approvals-and-sandbox",
     "--dangerously-skip-permissions",
@@ -625,9 +626,9 @@ def test_a_planned_writable_data_mount_must_be_writable():
     assert codex_proof.unplanned_mounts(planned_view(), planned, _HOST, _HOST_DEV) != []
 
 
-# OAuth mode binds one host file on purpose: the staged auth.json, by descriptor.
-_AUTH = "/tmp/home/.codex/auth.json"
-_STAGED_ROOT = "/stage/inv-1/auth.json"
+# OAuth mode binds one host directory on purpose: the staged auth directory, by descriptor.
+_AUTH = "/invocation/codex-auth"
+_STAGED_ROOT = "/stage/inv-1/codex-auth"
 _OAUTH_PLAN = [*_PLAN[: _PLAN.index("--")], "--bind-fd", "7", _AUTH, *_PLAN[_PLAN.index("--") :]]
 
 
@@ -1063,6 +1064,10 @@ def test_native_bypass_flag_is_what_the_read_only_sandbox_stops(proof_root, tmp_
 # OAuth mode (bu-kiuh8v.16) ----------------------------------------------------
 
 
+# Plan mount kinds that let the runtime write to the host.
+WRITABLE_HOST = frozenset({"fd-rw", "bind", "data-rw"})
+
+
 def _oauth_failures(observation):
     failures = codex_proof.evaluate(
         observation,
@@ -1074,8 +1079,9 @@ def _oauth_failures(observation):
 
 @pytest.mark.parametrize("transport", ["websocket", "http"])
 def test_native_oauth_codex_refreshes_and_the_host_persists_it(proof_root, transport, tmp_path):
-    """The staged token is expired: the runtime refreshes it, writes its one writable
-    file, and after settlement the host installs that into the volume."""
+    """The staged token is expired: the runtime refreshes it, renames the refresh into
+    its one writable directory, and after settlement the host installs that into the
+    volume. That directory is the only host mount the runtime can write."""
     observation = launch(
         proof_root, {"oauth": True, "refuse_websocket": transport == "http"}, tmp_path
     )
@@ -1090,6 +1096,10 @@ def test_native_oauth_codex_refreshes_and_the_host_persists_it(proof_root, trans
     ]
     assert observation["settled"] and observation["stage_empty"]
     assert observation["lease_released"]
+    # The plan's only writable host mount; HOME and CODEX_HOME are sandbox tmpfs.
+    planned = observation["planned"]
+    assert {point for point, kind in planned.items() if kind in WRITABLE_HOST} == {AUTH_DIR}
+    assert planned[AUTH_DIR] == "fd-rw" and planned["/tmp"] == "tmpfs"
     persisted = json.loads(observation["volume_document"])
     assert persisted["tokens"]["access_token"] == codex_proof.OAUTH_REFRESHED_ACCESS
     assert persisted["tokens"]["refresh_token"] == codex_proof.OAUTH_REFRESHED_REFRESH
@@ -1106,9 +1116,20 @@ def test_native_oauth_refresh_for_another_account_leaves_the_volume(proof_root, 
 
 
 def test_native_oauth_read_only_auth_file_loses_the_refresh(proof_root, tmp_path):
-    """The control: the writable file is what carries a refresh back to the volume."""
+    """The control: the writable directory is what carries a refresh back to the volume."""
     observation = launch(proof_root, {"oauth": True, "readonly_auth": True}, tmp_path)
     assert observation["refresh"], "the runtime never refreshed, so nothing was tested"
+    assert observation["settled"] and observation["lease_released"]
+    assert observation["volume_document"] == codex_proof.oauth_document()
+
+
+def test_native_oauth_single_file_bind_loses_the_refresh(proof_root, tmp_path):
+    """The control for the 0.159.2-era plan: auth.json alone bound writable. The pinned
+    CLI's tempfile-and-rename cannot replace a bind-mount point (EBUSY), so the refresh
+    is lost and the volume keeps the staged document."""
+    observation = launch(proof_root, {"oauth": True, "single_file_auth": True}, tmp_path)
+    assert observation["refresh"], "the runtime never refreshed, so nothing was tested"
+    assert "Resource busy" in (observation.get("stderr_tail") or "")
     assert observation["settled"] and observation["lease_released"]
     assert observation["volume_document"] == codex_proof.oauth_document()
 

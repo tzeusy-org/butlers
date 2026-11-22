@@ -54,6 +54,21 @@ LIMITS_UNAVAILABLE_LINE: Final = (
 )
 
 
+#: An unreadable spend state is not "too busy" either: the monthly ceiling could not be checked.
+SPEND_UNREADABLE_LINE: Final = (
+    "A request you sent was not accepted because the assistant could not check its spending "
+    "limit. It was not run."
+)
+
+
+#: The owner's monthly ceiling stopped the request; the words follow the spawner's refusal text
+#: (``CEILING_DENIAL_REASON_PREFIX``) so the owner hears one phrase wherever it applies.
+CEILING_REACHED_LINE: Final = (
+    "A request you sent was not run. Monthly spend ceiling reached: raise it in Settings or "
+    "wait for the month to turn, then send it again."
+)
+
+
 def unread_sentence(released: int) -> str:
     """Owner replies a goal's end released unread (sw_070): a count, never a reply."""
     noun = "reply" if released == 1 else "replies"
@@ -64,11 +79,14 @@ def unread_sentence(released: int) -> str:
 def line_for(cause: str, refusal: str | None, released: int = 0) -> str | None:
     if cause == "replies_unread":
         return unread_sentence(released) if released > 0 else CAUSE_LINES[cause]
-    line = (
-        LIMITS_UNAVAILABLE_LINE
-        if (cause == "admission_refused" and refusal == "limits_unavailable")
-        else CAUSE_LINES.get(cause)
-    )
+    if cause == "admission_refused" and refusal == "limits_unavailable":
+        line = LIMITS_UNAVAILABLE_LINE
+    elif cause == "admission_refused" and refusal == "ceiling_reached":
+        line = CEILING_REACHED_LINE
+    elif cause == "admission_refused" and refusal == "spend_state_unreadable":
+        line = SPEND_UNREADABLE_LINE
+    else:
+        line = CAUSE_LINES.get(cause)
     if line is not None and released > 0:
         line = f"{line} {unread_sentence(released)}"
     return line

@@ -9,7 +9,9 @@ import pytest
 
 from tests.capability_host.helpers import (
     BEARER,
+    CID,
     NEXT_BEARER,
+    SUB,
     Env,
     call_body,
     error_code,
@@ -81,6 +83,38 @@ async def test_bearer_alone_cannot_call_a_tool(env: Env):
     response = await env.send(call_body("entity_lookup", {"q": "x"}), assertion=None)
     assert _refused(response)
     assert env.calls == [] and env.projection.acquired == 0
+
+
+# Identity headers a proxy or client might set. The host reads only the bearer, the assertion
+# and Content-Length, so none of these can stand in for, or override, the signed assertion.
+FORGED_IDENTITY = [
+    ("X-Forwarded-User", "5151"),
+    ("X-Forwarded-Email", "someone@example.com"),
+    ("X-Auth-Request-User", "5151"),
+    ("X-Remote-User", "5151"),
+    ("X-MCP-Sub", "5151"),
+    ("X-MCP-Client-Id", "https://chatgpt.com/connector/oauth/client.json"),
+    ("X-Forwarded-For", "203.0.113.7"),
+]
+
+
+async def test_forged_identity_headers_without_an_assertion_are_refused(env: Env):
+    response = await env.send(
+        call_body("entity_lookup", {"q": "x"}), assertion=None, headers=FORGED_IDENTITY
+    )
+    assert _refused(response)
+    assert env.calls == [] and env.projection.acquired == 0
+    (line,) = env.audits()
+    assert line["cause"] == "missing" and line["sub"] is None
+
+
+async def test_forged_identity_headers_never_override_the_assertion(env: Env):
+    message = await env.tool("entity_lookup", {"q": "x"}, headers=FORGED_IDENTITY)
+    assert error_code(message) is None
+    (context,) = env.calls
+    assert (context.sub, context.cid) == (SUB, CID)
+    (line,) = env.audits()
+    assert line["sub"] == SUB and line["cid"] == "claude.ai"
 
 
 # -- REQ-public-mcp-authorization-002 request shape --

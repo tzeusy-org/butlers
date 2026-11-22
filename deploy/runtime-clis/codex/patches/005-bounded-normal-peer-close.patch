@@ -1,10 +1,10 @@
 --- a/codex-rs/codex-api/src/endpoint/responses_websocket.rs
 +++ b/codex-rs/codex-api/src/endpoint/responses_websocket.rs
-@@ -48,0 +49,3 @@
+@@ -62,0 +63,3 @@ use url::Url;
 +// Bound only normal peer-close reply flushing; terminal errors and cancellation remain immediate.
 +const PEER_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 +
-@@ -97,0 +101,19 @@
+@@ -144,0 +148,19 @@ impl WsStream {
 +                            Ok(Message::Close(frame)) => {
 +                                // Tungstenite queues the matching reply in read(). Flush it before
 +                                // publishing Close: its consumer can immediately drop this pump.
@@ -24,15 +24,15 @@
 +                                let _ = tx_message.send(result);
 +                                break;
 +                            }
-@@ -100 +121,0 @@
+@@ -147 +168,0 @@ impl WsStream {
 -                            | Message::Close(_)
-@@ -102 +122,0 @@
+@@ -149 +169,0 @@ impl WsStream {
 -                                let is_close = matches!(message, Message::Close(_));
-@@ -104,3 +123,0 @@
+@@ -153,3 +172,0 @@ impl WsStream {
+-                                if is_close {
 -                                    break;
 -                                }
--                                if is_close {
-@@ -941,0 +959,114 @@
+@@ -1160,0 +1178,114 @@ mod tests {
 +
 +    // Real production WsStream/connector and pinned Tungstenite over owned loopback sockets.
 +    // These tests are intentionally runnable unchanged against the old production definition.
@@ -67,7 +67,7 @@
 +        })
 +        .await
 +        .expect("bounded real handshake");
-+        (WsStream::new(client.expect("real client handshake").0), server)
++        (WsStream::new(client.expect("real client handshake").0, /*max_message_bytes*/ None), server)
 +    }
 +
 +    #[tokio::test]

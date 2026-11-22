@@ -95,6 +95,11 @@ Health is a standing subscriber to Travel's `travel.trip_active` domain event (b
 - `health.visit_briefs` (migration `health_005`) is keyed by calendar event id: a delivered brief is never re-sent, a reschedule re-anchors the row, and a suppressed or failed send is retried on the next run. A session advisory lock held for the whole run serializes overlapping runs (scheduler tick and dashboard Trigger); the loser returns `skipped_concurrent` and sends nothing. Rollback: drop the schedule entry and the table.
 - The owner timezone is read from `public.state` explicitly (the Health pool resolves an unqualified `state` to `health.state`); the fallback is SGT. The zone comes from the shared `owner_briefing_zone()` (over `load_configured_general_timezone()`).
 
+## Weight Plausibility Gate (bu-swkpoo.11)
+- A shared scale reports every household member through one stabilized sensor, so `wellness_ingest` (Home Assistant arm) compares each `weight` kg reading with the median of the owner's active `measurement_weight` facts over the 30 days before its `valid_at` (at least 3 readings, else accept). A deviation above `WEIGHT_MAX_BASELINE_DEVIATION` (15%) is stored with `validity = 'candidate'` and `metadata.held`, not asserted: series, projections and briefs read `validity = 'active'` only. The tool returns `status: held_implausible` and counts `health_wellness_ingest_total{outcome="held_implausible"}`.
+- Do not report a held reading as a weigh-in. There is no confirm step yet: confirming one means setting that fact's `validity` to `active` by hand. The query fails open, so a database error never holds a reading.
+- `health_009` retracts HA weight facts already stored that deviate more than 15% from the median of the other active weights within 15 days either side. Its literals are frozen; the ingest constants may be retuned independently.
+
 ## Interactive Response Mode
 
 When processing messages that originated from Telegram or other interactive channels, you should respond interactively to provide a better user experience. This mode is activated when a REQUEST CONTEXT JSON block is present in your context and contains a `source_channel` field (e.g., `telegram_bot`).

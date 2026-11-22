@@ -10,7 +10,7 @@
     "npm": "10.9.9",
     "uv": "0.12.22",
     "claude": "2.1.309",
-    "codex": "0.159.2",
+    "codex": "0.170.0",
     "gemini": "0.66.0",
     "opencode": "1.17.7"
   },
@@ -38,7 +38,7 @@
     "schema": "butlers.fixed-runtime-provenance/v1",
     "source_inputs": {
       "Dockerfile.codex-artifacts": {
-        "sha256": "70a0a46fb894c038eb4e830910bc204d569ed6b277eb64de48811ef91de63688"
+        "sha256": "60ec1e3ea8c6bd7c0272f9cf8a6aadd6c283ac3bdb95c4b035e8eddddd2a6630"
       },
       "Dockerfile.default-plugin-artifacts": {
         "sha256": "d3f809f55a782938d7f9e5b1634dc51c8ad67366e02517ed5b2dd72005142c0c"
@@ -62,28 +62,28 @@
         "sha256": "f7d83e9dcdeef94626d9e0dd81fa2db6222343824488c1e95b785ea0773b691b"
       },
       "deploy/runtime-clis/codex/build-inputs.json": {
-        "sha256": "8886263cf441af7834f9a1e3f4d24cbd1c4c0474bf6e789f43c96ba9ed215b84"
+        "sha256": "1cca53ebf4d8398d39237e62870616a59aa395ac4ddc8f3fc8cead4b887eb72b"
       },
       "deploy/runtime-clis/codex/compiler-inputs.json": {
         "sha256": "b8b8e3910b089d0622818620c090709884f1d0e1849c427a0dc98831360fd412"
       },
       "deploy/runtime-clis/codex/patches/001-workspace-release-versions.patch": {
-        "sha256": "3a7260f09562f9046a5b8f99b45506f959fb2331e7512175f2ec9cda7536ca43"
+        "sha256": "4b11961badcef24e56dc509a0fe2518afb4dfb9255593b19ed065440e718ef49"
       },
       "deploy/runtime-clis/codex/patches/002-explicit-http-executor.patch": {
-        "sha256": "06e728e1bed84b6e6460ea01040a5b1e080058bcc47ab11dd0d5b5aafa72bbe0"
+        "sha256": "cff474bb30b56e617b04109149437c47efa0731bb41c6c4368f22618a25b9a98"
       },
       "deploy/runtime-clis/codex/patches/003-explicit-websocket-executor.patch": {
-        "sha256": "23d303ca89c3b89a3520d7d5140b00b6c941c55fc1299eb1d956162e66bebe59"
+        "sha256": "c9960214c05bf24e0add2c249727bae77ca621c13d635e4c351422d7af1eb72d"
       },
       "deploy/runtime-clis/codex/patches/004-bounded-selected-hop-errors.patch": {
-        "sha256": "7c0216178ec5ee2ea29cb9014ce7fc60ebb4dcd4e15d3a205411605212bdfc13"
+        "sha256": "a66cb7d01a6a95a45bc7cabdb62db5b61ab28bb3bb1f7fa18dfa1647971a7f69"
       },
       "deploy/runtime-clis/codex/patches/005-bounded-normal-peer-close.patch": {
-        "sha256": "0fce292ee4322e495d72deaca5768175dc48a3f3f9b2291df2b34ed80e996348"
+        "sha256": "8da1447b5fc6bd92f9ee7aa740a74e38ede308bd3ad84b41ab1b034020da9932"
       },
       "deploy/runtime-clis/codex/series.json": {
-        "sha256": "80c5d00a2581beaa8a39f2026225167ae1ad803028c6b89d6b921e987847255c"
+        "sha256": "f5a4343a0a27f7f864f9abcf2aca54dae77ce5b4cdd5e4a80b1a3e6681fb5d85"
       },
       "deploy/runtime-clis/debian-system-inputs.json": {
         "sha256": "a42de4f1082b934775b2a36f24b9dcff29d6a7265f9255960c47ca4ee0cdcd28"
@@ -134,7 +134,7 @@
         "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
       },
       "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
-        "sha256": "68485d59767d5a8b5e2df8482117562ff0e4831bf913e361f4d43d5658f14e39"
+        "sha256": "c6ce1a247c43317cdb41a11f821d17305e1c46b466faafa9dbd8db7150de5fe6"
       },
       "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
         "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
@@ -236,15 +236,15 @@
         "sha256": "aae14ccd2fbcfc3f3759f246af2f86c5cc3260ad155478270113bf693a8c218a"
       },
       "scripts/runtime_clis/runtime_artifacts.py": {
-        "sha256": "f36b6cd78fcd5b108de7e80cb4d1ba799e00021714e58acc8db20f8abd69b294"
+        "sha256": "0484000a06b812a33d822a2fb3d7df17aea454fbfef6acd58782ed0c050b24e8"
       }
     },
     "vendor_sources": {
       "codex": {
-        "version": "0.159.2",
-        "commit": "ff6aec96948b70d94983af2641a6b67c94faeff5",
-        "archive_sha256": "8cfd92ccc784603d0ef94165f5a70bb99fd3de6e8b4bccda58580fc3f5f4961d",
-        "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154"
+        "version": "0.170.0",
+        "commit": "29eb79e9866b3262a777fdf8195c1b9e63684c91",
+        "archive_sha256": "d7c78b72ac4117acd66f0154841ec6bcd1b8d72a6f68fd00f90c34e526db643f",
+        "source_tree_sha256": "c24962aecdd7d639b4df8323b4f151be1fa790e5df8dfbdcf99241dc0a724b47"
       },
       "gemini": {
         "version": "0.66.0",

@@ -723,6 +723,26 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{source}>",
     ): "dynamic-review: closed memory-relation export source expanded per butler on its own pool",
     (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.budgets",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.effects",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.goal_outcomes",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.goals",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
+        "src/butlers/api/routers/goals.py",
+        "switchboard.invocations",
+    ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
+    (
         "src/butlers/api/routers/identity.py",
         "relationship.entity_facts",
     ): "pending-bu-lsxqb0.2: on-demand schema-selected dashboard/calendar source read; no exception adopted here",
@@ -954,6 +974,18 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/core/fleet_conditions.py",
         "switchboard.butler_registry_control_plane",
     ): "burn-down: existing switchboard.butler_registry_control_plane coupling; route through owning service or make local schema authority explicit",
+    (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.budget_pools",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
+    (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.pool_reservations",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
+    (
+        "src/butlers/core/spend_pools.py",
+        "switchboard.charge_goal_reservation",
+    ): "sanctioned:RFC-0038 D10: the monthly spend pools reserved in the admission transaction and charged in the goal budget's transaction on the Switchboard runtime role (sw_084, bu-jv1moa.1)",
     (
         "src/butlers/core/goal_ledger.py",
         "switchboard.admission_attempt_bindings",

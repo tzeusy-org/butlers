@@ -2,8 +2,9 @@
 
 Every payload here is **synthetic**. Each one is shaped after the public Google Calendar API v3
 Events resource reference (`eventType`, `outOfOfficeProperties`, `focusTimeProperties`,
-`workingLocationProperties`). None was captured from a real account. This corpus does not meet
-the recorded-payload obligation. A captured payload would need its own sanitized file, its own
+`workingLocationProperties`). None was captured from a real account. The recorded-payload requirement was dropped by a 2026-11-22
+owner decision (recorded capture is infeasible on a consumer account); this synthetic corpus is
+the accepted fixture set, with its provenance disclosed. A captured payload would need its own sanitized file, its own
 `provenance` entry naming where and how it was captured, and a review before it lands.
 
 `manifest.json` lists every file once with its `sha256` and the typed fields the real normalizer

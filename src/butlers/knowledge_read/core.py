@@ -198,8 +198,10 @@ def tables_for(tool: str) -> tuple[Table, ...]:
 def record_uri(table: Table, row_id: str) -> tuple[str, str]:
     """(kind, uri) from the manifest's ``butlers://<domain>/<kind>/{key}`` template."""
     template = table.uri
-    kind = template.split("/")[3]
-    return kind, template[: template.index("{")] + row_id
+    parts = template.split("/")
+    if len(parts) != 5 or not parts[3] or "{" in parts[3] or not parts[4].startswith("{"):
+        raise ValueError(f"uri template must be butlers://<domain>/<kind>/{{key}}: {template}")
+    return parts[3], template[: template.index("{")] + row_id
 
 
 def source_domains() -> dict[str, str]:
@@ -281,7 +283,8 @@ class Arguments:
         if not isinstance(value, str):
             raise ReadError("invalid_argument", argument=name)
         value = unicodedata.normalize("NFC", value).strip()
-        if len(value) > max_length or (required and not value):
+        # PostgreSQL text cannot hold NUL: refuse it here as final, not as a retryable DB error.
+        if len(value) > max_length or (required and not value) or "\x00" in value:
             raise ReadError("invalid_argument", argument=name)
         return self._keep(name, value or None)
 
@@ -305,7 +308,12 @@ class Arguments:
             if not isinstance(item, str):
                 raise ReadError("invalid_argument", argument=name)
             item = unicodedata.normalize("NFC", item).strip()
-            if not item or len(item) > max_length or (options and item not in options):
+            if (
+                not item
+                or len(item) > max_length
+                or (options and item not in options)
+                or "\x00" in item
+            ):
                 raise ReadError("invalid_argument", argument=name)
             items.append(item)
         return self._keep(name, tuple(sorted(set(items))))

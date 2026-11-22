@@ -51,7 +51,9 @@ _TOKENS = (
     ("api_key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
 )
-_LUHN_RUN = re.compile(r"(?<!\d)\d(?:[ \t\n-]?\d){12,18}(?!\d)")
+# One space or dash between digits. NFKC already maps the no-break, ideographic and full-width
+# forms onto ASCII; the typographic dashes (U+2010 to U+2015) and the minus sign it leaves alone.
+_LUHN_RUN = re.compile(r"(?<!\d)\d(?:[ \t\n\-\u2010-\u2015\u2212]?\d){12,18}(?!\d)")
 _CARD_WORD = re.compile(r"(?i)\b(?:card|visa|mastercard|amex|credit|debit|cvv|expiry)\b")
 _OTP = re.compile(
     r"(?i:\b(?:otp|one[- ]time (?:password|passcode|code|pin)|verification code|security code"

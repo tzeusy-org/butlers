@@ -30,29 +30,41 @@ nodeSelector:
 {{ .Release.Name }}-bws
 {{- end -}}
 
-{{/* Postgres connection env, shared by every app container. */}}
+{{/* Postgres connection env, shared by every app container (the shared runtime login). */}}
 {{- define "butlers.postgresEnv" -}}
+{{- include "butlers.postgresLoginEnv" (dict "root" . "keyPrefix" "") -}}
+{{- end -}}
+
+{{/* The migrations initContainer's env: the migrator login when database.migratorLogin
+     is enabled (bu-dss7he.6 S3), else the shared login, exactly as butlers.postgresEnv. */}}
+{{- define "butlers.migratorPostgresEnv" -}}
+{{- $prefix := ternary "MIGRATOR_" "" (eq (toString .Values.database.migratorLogin.enabled) "true") -}}
+{{- include "butlers.postgresLoginEnv" (dict "root" . "keyPrefix" $prefix) -}}
+{{- end -}}
+
+{{- define "butlers.postgresLoginEnv" -}}
+{{- $r := .root -}}
 - name: POSTGRES_HOST
-  value: {{ required "database.host is required" .Values.database.host | quote }}
+  value: {{ required "database.host is required" $r.Values.database.host | quote }}
 - name: POSTGRES_PORT
-  value: {{ .Values.database.port | quote }}
+  value: {{ $r.Values.database.port | quote }}
 - name: POSTGRES_DB
-  value: {{ .Values.database.name | quote }}
+  value: {{ $r.Values.database.name | quote }}
 - name: POSTGRES_SSLMODE
-  value: {{ .Values.database.sslmode | quote }}
+  value: {{ $r.Values.database.sslmode | quote }}
 - name: POSTGRES_USER
   valueFrom:
-    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: POSTGRES_USER}
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" $r }}, key: {{ .keyPrefix }}POSTGRES_USER}
 - name: POSTGRES_PASSWORD
   valueFrom:
-    secretKeyRef: {name: {{ include "butlers.bwsSecret" . }}, key: POSTGRES_PASSWORD}
+    secretKeyRef: {name: {{ include "butlers.bwsSecret" $r }}, key: {{ .keyPrefix }}POSTGRES_PASSWORD}
 - name: BUTLERS_DB_POOL_MIN_SIZE
-  value: {{ .Values.database.poolMinSize | quote }}
+  value: {{ $r.Values.database.poolMinSize | quote }}
 - name: BUTLERS_DB_POOL_MAX_SIZE
-  value: {{ .Values.database.poolMaxSize | quote }}
+  value: {{ $r.Values.database.poolMaxSize | quote }}
 - name: GIT_SHA
-  value: {{ .Values.image.tag | quote }}
-{{- range $k, $v := .Values.commonEnv }}
+  value: {{ $r.Values.image.tag | quote }}
+{{- range $k, $v := $r.Values.commonEnv }}
 - name: {{ $k }}
   value: {{ $v | quote }}
 {{- end }}

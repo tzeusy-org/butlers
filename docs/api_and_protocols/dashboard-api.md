@@ -77,6 +77,26 @@ the inventory; the generated OpenAPI schema lists every operation and its respon
 Cross-cutting envelope, pagination, and degraded-source rules are in
 [Response Conventions](response-conventions.md).
 
+### Goal ledger reads (RFC 0038 D19, dark)
+
+`src/butlers/api/routers/goals.py` serves three owner-authenticated, read-only routes over
+`switchboard.goals` and its sibling ledger tables. No current page calls them; they wait for the
+D19 pages and the M6 switch.
+
+- `GET /api/goals` is a `Page` list (`created_at DESC, id DESC`) filtered by `origin`, `exposed`, `outcome`, a `since` (inclusive) and `until` (exclusive) `created_at` range,
+  `state` and `region`. A region is the domain prefix of an effect's capability identity. An
+  unreachable or failing ledger answers 200 with `sources_degraded: ["goal_ledger"]`, never an
+  empty page.
+- `GET /api/goals/{goal_id}` returns the delegation tree, effects with receipt refs, approvals with
+  lineage (the goal's own cause and the goals each approval-parked effect caused), the budget and
+  the outcome. An absent goal is 404; an unreadable ledger is 503.
+- `GET /api/goals/regions` returns recent goals and schedules coming due per region, naming failed
+  sources in `sources_degraded` (`goal_ledger`, `obligations:<butler>`).
+
+The projection is content-free (D17): no grant snapshots, arguments, results or prompt text.
+Owner Stop is not served yet. `GoalRuntime.stop` has no service-listener door, and the signed
+D19 change leaves the literal Stop route to the Hold/Stop-all owner.
+
 ### Provider allowance observation
 
 `GET /api/settings/models/allowance` (`src/butlers/api/routers/model_settings.py`) is an

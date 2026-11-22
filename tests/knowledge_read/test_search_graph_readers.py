@@ -62,7 +62,7 @@ def test_the_index_spans_only_the_four_searchable_domains():
     assert {s.table.domain for s in sources} == set(INDEX_DOMAINS)
     assert not any(s.table.domain in {"finance", "health", "proposals"} for s in sources)
     assert all(s.prefix.startswith(f"butlers://{s.table.domain}/") for s in sources)
-    assert index_kinds() == ("document", "entity", "episode", "fact", "leg", "trip")
+    assert index_kinds() == ("entity", "episode", "fact", "leg", "trip")
     # Every manifest source of fetch is an index source, except the proposal state.
     fetchable = {t.source for t in tables_for("fetch")}
     assert fetchable - {s.table.source for s in sources} == {"relationship.external_fact_proposals"}
@@ -186,6 +186,32 @@ async def test_graph_tools_refuse_a_disabled_relationship_domain():
 )
 async def test_trips_refuses_out_of_contract_arguments(arguments, argument):
     assert await _code(trips, arguments) == ("invalid_argument", argument)
+
+
+class _TripsOnly:
+    """A snapshot connection with one trip and no legs; any documents read fails the test."""
+
+    def is_in_transaction(self) -> bool:
+        return True
+
+    async def fetch(self, sql: str, *params: Any) -> list[dict[str, Any]]:
+        assert "travel__documents" not in sql, "read an unpublished source"
+        if "travel__trips" in sql:
+            return [{"source_id": ID, "fields": {"name": "Synthetic trip", "status": "planned"}}]
+        return []
+
+
+async def test_trips_answers_without_documents_when_they_are_not_published(monkeypatch):
+    import butlers.knowledge_read.core as core
+
+    narrowed = core.load_manifest()
+    narrowed = replace(
+        narrowed, tables=tuple(t for t in narrowed.tables if t.source != "travel.documents")
+    )
+    monkeypatch.setattr(core, "_manifest", lambda: narrowed)
+    conn: Any = _TripsOnly()
+    result = await trips(conn, _context(), {})
+    assert [(t["id"], t["legs"], t["documents"]) for t in result["trips"]] == [(ID, [], [])]
 
 
 async def test_describe_takes_no_arguments_and_lists_the_pinned_catalogue():

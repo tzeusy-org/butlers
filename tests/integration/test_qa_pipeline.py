@@ -46,8 +46,9 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
 from butlers.core.qa.triage import TriagedFinding, triage_findings
 from butlers.testing.fake_pool import FakePool, fake_pool
+from tests.core.qa.conftest import _no_paused_proposal, no_paused_proposal  # noqa: F401
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("_no_paused_proposal")]
 
 
 # ---------------------------------------------------------------------------

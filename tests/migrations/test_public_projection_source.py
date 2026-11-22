@@ -31,6 +31,7 @@ from butlers.core.entity_graph_edges import (
     project_or_withhold_entity_graph_edge,
     withhold_entity_graph_edge,
 )
+from butlers.knowledge_read.manifest import _segments, credential
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.migrations.projection import (
     drop_replica_identity,
@@ -43,6 +44,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from tests.credential_key_cases import BENIGN_KEYS, CREDENTIAL_KEYS
 
 pytestmark = pytest.mark.integration
 
@@ -1916,6 +1918,139 @@ async def test_finance_health_json_paths_credentials_and_lifecycle(
         assert not await subscriber.fetchval(
             "SELECT EXISTS(SELECT 1 FROM finance.json_fields_public WHERE row_id=$1)", str(new_id)
         )
+
+
+@pytest.mark.asyncio
+async def test_health_metadata_credential_paths_never_materialize(
+    finance_health_projection: Projection,
+) -> None:
+    """Task 6.1: credential-named health ``metadata`` keys, in every key style, stay unpublished.
+
+    The finance twin is the test above; this one writes as the Health runtime role and checks
+    the leaves on the primary and on the subscriber after a barrier.
+    """
+    p = finance_health_projection
+    omitted = (
+        "api_key",
+        "apiKey",
+        "api-key",
+        "access_token",
+        "accessToken",
+        "access-token",
+        "client_secret",
+        "clientSecret",
+        "Client-Secret",
+        "portal_password",
+        "portalPassword",
+        "portal-password",
+        "session cookie",
+    )
+    metadata: dict[str, object] = {key: "synthetic-omit" for key in omitted}
+    metadata["clinic"] = "Example Clinic"
+    metadata["portal"] = {"url_label": "kept", "loginToken": "synthetic-omit"}
+    metadata["visits"] = [{"room": "2B", "authCode": "synthetic-omit"}]
+    async with p.source() as source:
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_health_rw")
+            fact = await _health_fact(source, "condition", metadata)
+        query = (
+            "SELECT path, value_text FROM health.json_fields_public "
+            "WHERE source_table='health.facts' AND row_id=$1 AND starts_with(path, 'metadata.') "
+            "ORDER BY path"
+        )
+        rows = await source.fetch(query, str(fact))
+        assert {r["path"] for r in rows} == {
+            "metadata.clinic",
+            "metadata.portal.url_label",
+            "metadata.visits.[0].room",
+        }
+        assert all(r["value_text"] != "synthetic-omit" for r in rows)
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        assert await source.fetch(query, str(fact)) == await subscriber.fetch(query, str(fact))
+        await source.execute("DELETE FROM health.facts WHERE id=$1", fact)
+    await p.caught_up()
+
+
+@pytest.mark.asyncio
+async def test_sql_credential_rule_agrees_with_python_on_the_shared_cases(
+    finance_health_projection: Projection,
+) -> None:
+    """bu-y66o00.71: public.mcp_json_tokens/mcp_json_credential are the manifest rule's twin."""
+    keys = [*CREDENTIAL_KEYS, *BENIGN_KEYS]
+    async with finance_health_projection.source() as source:
+        rows = await source.fetch(
+            "SELECT key, public.mcp_json_credential(public.mcp_json_tokens(key)) AS hit, "
+            "public.mcp_json_tokens(key) AS tokens FROM unnest($1::text[]) AS key",
+            keys,
+        )
+    assert {r["key"]: r["hit"] for r in rows} == {key: credential(key) for key in keys}
+    assert {r["key"]: tuple(r["tokens"]) for r in rows} == {key: _segments(key) for key in keys}
+    assert all(credential(key) for key in CREDENTIAL_KEYS)
+    assert not any(credential(key) for key in BENIGN_KEYS)
+
+
+@pytest.mark.asyncio
+async def test_every_credential_key_style_stays_out_of_the_materialized_leaves(
+    finance_health_projection: Projection,
+) -> None:
+    """bu-y66o00.71: acronym, concatenated, digit-suffixed and authorization-style keys.
+
+    Health metadata, a Health reading object and Finance metadata, each written by its runtime
+    role; the benign neighbors of the credential words stay published.
+    """
+    p = finance_health_projection
+    metadata: dict[str, object] = dict.fromkeys(CREDENTIAL_KEYS, "synthetic-omit")
+    metadata.update(dict.fromkeys(BENIGN_KEYS, "synthetic-keep"))
+    expected = {"metadata." + key for key in BENIGN_KEYS}
+    reading = {"systolic": 120, "APIKey": 1, "cvv2": 2, "pin2": 3, "authorization": 4}
+    async with p.source() as source:
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_health_rw")
+            fact = await _health_fact(source, "condition", metadata)
+            measured = await _health_fact(source, "measurement_blood_pressure", {"value": reading})
+        async with source.transaction():
+            await source.execute("SET LOCAL ROLE butler_finance_rw")
+            transaction = await source.fetchval(
+                """
+                INSERT INTO finance.transactions(posted_at,merchant,amount,currency,direction,
+                    category,metadata)
+                VALUES(now(),'C fixture',1,'USD','debit','groceries',$1::jsonb) RETURNING id
+            """,
+                json.dumps(metadata),
+            )
+        health = (
+            "SELECT path, value_text FROM health.json_fields_public "
+            "WHERE source_table='health.facts' AND row_id=$1 AND starts_with(path, 'metadata.')"
+        )
+        finance = (
+            "SELECT path, value_text FROM finance.json_fields_public "
+            "WHERE source_table='finance.transactions' AND row_id=$1 "
+            "AND starts_with(path, 'metadata.')"
+        )
+        for query, row_id in ((health, fact), (finance, transaction)):
+            rows = await source.fetch(query, str(row_id))
+            assert {r["path"] for r in rows} == expected
+            assert {r["value_text"] for r in rows} == {"synthetic-keep"}
+        readings = "SELECT metric FROM health.measurements_public WHERE id LIKE $1 ORDER BY id"
+        assert [r["metric"] for r in await source.fetch(readings, f"{measured}%")] == [
+            "measurement_blood_pressure.systolic"
+        ]
+    await p.caught_up()
+    async with p.source() as source, p.subscriber() as subscriber:
+        for query, row_id in ((health, fact), (finance, transaction)):
+            ordered = query + " ORDER BY path"
+            assert await source.fetch(ordered, str(row_id)) == await subscriber.fetch(
+                ordered, str(row_id)
+            )
+        assert await subscriber.fetch(readings, f"{measured}%") == await source.fetch(
+            readings, f"{measured}%"
+        )
+        await source.execute(
+            "DELETE FROM health.facts WHERE id = ANY($1::uuid[])", [fact, measured]
+        )
+        await source.execute("DELETE FROM finance.transactions WHERE id=$1", transaction)
+    await p.caught_up()
 
 
 @pytest.mark.asyncio

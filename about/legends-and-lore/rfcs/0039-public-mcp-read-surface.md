@@ -478,9 +478,15 @@ same kind uses the same pattern:
   check refuses a published finance or health table without a single-column
   primary key. The function skips any path with a segment that matches the
   credential tier of the D4 column denylist, where a JSON key is first split
-  into segments on `.`, `_`, `-`, whitespace and every lower-to-upper camelCase
-  boundary, then compared case-insensitively (so `accessToken` becomes
-  `access, token` and matches `token`, and `Client-Secret` matches `secret`).
+  into segments on `.`, `_`, `-`, whitespace and every acronym, lower-to-upper
+  camelCase and letter-digit boundary, then compared case-insensitively (so
+  `accessToken` becomes `access, token` and matches `token`, `APIKey` becomes
+  `api, key`, `cvv2` becomes `cvv, 2`, and `Client-Secret` matches `secret`).
+  A credential entry also matches with a plural or `key`/`code`/`number`
+  suffix (`api_keys`, `PINCode`), and an entry of five or more letters matches
+  at the end of a concatenated segment (`apikey`, `accesstoken`), but never
+  when other letters follow it (`secretary`, `tokenization`); D4 gives the
+  rule (bu-y66o00.71).
   It deletes a row's fields when the row stops qualifying. This publishes the
   JSONB content without publishing a JSONB column, and keeps the credential
   rule on keys as well as on columns. [Observed] The keys are unconstrained:
@@ -1102,7 +1108,8 @@ refuses.
    - *Credential tier, every domain:* `secret`, `token`, `password`,
      `credential`, `otp`, `cvv`, `card`, `api_key`, `private_key`,
      `access_key`, `client_key`, `signing_key`, `access_url`, `passcode`,
-     `passphrase`, `pin`, `bearer`, `cookie` and `auth`. These name
+     `passphrase`, `pin`, `bearer`, `cookie`, `auth`, and (bu-y66o00.71)
+     `authorization` and `authentication`. These name
      authenticators or payment credentials (a full card number with its CVV
      can pay; SimpleFIN's own credential is an access URL with Basic userinfo,
      stored as `SIMPLEFIN_ACCESS_URL` [Observed:
@@ -1132,10 +1139,20 @@ refuses.
    entry matches when its segments appear as a contiguous run of the column's
    segments. So `access_token` matches `token` and `source_message_id`
    matches `source_message`, while `withdrawal` does not match `raw` and
-   `direction` passes. The JSON-field trigger applies the credential tier to
-   the segments of a JSON path the same way, after splitting each key on `.`,
-   `_`, `-`, whitespace and camelCase boundaries (D2), so
-   `metadata.refreshToken` and `metadata.simplefin_access_url` are skipped.
+   `direction` passes. Names are split into segments on `.`, `_`, `-`,
+   whitespace and every acronym, camelCase and letter-digit boundary before
+   matching. A credential-tier entry's last segment may carry an `s`, `key(s)`,
+   `code(s)` or `number(s)` suffix (`api_keys`, `PINCode`, `cvv2` as `cvv, 2`),
+   and an entry of five or more letters, written without underscores, also
+   matches at the end of a segment (`apikey`, `accesstoken`,
+   `proxyAuthorization`); no entry matches a segment in which other letters
+   follow it, so `secretary` and `tokenization` pass. `authorization` and
+   `authentication` are credential-tier entries. The JSON-field trigger
+   applies the credential tier to the segments of a JSON path the same way
+   (D2), so `metadata.refreshToken` and `metadata.simplefin_access_url` are
+   skipped. One rule serves the manifest validator, the owner step's guard and
+   the trigger (`butlers.knowledge_read.manifest.credential`, mirrored by
+   `public.mcp_json_tokens` and `public.mcp_json_credential`).
    A `dlp = "identifier"` mark (D15) is refused on a column or JSON path with
    a credential-tier segment, on any `json_fields_public` column, and outside
    `finance` and `health`.
@@ -1715,7 +1732,7 @@ the line and accepted the risk (OD16).
 | `entity_profile` | relationship | `entity_id`, `sections? ⊆ {facts, edges}` (default both) | `{entity, facts[], edges: {known, withheld}, coverage}`; `facts` holds the entity's published `entity_facts` and its `relationship` memory facts (interactions, life events, notes, gifts, loans, tasks, reminders; OD21), each with its predicate and `valid_at`; a symmetric predicate (`knows`, `lives_with`, `sibling_of`) stored once per direction appears once per unordered pair, the newest | facts, edges, withheld counts; modelled on `dossier_for_entity` | 200 facts |
 | `graph_neighbors` | relationship | `entity_id`, `predicates?`, `hops 1..2`, `limit ≤ 200` | nodes, edges with receipts (edge id and anchors), withheld counts | `entity_graph_edges` as filtered in D2 and `entity_graph_withheld_counts`; parity with REQ-entity-graph-003/005/009 | 200 |
 | `graph_path` | relationship | `from_id`, `to_id`, `max_hops ≤ 4` | `{path: [edge receipts]} \| {path: null}` | parity with REQ-entity-graph-006 | 4 hops |
-| `timeline` | time and travel (multi-domain) | `start`, `end` (span ≤ 92 d), `kinds?`, `cursor?`, `limit ≤ 200` | `{items: [{at, end, kind, title, domain, source}], next_cursor, sources_degraded}`; a disabled domain's items are omitted and the domain listed with reason `"disabled"` | `episodes_public`, trip legs | 200 per page |
+| `timeline` | time and travel (multi-domain) | `start`, `end` (span ≤ 92 d), `kinds?` (`trip_leg`, alias `leg`, or an episode kind such as `scheduled_block`, `work`, `social_episode`; unknown kinds match nothing), `cursor?`, `limit ≤ 200` | `{items: [{at, end, kind, title, domain, source}], next_cursor, sources_degraded}`; a disabled domain's items are omitted and the domain listed with reason `"disabled"` | `episodes_public`, trip legs | 200 per page |
 | `time_use` | time | `start`, `end` (≤ 366 d), `bucket: day\|week\|month`, `group_by: category\|kind` | `{series: [{bucket_start, group, minutes}]}` | `rollups_public` | 400 points |
 | `trips` | travel | `status?`, `trip_id?`, `limit ≤ 50` | trips with legs, city-level places, document expiry dates | trips, legs | 50 |
 | `describe` | (none) | — | `{server_version, manifest_digest, domains: {name: enabled\|disabled\|stale}, as_of, tools, columns}` | controls, manifest | — |

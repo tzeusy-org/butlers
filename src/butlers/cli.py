@@ -855,6 +855,63 @@ def apply_grants(database: str, execute: bool, allow_grants: bool) -> None:
     click.echo(f"{len(todo)} grant change(s) {verb}; {len(changes) - len(todo)} skipped")
 
 
+@db.command("transfer-ownership")
+@click.option("--database", default="butlers", show_default=True, help="Database name")
+@click.option("--from-login", "source", required=True, help="The shared login that owns today")
+@click.option("--to-login", "target", required=True, help="The migrator login that will own")
+@click.option(
+    "--execute",
+    is_flag=True,
+    help="Transfer. Without it the command only prints what it would move and copy.",
+)
+def transfer_ownership(database: str, source: str, target: str, execute: bool) -> None:
+    """Move every object the shared login owns to the migrator login (bu-dss7he.6 S3).
+
+    Run once, as a superuser (connection env as for every db command). Default is a dry run
+    that prints object, role and membership names only. With ``--execute`` it runs
+    ``REASSIGN OWNED`` and copies the shared login's role memberships to the migrator in
+    one transaction, rolled back unless the shared login then owns nothing. See
+    docs/data_and_storage/migrator-login.md for the whole activation sequence.
+    """
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from butlers.db import db_params_from_env
+    from butlers.db_authority import ownership
+
+    engine = create_engine(_migration_db_url(db_params_from_env(), db_name=database, schema=None))
+    try:
+        with engine.begin() as conn:
+            plan = ownership.read_transfer_plan(conn, source, target)
+            if execute and not plan.refusals:
+                plan = ownership.transfer_ownership(conn, source, target)
+    except SQLAlchemyError:
+        # Driver errors can include a URL or statement. Keep this surface closed.
+        raise click.ClickException(
+            "Ownership transfer refused: database operation failed"
+        ) from None
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from None
+    finally:
+        engine.dispose()
+    for line in plan.refusals:
+        click.echo(f"REFUSED {line}")
+    for obj in plan.owned:
+        click.echo(f"OWNED {obj}")
+    for membership in plan.memberships:
+        click.echo(f"MEMBERSHIP {membership.role} {membership.options()}")
+    for obj in plan.acl_not_copied:
+        click.echo(f"ACL-NOT-COPIED {obj}")
+    if plan.refusals:
+        raise click.ClickException(f"{len(plan.refusals)} refusal(s); nothing transferred")
+    verb = "transferred" if execute else "would transfer (dry run; pass --execute)"
+    click.echo(
+        f"{len(plan.owned)} owned object(s) {verb}; {len(plan.memberships)} membership(s) "
+        f"copied to {target}; {len(plan.acl_not_copied)} privilege grant(s) left for the "
+        "init-db.sql replay"
+    )
+
+
 @db.command("check-grants")
 @click.option("--database", default="butlers", show_default=True, help="Database name")
 @click.option(

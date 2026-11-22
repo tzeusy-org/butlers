@@ -15,6 +15,11 @@ from butlers.chronicler.day_close_cache import day_close_cache_key
 from butlers.chronicler.day_close_refresh import DayCloseRefreshService
 from butlers.chronicler.storage import list_episodes, list_point_events
 
+#: A failed refresh (dispatch, validation or cache write) waits this long before the same
+#: day is tried again. Without it the discovery walk retried every failing date on every
+#: tick, once a minute, forever (bu-2cgabc).
+FAILURE_RETRY_AFTER = timedelta(minutes=30)
+
 
 class DayCloseContinuation:
     """One daemon's fixed post-tick caller, with durable revision discovery."""
@@ -160,10 +165,14 @@ class DayCloseContinuation:
                         "revision": revision,
                         "processed": state.get("processed"),
                     }
-                    await self._save(key, pending)
-                    if state.get("retry_at") and datetime.fromisoformat(
+                    held = bool(state.get("retry_at")) and datetime.fromisoformat(
                         state["retry_at"]
-                    ) > datetime.now(UTC):
+                    ) > datetime.now(UTC)
+                    if held:
+                        # The hold must survive the whole-value overwrite below.
+                        pending["retry_at"] = state["retry_at"]
+                    await self._save(key, pending)
+                    if held:
                         continue
                     if not await self._has_refresh_evidence(target):
                         unproven = True
@@ -184,6 +193,8 @@ class DayCloseContinuation:
                     elif result.get("status") == "success" and not result.get("invalid"):
                         if await self.revision(target) == revision:
                             pending["processed"] = revision
+                    elif result.get("status") == "error":
+                        pending["retry_at"] = (datetime.now(UTC) + FAILURE_RETRY_AFTER).isoformat()
                     await self._save(key, pending)
                     return result
                 if unproven:

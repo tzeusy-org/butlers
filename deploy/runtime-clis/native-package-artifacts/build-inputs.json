@@ -36,23 +36,23 @@
     {
       "id": "codex-wrapper",
       "name": "@openai/codex",
-      "version": "0.159.2",
-      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.2.tgz",
-      "integrity": "sha512-SE13C3nZCYoVL569BdegoOl6vwjb7o2sXOo7ivwVzaVoY0cswwi0/6pIE0TyO/C0vIkQh3jslExitET7PBTfIg==",
-      "sha256": "cf1e5d7b6e317a4a1d36dbff2ebd9b3cf048ac98d06fcb6682c57248e023cad2",
-      "size": 4904,
-      "maximum_bytes": 4904,
+      "version": "0.170.0",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.170.0.tgz",
+      "integrity": "sha512-dwoughgqjiik++CFaNkjQ5y6pJO6LUzu5P1z8Hy4LUeJ+aIYcX/QO1P5rOQnHmBG4agOM7Y+hc4LtVo/a4GFiw==",
+      "sha256": "d050bdcc0015ed5680c84e227e4aeca17fbfdd5ef1a3401f46bd73deaf983720",
+      "size": 4992,
+      "maximum_bytes": 4992,
       "destination": "codex"
     },
     {
       "id": "codex-platform",
       "name": "@openai/codex",
-      "version": "0.159.2-linux-x64",
-      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.159.2-linux-x64.tgz",
-      "integrity": "sha512-RrCZ1X52wpa1lOsXtCtSyhjOFdQPh7LH5Ccv8HsKmd/2UXbUwxXFqWXFK3JzatquUNGtW/TLox5Y7qVOGkV0/Q==",
-      "sha256": "84a6b35fb45bdcb94cef9fcb329438045a8911f53876cc9a9a7e6f9bb1382eba",
-      "size": 162475310,
-      "maximum_bytes": 162475310,
+      "version": "0.170.0-linux-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.170.0-linux-x64.tgz",
+      "integrity": "sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg==",
+      "sha256": "67c4bccce8e6c3a2b9ae0e586750e0efac7e0b8cd85e6b4734ad474317d2cc32",
+      "size": 168279228,
+      "maximum_bytes": 168279228,
       "destination": "codex/node_modules/@openai/codex-linux-x64"
     }
   ],
@@ -64,11 +64,11 @@
     "tree_sha256": "c430cd45c2ba69db759b141419c822d3d72e316f7802e69cf6787e812e627b57"
   },
   "codex": {
-    "version": "0.159.2",
+    "version": "0.170.0",
     "main_path": "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
     "binary_sha256": "4b42c0febe80a136dc32757f70cde09ac3888996d9eaf9e0639a0ea19044deab",
-    "source_tree_sha256": "7be953e354818b21d9d16cd451cd14062aa875fa405e91c22f65da5c813d0154",
-    "series_sha256": "80c5d00a2581beaa8a39f2026225167ae1ad803028c6b89d6b921e987847255c",
+    "source_tree_sha256": "c24962aecdd7d639b4df8323b4f151be1fa790e5df8dfbdcf99241dc0a724b47",
+    "series_sha256": "f5a4343a0a27f7f864f9abcf2aca54dae77ce5b4cdd5e4a80b1a3e6681fb5d85",
     "tree_sha256": "cd0cb462da5375d7eefee3b43bab18f083352618ea58a044755712ec4d3c7b3f"
   },
   "scope": "Complete original Linux/amd64 target packages and wrapper declarations. Claude remains unmodified; only the Codex main executable is replaced. Other original platform assets and optional target declarations remain intact. Build/native/image parity requires separate execution."

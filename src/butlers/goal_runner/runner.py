@@ -40,6 +40,7 @@ from butlers.core.decision_sets import DecisionSet
 from butlers.core.goal_labels import Label
 from butlers.core.goal_wake import WakeAdmission, WakeResult
 from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
+from butlers.core.spend_pools import SpendPools
 
 from .contracts import (
     Brief,
@@ -223,6 +224,11 @@ class GoalRunner:
     async def _open(self, plan: _Plan, attempts: list[UUID], candidate: Candidate) -> Started:
         lease = self.config.lease_seconds
         async with self._txn() as ledger:
+            # The monthly ceiling (bu-jv1moa.1): with the fleet pool spent, no invocation of any
+            # origin opens. Nothing is written; the goal stays for the sweep until the month turns.
+            refusal = await SpendPools(ledger.connection).launch_refusal()
+            if refusal is not None:
+                raise GoalEnded(refusal)
             if plan.depth == 1:
                 if not attempts:
                     assert plan.child_id is not None

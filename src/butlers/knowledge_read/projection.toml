@@ -523,7 +523,7 @@ key = ["proposal_id"]
 replica_identity = ["proposal_id"]
 tools = ["fetch"]
 time_column = "decided_at"
-uri = "butlers://proposal/{proposal_id}"
+uri = "butlers://proposals/proposal/{proposal_id}"
 
 [[table]]
 source = "relationship.facts"
@@ -537,18 +537,6 @@ tools = ["search", "fetch", "search_filtered", "entity_profile"]
 time_column = "valid_at"
 uri = "butlers://relationship/fact/{id}"
 row_filter = { "sensitivity" = ["normal"], "validity" = ["active", "fading"], "predicate" = ["account", "activity", "allergy", "anniversary", "bill", "child_of", "children", "condition", "condition_status", "contact_note", "contact_task", "current_interest", "current_project", "deadline", "dietary_restriction", "doctor_name", "dosage", "exercise_routine", "food_allergy", "gift", "goal", "idea", "interaction", "knows", "life_event", "lives_with", "loan", "managed_by", "manages", "meal_breakfast", "meal_dinner", "meal_lunch", "meal_snack", "measurement_active_minutes", "measurement_baseline", "measurement_blood_pressure", "measurement_blood_sugar", "measurement_breathing_rate", "measurement_heart_rate", "measurement_hrv", "measurement_resting_hr", "measurement_spo2", "measurement_steps", "measurement_temperature", "measurement_vo2_max", "measurement_weight", "medication", "medication_frequency", "note", "parent_of", "pharmacy", "preference", "preferences:finance_budget_period", "preferences:finance_currency", "preferences:finance_rounding", "preferences:general_communication_style", "preferences:general_language", "preferences:general_name", "preferences:general_timezone", "preferences:health_dietary_preference", "preferences:health_dietary_restriction", "preferences:health_exercise_preference", "preferences:health_measurement_unit", "preferences:home_comfort_temperature", "preferences:home_sleep_time", "preferences:home_temperature_unit", "preferences:home_wake_time", "preferences:relationship_communication_style", "preferences:relationship_contact_frequency", "preferences:travel_airline", "preferences:travel_flight_class", "preferences:travel_flight_seat", "preferences:travel_hotel_type", "preferences:travel_meal", "recommendation", "relationship_status", "relationship_to_user", "reminder", "research", "resource", "sibling_of", "sleep_session", "sleep_stage_summary", "status", "subscription", "symptom", "symptom_pattern", "symptom_trigger", "took_dose", "transaction_credit", "transaction_debit", "travel_intent", "workplace", "works_at"] }
-
-[[table]]
-source = "travel.documents"
-domain = "travel"
-columns = ["id", "trip_id", "type", "expiry_date"]
-types = { "id" = "uuid", "trip_id" = "uuid", "type" = "text", "expiry_date" = "date" }
-classes = { "id" = "system", "trip_id" = "system", "type" = "system", "expiry_date" = "personal_record" }
-key = ["id"]
-replica_identity = ["id"]
-tools = ["trips", "search", "fetch", "search_filtered"]
-time_column = "expiry_date"
-uri = "butlers://travel/document/{id}"
 
 [[table]]
 source = "travel.facts"
