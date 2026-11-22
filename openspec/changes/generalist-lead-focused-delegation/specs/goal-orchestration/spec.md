@@ -329,6 +329,29 @@ Scope: v1-mandatory
 #### Scenario: A held typed or cited rule is encountered
 - **WHEN** a worker can represent typed values or citations
 - **THEN** representation confers no steering/authority relaxation and the held decision remains for its named M7 gate
+### Requirement: The monthly spend ceiling bounds goals and reserves the owner's share
+Goal admission SHALL reserve each new goal's `max_spend` in a fleet month pool capped at the owner's monthly ceiling (`public.spend_ceiling`), and a goal of any origin but owner SHALL also reserve in a background lane capped at the ceiling less an owner reserve (default 20%, owner-set). The reservation SHALL be taken inside the admission transaction under row locks, keyed by goal, so two goals racing for the last unit commit exactly one and a duplicate admission or recovery epoch reuses the one reservation. Reading the ceiling or the pools MUST fail closed: an unreadable spend state refuses admission of every origin with the reason `spend_state_unreadable`, which gives an owner message a deterministic reply and refuses background work. The runner SHALL move priced spend from reserved to spent in the same transaction as the goal budget and SHALL open no invocation of any origin once the fleet pool is spent (reason `ceiling_reached`). A goal's end SHALL release its unspent reservation, except that a goal that used tokens with no priced spend keeps its whole reservation charged. With no ceiling configured nothing is reserved. Turning the lanes switch off drops the owner reserve and the background lane but keeps the fleet pool. A model SHALL NOT be able to change a ceiling or a reserve.
+
+ID: REQ-goal-orchestration-013
+Source: RFC 0038 D10 and D16; bu-jv1moa.1; docs/redesigns/2026-10-15-dots-superset-pursuit.md
+Scope: v1-mandatory
+
+#### Scenario: Background work stops at the lane cap
+- **WHEN** background goals have reserved the ceiling less the owner reserve
+- **THEN** the next obligation, third-party or staffer admission is refused as `lane_exhausted` and an owner admission still succeeds from the reserve
+
+#### Scenario: Two goals race for the last unit
+- **WHEN** two distinct goals are admitted concurrently for the last unit of the fleet pool
+- **THEN** exactly one reservation commits and the pool never overshoots
+
+#### Scenario: The spend state cannot be read
+- **WHEN** the ceiling or a pool read fails
+- **THEN** admission of every origin is refused as `spend_state_unreadable`, the owner's refused message is remembered for a retry, and no goal exists
+
+#### Scenario: The fleet pool is spent
+- **WHEN** month-to-date spend has reached the ceiling
+- **THEN** the runner opens no invocation of any origin and records `ceiling_reached`
+
 ## Source References
 
 - Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)

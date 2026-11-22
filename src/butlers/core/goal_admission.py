@@ -21,6 +21,7 @@ from opentelemetry import trace
 from butlers.core.goal_labels import Label, LabelRefused
 from butlers.core.resource_pairs import MAX_ID_LENGTH, pair_scope
 from butlers.core.runtime_config import read_goal_admission_config
+from butlers.core.spend_pools import SpendPolicy, SpendPools
 
 Origin = Literal["owner", "obligation", "third_party", "staffer"]
 SourceKind = Literal["message", "occurrence", "feed", "domain", "staffer"]
@@ -672,6 +673,16 @@ class GoalAdmission:
             await ledger.remember_refused_owner_ask(source, facts, plan.origin, "quota_exhausted")
             return refused
         goal_id = uuid4()
+        # The monthly ceiling (bu-jv1moa.1): reserve this goal's spend before it exists, under
+        # the pool locks, in this transaction. A refusal creates nothing.
+        policy = SpendPolicy(config.spend.owner_reserve_pct, config.spend.lanes_enabled)
+        spend_refusal = await SpendPools(ledger.connection, policy).reserve(
+            goal_id, plan.origin, limits.budget.max_spend
+        )
+        if spend_refusal is not None:
+            refused = await ledger.decide(source, attempt_id, "refused", spend_refusal)
+            await ledger.remember_refused_owner_ask(source, facts, plan.origin, spend_refusal)
+            return refused
         await ledger.create_goal(
             goal_id,
             source,

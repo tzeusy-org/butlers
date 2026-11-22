@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 #: Refusals that say "not now" rather than "no": capacity and unavailability. Authorization and
 #: owner-law refusals never leave a pending ask, and neither does a sender who is not the owner.
-RETRYABLE_REFUSALS = frozenset({"quota_exhausted", "limits_unavailable"})
+RETRYABLE_REFUSALS = frozenset({"quota_exhausted", "limits_unavailable", "spend_state_unreadable"})
 
 
 class GoalLedger:

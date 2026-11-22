@@ -64,7 +64,11 @@ async def test_only_owner_messages_and_retryable_reasons_leave_an_ask(world):  #
     again = await admit(runtime, Evidence("message", "stranger-3", owner=False))
     assert again.result == "refused" and again.reason == "quota_exhausted"
     assert [r for r in await asks(owner) if r["cause"] == "admission_refused"] == []
-    assert RETRYABLE_REFUSALS == {"quota_exhausted", "limits_unavailable"}
+    assert RETRYABLE_REFUSALS == {
+        "quota_exhausted",
+        "limits_unavailable",
+        "spend_state_unreadable",
+    }
     for reason in ("cause_invalid", "causal_chain_limit", "recorded_without_goal"):
         goals = GoalLedger(runtime)
         await goals.remember_refused_owner_ask(
