@@ -335,25 +335,27 @@ def _looks_like_auth_refresh_failure(error_detail: str) -> bool:
 # Store-only OpenAI API key (registry provider "openai"), preferred over the
 # cli-auth/codex device-code authority when present.
 _OPENAI_API_KEY_CREDENTIAL = "cli-auth/openai"
-_OPENAI_API_KEY_REJECTED_MESSAGE = (
-    "OpenAI API key rejected by the provider; Codex fell back to ChatGPT device-code auth."
-)
 # Every env var Codex accepts as auth; API-key sessions keep only CODEX_API_KEY.
 _CODEX_AUTH_ENV_VARS = ("CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN")
-# OpenAI quota exhaustion is account-level, so the ChatGPT plan may still serve.
-_OPENAI_QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota")
+# Quota exhaustion is account-level, so the other credential may still serve.
+# ``quota exceeded`` is the ChatGPT-plan wording ("Quota exceeded. Check your
+# plan and billing details."); the first two are the API-key wording.
+_OPENAI_QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "quota exceeded")
 
 
-def _openai_api_key_rejected(process_info: dict[str, Any] | None) -> bool:
-    """Return whether a failed API-key attempt warrants device-code fallback.
+def _device_code_attempt_rejected(process_info: dict[str, Any] | None) -> bool:
+    """Return whether a failed ChatGPT-login attempt warrants an API-key fallback.
 
-    Only a completed, non-zero, pre-tool-call exit whose (already redacted)
-    diagnostic names an auth or quota rejection qualifies. Timeouts,
-    cancellations, and MCP failures say nothing about the key, so they never
-    trigger a second run on another credential.
+    Either the device-code authority could not launch at all (fail-closed, no
+    subprocess ran), or a completed, non-zero, pre-tool-call exit whose
+    (already redacted) diagnostic names an auth or quota rejection. Timeouts,
+    cancellations, and MCP failures say nothing about the credential, so they
+    never trigger a second run on another credential.
     """
     if not process_info or not process_info.get("is_pre_tool_call"):
         return False
+    if process_info.get("authority_unavailable"):
+        return True
     if process_info.get("exit_code") in (None, -1, 0):
         return False
     detail = str(process_info.get("error_detail") or process_info.get("stderr") or "")
@@ -1952,7 +1954,7 @@ class CodexAdapter(RuntimeAdapter):
         )
 
     async def _load_openai_api_key(self) -> str | None:
-        """Return the stored OpenAI API key, or None to use device-code auth.
+        """Return the stored OpenAI API key, or None when there is no fallback key.
 
         A lookup failure is treated as "no key": the device-code authority
         still applies its own fail-closed checks. Exception detail is never
@@ -1967,7 +1969,7 @@ class CodexAdapter(RuntimeAdapter):
             )
         except Exception:
             logger.warning(
-                "codex: OpenAI API key lookup failed; using ChatGPT device-code auth (butler=%s)",
+                "codex: OpenAI API key lookup failed; no API-key fallback (butler=%s)",
                 self._butler_name,
             )
             return None
@@ -1989,15 +1991,16 @@ class CodexAdapter(RuntimeAdapter):
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
-        """Invoke Codex, preferring a stored OpenAI API key over device-code auth.
+        """Invoke Codex on the ChatGPT device-code login, falling back to a stored API key.
 
-        When ``cli-auth/openai`` holds a key, the session first runs with it
-        (``CODEX_API_KEY``, no ChatGPT ``auth.json``). If no key is stored, or
-        the provider rejects the key before any tool call, the session runs on
-        the ``cli-auth/codex`` device-code authority exactly as before. A
-        rejection is logged value-free and recorded as a failed test of
-        ``cli-auth/openai``; the device-code authority is never touched by the
-        API-key attempt.
+        The session runs on the ``cli-auth/codex`` device-code authority first.
+        If that attempt fails before any tool call with an auth or quota
+        rejection (or the authority cannot launch) and ``cli-auth/openai``
+        holds a key, the session is re-run with it (``CODEX_API_KEY``, no
+        ChatGPT ``auth.json``). With no stored key, or on any other failure,
+        the device-code outcome stands. The fallback is logged value-free and
+        tagged in session process info as ``auth_fallback=device_code_rejected``;
+        the API-key attempt never touches the device-code authority.
         """
         call_kwargs: dict[str, Any] = {
             "prompt": prompt,
@@ -2010,38 +2013,32 @@ class CodexAdapter(RuntimeAdapter):
             "cwd": cwd,
             "timeout": timeout,
         }
-        openai_api_key = await self._load_openai_api_key()
-        if openai_api_key is None:
-            return await self._invoke_with_auth(**call_kwargs, openai_api_key=None)
-
+        # A stale record from an earlier invocation must not look like this
+        # attempt's rejection.
+        self._last_process_info = None
         try:
-            result = await self._invoke_with_auth(**call_kwargs, openai_api_key=openai_api_key)
+            return await self._invoke_with_auth(**call_kwargs, openai_api_key=None)
         except MCPToolDiscoveryError:
             raise
         except RuntimeError:
-            if not _openai_api_key_rejected(self._last_process_info):
+            if not _device_code_attempt_rejected(self._last_process_info):
+                raise
+            openai_api_key = await self._load_openai_api_key()
+            if openai_api_key is None:
                 raise
             logger.warning(
-                "codex: OpenAI API key rejected; falling back to ChatGPT device-code auth "
+                "codex: ChatGPT device-code auth rejected; falling back to OpenAI API key "
                 "(butler=%s)",
                 self._butler_name,
             )
-            self._schedule_record_test_result(
-                _OPENAI_API_KEY_CREDENTIAL,
-                ok=False,
-                message=_OPENAI_API_KEY_REJECTED_MESSAGE,
-            )
-        else:
-            if self._last_process_info is not None:
-                self._last_process_info["auth_mode"] = "openai_api_key"
-            return result
 
         try:
-            return await self._invoke_with_auth(**call_kwargs, openai_api_key=None)
+            result = await self._invoke_with_auth(**call_kwargs, openai_api_key=openai_api_key)
         finally:
             if self._last_process_info is not None:
-                self._last_process_info["auth_mode"] = "device_code"
-                self._last_process_info["auth_fallback"] = "openai_api_key_rejected"
+                self._last_process_info["auth_mode"] = "openai_api_key"
+                self._last_process_info["auth_fallback"] = "device_code_rejected"
+        return result
 
     async def _invoke_with_auth(
         self,
