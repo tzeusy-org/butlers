@@ -64,6 +64,20 @@ async def test_health_trust_does_not_change_a_sibling_service(
         assert not client.trust_env
 
 
+@pytest.mark.parametrize("missing", ["HEALTH_MCP_URL", "BUTLERS_HEALTH_CA_FILE"])
+def test_partial_health_configuration_refuses_only_health_peers(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    health = "https://butlers-up:41103/mcp"
+    monkeypatch.setenv("HEALTH_MCP_URL", health)
+    monkeypatch.setenv("BUTLERS_HEALTH_CA_FILE", certifi.where())
+    monkeypatch.delenv(missing)
+    assert internal_service_http_options("http://127.0.0.1:41103/mcp") == {}
+    assert internal_service_http_options("http://butlers-up:41101/mcp") == {}
+    with pytest.raises(httpx.RequestError, match="Health TLS configuration is incomplete"):
+        internal_service_http_options(health)
+
+
 @pytest.mark.parametrize(
     "url",
     [

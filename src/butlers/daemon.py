@@ -632,7 +632,9 @@ class ButlerDaemon:
         assert self.config is not None and self.mcp is not None
         service_tls = self._service_listener_tls()
         if service_tls is not None and self.config.name == "health":
-            from butlers.core.service_plane.health_peer import HealthMedicationPeerAdmission
+            from butlers.core.service_plane.health_peer_admission import (
+                HealthMedicationPeerAdmission,
+            )
 
             self.mcp.add_middleware(HealthMedicationPeerAdmission())
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)

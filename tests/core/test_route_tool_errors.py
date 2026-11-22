@@ -18,6 +18,7 @@ import importlib
 from typing import Any
 from unittest.mock import AsyncMock
 
+import certifi
 import pytest
 from fastmcp import Client, FastMCP
 from opentelemetry import trace
@@ -113,17 +114,41 @@ async def test_a_successful_tool_is_still_delivered(routing, seen) -> None:
     routing._record_confirmed_route.assert_awaited_once()
 
 
+@pytest.mark.parametrize("target", ["messenger", "health"])
 async def test_a_tool_error_on_the_capability_header_path_is_rejected_too(
-    monkeypatch, routing, seen
+    monkeypatch, routing, seen, target
 ) -> None:
     from butlers.core import fact_authority
 
     monkeypatch.setattr(fact_authority, "source_transport_headers", lambda _target: {"x-test": "1"})
-    outcome = await routing.route("POOL", "messenger", "route.execute", {"schema_version": "v1"})
+    if target == "health":
+        monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+        monkeypatch.setenv("HEALTH_MCP_URL", "https://butlers-up:41103/sse")
+        monkeypatch.setenv("BUTLERS_HEALTH_CA_FILE", certifi.where())
+        routing.resolve_routing_target.return_value = (
+            {"endpoint_url": "http://localhost:41103/mcp"},
+            None,
+        )
+    original_client = routing.MCPClient
+    transports = []
+
+    def observe_client(transport):
+        transports.append(transport)
+        return original_client(transport)
+
+    monkeypatch.setattr(routing, "MCPClient", observe_client)
+    outcome = await routing.route("POOL", target, "route.execute", {"schema_version": "v1"})
 
     assert outcome["transport"]["outcome"] == "rejected"
     assert "delivery refused" in outcome["error"]
     routing._record_confirmed_route.assert_not_awaited()
+    (transport,) = transports
+    assert transport.headers["x-test"] == "1"
+    if target == "health":
+        assert str(transport.url) == "https://butlers-up:41103/mcp"
+        async with transport.httpx_client_factory(follow_redirects=True) as client:
+            assert not client.trust_env
+            assert not client.follow_redirects
 
 
 async def test_a_legacy_isError_result_is_still_refused(monkeypatch, routing) -> None:

@@ -46,6 +46,12 @@ def health_http_options(url: str | None = None, *, require_origin: bool = False)
     """Return HTTPX options scoped to the Health service."""
     expected_url = os.environ.get("HEALTH_MCP_URL")
     ca_file = os.environ.get("BUTLERS_HEALTH_CA_FILE")
+    if expected_url is None and ca_file is None:
+        return {}
+    if url is not None and not require_origin:
+        destination = urlsplit(url)
+        if destination.port != 41103 or destination.hostname in {"localhost", "127.0.0.1", "::1"}:
+            return {}
     if (expected_url is None) != (ca_file is None):
         raise httpx.RequestError("Health TLS configuration is incomplete")
     return _scoped_http_options(

@@ -46,20 +46,22 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey, RSAPublicNumbers
 
+from butlers.core.service_plane.workload_headers import (
+    DAEMON_HEADER as DAEMON_HEADER,
+)
+from butlers.core.service_plane.workload_headers import (
+    TOKEN_DIR as TOKEN_DIR,
+)
+from butlers.core.service_plane.workload_headers import (
+    TOKEN_HEADER as TOKEN_HEADER,
+)
+
 logger = logging.getLogger(__name__)
 
 #: Audience of a token presented to a named relay on the control plane.
 RELAY_AUDIENCE = "butlers.service-relay.v1"
 #: Audience of a token Switchboard presents to Messenger's delivery endpoint.
 DELIVERY_AUDIENCE = "butlers.messenger-delivery.v1"
-
-#: Header carrying the projected token. Distinct from ``X-Butlers-Assertion``.
-TOKEN_HEADER = "x-butlers-workload-token"
-#: Header carrying the presented daemon name; a filter, never authority.
-DAEMON_HEADER = "x-butlers-workload-daemon"
-
-#: Where the pod's projected token for each audience is mounted.
-TOKEN_DIR = Path("/var/run/secrets/butlers/workload")
 
 #: Longest validity window accepted. Projected volumes here request 600 s.
 MAX_LIFETIME_SECONDS = 3600

@@ -17,7 +17,7 @@ from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_conta
 from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
 from butlers.core.service_plane.health_peer import health_medication_transport
-from butlers.core.switchboard_tls import internal_service_http_options
+from butlers.core.switchboard_tls import internal_service_http_options, scoped_mcp_httpx_factory
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
 from butlers.mcp_liveness import LivenessClient as MCPClient
@@ -652,9 +652,15 @@ async def route(
                         # endpoint-cached MCP session with unrelated reports.
                         from fastmcp.client.transports import StreamableHttpTransport
 
-                        peer_client = MCPClient(
-                            StreamableHttpTransport(endpoint_url, headers=headers)
+                        options = internal_service_http_options(endpoint_url)
+                        peer_transport = StreamableHttpTransport(
+                            endpoint_url,
+                            headers=headers,
+                            httpx_client_factory=scoped_mcp_httpx_factory(options)
+                            if options
+                            else None,
                         )
+                        peer_client = MCPClient(peer_transport)
                         peer_context = (
                             finance_warning_call.client_context(peer_client)
                             if finance_warning_call is not None

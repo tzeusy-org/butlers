@@ -12,7 +12,7 @@ from fastmcp.tools.base import ToolResult
 from mcp.types import CallToolRequestParams
 from starlette.requests import Request
 
-from butlers.core.service_plane import health_peer
+from butlers.core.service_plane import health_peer, health_peer_admission
 from butlers.core.service_plane.workload_identity import DAEMON_HEADER, RELAY_AUDIENCE, TOKEN_HEADER
 from tests.core.test_service_plane_workload_identity import _claims, _token, _verifier
 
@@ -51,10 +51,10 @@ async def test_health_peer_checks_socket_and_token_before_handler(
     request = Request(
         {"type": "http", "scheme": scheme, "server": (listener, 41103), "headers": headers}
     )
-    monkeypatch.setattr(health_peer, "get_http_request", lambda: request)
+    monkeypatch.setattr(health_peer_admission, "get_http_request", lambda: request)
     verifier = _verifier(health_peer.HEALTH_PEER_AUDIENCE)
-    monkeypatch.setattr(health_peer, "cached_verifier", lambda _: verifier)
-    admission = health_peer.HealthMedicationPeerAdmission()
+    monkeypatch.setattr(health_peer_admission, "cached_verifier", lambda _: verifier)
+    admission = health_peer_admission.HealthMedicationPeerAdmission()
     context = MiddlewareContext(message=CallToolRequestParams(name=health_peer.MEDICATION_TOOL))
     expected = ToolResult(content="fixture snapshot")
     handler = AsyncMock(return_value=expected)
