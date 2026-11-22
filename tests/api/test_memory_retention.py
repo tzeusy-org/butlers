@@ -447,12 +447,18 @@ async def test_purge_superseded_uses_policy_ttl_days(monkeypatch):
     pool.fetchrow = AsyncMock(return_value=policy_row)
     _register_memory_runtime_pool(monkeypatch, pool)
 
-    with patch(
-        "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"deleted": 5, "deleted_ha_state": 0}),
-    ) as mock_purge:
-        with patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)):
-            await _run_memory_purge_superseded_job(pool, None)
+    with (
+        patch(
+            "butlers.modules.memory.storage.purge_superseded_facts",
+            new=AsyncMock(return_value={"deleted": 5}),
+        ) as mock_purge,
+        patch(
+            "butlers.modules.memory.storage.purge_ha_state_facts",
+            new=AsyncMock(return_value={"deleted_ha_state": 0}),
+        ),
+        patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)),
+    ):
+        await _run_memory_purge_superseded_job(pool, None)
 
     mock_purge.assert_awaited_once()
     _, kwargs = mock_purge.call_args
@@ -564,14 +570,20 @@ async def test_purge_superseded_passes_bytes_freed_to_log_compaction(monkeypatch
     from butlers.scheduled_jobs import _run_memory_purge_superseded_job
 
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchrow = AsyncMock(return_value={"ttl_days": 30})
     _register_memory_runtime_pool(monkeypatch, pool)
 
     size_sequence = [16384, 8192]
 
-    with patch(
-        "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"deleted": 10, "deleted_ha_state": 2}),
+    with (
+        patch(
+            "butlers.modules.memory.storage.purge_superseded_facts",
+            new=AsyncMock(return_value={"deleted": 10}),
+        ),
+        patch(
+            "butlers.modules.memory.storage.purge_ha_state_facts",
+            new=AsyncMock(return_value={"deleted_ha_state": 2}),
+        ),
     ):
         with patch(
             "butlers.scheduled_jobs._table_size_bytes",

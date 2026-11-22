@@ -175,6 +175,13 @@ Episodes carry a `retention_class`, and the memory module applies its own
 retention policies (see [Memory](../modules/memory.md)).  This page defers to
 that framework.
 
+Superseded facts are closed validity intervals and are kept by default. The horizon is the
+`kind='fact'` row of `public.memory_retention_policies` (`ttl_days`; NULL keeps forever, which
+core_358 set from the seeded 7). A finite horizon deletes only classes whose `memory_policies`
+row has `archive_before_delete = false` and a non-NULL `ttl_days`; an unreadable policy keeps
+everything. Orphaned `ha_state` facts are still deleted nightly. Setting a short horizon through
+`PUT /api/memory/retention-policies` is possible; the class floor bounds the loss.
+
 ---
 
 ## Pruners

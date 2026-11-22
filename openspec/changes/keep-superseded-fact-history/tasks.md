@@ -1,0 +1,5 @@
+- [x] Fail-closed purge with class floor and lengthen-only `job_args`
+- [x] Separate always-on `ha_state` purge
+- [x] core_358 data migration (seeded 7 to NULL)
+- [x] `facts_as_of` storage helper
+- [x] Docs: memory.md, data-retention.md

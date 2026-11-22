@@ -11648,6 +11648,7 @@ STORE_WRITERS = MappingProxyType(
                 "butlers.modules.memory.storage.confirm_memory",
                 "butlers.modules.memory.storage.endorse_rule",
                 "butlers.modules.memory.storage.get_memory",
+                "butlers.modules.memory.storage.purge_ha_state_facts",
                 "butlers.modules.memory.storage.purge_superseded_facts",
                 "butlers.modules.memory.storage.retire_rule",
                 "butlers.modules.memory.storage.retry_dead_letter_episode",
