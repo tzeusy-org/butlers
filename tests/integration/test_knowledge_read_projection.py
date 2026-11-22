@@ -1524,16 +1524,11 @@ async def test_trips_expose_expiry_not_document_numbers(projected, primary, read
         assert only["source"]["uri"] == f"butlers://travel/trip/{trip}"
         assert [leg_["id"] for leg_ in only["legs"]] == [str(leg)]
         assert only["legs"][0]["carrier"] == "JL"
-        assert only["documents"] == [
-            {
-                "id": str(document),
-                "type": "visa",
-                "expiry_date": "2027-01-31",
-                "source": context.source("document", f"butlers://travel/document/{document}"),
-            }
-        ]
+        # The manifest does not publish travel.documents: the row never reaches trips.
+        assert only["documents"] == []
         text_ = json.dumps(result)
         assert "CONF-TRIP-77" not in text_ and "MARKER" not in text_
+        assert str(document) not in text_
         active = await trips(reader, context, {"status": "active"})
         assert str(trip) in {t["id"] for t in active["trips"]}
         assert str(other) not in {t["id"] for t in active["trips"]}

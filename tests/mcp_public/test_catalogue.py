@@ -36,7 +36,7 @@ NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 PINNED = {
     "search": "7cb8c3a7a36eed5ec5d62012260914ed0515a505b71df8121e00789e72cc90af",
     "fetch": "e30d7f7ff04e4eccebaa6e83d9c4ee0c377f86113cd701812b06b762b9de64e3",
-    "search_filtered": "037c6f096a4b6a41cddd62688342139993e8b8168cbb8c4ee580790275ccb7c2",
+    "search_filtered": "b16f99d3b80915c1eae613c498816463363b7e0a9f3f67e37aca4fcdac854c11",
     "entity_lookup": "36a3b03c6e5904130b2f11342951ec930b1a8c1388533ea7e93429a89d7f00a3",
     "entity_profile": "0de5996f8960b52c9525b342d5d76e21c21e35fa4435c65f890eda27774331a3",
     "graph_neighbors": "c4d336946cb9e313bb4da207a5a2dee7c9c0e0f9dce1a96d6995910971a031a2",
