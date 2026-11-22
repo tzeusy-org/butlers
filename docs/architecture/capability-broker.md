@@ -478,6 +478,31 @@ A `REPLAN` call is first sent to the domain as a conditional dispatch:
 `calendar_respond` keeps `always_per_event`, and no other capability has a
 conditional.
 
+### Gmail exposure rule (D13, owner rule on bu-kqme7f.5; bu-kqme7f.10)
+
+`gmail_modify_threads` is `record`, but under exposure the broker narrows it for
+injected mail (`policy.gmail_rule_applies`, `policy.gmail_parks`), applied in
+`_authorize` right after `decide()` and before owner law:
+
+- Bound calls: the invocation is exposed or the goal is `third_party` origin.
+  Exposure decides; an unexposed owner, obligation or staffer goal is not bound.
+- The binding is the goal's admitting Gmail thread, `Principal.trigger_thread`,
+  read from `switchboard.goals.trigger_gmail_account` / `trigger_gmail_thread`
+  (sw_083). Admission writes it from `Evidence.trigger_thread`, which only the
+  accepted-source reader sets, for a Gmail envelope (endpoint
+  `gmail:user:<address>`, thread = `external_conversation_id`).
+- A bound call dispatches only for that account (case-blind) and that one
+  thread, removing neither `INBOX` nor `UNREAD`. Anything else, including a
+  malformed call or a goal with no binding, becomes `PER_EVENT`.
+- Cap: `BrokerLedger.counted_effects` counts the goal's live effects of the
+  capability (requested, parked, approved, dispatched, committed, unknown)
+  under the goal lock; at five the call is refused `policy_refused` before any
+  reservation or budget charge. Failed effects and ended parks do not count; a
+  replay of a live call, even at the cap, is refused `effect_already_recorded` before it writes a
+  row. A typed error result from the domain is a committed effect and counts.
+- The Gmail module re-checks the argument-only half: an exposed or third-party
+  INBOX/UNREAD removal runs only as the approved call (`approval_ref` set).
+
 ## Owner law (S1, bu-dhloi1.10)
 
 The owner can hold calls with a tighten-only overlay (REQ-capability-authorization-020).

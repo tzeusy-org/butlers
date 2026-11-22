@@ -7,7 +7,7 @@
 
 ## 2. Exposure rule (bu-kqme7f.10)
 
-- [ ] 2.1 Trigger-thread binding, conditional park and per-goal cap of 5; replace the interim
+- [x] 2.1 Trigger-thread binding, conditional park and per-goal cap of 5; replace the interim
   `exposed_modify_refused` refusal.
 
 ## 3. Archive

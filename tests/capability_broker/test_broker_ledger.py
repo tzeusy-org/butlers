@@ -105,19 +105,25 @@ class World:
     signer: AssertionSigner
     keys: dict = field(default_factory=dict)
 
-    async def goal(self, *grants: Grant, exposed=False, max_calls=10, origin="owner") -> UUID:
+    async def goal(
+        self, *grants: Grant, exposed=False, max_calls=10, origin="owner", trigger=None
+    ) -> UUID:
         goal_id, ceiling = uuid4(), encode_grants(grants)
+        account, thread = trigger or (None, None)
         await self.owner.execute(
             "INSERT INTO switchboard.goals (id, source_key, source_kind, source_ref, origin, "
             "admitted_exposed, exposed, ceiling, ceiling_digest, catalog_digest, config_digest, "
-            "chain_depth, status) VALUES ($1, $2, 'message', 'ref', $6, $3, $3, $4::jsonb, "
-            "$5, 'catalog-v1', 'config', 0, 'running')",
+            "chain_depth, status, trigger_gmail_account, trigger_gmail_thread) "
+            "VALUES ($1, $2, 'message', 'ref', $6, $3, $3, $4::jsonb, "
+            "$5, 'catalog-v1', 'config', 0, 'running', $7, $8)",
             goal_id,
             f"message:{goal_id}",
             exposed,
             ceiling,
             digest(ceiling),
             origin,
+            account,
+            thread,
         )
         await self.owner.execute(
             "INSERT INTO switchboard.budgets (goal_id, max_invocations, max_children, max_calls, "

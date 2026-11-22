@@ -15,7 +15,13 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from butlers.core.goal_admission import EvidenceRefused, decode_grants, digest, encode_grants
+from butlers.core.goal_admission import (
+    EvidenceRefused,
+    decode_grants,
+    digest,
+    encode_grants,
+    valid_trigger_thread,
+)
 from butlers.core.goal_labels import EXPOSURE_CAUSES, Label
 from butlers.core.goal_ledger import GoalLedger
 from butlers.core.owner_policy import (
@@ -63,6 +69,19 @@ UNPUBLISHED_CAPABILITY = "<unpublished>"
 _CATALOG_IDENTITY = re.compile(r"[a-z][a-z0-9_]{0,62}__[a-z][a-z0-9_]{0,126}")
 
 
+def goal_trigger_thread(goal) -> tuple[str, str] | None:
+    """The goal's admitting Gmail ``(account, thread_id)`` (sw_083), or None.
+
+    A row without the columns, or with anything but an exact pair, binds no thread: the Gmail
+    exposure rule then parks every change, so a missing binding only narrows.
+    """
+    try:
+        trigger = (goal["trigger_gmail_account"], goal["trigger_gmail_thread"])
+    except (KeyError, TypeError):
+        return None
+    return trigger if valid_trigger_thread(trigger) else None
+
+
 def invocation_exposure_cause(invocation) -> str | None:
     """The closed S1 cause on an invocation row; anything else reads as unknown."""
     try:
@@ -84,7 +103,8 @@ class BrokerLedger:
         await self.connection.execute("SET LOCAL lock_timeout = '5s'")
         await self.connection.execute("SET LOCAL statement_timeout = '5s'")
         return await self.connection.fetchrow(
-            "SELECT id, status, origin, catalog_digest, ceiling "
+            "SELECT id, status, origin, catalog_digest, ceiling, "
+            "trigger_gmail_account, trigger_gmail_thread "
             "FROM switchboard.goals WHERE id = $1 FOR UPDATE",
             goal_id,
         )
@@ -125,9 +145,29 @@ class BrokerLedger:
                 grants,
                 label,
                 invocation_exposure_cause(invocation),
+                goal_trigger_thread(goal),
             )
         except (ValueError, KeyError, TypeError, AttributeError):
             raise BrokerRefused(Reason.AUTHENTICATION) from None
+
+    async def counted_effects(self, goal_id: UUID, capability: str, args_digest: str) -> int:
+        """The goal's other effects of ``capability`` that changed, or may still change, anything.
+
+        Read under the goal lock this transaction holds, so two calls racing a per-goal cap
+        serialise. A failed effect and a park that ended rejected, expired or cancelled changed
+        nothing and is not counted. An effect with this call's own ``args_digest`` is left out:
+        a replay of a live call is not a new effect, so even at the cap it reaches
+        :meth:`reserve` and is refused as a duplicate naming the original effect.
+        """
+        return await self.connection.fetchval(
+            "SELECT count(*) FROM switchboard.effects "
+            "WHERE goal_id = $1 AND capability = $2 AND status = ANY($3::text[]) "
+            "AND args_digest IS DISTINCT FROM $4",
+            goal_id,
+            capability,
+            list(_LIVE_EFFECTS),
+            args_digest,
+        )
 
     async def _join(self, goal_id: UUID, invocation_id: UUID, label: Label, cause: str) -> bool:
         """Join ``label`` into the invocation (S1); the goal must already be locked.

@@ -88,19 +88,54 @@ Scope: v1-mandatory
 ### Requirement: Exposed and third-party modify follows the owner rule
 
 Under an exposed or third-party-origin invocation, `gmail_modify_threads` SHALL touch only the
-thread that triggered the goal; removing `INBOX` or `UNREAD` SHALL park for owner approval; any
-other target SHALL park; and a per-goal cap of 5 modify calls SHALL apply besides the 50-thread
-per-call cap. This path is refused until bu-kqme7f.10 lands: until then the call SHALL return
-`exposed_modify_refused` and change nothing, and a call with no lineage SHALL be treated as
-exposed.
+thread that triggered the goal without approval; removing `INBOX` or `UNREAD` SHALL park for
+per-event owner approval; any other target SHALL park for per-event owner approval; and a per-goal
+cap of 5 modify calls SHALL apply besides the 50-thread per-call cap, refusing the sixth.
+
+The broker enforces the rule (RFC 0038 D5, D10, D13). Admission SHALL record the admitting Gmail
+message's account and thread on the goal, once, from the trusted source reader; a goal no Gmail
+message admitted SHALL park every bound call. The cap SHALL count the goal's parked, approved,
+dispatched, committed and unknown effects of the capability, SHALL NOT count failed effects or
+parks that ended rejected, expired or cancelled, and a replay of a live call, even at the cap, SHALL be refused as a
+duplicate without being counted. The domain SHALL refuse with `exposed_modify_refused` a call with
+no lineage or an unknown origin, and an exposed or third-party `INBOX` or `UNREAD` removal that is
+not the owner-approved call itself.
+
+Exposure decides, not origin. An unexposed `obligation` or `staffer` goal SHALL keep the ordinary
+`record` behavior, like an unexposed owner goal: an obligation's authority is owner-declared (RFC
+0038 D5) and its prompt is trusted unless created under exposure (D6), and the rule guards against
+injected mail, which only reaches a goal by exposing it. An exposed obligation is bound like any
+other exposed goal and, having no triggering thread, parks every change.
 
 ID: REQ-module-gmail-006
-Source: bu-kqme7f.5 correction 2026-10-15; owner decision 2026-10-20; RFC 0038 D4, D6, D7
+Source: bu-kqme7f.5 owner rule (2026-10-15 correction, reaffirmed 2026-10-20); bu-kqme7f.10;
+RFC 0038 D4, D5, D6, D7, D10, D13
 Scope: v1-mandatory
 
-#### Scenario: Interim refusal
-- **WHEN** a third-party-origin goal calls `gmail_modify_threads`
-- **THEN** the call returns `exposed_modify_refused` and no Gmail call is made
+#### Scenario: Label on the triggering thread
+- **WHEN** a third-party-origin goal admitted by a Gmail message adds a label to that message's
+  thread
+- **THEN** the call dispatches without parking and is recorded in the effect ledger
+
+#### Scenario: Injected archive of another thread
+- **WHEN** an instruction in inbound mail makes the goal remove `INBOX` from another thread
+- **THEN** the call parks for per-event owner approval and no Gmail call is made
+
+#### Scenario: Archive or mark read of the triggering thread
+- **WHEN** an exposed goal removes `INBOX` or `UNREAD` from its triggering thread
+- **THEN** the call parks for per-event owner approval
+
+#### Scenario: Per-goal cap
+- **WHEN** a bound goal makes its sixth `gmail_modify_threads` call
+- **THEN** the broker refuses it
+
+#### Scenario: Failed call does not count
+- **WHEN** a bound call fails and is retried
+- **THEN** the failed effect does not count toward the cap
+
+#### Scenario: Unexposed obligation
+- **WHEN** an unexposed obligation goal archives a thread
+- **THEN** the call dispatches as an ordinary `record` call
 
 ### Requirement: Account and scope errors are typed
 

@@ -30,18 +30,35 @@ is naturally idempotent and keeps no effect receipts; the broker still records t
 effect ledger (D12). Store writers: `external:gmail` lists `gmail_modify_threads` as its record
 capability and `GmailModule._modify_threads` as its native writer.
 
-### D3. Exposed and third-party modify: interim refusal
+### D3. Exposed and third-party modify: the owner rule in the broker
 
 The recorded owner rule (2026-10-15 correction, unchanged by the 2026-10-20 owner decision): under a
 third-party-origin or exposed invocation `gmail_modify_threads` may touch only the thread that
 triggered the goal; removing INBOX or UNREAD parks for owner approval; any other target parks; and
 a per-goal cap of 5 modify calls applies besides the 50-thread per-call cap.
 
-That rule needs trigger-thread binding, a conditional park in `capability_broker/policy.py` and a
-per-goal counter. Those land in bu-kqme7f.10. Until then the module refuses `gmail_modify_threads`
-with the typed error `exposed_modify_refused` whenever the lineage is missing, exposed, or
-third-party. This is stricter than the recorded rule and is invisible to the owner because the
-module is dark until the switch. The rule's path is marked "refused until bu-kqme7f.10 lands".
+bu-kqme7f.10 builds it in the broker, with the RFC 0038 amendment (D5, D7, D10, D13 "Gmail
+exposure rule") in the same change:
+
+- Binding (D5). `Evidence.trigger_thread` carries `(account, thread_id)`; the accepted-source
+  reader sets it for a Gmail envelope from the connector endpoint (`gmail:user:<address>`) and the
+  envelope's `external_conversation_id`. Admission writes it to `switchboard.goals`
+  (`trigger_gmail_account`, `trigger_gmail_thread`, sw_083), immutable under sw_063's guard.
+- Park (D13). `policy.gmail_rule_applies` binds a call when the invocation is exposed or the goal
+  is third-party. `policy.gmail_parks` lets it dispatch only for the bound account and thread
+  with no INBOX or UNREAD removal; anything else becomes `PER_EVENT`. Applied in
+  `Broker._authorize` right after `decide()`, before owner law, so it only narrows.
+- Cap (D10). `BrokerLedger.counted_effects` counts the goal's live effects of the capability under
+  the goal lock the call already holds; the sixth call is refused `policy_refused` before any
+  reservation. Failed effects and ended parks do not count; the D12 duplicate check refuses a
+  replay before it writes a row. A call the domain answers with a typed error result (for example
+  an unknown label) is a committed effect and counts: the broker never reads tool content.
+- Domain. The module refuses missing lineage or an unknown origin, and an exposed or third-party
+  INBOX/UNREAD removal unless the lineage carries the approval of this exact call.
+
+Obligation lineage: exposure decides, not origin. An unexposed obligation keeps the record
+behavior (its authority is owner-declared, RFC 0038 D5; its prompt is trusted unless created under
+exposure, D6); an exposed one is bound and, with no triggering thread, parks every change.
 
 ### D4. Reads expose the invocation and scrub bearer material
 
@@ -60,6 +77,5 @@ Gmail call. A partial failure returns per-thread outcomes.
 
 ## Open items
 
-- bu-kqme7f.10: the substrate for D3.
 - Owner rollout: confirm `gmail.modify` per account on the dashboard and re-consent through
   `/api/oauth/google/start?force_consent=true` where it is missing (docs/modules/gmail.md).
