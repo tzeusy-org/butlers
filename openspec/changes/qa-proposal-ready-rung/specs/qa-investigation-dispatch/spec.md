@@ -43,7 +43,7 @@ Scope: v1-mandatory
 - **THEN** the dispatcher records a decision-only `publication_paused` dispatch event and `dedup_reason = publication_paused` before calling `create_or_join_attempt`
 - **AND** no `healing_attempts` row, worktree, runtime session or LLM invocation exists as a consequence
 - **AND** the gate is inert whenever a publisher is injected, and a pruned export or an expired window makes the fingerprint eligible again for exactly one re-investigation
-- **AND** nothing publishes a retained proposal automatically today, because no publisher exists; flagging exports as sealed before isolation is proven, so each needs owner approval per pull request, is deferred to a follow-up bead (sealed-before-isolation flag)
+- **AND** nothing publishes a retained proposal automatically today, because no publisher exists; flagging exports as sealed before isolation is proven, so each needs owner approval per pull request, is deferred to a bu-ejow5p.11 (per-attempt credential-free investigator with an executable isolation verifier)
 
 #### Scenario: Dispatcher git subprocesses in the shared clone are isolated
 - **WHEN** the dispatcher runs git against the shared clone or an agent worktree (main refresh, follow-up fetch, worktree create/remove, managed-clone refresh, commit diff snapshot, no-op branch detection)
