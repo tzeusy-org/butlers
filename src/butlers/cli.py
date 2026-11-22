@@ -91,7 +91,19 @@ def cli() -> None:
     help="Directory containing butler configs",
 )
 @click.option("--exclude", multiple=True, help="Exclude butlers (repeatable or comma-separated)")
-def up(only: tuple[str, ...], butlers_dir: Path, exclude: tuple[str, ...]) -> None:
+@click.option(
+    "--health-tls-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Mounted TLS certificate and key for the Health service listener",
+)
+@click.option("--health-tls-bind", help="Pod IPv4 address for the Health service TLS listener")
+def up(
+    only: tuple[str, ...],
+    butlers_dir: Path,
+    exclude: tuple[str, ...],
+    health_tls_dir: Path | None,
+    health_tls_bind: str | None,
+) -> None:
     """Start all butler daemons (or filtered by --only)."""
     # Flatten: support both --only a --only b and --only a,b
     only = tuple(name.strip() for entry in only for name in entry.split(",") if name.strip())
@@ -112,6 +124,13 @@ def up(only: tuple[str, ...], butlers_dir: Path, exclude: tuple[str, ...]) -> No
     configs = {name: path for name, path in configs.items() if name not in excluded}
     if not configs:
         raise click.ClickException("No butlers remain after exclusions")
+    if (health_tls_dir is None) != (health_tls_bind is None):
+        raise click.ClickException("Health service TLS requires both material and a pod IP bind")
+    health_tls = None
+    if health_tls_dir is not None and health_tls_bind is not None:
+        if "health" not in configs:
+            raise click.ClickException("Health service TLS requires starting the Health daemon")
+        health_tls = (health_tls_dir, health_tls_bind)
 
     # Check for port conflicts before starting any butler
     conflicts = _check_port_conflicts(configs)
@@ -124,7 +143,7 @@ def up(only: tuple[str, ...], butlers_dir: Path, exclude: tuple[str, ...]) -> No
 
     ordered_names = [n for n, _ in _ordered_configs(configs)]
     click.echo(f"Starting {len(configs)} butler(s): {', '.join(ordered_names)}")
-    asyncio.run(_start_all(configs))
+    asyncio.run(_start_all(configs, health_tls=health_tls))
 
 
 @cli.command()
@@ -1386,7 +1405,9 @@ async def _shutdown_in_share(daemon: Any, plan: _ShutdownPlan) -> None:
     await daemon.shutdown()
 
 
-async def _start_all(configs: dict[str, Path]) -> None:
+async def _start_all(
+    configs: dict[str, Path], *, health_tls: tuple[Path, str] | None = None
+) -> None:
     """Start all butler daemons in a single event loop."""
     from contextlib import AsyncExitStack
 
@@ -1417,7 +1438,12 @@ async def _start_all(configs: dict[str, Path]) -> None:
             port_attempt = 0
             db_attempt = 0
             while not started:
-                daemon = ButlerDaemon(config_dir)
+                if name == "health" and health_tls is not None:
+                    daemon = ButlerDaemon(
+                        config_dir, service_tls_dir=health_tls[0], service_tls_bind=health_tls[1]
+                    )
+                else:
+                    daemon = ButlerDaemon(config_dir)
                 try:
                     await daemon.start()
                     daemons.append(daemon)

@@ -62,7 +62,7 @@ from butlers.core.qa.patrol_provenance import (
     QUALIFYING_PATROL_STATUSES,
     qa_patrol_contract,
 )
-from butlers.core.switchboard_tls import switchboard_http_options
+from butlers.core.switchboard_tls import internal_service_http_options
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class FleetReadiness:
         self._clock = clock
         self._client_factory = client_factory or (
             lambda: httpx.AsyncClient(
-                timeout=PROBE_DEADLINE_S + 1.0, **switchboard_http_options(trust_env=False)
+                timeout=PROBE_DEADLINE_S + 1.0, **internal_service_http_options(trust_env=False)
             )
         )
         self.sample_interval_s = sample_interval_s

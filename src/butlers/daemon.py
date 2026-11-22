@@ -211,7 +211,7 @@ class LocalSwitchboardClient:
             return await client.call_tool(name, arguments)
 
 
-class _SwitchboardServiceServer(uvicorn.Server):
+class _SplitServiceServer(uvicorn.Server):
     """Serve Service TLS and private runtime HTTP with one ASGI lifespan."""
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
@@ -261,14 +261,15 @@ class ButlerDaemon:
             raise ValueError("Either config_dir or butler_name must be provided")
         if config_dir is not None and butler_name is not None:
             raise ValueError("Cannot provide both config_dir and butler_name")
-        if service_tls_dir is not None and control_profile is None:
+        configured_name = config_dir.name if config_dir is not None else butler_name
+        if service_tls_dir is not None and control_profile is None and configured_name != "health":
             raise ValueError("Switchboard service TLS requires a control profile")
         if (service_tls_dir is None) != (service_tls_bind is None):
-            raise ValueError("Switchboard service TLS requires both material and a pod IP bind")
+            raise ValueError("Service TLS requires both material and a pod IP bind")
         if service_tls_bind is not None:
             address = IPv4Address(service_tls_bind)
             if address.is_loopback or address.is_unspecified or address.is_multicast:
-                raise ValueError("Switchboard service TLS requires a non-loopback IPv4 pod IP")
+                raise ValueError("Service TLS requires a non-loopback IPv4 pod IP")
 
         # If butler_name is provided, derive config_dir from roster/
         if butler_name is not None:
@@ -692,7 +693,7 @@ class ButlerDaemon:
             sock.close()
             raise
         self._mcp_socket = sock
-        server_type = _SwitchboardServiceServer if service_tls is not None else uvicorn.Server
+        server_type = _SplitServiceServer if service_tls is not None else uvicorn.Server
         self._server = server_type(config)
         self._server_task = asyncio.create_task(self._server.serve(sockets=[sock]))
         deadline = time.monotonic() + _MCP_SERVER_START_TIMEOUT_S
@@ -822,8 +823,11 @@ class ButlerDaemon:
         if directory is None:
             return None
         config = self.config
-        if config is None or (config.name, config.port) != ("switchboard", 41100):
-            raise ValueError("Service TLS is configured outside the Switchboard service listener")
+        expected = ("switchboard", 41100) if self._control_profile else ("health", 41103)
+        if config is None or (config.name, config.port) != expected:
+            raise ValueError(
+                f"Service TLS is configured outside the {expected[0].capitalize()} service listener"
+            )
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_3
         try:
@@ -832,7 +836,7 @@ class ButlerDaemon:
             )
         except OSError:
             raise RuntimeError(
-                "Switchboard service TLS material is unavailable or invalid"
+                f"{config.name.capitalize()} service TLS material is unavailable or invalid"
             ) from None
         return context
 

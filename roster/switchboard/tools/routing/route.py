@@ -16,7 +16,7 @@ from butlers.core.control_plane_identity import PROBE_DEADLINE_S, probe_once
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
-from butlers.core.switchboard_tls import switchboard_http_options
+from butlers.core.switchboard_tls import internal_service_http_options
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
 from butlers.mcp_liveness import LivenessClient as MCPClient
@@ -107,7 +107,7 @@ async def _resolve_receiver_route_target(
             # The L2 operation reserves its sequence before this identity GET
             # and conditionally records only the current boot/sequence.  No
             # Dashboard API or owner credential enters this path.
-            options = switchboard_http_options(expected.url, trust_env=False)
+            options = internal_service_http_options(expected.url, trust_env=False)
             async with httpx.AsyncClient(timeout=PROBE_DEADLINE_S, **options) as client:
                 outcome = await probe_once(pool, expected, client=client)
             if outcome.category != "healthy" or not outcome.recorded:

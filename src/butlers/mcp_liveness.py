@@ -27,7 +27,7 @@ import mcp.types
 from fastmcp import Client
 from fastmcp.client.progress import ProgressHandler
 
-from butlers.core.switchboard_tls import switchboard_mcp_transport
+from butlers.core.switchboard_tls import internal_service_mcp_transport
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ class LivenessClient(Client):
         if isinstance(transport, str):
             scheme, separator, _ = transport.partition("://")
             if separator and scheme in {"http", "https"}:
-                transport = switchboard_mcp_transport(transport)
+                transport = internal_service_mcp_transport(transport)
         super().__init__(transport, *args, init_timeout=init_timeout, **kwargs)
         self._ping_interval_s = ping_interval_s
         self._ping_timeout_s = ping_timeout_s

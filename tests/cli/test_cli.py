@@ -1,6 +1,8 @@
 """Tests for the CLI commands."""
 
 import logging
+from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from click.testing import CliRunner
@@ -313,6 +315,26 @@ class TestChroniclerMemoryPreparation:
 
 
 class TestUpCommand:
+    def test_up_passes_optional_health_service_tls(self, runner, tmp_path, monkeypatch):
+        start = AsyncMock()
+        monkeypatch.setattr("butlers.cli._start_all", start)
+        result = runner.invoke(
+            cli,
+            [
+                "up",
+                "--only",
+                "health",
+                "--health-tls-dir",
+                str(tmp_path),
+                "--health-tls-bind",
+                "192.0.2.80",
+            ],
+        )
+        assert result.exit_code == 0, result.exception
+        start.assert_awaited_once_with(
+            {"health": Path("roster/health")}, health_tls=(tmp_path, "192.0.2.80")
+        )
+
     def test_up_error_cases(self, runner, tmp_path, butler_config_dir):
         """up fails with no configs and with nonexistent --only target."""
         empty = tmp_path / "empty"
