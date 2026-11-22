@@ -221,3 +221,36 @@ def test_code_identifier_near_secrets_does_not_leak_neighbours():
 def test_validation_pass_still_rejects_real_secrets_beside_code_identifiers():
     ok, violations = validate_anonymized("butlers.core.spawner leaked a@b.example.org")
     assert ok is False and violations
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "this.Alice",  # stdlib module, not imported, person-like name
+        "turtle.Bob",
+        "json.Carol",  # stdlib package
+        "butlers.core.spawner.Dave",  # repo module + name
+        "asyncpg.exceptions.Erin",  # third-party module + name
+        "asyncio.exceptions.Frank",
+        "tomllib.Grace",
+    ],
+)
+def test_capitalized_names_are_kept_only_with_import_free_source_evidence(text: str):
+    import sys
+
+    for name in ("this", "turtle", "tomllib"):
+        sys.modules.pop(name, None)  # the attribute check must not rely on an import
+    out = anonymize(f"owner {text} said", REPO_ROOT)
+    assert text not in out
+    assert "[REDACTED-HOST]" in out
+
+
+def test_real_classes_are_preserved_without_importing_their_module():
+    import sys
+
+    sys.modules.pop("tomllib", None)
+    assert anonymize("tomllib.TOMLDecodeError", REPO_ROOT) == "tomllib.TOMLDecodeError"
+    assert "tomllib" not in sys.modules  # preservation did not import it
+    assert anonymize("concurrent.futures.TimeoutError", REPO_ROOT) == (
+        "concurrent.futures.TimeoutError"
+    )
