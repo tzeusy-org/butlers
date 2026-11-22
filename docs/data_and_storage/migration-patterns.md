@@ -170,6 +170,11 @@ roles, not among them: `PROJECTION_PUBLISHER` and `publisher_relations()` state 
 publication `butlers_public_v1` does not exist. `butlers db check-grants` diffs it too, and
 skips it where the role is absent (Compose, testcontainers).
 
+CNPG's metrics exporter is declared the same way, as `CNPG_METRICS_EXPORTER`: it holds `CONNECT`
+on the database, granted by `init-db.sql` when the role exists, and no privilege on any `public`
+relation, so it has no manifest row. The manifest is relation-level, so neither
+`check-grants` nor `apply-grants` reads or revokes that database grant.
+
 `butlers db apply-grants` converges a live database to the manifest: it revokes
 whatever exceeds a row (the migration-intent ceiling) and grants only what the
 row and an `init-db.sql` replay both allow, so it narrows and never re-grants a

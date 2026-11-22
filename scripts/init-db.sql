@@ -215,6 +215,7 @@ DECLARE
     _restore_drill_audit_writer_role TEXT := 'restore_drill_executor_audit_writer';
     _restore_drill_executor_schema TEXT := 'restore_drill_executor';
     _optional_calendar_role TEXT := 'butler_calendar_rw';
+    _cnpg_metrics_exporter_role TEXT := 'cnpg_metrics_exporter';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
     _schema TEXT;
@@ -782,6 +783,15 @@ BEGIN
                 );
             END IF;
         END LOOP;
+    END IF;
+
+    -- CNPG's metrics exporter (a pg_monitor member CNPG creates; declared as
+    -- CNPG_METRICS_EXPORTER in butlers.db_authority.grants) lost CONNECT when
+    -- core_001 revoked it from PUBLIC, so every exporter query here was denied,
+    -- including the replication-slot query behind the RFC 0039 D16 slot alerts.
+    -- CONNECT only; local and Docker Postgres have no such role.
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _cnpg_metrics_exporter_role) THEN
+        EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _cnpg_metrics_exporter_role);
     END IF;
 
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
