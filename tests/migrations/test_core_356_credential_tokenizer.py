@@ -78,7 +78,9 @@ def test_core_356_recomputes_leaves_published_under_the_old_rule(postgres_contai
         kept = {"metadata." + key for key in _KEPT}
         # core_320's rule published every one of these.
         assert _paths(engine, "finance", "transactions") == leaked
-        assert _paths(engine, "health", "facts") == leaked
+        # The reading's own metadata leaves sit beside the condition fact's.
+        readings = {"metadata.value." + key for key in _READING}
+        assert _paths(engine, "health", "facts") == leaked | readings
         assert _metrics(engine) == {
             "measurement_blood_pressure.systolic",
             "measurement_blood_pressure.pin2",
@@ -86,7 +88,7 @@ def test_core_356_recomputes_leaves_published_under_the_old_rule(postgres_contai
 
         # The shared functions change on the first run; only health's own run recomputes health.
         asyncio.run(run_migrations(url, chain="core", schema="health"))
-        assert _paths(engine, "health", "facts") == kept
+        assert _paths(engine, "health", "facts") == kept | {"metadata.value.systolic"}
         assert _metrics(engine) == {"measurement_blood_pressure.systolic"}
         assert _paths(engine, "finance", "transactions") == leaked
 
