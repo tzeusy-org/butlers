@@ -12,9 +12,28 @@
 
 ---
 
-## Status: projection activated on dev by every deploy; public server pending
+## Status: live on dev behind the gateway
 
-The source now provides the canonical full-v1
+As of 2026-11-22 the whole surface runs on dev:
+
+- **Projection.** Every `make deploy-dev` reconciles the publication and runs the owner step
+  (3b, 3c).
+- **Public server.** The public chart (3d) runs in `butlers-public-dev` with the verifier keyring
+  installed (owner act 4) and the site audience set. Clients reach it only through the gateway
+  endpoint (owner acts 5, 6 and 8). The chart is upgraded by hand: `PUBLIC_MCP_CHART_dev` is still
+  `off` in `deploy/helm/butlers/makefile`, so `make deploy-dev` does not upgrade it (3c step 4;
+  switching it on is `bu-y66o00.67`).
+- **Clients.** claude.ai is connected; its first signed call answered `describe` on 2026-11-22.
+  ChatGPT is next (task 3.1).
+- **Alerts.** The `PrometheusRule` and `PodMonitor` ship with the chart, both flags read 1, and
+  the two Uptime Kuma monitors poll them (3e).
+- **Open.** The ChatGPT connection, the dev rollback rehearsal that section 7 scripts (task 8.1),
+  the widening and narrowing rehearsal (task 8.2), the security review (task 6.1) and the metric
+  sources 3e lists as gaps.
+
+The rest of this section says what each piece does.
+
+The source provides the canonical full-v1
 `src/butlers/knowledge_read/projection.toml`, its closed immutable model, catalog validation,
 and `butlers public-mcp reconcile --database butlers`. On dev the `migrations` initContainer
 runs reconcile after Alembic (`publicMcp.reconcile`, true only in `values.dev.yaml`), and every
@@ -50,9 +69,10 @@ The packaged resource is read without a mutable external manifest override.
 The connection-free renderer `butlers.migrations.public_mcp_owner` supplies the subscriber
 database. `butlers public-mcp owner-sql` prints its file, and on dev
 `scripts/k8s/public-mcp-owner-step.sh`, run by `make deploy-dev`, pipes that file to the CNPG
-primary as the superuser (3c). The public chart is not part of this: it lands with the public
-server (`bu-y66o00.6`, task 2.4), which then adds its upgrade to the same recipe. Until a public
-pod exists there is no shipped digest to converge (RFC 0039 D3 "The public chart").
+primary as the superuser (3c). The same recipe then upgrades the public chart at the same tag
+when `PUBLIC_MCP_CHART_dev` is `on`, so the shipped, replicated and applied digests converge in
+one deploy (RFC 0039 D3 "The public chart"); while that switch is `off` the chart is upgraded by
+hand (3d step 5).
 
 The renderer validates the reconciled digest and actual publication, primary types/keys,
 credentialless publisher, finite WAL cap and closed existing subscriber catalog before
@@ -127,38 +147,27 @@ threshold it pins to 0.3), so the planner answers it from a BitmapOr of both ind
 ranking and the exact match condition stay as before. Dropping `pg_trgm` now needs `CASCADE`,
 which takes the trigram index with it; the next owner step rebuilds both.
 
-The first pure readers exist in `butlers.knowledge_read` (`entities`, `chronology`, `finance`):
-`entity_lookup`, `entity_profile`, `timeline`, `time_use` and `finance_ledger`. Each takes an
-asyncpg connection to `butlers_public`, a host-built `ReadContext` (caller `sub`, the request's
-`replication_as_of()`, the union of kill-switch layers, the process cursor key) and the raw
-arguments, and returns JSON-ready data or raises `ReadError` with a D17 code. They read only
-`mcp_read` views, write nothing and keep no state; connections, authentication, budgets, DLP and
-transport stay with the future host. The other D10 tools, including the `knowledge_index` view
-behind `search`/`fetch`, are not built yet.
+The pure readers in `butlers.knowledge_read` serve the 19 tools of the pinned v1 catalogue
+(`describe` lists them). Each takes an asyncpg connection to `butlers_public`, a host-built
+`ReadContext` (caller `sub`, the request's `replication_as_of()`, the union of kill-switch layers,
+the process cursor key) and the raw arguments, and returns JSON-ready data or raises `ReadError`
+with a D17 code. They read only `mcp_read` views, write nothing (`propose_fact` aside, section
+"Proposal intake") and keep no state. Connections, authentication, budgets, canaries, DLP and
+audit belong to the host, `butlers.capability_host`; the transport is `butlers.mcp_public`.
 
-**Still pending:** the remaining D10 read functions, the public chart and server,
-request/canary/digest serving semantics,
-deployed privileges/network and live owner steps. The deployed API and migrations currently
-share a configured database login and the API does not SET ROLE. SQL ACLs cannot establish
-controls-only API writes while that effective identity also owns manifest state. Both
-original member issues remain partial; no server/importer/approval/retention or deployment
-completion follows from this database foundation.
+**Known gap.** The deployed API and migrations share one database login, and the API does not
+`SET ROLE`, so SQL ACLs cannot limit the API to controls-only writes while that identity also
+owns the manifest state (section 6, "Privilege").
 
-The remaining sections retain the full target procedure and its pending ownership below.
-
-Every step below carries one of two tags:
-
-- **Now.** Runnable today.
-- **Lands with `bu-y66o00.N`.** The design's command or object, which does not exist until that
-  bead merges. Until then, do not improvise a substitute (for example, a hand-written
-  subscription): the design depends on exact step order and on the guard checks inside the
-  generated file. The implementing bead updates this page in the same PR.
+Steps tagged **Now** are runnable today. Never improvise a substitute for a step (for example, a
+hand-written subscription): the design depends on exact step order and on the guard checks inside
+the generated file.
 
 **Environments.**
 
 | Environment | Butlers namespace | CNPG cluster | Public namespace | State |
 |---|---|---|---|---|
-| dev (the live system) | `butlers-dev` | `postgres-dev` | `butlers-public-dev` (created by the public chart) | Homelab acts 2 and 3 applied (Tzeusy/homelab#40); Butlers side not built |
+| dev (the live system) | `butlers-dev` | `postgres-dev` | `butlers-public-dev` (created by the public chart) | Live behind the gateway (see Status); homelab acts 2 and 3 applied (Tzeusy/homelab#40) |
 | prod | `butlers` | [Unknown] | not named | Deferred by owner decision OD18; nothing on this page runs against prod |
 
 [Observed] The prod database location is unresolved: `deploy/helm/butlers/values.prod.yaml:1-4`
@@ -342,8 +351,10 @@ owner step".
    nothing (D3 step 1).
 4. After step 3 exits 0 (and with both `PUBLIC_MCP_OWNER_STEP_dev` and `PUBLIC_MCP_CHART_dev` on),
    the public chart `deploy/helm/butlers-public-mcp` at the same tag (3d), so the public pod
-   ships the manifest just applied. `PUBLIC_MCP_CHART_dev` is `off` until go-live, so today the
-   recipe ends at step 3.
+   ships the manifest just applied. `PUBLIC_MCP_CHART_dev` is still `off` on `main`, so today the
+   recipe ends at step 3 and the public chart is upgraded by hand (3d step 5). Until that switch
+   is on, a deploy that changes the manifest leaves the public pod on its old image, which refuses
+   with `projection_version_mismatch` until the hand upgrade.
 
 The target exits with the first non-zero status of these steps. The owner step runs on every dev
 deploy; with an unchanged manifest and a healthy slot it changes nothing (D3 "Rerun"). Read its
@@ -435,12 +446,14 @@ runtime contract and values.
    site env file); the deploy script renders it with `--set-file keyringJson=`. Without it every
    upgrade resets the keyring to empty, and the server verifies nothing and refuses every call.
 5. *Deploy.* On dev, `make deploy-dev` upgrades the chart after a successful owner step, at the
-   same tag, through `scripts/k8s/public-mcp-chart-deploy.sh`. **The hook is guarded:**
-   `PUBLIC_MCP_CHART_dev := off` in `deploy/helm/butlers/makefile` until go-live. Flip it to `on`
-   in a reviewed change once the server PRs have merged and the image exists. It never runs when
-   the owner step was switched off or failed, and its status joins the recipe's (first non-zero
-   wins). Prod stays off (OD18). By hand:
-   `scripts/k8s/public-mcp-chart-deploy.sh dev <tag> on`. The release record lives in
+   same tag, through `scripts/k8s/public-mcp-chart-deploy.sh`. **The hook is guarded** by
+   `PUBLIC_MCP_CHART_dev` in `deploy/helm/butlers/makefile`, which is still `off`: every public
+   chart revision on dev so far was a hand upgrade. Switching it on is a reviewed change
+   (`bu-y66o00.67`). It never runs when the owner step was switched off or failed, and its status
+   joins the recipe's (first non-zero wins). Prod stays off (OD18). By hand, from a checkout whose
+   site env carries the values of step 3 and the keyring of step 4:
+   `scripts/k8s/public-mcp-chart-deploy.sh dev <tag> on`. It uses the chart files of that
+   checkout and the image at `<tag>`. The release record lives in
    `butlers-dev` (helm cannot store a release in a namespace the chart creates); the namespace
    carries `helm.sh/resource-policy: keep`.
 6. *Filter-proxy.* Owner act 5 points `UPSTREAM_URL` at
@@ -557,7 +570,7 @@ table.
 | Refusal | Likely missing or broken step | Fix |
 |---|---|---|
 | `projection_apply_pending` | The owner step has not run since the first sync or the last manifest change, stopped midway, or the initial copy is not complete | Run 3c; wait for every relation to reach state `r` |
-| `projection_version_mismatch` | Deploy skew: the public pod ships a different manifest from the replicated digest | On dev, the last deploy's owner step failed, so its public chart step did not run: fix 3c and deploy again. Elsewhere, finish the `butlers` rollout (3b) or deploy the public chart at the same revision |
+| `projection_version_mismatch` | Deploy skew: the public pod ships a different manifest from the replicated digest | On dev, the public chart is not at the deployed tag: while `PUBLIC_MCP_CHART_dev` is `off`, run `scripts/k8s/public-mcp-chart-deploy.sh dev <deployed tag> on` (3d step 5); with it on, the last deploy's owner step failed, so its chart step did not run: fix 3c and deploy again. Elsewhere, finish the `butlers` rollout (3b) or deploy the public chart at the same revision |
 | `projection_stale` | Replication older than 15 minutes, or `replication_as_of()` NULL (no subscription, or it never confirmed a position) | Check the slot; if `wal_status = 'lost'`, rerun 3c, which rebuilds the slot and subscription |
 | `unavailable` | The canaries file is missing, invalid or an empty list (ExternalSecret `butlers-public-mcp-canaries`, Bitwarden `MCP_PUBLIC_CANARIES`; `describe` still answers), or no connection to `butlers_public`: `postgres-<env>` down, the connection limit reached, a `pg_hba` refusal (for example, a pod on a second node), or the password Secret missing | Section 1 checks; the ExternalSecret status in `butlers-public-<env>` (`butlers-public-mcp-db`, mounted at `/etc/butlers-public-mcp/db/password`) |
 | `domain_disabled` | A kill switch is off | Intended, or see section 6 |
@@ -576,8 +589,9 @@ table.
 
 **On dev this needs no owner act** (OD20). A manifest change reaches dev only through a deploy,
 and every `make deploy-dev` runs the step after its migrations, whatever the release returned,
-and (once it exists) the public chart at the same tag (3c), so the first sync and every manifest change are
-covered. Only a slot invalidation between deploys calls for a manual run of
+and, once `PUBLIC_MCP_CHART_dev` is `on`, the public chart at the same tag (3c), so the first sync
+and every manifest change are covered. While that switch is `off`, a manifest change also needs
+the hand chart upgrade (3d step 5). Only a slot invalidation between deploys calls for a manual run of
 `scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>`. **Elsewhere** it stays the one
 recurring owner act.
 
@@ -597,29 +611,105 @@ after adding a node (the pod range) [Inferred].
 
 ## 6. Incidents
 
-**Lands with `bu-y66o00.7`** (task 7.2), which fills this section: flipping each kill-switch
-layer, rotating the bearer and keyring, draining or flushing the inbox, and the canary latch. The
-switches and the leak runbook are RFC 0039 D16; the leak runbook ends with the owner step (3c),
-which purges the narrowed rows. On dev the deploy that ships the narrowed manifest runs it, even
-when that deploy's release fails after its migrations; if the deploy prints `public-mcp owner
-step FAILED`, the purge did not happen, so fix the cause and rerun
-`scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>` before re-enabling.
+Task 7.2. Each procedure gives its trigger, the steps, how to verify them and who runs them. The
+switches and the leak runbook are RFC 0039 D16; the failure codes are D17 (section 4).
+
+**Who.** The owner runs every step that touches Bitwarden, the homelab repository, the site env
+file, the cluster with `kubectl`, or the superuser path (`kubectl exec` into the `postgres-dev`
+primary, the owner step). Agents prepare the reviewed changes (manifest, values, makefile), read
+the results the owner pastes back, and may call `describe` through a connected client. Agents
+never run a superuser step (RFC 0039 D9).
+
+**Handles used below** (dev; replace `dev` for another environment):
+
+```bash
+# The CNPG primary, selected by label (section 1). Superuser psql: one statement per -c.
+primary="$(kubectl -n postgres-dev get pod \
+  -l cnpg.io/cluster=postgres-dev,cnpg.io/instanceRole=primary -o name)"
+kubectl -n postgres-dev exec -i "$primary" -c postgres -- psql -X -d butlers -c "<query>"
+# The deployed tag: the part after the last ':' of the dashboard-api image.
+kubectl -n butlers-dev get deploy dashboard-api \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="dashboard-api")].image}'
+```
+
+`psql -c` with several statements runs them in one transaction, which `DROP SUBSCRIPTION` refuses,
+so every superuser statement below is its own `-c`.
+
+**Reading `describe`.** It answers whenever the projection is reachable, even while the latch or
+a switch stops every other tool. `domains` maps each of the seven data domains to `disabled` (any
+switch layer), `stale` (replication older than the D17 cutoff) or `enabled`; `all` shows as every
+domain `disabled`. `manifest_digest` is the replicated digest of `mcp_surface.manifest_state`.
+Call it from a connected client.
 
 ### Kill-switch layers (task 5.6)
 
 The owner flips the normal switch from the dashboard or the CLI; the rest are break glass. Nothing
-here is instant except the last two rows: **never promise immediate effect from the first two.**
+here is instant except scaling to zero and the gateway: **never promise immediate effect from the
+first two rows.**
 
-| Layer | Flip | Reaches | Latency |
-| --- | --- | --- | --- |
-| `mcp_surface.controls` row per domain, plus `all` (primary) | Dashboard `/settings/public-mcp` (owner passkey session), or `butlers public-mcp disable <domain\|all>` | The public server by replication; the Relationship proposal importer reads the primary | Public server: within 15 minutes (the D17 stale cutoff). Importer: its next pass |
-| `disabled_domains` key of ConfigMap `butlers-public-mcp-switches` in `butlers-public-<env>` | `kubectl` or Helm | The public server only | Re-read every 10 s; no replication |
-| Canary latch | The detector | Every tool except `describe` | Until the pod restarts |
-| Scale the public Deployment to 0 | `kubectl` | The whole surface | Immediate |
+| Layer | Flip | Reaches | Latency | Who |
+| --- | --- | --- | --- | --- |
+| `mcp_surface.controls` row per domain, plus `all` (primary) | Dashboard `/settings/public-mcp` (owner passkey session), or `butlers public-mcp disable <domain\|all>` | The public server by replication; the Relationship proposal importer reads the primary | Public server: within 15 minutes (the D17 stale cutoff). Importer: its next pass | owner |
+| `disabled_domains` key of ConfigMap `butlers-public-mcp-switches` in `butlers-public-<env>` | `kubectl patch` | The public server only | About a minute: the kubelet's volume refresh, then the 10 s re-read | owner |
+| Canary latch | The detector | Every tool except `describe` | Until the pod restarts | automatic |
+| Scale the public Deployment to 0 | `kubectl scale` | The whole surface | Immediate | owner |
+| Gateway: Worker maintenance, or the server removed from `MCP_SERVERS` | Homelab repository | Every client | Immediate | owner (homelab) |
 
 Domains are `all`, `knowledge`, `relationship`, `time`, `travel`, `finance`, `health` and
 `proposals`; `all` turns off every data tool and leaves `describe`. Disabling and enabling are one
 step each, with no unlock.
+
+**Layer 1, the controls row (normal path).**
+
+- *Flip.* The dashboard Settings page, or the CLI as the migration principal. On dev the
+  `dashboard-api` container carries that login, so:
+
+  ```bash
+  kubectl -n butlers-dev exec deploy/dashboard-api -c dashboard-api -- \
+    /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py \
+    butlers public-mcp disable all        # or: enable <domain|all>, disable <domain>
+  ```
+
+  [Inferred: the same image, entrypoint and `POSTGRES_*` environment as the `migrations`
+  initContainer, which runs `butlers public-mcp reconcile` this way; not yet run live.]
+- *Verify on the primary* (superuser, `-d butlers`):
+  `SELECT domain, state, changed_at, changed_by FROM mcp_surface.controls ORDER BY domain;`.
+  Then `describe` shows the domain `disabled`, within 15 minutes. For `proposals` or `all`, the
+  importer's gauge `butlers_public_mcp_proposal_import_switch_enabled` reads 0 after its next pass.
+- *Undo.* `enable` the same row. Enabling `all` does not enable a domain that has its own
+  `disabled` row.
+
+**Layer 2, break glass.**
+
+- *Flip.* One domain or `all` per line:
+
+  ```bash
+  kubectl -n butlers-public-dev patch configmap butlers-public-mcp-switches --type merge \
+    -p '{"data":{"disabled_domains":"all\n"}}'          # or "finance\nhealth\n"
+  ```
+
+  An unknown name disables every domain (section 3d, "Break glass").
+- *Verify.* `kubectl -n butlers-public-dev get configmap butlers-public-mcp-switches -o
+  jsonpath='{.data.disabled_domains}'` prints the lines; `describe` shows the domains `disabled`
+  within about a minute.
+- *Undo.* Patch the key back to a comment, `"# none\n"`.
+- *Caveat.* Every public chart upgrade rewrites this ConfigMap from the chart's `disabledDomains`
+  value, which disables nothing, so a break-glass entry does not survive an upgrade. In an
+  incident set layer 1 as well, and read `describe` again after each chart upgrade. Layer 2 does
+  not stop the importer.
+
+**Layer 3, the canary latch.** Not flipped by hand; see "Canary latch" below.
+
+**Layer 4, scale to zero.**
+
+- *Flip.* `kubectl -n butlers-public-dev scale deployment/butlers-public-mcp --replicas=0`.
+- *Verify.* `kubectl -n butlers-public-dev get deploy,pods` shows `0/0` and no pod. Clients fail
+  at the gateway. After 5 minutes `PublicMcpServerMetricsMissing` drops the critical flag, so the
+  critical Kuma monitor goes DOWN and the owner's Telegram gets a message: expected.
+- *Undo.* `--replicas=1`; any chart upgrade also restores one replica. The new process starts with
+  the latch clear, an empty replay set and the owner-step gauge unset until the first call.
+
+**Layer 5, the gateway.** Homelab acts, outside this repository (RFC 0039 D16).
 
 **Dashboard.** `GET /api/settings/public-mcp` lists the eight rows with state, change time and
 actor; `GET /api/settings/public-mcp/summary` feeds the Settings console panel (how many of the
@@ -645,21 +735,359 @@ the new API image or CLI is used, because the `changed_by` column comes from it 
 deployment assumption, not something the API checks; a different login gets a closed 503. The
 console summary reports `missing_rows` so an unseeded table never reads as all-enabled.
 
+### Rotate the hop bearer (D6)
+
+*Trigger.* A scheduled rotation, or a suspected exposure of the filter-proxy `UPSTREAM_BEARER`.
+A digest that does not match refuses every request with HTTP 401 before the body is read, and
+`PublicMcpBearerRefusals` lowers the warning flag.
+
+The server accepts two digests, `bearer/digest` and the optional `bearer/digest_next`, re-read
+every 10 seconds. The chart fills them from the Bitwarden dev items named by
+`externalSecrets.bearerDigestKey` (`MCP_PUBLIC_HOP_BEARER_DIGEST`) and
+`externalSecrets.bearerDigestNextKey` (empty by default), through ExternalSecret
+`butlers-public-mcp-bearer` (refresh interval 1h). `scripts/k8s/public-mcp-chart-deploy.sh`
+passes only `values.yaml` and `values.dev.yaml`, so the next-digest item name goes into
+`deploy/helm/butlers-public-mcp/values.dev.yaml` in a reviewed change. An item name is not a
+secret.
+
+1. *Owner, homelab custody.* Generate the new bearer. Compute its digest, lowercase hex SHA-256 of
+   the bearer with no trailing newline and no prefix (`printf '%s' "<bearer>" | sha256sum`), and
+   store it in a new Bitwarden dev item, for example `MCP_PUBLIC_HOP_BEARER_DIGEST_NEXT`. Never put
+   the bearer itself in a Butlers item.
+2. *Agent or owner, reviewed PR.* Set `externalSecrets.bearerDigestNextKey` to that item name in
+   `values.dev.yaml`.
+3. *Owner.* From a checkout of `main` with that change:
+   `scripts/k8s/public-mcp-chart-deploy.sh dev <deployed tag> on`. The bearer volume gains the
+   `digest_next` item, so the pod is recreated.
+4. *Verify.* `kubectl -n butlers-public-dev get externalsecret butlers-public-mcp-bearer` is
+   `Ready`; key names only:
+   `kubectl -n butlers-public-dev get secret butlers-public-mcp-bearer -o json | jq '.data | keys'`
+   lists `digest` and `digest_next`. A client call still succeeds on the old bearer.
+5. *Owner, homelab.* Switch the filter-proxy `UPSTREAM_BEARER` to the new bearer. Verify that a
+   client call succeeds and `butlers_public_mcp_bearer_refusals_total` does not rise.
+6. *Owner, promote.* Write the new digest into `MCP_PUBLIC_HOP_BEARER_DIGEST` and refresh at once
+   instead of waiting up to an hour:
+
+   ```bash
+   kubectl -n butlers-public-dev annotate externalsecret butlers-public-mcp-bearer \
+     force-sync="$(date +%s)" --overwrite
+   ```
+
+   Then a reviewed PR sets `bearerDigestNextKey` back to `""`, the owner runs the chart deploy of
+   step 3 again and deletes the next-digest item. Verify: the key list is `digest` only and client
+   calls succeed.
+
+### Rotate the verifier keyring (D7)
+
+*Trigger.* A scheduled rotation of the Worker's Ed25519 key, or its exposure. A keyring that does
+not match refuses every call (JSON-RPC `-32001`); the audit line's `cause` reads `keyring`, `kid`
+or `signature`, and `PublicMcpAssertionFailures` lowers the warning flag.
+
+The keyring is a public-key document in ConfigMap `butlers-public-mcp-keyring`, rendered from the
+file that `BUTLERS_PUBLIC_MCP_KEYRING_FILE` names in the site env file (3d step 4). Its shape,
+checked by `butlers.core.runtime_probe_control.keys`:
+
+```json
+{"version": 1,
+ "current":  {"alg": "EdDSA", "kid": "<new kid>", "public_key_b64u": "<new>", "sign_from": "<T>"},
+ "retiring": [{"alg": "EdDSA", "kid": "<old kid>", "public_key_b64u": "<old>",
+               "sign_from": "<old sign_from>", "sign_until": "<T>", "accept_until": "<T + 70 s to 5 min>"}]}
+```
+
+Exactly one `current` and at most one `retiring` entry; distinct kids and keys; the current
+`sign_from` equals the retiring `sign_until` (the cutover instant T, a UTC second); `accept_until`
+is 70 seconds to 5 minutes after it. An assertion verifies only under the key whose window holds
+its `iat`: the old key up to T inclusive, the new key from T.
+
+1. *Owner, homelab.* Generate the new key pair; the private key stays a Worker secret.
+2. *Owner.* Pick T after steps 3 and 4 can finish. Write the document above over the keyring file
+   (public keys only).
+3. *Owner.* `scripts/k8s/public-mcp-chart-deploy.sh dev <deployed tag> on`. Only the ConfigMap
+   changes, so the pod keeps running and re-reads it within about a minute. Verify the kids (the
+   document is public):
+   `kubectl -n butlers-public-dev get configmap butlers-public-mcp-keyring -o jsonpath='{.data.keyring\.json}' | jq '{current: .current.kid, retiring: [.retiring[].kid]}'`.
+   Calls still succeed on the old key.
+4. *Owner, homelab.* Redeploy the Worker to sign with the new key from T. [Unknown] whether the
+   Worker can hold both keys and switch at T by itself; if it switches when deployed, calls signed
+   between that moment and T (new key too early) or after T (old key too late) are refused, so
+   deploy it as close to T as possible. Clients retry.
+5. *Verify after T.* Client calls succeed and `butlers_public_mcp_auth_failures_total` stays flat.
+6. *Owner, after `accept_until`.* Set `"retiring": []`, run the chart deploy of step 3 again, and
+   verify the kid list shows no retiring entry. The file stays the record of the current key.
+
+### Rebuild after slot invalidation
+
+*Trigger.* Every data tool answers `projection_stale`, `describe` shows each domain `stale`, and
+the slot is lost. `PublicMcpSlotRetainedWal` (critical) usually fires first, and
+`PublicMcpSlotInactive` (warning) once the subscription stops.
+
+1. *Confirm* (superuser, `-d butlers`):
+   `SELECT slot_name, active, wal_status FROM pg_replication_slots WHERE slot_name = 'butlers_public_sub';`.
+   Only `wal_status = 'lost'` needs a rebuild; `unreserved` can still recover once the subscriber
+   catches up. Look for the cause too, in `-d butlers_public`:
+   `SELECT subname, pid, last_msg_receipt_time FROM pg_stat_subscription;`.
+2. *Owner.* Fix the cause (a disabled or failing subscription, disk pressure), then, from a
+   checkout that has the deployed tag (`git fetch` first):
+   `scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>`. It deletes the applied record (the
+   server answers `projection_apply_pending` from then on), drops the subscription and its slots,
+   truncates the mirrored tables, recreates the slot and subscription and re-copies (RFC 0039 D3
+   step 4).
+3. *Verify.* The 3c queries: the slot `reserved` or `extended`, the subscription enabled, every
+   relation in state `r`, the applied digest equal to the manifest digest. `describe` no longer
+   shows `stale`, and both flags return to 1.
+
+### Drain or flush the proposal inbox (section 9)
+
+*Trigger.* `PublicMcpInboxUndrained` (depth over 500), or `propose_fact` answering `unavailable`
+with `retryable: true` (the cap of 1,000 rows).
+
+- *Diagnose (read-only; agent or owner).* The importer runs every 5 minutes in `butlers-up`. A pass
+  that logs `no mcp_proposals_reader password file is mounted; intake skipped` means Secret
+  `postgres-mcp-proposals-reader-user` is missing in `butlers-dev`; errors count in
+  `butlers_public_mcp_proposal_import_errors_total{step}`. Depth: the gauge
+  `butlers_public_mcp_proposal_import_inbox_depth`, or as superuser in `-d butlers_public`
+  `SELECT count(*) FROM mcp_inbox.proposals;`.
+- *Drain (owner fixes the cause).* Each pass takes up to 100 rows, so a full inbox empties in about
+  ten passes. Intake runs while `proposals` is off, so disabling it does not stop the drain; it
+  only stops parking. To stop new proposals while the inbox drains, disable `proposals` (layer 1,
+  and layer 2 for immediate effect). Verify: the depth falls, and in `-d butlers`
+  `SELECT state, count(*) FROM relationship.external_fact_proposals GROUP BY 1;` grows by the
+  copied rows.
+- *Flush (owner, superuser).* To discard rows never imported, for example a flood from one
+  client: disable `proposals` (layers 1 and 2), then in `-d butlers_public`
+  `DELETE FROM mcp_inbox.proposals;`. [Inferred: no script does this; a deleted row never reaches
+  the primary.] Rows already imported stay `imported`, and park when `proposals` is enabled again
+  (the rate limits still apply); reject unwanted ones in the approvals queue.
+
+### Canary latch
+
+*Trips when* the projection probe, which runs on the first data call after each new applied
+manifest or canary set, finds a canary string in any `mcp_read` view, or a canary string appears
+in a response about to be released (D15). Each hit counts `butlers_public_mcp_canary_hits_total`
+and sets `butlers_public_mcp_canary_latched` to 1: `PublicMcpCanaryHit` and
+`PublicMcpCanaryLatched` (both critical) drop the critical flag, and the owner's Telegram gets a
+message.
+
+*Blocks* every tool except `describe`, for every client, with `blocked`, until the process
+restarts. `blocked` while the latch gauge is 0 is a DLP drop (`PublicMcpDlpDrop`), not the latch.
+The audit lines (`kubectl -n butlers-public-dev logs deploy/butlers-public-mcp`) carry the tool and
+outcome of each call, never content.
+
+*Clear (owner).* Run the leak runbook below first. A restart forgets the probe result, so with the
+canary still in the projection the next data call latches again. Then:
+`kubectl -n butlers-public-dev rollout restart deployment/butlers-public-mcp` (a chart upgrade that
+changes the pod also restarts it). Verify: a data call answers normally or `domain_disabled`, not
+`blocked`; the latch gauge is not 1; the critical flag returns to 1.
+
+### Leak runbook (D16)
+
+*Trigger.* A canary hit (the latch), or a column, table or predicate published that must not be.
+The surface refuses from the moment the publication narrows until the owner step completes (D17).
+
+1. *Stop serving (owner, at once).* Disable the domain, or `all`, in layer 2 for immediate effect
+   and in layer 1 so it survives chart upgrades; or scale to zero (layer 4). A tripped latch
+   already blocks.
+2. *Narrow the manifest (agent or owner, reviewed PR).* Remove the column, table or predicate from
+   `src/butlers/knowledge_read/projection.toml`, with the tests and docs it touches, and merge.
+3. *Deploy (owner).* `scripts/k8s/deploy-dev.sh` from the updated `main` (it builds and ships).
+   The migrations' reconcile narrows the publication (3b); the owner step in the same deploy sees
+   a changed entry and rebuilds: it deletes the applied record, drops the subscription, truncates
+   every mirrored table and re-copies under the narrowed publication. That is the purge. It runs
+   even when the release fails after its migrations. If the deploy prints `public-mcp owner step
+   FAILED`, the purge did not happen: fix the cause and rerun
+   `scripts/k8s/public-mcp-owner-step.sh dev <deployed tag>` before going on.
+4. *Ship the public chart at the same tag (owner).* While `PUBLIC_MCP_CHART_dev` is `off`:
+   `scripts/k8s/public-mcp-chart-deploy.sh dev <deployed tag> on`. The new pod ships the narrowed
+   manifest and starts with the latch clear. The upgrade resets layer 2; layer 1 keeps the domain
+   off, which `describe` confirms.
+5. *Confirm the purge (read-only).* The 3c queries: the applied digest equals the manifest
+   digest and every relation is in state `r`. The removed column is gone from its subscriber
+   table, as superuser in `-d butlers_public`:
+   `SELECT column_name FROM information_schema.columns WHERE table_schema = '<schema>' AND table_name = '<table>';`,
+   and from `describe`'s `columns`.
+6. *Confirm the canary probe is clean.* Make one data call (any tool but `describe`). The probe
+   runs before the domain check, so with the domain still off a clean projection answers
+   `domain_disabled` and a dirty one `blocked`, latching again [Inferred:
+   `butlers.capability_host.host`, `_run`]. The latch gauge stays 0 and the critical flag at 1.
+7. *Re-enable (owner).* `enable` the layer 1 row and clear any layer 2 entry. Verify: `describe`
+   shows the domain `enabled`.
+
 ## 7. Teardown and rebuild
 
-**Lands with `bu-y66o00.7`** (task 8.1). On dev, first merge a change that sets
-`PUBLIC_MCP_OWNER_STEP_dev := off` in `deploy/helm/butlers/makefile` (RFC 0039 D3 "Off switch").
-Without it, the next `make deploy-dev` recreates the slot and subscription, re-copies the
-published data into `butlers_public` and reinstalls the public chart. Reconcile still recreates
-the publication, which is inert without a slot or subscription. Rollback order: disable `all`,
-scale the public Deployment to 0, uninstall the public chart, then as superuser drop the
-subscription (which also drops its slot and table-sync slots) and the publication, and confirm no
-`butlers_public_sub` or `pg_<oid>_sync_%` slot remains. Then run one `make deploy-dev` and
-confirm it recreates no slot, subscription or public chart. Removing `butlers_public`, the roles
-and the `pg_hba` lines reverses owner act 2 in homelab.
+Task 8.1, on dev only (OD18). **Not yet rehearsed:** the first rehearsal follows this section
+verbatim and fixes every gap it finds here. Every step is the owner's (`kubectl` on the cluster;
+step 4 is the superuser path); an agent prepares the two makefile PRs and reads the results.
 
-Rebuild by setting the off switch back to `on` and running sections 1, 3a, 3b and 3c again; the end state is the applied digest equal to
-the manifest digest and both flags at 1.
+**What to expect while it runs.**
+
+- *Clients.* claude.ai and ChatGPT lose the server from step 2 until the rebuild's public chart is
+  up. [Unknown] whether a client needs reconnecting afterwards.
+- *Alerts.* After step 2, `PublicMcpServerMetricsMissing` fires within 5 minutes: the critical
+  flag drops to 0, the critical Kuma monitor goes DOWN and the owner's Telegram gets a message.
+  Step 3 removes the chart's rules, so both flag series disappear; Kuma counts an empty result as
+  DOWN, so the warning monitor follows after its retries, with its own message. Both stay DOWN
+  until the rebuild's chart is installed and both flags read 1.
+- *Primary.* Untouched. No butler, dashboard or applied fact changes. The proposal importer keeps
+  running in `butlers-up`; with `all` disabled it parks nothing.
+
+**Off switch, answered from the makefile.** `PUBLIC_MCP_OWNER_STEP_dev := off` alone also stops
+the public chart step. The `deploy-%` recipe runs `public-mcp-chart-deploy.sh` only when the owner
+step exited 0 **and** `PUBLIC_MCP_OWNER_STEP_$*` is `on`:
+
+```make
+if [ $$os -eq 0 ] && [ "$(PUBLIC_MCP_OWNER_STEP_$*)" = on ]; then \
+	../../../scripts/k8s/public-mcp-chart-deploy.sh "$*" "$(TAG)" "$(PUBLIC_MCP_CHART_$*)"; pc=$$?; \
+fi; \
+```
+
+With the switch `off` the owner step script prints a notice and exits 0 before doing anything, and
+the chart step is skipped without a notice. `PUBLIC_MCP_CHART_dev` need not change; it is `off` on
+`main` today anyway. `make` reads both switches from the checkout it runs in, not from the
+deployed tag.
+
+**Before step 1**, record the baseline the rehearsal must leave unchanged, as superuser in
+`-d butlers`: `SELECT state, count(*) FROM relationship.external_fact_proposals GROUP BY 1;`, and
+note the deployed tag (handles above) as `tag`.
+
+**Teardown.**
+
+0. *Off switch.* Merge a reviewed PR that sets `PUBLIC_MCP_OWNER_STEP_dev := off` in
+   `deploy/helm/butlers/makefile`, then `git pull` the checkout you deploy from. Verify:
+   `grep -n '^PUBLIC_MCP_' deploy/helm/butlers/makefile` shows `PUBLIC_MCP_OWNER_STEP_dev := off`.
+1. *Disable `all`* (layer 1):
+
+   ```bash
+   kubectl -n butlers-dev exec deploy/dashboard-api -c dashboard-api -- \
+     /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py \
+     butlers public-mcp disable all
+   ```
+
+   Verify (superuser, `-d butlers`): `SELECT state FROM mcp_surface.controls WHERE domain = 'all';`
+   is `disabled`. Replication does not matter here: the server goes away next. The row stays
+   disabled through the rebuild, which therefore starts closed.
+2. *Scale to zero:*
+   `kubectl -n butlers-public-dev scale deployment/butlers-public-mcp --replicas=0`. Verify:
+   `kubectl -n butlers-public-dev get deploy,pods` shows `0/0` and no pod.
+3. *Uninstall the public chart* (the release record lives in `butlers-dev`):
+   `helm -n butlers-dev uninstall butlers-public-mcp`. What it leaves: the namespace
+   `butlers-public-dev`, kept by `helm.sh/resource-policy: keep`, holding nothing of the chart's.
+   Helm deletes the Deployment, the Service, the five NetworkPolicies, both ConfigMaps (keyring,
+   switches), the three ExternalSecrets, the `PrometheusRule` and the `PodMonitor`; the Secrets the
+   ExternalSecrets created go with them, because `creationPolicy: Owner` makes each ExternalSecret
+   their owner [Inferred: External Secrets Operator garbage collection]. Bitwarden items, the site
+   env file, the keyring file and everything in `postgres-dev` are untouched. Verify:
+   `helm -n butlers-dev status butlers-public-mcp` reports the release not found, and
+   `kubectl -n butlers-public-dev get deploy,svc,configmap,secret,externalsecret,networkpolicy,prometheusrule,podmonitor`
+   lists only Kubernetes' own `kube-root-ca.crt` ConfigMap [Inferred]. The rebuild's install
+   reuses the namespace.
+4. *Drop the subscription, then the publication* (superuser). First confirm the initial copy is
+   complete, in `-d butlers_public`:
+
+   ```sql
+   SELECT s.oid, s.subenabled,
+          (SELECT count(*) FROM pg_subscription_rel r
+            WHERE r.srsubid = s.oid AND r.srsubstate <> 'r') AS not_ready
+     FROM pg_subscription s WHERE s.subname = 'butlers_public_sub';
+   -- one row, not_ready 0; note the oid for the fallback
+   ```
+
+   Then, each statement on its own:
+
+   ```bash
+   kubectl -n postgres-dev exec -i "$primary" -c postgres -- \
+     psql -X -v ON_ERROR_STOP=1 -d butlers_public -c "DROP SUBSCRIPTION butlers_public_sub;"
+   kubectl -n postgres-dev exec -i "$primary" -c postgres -- \
+     psql -X -v ON_ERROR_STOP=1 -d butlers -c "DROP PUBLICATION butlers_public_v1;"
+   ```
+
+   Only a superuser can drop a `password_required = false` subscription. A plain `DROP
+   SUBSCRIPTION` also drops the slot `butlers_public_sub` and any table-sync slots on the primary,
+   through the subscription's own connection. *Fallback*, if the drop fails (for example
+   `not_ready` was above 0, where a table-sync worker can deadlock a drop on this same-instance
+   topology, RFC 0039 D3 step 4): run the owner step's own order, one `-c` each. In
+   `-d butlers_public`: `ALTER SUBSCRIPTION butlers_public_sub DISABLE;`, then repeat
+   `SELECT count(*) FROM pg_stat_subscription WHERE subname = 'butlers_public_sub' AND pid IS NOT NULL;`
+   until it is 0, then `ALTER SUBSCRIPTION butlers_public_sub SET (slot_name = NONE);` and
+   `DROP SUBSCRIPTION butlers_public_sub;`. Those leave the slots behind, so in `-d butlers`, with
+   `<oid>` from the check above:
+   `SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots WHERE (slot_name = 'butlers_public_sub' OR slot_name LIKE 'pg\_<oid>\_sync\_%') AND active_pid IS NOT NULL;`,
+   then
+   `SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE (slot_name = 'butlers_public_sub' OR slot_name LIKE 'pg\_<oid>\_sync\_%') AND NOT active;`,
+   then the `DROP PUBLICATION` above.
+5. *Verify* (superuser, `-d butlers`):
+
+   ```sql
+   SELECT slot_name, slot_type, active FROM pg_replication_slots
+    WHERE slot_name = 'butlers_public_sub' OR slot_name LIKE 'pg\_%\_sync\_%';  -- 0 rows
+   SELECT count(*) FROM pg_replication_slots WHERE slot_type = 'logical';      -- 0
+   SELECT count(*) FROM pg_subscription;            -- 0 (a catalog shared by every database)
+   SELECT count(*) FROM pg_publication WHERE pubname = 'butlers_public_v1';    -- 0
+   SELECT state, count(*) FROM relationship.external_fact_proposals GROUP BY 1;
+     -- the baseline, apart from rows a pass imported meanwhile
+   ```
+
+   `make status-dev` (from `deploy/helm/butlers`) shows the `butlers-dev` pods running. Left behind
+   by design, for the rebuild to reuse: `butlers_public` with its roles, the subscriber tables
+   holding their last copied rows, the `mcp_read` views, `mcp_local.manifest_applied` with the old
+   digest and the inbox; on the primary, `mcp_surface.controls` and `mcp_surface.manifest_state`.
+   Removing `butlers_public`, the roles and the `pg_hba` lines reverses owner act 2 in homelab and
+   is not part of the rehearsal.
+6. *One deploy recreates nothing.* From the same checkout, redeploy the pushed tag without a
+   build: `scripts/k8s/deploy-dev.sh "$tag"`. Check:
+   - the output carries `public-mcp owner step: PUBLIC_MCP_OWNER_STEP_dev is off; skipped`, no
+     `public-mcp chart` line (the recipe does not call it), and the deploy exits 0;
+   - the step 5 queries still find no slot and no subscription. `butlers_public_v1` exists again,
+     as expected: the migrations' reconcile recreates the publication, which is inert without a
+     slot or subscription and retains no WAL;
+   - `helm -n butlers-dev status butlers-public-mcp` still reports not found, and
+     `kubectl -n butlers-public-dev get pods` lists nothing.
+
+**Rebuild.** It ends with the applied digest equal to the manifest digest, both flags at 1, and
+`describe` answering.
+
+1. *Switch back on.* Merge a reviewed PR that sets `PUBLIC_MCP_OWNER_STEP_dev := on` (it may also
+   switch `PUBLIC_MCP_CHART_dev` on, `bu-y66o00.67`), and `git pull` the deploy checkout.
+2. *Preflight.* Section 1, both tables (read-only). "Logical slots before first sync" holds again:
+   no logical slot.
+3. *Deploy:* `scripts/k8s/deploy-dev.sh "$tag"`. It reruns `init-db.sql` (3a), reconciles (3b) and
+   runs the owner step (3c), which finds no slot, rebuilds and starts the initial copy. The output
+   ends the step with `public-mcp owner step: applied`.
+4. *Public chart.* If `PUBLIC_MCP_CHART_dev` is still `off`:
+   `scripts/k8s/public-mcp-chart-deploy.sh dev "$tag" on`, from a checkout whose site env carries
+   `BUTLERS_PUBLIC_MCP_AUDIENCE`, `BUTLERS_PUBLIC_MCP_ALLOWED_SUBS` and
+   `BUTLERS_PUBLIC_MCP_KEYRING_FILE` (3d steps 3 and 4; without the keyring every call is refused).
+   The ExternalSecrets sync again from the unchanged Bitwarden items.
+5. *Copy complete.* In `-d butlers_public`,
+   `SELECT srsubstate, count(*) FROM pg_subscription_rel GROUP BY 1;` shows only `r`; then the rest
+   of the 3c verify queries.
+6. *Live checks:* `scripts/k8s/public-mcp-live-checks.sh dev` exits 0.
+7. *Re-enable:* the step 1 command with `enable all`. `describe` shows every domain `enabled`
+   within 15 minutes.
+8. *End state.*
+   - `TABLE mcp_surface.manifest_state;` in `-d butlers` and `TABLE mcp_read.manifest_applied;` in
+     `-d butlers_public` show the same digest.
+   - In the cluster Prometheus, `butlers_public_mcp:critical_ok` and
+     `butlers_public_mcp:warning_ok` both read 1, and both Kuma monitors are UP again.
+   - `describe` from a connected client: `manifest_digest` is that digest, every domain is
+     `enabled`, and `tools` lists 19 names.
+
+**Widening and narrowing rehearsal (task 8.2).** A reviewed PR edits
+`src/butlers/knowledge_read/projection.toml`: a narrowing removes a column (or a table), a
+widening adds one; reverting the PR rehearses the other direction. Deploy it with
+`scripts/k8s/deploy-dev.sh`, then the public chart by hand while `PUBLIC_MCP_CHART_dev` is `off`.
+
+- *The window* runs from the migrations' reconcile until the owner step records the new digest.
+  Data calls in it answer `projection_apply_pending`, and any call, `describe` included, sets
+  `butlers_public_mcp_owner_step_pending{change="narrowing"}` or `{change="widening"}` to 1, so
+  `PublicMcpOwnerStepPending` lowers the warning flag (section 5). The gauge is refreshed only by
+  requests: call `describe` during the window to see it, and once after the step to return it to
+  0. A narrowing left pending 24 hours would also turn the critical flag. Until the hand chart
+  upgrade, the old pod answers `projection_version_mismatch` instead (section 4).
+- *Narrowing* rebuilds the subscription and re-copies (D3 step 4). Verify as in leak runbook step
+  5: the column is gone from the subscriber table and from `describe`'s `columns`; every answer in
+  the window was a refusal, so none carried it.
+- *Widening* that only adds a table needs no rebuild; a changed existing entry rebuilds. Verify the
+  new column in the subscriber table and in `describe`'s `columns`.
 
 **Rolling back below the search indexes (bu-y66o00.53).** An owner step from any tag before
 #5867 cannot run over this one's projection:
@@ -818,7 +1246,7 @@ report `BLOCKED` with the review's stated reason for the applied path; the rejec
 
 The public server's one write (RFC 0039 D13 step 1, built by `bu-y66o00.8`). It validates a closed
 argument set, then inserts one row into `mcp_inbox.proposals` on `butlers_public`. Nothing reads the
-row until the importer (task 5.2, not yet built) pulls it, so a received proposal has no effect.
+row until the importer (section 9) pulls it, and nothing is applied until the owner approves it.
 
 - **Arguments:** `subject_entity_id`, `predicate`, `object_entity_id`, optional `evidence_url`
   (absolute `http` or `https` URL with a host, no credentials or whitespace, at most 2048
