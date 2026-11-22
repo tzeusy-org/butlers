@@ -35,3 +35,23 @@ A projection adapter whose read surface has a rolling retention policy (a TTL/pa
   TTL-free connector table (the existing convention for every adapter
   predating this requirement)
 - **THEN** no retention-lag monitoring obligation applies to that adapter
+
+## MODIFIED Requirements
+
+### Requirement: Owner-Day Narrative Composition
+
+The requirement in `openspec/specs/butler-chronicler/spec.md` is unchanged except for the
+scenario below.
+
+#### Scenario: Uncaptured lanes appear as unknowns
+
+Owner decision `run24-outage-clause` = D (bead bu-uhbhzq.2 notes).
+
+- **WHEN** the day's frozen source availability marks a lane uncaptured
+- **THEN** the bundle's `owner_day.unknowns` SHALL carry one deterministic line
+  for that lane, for example "Meals not captured (source retired since 13 Aug)",
+  in addition to the standing partial-evidence line
+- **AND** the line SHALL be stored in the day's unknowns every day, while the
+  delivered recap SHALL mention a dark lane on its first dark day and weekly
+  after, and a retired or unconfigured lane only once (`owner_day.recap_mention`)
+- **AND** the bundle SHALL NOT carry endpoint, source or connector identity

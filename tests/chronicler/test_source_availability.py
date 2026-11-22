@@ -375,3 +375,69 @@ async def test_the_correction_with_nothing_to_correct_changes_nothing(monkeypatc
         fetch=AsyncMock(side_effect=[[{"source_name": "x", "retired_at": _RETIRED_AT}], []]),
     )
     assert await correct_retired_feeder_dark(conn) == {"corrected": 0, "deleted": 0}
+
+
+# ---------------------------------------------------------------------------
+# Uncaptured lanes and streaks (slices 4-5)
+# ---------------------------------------------------------------------------
+
+
+def _all(state: str, **overrides: str) -> dict[str, str]:
+    base = {name: state for name in flags.SOURCE_CRON_MINUTES}
+    base.update(overrides)
+    return base
+
+
+def test_uncaptured_lanes_requires_every_observed_source_unavailable() -> None:
+    from butlers.chronicler.flags import uncaptured_lanes
+
+    availability = _all(AVAILABLE, **{"health.meals": RETIRED})
+    result = uncaptured_lanes(availability, retired_since={"health.meals": date(2026, 8, 13)})
+    assert result == [{"lane": "eat", "state": "not_captured", "since": "2026-08-13"}]
+
+
+def test_uncaptured_lanes_marks_dark_over_retired() -> None:
+    from butlers.chronicler.flags import uncaptured_lanes
+
+    availability = _all(AVAILABLE, **{"health.meals": DARK})
+    assert uncaptured_lanes(availability)[0]["state"] == "dark"
+    assert uncaptured_lanes(_all(AVAILABLE)) == []
+
+
+class _AvailabilityConn:
+    """Fake conn: ``days`` maps local_date -> {source: state}; a missing day was never frozen."""
+
+    def __init__(self, days: dict[date, dict[str, str]]) -> None:
+        self.days = days
+
+    async def fetch(self, query: str, local_date: date, _tz: str) -> list[dict[str, Any]]:
+        if "retired_at" in query:
+            return []
+        return [{"source_name": k, "state": v} for k, v in self.days.get(local_date, {}).items()]
+
+
+async def test_streak_counts_consecutive_uncaptured_days_and_stops_at_a_gap() -> None:
+    from butlers.chronicler.flags import load_uncaptured_with_streaks
+
+    today = date(2026, 11, 20)
+    dark = _all(AVAILABLE, **{"health.meals": DARK})
+    days = {
+        today: dark,
+        today - timedelta(days=1): dark,
+        today - timedelta(days=2): dark,
+        today - timedelta(days=3): _all(AVAILABLE),
+        today - timedelta(days=4): dark,
+    }
+    lanes, streaks = await load_uncaptured_with_streaks(
+        _AvailabilityConn(days), local_date=today, timezone="Asia/Singapore"
+    )
+    assert [e["lane"] for e in lanes] == ["eat"]
+    assert streaks == {"eat": 3}
+
+
+async def test_unsnapshotted_day_has_no_uncaptured_lanes() -> None:
+    from butlers.chronicler.flags import load_uncaptured_with_streaks
+
+    assert await load_uncaptured_with_streaks(
+        _AvailabilityConn({}), local_date=date(2026, 11, 20), timezone="Asia/Singapore"
+    ) == ([], {})

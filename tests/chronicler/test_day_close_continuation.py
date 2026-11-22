@@ -569,3 +569,47 @@ async def test_an_elapsed_hold_is_retried_and_cleared_on_success():
     continuation.begin_tick()
     assert (await continuation.resume_once())["status"] == "success"
     assert "retry_at" not in pool.state[key]
+
+
+async def test_snapshot_adds_uncaptured_lane_unknowns_from_frozen_availability(monkeypatch):
+    continuation, _, _ = owner()
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_episodes", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_point_events", AsyncMock(return_value=[])
+    )
+    lane = {"lane": "eat", "state": "not_captured", "since": "2026-04-13"}
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.load_uncaptured_with_streaks",
+        AsyncMock(return_value=([lane], {"eat": 1})),
+    )
+
+    class _Pool:
+        def acquire(self):
+            return _Ctx()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_):
+            return False
+
+    continuation.pool = _Pool()
+    bundle = await continuation._snapshot(DAY)
+    assert (
+        "Meals not captured (source retired since 13 Apr)" in bundle.bundle["owner_day"]["unknowns"]
+    )
+
+
+async def test_snapshot_without_readable_availability_adds_no_unknowns(monkeypatch):
+    continuation, _, _ = owner()
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_episodes", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_point_events", AsyncMock(return_value=[])
+    )
+    bundle = await continuation._snapshot(DAY)  # the StatePool has no acquire()
+    assert len(bundle.bundle["owner_day"]["unknowns"]) == 1

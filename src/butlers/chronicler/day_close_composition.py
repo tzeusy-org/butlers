@@ -9,7 +9,7 @@ not automatically an owner conversation, attendance or attentive listening.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -191,6 +191,47 @@ def _representative(items: list[dict[str, Any]], limit: int) -> list[dict[str, A
     return result
 
 
+_LANE_LABELS = {
+    "sleep": "Sleep",
+    "exercise": "Exercise",
+    "work": "Work",
+    "butler_ops": "Butler activity",
+    "play": "Play",
+    "social": "Social",
+    "travel": "Travel",
+    "eat": "Meals",
+    "rest": "Rest",
+}
+
+
+def _unknown_text(entry: Mapping[str, Any]) -> str:
+    label = _LANE_LABELS.get(entry["lane"], str(entry["lane"]).replace("_", " ").capitalize())
+    if entry.get("state") == "dark":
+        return f"{label} not captured (source dark)"
+    since = entry.get("since")
+    if since:
+        day = date.fromisoformat(since)
+        return f"{label} not captured (source retired since {day.day} {day:%b})"
+    return f"{label} not captured (source not configured)"
+
+
+def uncaptured_unknowns(uncaptured: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One deterministic unknowns line per uncaptured lane; names no endpoint or source."""
+    return [_unknown_text(entry) for entry in uncaptured]
+
+
+def recap_mention(entry: Mapping[str, Any], *, streak: int) -> bool:
+    """Whether the delivered recap may mention this lane's gap today.
+
+    ``streak`` counts consecutive uncaptured days ending today. A dark lane is mentioned on its
+    first dark day and weekly after (day 8, 15, ...); a retired or unconfigured lane only once.
+    The unknowns line is stored every day regardless.
+    """
+    if streak <= 1:
+        return True
+    return entry.get("state") == "dark" and (streak - 1) % 7 == 0
+
+
 def compose_owner_day(
     *,
     date_label: str,
@@ -199,6 +240,8 @@ def compose_owner_day(
     events: Sequence[dict[str, Any]],
     max_episodes: int,
     max_events: int,
+    uncaptured: Sequence[Mapping[str, Any]] = (),
+    uncaptured_streaks: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Bounded, representative observations with explicit uncertainty and provenance.
 
@@ -229,7 +272,14 @@ def compose_owner_day(
                     group.append(observation)
         candidates.extend(_representative(group, min(cap, MAX_OBSERVATIONS)))
     observations = _representative(candidates, MAX_OBSERVATIONS)
-    return {
-        "observations": observations,
-        "unknowns": ["Evidence is partial; gaps do not prove inactivity or a quiet day."],
-    }
+    unknowns = ["Evidence is partial; gaps do not prove inactivity or a quiet day."]
+    unknowns.extend(uncaptured_unknowns(uncaptured))
+    owner_day: dict[str, Any] = {"observations": observations, "unknowns": unknowns}
+    if uncaptured:
+        streaks = uncaptured_streaks or {}
+        owner_day["recap_mention"] = [
+            _unknown_text(entry)
+            for entry in uncaptured
+            if recap_mention(entry, streak=streaks.get(entry["lane"], 1))
+        ]
+    return owner_day

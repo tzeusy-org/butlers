@@ -35,7 +35,7 @@ Design choices
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -383,6 +383,8 @@ def assemble_day_close_bundle(
     timezone: str = "UTC",
     config: BundleConfig | None = None,
     dropped_intents: Sequence[dict[str, Any]] | None = None,
+    uncaptured: Sequence[dict[str, Any]] = (),
+    uncaptured_streaks: Mapping[str, int] | None = None,
 ) -> TierTwoInput:
     """Assemble a token-bounded day-close bundle.
 
@@ -411,6 +413,11 @@ def assemble_day_close_bundle(
             contradiction honestly without asserting attendance either way.
             The registered caller constructs this only from normal rows before
             passing it here; the same total bundle budget applies.
+        uncaptured: Lanes the frozen availability snapshot marks dark or not
+            captured (``{"lane", "state", "since"}``). Each adds one
+            deterministic line to ``owner_day.unknowns``; no endpoint identity.
+        uncaptured_streaks: Consecutive uncaptured days per lane, deciding which
+            lines the delivered recap may mention (``owner_day.recap_mention``).
 
     Returns
         :class:`~butlers.chronicler.interpretation.TierTwoInput` with
@@ -449,6 +456,8 @@ def assemble_day_close_bundle(
         events=normal_events,
         max_episodes=config.max_episodes,
         max_events=config.max_events,
+        uncaptured=uncaptured,
+        uncaptured_streaks=uncaptured_streaks,
     )
     narrative_refs = [ref for row in owner_day["observations"] for ref in row["source_refs"]]
 

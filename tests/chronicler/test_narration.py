@@ -9,6 +9,7 @@ PostgreSQL, no network, no real LLM call required.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ import pytest
 from butlers.chronicler.flags import FLAG_FEEDER_DARK, FLAG_SLEEP_MISSING
 from butlers.chronicler.models import DailyRollup, DailyRollupFlag
 from butlers.chronicler.narration import (
+    _SYSTEM_PROMPT,
     build_narration_prompt,
     narrate_daily_rollup,
     narration_enabled,
@@ -38,33 +40,44 @@ _DAY_END = datetime(2026, 7, 1, 17, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
+_EATING_DARK = [{"lane": "eat", "state": "not_captured", "since": "2026-08-13"}]
+
+
 def test_skips_when_no_rollup_rows() -> None:
-    skip, reason = should_skip_narration([], [])
+    skip, reason = should_skip_narration([], [], uncaptured=[])
     assert skip is True
     assert reason == "no_rollup_data"
 
 
-def test_skips_when_feeder_dark_flag_present() -> None:
-    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100)]
+def test_feeder_dark_flag_alone_no_longer_skips_the_whole_day() -> None:
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100),
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+    ]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_FEEDER_DARK)]
-    skip, reason = should_skip_narration(rollups, flags)
-    assert skip is True
-    assert reason == "feeder_dark"
+    assert should_skip_narration(rollups, flags, uncaptured=_EATING_DARK) == (False, None)
+
+
+def test_skips_only_when_every_rolled_up_lane_is_uncaptured() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0)]
+    skip, reason = should_skip_narration(rollups, [], uncaptured=_EATING_DARK)
+    assert (skip, reason) == (True, "all_lanes_dark")
+
+
+def test_unreadable_availability_skips_as_unknown() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    assert should_skip_narration(rollups, [], uncaptured=None) == (True, "availability_unknown")
 
 
 def test_does_not_skip_healthy_day_with_other_flags() -> None:
     rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=0)]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING)]
-    skip, reason = should_skip_narration(rollups, flags)
-    assert skip is False
-    assert reason is None
+    assert should_skip_narration(rollups, flags, uncaptured=[]) == (False, None)
 
 
 def test_does_not_skip_healthy_day_with_no_flags() -> None:
     rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
-    skip, reason = should_skip_narration(rollups, [])
-    assert skip is False
-    assert reason is None
+    assert should_skip_narration(rollups, [], uncaptured=[]) == (False, None)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +256,58 @@ def test_parse_narration_response_drops_empty_label_values() -> None:
     assert result == ("fine", {})
 
 
+def test_prompt_lists_uncaptured_lanes_and_omits_them_when_none() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    kwargs = dict(local_date=_LOCAL_DATE, rollup_rows=rollups, flag_rows=[], top_episode_titles={})
+    with_lanes = json.loads(build_narration_prompt(**kwargs, uncaptured=_EATING_DARK))
+    assert with_lanes["uncaptured_lanes"] == _EATING_DARK
+    assert json.loads(build_narration_prompt(**kwargs, uncaptured=[]))["uncaptured_lanes"] == []
+
+
+def test_system_prompt_forbids_describing_uncaptured_lanes() -> None:
+    assert "uncaptured_lanes" in _SYSTEM_PROMPT
+    assert "absence" in _SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The owner skipped lunch.",
+        "No meals were logged.",
+        "The day went without dinner.",
+        "Breakfast didn't happen.",
+    ],
+)
+def test_parse_rejects_absence_claim_about_uncaptured_lane(summary: str) -> None:
+    raw = json.dumps({"day_summary": summary, "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_EATING_DARK) is None
+
+
+def test_parse_rejects_absence_claim_inside_a_flag_label() -> None:
+    raw = json.dumps({"day_summary": "Fine.", "flag_labels": {"sleep_missing": "No meal data."}})
+    assert (
+        parse_narration_response(raw, known_flag_types=["sleep_missing"], uncaptured=_EATING_DARK)
+        is None
+    )
+
+
+def test_parse_allows_other_lane_negations_and_positive_mentions() -> None:
+    raw = json.dumps(
+        {"day_summary": "No exercise was recorded; work dominated.", "flag_labels": {}}
+    )
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_EATING_DARK) == (
+        "No exercise was recorded; work dominated.",
+        {},
+    )
+    positive = json.dumps({"day_summary": "A long lunch meeting ran on.", "flag_labels": {}})
+    assert parse_narration_response(positive, known_flag_types=[], uncaptured=_EATING_DARK)
+
+
+def test_parse_without_uncaptured_lanes_is_unchanged() -> None:
+    raw = json.dumps({"day_summary": "No meals were logged.", "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[]) is not None
+
+
 # ---------------------------------------------------------------------------
 # narration_enabled (owner toggle)
 # ---------------------------------------------------------------------------
@@ -299,7 +364,9 @@ class _NarrationPool:
         return _AsyncContext(_NarrationConnection())
 
 
-def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str, Any]:
+def _patch_common(
+    monkeypatch, *, rollups, flags, top_episodes=None, uncaptured=()
+) -> dict[str, Any]:
     written: dict[str, Any] = {"day_narrative": None, "flag_narratives": {}}
 
     async def _fake_list_daily_rollups(pool, *, local_date):
@@ -325,6 +392,10 @@ def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str
     async def _allow_fact_write(_conn):
         return None
 
+    async def _fake_load_uncaptured(pool, *, local_date, timezone):
+        return None if uncaptured is None else list(uncaptured)
+
+    monkeypatch.setattr("butlers.chronicler.narration._load_uncaptured", _fake_load_uncaptured)
     monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollups", _fake_list_daily_rollups)
     monkeypatch.setattr(
         "butlers.chronicler.narration.list_daily_rollup_flags", _fake_list_daily_rollup_flags
@@ -362,15 +433,67 @@ async def test_narrate_daily_rollup_skips_no_rollup_data(monkeypatch) -> None:
     assert result == {"local_date": "2026-07-05", "status": "skipped_no_rollup_data"}
 
 
-async def test_narrate_daily_rollup_skips_feeder_dark(monkeypatch) -> None:
+async def test_narrate_feeder_dark_day_with_available_lanes_is_narrated(monkeypatch) -> None:
     monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
-    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=0)]
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+        DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0),
+    ]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_FEEDER_DARK)]
-    _patch_common(monkeypatch, rollups=rollups, flags=flags)
+    written = _patch_common(monkeypatch, rollups=rollups, flags=flags, uncaptured=_EATING_DARK)
+    prompts: list[str] = []
 
+    class _Capturing(_FakeDispatcher):
+        async def call(self, prompt: str, system_prompt: str = "") -> str:
+            prompts.append(prompt)
+            return await super().call(prompt, system_prompt)
+
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *a, **kw: _Capturing(
+            response='{"day_summary": "Work dominated.", "flag_labels": {}}'
+        ),
+    )
+
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
+
+    assert result["status"] == "labeled"
+    assert written["day_narrative"] == "Work dominated."
+    assert json.loads(prompts[0])["uncaptured_lanes"] == _EATING_DARK
+
+
+async def test_narrate_skips_when_every_lane_uncaptured(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0)]
+    _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=_EATING_DARK)
     result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    assert result == {"local_date": "2026-07-05", "status": "skipped_all_lanes_dark"}
 
-    assert result == {"local_date": "2026-07-05", "status": "skipped_feeder_dark"}
+
+async def test_narrate_skips_when_availability_snapshot_unreadable(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=None)
+    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    assert result == {"local_date": "2026-07-05", "status": "skipped_availability_unknown"}
+
+
+async def test_narrate_rejects_absence_claim_about_uncaptured_lane(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+        DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0),
+    ]
+    written = _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=_EATING_DARK)
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *a, **kw: _FakeDispatcher(
+            response='{"day_summary": "No meals were logged.", "flag_labels": {}}'
+        ),
+    )
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
+    assert result["status"] == "llm_output_invalid"
+    assert written["day_narrative"] is None
 
 
 async def test_narrate_daily_rollup_llm_unavailable_on_exception(monkeypatch) -> None:

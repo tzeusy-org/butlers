@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from butlers.chronicler.bundle_assembler import assemble_day_close_bundle
 from butlers.chronicler.day_close_cache import day_close_cache_key
 from butlers.chronicler.day_close_refresh import DayCloseRefreshService
+from butlers.chronicler.flags import load_uncaptured_with_streaks
 from butlers.chronicler.storage import list_episodes, list_point_events
 
 #: A failed refresh (dispatch, validation or cache write) waits this long before the same
@@ -60,6 +61,16 @@ class DayCloseContinuation:
             value,
         )
 
+    async def _uncaptured(self, target: date) -> tuple[list[dict[str, Any]], dict[str, int]]:
+        """Frozen-availability gaps for the day; an unreadable snapshot adds no unknowns."""
+        try:
+            async with self.pool.acquire() as conn:
+                return await load_uncaptured_with_streaks(
+                    conn, local_date=target, timezone=self.timezone
+                )
+        except Exception:
+            return [], {}
+
     async def _snapshot(self, target: date) -> Any:
         zone = ZoneInfo(self.timezone)
         start = datetime.combine(target, datetime.min.time(), zone).astimezone(UTC)
@@ -70,8 +81,11 @@ class DayCloseContinuation:
         events = await list_point_events(self.pool, occurred_from=start, occurred_to=end, limit=500)
         # Use the accepted privacy projection, bounds and stable field stripping.
         # No raw material, private identity or computed_at is persisted.
+        uncaptured, streaks = await self._uncaptured(target)
         bundle = assemble_day_close_bundle(
             date_label=target.isoformat(),
+            uncaptured=uncaptured,
+            uncaptured_streaks=streaks,
             timezone=self.timezone,
             episodes=[asdict(row) for row in episodes],
             events=[asdict(row) for row in events],
