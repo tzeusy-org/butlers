@@ -171,14 +171,3 @@ async def test_credentials_status_reports_read_key_and_flags_a_present_write_key
     assert status["gh_token_present"] is True  # the read key
     assert status["gh_write_token_present"] is True  # action needed: remove it
     assert QA_GH_TOKEN_KEY not in store.resolved
-
-
-async def test_router_ignores_env_injected_github_tokens(monkeypatch):
-    """An env-injected token may be write-capable and is invisible to the DB presence check."""
-    from butlers.api.routers import qa as router
-
-    store = _RecordingStore({})
-    monkeypatch.setattr("butlers.credential_store.CredentialStore", lambda pool: store)
-    monkeypatch.setenv("GITHUB_TOKEN", _WRITE_MARKER)
-    monkeypatch.setenv("GH_TOKEN", _WRITE_MARKER)
-    assert await router._resolve_github_token(MagicMock()) is None

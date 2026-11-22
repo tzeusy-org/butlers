@@ -217,14 +217,17 @@ def _shared_pool(db: DatabaseManager):
 
 
 async def _resolve_github_token(db: DatabaseManager) -> str | None:
-    """Resolve the read-only GitHub token for live PR metadata, or ``None``.
+    """Resolve a GitHub token for live PR metadata, or ``None``.
 
-    Only CredentialStore ``BUTLERS_QA_GH_READ_TOKEN`` is used.  The write-scoped
-    ``BUTLERS_QA_GH_TOKEN`` is never resolved, and ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the
-    daemon environment are deliberately ignored: an env-injected token may be write-capable
-    and the credential-store presence check cannot see it (bu-ejow5p.1).
+    Resolution order (first hit wins):
 
-    Returns ``None`` when the read token cannot be found - the PR panel then degrades
+    1. CredentialStore ``BUTLERS_QA_GH_READ_TOKEN`` (the read-only polling token).
+       The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved (bu-ejow5p.1).
+    2. Conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the environment
+       (ops provisions either via the daemon env).  Owner-approved scope keeps this
+       fallback; an env token is not visible to the credential-store presence check.
+
+    Returns ``None`` when no token can be found - the PR panel then degrades
     gracefully to the honest "unavailable" state.
     """
     try:
@@ -232,10 +235,18 @@ async def _resolve_github_token(db: DatabaseManager) -> str | None:
         from butlers.credential_store import CredentialStore
 
         pool = db.credential_shared_pool()
-        return await CredentialStore(pool).resolve(QA_GH_READ_TOKEN_KEY) or None
+        token = await CredentialStore(pool).resolve(QA_GH_READ_TOKEN_KEY)
+        if token:
+            return token
     except Exception:
-        logger.debug("CredentialStore GitHub read token resolution failed", exc_info=True)
-        return None
+        # CredentialStore unavailable / pool missing — fall through to env.
+        logger.debug("CredentialStore GitHub token resolution failed; trying env", exc_info=True)
+
+    for env_key in ("GITHUB_TOKEN", "GH_TOKEN"):
+        value = os.environ.get(env_key, "").strip()
+        if value:
+            return value
+    return None
 
 
 async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
