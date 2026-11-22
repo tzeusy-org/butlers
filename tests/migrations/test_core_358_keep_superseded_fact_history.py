@@ -22,7 +22,7 @@ def _migrated(postgres_container):
         postgres_container,
         migration_db_name(),
         chains=["core"],
-        revisions={"core": "core_356"},
+        revisions={"core": "core_357"},
     )
     return url, command, _build_alembic_config(url, chains=["core"])
 
@@ -39,7 +39,7 @@ def test_the_seeded_seven_days_becomes_keep_forever_and_downgrade_restores_it(
         with engine.connect() as c:
             ttl, by = c.execute(_READ).one()
         assert ttl is None and by == "migration:core_358"
-        command.downgrade(config, "core_356")
+        command.downgrade(config, "core_357")
         with engine.connect() as c:
             assert c.execute(_READ).one()[0] == 7
     finally:
@@ -60,7 +60,7 @@ def test_an_edited_horizon_is_left_alone_both_ways(postgres_container) -> None:
         command.upgrade(config, "core_358")
         with engine.connect() as c:
             assert c.execute(_READ).one()[0] == 90
-        command.downgrade(config, "core_356")
+        command.downgrade(config, "core_357")
         with engine.connect() as c:
             assert c.execute(_READ).one()[0] == 90
     finally:
@@ -100,7 +100,7 @@ def test_a_horizon_an_admin_set_after_the_upgrade_survives_the_downgrade(
                     "updated_by = 'admin' WHERE kind = 'fact'"
                 )
             )
-        command.downgrade(config, "core_356")
+        command.downgrade(config, "core_357")
         with engine.connect() as c:
             assert c.execute(_READ).one()[0] is None
     finally:

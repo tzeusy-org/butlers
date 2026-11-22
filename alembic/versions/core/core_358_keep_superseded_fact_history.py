@@ -1,7 +1,7 @@
 """Superseded facts are kept: the fact retention horizon becomes NULL (bu-uhbhzq.3).
 
 Revision ID: core_358
-Revises: core_356
+Revises: core_357
 Create Date: 2026-11-23 00:00:00.000000
 
 core_096 seeded ``public.memory_retention_policies`` ``kind='fact'`` with ``ttl_days = 7``, and the
@@ -25,7 +25,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_358"
-down_revision = "core_356"
+down_revision = "core_357"
 branch_labels = None
 depends_on = None
 
