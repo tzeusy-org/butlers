@@ -1,7 +1,7 @@
 """Owner-delivery subjects carry a derived urgency class and its cause (bu-dhloi1.22).
 
-Revision ID: core_356
-Revises: core_355
+Revision ID: core_357
+Revises: core_356
 Create Date: 2026-11-23 00:00:00.000000
 
 core_317 left ``urgency_class`` as a typed slot that admitted no value. This gives it the closed
@@ -28,8 +28,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_356"
-down_revision = "core_355"
+revision = "core_357"
+down_revision = "core_356"
 branch_labels = None
 depends_on = None
 

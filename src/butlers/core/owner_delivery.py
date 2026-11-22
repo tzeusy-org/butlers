@@ -187,7 +187,7 @@ class Subject:
             row["action_digest"],
             row["generation"],
             row["state"],
-            # NULL is a row from before core_356; it reads as routine.
+            # NULL is a row from before core_357; it reads as routine.
             row["urgency_class"] or "routine",
             row["urgency_reason"],
         )

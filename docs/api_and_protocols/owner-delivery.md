@@ -242,8 +242,8 @@ verified interruption authority notify uses (`attention_urgency.evaluate_interru
 only when the quiet-hours and the context gate both interrupt. A model priority, an
 owner-origin goal, an unreadable authority (the evaluation runs in a savepoint) or an unknown
 cause is routine. `open_subject` takes an `Urgency`, never a priority. The pair is written
-with the row; a replay returns the stored pair and a trigger (core_356) refuses any update.
-Rows from before core_356 read as routine. Owner mode holds (#5783, #5776) and the owner law
+with the row; a replay returns the stored pair and a trigger (core_357) refuses any update.
+Rows from before core_357 read as routine. Owner mode holds (#5783, #5776) and the owner law
 may only hold a subject, never raise it; consuming them is not done here.
 
 ## Later-owned inputs (not active here)
