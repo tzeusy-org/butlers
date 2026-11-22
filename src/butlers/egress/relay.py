@@ -29,6 +29,17 @@ def _client_tls(directory: Path) -> ssl.SSLContext:
     return tls
 
 
+def _require_gateway_name(upstream: asyncio.StreamWriter, name: str) -> None:
+    certificate = upstream.get_extra_info("peercert") or {}
+    # The TLS handshake verifies the chain and hostname. This profile requires a
+    # literal DNS SAN as well, since standard hostname matching accepts wildcards.
+    if not any(
+        kind == "DNS" and value.lower() == name
+        for kind, value in certificate.get("subjectAltName", ())
+    ):
+        raise ssl.SSLCertVerificationError("gateway DNS SAN mismatch")
+
+
 async def _copy(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     while chunk := await reader.read(_CHUNK):
         writer.write(chunk)
@@ -40,7 +51,7 @@ async def _serve(name: str, port: int, tls: ssl.SSLContext) -> None:
 
     async def forward(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         upstream: asyncio.StreamWriter | None = None
-        streams: list[asyncio.Task[None]] = []
+        streams: tuple[asyncio.Task[None], ...] = ()
         if slots.locked():
             log.warning("egress relay connection limit reached")
             await gateway._settle_writers(writer)
@@ -55,14 +66,20 @@ async def _serve(name: str, port: int, tls: ssl.SSLContext) -> None:
                         server_hostname=name,
                         ssl_shutdown_timeout=gateway._CONNECT_TIMEOUT_S,
                     )
+                    _require_gateway_name(upstream, name)
                 async with asyncio.timeout(gateway._EXCHANGE_TIMEOUT_S):
-                    streams = [
-                        asyncio.create_task(_copy(reader, upstream)),
-                        asyncio.create_task(_copy(upstream_reader, writer)),
-                    ]
+                    sending = asyncio.create_task(_copy(reader, upstream))
+                    receiving = asyncio.create_task(_copy(upstream_reader, writer))
+                    streams = (sending, receiving)
                     done, _ = await asyncio.wait(streams, return_when=asyncio.FIRST_COMPLETED)
-                    for stream in done:
-                        stream.result()
+                    if sending in done:
+                        try:
+                            sending.result()
+                        except OSError:
+                            log.warning("egress relay upload interrupted")
+                    # TLS has no independent write EOF. Keep the response side open
+                    # when the client finishes sending or the gateway stops reading.
+                    await receiving
             except ssl.SSLCertVerificationError:
                 log.warning("egress relay gateway identity refused")
             except (OSError, TimeoutError):

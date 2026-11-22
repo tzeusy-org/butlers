@@ -21,7 +21,7 @@ The file's header documents each key. In short:
 | `internal` | Exact chart peers: destination component, port or `port`..`end_port`, protocol. |
 | `sites` | Peers outside the chart (Postgres, the OTLP collector, Home Assistant, the off-node backup device). The profile owns the port; the deployment supplies only the location. |
 | `external` | Exact public `hostname:port` entries, reachable only through the shared gateway. |
-| `gateway_port` | This workload's port on the gateway. Unique per workload: it is the workload's identity there. |
+| `gateway_port` | The unique listener port that selects the workload's gateway route. The gateway verifies its client certificate separately. |
 | `dynamic` | Configured destinations deliberately **not** admitted, with the reason. |
 | `held` | A reason the workload cannot be enforced yet. A held workload admits nothing. |
 
@@ -180,8 +180,9 @@ Profiled workloads receive paired nonsecret `BUTLERS_EGRESS_MODE=request-v1` and
 bare gateway name to IPv4 loopback. The relay binds only loopback and uses its own
 client identity to reach the same port at
 `egress-gateway.<release namespace>.svc.<clusterDomain>`. The relay verifies the
-gateway CA and exact DNS SAN. A missing relay or failed connection leaves the request
-unavailable.
+gateway CA and requires the configured service name as a literal DNS SAN before forwarding
+the request. The relay can finish sending a response after the client closes its send side,
+within the exchange deadline. A missing relay or failed connection leaves the request unavailable.
 
 Configure `egressProfiles.gateway.tlsSecret` for the server and
 `clientSecrets` and `clientPins` by workload for every external profile. Each

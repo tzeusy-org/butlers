@@ -9,6 +9,7 @@ import shutil
 import socket
 import ssl
 from contextlib import asynccontextmanager
+from unittest.mock import Mock
 
 import h11
 import httpx
@@ -452,10 +453,12 @@ def wire(*, host=HOST, target=b"/test", headers=(), body=b"", method=b"POST"):
     )
 
 
-async def exchange(port, payload, *, tls=None, name=None):
+async def exchange(port, payload, *, tls=None, name=None, finish_upload=False):
     reader, writer = await asyncio.open_connection("127.0.0.1", port, ssl=tls, server_hostname=name)
     try:
         writer.write(payload)
+        if finish_upload:
+            writer.write_eof()
         await writer.drain()
         response = bytearray()
         while True:
@@ -632,6 +635,17 @@ def relay_tls_directory(gateway_identity):
     return relay_dir
 
 
+def test_relay_requires_literal_dns_san():
+    upstream = Mock(spec=asyncio.StreamWriter)
+    upstream.get_extra_info.return_value = {"subjectAltName": (("DNS", _GATEWAY_NAME.upper()),)}
+    relay._require_gateway_name(upstream, _GATEWAY_NAME)
+
+    for san in ((), (("DNS", "*.butlers.svc.cluster.local"),), (("URI", _GATEWAY_NAME),)):
+        upstream.get_extra_info.return_value = {"subjectAltName": san}
+        with pytest.raises(ssl.SSLCertVerificationError, match="gateway DNS SAN mismatch"):
+            relay._require_gateway_name(upstream, _GATEWAY_NAME)
+
+
 async def test_relay_checks_service_name_and_preserves_provider_response(
     gateway_identity, relay_tls_directory, tls_contexts, monkeypatch, caplog
 ):
@@ -694,6 +708,47 @@ async def test_relay_checks_service_name_and_preserves_provider_response(
             ]
             assert resolutions == [(HOST, 443), (HOST, 443)]
             assert origin.dials == [(PUBLIC, 443, HOST), (PUBLIC, 443, HOST)]
+
+
+@pytest.mark.parametrize("status", [200, 413])
+async def test_relay_drains_response_after_client_finishes_upload(
+    gateway_identity, relay_tls_directory, tls_contexts, monkeypatch, status
+):
+    origin = Origin(
+        status=status, chunks=(b"response-after-upload",), delay=0.05, early=status == 413
+    )
+    body = b"fixture-upload"
+    request = wire(body=body)
+    if origin.early:
+        request = request[: -len(body)]
+
+    loop = asyncio.get_running_loop()
+    getaddrinfo = loop.getaddrinfo
+    async with running_authenticated_gateway(
+        gateway_identity, tls_contexts, monkeypatch, origin=origin
+    ) as (sockets, _, resolutions, settled):
+
+        async def resolve(host, port, **kwargs):
+            assert (host, port) == (_GATEWAY_NAME + ".", ROUTE.port)
+            return await getaddrinfo("127.0.0.1", sockets[port], **kwargs)
+
+        monkeypatch.setattr(loop, "getaddrinfo", resolve)
+        args = [
+            "--port",
+            str(ROUTE.port),
+            "--gateway-name",
+            _GATEWAY_NAME,
+            "--tls-dir",
+            str(relay_tls_directory),
+        ]
+        async with running_egress_command(relay.main, args, monkeypatch) as local:
+            response = await exchange(local[ROUTE.port], request, finish_upload=True)
+            assert response.startswith(f"HTTP/1.1 {status} ".encode())
+            assert b"response-after-upload" in response
+            await asyncio.wait_for(settled.get(), 5)
+
+    assert resolutions == [(HOST, 443)]
+    assert [content for _, content in origin.requests] == [b"" if origin.early else body]
 
 
 async def test_request_execution_binds_verified_tls_host_and_preserves_content(
