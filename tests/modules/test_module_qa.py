@@ -544,6 +544,100 @@ class TestFullCycleNoFindings:
         assert result["status"] == "clean" and result["findings_count"] == 0
 
 
+class TestHaltedPatrol:
+    """A patrol whose findings were held behind a halting gate says so (bu-ejow5p.3)."""
+
+    @staticmethod
+    def _triaged(count: int):
+        from butlers.core.qa.models import QaFinding
+        from butlers.core.qa.triage import TriagedFinding
+
+        now = datetime.now(UTC)
+        return [
+            TriagedFinding(
+                finding=QaFinding(
+                    fingerprint=uuid.uuid4().hex * 2,
+                    source_type="log_scanner",
+                    source_butler="general",
+                    severity=1,
+                    exception_type="ValueError",
+                    event_summary="Synthetic failure",
+                    call_site="module:1",
+                    occurrence_count=1,
+                    first_seen=now,
+                    last_seen=now,
+                    timestamp=now,
+                ),
+                dedup_reason=None,
+                finding_id=uuid.uuid4(),
+            )
+            for _ in range(count)
+        ]
+
+    async def _run(self, reasons: list[str], accepted: int = 0):
+        import butlers.modules.qa as qa_module
+        from butlers.core.qa.dispatch import QaDispatchResult
+
+        triaged = self._triaged(len(reasons))
+        results = [
+            QaDispatchResult(
+                accepted=index < accepted, fingerprint=t.finding.fingerprint, reason=reason
+            )
+            for index, (t, reason) in enumerate(zip(triaged, reasons, strict=True))
+        ]
+        labels: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, source_type, dedup_reason):
+                labels.append(dedup_reason)
+                return self
+
+            def inc(self):
+                pass
+
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        mod._pool = _qa_pool()
+        mod._sources = []
+        original = qa_module._qa_findings_total
+        qa_module._qa_findings_total = FakeCounter()
+        try:
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
+                patch("butlers.modules.qa.dispatch_novel_findings", new_callable=AsyncMock) as md,
+                patch("butlers.modules.qa.check_open_pr_statuses", new_callable=AsyncMock),
+                patch.object(mod, "_complete_patrol_record", new_callable=AsyncMock) as complete,
+            ):
+                mt.return_value = MagicMock(
+                    all_findings=triaged, novel_findings=triaged, dedup_counts={}
+                )
+                md.return_value = results
+                result = await mod._run_patrol_cycle()
+        finally:
+            qa_module._qa_findings_total = original
+        return result, complete.await_args.kwargs, labels
+
+    async def test_breaker_hold_is_halted_with_its_reason_and_labelled_by_it(self):
+        result, written, labels = await self._run(["circuit_breaker"] * 3)
+        assert result["status"] == "halted"
+        assert written["status"] == "halted"
+        assert written["halt_reason"] == "circuit_breaker"
+        assert labels == ["circuit_breaker"] * 3
+
+    async def test_cap_leftovers_with_a_dispatch_stay_findings_dispatched(self):
+        result, written, labels = await self._run(
+            ["dispatched", "concurrency_cap", "concurrency_cap"], accepted=1
+        )
+        assert result["status"] == "findings_dispatched"
+        assert written["halt_reason"] is None
+        assert sorted(labels) == ["concurrency_cap", "concurrency_cap", "novel"]
+
+    async def test_cooldown_only_is_still_suppressed_not_halted(self):
+        result, written, _ = await self._run(["cooldown", "cooldown"])
+        assert result["status"] == "suppressed"
+        assert written["halt_reason"] is None
+
+
 # ---------------------------------------------------------------------------
 # Prometheus metrics
 # ---------------------------------------------------------------------------

@@ -6507,7 +6507,8 @@ export type QaPatrolStatus =
   | "findings_dispatched"
   | "error"
   | "skipped_overlap"
-  | "suppressed";
+  | "suppressed"
+  | "halted";
 
 /**
  * Patrol reads stay open to a malformed or future database value so the UI can

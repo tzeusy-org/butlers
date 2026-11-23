@@ -20,6 +20,11 @@ const PATROL_STATUS_PRESENTATIONS: Record<QaPatrolStatus, QaPatrolStatusPresenta
     dotClassName: "bg-[var(--amber)]",
     tone: "attention",
   },
+  halted: {
+    label: "dispatch halted",
+    dotClassName: "bg-[var(--amber)]",
+    tone: "attention",
+  },
   error: { label: "patrol error", dotClassName: "bg-destructive", tone: "destructive" },
   running: { label: "patrol running", dotClassName: "bg-muted-foreground", tone: "muted" },
   skipped_overlap: {

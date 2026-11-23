@@ -369,6 +369,7 @@ describe("ButlerQaInvestigationsTab — patrol status presentation", () => {
     ["clean", "clean", "default", "bg-[var(--green)]"],
     ["findings_dispatched", "findings dispatched", "outline", "border-[var(--amber)]"],
     ["suppressed", "findings suppressed", "outline", "border-[var(--amber)]"],
+    ["halted", "dispatch halted", "outline", "border-[var(--amber)]"],
     ["error", "patrol error", "destructive", null],
     ["running", "patrol running", "secondary", null],
     ["skipped_overlap", "patrol skipped due to overlap", "secondary", null],

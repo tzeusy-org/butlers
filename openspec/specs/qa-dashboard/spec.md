@@ -361,13 +361,14 @@ The dashboard SHALL render the case index at `/qa/investigations` using the Disp
 
 The QA dashboard SHALL treat the existing `public.qa_patrols.status` vocabulary
 as an explicit cross-layer contract. The canonical accepted values are `running`,
-`clean`, `findings_dispatched`, `error`, `skipped_overlap`, and `suppressed`; this
-change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
+`clean`, `findings_dispatched`, `error`, `skipped_overlap`, `suppressed`, and `halted`;
+`halted` marks a patrol whose novel findings were held behind a halting gate (open circuit
+breaker, no executor model, full concurrency cap) and is recorded with a `halt_reason`.
 
 #### Scenario: Canonical patrol-status filter validation
 
 - **WHEN** an operator requests `GET /api/qa/patrols` with `status` equal to one of
-  the six canonical values
+  the seven canonical values
 - **THEN** the API accepts the filter and returns matching patrol records
 - **AND** when `status` is any other value, the API returns HTTP 422 naming the
   rejected value and the canonical vocabulary
@@ -397,6 +398,7 @@ change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
   - `clean`: label `clean`, healthy green
   - `findings_dispatched`: label `findings dispatched`, amber attention
   - `suppressed`: label `findings suppressed`, amber warning
+  - `halted`: label `dispatch halted`, amber warning
   - `error`: label `patrol error`, destructive red
   - `running`: label `patrol running`, explicit muted non-success
   - `skipped_overlap`: label `patrol skipped due to overlap`, explicit muted
@@ -424,7 +426,7 @@ change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
 - **WHEN** an operator opens the QA butler detail's recent-patrol cadence stripe
 - **THEN** each status badge renders the same human-readable label as the shared
   patrol-status mapping for every canonical value
-- **AND** only `clean` is green; `findings_dispatched` and `suppressed` use amber
+- **AND** only `clean` is green; `findings_dispatched`, `suppressed` and `halted` use amber
   attention semantics; `error` and an unknown persisted value are destructive; and
   `running` and `skipped_overlap` remain explicit muted non-success states
 - **AND** an unknown persisted value renders `unknown patrol status`, never its raw
