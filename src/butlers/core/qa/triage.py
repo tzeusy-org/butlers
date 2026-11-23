@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import asyncpg
 
@@ -32,6 +32,11 @@ from butlers.core.healing.tracking import (
 )
 from butlers.core.qa.dismissals import is_dismissed
 from butlers.core.qa.findings import insert_finding
+from butlers.core.qa.known_issue_links import (
+    SUPPRESSING_STATES,
+    get_gating_link,
+    mark_link_regressed,
+)
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
@@ -210,6 +215,32 @@ async def triage_findings(
                     "Triage: dedup fingerprint=%s reason=dismissed",
                     fp[:12],
                 )
+
+        # ------------------------------------------------------------------
+        # Gate 2b: Tracked elsewhere (a bead, PR or issue the owner linked)
+        # ------------------------------------------------------------------
+        if dedup_reason is None:
+            link = await get_gating_link(pool, fp)
+            if link is not None:
+                if link["state"] in SUPPRESSING_STATES:
+                    dedup_reason = "tracked"
+                    logger.debug(
+                        "Triage: dedup fingerprint=%s reason=tracked ref=%s",
+                        fp[:12],
+                        link["tracker_ref"],
+                    )
+                else:
+                    # The fix is believed live and the failure is back: admit it as a
+                    # regression that carries the link, and stop the link gating.
+                    finding = replace(
+                        finding,
+                        structured_evidence={
+                            **(finding.structured_evidence or {}),
+                            "regression_of": str(link["id"]),
+                            "tracker_ref": link["tracker_ref"],
+                        },
+                    )
+                    await mark_link_regressed(pool, link["id"])
 
         # ------------------------------------------------------------------
         # Gate 3: Cooldown check

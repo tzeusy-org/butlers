@@ -50,10 +50,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import asyncpg
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from butlers.api.audit_emit import authenticated_principal
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
@@ -82,6 +83,12 @@ from butlers.core.logging import redact_text
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
+from butlers.core.qa.known_issue_links import (
+    DEFAULT_LINK_TTL,
+    TRACKER_KINDS,
+    close_link,
+    upsert_link,
+)
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import DiffLine, InvestigationNotes
 from butlers.core.qa.patrol_status import (
@@ -721,6 +728,29 @@ class DismissRequest(BaseModel):
 
     dismissed_until: datetime | None = None
     dismissed_by: str = "dashboard_user"
+
+
+class QaKnownIssueLink(BaseModel):
+    """A finding fingerprint's link to the bead, PR or issue that tracks it."""
+
+    id: uuid.UUID
+    fingerprint: str
+    tracker_kind: str
+    tracker_ref: str
+    linked_by: str
+    linked_at: datetime
+    fix_ref: str | None = None
+    state: str
+    expires_at: datetime | None = None
+
+
+class KnownIssueLinkRequest(BaseModel):
+    """Request body for linking a finding to a tracked defect (owner action)."""
+
+    tracker_kind: str
+    tracker_ref: str
+    # Omitted: the link lapses after ``DEFAULT_LINK_TTL``, so it never suppresses forever.
+    expires_at: datetime | None = None
 
 
 class QaInvestigation(BaseModel):
@@ -2825,6 +2855,89 @@ async def dismiss_known_issue(
         raise HTTPException(status_code=500, detail="Failed to create dismissal")
 
     return ApiResponse(data=_row_to_dismissal(row))
+
+
+# ---------------------------------------------------------------------------
+# POST/DELETE /api/qa/known-issues/{fingerprint}/link — tracked-defect linkage
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/known-issues/{fingerprint}/link",
+    response_model=ApiResponse[QaKnownIssueLink],
+    status_code=201,
+)
+async def link_known_issue(
+    fingerprint: str,
+    body: KnownIssueLinkRequest,
+    response: Response,
+    *,
+    db: Db,
+) -> ApiResponse[QaKnownIssueLink]:
+    """Link a finding to the work item that already tracks it (owner action).
+
+    While the link is open, patrols persist the finding as ``tracked`` and dispatch no
+    investigation. A bead ref is an unverified owner assertion (QA does not read the tracker);
+    a GitHub PR ref is rejected when GitHub says it is already merged or closed. A repeat link
+    is idempotent (200).
+    """
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    if body.tracker_kind not in TRACKER_KINDS:
+        raise HTTPException(
+            status_code=422, detail=f"tracker_kind must be one of {', '.join(TRACKER_KINDS)}"
+        )
+    tracker_ref = body.tracker_ref.strip()
+    if not tracker_ref or len(tracker_ref) > 300:
+        raise HTTPException(status_code=422, detail="tracker_ref must be 1 to 300 characters")
+
+    pool = _shared_pool(db)
+    if body.tracker_kind == "github_pr":
+        parsed = parse_pr_url(tracker_ref)
+        if parsed is None:
+            raise HTTPException(status_code=422, detail="tracker_ref must be a GitHub PR URL")
+        owner, repo, number = parsed
+        meta = await get_pr_client().fetch(
+            owner, repo, number, token=await _resolve_github_token(db)
+        )
+        # An unreachable or unauthenticated read is not a verdict: the link is accepted as an
+        # owner assertion, exactly as a bead ref is. Only a PR known to be done is refused.
+        if meta.state in ("merged", "closed"):
+            raise HTTPException(
+                status_code=422, detail=f"That pull request is already {meta.state}"
+            )
+
+    expires_at = body.expires_at or (datetime.now(UTC) + DEFAULT_LINK_TTL)
+    row, created = await upsert_link(
+        pool,
+        fingerprint=fingerprint,
+        tracker_kind=body.tracker_kind,
+        tracker_ref=tracker_ref,
+        linked_by="owner",
+        expires_at=expires_at,
+    )
+    response.status_code = 201 if created else 200
+    return ApiResponse(data=QaKnownIssueLink(**row))
+
+
+@router.delete("/known-issues/{fingerprint}/link", response_model=ApiResponse[dict[str, bool]])
+async def unlink_known_issue(
+    fingerprint: str,
+    tracker_ref: str = Query(..., min_length=1, max_length=300),
+    *,
+    db: Db,
+) -> ApiResponse[dict[str, bool]]:
+    """Close a link so its finding is investigated again (owner action)."""
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if not await close_link(_shared_pool(db), fingerprint, tracker_ref.strip()):
+        raise HTTPException(status_code=404, detail="No open link for that fingerprint and ref")
+    return ApiResponse(data={"closed": True})
 
 
 # ---------------------------------------------------------------------------
