@@ -164,7 +164,7 @@ match" and never fails ingest. See `openspec/specs/proactive-insight-engine`
 | Tier | Retention |
 |---|---|
 | Tier 1 | Butler/domain retention policy (e.g., finance multi-year, health indefinite) |
-| Tier 2 | `switchboard.message_inbox` retention (monthly partitions; the row expires with its partition) |
+| Tier 2 | `connectors.evidence_journal` (headers and ids only, the envelope's tier, kept until a per-source retention contract exists, bu-uhbhzq.7). `switchboard.message_inbox` is a routing buffer, not the evidence copy |
 | Tier 3 | No message-level storage beyond the bounded filtered-event preview; metrics only |
 
 ## Dashboard Management

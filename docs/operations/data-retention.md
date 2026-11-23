@@ -115,6 +115,18 @@ that names a horizon per source replaces this refusal.
 
 ---
 
+### `connectors.evidence_journal`
+
+**Decision: KEEP, append-only, until a per-source retention contract exists (bu-uhbhzq.7)**
+
+The connector-owned verbatim copy for sources with no evidence table (gmail, google-drive,
+google-health, telegram-bot, telegram-user, whatsapp-user). Unpartitioned; one row per
+`(source, endpoint_identity, provider_id, provider_revision)`. UPDATE, DELETE and TRUNCATE are
+refused by trigger; a sanctioned deleter comes with the retention contract. Its downgrade
+refuses while rows exist.
+
+---
+
 ### `public.insight_candidates`
 
 **Decision: STATUS-GATED — terminal rows after 90 days; pruner [C], disabled by default**

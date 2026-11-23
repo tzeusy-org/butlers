@@ -89,6 +89,7 @@ from butlers.connectors.automated_evidence import (
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -2260,6 +2261,8 @@ class GmailConnectorRuntime:
         ConnectionError,
         TimeoutError,
         httpx.HTTPError,
+        # The evidence row was not committed: nothing was submitted, so hold the cursor.
+        EvidenceNotCommitted,
     )
 
     async def _ingest_messages(self, message_ids: list[str]) -> None:
@@ -3689,6 +3692,11 @@ class GmailConnectorRuntime:
         status = "error"
 
         try:
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row is the commit
+            # point. A failed write raises, so nothing is submitted and the cursor holds; a
+            # failed submit below keeps the row. Duplicates and replays collapse on its key.
+            if self._db_pool is not None:
+                await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response
