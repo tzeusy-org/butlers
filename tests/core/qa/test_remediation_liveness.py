@@ -213,12 +213,19 @@ async def test_reset_refused_while_the_named_structural_cause_is_still_present()
         assert decision.reason == "structural_cause_present:publisher_unconfigured"
 
 
-async def test_presence_probes_are_closed_and_fail_toward_refusal() -> None:
+async def test_causes_without_an_honest_probe_are_unknown_and_refuse(
+    publisher_wired: None,
+) -> None:
     assert await rl.structural_cause_present(ScriptedPool({}), "no_such_cause") is None
+    # A readable export table says nothing about a retention refusal, so it must not read "absent".
     readable = ScriptedPool({"qa_publication_exports": 1})
-    assert await rl.structural_cause_present(readable, "proposal_retention_unavailable") is False
+    assert await rl.structural_cause_present(readable, "proposal_retention_unavailable") is None
     broken = ScriptedPool({}, fail=True)
-    assert await rl.structural_cause_present(broken, "proposal_retention_unavailable") is True
+    assert await rl.structural_cause_present(broken, "proposal_retention_unavailable") is None
+    decision = await rl.evaluate_reset(
+        readable, "proposal_retention_unavailable:PR-9", ["publication_unretained: x"] * 5
+    )
+    assert not decision.allowed and decision.reason == "evidence_unreadable"
 
 
 async def test_reset_allowed_when_structural_cause_is_named_with_a_fresh_reference(
@@ -264,6 +271,8 @@ async def test_refusal_is_persisted_as_a_refused_row_with_its_reason() -> None:
     sql, args = pool.calls[0]
     assert "'refused'" in sql
     assert "NOT EXISTS" in sql  # identical refusals inside the window are not re-inserted
+    for key in ("reset_by = $1", "cause_code IS NOT DISTINCT", "cause_ref IS NOT DISTINCT"):
+        assert key in sql
     assert args == (
         "dashboard",
         "Manual reset refused",

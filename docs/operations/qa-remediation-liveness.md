@@ -27,7 +27,11 @@ allowlist is bootstrap-owned in `scripts/init-db.sql`, so adding them needs an o
 Name the cause: `POST /api/qa/circuit-breaker/reset` with `{"cause_ref": "<cause_code>:<ref>"}`,
 where `<ref>` is the PR, bead or deploy that changed the cause. Causes come from the streak's
 `error_detail` (`publisher_unconfigured`, `proposal_retention_unavailable`, otherwise
-`execution_failure`). While the dominant cause is structural the reset must name it, and is refused while the cause is still present: `publisher_unconfigured` is re-evaluated from the live wiring (`butlers.core.qa.publisher_wiring`), `proposal_retention_unavailable` from a retention-store probe, and an unreadable probe refuses. If five more
+`execution_failure`). While the dominant cause is structural the reset must name it, and is refused while the cause is
+still present. `publisher_unconfigured` is re-evaluated from the live wiring
+(`butlers.core.qa.publisher_wiring`). `proposal_retention_unavailable` has no honest probe yet (a
+retention refusal is recorded only on the attempt), so it reads unknown and the reset is refused as
+`evidence_unreadable` until one exists. An unreadable probe always refuses. If five more
 identical structural failures follow a reset, the same `<ref>` is refused (`structural_cause_unchanged`);
 fix the cause and use a new reference.
 

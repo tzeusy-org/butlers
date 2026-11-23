@@ -372,19 +372,14 @@ async def structural_cause_present(pool: Any, cause: str) -> bool | None:
 
     Evidence is the live wiring, never the failure history: after a fix lands no attempt has run
     yet (the breaker is what stops one), so history would keep a fixed cause "present" forever.
-    An unknown cause code or an unreadable probe is ``None``; the caller refuses.
+    A cause with no honest probe, or an unreadable probe, is ``None``; the caller refuses.
     """
     if cause == "publisher_unconfigured":
         return not publisher_wiring.production_publisher_wired()
-    if cause == "proposal_retention_unavailable":
-        try:
-            await pool.fetchval("SELECT 1 FROM public.qa_publication_exports LIMIT 1")
-        except Exception as exc:  # noqa: BLE001 - reduced to a typed log
-            logger.warning(
-                "QA breaker reset: retention probe failed (category=%s)", type(exc).__name__
-            )
-            return True
-        return False
+    # ``proposal_retention_unavailable`` has no honest probe yet: the cause is a retention
+    # refusal (export_unretained, unknown_attempt, export_changed, export_pruned) that is recorded
+    # only as an attempt's error_detail, and a readable export table proves nothing about it.
+    # Until the retention outcome is observable, it is unknown, which refuses.
     return None
 
 
@@ -447,6 +442,8 @@ _RECORD_REFUSAL_SQL = """
     WHERE NOT EXISTS (
         SELECT 1 FROM public.breaker_resets
         WHERE breaker = 'qa' AND outcome = 'refused'
+          AND reset_by = $1
+          AND cause_code IS NOT DISTINCT FROM $3::text
           AND cause_ref IS NOT DISTINCT FROM $4::text
           AND refusal_reason IS NOT DISTINCT FROM $5::text
           AND reset_at > clock_timestamp() - make_interval(secs => $6)

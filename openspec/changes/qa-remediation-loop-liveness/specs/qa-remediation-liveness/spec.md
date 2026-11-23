@@ -37,7 +37,7 @@ Scope: v1-mandatory
 - **THEN** no condition opens or resolves and the tick is marked incomplete
 
 ### Requirement: Cause-bound breaker reset
-A manual QA breaker reset SHALL name the cause it addresses as `<cause_code>:<reference>` and SHALL be recorded with that cause. While the streak's dominant cause is structural, the reset SHALL name that cause and SHALL be refused while that cause is still present, re-evaluated from current state at reset time (not from the failure history); an unknown or unreadable probe SHALL refuse. A reference whose earlier reset was followed by a failure on the same structural cause SHALL also be refused. A liveness condition SHALL never auto-reset, auto-publish, unpause or widen authority.
+A manual QA breaker reset SHALL name the cause it addresses as `<cause_code>:<reference>` and SHALL be recorded with that cause. While the streak's dominant cause is structural, the reset SHALL name that cause and SHALL be refused while that cause is still present, re-evaluated from current state at reset time (not from the failure history); a cause with no probe, an unknown cause or an unreadable probe SHALL refuse. A reference whose earlier reset was followed by a failure on the same structural cause SHALL also be refused. A liveness condition SHALL never auto-reset, auto-publish, unpause or widen authority.
 
 ID: REQ-qa-remediation-liveness-003
 Source: owner gate bu-l34qcx (approved 2026-11-22); dossier move 8
