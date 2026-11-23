@@ -303,12 +303,14 @@ async def _run_switchboard_owner_watch_tick_job(
 ) -> dict[str, Any]:
     """One owner-watch tick (bu-4c7nvp.1.5 S3d): dark unless OWNER_WATCHES_LIVE is on.
 
-    Without a production snapshot provider the tick is blind and fires nothing.
+    The production providers are resolved only while the flag is on and Switchboard has
+    registered its database; otherwise the tick is blind and fires nothing.
     """
     del job_args
+    from butlers.watches.providers import resolve_providers
     from butlers.watches.tick import run_tick
 
-    return await run_tick(pool)
+    return await run_tick(pool, providers=await resolve_providers(pool))
 
 
 async def _run_switchboard_insight_delivery_cycle_job(

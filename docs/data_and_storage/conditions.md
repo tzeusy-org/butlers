@@ -178,9 +178,10 @@ one approval-gated pending action for the Switchboard tool `owner_watch_apply_ca
 card's canonical JSON and digest. The action id derives from the digest, so a replayed proposal parks
 once. Approve replays the call, which refuses anything that is not byte-for-byte the card Switchboard
 parked (stored in the Switchboard `state` table in the same transaction) and then approves that exact
-card as the owner through `WatchService.approve`. Reject or expiry changes nothing. Applying needs a
-service and a snapshot provider that production does not wire yet, so until the goal-runtime cutover
-the apply refuses with `owner_watches_unavailable`. An owner `never` on a watch notice, through the authenticated dashboard route, pauses that watch after
+card as the owner through `WatchService.approve`. Reject or expiry changes nothing. Applying needs the
+production providers (`butlers.watches.providers`), which resolve only while `OWNER_WATCHES_LIVE` is on and
+Switchboard has registered its database; otherwise, or when the live grant source cannot be read, the apply refuses with
+`owner_watches_unavailable` and changes nothing. An owner `never` on a watch notice, through the authenticated dashboard route, pauses that watch after
 the insight feedback commits (`butlers.watches.never.pause_on_never`); the model-callable mute tool
 passes no owner origin and so pauses nothing, and a pause that fails never fails the reply. The
 scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` only when
@@ -188,3 +189,28 @@ scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` on
 log, and fires and changes nothing. The tick takes an optional dependency reporter, but no
 production reporter is wired to the scheduled job (the `owner_watches` dependency is not a declared
 capability dependency), so a blind tick is visible in the job result and log only.
+
+### Production providers (`butlers.watches.providers`, dark)
+
+`OwnerWatchRuntime` builds the one `WatchService` (the PostgreSQL watch store with a lock pool of its own,
+the one conditions evaluator over `public.condition_*`, and the insight withdraw) and both providers. They read
+one place, `public.owner_watch_sources()` (core_368), plus the owner entity, through the Switchboard pool, and
+never write.
+
+- `public.owner_watch_sources()` returns the registered perception kinds and `last_read_at` (the newest timeline
+  row's write time, null for a kind nothing has written) and no other column: no value, subject, label or
+  evidence. It is `SECURITY DEFINER` with a pinned `search_path`, owned by `perception_owner`, revoked from
+  PUBLIC, executable by `butler_switchboard_rw` only, and checks that identity itself. Its definition lives in
+  the fixed `scripts/init-db.sql` installer (outside the perception backup profile); core_368 re-runs the
+  installer and proves the pinned body, owner, search path and ACL, and a database whose bootstrap predates it
+  fails loudly. Its downgrade is a no-op (additive, read-only).
+- The grant is re-derived from that read on every call: sources `clock` and `perception:<kind>` for every
+  registered kind, subjects the owner entity and the null subject, and never a decision, effect or inbox
+  source. Bundles, conditions, read checks and routines have no registry to derive from yet, so they are not
+  grantable. A moved registry changes the grant digest, so a replayed watch pauses and an approval proposed on
+  the old grant is refused.
+- The snapshot carries `now` and the kinds nothing has ever written as unmeasurable. It has no decisions,
+  inputs, effects or label, because a snapshot cannot witness an occurrence leaf.
+- The sources are cached for 60 seconds, re-read first by every apply and every tick. A read that fails, or no
+  single owner entity, makes both providers answer unknown: a card is refused, the tick is blind and no
+  running watch is paused, fired or changed.

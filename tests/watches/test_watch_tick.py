@@ -28,12 +28,15 @@ class Reporter:
         self.reports.append((dependency, state, reason))
 
 
-def providers(service=None, snapshot=True):
-    class P(Providers):
-        service_for = staticmethod(lambda: service)
-        snapshot_for = staticmethod(lambda now: Snapshot(now=now) if snapshot else None)
+def providers(service=None, snapshot=True, prepared=True):
+    async def prepare(now):
+        return prepared
 
-    return P()
+    return Providers(
+        service_for=lambda: service,
+        snapshot_for=lambda now: Snapshot(now=now) if snapshot else None,
+        prepare=prepare,
+    )
 
 
 def test_the_flag_ships_off():
@@ -145,3 +148,27 @@ async def test_a_dark_tick_sweeps_nothing(service):
     pool = SweepPool()
     await tick.run_tick(pool, now=NOW, providers=providers(service))
     assert pool.deleted == []
+
+
+async def test_an_unreadable_grant_source_is_blind_and_changes_nothing(service):
+    pool = SweepPool()
+    result = await tick.run_tick(
+        pool, now=NOW, live=True, providers=providers(service, prepared=False)
+    )
+    assert result == {"status": tick.BLIND} and pool.deleted == []
+
+
+async def test_the_scheduled_job_resolves_the_providers_and_stays_dark_by_default(monkeypatch):
+    from butlers import scheduled_jobs
+    from butlers.watches import providers as providers_module
+
+    seen = []
+
+    async def resolve(pool, *, live=None):
+        seen.append(pool)
+        return providers(None)
+
+    monkeypatch.setattr(providers_module, "resolve_providers", resolve)
+    pool = SweepPool()
+    result = await scheduled_jobs._run_switchboard_owner_watch_tick_job(pool, None)
+    assert result == {"status": "dark"} and seen == [pool] and pool.deleted == []

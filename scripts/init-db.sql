@@ -9539,6 +9539,36 @@ BEGIN
     GRANT EXECUTE ON FUNCTION public.perception_purge_place_history(integer,boolean)
         TO perception_retention;
 
+    -- The owner-watch source reader (bu-4c7nvp.1.5.1): the registered perception kinds and when
+    -- each last had a row, nothing else. It reads no value, subject, label or timeline column, and
+    -- only the Switchboard runtime role may call it. It is deliberately outside the perception
+    -- function allowlist above, so the backup catalog profile does not change.
+    CREATE OR REPLACE FUNCTION public.owner_watch_sources() RETURNS jsonb
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp AS $watch_sources$
+    BEGIN
+        IF COALESCE(NULLIF(current_setting('role',true),'none'),session_user)
+            <> 'butler_switchboard_rw' THEN
+            RAISE EXCEPTION 'owner watch source reader requires the switchboard identity'
+                USING ERRCODE='42501';
+        END IF;
+        RETURN COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',k.kind,'last_read_at',
+            (SELECT max(t.created_at) FROM public.timeline t WHERE t.kind=k.kind))
+            ORDER BY k.kind) FROM perception_private.kinds k),'[]'::jsonb);
+    END $watch_sources$;
+    ALTER FUNCTION public.owner_watch_sources() OWNER TO perception_owner;
+    REVOKE ALL ON FUNCTION public.owner_watch_sources() FROM PUBLIC;
+    FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
+        SELECT grantee FROM aclexplode(COALESCE((SELECT proacl FROM pg_proc
+            WHERE oid='public.owner_watch_sources()'::regprocedure),
+            acldefault('f','perception_owner'::regrole))))
+        AND rolname<>'perception_owner' LOOP
+        EXECUTE format('REVOKE ALL ON FUNCTION public.owner_watch_sources() FROM %I',r);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname='butler_switchboard_rw') THEN
+        GRANT EXECUTE ON FUNCTION public.owner_watch_sources() TO butler_switchboard_rw;
+    END IF;
+
 
     -- PERCEPTION_BACKUP_BEGIN
     -- Fixed ten-relation companion. The catalog digest is the canonical PG17

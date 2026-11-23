@@ -192,7 +192,8 @@ _INSTALLED = {
             JOIN pg_catalog.pg_namespace AS n ON n.oid=p.pronamespace
             WHERE n.nspname='public' AND p.proname IN
                 ('perception_write','perception_read','perception_timeline',
-                 'perception_bind','perception_registry','perception_purge_place_history'))
+                 'perception_bind','perception_registry','perception_purge_place_history',
+                 'owner_watch_sources'))
     """,
     "restore_drill_executor_admin": """
         SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace AS n
