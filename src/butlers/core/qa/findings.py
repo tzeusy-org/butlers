@@ -75,6 +75,13 @@ async def insert_finding(
     uuid.UUID
         The ``id`` of the newly inserted row.
     """
+    if finding.dashboard_claim is not None:
+        from butlers.core.qa.dashboard_inbox import DashboardInbox
+
+        async with pool.acquire() as conn, conn.transaction():
+            return await DashboardInbox.persist_finding(
+                conn, patrol_id, finding, dedup_reason, healing_attempt_id
+            )
     row_id = await pool.fetchval(
         """
         INSERT INTO public.qa_findings (

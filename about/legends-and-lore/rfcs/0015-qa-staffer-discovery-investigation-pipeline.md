@@ -72,6 +72,59 @@ Key invariants that all sources must honour:
 **Future sources** (protocol accommodates without triage/dispatch/dashboard changes):
 `prometheus_metrics`, `mcp_reachability`, `scheduler_drift`, `git_regression`.
 
+### D1a: Durable dashboard reports and exposed triage
+
+The adopted dashboard exception is governed by REQ-staffer-qa-001/003/004 in
+`durable-dashboard-terminal-action-recovery` and the matching
+`generalist-lead-focused-delegation` clauses. Ordinary reports keep their volatile
+buffer. The legacy deployment and `KEY_ABSENT_STAGE` keep deterministic triage.
+An isolated candidate may exercise the successor only through a closed harness;
+live wiring requires the separately authorized switch.
+
+Before any dashboard write or receipt read, the released named relay must verify
+the Switchboard-router service subject/client and QA audience at the QA peer.
+Inbound relay authentication alone is insufficient. Report fields, source names
+and model output cannot establish identity. The current relay has no released
+QA peer audience or receiver guard: the dark store and adapter are not service
+registrations, and no live module or control listener invokes them. No alternate
+credential, projection or direct Switchboard-to-QA SQL reader is authorized.
+
+QA owns `public.qa_dashboard_reports` beside its existing patrol/finding tables.
+The action/effect pair, stable key and canonical input hash bind one retained
+receipt. Different content or key conflicts without overwrite. A fenced lease
+may reclaim an expired claim; finding insertion and acknowledgement commit
+together. Only the winning generation can establish the immutable finding link.
+The source keeps accepted evidence when disabled, refusing new delivery/claims
+and new admission evidence. Additive binary rollback preserves the table;
+schema downgrade deliberately retains it and its guards.
+
+Receipt inspection returns exactly `found`, `not_found` or `unavailable`, with
+only identity, lifecycle, creation time and an acknowledged finding ID. Only a
+successful exact `not_found` permits same-key/content redelivery. Unknown commits
+or unavailable reads require reconciliation within the terminal reconciler's
+five-attempt/15-minute bound, followed by explicit ambiguity. No receipt implies
+finding acknowledgement, admission, investigation, publication or completion.
+
+The git-declared `qa_triage_v1` definition grants an explicit empty capability
+tuple and empty resource map. The trusted adapter verifies that definition and
+the complete current published catalog, then supplies the persisted anonymized
+finding as exposed input to the existing goal-admission engine. The source is
+`qa:triage:<canonical-finding-UUID>`, derived only from acknowledged owner evidence.
+The existing source/attempt locks and immutable admission decisions are the only
+admission journal; uncertainty retries the same source/attempt. Missing or stale
+source, contract, catalog or limits refuses without a new goal. A recorded refusal
+replays until a trusted fresh attempt; an admitted source always returns its goal.
+The source-reader interface defaults closed until its authenticated owner boundary
+is released. Harness proof of journal behavior is not proof of that boundary.
+
+No QA control, domain read/write, communication, shell/network or executor grant
+enters this ceiling. Insufficient diagnosis remains unknown; model judgments
+cannot replace canonical fingerprint/severity/dedup decisions. D18 engineering
+executors retain their separate existing contract. Receipt acceptance targets the
+existing 1–2 second reception budget after durable commit; discovery targets the
+next enabled patrol. These are service objectives, not measurements or activation.
+Payload/context remain sensitive and absent from receipts, logs and metrics.
+
 ### D2: Fingerprint-Based Triage and Deduplication
 
 The triage layer accepts `QaFinding` objects from all sources in a single pass per patrol cycle.

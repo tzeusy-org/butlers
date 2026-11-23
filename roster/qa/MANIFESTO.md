@@ -48,6 +48,25 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - **Relay reception:** Accept findings from every butler's core QA relay via
   Switchboard `route()` → `report_finding` tool. This is direct
   butler-to-staffer tool routing, not user-message classification.
+  This remains the legacy and `KEY_ABSENT_STAGE` behavior. The successor uses
+  the named service relay only after the authorized switch; its QA peer must
+  verify the Switchboard-router subject and QA audience before data access.
+- **Durable dashboard custody (dark):** Dashboard action/effect identities bind
+  retained receipts, fenced claims and one immutable canonical finding link in
+  the QA-owned inbox. Ordinary reports remain volatile. Disabled sources retain
+  accepted evidence and refuse new delivery, claim and admission evidence.
+  Receipts expose only safe identity/lifecycle fields; unavailable lookup never
+  proves absence or authorizes blind redelivery. Rollback retains custody.
+- **Exposed triage (dark):** The declared `qa_triage_v1` profile has no domain
+  grants and no resource access. Only the persisted anonymized finding enters
+  the existing goal admission path as exposed data; missing evidence remains
+  unknown. Catalog, definition, trusted source and finite limits must verify.
+  The existing admission journal coalesces retries into one logical goal.
+  No source/contract identity, permission or executor authority comes from
+  report fields or model output. D18 investigation remains a separate contract.
+  The current QA peer/evidence boundary is unreleased: the default adapter
+  refuses, no service endpoint is added, and only closed synthetic harnesses
+  exercise the owner-side store and bounded admission proof.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.
 - **Journal capture:** Every QA decision is recorded as a
   `qa_investigation_events` row (`flagged`, `sampled`, `cross-checked`,
@@ -97,6 +116,7 @@ other field or send them to GitHub.
 |---|---|
 | Patrol interval | 10 minutes (configurable) |
 | Reactive finding latency | Next patrol tick (or immediate for severity 0) |
+| Dark dashboard custody target | Receipt only after durable commit; 1–2 second reception objective, not a runtime measurement |
 | Investigation dispatch decision | Within patrol cycle completion |
 | PR creation | After investigation agent session completes |
 | Availability | Should run continuously; restart recovers stale patrol rows |

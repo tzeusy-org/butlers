@@ -25,10 +25,14 @@ import asyncio
 import logging
 from collections import deque
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from butlers.core.qa.dashboard_inbox import DashboardInbox
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -55,12 +59,23 @@ class ButlerReportsSource:
     max_buffer:
         Maximum number of findings to buffer.  When exceeded, the oldest
         entries are dropped with a WARNING.
+    dashboard_inbox:
+        Optional owner-side durable store for the closed candidate harness.
+        Default construction keeps the ordinary volatile behavior. The live
+        QA peer authentication/evidence boundary is not yet released.
     """
 
-    def __init__(self, max_buffer: int = DEFAULT_MAX_REACTIVE_BUFFER) -> None:
+    def __init__(
+        self,
+        max_buffer: int = DEFAULT_MAX_REACTIVE_BUFFER,
+        *,
+        dashboard_inbox: DashboardInbox | None = None,
+    ) -> None:
         self._max_buffer = max_buffer
         self._buffer: deque[QaFinding] = deque()
         self._lock = asyncio.Lock()
+        # Closed harness injection only until the QA peer boundary is released.
+        self._dashboard_inbox = dashboard_inbox
 
     @property
     def name(self) -> str:
@@ -146,7 +161,11 @@ class ButlerReportsSource:
             self._buffer.append(finding)
 
     async def discover(self, lookback_minutes: int) -> list[QaFinding]:
-        """Drain the buffer and return all buffered findings.
+        """Claim injected durable work, then drain ordinary buffered findings.
+
+        A failed durable claim leaves the ordinary buffer intact. Finding
+        persistence subsequently acknowledges each durable generation in the
+        same transaction as its canonical finding insert.
 
         The ``lookback_minutes`` parameter is ignored for this source —
         reactive findings are already in the right time window by definition
@@ -157,10 +176,11 @@ class ButlerReportsSource:
         list[QaFinding]
             All buffered findings (drained — buffer is empty after this call).
         """
+        durable = await self._dashboard_inbox.claim() if self._dashboard_inbox else []
         async with self._lock:
             findings = list(self._buffer)
             self._buffer.clear()
-        return findings
+        return findings + durable
 
     @property
     def buffer_size(self) -> int:

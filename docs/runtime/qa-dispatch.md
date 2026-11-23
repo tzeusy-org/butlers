@@ -7,6 +7,51 @@ This note describes persistence; it does not change admission order or authorize
 
 ## Implementation Notes
 
+### Dark dashboard custody and staffer admission
+
+`core_363` adds `public.qa_dashboard_reports`; it changes no other migration
+plane. Only QA's runtime role receives read/insert/update access. RLS denies
+other runtime roles even after bootstrap regrants; table ownership remains the
+trusted maintenance boundary. The store contains anonymized sensitive evidence,
+not a public dashboard projection. Immutable key/hash/payload guards, retained
+rows and unique finding linkage protect custody across restart and rollback.
+Downgrade retains both the table and its guards deliberately.
+
+`DashboardInbox` implements owner-side acceptance and exact durable receipts.
+`ButlerReportsSource` accepts an optional inbox only in closed tests today;
+default construction still drains only the existing volatile buffer. Discovery
+claims through `core.queue_claim` in the adapter transaction. `insert_finding`
+locks and checks the winning generation/lease before insertion, then commits
+the canonical finding and acknowledgement together. A stale claimant inserts
+nothing, while a same-generation acknowledgement retry returns the original ID.
+Ordinary deterministic triage and the D18 dispatcher keep their ownership.
+
+`QaTriageEvidence` checks `roster/qa/qa_triage_v1.toml`, the current complete
+published fleet and an acknowledged owner snapshot. Its domain/resource ceiling
+is explicitly empty. The finding is exposed data, and the existing admission
+engine owns finite limits, source/attempt locks and durable decisions. Unknown
+commit results reconcile the same source and attempt; a previous admission wins
+across disabled-source or contract drift. No second admission ledger exists.
+
+The released transport does **not** yet supply the exact authenticated QA peer
+audience or QA-owner evidence reader. These APIs have no live caller, MCP
+registration, credential, deployment or activation. The adapter defaults to
+refusal without an injected trusted reader. The synthetic owner reader in the
+PostgreSQL tests establishes storage/admission behavior, not network identity.
+The remaining consumer must use the relay owner's exact released interface,
+with subject/audience/session-listener refusal before storage access. It must
+also connect exposed starting input to the runtime through the released owner
+boundary; this dark source proof does not establish a running triage invocation.
+
+Only authenticated exact `not_found` may permit same-key/content redelivery.
+`found` pending/claimed is retained evidence, and `unavailable` remains unknown.
+The calling terminal reconciler owns its existing five-attempt/15-minute bound
+and explicit ambiguity; this store neither adds retries nor activates that
+reconciler. Receipt fields contain no summary, context, hash or sensitive data.
+See RFC 0015 D1a for ownership, permissions and service objectives.
+
+### Infrastructure-condition persistence
+
 An ordinary `infra_condition_open` result requires both the finding-reason write and the
 condition-linked decision-event write to return successfully. Neither write is best effort.
 If either raises, the existing dispatcher boundary reports `internal_error`, with no attempt

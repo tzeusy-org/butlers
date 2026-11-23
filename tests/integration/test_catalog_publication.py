@@ -116,6 +116,147 @@ async def test_migrated_complete_fleet_actual_goal_admission_and_reader(publicat
             )
 
 
+async def test_dark_qa_finding_admission_uses_current_catalog_and_one_journal(
+    publication_url, fleet, tmp_path, monkeypatch
+):
+    """Owner-side harness proof only: no released QA peer authentication is claimed."""
+    from dataclasses import replace
+
+    from butlers.core.goal_admission import AdmissionUnavailable
+    from butlers.core.qa import staffer_source
+    from butlers.core.qa.dashboard_inbox import (
+        DashboardIdentity,
+        DashboardInbox,
+        DashboardReport,
+        InboxRefused,
+    )
+    from butlers.core.qa.findings import insert_finding
+    from butlers.core.qa.staffer_source import QaTriageEvidence, triage_source
+
+    await publish_all(publication_url)
+    await configure(fleet, limits())
+    enabled = [True]
+    async with runtime_pool(publication_url, "qa") as qa:
+        store = DashboardInbox(qa, enabled=lambda: enabled[0], repo_root=Path.cwd())
+        await store.accept(
+            DashboardIdentity(uuid4(), uuid4(), "closed-qa-admission"),
+            DashboardReport("ValueError", "qa.test:admit", 2, "synthetic input"),
+        )
+        finding = (await store.claim())[0]
+        patrol = await qa.fetchval(
+            "INSERT INTO public.qa_patrols(status,log_lookback_minutes) "
+            "VALUES('running',15) RETURNING id"
+        )
+        finding_id = await insert_finding(qa, patrol, finding, None)
+        source = triage_source(finding_id)
+
+        class OwnerReader:
+            # Explicit stand-in for the unreleased authenticated owner boundary.
+            # Only QA's own runtime pool reads its storage, never Switchboard's.
+            async def load(self, requested):
+                try:
+                    return await store.acknowledged(requested)
+                except InboxRefused:
+                    raise EvidenceRefused("source_evidence_unavailable") from None
+
+        async with runtime_pool(publication_url, "switchboard") as runtime:
+            reader = QaTriageEvidence(OwnerReader())
+            engine = GoalAdmission(runtime, reader)
+            # The default closed boundary and forged source refuse before admission.
+            for denied_reader, denied_source in (
+                (QaTriageEvidence(), source),
+                (reader, SourceRef("staffer", "qa:triage:" + str(uuid4()))),
+                (reader, SourceRef("staffer", "owner:" + str(finding_id))),
+            ):
+                denied = await GoalAdmission(runtime, denied_reader).admit_submission(
+                    denied_source, uuid4()
+                )
+                assert denied.result == "refused"
+
+            definition = tmp_path / "qa_triage_v1.toml"
+            definition.write_text('version=1\ncapabilities=["health__lookup"]\n')
+            with monkeypatch.context() as patch:
+                patch.setattr(staffer_source, "_DEFINITION", definition)
+                denied_attempt = uuid4()
+                refused = await engine.admit_submission(source, denied_attempt)
+                assert refused.result == "refused"
+            assert await engine.admit_submission(source, denied_attempt) == refused
+            # A complete but expired real fleet publication is not an empty
+            # grant set. No goal may be admitted until a fresh publication verifies.
+            async with runtime_pool(publication_url, "health") as health:
+                await health.execute(
+                    "UPDATE public.capability_catalog_current "
+                    "SET expires_at=clock_timestamp()-interval '1 second' WHERE domain='health'"
+                )
+                denied_catalog = await engine.admit_submission(source, uuid4())
+                assert denied_catalog.result == "refused"
+                _, catalog = await registered_catalog("health")
+                await CatalogPublisher(health, "health").publish(catalog)
+            # Missing limits refuse without a goal. The same attempt remains refused.
+            await fleet.execute(
+                "UPDATE switchboard.runtime_config SET goal_admission_config=NULL "
+                "WHERE butler_name='switchboard'"
+            )
+            denied_limits = await engine.admit_submission(source, uuid4())
+            assert (
+                denied_limits.result == "refused" and denied_limits.reason == "limits_unavailable"
+            )
+            await configure(fleet, limits())
+
+            # Lose the acknowledgement after the real goal/decision transaction commits.
+            class CommitUncertain:
+                @asynccontextmanager
+                async def acquire(self):
+                    async with runtime.acquire() as real:
+
+                        class Connection:
+                            def __getattr__(self, name):
+                                return getattr(real, name)
+
+                            @asynccontextmanager
+                            async def transaction(self):
+                                nested = real.is_in_transaction()
+                                async with real.transaction():
+                                    yield
+                                if not nested:
+                                    raise OSError("synthetic lost acknowledgement")
+
+                        yield Connection()
+
+            attempt = uuid4()
+            before = await fleet.fetchval("SELECT count(*) FROM switchboard.goals")
+            with pytest.raises(AdmissionUnavailable):
+                await GoalAdmission(CommitUncertain(), reader).admit_submission(source, attempt)
+            results = await asyncio.gather(
+                engine.admit_submission(source, attempt),
+                *(engine.admit_submission(source, uuid4()) for _ in range(4)),
+            )
+            assert all(result == results[0] for result in results)
+            assert results[0].result == "admitted"
+            assert await fleet.fetchval("SELECT count(*) FROM switchboard.goals") == before + 1
+            goal = await fleet.fetchrow(
+                "SELECT origin,exposed,ceiling,contract_digest FROM switchboard.goals WHERE id=$1",
+                results[0].goal_id,
+            )
+            assert goal["origin"] == "staffer" and goal["exposed"] and goal["ceiling"] == []
+            async with runtime.acquire() as conn, conn.transaction():
+                facts = await reader.load(conn, source)
+                assert facts.finding["id"] == finding_id and facts.staffer.capabilities == ()
+                assert facts.staffer.digest == goal["contract_digest"]
+                # A stale catalog binding cannot derive a new admission plan.
+                stale = replace(facts, staffer=replace(facts.staffer, catalog_digest="old"))
+                from butlers.core.goal_admission import derive_admission
+
+                with pytest.raises(EvidenceRefused):
+                    derive_admission(stale, await PublishedCatalogProvider().load(conn))
+            enabled[0] = False
+            assert await engine.admit_submission(source, uuid4()) == results[0]
+            # A newly acknowledged source may not use disabled QA evidence.
+            with pytest.raises(EvidenceRefused):
+                async with runtime.acquire() as conn, conn.transaction():
+                    await reader.load(conn, source)
+
+
 async def test_real_roles_bootstrap_immutability_and_bad_publisher(
     publication_url,
     fleet,
