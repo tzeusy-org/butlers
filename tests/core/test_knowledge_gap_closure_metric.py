@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.core.logging import reset_butler_context, set_butler_context
+from butlers.core.logging import _butler_context, reset_butler_context, set_butler_context
 from butlers.core.metrics import record_knowledge_gap_closure_failure
 from butlers.modules.memory import knowledge_gaps
 from tests.core.test_otel_metrics import (
@@ -26,9 +26,13 @@ COUNTER = "butlers.memory.knowledge_gap_closure_failures_total"
 @pytest.fixture
 def reader():
     _provider, in_memory = _make_in_memory_provider()
+    # Pin the butler label: another test on this xdist worker may have left a name bound.
+    saved_butler = _butler_context.get()
+    _butler_context.set(None)
     try:
         yield in_memory
     finally:
+        _butler_context.set(saved_butler)
         _reset_metrics_global_state()
 
 
