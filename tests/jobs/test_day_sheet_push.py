@@ -49,6 +49,7 @@ def wired(monkeypatch):
         send=AsyncMock(return_value="delivered"),
         delivered=AsyncMock(return_value=False),
         claim=AsyncMock(return_value="tok"),
+        fence=AsyncMock(return_value=True),
         release=AsyncMock(),
         failures=AsyncMock(return_value=(0, None)),
         suppressed=AsyncMock(return_value=None),
@@ -60,6 +61,7 @@ def wired(monkeypatch):
     monkeypatch.setattr(job.owner_notify, "check_owner_notify_suppression", w.suppressed)
     monkeypatch.setattr(job, "_date_delivered", w.delivered)
     monkeypatch.setattr(job, "_claim", w.claim)
+    monkeypatch.setattr(job, "_fence", w.fence)
     monkeypatch.setattr(job, "_release", w.release)
     monkeypatch.setattr(job, "failed_attempts", w.failures)
     monkeypatch.setattr(job, "state_set", w.state)
@@ -203,6 +205,19 @@ class _StatePool:
             self.claimed_at[key] = self.clock
             self.values[key] = _value
             return key
+        if "SET updated_at = now()" in sql:  # the pre-send fence
+            key, token, marker_key, _delivered, like, _since = args
+            held = self.values.get(key)
+            marker = self.values.get(marker_key)
+            prefix = like.rstrip("%")
+            if not (isinstance(held, dict) and held.get("token") == token):
+                return None
+            if isinstance(marker, dict) and marker.get("outcome") == "delivered":
+                return None
+            if any(k.startswith(prefix) for k in self.ledger_delivered):
+                return None
+            self.claimed_at[key] = self.clock
+            return key
         if "INSERT INTO state" in sql:  # state_set
             self.values[args[0]] = args[1]
             return 1
@@ -319,3 +334,43 @@ async def test_a_tick_paused_before_the_claim_rechecks_delivery_under_it(wired):
     wired.read.assert_not_called()
     wired.send.assert_not_called()
     wired.release.assert_awaited_once()
+
+
+async def test_a_holder_that_lost_the_claim_sends_nothing(wired):
+    wired.fence.return_value = False
+    result = await job.run_day_sheet_push(wired.db, now=SGT_NOW)
+    assert result == {"outcome": "skipped", "reason": "lost_claim"}
+    wired.send.assert_not_called()
+    wired.release.assert_awaited_once()
+
+
+async def test_the_fence_runs_after_every_slow_step_and_just_before_the_send(wired):
+    order: list[str] = []
+    wired.suppressed.side_effect = lambda *a, **k: order.append("suppression")
+    provider = AsyncMock(side_effect=lambda: order.append("client"))
+    wired.fence.side_effect = lambda *a, **k: order.append("fence") or True
+    wired.send.side_effect = lambda *a, **k: order.append("send") or "delivered"
+    await job.run_day_sheet_push(wired.db, now=SGT_NOW, client_provider=provider)
+    assert order == ["suppression", "client", "fence", "send"]
+
+
+async def test_the_fence_matches_only_the_current_holder_of_an_undelivered_date(replicas):
+    pool, day = replicas.pool, date(2026, 11, 24)
+    since = SGT_NOW - timedelta(hours=36)
+    old = await job._claim(pool, day, SGT_NOW)
+    assert await job._fence(pool, day, old, since)
+    pool.clock = SGT_NOW + timedelta(minutes=11)
+    new = await job._claim(pool, day, pool.clock)
+    assert new and new != old
+    assert not await job._fence(pool, day, old, since), "an expired holder must not send"
+    assert await job._fence(pool, day, new, since)
+    await job._write_markers(pool, day, {"outcome": "delivered"})
+    assert not await job._fence(pool, day, new, since), "a delivered date ends the sends"
+
+
+async def test_the_fence_fails_closed_when_it_cannot_be_checked(replicas):
+    class _Broken:
+        async def fetchval(self, *_a):
+            raise RuntimeError("connection lost")
+
+    assert not await job._fence(_Broken(), date(2026, 11, 24), "tok", SGT_NOW)

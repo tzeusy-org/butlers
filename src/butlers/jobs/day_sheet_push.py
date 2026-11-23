@@ -20,6 +20,10 @@ Delivery goes through :mod:`butlers.jobs.owner_notify` with the general butler's
 Switchboard client bound for the call, the boundary ``background.dispatch_scheduled_task`` binds
 for butler jobs; the API process has no such client of its own.
 
+Before the send a fence (one atomic statement) re-verifies that the claim still carries this
+holder's token and that the date is undelivered, refreshing the lease; a holder that stalled past
+the TTL and lost the claim aborts with ``lost_claim`` and sends nothing.
+
 Accepted duplicate classes: a send that fails after the provider call began is ambiguous (the
 provider may have delivered) and is retried, and a delivery whose marker and ledger writes both
 fail is resent once after the claim TTL. A duplicate beats a missed sheet.
@@ -135,6 +139,45 @@ async def _claim(pool: asyncpg.Pool, day: Any, now: datetime) -> str | None:
     return token if key is not None else None
 
 
+async def _fence(pool: asyncpg.Pool, day: Any, token: str, since: datetime) -> bool:
+    """Immediately before the send: still this holder's claim, and the date still undelivered.
+
+    One atomic statement: it refreshes the claim's lease (so a successor cannot take it over
+    during the transport call) only when the claim row still carries this holder's token and the
+    date has neither a delivered marker nor a delivered ledger row. A holder that stalled past the
+    TTL, whose claim was taken over (and maybe delivered) meanwhile, matches nothing and must send
+    nothing. Fails closed: when the fence cannot be verified, nothing is sent. The window left is
+    the transport call itself, the accepted ambiguous class.
+    """
+    iso = day.isoformat()
+    try:
+        key = await pool.fetchval(
+            """
+            UPDATE state SET updated_at = now()
+            WHERE key = $1 AND value->>'token' = $2
+              AND NOT EXISTS (
+                  SELECT 1 FROM state AS marker
+                  WHERE marker.key = $3 AND marker.value->>'outcome' = $4
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM public.attention_ledger
+                  WHERE dedup_key LIKE $5 AND outcome = 'delivered' AND occurred_at >= $6
+              )
+            RETURNING key
+            """,
+            f"{CLAIM_PREFIX}{iso}",
+            token,
+            f"{MARKER_PREFIX}{iso}",
+            owner_notify.DELIVERED,
+            f"{JOB_NAME}:{iso}:%",
+            since,
+        )
+    except Exception:
+        logger.warning("day sheet push: could not verify the claim before sending", exc_info=True)
+        return False
+    return key is not None
+
+
 async def _release(pool: asyncpg.Pool, day: Any, token: str) -> None:
     """Free this holder's claim so a later tick can retry (a failed or suppressed send).
 
@@ -205,6 +248,10 @@ async def run_day_sheet_push(
                 client = await client_provider()
             except Exception:
                 logger.warning("day sheet push: Switchboard client unavailable", exc_info=True)
+        # Everything above can stall past the claim TTL, so a successor may hold the claim (or
+        # have delivered) by now. Fence and refresh the lease at once before the transport call.
+        if not await _fence(pool, tomorrow, claim, now - _DEDUP_WINDOW):
+            return {"outcome": "skipped", "reason": "lost_claim"}
         token = set_current_switchboard_client(client)
         try:
             outcome = await owner_notify.send_owner_telegram(
