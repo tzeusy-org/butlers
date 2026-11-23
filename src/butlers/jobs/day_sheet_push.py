@@ -20,6 +20,10 @@ Delivery goes through :mod:`butlers.jobs.owner_notify` with the general butler's
 Switchboard client bound for the call, the boundary ``background.dispatch_scheduled_task`` binds
 for butler jobs; the API process has no such client of its own.
 
+Accepted duplicate classes: a send that fails after the provider call began is ambiguous (the
+provider may have delivered) and is retried, and a delivery whose marker and ledger writes both
+fail is resent once after the claim TTL. A duplicate beats a missed sheet.
+
 Markers (general's state store): ``day_sheet/pushed/<date>`` and ``day_sheet/pushed/latest``, each
 ``{date, zone, outcome, digest, freshness, recorded_at}``. The ``eod-tomorrow-prep`` prompt reads
 ``latest`` (it carries the date, so the prompt needs no timezone arithmetic of its own).
@@ -33,6 +37,7 @@ import os
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
 
@@ -41,7 +46,7 @@ from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.read_models.calendar_day_sheet import query_calendar_day_sheet
 from butlers.core.attention_ledger import failed_attempts
 from butlers.core.job_health import record_tick
-from butlers.core.state import state_delete, state_get, state_set
+from butlers.core.state import state_get, state_set
 from butlers.core.temporal.day_sheet import render_day_sheet_text
 from butlers.core.tool_call_capture import (
     reset_current_switchboard_client,
@@ -101,13 +106,15 @@ async def _date_delivered(pool: asyncpg.Pool, day: Any, since: datetime) -> bool
     return row is not None
 
 
-async def _claim(pool: asyncpg.Pool, day: Any, now: datetime) -> bool:
+async def _claim(pool: asyncpg.Pool, day: Any, now: datetime) -> str | None:
     """Take the per-date delivery claim; exactly one concurrent caller wins.
 
     One statement on one connection (no second acquire from the pool): the insert wins when no
     claim exists, or when the existing claim is older than ``CLAIM_TTL`` (a crashed holder). The
     claim lives in the general state store, so it serialises replicas as well as overlapping ticks.
+    Returns the holder's random token (release is scoped to it), or ``None`` when not won.
     """
+    token = uuid4().hex
     try:
         key = await pool.fetchval(
             """
@@ -119,19 +126,27 @@ async def _claim(pool: asyncpg.Pool, day: Any, now: datetime) -> bool:
             RETURNING key
             """,
             f"{CLAIM_PREFIX}{day.isoformat()}",
-            {"claimed_at": now.isoformat()},
+            {"claimed_at": now.isoformat(), "token": token},
             CLAIM_TTL.total_seconds(),
         )
     except Exception:
         logger.warning("day sheet push: could not take the delivery claim", exc_info=True)
-        return False
-    return key is not None
+        return None
+    return token if key is not None else None
 
 
-async def _release(pool: asyncpg.Pool, day: Any) -> None:
-    """Free the claim so a later tick can retry (a failed or suppressed send)."""
+async def _release(pool: asyncpg.Pool, day: Any, token: str) -> None:
+    """Free this holder's claim so a later tick can retry (a failed or suppressed send).
+
+    Scoped to the holder's token: a claim that expired and was retaken by another replica is
+    not deleted by the old holder.
+    """
     try:
-        await state_delete(pool, f"{CLAIM_PREFIX}{day.isoformat()}")
+        await pool.execute(
+            "DELETE FROM state WHERE key = $1 AND value->>'token' = $2",
+            f"{CLAIM_PREFIX}{day.isoformat()}",
+            token,
+        )
     except Exception:
         logger.warning("day sheet push: could not release the claim; it expires", exc_info=True)
 
@@ -165,7 +180,8 @@ async def run_day_sheet_push(
 
     if await _date_delivered(pool, tomorrow, now - _DEDUP_WINDOW):
         return {"outcome": "skipped", "reason": "already_sent"}
-    if not await _claim(pool, tomorrow, now):
+    claim = await _claim(pool, tomorrow, now)
+    if claim is None:
         return {"outcome": "skipped", "reason": "claim_held"}
 
     outcome = None
@@ -213,7 +229,7 @@ async def run_day_sheet_push(
     finally:
         # Only a delivery keeps the claim; any other path frees it for a later tick's retry.
         if outcome != owner_notify.DELIVERED:
-            await _release(pool, tomorrow)
+            await _release(pool, tomorrow, claim)
 
 
 async def run_day_sheet_push_loop(

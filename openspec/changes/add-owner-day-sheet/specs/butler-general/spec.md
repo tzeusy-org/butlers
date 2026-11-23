@@ -16,7 +16,8 @@ Scope: v1-mandatory
 - **THEN** it reads and sends nothing
 - **AND** when enabled, a tick inside 22:30 to 23:30 owner-local sends `render_day_sheet_text` over the owner-local tomorrow, from the same `query_calendar_day_sheet` fan-out the dashboard serves, composed by no model
 - **AND** one delivery for the owner-local date ends it, so a changed sheet or a freshness change never resends, while a failed or suppressed send does not end it and is retried
-- **AND** a per-date claim taken in one atomic statement lets exactly one replica or overlapping tick deliver, and a crashed holder's claim expires
+- **AND** a per-date claim taken in one atomic statement lets exactly one replica or overlapping tick deliver, and a crashed holder's claim expires, and a holder releases only its own claim
+- **AND** a duplicate is accepted over a missed sheet in two cases: a send that failed after the provider call began is retried, and a delivery whose markers failed to record is resent once after the claim expires
 - **AND** it records `day_sheet/pushed/<date>` and `day_sheet/pushed/latest` (carrying `date`, `outcome` and `digest`) in the general butler's state
 
 #### Scenario: EOD briefing leaves the calendar to the day sheet

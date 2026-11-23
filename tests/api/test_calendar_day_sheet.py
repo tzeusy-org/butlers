@@ -198,7 +198,7 @@ async def test_the_telegram_push_equals_the_dashboard_sheet_for_the_same_date(ap
     monkeypatch.setenv(job.ENABLED_ENV, "1")
     monkeypatch.setattr(job, "owner_zoneinfo", AsyncMock(return_value=ZoneInfo("UTC")))
     monkeypatch.setattr(job, "_date_delivered", AsyncMock(return_value=False))
-    monkeypatch.setattr(job, "_claim", AsyncMock(return_value=True))
+    monkeypatch.setattr(job, "_claim", AsyncMock(return_value="tok"))
     monkeypatch.setattr(job, "_release", AsyncMock())
     monkeypatch.setattr(job, "failed_attempts", AsyncMock(return_value=(0, None)))
     monkeypatch.setattr(

@@ -48,7 +48,7 @@ def wired(monkeypatch):
         read=AsyncMock(return_value=_sheet()),
         send=AsyncMock(return_value="delivered"),
         delivered=AsyncMock(return_value=False),
-        claim=AsyncMock(return_value=True),
+        claim=AsyncMock(return_value="tok"),
         release=AsyncMock(),
         failures=AsyncMock(return_value=(0, None)),
         suppressed=AsyncMock(return_value=None),
@@ -201,6 +201,7 @@ class _StatePool:
             if held is not None and (self.clock - held).total_seconds() < ttl:
                 return None
             self.claimed_at[key] = self.clock
+            self.values[key] = _value
             return key
         if "INSERT INTO state" in sql:  # state_set
             self.values[args[0]] = args[1]
@@ -213,9 +214,12 @@ class _StatePool:
         raise AssertionError(sql)
 
     async def execute(self, sql, *args):
-        assert "DELETE FROM state" in sql
-        self.claimed_at.pop(args[0], None)
-        self.values.pop(args[0], None)
+        assert "DELETE FROM state" in sql and "value->>'token'" in sql
+        key, token = args
+        held = self.values.get(key)
+        if isinstance(held, dict) and held.get("token") == token:
+            self.claimed_at.pop(key, None)
+            self.values.pop(key, None)
 
 
 @pytest.fixture
@@ -291,3 +295,17 @@ async def test_a_crashed_holders_claim_expires(replicas):
     replicas.pool.clock = SGT_NOW
     result = await job.run_day_sheet_push(replicas.db, now=SGT_NOW)
     assert result["outcome"] == "delivered"
+
+
+async def test_an_old_holder_does_not_release_a_claim_retaken_after_expiry(replicas):
+    pool = replicas.pool
+    old = await job._claim(pool, date(2026, 11, 24), SGT_NOW)
+    pool.clock = SGT_NOW + timedelta(minutes=11)  # the old holder's claim has expired
+    new = await job._claim(pool, date(2026, 11, 24), pool.clock)
+    assert old and new and old != new
+
+    await job._release(pool, date(2026, 11, 24), old)
+
+    assert "day_sheet/claim/2026-11-24" in pool.claimed_at  # the new holder's claim survives
+    await job._release(pool, date(2026, 11, 24), new)
+    assert "day_sheet/claim/2026-11-24" not in pool.claimed_at

@@ -24,14 +24,25 @@ NOW = datetime(2026, 11, 23, 14, 40, tzinfo=UTC)
 async def test_concurrent_claims_have_exactly_one_winner(db) -> None:
     pool = await db("core")
     wins = await asyncio.gather(*(job._claim(pool, DAY, NOW) for _ in range(8)))
-    assert sum(wins) == 1
+    assert sum(1 for w in wins if w) == 1
 
 
 async def test_a_released_claim_can_be_taken_again(db) -> None:
     pool = await db("core")
-    assert await job._claim(pool, DAY, NOW)
+    token = await job._claim(pool, DAY, NOW)
+    assert token
     assert not await job._claim(pool, DAY, NOW)
-    await job._release(pool, DAY)
+    await job._release(pool, DAY, token)
+    assert await job._claim(pool, DAY, NOW)
+
+
+async def test_only_the_holder_can_release(db) -> None:
+    pool = await db("core")
+    token = await job._claim(pool, DAY, NOW)
+    assert token
+    await job._release(pool, DAY, "someone-else")
+    assert not await job._claim(pool, DAY, NOW)  # still held
+    await job._release(pool, DAY, token)
     assert await job._claim(pool, DAY, NOW)
 
 
