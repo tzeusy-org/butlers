@@ -87,6 +87,7 @@ from butlers.connectors.home_assistant_wellness import (
     WellnessRule,
     parse_rules_extra,
 )
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.home_assistant_client import (
@@ -1731,7 +1732,7 @@ async def _ingest_live(mcp_client: Any, envelope: dict[str, Any]) -> None:
     """
     for attempt in range(1, _LIVE_INGEST_ATTEMPTS + 1):
         try:
-            await mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(mcp_client, envelope)
             return
         except ConnectionError:
             if attempt >= _LIVE_INGEST_ATTEMPTS:
@@ -1793,7 +1794,7 @@ async def emit_with_wellness_promotion(
         try:
             scrubbed = scrub_ha_envelope(ha_envelope)
             if on_failed is None:
-                await mcp_client.call_tool("ingest", scrubbed)
+                await submit_ingest(mcp_client, scrubbed)
             else:
                 await _ingest_live(mcp_client, scrubbed)
             if metrics is not None:
@@ -1857,7 +1858,7 @@ async def emit_with_wellness_promotion(
     try:
         scrubbed_wellness = scrub_ha_envelope(wellness_envelope)
         if on_failed is None:
-            await mcp_client.call_tool("ingest", scrubbed_wellness)
+            await submit_ingest(mcp_client, scrubbed_wellness)
         else:
             await _ingest_live(mcp_client, scrubbed_wellness)
         if metrics is not None:
@@ -2070,7 +2071,7 @@ async def _main() -> None:
 
     # Filter persistence (for recording dropped events)
     async def _submit_envelope_for_replay(envelope: dict[str, Any]) -> None:
-        await connector._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(connector._mcp_client, envelope)
 
     ha_filter_persistence = HAFilterPersistence(
         endpoint_identity=endpoint_identity,

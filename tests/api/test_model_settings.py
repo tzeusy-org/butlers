@@ -1682,7 +1682,9 @@ async def test_override_cancellation_before_audit_commit_rolls_back():
             )
         )
         try:
-            await asyncio.wait_for(store.audit_entered.wait(), 3)
+            # Readiness only: a loaded runner can take seconds to reach the audit write. The
+            # cancellation assertions below stay tight.
+            await asyncio.wait_for(store.audit_entered.wait(), 30)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(task, 3)

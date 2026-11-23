@@ -818,6 +818,8 @@ def _synced_runtime(account_config: CalendarAccountConfig, calls: list[dict[str,
     runtime = CalendarConnectorRuntime(account_config)
     runtime._cursor_pool = AsyncMock()
     runtime._running = True
+    # The revision journal has its own tests; these cases are about the sync token.
+    runtime._journal_events = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
         calls.append(dict(params))
@@ -1061,6 +1063,7 @@ async def test_cleared_expired_cursor_keeps_recovery_ingest_mode(account_config,
             patch.object(runtime, "_process_event", AsyncMock(return_value=True)) as process,
         ):
             await runtime._ensure_sync_token()
+        assert runtime._journal_events.await_args.args == ([event], "resync")
         process.assert_awaited_once_with(event)
         assert durable_token == "replacement"
 

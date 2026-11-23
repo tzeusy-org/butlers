@@ -10,7 +10,10 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 
 
 @pytest.mark.parametrize("kind", ["transition", "waypoints"])
-async def test_owntracks_transition_and_waypoint_replay_may_journal_the_stored_envelope(kind):
+@pytest.mark.parametrize("reply_status", ["accepted", "error"])
+async def test_owntracks_transition_and_waypoint_replay_may_journal_the_stored_envelope(
+    kind, reply_status
+):
     connector = owntracks.OwnTracksConnector(
         owntracks.OwnTracksConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"),
         webhook_token="synthetic-fixture",
@@ -38,7 +41,7 @@ async def test_owntracks_transition_and_waypoint_replay_may_journal_the_stored_e
 
     async def observe_submit(*_args, **_kwargs):
         submit_observations.append(journal_exists)
-        return {"status": "accepted"}
+        return {"status": reply_status}
 
     connector._mcp_client.call_tool = AsyncMock(side_effect=observe_submit)
     replay_row = {
@@ -66,7 +69,8 @@ async def test_owntracks_transition_and_waypoint_replay_may_journal_the_stored_e
     )
 
     conn.fetch.assert_awaited_once()
-    assert conn.execute.await_args.args[1] == "replay_complete"
+    expected_status = "replay_complete" if reply_status == "accepted" else "replay_failed"
+    assert conn.execute.await_args.args[1] == expected_status
     assert submit_observations == [True]
 
 

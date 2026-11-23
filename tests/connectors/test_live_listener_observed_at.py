@@ -50,7 +50,9 @@ async def test_process_segment_submits_a_wall_clock_observed_at_and_the_same_dur
             session_last_ts_ms=0,
         )
     }
-    connector._mcp_client = SimpleNamespace(call_tool=AsyncMock(return_value={"status": "ok"}))
+    connector._mcp_client = SimpleNamespace(
+        call_tool=AsyncMock(return_value={"status": "accepted"})
+    )
     connector._connector_metrics = MagicMock()
     connector._db_pool = None
     before = datetime.now(UTC)

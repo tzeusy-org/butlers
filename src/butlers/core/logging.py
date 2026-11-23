@@ -205,6 +205,11 @@ def _redact_text(text: str) -> str:
     return text
 
 
+def redact_text(text: str) -> str:
+    """Scrub known credential patterns from ``text`` (the log filter's rules)."""
+    return _redact_text(text)
+
+
 def _redact_value(value: Any) -> Any:
     """Redact string leaves of a structlog event value, preserving container types."""
     if isinstance(value, str):

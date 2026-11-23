@@ -42,6 +42,7 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Thread
@@ -53,8 +54,10 @@ from fastapi import FastAPI
 from prometheus_client import Counter
 
 from butlers.connector_catalog import connector_descriptor
+from butlers.connectors.calendar_event_revisions import record_calendar_revisions
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import EvidenceNotCommitted
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -73,6 +76,7 @@ from butlers.connectors.google_fleet import (
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
 from butlers.core.logging import configure_logging
@@ -109,6 +113,8 @@ calendar_resync_full_ingest_total = Counter(
     "Full syncs that ingest events (410 recovery or a pending resync)",
     labelnames=["endpoint_identity"],
 )
+_JOURNAL_FAILED_REASON = "Google Calendar revision journal write failed"
+_PRIMARY_CALENDAR_ID = "primary"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -827,7 +833,7 @@ class GoogleCalendarAccountRuntime:
             raise RuntimeError("MCP client not initialized")
 
         for envelope in envelopes:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
 
 
 # ---------------------------------------------------------------------------
@@ -935,6 +941,8 @@ class CalendarConnectorRuntime:
         self._resync_pending = False
         # Set when the stored cursor could not be read; the cycle is skipped until it can.
         self._cursor_load_failed = False
+        # Set when the revision journal could not be written; cleared by the next success.
+        self._journal_failed = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1075,6 +1083,8 @@ class CalendarConnectorRuntime:
             await self._perform_full_sync(ingest_events=True)
             return
 
+        if events and not await self._journal_events(events, "change"):
+            return
         if not events and next_sync_token == self._sync_token:
             # No changes; just update any starting-soon notifications
             await self._check_starting_soon()
@@ -1117,6 +1127,65 @@ class CalendarConnectorRuntime:
     # ------------------------------------------------------------------
     # SyncToken management
     # ------------------------------------------------------------------
+
+    def _policy_blocks(self, event: Mapping[str, Any]) -> bool:
+        """Whether source policy blocks this event (no side effects).
+
+        The global deny is evaluated on its own, so a connector-local policy error never skips a
+        known global block. An error that leaves the answer open raises: the journal batch is then
+        held, because a permanent blocked row for an event that might be allowed is worse.
+        """
+        organizer_email = (event.get("organizer") or {}).get("email", "unknown")
+        envelope = IngestionEnvelope(
+            sender_address=organizer_email,
+            source_channel=_DESCRIPTOR.channel,
+            raw_key=event.get("id", ""),
+        )
+        unresolved = False
+        try:
+            global_decision = self._global_ingestion_policy.evaluate(envelope)
+            if global_decision is not None and global_decision.action == "skip":
+                return True
+        except Exception:  # noqa: BLE001
+            unresolved = True
+        try:
+            decision = self._ingestion_policy.evaluate(envelope)
+            if decision is not None and not decision.allowed:
+                return True
+        except Exception:  # noqa: BLE001
+            unresolved = True
+        if unresolved:
+            raise _PolicyUnresolvedError("policy evaluation failed")
+        return False
+
+    async def _journal_events(self, events: list[dict[str, Any]], observation: str) -> bool:
+        """Append every observed event version to the revision journal; False when it failed.
+
+        This is the commit point: it runs before any Switchboard submission and before the sync
+        token moves. On failure nothing proceeds, health is degraded, and the next cycle fetches
+        and journals the same delta again (the unique key dedupes it).
+        """
+        try:
+            await record_calendar_revisions(
+                self._cursor_pool,
+                endpoint_identity=self._config.endpoint_identity,
+                calendar_id=_PRIMARY_CALENDAR_ID,
+                events=events,
+                observation=observation,
+                parse=_parse_dt,
+                blocked=self._policy_blocks,
+            )
+        except EvidenceNotCommitted as exc:
+            self._journal_failed = True
+            logger.error(
+                "Calendar: revision journal write failed for email=%s (failure_class=%s); "
+                "the sync token is held",
+                self._config.email,
+                exc.reason,
+            )
+            return False
+        self._journal_failed = False
+        return True
 
     async def _ensure_sync_token(self) -> None:
         """Load syncToken from cursor store; if missing, perform full sync."""
@@ -1349,6 +1418,10 @@ class CalendarConnectorRuntime:
         # Health follows the final page, set before any event is processed: a retry hold below
         # must not leave a missing token looking healthy (REQ-connector-google-calendar-011).
         self._missing_sync_token = not next_sync_token
+        # Evidence first: the baseline (or 410 recovery) is journaled before anything is routed
+        # or the token saved, so a failed write repeats this sync instead of losing history.
+        if not await self._journal_events(all_events, "resync" if ingest_events else "baseline"):
+            return
 
         # Populate upcoming events cache for "starting soon" detection
         self._upcoming_events.clear()
@@ -1663,20 +1736,7 @@ class CalendarConnectorRuntime:
 
     async def _submit_to_ingest_api(self, envelope: dict[str, Any]) -> None:
         """Submit the ingest.v1 envelope to the Switchboard via MCP."""
-        result = await self._mcp_client.call_tool("ingest", envelope)
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"Switchboard returned non-dict result for ingest envelope: result={result!r}"
-            )
-        status = result.get("status", "")
-        if not status:
-            raise RuntimeError(
-                f"Switchboard result missing or empty status for ingest envelope: result={result!r}"
-            )
-        if status not in ("accepted", "duplicate", "queued"):
-            raise RuntimeError(
-                f"Switchboard rejected envelope: status={status!r}, result={result!r}"
-            )
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # "Starting soon" synthetic notifications
@@ -1785,6 +1845,8 @@ class CalendarConnectorRuntime:
             return "degraded", "Starting up, API not yet checked"
         if self._source_api_ok and self._cursor_load_failed:
             return "degraded", _CURSOR_LOAD_FAILED_REASON
+        if self._source_api_ok and self._journal_failed:
+            return "degraded", _JOURNAL_FAILED_REASON
         if self._source_api_ok and self._missing_sync_token:
             return "degraded", _NO_SYNC_TOKEN_REASON
         if self._source_api_ok:
@@ -2159,6 +2221,10 @@ class CalendarAccountSource(GoogleAccountFleet[CalendarAccountLoop]):
 # ---------------------------------------------------------------------------
 # Internal exceptions
 # ---------------------------------------------------------------------------
+
+
+class _PolicyUnresolvedError(Exception):
+    """Source policy could not be evaluated; the journal batch is held."""
 
 
 class _SyncTokenExpiredError(Exception):

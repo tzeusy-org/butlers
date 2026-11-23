@@ -2552,6 +2552,8 @@ async def test_submission_error_retains_raw_payload() -> None:
         ({"status": "accepted"}, "HANDLED", 0),
         ({"status": "duplicate"}, "HANDLED", 0),
         ({"status": "error", "error": "refused"}, "REJECTED", 1),
+        ({"status": "transient_error", "retryable": True}, "FAILED", 1),
+        ({"status": "unrecognized"}, "FAILED", 1),
         (RuntimeError("Server session was closed unexpectedly"), "FAILED", 1),
         (ConnectionError("switchboard down"), "FAILED", 1),
     ],
@@ -2559,7 +2561,7 @@ async def test_submission_error_retains_raw_payload() -> None:
 async def test_submission_classifies_the_ingest_reply(
     reply, outcome, error_rows, monkeypatch
 ) -> None:
-    """Only an ingest error-status reply is a rejection; every exception stays transient."""
+    """Only an explicit refusal is eligible for poison-envelope quarantine."""
     from butlers.connectors import google_health as gh
     from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 

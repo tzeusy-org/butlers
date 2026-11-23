@@ -126,6 +126,13 @@ Steering memory is gated on that stamp:
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
+  **Guidance waiting for you** in the Rules register shows persisted provenance
+  and individual endorsement. To endorse a legacy batch, the owner explicitly
+  selects up to 100 rows in one source, previews the exact stored guidance, then
+  confirms. The preview digest binds source, ordered IDs, content, and provenance.
+  Confirmation locks and validates the whole selection before writing. A stale,
+  ineligible, or unavailable selection changes nothing. Repeating an accepted
+  selection returns original receipts without writing new stamps or audit rows.
 - **Facts** from `third_party` or `mixed` authority are *held* while live and not
   vouched for: they stay recallable as attributed reports (never Profile Facts), and
   the owner can vouch for one from the dashboard (fact detail, **Vouch**) or with

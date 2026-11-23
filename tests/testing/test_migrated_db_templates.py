@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+from textwrap import dedent
 from urllib.parse import urlparse
 
 import pytest
@@ -69,6 +74,113 @@ def _scalar(url: str, sql: str) -> object:
             return conn.execute(text(sql)).scalar()
     finally:
         engine.dispose()
+
+
+@pytest.mark.integration
+def test_pytest_workers_release_migrated_databases_on_pass_and_failure(
+    postgres_container, tmp_path: Path
+) -> None:
+    admin_url = postgres_container.get_connection_url()
+    admin = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    sentinel = f"tmpl_unowned_{migration.migration_db_name()}"
+    with admin.connect() as conn:
+        conn.execute(text(f'CREATE DATABASE "{sentinel}" WITH IS_TEMPLATE true'))
+    try:
+        with admin.connect() as conn:
+            inventory = text("SELECT datname FROM pg_database")
+            before = set(conn.execute(inventory).scalars())
+            tests = tmp_path / "test_fixture_teardown.py"
+            tests.write_text(
+                dedent(
+                    """
+                    import fcntl
+                    import os
+                    from pathlib import Path
+                    from urllib.parse import urlparse
+
+                    import pytest
+
+                    from butlers.testing import migration
+
+                    class ReusedPostgres:
+                        def get_connection_url(self):
+                            return os.environ["TEARDOWN_TEST_POSTGRES_URL"]
+
+                        def get_container_host_ip(self):
+                            return urlparse(self.get_connection_url()).hostname
+
+                        def get_exposed_port(self, port):
+                            return urlparse(self.get_connection_url()).port
+
+                    @pytest.fixture(scope="session")
+                    def postgres_container():
+                        return ReusedPostgres()
+
+                    @pytest.fixture
+                    def migrated_db(postgres_container, monkeypatch, request):
+                        monkeypatch.setenv("BUTLERS_TEST_DB_TEMPLATES", request.param)
+                        # Workers reuse one server. Serialize bootstrap, which
+                        # provisions server-wide roles before migrating the DB.
+                        with Path(__file__).with_suffix(".lock").open("w") as lock:
+                            fcntl.flock(lock, fcntl.LOCK_EX)
+                            return migration.create_migrated_test_db(
+                                postgres_container,
+                                migration.migration_db_name(),
+                                chains=["core"],
+                                revisions={"core": "core_002"},
+                            )
+
+                    @pytest.mark.parametrize("migrated_db", ["1"], indirect=True)
+                    def test_pass(migrated_db):
+                        assert migrated_db
+
+                    @pytest.mark.parametrize("migrated_db", ["0"], indirect=True)
+                    def test_failure(migrated_db):
+                        assert migrated_db
+                        pytest.fail("intentional failure after creating the database")
+                    """
+                ),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "-p",
+                    "conftest",
+                    "-o",
+                    "addopts=",
+                    "--confcutdir",
+                    str(tmp_path),
+                    "-n",
+                    "auto",
+                    "-q",
+                    str(tests),
+                ],
+                cwd=Path(__file__).resolve().parents[2],
+                env={
+                    **os.environ,
+                    "TEARDOWN_TEST_POSTGRES_URL": admin_url,
+                    "PYTEST_XDIST_AUTO_WORKERS": "2",
+                },
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if (
+                result.returncode != 1
+                or "intentional failure after creating the database" not in result.stdout
+                or "1 failed, 1 passed" not in result.stdout
+            ):
+                pytest.fail("expected one pass and one deliberate failure after database setup")
+            assert set(conn.execute(inventory).scalars()) == before
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f'ALTER DATABASE "{sentinel}" WITH IS_TEMPLATE false'))
+            conn.execute(text(f'DROP DATABASE "{sentinel}"'))
+        admin.dispose()
 
 
 @pytest.mark.integration

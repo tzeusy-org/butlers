@@ -467,6 +467,55 @@ The landed Dashboard CLI closure generator is not a goal image per-file proof.
 The full image, restricted-network, runtime conformance, credential-retargeting
 and tool-less-function acceptance criteria remain unfinished.
 
+## D18 OpenCode model-function preset (dark)
+
+`session_host/model_function.py` recovers the tool-less OpenCode preset from the
+historical `263d8ac00d8a606d865508a3a1fcfba261f1e7c8` implementation against the
+current settings contract (RFC 0038 D18 and the active `runtime-opencode` delta).
+`OpenCodeModelFunctionSettings` accepts the same explicit OpenAI API-key model
+family as the existing goal preset. It accepts no broker binding, token, runtime
+arguments or arbitrary provider configuration. Its empty MCP section, global and
+agent-level deny-all permissions and disabled tools are a separate configuration
+identity from a goal. The key stays in the invocation-local credential file.
+The command supplies a fixed title, preventing the CLI's implicit title-model
+call; automatic compaction is disabled and the primary agent has one step.
+
+`structured_result` accepts one bounded JSON-object answer from a single completed
+OpenCode step. Duplicate keys, nonfinite numbers, tool/error/unknown events,
+multiple steps, missing completion and oversized output refuse with a fixed code.
+The pinned CLI may emit its completed text part after `step_finish`; both observed
+text/finish orders are accepted. The deterministic caller must still validate its
+own typed result schema. Rejecting output cannot undo a tool effect and is not
+proof that tools were disabled.
+
+The explicit native fixture uses a disposable HOME and only a synthetic API key
+against a local fake OpenAI provider:
+
+```sh
+uv run --no-sync python -m tests.session_host.opencode_model_function_proof \
+  --binary /absolute/path/to/reviewed/opencode \
+  --sha256 <reviewed-binary-sha256>
+```
+
+It never selects the user's PATH runtime or reads the user's credentials. A
+deny/control/deny sequence observes the actual provider requests: exactly one
+`gpt-4.1` call per launch, no offered tools under the preset, and shell/read tools
+offered when the denial settings are neutralized. It prints hashes and tool counts,
+never runtime output or headers. The local stock OpenCode 1.17.7 control produced
+`[[0], [10], [0]]`; its binary SHA256 was
+`c67c8602154a18729cb80b4fca2669911f558347d76599f7ef45dee76c806613`, extracted
+from the SHA256-pinned npm archive in `deploy/runtime-clis/opencode/component-inputs.json`.
+This stock-binary fixture is adapter/config evidence, not evidence for the patched
+application image, real provider, kernel isolation or restricted network transport.
+
+No live caller, control operation or goal profile selects this preset. D18 host
+dispatch/staging and caller migration remain `bu-m1u7zy.2`; a consuming host must
+stage only its model credential and prompt, keep ambient configuration inaccessible,
+and never stage a goal MCP file or bearer. The private network namespace remains
+closed. Integrating positive invocation connectivity with the adopted S7 gateway
+requires a reviewed transport boundary and its own evidence before any profile is
+eligible. This change neither activates D18 nor completes parent AC1/3/4/5/6/7.
+
 ## Codex adapter proof (dark, tuple not eligible)
 
 `CodexSettings` is the closed preset for `codex` on `gpt-6-sol`: Codex 0.170.0, API

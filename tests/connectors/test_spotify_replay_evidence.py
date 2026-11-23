@@ -16,8 +16,9 @@ from tests.connectors.test_spotify_connector import (
 
 
 @pytest.mark.parametrize("kind", ["music", "spoken"])
-@pytest.mark.parametrize("disposition", ["filtered", "legacy_preview", "parked"])
+@pytest.mark.parametrize("disposition", ["filtered", "legacy_preview", "parked", "parked_refused"])
 async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, monkeypatch):
+    parked = disposition in {"parked", "parked_refused"}
     connector = spotify.SpotifyConnector(
         spotify.SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
@@ -27,7 +28,7 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
     connector._ingestion_policy = SimpleNamespace(
         scope="connector_rule",
         evaluate=lambda _env: SimpleNamespace(
-            allowed=disposition == "parked", action="block", matched_rule_type="sender_domain"
+            allowed=parked, action="block", matched_rule_type="sender_domain"
         ),
     )
     connector._mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
@@ -42,8 +43,10 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
 
     async def observe_submit(*_args, **_kwargs):
         submit_observations.append(evidence_committed)
-        if disposition == "parked" and len(submit_observations) == 1:
+        if parked and len(submit_observations) == 1:
             raise RuntimeError("synthetic downstream outage")
+        if disposition == "parked_refused":
+            return {"status": "error", "retryable": False, "error": "Validation failed"}
         return {"status": "accepted"}
 
     connector._cursor_pool = SimpleNamespace(fetchval=AsyncMock(side_effect=record_evidence))
@@ -70,7 +73,7 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
         }
         await connector._handle_spoken_playback({"item": item}, item, _NOW, _OBSERVED)
 
-    if disposition != "parked":
+    if not parked:
         assert not evidence_committed
         connector._mcp_client.call_tool.assert_not_awaited()
         await connector._flush_filtered_events()
@@ -81,7 +84,7 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
     conn.executemany.assert_awaited_once()
     _, rows = conn.executemany.await_args.args
     [inserted] = rows
-    assert inserted[8] == ("error" if disposition == "parked" else "filtered")
+    assert inserted[8] == ("error" if parked else "filtered")
 
     # Model the owner replay request mutating only the row's status. The
     # real drain still claims/rebuilds/submits exactly the stored envelope.
@@ -103,13 +106,9 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
 
     conn.fetch.assert_awaited_once()
     conn.execute.assert_awaited_once()
-    assert conn.execute.await_args.args[1] in {"replay_complete", "replay_failed"}
-    if disposition == "parked":
-        assert conn.execute.await_args.args[1] == "replay_complete"
-        assert submit_observations == [True, True]
-    else:
-        assert conn.execute.await_args.args[1] == "replay_failed"
-        assert submit_observations == []
+    expected_status = "replay_complete" if disposition == "parked" else "replay_failed"
+    assert conn.execute.await_args.args[1] == expected_status
+    assert submit_observations == ([True, True] if parked else [])
 
 
 @pytest.mark.parametrize("kind", ["session", "spoken", "ctx", "digest"])
