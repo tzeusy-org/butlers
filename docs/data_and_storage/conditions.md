@@ -176,5 +176,9 @@ once. Approve replays the call, which refuses anything that is not byte-for-byte
 parked (stored in the Switchboard `state` table in the same transaction) and then approves that exact
 card as the owner through `WatchService.approve`. Reject or expiry changes nothing. Applying needs a
 service and a snapshot provider that production does not wire yet, so until the goal-runtime cutover
-the apply refuses with `owner_watches_unavailable`. The `never` reply and the scheduled tick are a
-later slice.
+the apply refuses with `owner_watches_unavailable`. An owner `never` on a watch notice, through the authenticated dashboard route, pauses that watch after
+the insight feedback commits (`butlers.watches.never.pause_on_never`); the model-callable mute tool
+passes no owner origin and so pauses nothing, and a pause that fails never fails the reply. The
+scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` only when
+`OWNER_WATCHES_LIVE` is on; without a snapshot provider it reports `blind:no_snapshot_provider`,
+degrades the watch dependency and fires nothing.

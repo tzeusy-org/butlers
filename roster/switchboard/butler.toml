@@ -79,6 +79,14 @@ cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"
 
+# Owner watch tick (bu-4c7nvp.1.5 S3d): dark until OWNER_WATCHES_LIVE is on; blind (no fire,
+# health degraded) without a snapshot provider. Idempotent: every step replays safely.
+[[butler.schedule]]
+name = "owner-watch-tick"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "owner_watch_tick"
+
 # Proactive insight delivery — hold-until-first-active daily cadence
 # (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
 # window instead of a single fixed 08:00 UTC slot: delivery_cycle's

@@ -465,6 +465,20 @@ async def list_insight_candidates(
     return ApiResponse[list[InsightCandidate]](data=data)
 
 
+async def _pause_watch_for_never(pool: Any, insight_id: UUID) -> None:
+    """An owner `never` on a watch notice also pauses the watch (REQ-owner-watches-004).
+
+    The route only reaches here after ``authenticated_principal()`` proved the owner. The
+    feedback is already committed, so a failure here is logged and never fails the reply.
+    """
+    from butlers.watches.never import pause_on_never
+
+    try:
+        await pause_on_never(pool, str(insight_id), origin="owner")
+    except Exception:
+        logger.warning("owner_watch_pause_on_never_failed insight=%s", insight_id, exc_info=True)
+
+
 async def _record_feedback(
     *,
     pool: Any,
@@ -485,6 +499,8 @@ async def _record_feedback(
     if result["status"] == "error":
         status_code = 404 if result["reason"] == "insight not found" else 422
         raise HTTPException(status_code=status_code, detail=result["reason"])
+    if verdict == "never":
+        await _pause_watch_for_never(pool, insight_id)
     return ApiResponse[InsightFeedbackResponse](
         data=InsightFeedbackResponse(
             status="recorded",

@@ -297,6 +297,20 @@ def _build_switchboard_insight_amend_fn(pool: asyncpg.Pool) -> Any:
     return _amend_fn
 
 
+async def _run_switchboard_owner_watch_tick_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """One owner-watch tick (bu-4c7nvp.1.5 S3d): dark unless OWNER_WATCHES_LIVE is on.
+
+    Without a production snapshot provider the tick is blind and fires nothing.
+    """
+    del job_args
+    from butlers.watches.tick import run_tick
+
+    return await run_tick(pool)
+
+
 async def _run_switchboard_insight_delivery_cycle_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2592,6 +2606,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "switchboard": {
             "eligibility_sweep": _run_switchboard_eligibility_sweep_job,
             "insight_delivery_cycle": _run_switchboard_insight_delivery_cycle_job,
+            "owner_watch_tick": _run_switchboard_owner_watch_tick_job,
             "insight_urgent_subcycle": _run_switchboard_insight_urgent_subcycle_job,
             "insight_timed_subcycle": _run_switchboard_insight_timed_subcycle_job,
             "insight_outcome_sweep": _run_switchboard_insight_outcome_sweep_job,
