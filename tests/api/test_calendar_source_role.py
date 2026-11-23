@@ -93,3 +93,14 @@ async def test_a_schema_that_fails_is_reported_not_hidden(app):
 
     assert data["updated_butlers"] == ["general"]
     assert data["failed_butlers"] == ["travel"]
+
+
+async def test_every_schema_failing_is_a_503_not_a_404(app):
+    bad = MagicMock()
+    bad.fetch = AsyncMock(side_effect=RuntimeError("down"))
+    _wire(app, {"general": bad, "travel": bad}, audit=fake_pool(execute=None))
+
+    resp = await _post(app, {"source_key": KEY, "role": "team"})
+
+    assert resp.status_code == 503
+    assert "general" in resp.json()["detail"]

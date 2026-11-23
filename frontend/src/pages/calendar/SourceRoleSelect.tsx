@@ -76,9 +76,11 @@ export function SourceRoleSelect({ source }: SourceRoleSelectProps) {
         onChange={(event) => change(event.target.value)}
       >
         <option value={NOT_SET}>
-          {role === "unclassified" || !confirmed
-            ? "Whose? Not set (counts only if invited)"
-            : "Not set"}
+          {confirmed
+            ? "Clear (go back to the assumed role)"
+            : role === "unclassified"
+              ? "Whose? Not set (counts only if invited)"
+              : `${ROLE_LABELS[role]} (assumed)`}
         </option>
         {CHOICES.map((choice) => (
           <option key={choice} value={choice}>

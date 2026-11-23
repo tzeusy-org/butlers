@@ -3582,13 +3582,26 @@ async def set_calendar_source_role(
         if rows:
             updated.append(butler)
     if not updated:
+        if failed:
+            # Nothing was written and some schemas could not be asked: that is an outage, not
+            # an unknown source, so the owner is told to retry rather than that it does not exist.
+            raise HTTPException(
+                status_code=503,
+                detail=f"Could not write the role in: {', '.join(failed)}. Try again.",
+            )
         raise HTTPException(status_code=404, detail="Requested calendar source was not found")
 
     await log_audit_entry(
         db,
         updated[0],
         "calendar.workspace.source_role",
-        {"source_key": request.source_key, "role": role, "basis": basis},
+        {
+            "source_key": request.source_key,
+            "role": role,
+            "basis": basis,
+            "updated": updated,
+            "failed": failed,
+        },
     )
     return ApiResponse[CalendarSourceRoleResponse](
         data=CalendarSourceRoleResponse(

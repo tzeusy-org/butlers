@@ -53,6 +53,12 @@ describe("SourceRoleSelect", () => {
     expect(host.querySelector("select")!.value).toBe("");
   });
 
+  it("shows the inferred role as assumed, not as not set", () => {
+    const host = render(source({ time_role: "owner", role_basis: "provider_inferred" }));
+    expect(host.textContent).toContain("Mine (assumed)");
+    expect(host.textContent).not.toContain("counts only if invited");
+  });
+
   it("shows a confirmed role as selected", () => {
     const host = render(source({ time_role: "household_member", role_basis: "owner_confirmed" }));
     expect(host.querySelector("select")!.value).toBe("household_member");
