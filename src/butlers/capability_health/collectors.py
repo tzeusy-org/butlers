@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from butlers.capability_health.model import Observation
+from butlers.watches.health import DEGRADED, KEY, KNOWN, MAX_AGE_SECONDS, NO_SNAPSHOT_PROVIDER
 
 #: Credential key (``<scope>:<name>``) to the declared dependency it feeds.
 CREDENTIAL_DEPENDENCIES = {
@@ -118,3 +120,46 @@ async def probe_conditions(
         with contextlib.suppress(Exception):
             await pool.release(connection)
     return Observation("conditions", "available", None, started)
+
+
+FUTURE_SKEW_SECONDS = 30  # a report stamped slightly ahead of this clock is still fresh
+
+
+async def probe_owner_watches(
+    pool: Any,
+    *,
+    live: bool,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    deadline_s: float = PROBE_TIMEOUT_S,
+) -> Observation:
+    """The owner-watch tick's own report, read from its one ``state`` row.
+
+    Flag off: ``unconfigured`` (``not_configured``). Flag on: a fresh ``up`` report is available,
+    a ``degraded`` report is degraded, and no report, an old one or an unknown word is
+    unmeasured, never available. The row is closed words and a time, observed at its own ``at``.
+    """
+    now = clock()
+    if not live:
+        return Observation("owner_watches", "unconfigured", "not_configured", now)
+    unmeasured = Observation("owner_watches", None, None, now)
+    try:
+        raw = await asyncio.wait_for(
+            pool.fetchval("SELECT value FROM state WHERE key = $1", KEY), deadline_s
+        )
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        state, reason = value["state"], value["reason"]
+        if not isinstance(state, str) or not isinstance(reason, str | None):
+            return unmeasured  # an unhashable or non-word value says nothing
+        at = datetime.fromisoformat(value["at"])
+        known = (state, reason) in KNOWN
+    except Exception:
+        return unmeasured  # absent, unreadable or malformed: says nothing
+    if not known or at.tzinfo is None:
+        return unmeasured
+    skew = (now - at).total_seconds()
+    if skew > MAX_AGE_SECONDS or skew < -FUTURE_SKEW_SECONDS:
+        return unmeasured
+    if state == DEGRADED:
+        cause = "provider_unavailable" if reason == NO_SNAPSHOT_PROVIDER else "signal_unmeasurable"
+        return Observation("owner_watches", "degraded", cause, at)
+    return Observation("owner_watches", "available", None, at)

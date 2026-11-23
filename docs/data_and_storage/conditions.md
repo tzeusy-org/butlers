@@ -188,9 +188,10 @@ the insight feedback commits (`butlers.watches.never.pause_on_never`); the model
 passes no owner origin and so pauses nothing, and a pause that fails never fails the reply. The
 scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` only when
 `OWNER_WATCHES_LIVE` is on; without a snapshot provider it reports `blind:no_snapshot_provider` in its result and a warning
-log, and fires and changes nothing. The tick takes an optional dependency reporter, but no
-production reporter is wired to the scheduled job (the `owner_watches` dependency is not a declared
-capability dependency), so a blind tick is visible in the job result and log only.
+log, and fires and changes nothing. The scheduled job passes a `StateReporter` (`butlers.watches.health`): the tick's outcome lands in one Switchboard
+`state` row (`{state, reason, at}` only) that the capability-health collector reads to publish the `owner_watches`
+dependency (see [capability health](../runtime/capability-health.md)); the blind reason is `no_snapshot_provider`
+or `sources_unreadable`, and a reporter failure never stops a tick.
 
 ### Production providers (`butlers.watches.providers`, dark)
 
