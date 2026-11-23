@@ -637,7 +637,7 @@ def _run_chain(
 
 
 def test_dry_run_grant_step_cannot_block_the_pod_and_never_executes(tmp_path: Path) -> None:
-    args = _migrations("values.dev.yaml")
+    args = _migrations("values.dev.yaml", sets=("database.applyGrants=false",))
     result, calls = _run_chain(tmp_path, args, APPLY_RC="1")
     assert result.returncode == 0, result.stderr
     assert not any("--execute" in call for call in calls)
@@ -650,7 +650,7 @@ def test_dry_run_grant_step_cannot_block_the_pod_and_never_executes(tmp_path: Pa
 
 
 def test_enabled_grant_step_is_fail_closed_and_runs_before_reconcile(tmp_path: Path) -> None:
-    args = _migrations("values.dev.yaml", sets=("database.applyGrants=true",))
+    args = _migrations("values.dev.yaml")
     assert "--execute" in args
     ok, calls = _run_chain(tmp_path / "ok", args)
     assert ok.returncode == 0, ok.stderr
