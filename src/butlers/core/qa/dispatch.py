@@ -60,10 +60,11 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
+from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, validate_anonymized
 from butlers.core.healing.constants import (
@@ -92,7 +93,7 @@ from butlers.core.healing.worktree import (
 )
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
     update_finding_attempt,
@@ -298,6 +299,10 @@ _ALLOWED_ENV_VARS = frozenset(
     }
 )
 
+#: Default rung for an engineering executor (owner decision, bu-ejow5p.5): ``workhorse``, resolved
+#: exactly (no fallthrough). One reasoning escalation per incident generation is move C's budget.
+EXECUTOR_COMPLEXITY: Final = Complexity.WORKHORSE
+
 _QA_AGENT_SUBDIR = Path(".tmp/qa-agent")
 _QA_AGENT_OVERRIDE = """# QA Agent Override
 
@@ -312,6 +317,12 @@ Rules specific to this workspace:
 - Do not push branches or open PRs yourself.
 - Stay within the scope of the current QA investigation or PR-review follow-up.
 """
+
+
+def _launch_identity(spawner: Any, fallback: str) -> str:
+    """Butler identity the launching spawner resolves models under (else the finding's butler)."""
+    name = getattr(getattr(spawner, "_config", None), "name", None)
+    return name if isinstance(name, str) and name else fallback
 
 
 # ---------------------------------------------------------------------------
@@ -1220,7 +1231,7 @@ async def _run_investigation_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
+            complexity=EXECUTOR_COMPLEXITY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -2444,7 +2455,7 @@ async def _run_review_followup_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
+            complexity=EXECUTOR_COMPLEXITY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -3035,18 +3046,26 @@ async def dispatch_qa_investigation(
         # ---------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(pool, finding.source_butler, Complexity.SPECIALTY)
+            # Same identity (the launching spawner's butler), exact rung and intent that
+            # ``Spawner._run`` resolves under at launch, so admission cannot pass on a model
+            # the launch would then refuse.
+            model_result = await resolve_model_with_effective_tier(
+                pool,
+                _launch_identity(spawner, finding.source_butler),
+                EXECUTOR_COMPLEXITY,
+                allow_tier_fallthrough=False,
+                intent=derive_dispatch_intent("qa", EXECUTOR_COMPLEXITY),
+            )
         except Exception as model_exc:
             logger.warning(
-                "Model resolution failed for specialty tier (butler=%s): %s",
+                "Model resolution failed for the executor rung (butler=%s): %s",
                 finding.source_butler,
                 model_exc,
             )
 
         if model_result is None:
             logger.warning(
-                "QA dispatch skipped: no self_healing tier model available "
-                "(butler=%s, fingerprint=%s)",
+                "QA dispatch skipped: no executor-rung model available (butler=%s, fingerprint=%s)",
                 finding.source_butler,
                 fp[:12],
             )
@@ -3061,7 +3080,7 @@ async def dispatch_qa_investigation(
                     fingerprint=fp,
                     butler_name=finding.source_butler,
                     decision="no_model",
-                    reason="No self_healing tier model available",
+                    reason="No executor-rung (workhorse) model available",
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record no_model event: %s", _evt_exc)

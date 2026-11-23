@@ -145,7 +145,11 @@ async def _dispatch(pool: asyncpg.Pool, finding) -> object:
     Postgres-backed gate in between.
     """
     patrol_id = await _make_patrol(pool)
-    with patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=None):
+    with patch(
+        "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
         return await dispatch_qa_investigation(
             pool=pool,
             triaged_finding=_triaged(finding),

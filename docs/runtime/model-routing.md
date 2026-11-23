@@ -223,6 +223,29 @@ proof under the new contract. The Models page shows declarations, not proof.
 `structuredContent` when a tool result carries it, dropping `content[]` and the image with it
 (openai/codex#10334). `tests/core/test_attachment_view.py` pins the wire shape.
 
+### Engineering executors (`qa` trigger)
+
+A `qa` session is a repository engineer in an isolated worktree (RFC 0038 D18), not a butler. Two
+rules keep it apart from butler sessions:
+
+- **Launch profile.** `Spawner._run` skips the persona, DB prompt override, memory recall,
+  situational and timezone preambles and the blind-spot disclosure for it. The system prompt is the
+  versioned, core-owned `src/butlers/core/qa/executor_system_prompt.md`; the session's
+  `prompt_provenance` records the single source `engineering_executor_profile@v1`. A missing profile
+  refuses the launch (`executor_profile_unavailable`), never a persona fallback. Healing keeps the
+  full composition until a follow-up decides otherwise.
+- **Exact workhorse rung.** The `qa` intent requires `ModelFeature.WORKSPACE_AGENT` (declared by the
+  CLI adapters, `false` on the direct API adapter, so API entries are hard-unfit) at `reversible`
+  consequence. Resolution uses `Complexity.WORKHORSE` with `allow_tier_fallthrough=False`: no entry
+  at the rung means the launch is refused with no silent downgrade to `cheap`, `specialty` or
+  `local`. QA admission (Gate 10) resolves under the same identity, rung and intent as the launch,
+  so it cannot admit a model the launch would refuse. Escalation to `reasoning` is the incident
+  budget's job (one per incident generation, three sessions or sixty minutes in total), not this
+  resolver's.
+- **Sandbox auth failures.** A provider auth rejection inside an executor sandbox is classified
+  `executor_env_unfit` and recorded with that outcome. It is not a breaker-qualifying outcome, so it
+  never opens the fleet-visible catalog-entry breaker.
+
 ## Token Quotas
 
 The quota system prevents runaway costs by limiting token consumption per model on rolling time windows.

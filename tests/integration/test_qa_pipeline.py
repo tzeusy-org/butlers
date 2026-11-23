@@ -145,7 +145,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -254,7 +254,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -316,7 +316,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -456,7 +456,7 @@ class TestReactiveRelay:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -547,7 +547,7 @@ class TestCrossSourceDeduplication:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -790,7 +790,7 @@ class TestHealingApiBackwardCompatibility:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -854,7 +854,7 @@ class TestHealingApiBackwardCompatibility:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),

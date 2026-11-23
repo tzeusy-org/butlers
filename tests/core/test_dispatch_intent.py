@@ -262,16 +262,19 @@ def test_tool_wired_triggers_require_tool_use() -> None:
         intent = derive_dispatch_intent(source, "workhorse")
         assert ModelFeature.TOOL_USE in intent.required_features, source
 
-    for source in ("healing", "qa"):
-        intent = derive_dispatch_intent(source, "workhorse")
-        assert intent.required_features == frozenset(), source
+    intent = derive_dispatch_intent("healing", "workhorse")
+    assert intent.required_features == frozenset()
+    # A QA session is an engineering executor: no MCP, but it must run a workspace.
+    qa = derive_dispatch_intent("qa", "workhorse")
+    assert qa.required_features == frozenset({ModelFeature.WORKSPACE_AGENT})
+    assert ModelFeature.TOOL_USE not in qa.required_features
 
 
 @pytest.mark.unit
 def test_consequence_levels_match_who_sees_the_result() -> None:
     """OBSERVE only where nothing outside the system is waiting on the output."""
     assert derive_dispatch_intent("classification", "cheap").consequence is Consequence.OBSERVE
-    assert derive_dispatch_intent("qa", "cheap").consequence is Consequence.OBSERVE
+    assert derive_dispatch_intent("qa", "cheap").consequence is Consequence.REVERSIBLE
     assert derive_dispatch_intent("tick", "cheap").consequence is Consequence.REVERSIBLE
     assert derive_dispatch_intent("route", "cheap").consequence is Consequence.EXTERNAL
     # An unrecognized trigger is treated as the most consequential, not the least.
@@ -312,7 +315,7 @@ def test_intent_describe_is_json_safe_and_prompt_free() -> None:
         "deadline_s",
         "max_cost_usd_per_call",
     }
-    assert DISPATCH_POLICY_VERSION == "2"
+    assert DISPATCH_POLICY_VERSION == "3"
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,12 @@ class ModelFeature(enum.StrEnum):
     #: every consequence level except OBSERVE) rather than silently degrading to a
     #: text-only model that would hallucinate a description.
     VISION = "vision"
+    #: The runtime is a CLI that can run shell and filesystem tools inside the working
+    #: directory it is launched in -- what an engineering executor (QA investigation,
+    #: RFC 0038 D18) needs to read, edit and test a repository. Distinct from
+    #: ``TOOL_USE`` (MCP wiring into a butler): an executor has no MCP server. Declared
+    #: on the CLI adapters; the direct-API adapter has no filesystem or shell.
+    WORKSPACE_AGENT = "workspace_agent"
 
 
 class Support(enum.StrEnum):

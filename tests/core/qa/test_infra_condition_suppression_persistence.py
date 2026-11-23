@@ -79,7 +79,7 @@ async def test_failed_suppression_is_honest_and_same_finding_retry_is_idempotent
     monkeypatch.setattr(dispatch, "get_active_condition", AsyncMock(return_value=condition))
     monkeypatch.setattr(dispatch, "create_or_join_attempt", claim)
     monkeypatch.setattr(dispatch, "create_healing_worktree", workspace)
-    monkeypatch.setattr(dispatch, "resolve_model", resolve_model)
+    monkeypatch.setattr(dispatch, "resolve_model_with_effective_tier", resolve_model)
     spawner, metrics = MagicMock(), MagicMock()
 
     async def invoke():

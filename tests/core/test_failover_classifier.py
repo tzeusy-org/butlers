@@ -1354,3 +1354,24 @@ class TestMarkerBucketDisjointness:
             for marker in bucket:
                 assert marker == marker.lower(), f"{name}: {marker!r} is not lowercase"
                 assert marker == marker.strip(), f"{name}: {marker!r} has surrounding whitespace"
+
+
+class TestExecutorEnvUnfit:
+    """bu-ejow5p.5: a provider auth failure in an executor sandbox is an environment fault."""
+
+    MSG = "Claude CLI exited with code 1: authentication failed: invalid api key"
+
+    def test_auth_failure_in_an_executor_is_executor_env_unfit(self) -> None:
+        ctx = _ctx(RuntimeError(self.MSG))
+        ctx.executor_env = True
+        dec = classify_failover_eligibility(ctx)
+        assert dec.reason.startswith("executor_env_unfit"), dec.reason
+
+    def test_the_same_failure_outside_an_executor_keeps_provider_auth_error(self) -> None:
+        dec = classify_failover_eligibility(_ctx(RuntimeError(self.MSG)))
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_availability_failures_in_an_executor_are_unchanged(self) -> None:
+        ctx = _ctx(RuntimeError("connection refused: provider unavailable"))
+        ctx.executor_env = True
+        assert classify_failover_eligibility(ctx).reason.startswith("provider_unavailable")

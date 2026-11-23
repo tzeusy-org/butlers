@@ -431,7 +431,10 @@ class GeminiAdapter(RuntimeAdapter):
         return GeminiAdapter(gemini_binary=self._gemini_binary)
 
     #: The CLI receives the butler's MCP server config and executes its tools.
-    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {
+        "tool_use": True,
+        "workspace_agent": True,
+    }
 
     @property
     def binary_name(self) -> str:
