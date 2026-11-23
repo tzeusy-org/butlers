@@ -121,6 +121,14 @@ The point and place-cluster projections share one plausibility policy
   back within 50 km, and a gap of more than 36 hours splits it. It frames the
   day and never counts as lived time.
 
+## Evidence before acknowledgement
+
+For a location event the connector writes `connectors.owntracks_points` first, then
+submits to Switchboard, then saves the checkpoint and answers the phone. A failed
+evidence write answers 503, so the phone keeps the point and nothing is submitted.
+A failed submit keeps the row; the existing retry, park and replay path is unchanged.
+`message_inbox` is a routing buffer, not an evidence surface.
+
 ## Privacy note
 
 OwnTracks location payloads contain precise coordinates and may include the

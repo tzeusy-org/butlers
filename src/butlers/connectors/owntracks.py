@@ -847,8 +847,9 @@ async def persist_location_point(
     This table is the Chronicler-readable evidence surface for
     ``owntracks.points`` (RFC 0014 §D9).  The connector writes here
     directly (connector_writer role) on every accepted location event.
-    Errors are caught and logged; failure to persist does NOT abort the
-    ingest submission path.
+    A database error propagates: the caller commits this row before it
+    submits, checkpoints or acknowledges, so a failed write acknowledges
+    nothing (bu-uhbhzq.4). Only a scrub failure is logged and skipped.
 
     Args:
         pool: asyncpg connection pool (connector_writer role).
@@ -1461,6 +1462,22 @@ class OwnTracksConnector:
                 },
             )
 
+        # Commit the durable location evidence (RFC 0014 §D9) BEFORE the submit, the
+        # checkpoint and the acknowledgement. A write failure propagates: the webhook
+        # answers 503, nothing is submitted, and the phone keeps the point. A submit
+        # failure below keeps the row; it is evidence, not a replay queue (bu-uhbhzq.4).
+        if payload_type == "location" and self._db_pool is not None and tst is not None:
+            await persist_location_point(
+                self._db_pool,
+                endpoint_identity=device.endpoint_identity,
+                tst=int(tst),
+                lat=float(body.get("lat", 0.0)),
+                lon=float(body.get("lon", 0.0)),
+                accuracy=float(body["acc"]) if body.get("acc") is not None else None,
+                trigger=body.get("t") or None,
+                raw_payload=body,
+            )
+
         # Submit to Switchboard
         retry_key = str(envelope["control"]["idempotency_key"])
         start_t = time.perf_counter()
@@ -1515,25 +1532,6 @@ class OwnTracksConnector:
         # Update checkpoint (timestamp-based)
         if tst is not None:
             await self._save_checkpoint(device, int(tst))
-
-        # Persist durable location evidence for Chronicler (RFC 0014 §D9)
-        if payload_type == "location" and self._db_pool is not None and tst is not None:
-            try:
-                await persist_location_point(
-                    self._db_pool,
-                    endpoint_identity=device.endpoint_identity,
-                    tst=int(tst),
-                    lat=float(body.get("lat", 0.0)),
-                    lon=float(body.get("lon", 0.0)),
-                    accuracy=float(body["acc"]) if body.get("acc") is not None else None,
-                    trigger=body.get("t") or None,
-                    raw_payload=body,
-                )
-            except Exception:
-                logger.warning(
-                    "OwnTracksConnector: failed to persist location evidence (non-fatal)",
-                    exc_info=True,
-                )
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
         # in the background: the webhook waits on this method, and a slow drain
@@ -1928,8 +1926,8 @@ async def run_owntracks_connector() -> None:
         pool_kwargs["setup"] = connector_setup_role
         # Register the JSONB codec so dict payloads encode for jsonb columns
         # (e.g. owntracks_points.raw_payload). Without this, every evidence
-        # INSERT raises a DataError that persist_location_point swallows,
-        # silently dropping all location points. Mirrors steam/home_assistant.
+        # INSERT raises a DataError; the webhook now answers 503 on it (bu-uhbhzq.4),
+        # so the phone keeps every point. Mirrors steam/home_assistant.
         pool_kwargs["init"] = register_jsonb_codec
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)

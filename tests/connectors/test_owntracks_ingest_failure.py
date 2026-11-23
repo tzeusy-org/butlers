@@ -195,3 +195,59 @@ async def test_a_slow_ingest_answers_503_without_cancelling_the_ingest(monkeypat
         await asyncio.wait_for(finished.wait(), 1)
     finally:
         await _stop(connector)
+
+
+async def test_the_location_row_is_written_before_the_submit(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        order.append("persist")
+        return True
+
+    async def call_tool(tool: str, payload: dict | None = None) -> dict:
+        if tool == "ingest":
+            order.append(tool)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(side_effect=call_tool), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 200
+        assert order == ["persist", "ingest"]
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_location_write_acknowledges_nothing(monkeypatch) -> None:
+    async def broken_persist(pool: Any, **kwargs: Any) -> bool:
+        raise OSError("connectors database unreachable")
+
+    monkeypatch.setattr(owntracks, "persist_location_point", broken_persist)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FakePool())
+    saved = AsyncMock()
+    connector._save_checkpoint = saved  # type: ignore[method-assign]
+    try:
+        response = await _post(connector, _POINT)
+
+        assert response.status_code == 503  # the phone keeps the point
+        assert _ingests(call_tool) == []  # nothing submitted
+        saved.assert_not_awaited()  # checkpoint unchanged
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_submit_keeps_the_location_row(monkeypatch) -> None:
+    persisted: list[int] = []
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        persisted.append(kwargs["tst"])
+        return True
+
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(side_effect=_always_unreachable), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 503
+        assert persisted == [_POINT["tst"]]  # evidence kept although the submit failed
+    finally:
+        await _stop(connector)
