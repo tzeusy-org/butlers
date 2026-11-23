@@ -115,6 +115,7 @@ OP GET /api/calendar/workspace 1bf2c7797185
 OP GET /api/calendar/workspace/audit b2520f3e8a0c
 OP GET /api/calendar/workspace/conflicts 6e4f58219019
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
+OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
 OP GET /api/calendar/workspace/entries/{entry_id} a79017fc237f
 OP GET /api/calendar/workspace/invitations 5347ebdec7a3
 OP GET /api/calendar/workspace/meta fe2b095641fb
@@ -835,6 +836,7 @@ ROUTE APIRoute GET '/api/calendar/workspace' name=get_workspace op=get_workspace
 ROUTE APIRoute GET '/api/calendar/workspace/audit' name=get_calendar_audit op=get_calendar_audit_api_calendar_workspace_audit_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/conflicts' name=get_workspace_conflicts op=get_workspace_conflicts_api_calendar_workspace_conflicts_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/day-briefing' name=get_day_briefing op=get_day_briefing_api_calendar_workspace_day_briefing_get tags=calendar,workspace schema=True
+ROUTE APIRoute GET '/api/calendar/workspace/day-sheet' name=get_day_sheet op=get_day_sheet_api_calendar_workspace_day_sheet_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/entries/{entry_id}' name=get_entry_detail op=get_entry_detail_api_calendar_workspace_entries__entry_id__get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/invitations' name=get_workspace_invitations op=get_workspace_invitations_api_calendar_workspace_invitations_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/meta' name=get_workspace_meta op=get_workspace_meta_api_calendar_workspace_meta_get tags=calendar,workspace schema=True
@@ -1525,6 +1527,7 @@ SCHEMA ApiResponse_ConsoleResponse_ cb9d57acf792
 SCHEMA ApiResponse_CorrectionPrompts_ 761ab055e049
 SCHEMA ApiResponse_DailyActivity_ 5ff1fba56e00
 SCHEMA ApiResponse_DatabaseFacts_ 5b3003f41a06
+SCHEMA ApiResponse_DaySheetResponse_ e6517c900bda
 SCHEMA ApiResponse_DeadlineRecord_ 8414759fac0f
 SCHEMA ApiResponse_DecisionSetDecisionResult_ 9ce18e403eca
 SCHEMA ApiResponse_DecisionSetView_ 9cfed7a127b1
@@ -1983,6 +1986,10 @@ SCHEMA DayCloseRefreshQuietResponse 00a00401b49c
 SCHEMA DayCloseRefreshRequest 66c97e5c2f96
 SCHEMA DayCloseRefreshResponse e62a91337299
 SCHEMA DayCloseStaleResponse 1cc39a379a81
+SCHEMA DaySheetFreshness e071948acc12
+SCHEMA DaySheetGap 9233e2222966
+SCHEMA DaySheetItem f26487f97c3b
+SCHEMA DaySheetResponse 9cbb5b12ea87
 SCHEMA DeadlineRecord d0154fa0197f
 SCHEMA DecisionSetDecisionRequest 1df717775a1d
 SCHEMA DecisionSetDecisionResult eac3a5931c9a

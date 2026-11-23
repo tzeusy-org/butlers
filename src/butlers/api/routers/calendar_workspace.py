@@ -9,6 +9,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from datetime import date as date_type
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -66,6 +67,10 @@ from butlers.api.models.calendar_workspace import (
     ConflictScanWindow,
     DayBriefingButlerGroup,
     DayBriefingKindGroup,
+    DaySheetFreshness,
+    DaySheetGap,
+    DaySheetItem,
+    DaySheetResponse,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -73,7 +78,9 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
+from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from butlers.api.read_models.calendar_day_sheet import query_calendar_day_sheet
 from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
@@ -99,6 +106,7 @@ from butlers.api.read_models.calendar_workspace import (
 from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
 from butlers.core.liveness import derive_liveness
+from butlers.core.temporal.day_sheet import render_day_sheet_text
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
@@ -1647,6 +1655,71 @@ async def get_workspace_conflicts(
             issues_available=scan.available,
             unclassified_sources=scan.unclassified_sources,
             unclassified_events=scan.unclassified_events,
+        )
+    )
+
+
+@router.get("/day-sheet", response_model=ApiResponse[DaySheetResponse])
+async def get_day_sheet(
+    date: date_type | None = Query(
+        None, description="Owner-local calendar day (YYYY-MM-DD); defaults to today"
+    ),
+    timezone: str | None = Query(
+        None, description="IANA zone to read the day in; defaults to the owner's zone"
+    ),
+    *,
+    db: Db,
+) -> ApiResponse[DaySheetResponse]:
+    """One deterministic projection of an owner-local day (REQ-module-calendar-036).
+
+    Never says a day is clear when it cannot know: an unreadable calendar schema or a stale sync
+    is reported in ``freshness`` (and in ``text``) instead of an empty list. Read-only, no model.
+    """
+    if timezone is not None:
+        try:
+            zone = ZoneInfo(timezone.strip())
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
+    else:
+        zone = await owner_zoneinfo(_calendar_accounts_shared_pool(db))
+    local_date = date or datetime.now(zone).date()
+
+    sheet = await query_calendar_day_sheet(db, local_date=local_date, zone=zone)
+    return ApiResponse[DaySheetResponse](
+        data=DaySheetResponse(
+            date=sheet.date,
+            zone=sheet.zone,
+            freshness=DaySheetFreshness(
+                state=sheet.freshness.state,
+                as_of=sheet.freshness.as_of,
+                sources_unreadable=sheet.freshness.sources_unreadable,
+                sources_total=sheet.freshness.sources_total,
+            ),
+            items=[
+                DaySheetItem(
+                    ref=i.ref,
+                    start=i.start,
+                    end=i.end,
+                    all_day=i.all_day,
+                    kind=i.kind,
+                    title=i.title,
+                    label_class=i.label_class,
+                    people_count=i.people_count,
+                    conflict_ref=i.conflict_ref,
+                    door=i.door,
+                )
+                for i in sheet.items
+            ],
+            gaps=[DaySheetGap(start=g.start, end=g.end) for g in sheet.gaps],
+            attended_minutes=sheet.load.attended_minutes,
+            attended_count=sheet.load.count,
+            longest_gap=(
+                DaySheetGap(start=sheet.longest_gap.start, end=sheet.longest_gap.end)
+                if sheet.longest_gap
+                else None
+            ),
+            digest=sheet.digest,
+            text=render_day_sheet_text(sheet),
         )
     )
 
