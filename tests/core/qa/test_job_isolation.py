@@ -394,7 +394,9 @@ async def test_an_unreadable_fleet_reads_as_at_cap_not_empty(tmp_path) -> None:
     assert await active_job_count(_fleet_iso(tmp_path, live)) == 2
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can open a 000 directory: no fallback runs")
 async def test_the_sweep_removes_a_pod_chmodded_000_tree(tmp_path) -> None:
+    from butlers.core.qa import job_isolation
     from butlers.core.qa.job_isolation import sweep_orphans
 
     iso = _fleet_iso(tmp_path, _Fleet([]))
@@ -403,9 +405,52 @@ async def test_the_sweep_removes_a_pod_chmodded_000_tree(tmp_path) -> None:
     (locked / "f").write_text("x")
     os.chmod(locked, 0o000)
     os.chmod(locked.parent, 0o500)
-    report = await sweep_orphans(iso, live=set())
+    path_opens = []
+    real_open = os.open
+
+    def spy(name, flags, *args, **kwargs):
+        if flags & os.O_PATH:
+            path_opens.append(name)
+        return real_open(name, flags, *args, **kwargs)
+
+    with patch.object(job_isolation.os, "open", spy):
+        report = await sweep_orphans(iso, live=set())
     assert report.directories_removed == 1
     assert not (iso.exchange_root / "attempts" / "dead").exists()
+    assert path_opens, "the O_PATH fallback never ran, so the 000 case was not exercised"
+
+
+def test_opening_a_symlink_as_a_directory_is_refused(tmp_path) -> None:
+    """Pins O_NOFOLLOW on the open itself, independent of the scanner."""
+    from butlers.core.qa.job_isolation import _open_directory
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    os.symlink(target, link)
+    with pytest.raises(OSError):
+        _open_directory(link, None)
+
+
+def test_the_scan_never_yields_a_symlink_as_a_directory_to_open(tmp_path) -> None:
+    """Pins follow_symlinks=False in the scan, independent of O_NOFOLLOW on the open."""
+    from butlers.core.qa import job_isolation
+
+    target = tmp_path / "target"
+    target.mkdir()
+    root = tmp_path / "root"
+    (root / "real").mkdir(parents=True)
+    os.symlink(target, root / "link")
+    opened = []
+    real = job_isolation._open_directory
+
+    def spy(name, dir_fd):
+        opened.append(str(name))
+        return real(name, dir_fd)
+
+    with patch.object(job_isolation, "_open_directory", spy):
+        job_isolation._reopen_directories(root)
+    assert "real" in opened and "link" not in opened
 
 
 async def test_the_sweep_lists_only_this_releases_jobs(tmp_path) -> None:
