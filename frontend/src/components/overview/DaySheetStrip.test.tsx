@@ -119,11 +119,53 @@ describe("DaySheetStrip", () => {
     });
     const item = document.querySelector('[data-day-sheet-item="m1"]')!;
     expect(item.textContent).toContain("10:00-11:30");
-    expect(item.textContent).toContain("? <b>Standup</b>");
+    expect(item.textContent).toContain("<b>Standup</b>");
+    expect(item.textContent).toContain("(tentative)");
+    expect(item.querySelector("a")!.getAttribute("title")).toBe("<b>Standup</b>");
     expect(item.querySelector("b")).toBeNull();
     expect(item.querySelector("a")!.getAttribute("href")).toBe("/calendar?entry=m1");
     expect(screen.getByTestId("day-sheet-load").textContent).toContain(
-      "Committed 1h 30m across 1 meeting. Longest free: 12:00-15:00.",
+      "Committed 1h 30m across 1 meeting.",
     );
+    expect(screen.getByTestId("day-sheet-gap").textContent).toContain("12:00-15:00");
+  });
+
+  it("shows the date of a stale as-of that is not the sheet's own day", () => {
+    view({
+      sheet: sheet({
+        freshness: {
+          state: "stale",
+          as_of: "2026-11-22T22:15:00+08:00",
+          sources_unreadable: [],
+          sources_total: 1,
+        },
+      }),
+    });
+    expect(screen.getByTestId("day-sheet-stale").textContent).toContain("As of Sun 22 Nov 22:15");
+  });
+
+  it("shows the longest free window even when only a tentative event is listed", () => {
+    view({
+      sheet: sheet({
+        items: [
+          {
+            ref: "t",
+            start: "2026-11-24T10:00:00+08:00",
+            end: "2026-11-24T11:00:00+08:00",
+            all_day: false,
+            kind: "tentative",
+            title: "Maybe",
+            label_class: "third_party",
+            people_count: 0,
+            conflict_ref: null,
+            door: "/calendar?entry=t",
+          },
+        ],
+        attended_minutes: 0,
+        longest_gap: { start: "2026-11-24T11:00:00+08:00", end: "2026-11-24T20:00:00+08:00" },
+      }),
+    });
+    expect(screen.queryByTestId("day-sheet-load")).toBeNull();
+    expect(screen.getByTestId("day-sheet-gap").textContent).toContain("11:00-20:00");
   });
 });

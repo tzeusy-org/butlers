@@ -17,6 +17,14 @@ function clock(iso: string, zone: string): string {
   return formatInTimeZone(new Date(iso), zone, "HH:mm");
 }
 
+/** "HH:mm", or "EEE d MMM HH:mm" when the instant is not on the sheet's own date. */
+function stamp(iso: string, zone: string, sheetDate: string): string {
+  const date = new Date(iso);
+  return formatInTimeZone(date, zone, "yyyy-MM-dd") === sheetDate
+    ? formatInTimeZone(date, zone, "HH:mm")
+    : formatInTimeZone(date, zone, "EEE d MMM HH:mm");
+}
+
 function duration(minutes: number): string {
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
@@ -69,7 +77,7 @@ export function DaySheetStrip({
         ) : null}
         {freshness.state === "stale" ? (
           <p data-testid="day-sheet-stale" className="text-[var(--amber-text)]">
-            {freshness.as_of ? `As of ${clock(freshness.as_of, zone)}: ` : ""}
+            {freshness.as_of ? `As of ${stamp(freshness.as_of, zone, sheet.date)}: ` : ""}
             the calendar may be out of date.
           </p>
         ) : null}
@@ -87,8 +95,17 @@ export function DaySheetStrip({
                 <span className="w-24 shrink-0 tabular-nums text-[var(--mfg)]">
                   {itemWhen(item, zone)}
                 </span>
-                <Link to={item.door} className="truncate text-fg hover:underline">
-                  {item.kind === "tentative" ? "? " : ""}
+                <Link
+                  to={item.door}
+                  title={item.title}
+                  className="truncate text-fg hover:underline"
+                >
+                  {item.kind === "tentative" ? (
+                    <>
+                      <span aria-hidden="true">? </span>
+                      <span className="sr-only">(tentative) </span>
+                    </>
+                  ) : null}
                   {item.title}
                   {item.kind === "butler" ? " (butler hold)" : ""}
                 </Link>
@@ -100,7 +117,11 @@ export function DaySheetStrip({
           <p data-testid="day-sheet-load" className="text-[var(--mfg)]">
             Committed {duration(sheet.attended_minutes)} across {sheet.attended_count}{" "}
             {sheet.attended_count === 1 ? "meeting" : "meetings"}.
-            {sheet.longest_gap ? ` Longest free: ${gapText(sheet.longest_gap, zone)}.` : ""}
+          </p>
+        ) : null}
+        {freshness.state === "current" && sheet.longest_gap ? (
+          <p data-testid="day-sheet-gap" className="text-[var(--mfg)]">
+            Longest free: {gapText(sheet.longest_gap, zone)}.
           </p>
         ) : null}
       </>

@@ -55,6 +55,7 @@ export default function CalendarWorkspacePage() {
     selectedStatus,
     selectedSourceType,
     overlaysEnabled,
+    entryParam,
     updateQuery,
   } = useCalendarUrlState();
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -99,6 +100,7 @@ export default function CalendarWorkspacePage() {
     entries,
     workspaceFetching: workspaceQuery.isFetching,
     updateQuery,
+    entryParam,
   });
   const butlerEditor = useButlerEventEditor({ timezone, availableButlers });
   const { butlerMutation, openButlerCreateDialog } = butlerEditor;

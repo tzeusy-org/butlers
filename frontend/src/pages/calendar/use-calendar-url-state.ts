@@ -33,6 +33,8 @@ export function useCalendarUrlState() {
   // top of the primary user/butler view (not a separate view mode). The toggle
   // is persisted in the URL so the layered view is shareable.
   const overlaysEnabled = searchParams.get("overlays") === "1";
+  // A deep link to one entry (the day sheet's door): opened once, then dropped from the URL.
+  const entryParam = searchParams.get("entry");
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -77,6 +79,7 @@ export function useCalendarUrlState() {
       status?: string;
       kind?: string;
       overlays?: boolean;
+      entry?: string | null;
     }) => {
       const next = new URLSearchParams(searchParams);
 
@@ -125,6 +128,14 @@ export function useCalendarUrlState() {
         }
       }
 
+      if (nextValues.entry !== undefined) {
+        if (nextValues.entry) {
+          next.set("entry", nextValues.entry);
+        } else {
+          next.delete("entry");
+        }
+      }
+
       setSearchParams(next, { replace: true });
     },
     [searchParams, setSearchParams],
@@ -139,6 +150,7 @@ export function useCalendarUrlState() {
     selectedStatus,
     selectedSourceType,
     overlaysEnabled,
+    entryParam,
     updateQuery,
   };
 }
