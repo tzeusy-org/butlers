@@ -593,6 +593,20 @@ def pytest_make_collect_report(
     return report
 
 
+@pytest.hookimpl(wrapper=True)
+def pytest_fixture_setup(
+    fixturedef: pytest.FixtureDef[object], request: pytest.FixtureRequest
+) -> Generator[None, object, object]:
+    result = yield
+    if fixturedef.argname == "postgres_container":
+        from butlers.testing.migration import drop_test_databases
+
+        # Register after fixture setup so this runs before its own teardown.
+        # This also covers fixtures that reuse a live test server.
+        request.addfinalizer(lambda: drop_test_databases(result))
+    return result
+
+
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """Cap ``-n auto`` to the repo's intended worker count.
 

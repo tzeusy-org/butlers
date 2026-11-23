@@ -41,6 +41,12 @@ The root `conftest.py` (at the repository root) provides fixtures visible to all
 
 A shared Postgres testcontainer for all DB-backed tests in the pytest session. Uses the `pgvector/pgvector:pg17` image. The container is started once and reused across all tests; isolation is achieved at the database level (each test gets a fresh DB).
 
+Each pytest worker retires any remaining migration-helper databases before its
+Postgres fixture shuts down. The same finalizer runs for fixtures that reuse a
+live test server, including after a test failure. It uses the worker's successful
+creation records and checks the PostgreSQL cluster and database identities
+before dropping a database. Other databases on the same server are left alone.
+
 `_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
 
 Teardown requests container removal and anonymous PGDATA volume deletion everywhere except GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), decided by `_delete_session_data_volume`. CI has observed 25-60+ s volume-removal calls alongside restore-client timeouts. Retaining the volume until the disposable hosted VM is discarded mitigates possible teardown contention; these different-run observations do not establish causality, guarantee test/teardown ordering, or prove successful cleanup. Developer and self-hosted runners retain volume deletion and the existing removal retry/warning behavior.
