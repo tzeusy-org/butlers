@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -3543,6 +3544,37 @@ async def toggle_calendar_source(
     )
 
 
+class _SourceRoleLockError(Exception):
+    """The per-source advisory lock could not be taken."""
+
+
+@contextlib.asynccontextmanager
+async def _source_role_lock(pool: Any, source_key: str):
+    """Hold ``pg_advisory_lock`` for one source's role write on a single held connection."""
+    key = f"calendar_source_role:{source_key}"
+    try:
+        context = pool.acquire()
+        conn = await context.__aenter__()
+    except Exception as exc:
+        raise _SourceRoleLockError from exc
+    try:
+        try:
+            await conn.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", key)
+        except Exception as exc:
+            raise _SourceRoleLockError from exc
+        try:
+            yield
+        finally:
+            try:
+                await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key)
+            except Exception:
+                # A session lock must never go back into the pool held: drop the connection.
+                logger.warning("calendar source role unlock failed; dropping the connection")
+                conn.terminate()
+    finally:
+        await context.__aexit__(None, None, None)
+
+
 @accounts_router.post("/sources/role", response_model=ApiResponse[CalendarSourceRoleResponse])
 async def set_calendar_source_role(
     request: CalendarSourceRoleRequest,
@@ -3563,24 +3595,33 @@ async def set_calendar_source_role(
 
     updated: list[str] = []
     failed: list[str] = []
-    for butler in targets:
-        try:
-            rows = await db.pool(butler).fetch(
-                f"""
-                UPDATE calendar_sources
-                SET time_role = $1, role_basis = '{basis}', updated_at = now()
-                WHERE source_key = $2
-                RETURNING id
-                """,
-                role,
-                request.source_key,
-            )
-        except Exception:
-            logger.warning("set_calendar_source_role failed in %s", butler, exc_info=True)
-            failed.append(butler)
-            continue
-        if rows:
-            updated.append(butler)
+    # One owner decision must land in every schema or in none of the interleavings: hold a
+    # cluster-wide advisory lock for this source across the whole fan-out, so two concurrent
+    # requests (even on different API replicas) cannot leave schemas on different roles.
+    try:
+        async with _source_role_lock(db.pool(targets[0]), request.source_key):
+            for butler in targets:
+                try:
+                    rows = await db.pool(butler).fetch(
+                        f"""
+                        UPDATE calendar_sources
+                        SET time_role = $1, role_basis = '{basis}', updated_at = now()
+                        WHERE source_key = $2
+                        RETURNING id
+                        """,
+                        role,
+                        request.source_key,
+                    )
+                except Exception:
+                    logger.warning("set_calendar_source_role failed in %s", butler, exc_info=True)
+                    failed.append(butler)
+                    continue
+                if rows:
+                    updated.append(butler)
+    except _SourceRoleLockError as exc:
+        raise HTTPException(
+            status_code=503, detail="Could not lock the calendar source. Try again."
+        ) from exc
     if not updated:
         if failed:
             # Nothing was written and some schemas could not be asked: that is an outage, not

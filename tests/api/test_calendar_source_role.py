@@ -40,8 +40,8 @@ def _updated(source_id=None):
 
 
 async def test_the_role_is_written_confirmed_in_every_schema(app):
-    general = fake_pool(fetch=[_updated()])
-    travel = fake_pool(fetch=[_updated()])
+    general = fake_pool(fetch=[_updated()], execute=None)
+    travel = fake_pool(fetch=[_updated()], execute=None)
     _wire(app, {"general": general, "travel": travel}, audit=fake_pool(execute=None))
 
     resp = await _post(app, {"source_key": KEY, "role": "household_member"})
@@ -57,7 +57,7 @@ async def test_the_role_is_written_confirmed_in_every_schema(app):
 
 
 async def test_clearing_returns_the_source_to_inference(app):
-    general = fake_pool(fetch=[_updated()])
+    general = fake_pool(fetch=[_updated()], execute=None)
     _wire(app, {"general": general}, audit=fake_pool(execute=None))
 
     resp = await _post(app, {"source_key": KEY, "role": None})
@@ -69,7 +69,7 @@ async def test_clearing_returns_the_source_to_inference(app):
 
 
 async def test_an_unknown_role_is_refused_and_nothing_is_written(app):
-    general = fake_pool(fetch=[_updated()])
+    general = fake_pool(fetch=[_updated()], execute=None)
     _wire(app, {"general": general})
 
     resp = await _post(app, {"source_key": KEY, "role": "mine"})
@@ -79,14 +79,13 @@ async def test_an_unknown_role_is_refused_and_nothing_is_written(app):
 
 
 async def test_an_unknown_source_is_404(app):
-    _wire(app, {"general": fake_pool(fetch=[])}, audit=fake_pool(execute=None))
+    _wire(app, {"general": fake_pool(fetch=[], execute=None)}, audit=fake_pool(execute=None))
     assert (await _post(app, {"source_key": "nope", "role": "owner"})).status_code == 404
 
 
 async def test_a_schema_that_fails_is_reported_not_hidden(app):
-    good = fake_pool(fetch=[_updated()])
-    bad = MagicMock()
-    bad.fetch = AsyncMock(side_effect=RuntimeError("down"))
+    good = fake_pool(fetch=[_updated()], execute=None)
+    bad = fake_pool(fetch=AsyncMock(side_effect=RuntimeError("down")), execute=None)
     _wire(app, {"general": good, "travel": bad}, audit=fake_pool(execute=None))
 
     data = (await _post(app, {"source_key": KEY, "role": "team"})).json()["data"]
@@ -96,11 +95,88 @@ async def test_a_schema_that_fails_is_reported_not_hidden(app):
 
 
 async def test_every_schema_failing_is_a_503_not_a_404(app):
-    bad = MagicMock()
-    bad.fetch = AsyncMock(side_effect=RuntimeError("down"))
+    bad = fake_pool(fetch=AsyncMock(side_effect=RuntimeError("down")), execute=None)
     _wire(app, {"general": bad, "travel": bad}, audit=fake_pool(execute=None))
 
     resp = await _post(app, {"source_key": KEY, "role": "team"})
 
     assert resp.status_code == 503
     assert "general" in resp.json()["detail"]
+
+
+def _locking_pool(schema, locks, stored, update_hook=None):
+    """A fake schema pool whose connection emulates cluster-wide advisory locks by key."""
+    import asyncio
+
+    async def update(sql, role, source_key):
+        if update_hook is not None:
+            await update_hook(schema, role)
+        stored[schema] = role
+        return [_updated()]
+
+    async def execute(sql, key):
+        lock = locks.setdefault(key, asyncio.Lock())
+        if "pg_advisory_lock" in sql:
+            await lock.acquire()
+        else:
+            lock.release()
+
+    return fake_pool(fetch=AsyncMock(side_effect=update), execute=AsyncMock(side_effect=execute))
+
+
+async def test_overlapping_successful_updates_leave_all_schemas_on_one_role(app):
+    import asyncio
+
+    first_reached_travel = asyncio.Event()
+    second_wrote_travel = asyncio.Event()
+    stored: dict = {}
+    locks: dict = {}
+
+    async def hook(schema, role):
+        if schema == "travel" and role == "household_member":
+            first_reached_travel.set()
+            try:
+                await asyncio.wait_for(second_wrote_travel.wait(), timeout=0.5)
+            except TimeoutError:
+                pass
+        if schema == "travel" and role == "team":
+            second_wrote_travel.set()
+
+    _wire(
+        app,
+        {
+            "general": _locking_pool("general", locks, stored, hook),
+            "travel": _locking_pool("travel", locks, stored, hook),
+        },
+        audit=fake_pool(execute=None),
+    )
+    first = asyncio.create_task(_post(app, {"source_key": KEY, "role": "household_member"}))
+    await asyncio.wait_for(first_reached_travel.wait(), timeout=5)
+    second = asyncio.create_task(_post(app, {"source_key": KEY, "role": "team"}))
+    responses = await asyncio.wait_for(asyncio.gather(first, second), timeout=10)
+
+    assert all(r.status_code == 200 for r in responses)
+    assert stored["general"] == stored["travel"], stored
+
+
+async def test_the_lock_is_released_even_when_a_schema_write_fails(app):
+    locks: dict = {}
+    stored: dict = {}
+    good = _locking_pool("general", locks, stored)
+    bad = fake_pool(fetch=AsyncMock(side_effect=RuntimeError("down")), execute=None)
+    _wire(app, {"general": good, "travel": bad}, audit=fake_pool(execute=None))
+
+    resp = await _post(app, {"source_key": KEY, "role": "team"})
+
+    assert resp.status_code == 200 and resp.json()["data"]["failed_butlers"] == ["travel"]
+    assert not any(lock.locked() for lock in locks.values())
+
+
+async def test_an_unavailable_lock_is_a_503_and_writes_nothing(app):
+    general = fake_pool(fetch=[_updated()], execute=AsyncMock(side_effect=RuntimeError("down")))
+    _wire(app, {"general": general}, audit=fake_pool(execute=None))
+
+    resp = await _post(app, {"source_key": KEY, "role": "team"})
+
+    assert resp.status_code == 503
+    general.fetch.assert_not_awaited()
