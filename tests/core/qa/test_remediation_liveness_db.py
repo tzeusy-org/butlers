@@ -147,7 +147,19 @@ async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(db
         resp = await _call(app, "POST", "/api/qa/circuit-breaker/reset", json=body)
         assert resp.status_code == 200
         assert resp.json()["data"]["reset"] is False
-    assert await pool.fetchval("SELECT count(*) FROM public.breaker_resets") == 0
+    # Each refusal is persisted as an owner-visible decision, and none of them clears the breaker.
+    refused = await pool.fetch(
+        "SELECT cause_ref, refusal_reason FROM public.breaker_resets WHERE outcome = 'refused'"
+    )
+    assert sorted((r["cause_ref"], r["refusal_reason"]) for r in refused if r["cause_ref"]) == [
+        ("retry", "structural_cause_present:publisher_unconfigured")
+    ]
+    assert len(refused) == 2
+    assert (
+        await pool.fetchval("SELECT count(*) FROM public.breaker_resets WHERE outcome = 'reset'")
+        == 0
+    )
+    assert (await _call(app, "GET", "/api/qa/circuit-breaker")).json()["data"]["tripped"] is True
 
     ok = await _call(
         app,
@@ -156,7 +168,9 @@ async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(db
         json={"cause_ref": "publisher_unconfigured:PR-1"},
     )
     assert ok.json()["data"]["reset"] is True
-    row = await pool.fetchrow("SELECT cause_code, cause_ref FROM public.breaker_resets")
+    row = await pool.fetchrow(
+        "SELECT cause_code, cause_ref FROM public.breaker_resets WHERE outcome = 'reset'"
+    )
     assert (row["cause_code"], row["cause_ref"]) == ("publisher_unconfigured", "PR-1")
 
 

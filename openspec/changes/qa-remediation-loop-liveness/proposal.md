@@ -29,4 +29,4 @@ Paging these conditions through the owner-attention outbox: the fixed producer's
 the bootstrap-owned `scripts/init-db.sql`, so extending it is a separate owner-run step tracked as a
 follow-up. Conditions appear on the dashboard summary until then.
 
-Tracking: `bu-ejow5p.8`. Spec wording lands in a PR marked `(needs owner approval)`.
+Tracking: `bu-ejow5p.8`.

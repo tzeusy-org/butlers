@@ -45,7 +45,7 @@ Scope: v1-mandatory
 
 #### Scenario: Reset without a cause
 - **WHEN** a reset names no cause, or the dominant cause is structural and the reset names another
-- **THEN** it is refused with `refusal_reason` and no `breaker_resets` row is written
+- **THEN** it is refused with `refusal_reason` and recorded as a `breaker_resets` row with `outcome = 'refused'`, which never clears the breaker
 
 #### Scenario: Reset naming the structural cause
 - **WHEN** the dominant cause is `publisher_unconfigured` and the reset names `publisher_unconfigured:<reference>` with a fresh reference

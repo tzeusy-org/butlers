@@ -103,18 +103,18 @@ async def test_breaker_condition_needs_a_trip_older_than_the_threshold() -> None
     old = NOW - rl.BREAKER_OPEN_AFTER - timedelta(minutes=1)
     fresh = NOW - timedelta(hours=1)
 
-    def pool(rows: list[dict[str, Any]]) -> ScriptedPool:
+    def scripted(rows: list[dict[str, Any]]) -> ScriptedPool:
         return ScriptedPool({"breaker_resets": rows, "SELECT clock_timestamp()": NOW})
 
     tripped_old = [_attempt("failed", PUB, old)] * 5
-    assert (await rl.measure_breaker_open(pool(tripped_old))).state == "present"
-    assert (await rl.measure_breaker_open(pool([_attempt("failed", PUB, fresh)] * 5))).state == (
-        "absent"
-    )
+    assert (await rl.measure_breaker_open(scripted(tripped_old))).state == "present"
+    assert (
+        await rl.measure_breaker_open(scripted([_attempt("failed", PUB, fresh)] * 5))
+    ).state == ("absent")
     # Four failures or one success in the streak: not tripped.
-    assert (await rl.measure_breaker_open(pool(tripped_old[:4]))).state == "absent"
+    assert (await rl.measure_breaker_open(scripted(tripped_old[:4]))).state == "absent"
     mixed = [*tripped_old[:4], _attempt("pr_merged", None, old)]
-    assert (await rl.measure_breaker_open(pool(mixed))).state == "absent"
+    assert (await rl.measure_breaker_open(scripted(mixed))).state == "absent"
     assert (await rl.measure_breaker_open(ScriptedPool({}, fail=True))).state == "unmeasurable"
 
 
@@ -125,12 +125,12 @@ async def test_funnel_is_unmeasurable_with_zero_opportunities() -> None:
 
 
 async def test_funnel_present_only_when_enough_opportunities_and_no_merge() -> None:
-    def pool(opportunities: int, merged: int) -> ScriptedPool:
+    def scripted(opportunities: int, merged: int) -> ScriptedPool:
         return ScriptedPool({"opportunities": {"opportunities": opportunities, "merged": merged}})
 
-    assert (await rl.measure_funnel(pool(3, 0))).state == "present"
-    assert (await rl.measure_funnel(pool(2, 0))).state == "absent"  # below K: no absence claim
-    assert (await rl.measure_funnel(pool(9, 1))).state == "absent"
+    assert (await rl.measure_funnel(scripted(3, 0))).state == "present"
+    assert (await rl.measure_funnel(scripted(2, 0))).state == "absent"  # below K: no absence claim
+    assert (await rl.measure_funnel(scripted(9, 1))).state == "absent"
 
 
 async def test_proposal_unadopted() -> None:
@@ -215,3 +215,42 @@ async def test_reset_refused_when_prior_evidence_is_unreadable() -> None:
         ScriptedPool({}, fail=True), "publisher_unconfigured:PR-1", [PUB] * 5
     )
     assert not decision.allowed and decision.reason == "evidence_unreadable"
+
+
+class RecordingPool:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[tuple[str, tuple[Any, ...]]] = []
+
+    async def execute(self, sql: str, *args: Any) -> None:
+        if self.fail:
+            raise RuntimeError("db down")
+        self.calls.append((sql, args))
+
+
+async def test_refusal_is_persisted_as_a_refused_row_with_its_reason() -> None:
+    decision = rl.ResetDecision(False, "execution_failure", "retry", "structural_cause_present:x")
+    pool = RecordingPool()
+    assert await rl.record_reset_refusal(pool, decision, reset_by="dashboard") is True
+    sql, args = pool.calls[0]
+    assert "'refused'" in sql
+    assert args == (
+        "dashboard",
+        "Manual reset refused",
+        "execution_failure",
+        "retry",
+        "structural_cause_present:x",
+    )
+
+
+async def test_refusal_persistence_failure_is_reported_not_raised() -> None:
+    decision = rl.ResetDecision(False, reason="cause_ref_required")
+    assert await rl.record_reset_refusal(RecordingPool(fail=True), decision, reset_by="d") is False
+
+
+def test_streak_and_admission_share_the_breaker_constants_and_ignore_refusals() -> None:
+    from butlers.core.healing.constants import QA_BREAKER_WHERE_SQL
+
+    assert QA_BREAKER_WHERE_SQL in rl.STREAK_SQL
+    assert "outcome = 'reset'" in QA_BREAKER_WHERE_SQL
+    assert "r.outcome = 'reset'" in rl._PRIOR_STRUCTURAL_SQL

@@ -31,6 +31,10 @@ where `<ref>` is the PR, bead or deploy that changed the cause. Causes come from
 identical structural failures follow a reset, the same `<ref>` is refused (`structural_cause_unchanged`);
 fix the cause and use a new reference.
 
+Every refusal is recorded as a `public.breaker_resets` row with `outcome = 'refused'` and its
+`refusal_reason`, so the decision is auditable. Refusal rows never clear the breaker: admission counts
+only `outcome = 'reset'` rows.
+
 ## Prerequisite stall watchdog
 
 Runs where `bd` access exists, never in the runtime:

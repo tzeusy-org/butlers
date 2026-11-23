@@ -23,13 +23,15 @@ QA_BREAKER_EFFECTIVE_STATUS_SQL = f"""CASE
         ELSE status
     END"""
 
-#: Only launched QA executions that closed after the latest manual reset count.
+#: Only launched QA executions that closed after the latest manual reset count. A refused reset
+#: (``outcome = 'refused'``, bu-ejow5p.8) is an audit row and never clears the breaker.
 QA_BREAKER_WHERE_SQL = """FROM public.healing_attempts
 WHERE qa_patrol_id IS NOT NULL
   AND closed_at IS NOT NULL
   AND healing_session_id IS NOT NULL
   AND closed_at > COALESCE(
-        (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
+        (SELECT max(reset_at) FROM public.breaker_resets
+          WHERE breaker = 'qa' AND outcome = 'reset'),
         '-infinity'::timestamptz
       )
 """

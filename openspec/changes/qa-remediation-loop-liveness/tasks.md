@@ -1,7 +1,7 @@
 ## 1. Honest status and cause-bound reset
 
 - [x] 1.1 `staffer_status` derives from active loop conditions (`degraded`, or `unknown` when unreadable)
-- [x] 1.2 `breaker_resets.cause_code` / `cause_ref` (core_357); reset route requires and records `cause_ref`
+- [x] 1.2 `breaker_resets.cause_code` / `cause_ref` (core_359); reset route requires and records `cause_ref`
 - [x] 1.3 Dashboard reset dialog asks for the cause
 
 ## 2. Producer conditions

@@ -34,7 +34,12 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final, Literal
 
-from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import (
+    CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_WHERE_SQL,
+    QA_PROPOSAL_RETAINED_STATUS,
+)
 from butlers.core.infra_conditions import (
     ConditionTransition,
     Observation,
@@ -88,21 +93,19 @@ _LAUNCHED = """
 _LATEST_ATTEMPT_SQL = (
     f"SELECT status, error_detail, closed_at {_LAUNCHED} ORDER BY closed_at DESC LIMIT 1"
 )
-#: Same filter as dispatch admission: only attempts closed after the latest reset count.
+#: Same filter and effective status as dispatch admission and the dashboard (shared constants).
 STREAK_SQL: Final[str] = f"""
-    SELECT status, error_detail, closed_at {_LAUNCHED}
-      AND closed_at > COALESCE(
-            (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-            '-infinity'::timestamptz)
+    SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status, error_detail, closed_at
+    {QA_BREAKER_WHERE_SQL}
     ORDER BY closed_at DESC
     LIMIT $1
 """
 _NOW_SQL = "SELECT clock_timestamp()"
-_UNADOPTED_SQL = """
+_UNADOPTED_SQL = f"""
     SELECT count(*) AS n, min(updated_at) AS oldest
     FROM public.healing_attempts
     WHERE qa_patrol_id IS NOT NULL
-      AND status = 'proposal_retained'
+      AND ({QA_BREAKER_EFFECTIVE_STATUS_SQL}) = '{QA_PROPOSAL_RETAINED_STATUS}'
       AND pr_url IS NULL
       AND updated_at < clock_timestamp() - make_interval(secs => $1)
 """
@@ -350,7 +353,7 @@ _MAX_REF = 200
 _PRIOR_STRUCTURAL_SQL = """
     SELECT 1
     FROM public.breaker_resets r
-    WHERE r.breaker = 'qa' AND r.cause_code = $1 AND r.cause_ref = $2
+    WHERE r.breaker = 'qa' AND r.outcome = 'reset' AND r.cause_code = $1 AND r.cause_ref = $2
       AND EXISTS (
         SELECT 1 FROM public.healing_attempts a
         WHERE a.qa_patrol_id IS NOT NULL AND a.closed_at > r.reset_at
@@ -399,3 +402,32 @@ async def evaluate_reset(
         if prior:
             return ResetDecision(False, code, ref, reason=f"structural_cause_unchanged:{dominant}")
     return ResetDecision(True, code, ref)
+
+
+_RECORD_REFUSAL_SQL = """
+    INSERT INTO public.breaker_resets
+        (breaker, reset_by, reason, cause_code, cause_ref, outcome, refusal_reason)
+    VALUES ('qa', $1, $2, $3, $4, 'refused', $5)
+"""
+
+
+async def record_reset_refusal(pool: Any, decision: ResetDecision, *, reset_by: str) -> bool:
+    """Persist a refused reset as an owner-visible decision; returns whether it was stored.
+
+    The row carries ``outcome = 'refused'`` so it never clears the breaker (the admission filter
+    counts only ``outcome = 'reset'``). A failed write is logged, never raised: the refusal still
+    stands, but the caller learns the audit row is missing.
+    """
+    try:
+        await pool.execute(
+            _RECORD_REFUSAL_SQL,
+            reset_by,
+            "Manual reset refused",
+            decision.cause_code,
+            decision.cause_ref,
+            decision.reason,
+        )
+    except Exception as exc:  # noqa: BLE001 - reduced to a typed log
+        logger.warning("QA breaker reset refusal not persisted (category=%s)", type(exc).__name__)
+        return False
+    return True

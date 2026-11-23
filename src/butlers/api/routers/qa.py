@@ -92,6 +92,7 @@ from butlers.core.qa.remediation_liveness import (
 from butlers.core.qa.remediation_liveness import (
     active_loop_conditions,
     evaluate_reset,
+    record_reset_refusal,
 )
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
@@ -3542,6 +3543,7 @@ async def reset_circuit_breaker(
     )
     if not decision.allowed:
         logger.warning("QA circuit breaker reset refused (reason=%s)", decision.reason)
+        await record_reset_refusal(pool, decision, reset_by="dashboard")
         return ApiResponse(
             data=CircuitBreakerResetResponse(
                 reset=False,
