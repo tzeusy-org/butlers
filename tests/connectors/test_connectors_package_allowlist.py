@@ -41,6 +41,7 @@ CONNECTOR_FILES = {
     "home_assistant_scrub.py": "H:home_assistant",
     "home_assistant_wellness.py": "H:home_assistant",
     "ingest_retry.py": "K",
+    "ingest_submit.py": "K",
     "known_contact_snapshot.py": "K",
     "live_listener/__init__.py": "E",
     "live_listener/__main__.py": "E",

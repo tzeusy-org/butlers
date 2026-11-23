@@ -76,6 +76,7 @@ from butlers.connectors.filtered_event_buffer import (
 )
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -3142,16 +3143,10 @@ class SpotifyConnector:
         async with self._semaphore:
             start_t = time.perf_counter()
             try:
-                result = await self._mcp_client.call_tool("ingest", envelope)
+                result = await submit_ingest(self._mcp_client, envelope)
                 latency = time.perf_counter() - start_t
 
-                status = "success"
-                if isinstance(result, dict):
-                    resp_status = result.get("status", "")
-                    if resp_status == "duplicate":
-                        status = "duplicate"
-                    elif resp_status not in ("accepted", "queued", "duplicate"):
-                        logger.warning("SpotifyConnector: unexpected ingest response: %s", result)
+                status = "duplicate" if result.duplicate else "success"
 
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_ingest_submit = time.time()
