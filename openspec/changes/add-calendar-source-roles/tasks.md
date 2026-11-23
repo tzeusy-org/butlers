@@ -11,6 +11,6 @@
 ## 2. Deferred
 
 - [x] 2.1 `POST /api/calendar/sources/role` and the source list's role fields (S2 backend).
-- [ ] 2.1b Role picker in the source settings UI (S2 frontend).
+- [x] 2.1b Role picker in the source settings UI (S2 frontend).
 - [ ] 2.2 `role_subject_entity_id` and `household_time` read (S3).
 - [ ] 2.3 Role on the connector mirror (S4).
