@@ -117,6 +117,7 @@ OP GET /api/calendar/workspace/conflicts 6e4f58219019
 OP GET /api/calendar/workspace/day-briefing acff28e7abd4
 OP GET /api/calendar/workspace/day-sheet ac11c5ab1905
 OP GET /api/calendar/workspace/entries/{entry_id} a79017fc237f
+OP GET /api/calendar/workspace/household-time 8c9aeef11b75
 OP GET /api/calendar/workspace/invitations 5347ebdec7a3
 OP GET /api/calendar/workspace/meta fe2b095641fb
 OP GET /api/calendar/workspace/prep/{event_id} d7e0a9abf65f
@@ -839,6 +840,7 @@ ROUTE APIRoute GET '/api/calendar/workspace/conflicts' name=get_workspace_confli
 ROUTE APIRoute GET '/api/calendar/workspace/day-briefing' name=get_day_briefing op=get_day_briefing_api_calendar_workspace_day_briefing_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/day-sheet' name=get_day_sheet op=get_day_sheet_api_calendar_workspace_day_sheet_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/entries/{entry_id}' name=get_entry_detail op=get_entry_detail_api_calendar_workspace_entries__entry_id__get tags=calendar,workspace schema=True
+ROUTE APIRoute GET '/api/calendar/workspace/household-time' name=get_household_time op=get_household_time_api_calendar_workspace_household_time_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/invitations' name=get_workspace_invitations op=get_workspace_invitations_api_calendar_workspace_invitations_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/meta' name=get_workspace_meta op=get_workspace_meta_api_calendar_workspace_meta_get tags=calendar,workspace schema=True
 ROUTE APIRoute GET '/api/calendar/workspace/prep/{event_id}' name=get_meeting_prep op=get_meeting_prep_api_calendar_workspace_prep__event_id__get tags=calendar,workspace schema=True
@@ -1561,6 +1563,7 @@ SCHEMA ApiResponse_Glance_ bf01a7af7311
 SCHEMA ApiResponse_GoalDetail_ c491f0eea176
 SCHEMA ApiResponse_HeartbeatFacts_ ec165b10ebef
 SCHEMA ApiResponse_HourlyActivity_ bf207375eceb
+SCHEMA ApiResponse_HouseholdTimeResponse_ 7e2a2cfda841
 SCHEMA ApiResponse_IngestionEventDetail_ 27e8ae7b7efa
 SCHEMA ApiResponse_IngestionEventPayload_ 714e7759578d
 SCHEMA ApiResponse_IngestionEventRollup_ 66f5c42b1e19
@@ -1834,8 +1837,8 @@ SCHEMA CalendarProposalAcceptRequest 944a5f67aea1
 SCHEMA CalendarProposalActionResponse 166d3f5e0c01
 SCHEMA CalendarRespondRequest 8603b1271b4b
 SCHEMA CalendarRespondResponse ff107009f6d1
-SCHEMA CalendarSourceRoleRequest 113f98a00a13
-SCHEMA CalendarSourceRoleResponse 9e386c5cfebd
+SCHEMA CalendarSourceRoleRequest 75fa90b3902a
+SCHEMA CalendarSourceRoleResponse 105fd915af28
 SCHEMA CalendarSourceToggleRequest 9e24d7b3c527
 SCHEMA CalendarSourceToggleResponse a8e2ac569c3d
 SCHEMA CalendarSuggestedSlot a41cfdb65ca7
@@ -1911,7 +1914,7 @@ SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
 SCHEMA ConflictEventRef efcc18dfe2f9
 SCHEMA ConflictIssue 437d3d1463d5
-SCHEMA ConflictScanResponse 864b121f6867
+SCHEMA ConflictScanResponse 92f9148f7a01
 SCHEMA ConflictScanWindow 6af1a276ab4b
 SCHEMA ConnectionModel 89d5a5b90eaf
 SCHEMA ConnectivityResult f0a06b0d71b0
@@ -2144,6 +2147,9 @@ SCHEMA HeartbeatResponse 03569862eb2b
 SCHEMA HoldRequest db4c120305c7
 SCHEMA HourlyActivity 478d981d4bab
 SCHEMA HourlyActivityBucket be581198a6b2
+SCHEMA HouseholdEventRef 5a140c50e6a5
+SCHEMA HouseholdSubjectGroup 3cb5cf0575eb
+SCHEMA HouseholdTimeResponse 753de67ff5e1
 SCHEMA IdentityInfo 307c5b09734f
 SCHEMA IngestionDroppedKnownSummary 2417cf25aba5
 SCHEMA IngestionEventDetail f12ba12da37e

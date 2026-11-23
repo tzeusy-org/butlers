@@ -552,7 +552,7 @@ async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
         patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
     ):
         await run_calendar_context_producer(pool)
-    sql = " ".join(pool.fetch.await_args.args[0].split())
+    sql = " ".join(pool.fetch.await_args_list[0].args[0].split())
     assert "event_type" in sql
     assert "ce.all_day = false OR ce.event_type = 'outOfOffice'" in sql
 
@@ -588,7 +588,22 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert result["signal"] == "meeting"
     assert result["value"] == "busy"
     assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
-    pool.fetch.assert_awaited_once()
+    assert pool.fetch.await_count == 2  # the owner read, then the household count
+
+
+async def test_a_failed_household_count_read_keeps_the_owner_signal():
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    owner = _active_calendar_row(
+        title="Standup", starts_at=now - timedelta(minutes=5), ends_at=now + timedelta(minutes=20)
+    )
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[owner], RuntimeError("household read failed")])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        result = await run_calendar_context_producer(pool)
+    assert result["signal"] == "meeting" and "household_events" not in result
 
 
 async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
@@ -1693,3 +1708,71 @@ async def test_the_calendar_query_joins_the_source_role():
     sql = pool.fetch.await_args.args[0]
     assert "JOIN calendar_sources cs ON cs.id = ce.source_id" in sql
     assert "cs.time_role" in sql
+
+
+# -- household context: other people's live events are reported, never a signal (REQ-context-bus-019)
+
+
+async def test_a_household_event_sets_no_signal_but_is_reported():
+    result, set_context, clear_context = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Synthetic private appointment",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="household_member",
+            ),
+            _active_calendar_row(
+                title="Unclassified",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="unclassified",
+            ),
+        ]
+    )
+    assert result["signal"] is None
+    assert result["household_events"] == 1  # unclassified counts as nothing
+    set_context.assert_not_awaited()
+    assert "Synthetic private appointment" not in repr(result)
+    assert {c.args[2] for c in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_no_household_key_when_there_is_none():
+    result, _, _ = await _run_calendar([])
+    assert "household_events" not in result
+
+
+async def test_a_tentative_household_event_counts_as_context_but_never_as_owner_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative partner event",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    time_role="household_member",
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["household_events"] == 1 and result["signal"] is None
+    set_context.assert_not_awaited()
+
+
+async def test_a_tentative_owner_event_still_sets_no_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative owner meeting",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    metadata=_SELF_ATTENDEE,
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["signal"] is None
+    set_context.assert_not_awaited()

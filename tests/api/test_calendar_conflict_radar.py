@@ -207,10 +207,14 @@ def _ws_row(
     timezone: str = "UTC",
     event_metadata: object | None = None,
     time_role: str = "owner",
+    subject_entity_id=None,
+    subject_label: str | None = None,
 ) -> dict:
     """A workspace event-instance row (shape ``row_to_workspace`` consumes)."""
     return {
         "source_time_role": time_role,
+        "source_subject_entity_id": subject_entity_id,
+        "source_subject_label": subject_label,
         "instance_id": entry_id,
         "origin_instance_ref": str(uuid4()),
         "instance_timezone": timezone,
@@ -1269,3 +1273,97 @@ async def test_conflicts_endpoint_reports_how_many_unclassified_calendars_were_s
     # Every synthetic row gets its own source id, so two events are two calendars here.
     assert data["unclassified_sources"] == 2
     assert data["issues"] == []
+
+
+# -- household context beside the scan (bu-5ii4gj.1 S3, REQ-calendar-conflict-overcommitment-radar-003)
+
+
+async def test_conflicts_endpoint_lists_household_events_as_opaque_context_not_issues(app):
+    subject = uuid4()
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    partner = _ws_row(
+        entry_id="partner",
+        title="Synthetic private appointment",
+        start=_DAY + timedelta(minutes=30),
+        time_role="household_member",
+        subject_entity_id=subject,
+        subject_label="Alex",
+        event_metadata={
+            "source_type": "provider_event",
+            "attendees": [{"email": "guest@example.test"}],
+        },
+    )
+    partner["location"] = "12 Synthetic Road"
+    unknown = _ws_row(
+        entry_id="unknown",
+        title="Unclassified block",
+        start=_DAY + timedelta(minutes=15),
+        time_role="unclassified",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, partner, unknown]})
+
+    response = await _get(app)
+    data = response.json()["data"]
+
+    assert data["issues"] == []  # context never forms a conflict
+    [context] = data["household_context"]
+    assert context["subject_entity_id"] == str(subject) and context["subject_label"] == "Alex"
+    assert set(context) == {
+        "role",
+        "subject_entity_id",
+        "subject_label",
+        "start_at",
+        "end_at",
+        "all_day",
+    }
+    for leaked in ("Synthetic private appointment", "Synthetic Road", "guest@example.test"):
+        assert leaked not in response.text
+    assert data["unclassified_events"] == 1  # the coverage line is unchanged
+
+
+async def test_household_time_endpoint_groups_by_subject_and_leaks_nothing(app):
+    alex, sam = uuid4(), uuid4()
+    rows = [
+        _ws_row(
+            entry_id="a1",
+            title="Synthetic A1",
+            start=_DAY,
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="a2",
+            title="Synthetic A2",
+            start=_DAY + timedelta(hours=3),
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="s1",
+            title="Synthetic S1",
+            start=_DAY,
+            time_role="team",
+            subject_entity_id=sam,
+            subject_label="Sam",
+        ),
+        _ws_row(entry_id="mine", title="Owner", start=_DAY),
+        _ws_row(entry_id="u", title="Unclassified", start=_DAY, time_role="unclassified"),
+    ]
+    app, _ = _build_app(app, workspace_rows={"general": rows})
+    start = _DAY - timedelta(hours=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/calendar/workspace/household-time",
+            params={"start": start.isoformat(), "end": (start + timedelta(days=1)).isoformat()},
+        )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["available"] is True
+    by_subject = {g["subject_label"]: len(g["events"]) for g in data["subjects"]}
+    assert by_subject == {"Alex": 2, "Sam": 1}
+    for leaked in ("Synthetic A1", "Synthetic S1", "Owner", "Unclassified"):
+        assert leaked not in response.text

@@ -6,6 +6,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
+from butlers.core.temporal.household_context import (
+    HOUSEHOLD_OVERLAP_SQL,
+    events_from_overlap_rows,
+)
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -466,7 +470,37 @@ class ConflictsMixin:
             "slots": slots,
             "duration_minutes": duration_minutes,
             "calendar_ids": resolved_ids,
+            "household_context": await self._household_context(search_start, search_end),
         }
+
+    async def _household_context(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Other people's events in the window as time-and-subject context, never busy time.
+
+        They do not remove a slot (free/busy spans owner calendars only); this lists them beside
+        the slots so a proposal can say whose calendar a window sits next to. No title, location
+        or attendee leaves this read (REQ-module-calendar-038). Fail-open: an unreadable ledger
+        gives an empty list.
+        """
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        if pool is None:
+            return []
+        try:
+            rows = await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end)
+        except Exception:
+            logger.warning("Failed to read household context", exc_info=True)
+            return []
+        events = events_from_overlap_rows(rows)
+        return [
+            {
+                "role": e.role,
+                "subject_entity_id": e.subject_entity_id,
+                "subject_label": e.subject_label,
+                "start_at": e.starts_at.isoformat(),
+                "end_at": e.ends_at.isoformat(),
+                "all_day": e.all_day,
+            }
+            for e in events
+        ]
 
     @staticmethod
     def _build_suggested_slots(

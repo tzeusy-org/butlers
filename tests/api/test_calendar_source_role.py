@@ -53,7 +53,7 @@ async def test_the_role_is_written_confirmed_in_every_schema(app):
     for pool in (general, travel):
         sql, *args = pool.fetch.await_args.args
         assert "role_basis = 'owner_confirmed'" in sql
-        assert args == ["household_member", KEY]
+        assert args == ["household_member", KEY, None]
 
 
 async def test_clearing_returns_the_source_to_inference(app):
@@ -65,7 +65,7 @@ async def test_clearing_returns_the_source_to_inference(app):
     data = resp.json()["data"]
     assert data["role"] == "unclassified" and data["role_basis"] == "provider_inferred"
     sql, *args = general.fetch.await_args.args
-    assert "role_basis = 'provider_inferred'" in sql and args == ["unclassified", KEY]
+    assert "role_basis = 'provider_inferred'" in sql and args == ["unclassified", KEY, None]
 
 
 async def test_an_unknown_role_is_refused_and_nothing_is_written(app):
@@ -108,7 +108,7 @@ def _locking_pool(schema, locks, stored, update_hook=None):
     """A fake schema pool whose connection emulates cluster-wide advisory locks by key."""
     import asyncio
 
-    async def update(sql, role, source_key):
+    async def update(sql, role, source_key, subject=None):
         if update_hook is not None:
             await update_hook(schema, role)
         stored[schema] = role
@@ -233,3 +233,38 @@ async def test_the_lock_holding_connection_serves_its_own_schemas_write(app):
     resp = await asyncio.wait_for(_post(app, {"source_key": KEY, "role": "team"}), timeout=3)
 
     assert resp.status_code == 200 and general.writes == 1
+
+
+async def test_a_subject_is_written_with_a_household_role(app):
+    subject = uuid4()
+    general = fake_pool(fetch=[_updated()], fetchval=1, execute=None)
+    _wire(app, {"general": general}, audit=fake_pool(execute=None))
+
+    resp = await _post(
+        app, {"source_key": KEY, "role": "household_member", "subject_entity_id": str(subject)}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["data"]["subject_entity_id"] == str(subject)
+    _, *args = general.fetch.await_args.args
+    assert args == ["household_member", KEY, subject]
+
+
+async def test_a_subject_is_refused_for_a_role_that_has_none(app):
+    general = fake_pool(fetch=[_updated()], execute=None)
+    _wire(app, {"general": general}, audit=fake_pool(execute=None))
+
+    resp = await _post(app, {"source_key": KEY, "role": "owner", "subject_entity_id": str(uuid4())})
+
+    assert resp.status_code == 422
+    general.fetch.assert_not_awaited()
+
+
+async def test_an_unknown_subject_entity_is_a_404(app):
+    general = fake_pool(fetch=[_updated()], fetchval=None, execute=None)
+    _wire(app, {"general": general}, audit=fake_pool(execute=None))
+
+    resp = await _post(app, {"source_key": KEY, "role": "team", "subject_entity_id": str(uuid4())})
+
+    assert resp.status_code == 404
+    general.fetch.assert_not_awaited()

@@ -1,7 +1,7 @@
 """Withhold legacy unknown-sender names from the public MCP projection.
 
-Revision ID: core_368
-Revises: core_367
+Revision ID: core_369
+Revises: core_368
 
 Recompute placeholder_name under the existing row filter. Logical replication
 withdraws previously published rows as their filter flag changes; a later
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "core_368"
-down_revision = "core_367"
+revision = "core_369"
+down_revision = "core_368"
 branch_labels = None
 depends_on = None
 
