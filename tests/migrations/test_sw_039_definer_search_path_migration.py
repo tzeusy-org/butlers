@@ -176,7 +176,7 @@ def _ensure_holds_the_literal_schema_lock(db_url: str) -> bool:
 def test_sw_039_pins_targets_and_partition_maintenance_works_with_the_same_lock_key(
     postgres_container,
 ) -> None:
-    """Fresh chain: all ten definers pinned; next-month create and expired drop work."""
+    """Fresh chain: all ten definers pinned; next-month create works and the drop refuses (sw_086)."""
     db_url = _migrated_db(postgres_container)
     targets = _targets(db_url)
     assert len(targets) == 10, sorted(targets)
@@ -192,10 +192,9 @@ def test_sw_039_pins_targets_and_partition_maintenance_works_with_the_same_lock_
     ):
         assert _as_runtime_role(db_url, _PARTITION_CALLS[ensure]) == f"{parent}_p209902"
         assert {f"{parent}_p209902", f"{parent}_p209903"} <= _partitions(db_url, parent)
-        # Retention cutoff is April 2099: February and March are expired.
-        dropped = int(_as_runtime_role(db_url, _PARTITION_CALLS[drop]))
-        assert dropped >= 2
-        assert not {f"{parent}_p209902", f"{parent}_p209903"} & _partitions(db_url, parent)
+        # sw_086 disarmed the drops (bu-uhbhzq.4): they refuse and drop nothing.
+        assert "bu-uhbhzq.7" in _as_runtime_role(db_url, _PARTITION_CALLS[drop])
+        assert {f"{parent}_p209902", f"{parent}_p209903"} <= _partitions(db_url, parent)
 
 
 def test_sw_039_downgrade_restores_prior_bodies_and_reupgrade_is_idempotent(

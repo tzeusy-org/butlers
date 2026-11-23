@@ -123,18 +123,18 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
         relation_result = conn.execute(text("SELECT to_regclass('public.message_inbox_p202401')"))
         assert relation_result.scalar() == "message_inbox_p202401"
 
-        drop_result = conn.execute(
-            text(
-                "SELECT switchboard_message_inbox_drop_expired_partitions("
-                "CAST(:retention AS interval), CAST(:ref AS timestamptz)"
-                ")"
-            ),
-            {
-                "retention": "1 month",
-                "ref": "2024-03-20T00:00:00+00:00",
-            },
-        )
-        assert int(drop_result.scalar() or 0) >= 1
+        # The drop function refuses until a retention contract exists (sw_086,
+        # bu-uhbhzq.4): it raises and the expired partition stays.
+        with pytest.raises(Exception, match="bu-uhbhzq.7"):
+            with conn.begin_nested():
+                conn.execute(
+                    text(
+                        "SELECT switchboard_message_inbox_drop_expired_partitions("
+                        "CAST(:retention AS interval), CAST(:ref AS timestamptz)"
+                        ")"
+                    ),
+                    {"retention": "1 month", "ref": "2024-03-20T00:00:00+00:00"},
+                )
 
         conn.execute(
             text(
@@ -182,7 +182,7 @@ def test_partition_maintenance_and_downgrade_round_trip(postgres_container):
         )
     engine.dispose()
 
-    assert not table_exists(db_url, "message_inbox_p202401")
+    assert table_exists(db_url, "message_inbox_p202401")  # never dropped
 
     config = _build_alembic_config(db_url, chains=["switchboard"])
     command.downgrade(config, "switchboard@base")
