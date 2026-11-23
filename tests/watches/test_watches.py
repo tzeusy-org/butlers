@@ -158,11 +158,11 @@ class TestAuthoring:
     @pytest.mark.parametrize(
         "mutate",
         [
-            {"sources": DEFAULT_SOURCES | {"perception:owner.mode"}},
-            {"sources": frozenset({SOURCE})},
+            {"sources": frozenset({"condition:finance:bill-overdue"})},
+            {"sources": frozenset()},
             {"subjects": frozenset({ROUTINE, "someone-else"})},
         ],
-        ids=["source added", "source removed", "subject widened"],
+        ids=["own source removed", "all sources removed", "subject widened"],
     )
     async def test_a_grant_changed_since_the_card_refuses_create(self, service, store, mutate):
         card = service.propose_create({"predicate": PREDICATE}, now=NOW)
@@ -179,7 +179,7 @@ class TestAuthoring:
         renew = await service.propose_renew(watch.id, now=later)
         await service.pause(watch.id, origin="owner", now=NOW)
         resume = await service.propose_update(watch.id, resume=True)
-        GRANT.update(sources=DEFAULT_SOURCES | {"perception:owner.mode"})
+        GRANT.update(sources=DEFAULT_SOURCES - {SOURCE})  # a source the watch reads is gone
         registered = len(conditions.instances)
         for card in (renew, resume):
             with pytest.raises(WatchRefused):
@@ -188,9 +188,16 @@ class TestAuthoring:
 
     async def test_the_grant_is_rechecked_at_the_register_seam(self, service):
         _, watch = await create(service)
-        GRANT.update(sources=frozenset({SOURCE}))
+        GRANT.update(sources=frozenset({"condition:finance:bill-overdue"}))
         with pytest.raises(WatchRefused):
             await service._register(watch, snap())
+
+    async def test_an_unrelated_registry_change_does_not_refuse(self, service, store):
+        card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+        assert card.sources == (SOURCE,)  # the card binds the predicate's own read set only
+        GRANT.update(sources=DEFAULT_SOURCES | {"perception:owner.mode"})  # the registry grew
+        watch = await service.approve(card, approve(card), snap())
+        assert watch.state is WatchState.ACTIVE and len(store.watches) == 1
 
     async def test_a_replayed_approval_creates_one_watch_and_one_instance(
         self, service, store, conditions

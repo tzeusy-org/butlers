@@ -1164,3 +1164,17 @@ def test_sql_and_python_predicate_validators_give_the_same_verdict(db):
             sql = False  # a refusing raise (e.g. a malformed instant) is a refusal
         assert python is valid, f"{name}: Python verdict drifted from the corpus"
         assert bool(sql) is python, f"{name}: SQL={sql} Python={python}"
+
+
+def test_owner_watch_sources_flags_a_written_kind_without_any_time_or_content(db):
+    def sources():
+        return call(db, "SELECT public.owner_watch_sources()", {}, "butler_switchboard_rw")
+
+    before = {row["kind"]: row for row in sources()}
+    assert all(set(row) == {"kind", "written"} for row in before.values())
+    assert before["owner.place"]["written"] is False
+    assert write(db, request())["status"] == "committed"
+    after = {row["kind"]: row for row in sources()}
+    assert after["owner.place"] == {"kind": "owner.place", "written": True}
+    assert [k for k, row in after.items() if row["written"]] == ["owner.place"]
+    assert "T" not in json.dumps(after) and str(OWNER) not in json.dumps(after)  # no time, subject

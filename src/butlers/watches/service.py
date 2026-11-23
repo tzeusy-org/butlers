@@ -29,6 +29,7 @@ from butlers.conditions import (
     Tri,
 )
 from butlers.conditions.predicate import digest as predicate_digest
+from butlers.conditions.predicate import sources as predicate_sources
 from butlers.conditions.service import check_registration
 from butlers.core.goal_labels import CATEGORIES, Label
 from butlers.watches.model import (
@@ -39,6 +40,7 @@ from butlers.watches.model import (
     OWNER,
     SPEC_FIELDS,
     Action,
+    GrantUnavailable,
     OwnerApproval,
     Watch,
     WatchCard,
@@ -127,13 +129,14 @@ class WatchService:
             )
         except RegistrationRefused as exc:
             raise WatchRefused(str(exc)) from None
+        narrowed = self._narrow(grant, predicate)
         return WatchCard(
             action=Action.CREATE,
             watch_id=watch_id,
             target_version=1,
             predicate=predicate,
-            grant_digest=grant.digest,
-            sources=tuple(sorted(grant.sources)),
+            grant_digest=narrowed.digest,
+            sources=tuple(sorted(narrowed.sources)),
             categories=tuple(sorted(set(categories))),
             delivery=delivery,
             expires_at=None,
@@ -219,7 +222,7 @@ class WatchService:
         if card.action is Action.DELETE:
             return await self._delete(current, card, now)
         if card.action is Action.RENEW or (card.resume and current.state is WatchState.PAUSED):
-            self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
+            self._grant_is_current(card.watch_id, card.predicate, card.grant_digest, card.sources)
         if card.action is Action.RENEW:
             return await self._renew(current, card, snapshot)
         return await self._update(current, card, snapshot)
@@ -232,7 +235,7 @@ class WatchService:
             # A replay never re-inserts or re-registers: it only makes the condition match the
             # committed state, so a watch closed by a failed registration stays closed.
             return await self._reconcile(existing, snapshot)
-        self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
+        self._grant_is_current(card.watch_id, card.predicate, card.grant_digest, card.sources)
         watch = Watch(
             id=card.watch_id,
             version=1,
@@ -262,9 +265,15 @@ class WatchService:
         return stored
 
     def grant_is_current(self, watch: Watch) -> bool:
-        """True while the live grant is the one the owner approved for this watch."""
+        """True while the live grant is the one the owner approved for this watch.
+
+        Raises ``GrantUnavailable`` when the live grant cannot be read now: unknown is not
+        "changed", so no caller may pause or withhold on it.
+        """
         try:
-            self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
+            self._grant_is_current(watch.id, watch.predicate, watch.grant_digest, watch.sources)
+        except GrantUnavailable:
+            raise
         except WatchRefused:
             return False
         return True
@@ -273,9 +282,32 @@ class WatchService:
         if self.withdraw is not None:
             await self.withdraw(watch)
 
-    def _grant_is_current(self, watch_id: str, grant_digest: str, sources: tuple[str, ...]) -> None:
+    @staticmethod
+    def _narrow(grant: Grant, predicate: Mapping[str, Any]) -> Grant:
+        """The part of the live grant this watch reads: only the sources its predicate names.
+
+        The card binds this, so a registry that gains a source the predicate never reads does
+        not invalidate the watch.
+        """
+        own = frozenset(predicate_sources(dict(predicate)))
+        return Grant(
+            goal_id=grant.goal_id,
+            sources=own & grant.sources,
+            decisions=grant.decisions,
+            effects=grant.effects,
+            bindings=grant.bindings,
+            subjects=grant.subjects,
+        )
+
+    def _grant_is_current(
+        self,
+        watch_id: str,
+        predicate: Mapping[str, Any],
+        grant_digest: str,
+        sources: tuple[str, ...],
+    ) -> None:
         """Refuse unless the live grant is the one the owner approved (digest and sources)."""
-        grant = self.grant_for(watch_id)
+        grant = self._narrow(self.grant_for(watch_id), predicate)
         if grant.digest != grant_digest or tuple(sorted(grant.sources)) != tuple(sorted(sources)):
             raise WatchRefused("the grant changed since the card was proposed")
 
@@ -289,14 +321,14 @@ class WatchService:
         (a re-arm, a renewal, a resume or a repair) is edge-triggered: it starts unknown with the
         watch's last fire cursor as its floor, so only an event past it can fire it.
         """
-        self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
+        self._grant_is_current(watch.id, watch.predicate, watch.grant_digest, watch.sources)
         seed = watch.generation == 1
         if not seed and cursors is None:
             cursors = await self._last_fire_cursors(watch)
         await self.evaluator.register(
             instance_id=watch.instance_id,
             predicate=watch.predicate,
-            grant=self.grant_for(watch.id),
+            grant=self._narrow(self.grant_for(watch.id), watch.predicate),
             goal_id=watch.id,
             label=_label(watch.categories),
             snapshot=snapshot,
@@ -558,13 +590,12 @@ class WatchService:
         blind = (
             instance is not None and instance.state is State.OPEN and instance.result is Tri.UNKNOWN
         )
-        reason = (
-            "grant_changed"
-            if watch.state is WatchState.PAUSED
-            and watch.pause_reason != "owner"
-            and not self.grant_is_current(watch)
-            else None
-        )
+        reason = None
+        if watch.state is WatchState.PAUSED and watch.pause_reason != "owner":
+            try:
+                reason = None if self.grant_is_current(watch) else "grant_changed"
+            except GrantUnavailable:
+                reason = None  # unknown is not "changed"
         return WatchView(watch, blind, reason)
 
     async def _open(self, watch_id: str) -> Watch:

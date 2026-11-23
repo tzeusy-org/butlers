@@ -5,8 +5,8 @@ Revises: core_364
 Create Date: 2026-11-23 12:00:00.000000
 
 ``public.owner_watch_sources()`` is the one read the owner-watch providers make over perception:
-the registered perception kinds and, for each, when its newest timeline row was written
-(``last_read_at``, NULL for a kind nothing has written yet). It returns no value, subject, label,
+the registered perception kinds and, for each, whether any timeline row exists (``written``, a
+boolean, never a time, so no activity pattern leaks). It returns no value, subject, label,
 evidence or any other timeline column. It is ``SECURITY DEFINER`` with a pinned
 ``search_path``, owned by ``perception_owner`` (the perception tables are FORCE-RLS, owner-only),
 ``REVOKE``d from PUBLIC, and ``EXECUTE`` goes to ``butler_switchboard_rw`` alone. The function
@@ -15,7 +15,11 @@ checks that identity itself too, so a later broader grant still reads nothing.
 The definition lives in the fixed ``scripts/init-db.sql`` installer, as for core_322, core_328 and
 core_333, because only that installer can create a ``perception_owner`` function. This revision
 re-runs the installer and then proves, read-only, that the bootstrap really applied the pinned body,
-owner, search path and ACL. A database whose bootstrap predates this change fails loudly here.
+owner, search path and ACL. A database whose bootstrap predates this change fails loudly here:
+the migration calls the *installed* ``perception_admin.install_interface()``, whose body
+only changes when the fixed bootstrap is replayed, so a database bootstrapped before this revision
+needs one replay of ``scripts/init-db.sql`` (a cluster-superuser act: the owner's, or a deploy that
+already replays it) before this revision applies.
 
 It is outside the perception function allowlist, so the pinned backup catalog profile is unchanged.
 
@@ -37,7 +41,7 @@ depends_on = None
 
 _SWITCHBOARD = "butler_switchboard_rw"
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_368:owner-watch-sources', 0))"
-_BODY_SHA = "0f245803f7227f4813cc0b132138af72e092b2bf830be0dcebaac9a46da1519c"
+_BODY_SHA = "bd76915048ad3d4652a67e0078003cde2283694ee24144441d95f4e1cf39ff6f"
 
 # Catalog-only and lock-free: the function exists with the pinned body, owner, pinned search path,
 # SECURITY DEFINER, STABLE, and an ACL of its owner plus (when the role exists) the Switchboard
@@ -73,9 +77,15 @@ def upgrade() -> None:
     bind = op.get_bind()
     if bind.exec_driver_sql(_INSTALLED).scalar():
         return
+    # Scoped: restore the chain transaction's own timeouts afterwards (SET LOCAL lasts to its end).
+    previous = bind.exec_driver_sql(
+        "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')"
+    ).one()
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("SET LOCAL statement_timeout = '30s'")
     op.execute("SELECT perception_admin.install_interface()")
+    bind.exec_driver_sql("SELECT set_config('lock_timeout', %s, true)", (previous[0],))
+    bind.exec_driver_sql("SELECT set_config('statement_timeout', %s, true)", (previous[1],))
     if not bind.exec_driver_sql(_INSTALLED).scalar():
         raise RuntimeError(
             "owner watch source reader not applied: re-run the fixed bootstrap "

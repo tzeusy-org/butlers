@@ -165,7 +165,9 @@ async def test_the_apply_creates_a_watch_through_the_real_providers(world):
     assert result["status"] == "applied", result
     stored = await runtime.service.store.get(result["watch_id"])
     assert stored is not None and stored.state is WatchState.ACTIVE
-    assert stored.sources == tuple(sorted(runtime.grant_for(stored.id).sources))
+    assert stored.sources == (
+        "perception:owner.mode",
+    )  # the card binds the predicate's own read set
     replay = await apply_watch_card(
         world["pool"],
         card_json=body,
@@ -240,3 +242,30 @@ async def test_resolve_providers_is_absent_unless_live_and_registered(world):
         providers._database = None
         providers._lock_pool_factory = None
         providers._runtime = None
+
+
+async def test_an_expired_cache_leaves_a_running_watch_alone(world):
+    clock_now = [NOW]
+    runtime = _runtime(world, clock=lambda: clock_now[0])
+    card, body = await _parked(world, runtime)
+    provider = runtime.providers()
+    applied = await apply_watch_card(
+        world["pool"],
+        card_json=body,
+        digest=card.digest,
+        service_for=provider.service_for,
+        snapshot_for=provider.snapshot_for,
+        prepare=provider.prepare,
+        now=NOW,
+    )
+    watch = await runtime.service.store.get(applied["watch_id"])
+    assert watch is not None
+    clock_now[0] = NOW + providers.SOURCES_TTL + timedelta(seconds=1)  # expired mid-tick
+    with pytest.raises(GrantUnavailable):
+        runtime.service.grant_is_current(watch)  # unknown, never "changed"
+    view = await runtime.service.view(watch.id)
+    assert view.reason is None
+    result = await tick.run_tick(world["pool"], now=clock_now[0], live=True, providers=provider)
+    assert result["status"] == "ok"  # the tick re-prepared: a fresh read, nothing paused
+    stored = await runtime.service.store.get(watch.id)
+    assert stored is not None and stored.state is WatchState.ACTIVE

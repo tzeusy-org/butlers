@@ -8,7 +8,8 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
 
 - `predicate.validate` accepts only the closed AST: `decision`, `owner_input`,
   `effect_settled`, `at`, `transition`, the M7 leaves `expectation`, `routine_deviation`,
-  `condition`, `mode`, `read_check` and `bundle` (REQ-owner-watches-001), and `all`/`any` (at
+  `condition`, `mode`, `read_check` and `bundle` (REQ-owner-watches-001; `condition`, `read_check` and `bundle` validate
+  but a watch cannot use them yet, because no registry grants those sources), and `all`/`any` (at
   most 16 leaves in total, depth two, 8 KiB of compact JSON). An `expectation_kind` must be a
   registered `expect.*` perception kind, a UUID must be canonical lowercase and hyphenated, an `at`
   instant must be RFC 3339 UTC (`Z` or `+00:00`, no leap second), and a `read_check` number must be zero (any
@@ -147,8 +148,9 @@ condition side effects and the CAS write, in an undoable order: a new generation
 before ACTIVE commits (and is cancelled if the write loses), and a pause or delete commits before
 it cancels. A replayed approval repairs an interrupted transition (it never re-inserts or re-registers a
 create, and an active watch's replay also stops the generation a crashed renewal left open), so ACTIVE implies a live
-condition and PAUSED or DELETED implies none. A create, renew or resume approval is refused unless the live grant still has the digest and
-sources on the card. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
+condition and PAUSED or DELETED implies none. A create, renew or resume approval is refused unless the watch's own read set (the sources its predicate
+names, narrowed from the live grant) still has the digest and sources on the card, so a registry that gains a
+source the watch never reads does not invalidate it. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
 Two stores implement `WatchStore`: `InMemoryWatchStore` and `PostgresWatchStore` over
 `public.owner_watches` (core_364). The table is Switchboard-only behind row-level security (the
 core_323 posture), never deleted or truncated, with an immutable boundary, a version that rises
@@ -197,20 +199,24 @@ the one conditions evaluator over `public.condition_*`, and the insight withdraw
 one place, `public.owner_watch_sources()` (core_368), plus the owner entity, through the Switchboard pool, and
 never write.
 
-- `public.owner_watch_sources()` returns the registered perception kinds and `last_read_at` (the newest timeline
-  row's write time, null for a kind nothing has written) and no other column: no value, subject, label or
-  evidence. It is `SECURITY DEFINER` with a pinned `search_path`, owned by `perception_owner`, revoked from
+- `public.owner_watch_sources()` returns the registered perception kinds and a boolean `written` (whether any
+  timeline row exists for the kind) and no other column: no time, value, subject, label or evidence, so no
+  activity pattern. It is `SECURITY DEFINER` with a pinned `search_path`, owned by `perception_owner`, revoked from
   PUBLIC, executable by `butler_switchboard_rw` only, and checks that identity itself. Its definition lives in
-  the fixed `scripts/init-db.sql` installer (outside the perception backup profile); core_368 re-runs the
-  installer and proves the pinned body, owner, search path and ACL, and a database whose bootstrap predates it
-  fails loudly. Its downgrade is a no-op (additive, read-only).
+  the fixed `scripts/init-db.sql` installer (outside the perception backup profile).
+- Applying core_368 needs that installer replayed once on a database bootstrapped before it: the migration calls
+  the installed `perception_admin.install_interface()`, whose body only changes on a replay, and then proves the
+  pinned body, owner, search path and ACL. Without the replay core_368 fails loudly and changes nothing. The replay
+  is a cluster-superuser act (the owner's, or a deploy that already replays `init-db.sql`). Its downgrade is a
+  no-op (additive, read-only).
 - The grant is re-derived from that read on every call: sources `clock` and `perception:<kind>` for every
   registered kind, subjects the owner entity and the null subject, and never a decision, effect or inbox
-  source. Bundles, conditions, read checks and routines have no registry to derive from yet, so they are not
-  grantable. A moved registry changes the grant digest, so a replayed watch pauses and an approval proposed on
-  the old grant is refused.
+  source. Bundles, conditions, read checks and routines have no registry to derive from yet, so a watch that
+  names one is refused as an undeclared source. A card and a replay compare only the watch's own read set, so the
+  registry growing does not pause anything; a source the watch reads disappearing pauses a replayed watch.
 - The snapshot carries `now` and the kinds nothing has ever written as unmeasurable. It has no decisions,
   inputs, effects or label, because a snapshot cannot witness an occurrence leaf.
 - The sources are cached for 60 seconds, re-read first by every apply and every tick. A read that fails, or no
-  single owner entity, makes both providers answer unknown: a card is refused, the tick is blind and no
-  running watch is paused, fired or changed.
+  single owner entity, makes both providers answer unknown (`GrantUnavailable`, which is never "the grant
+  changed"): a card is refused, the tick is blind, and a watch whose cache expires mid-tick is skipped for that tick
+  with its fire kept for the next. Nothing is paused, consumed, fired or changed on unknown.

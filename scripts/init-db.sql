@@ -9539,9 +9539,9 @@ BEGIN
     GRANT EXECUTE ON FUNCTION public.perception_purge_place_history(integer,boolean)
         TO perception_retention;
 
-    -- The owner-watch source reader (bu-4c7nvp.1.5.1): the registered perception kinds and when
-    -- each last had a row, nothing else. It reads no value, subject, label or timeline column, and
-    -- only the Switchboard runtime role may call it. It is deliberately outside the perception
+    -- The owner-watch source reader (bu-4c7nvp.1.5.1): the registered perception kinds and whether
+    -- each has any row, nothing else (no time, so no activity pattern). It returns no value,
+    -- subject, label or timeline column, and only the Switchboard runtime role may call it. It is deliberately outside the perception
     -- function allowlist above, so the backup catalog profile does not change.
     CREATE OR REPLACE FUNCTION public.owner_watch_sources() RETURNS jsonb
     LANGUAGE plpgsql STABLE SECURITY DEFINER
@@ -9552,8 +9552,8 @@ BEGIN
             RAISE EXCEPTION 'owner watch source reader requires the switchboard identity'
                 USING ERRCODE='42501';
         END IF;
-        RETURN COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',k.kind,'last_read_at',
-            (SELECT max(t.created_at) FROM public.timeline t WHERE t.kind=k.kind))
+        RETURN COALESCE((SELECT jsonb_agg(jsonb_build_object('kind',k.kind,'written',
+            EXISTS (SELECT 1 FROM public.timeline t WHERE t.kind=k.kind))
             ORDER BY k.kind) FROM perception_private.kinds k),'[]'::jsonb);
     END $watch_sources$;
     ALTER FUNCTION public.owner_watch_sources() OWNER TO perception_owner;

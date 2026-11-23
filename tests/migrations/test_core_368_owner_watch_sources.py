@@ -101,13 +101,13 @@ def test_two_schemas_install_once_and_a_downgrade_keeps_the_function(postgres_co
     assert _admin(url, installed) is True
 
 
-def test_the_switchboard_role_reads_kinds_and_last_read_at_only(migrated):
+def test_the_switchboard_role_reads_kinds_and_a_written_flag_only(migrated):
     url, bootstrap = migrated
     raw = _as(bootstrap, _SWITCHBOARD, "SELECT public.owner_watch_sources()::text")
     rows = json.loads(raw)
     assert [row["kind"] for row in rows] == _KINDS
-    assert all(set(row) == {"kind", "last_read_at"} for row in rows)  # no content, subject, label
-    assert all(row["last_read_at"] is None for row in rows)  # nothing written yet
+    assert all(set(row) == {"kind", "written"} for row in rows)  # no time, content or subject
+    assert all(row["written"] is False for row in rows)  # nothing written yet
 
 
 def test_every_other_role_is_denied(migrated):

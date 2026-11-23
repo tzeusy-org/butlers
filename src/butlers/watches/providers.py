@@ -45,7 +45,7 @@ from butlers.core.owner import resolve_owner_entity_id_two_step
 from butlers.watches import tick
 from butlers.watches.approval import PROVIDERS, Providers
 from butlers.watches.delivery import InsightDelivery
-from butlers.watches.model import WatchRefused
+from butlers.watches.model import GrantUnavailable
 from butlers.watches.service import WatchService
 from butlers.watches.sql import PostgresWatchStore
 
@@ -54,10 +54,6 @@ logger = logging.getLogger(__name__)
 SOURCES_TTL = timedelta(seconds=60)
 LOCK_POOL_MAX = 3
 _SOURCES_SQL = "SELECT public.owner_watch_sources()"
-
-
-class GrantUnavailable(WatchRefused):
-    """The live grant cannot be read now: refuse a card, change nothing."""
 
 
 @dataclass(frozen=True)
@@ -78,16 +74,16 @@ def parse_sources(raw: Any) -> tuple[tuple[str, ...], frozenset[str]]:
     kinds: list[str] = []
     unwritten: set[str] = set()
     for row in rows:
-        if type(row) is not dict or set(row) != {"kind", "last_read_at"}:
+        if type(row) is not dict or set(row) != {"kind", "written"}:
             raise ValueError("owner watch sources: unexpected row shape")
         kind = row["kind"]
         if type(kind) is not str or not kind or kind in kinds:
             raise ValueError("owner watch sources: bad or repeated kind")
         kinds.append(kind)
-        if row["last_read_at"] is None:
+        if type(row["written"]) is not bool:
+            raise ValueError("owner watch sources: bad written flag")
+        if not row["written"]:
             unwritten.add(f"perception:{kind}")
-        elif type(row["last_read_at"]) is not str:
-            raise ValueError("owner watch sources: bad last_read_at")
     return tuple(sorted(kinds)), frozenset(unwritten)
 
 

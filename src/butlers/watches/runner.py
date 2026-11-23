@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from butlers.conditions import ConditionsUnavailable, FireIntent, Snapshot, State
-from butlers.watches.model import Watch, WatchState
+from butlers.watches.model import GrantUnavailable, Watch, WatchState
 from butlers.watches.service import WatchService
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,11 @@ class WatchRunner:
             if watch.state is WatchState.ACTIVE:
                 try:
                     await self._advance(watch, now, report)
+                except GrantUnavailable:
+                    # Unknown is not "the grant changed": nothing is paused, consumed or sent,
+                    # and the fire stays for the next tick.
+                    report.failed += 1
+                    logger.warning("owner_watch_grant_unavailable watch=%s", watch.id)
                 except (ConditionsUnavailable, ConnectionError):
                     report.failed += 1  # retained: the next tick starts from the same state
                     logger.warning("owner_watch_unavailable watch=%s", watch.id)
