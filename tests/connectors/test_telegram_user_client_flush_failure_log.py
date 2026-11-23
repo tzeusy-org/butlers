@@ -169,7 +169,12 @@ async def test_failure_parks_the_error_row_once_attempts_are_spent(connector, ca
     assert "1001" not in connector._held_batches
 
 
-async def test_real_submit_failure_log_withholds_an_echoed_ingest_rejection(connector, caplog):
+async def test_real_submit_failure_log_withholds_an_echoed_ingest_rejection(
+    connector, caplog, monkeypatch
+):
+    monkeypatch.setattr(
+        "butlers.connectors.telegram_user_client.commit_envelope", AsyncMock(return_value=True)
+    )
     echoed = f"Invalid ingest.v1 envelope: input_value='{_CODE}'"
     call_tool = AsyncMock(return_value={"status": "error", "error": echoed})
 

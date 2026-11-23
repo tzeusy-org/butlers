@@ -2417,8 +2417,7 @@ class GoogleHealthConnector:
                 # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A
                 # failed write is a FAILED outcome (not consumed, nothing submitted); a failed
                 # submit keeps the row.
-                if self._shared_pool is not None:
-                    await commit_envelope(self._shared_pool, envelope)
+                await commit_envelope(self._shared_pool, envelope)
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
                 status = "success"
@@ -2451,8 +2450,7 @@ class GoogleHealthConnector:
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
         """Submit directly to Switchboard — bypasses filter gate (replay path)."""
-        if self._shared_pool is not None:
-            await commit_envelope(self._shared_pool, envelope)
+        await commit_envelope(self._shared_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     async def _flush_filtered_events(self) -> None:

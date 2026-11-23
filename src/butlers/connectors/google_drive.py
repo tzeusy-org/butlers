@@ -1517,8 +1517,7 @@ class GDriveAccountLoop:
         try:
             # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
             # write raises, so nothing is submitted; a failed submit below keeps the row.
-            if self._db_pool is not None:
-                await commit_envelope(self._db_pool, envelope)
+            await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response

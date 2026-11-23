@@ -2553,10 +2553,14 @@ async def test_submission_error_retains_raw_payload() -> None:
         (ConnectionError("switchboard down"), "FAILED", 1),
     ],
 )
-async def test_submission_classifies_the_ingest_reply(reply, outcome, error_rows) -> None:
+async def test_submission_classifies_the_ingest_reply(
+    reply, outcome, error_rows, monkeypatch
+) -> None:
     """Only an ingest error-status reply is a rejection; every exception stays transient."""
     from butlers.connectors import google_health as gh
     from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    monkeypatch.setattr(gh, "commit_envelope", AsyncMock(return_value=True))  # journal has tests
 
     connector = _make_connector()
     connector._ingestion_policy = None
