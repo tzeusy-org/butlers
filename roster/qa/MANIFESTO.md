@@ -150,7 +150,8 @@ Investigation agents receive `PATH` and build-tool variables, never GitHub publi
 ## PR Creation Standards
 
 - Labels: `["self-healing", "automated"]`
-- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` by the trusted dispatcher only (PR-status polling); agents never receive it
+- GitHub token: the daemon resolves only a read-only token, `CredentialStore.resolve("BUTLERS_QA_GH_READ_TOKEN")`, for PR-status polling; agents never receive it. The write-scoped `BUTLERS_QA_GH_TOKEN` is never resolved: a leftover key is refused and reported as an action-needed condition.
+- **Investigator containment: not enforced (same pod, root).** Investigators share the daemon pod and process namespace, so anything the daemon can read they can read. This is why the daemon holds no write credential; real containment arrives with the per-attempt pod boundary (`bu-ejow5p.11`).
 - Publication: only the trusted deterministic publisher publishes, and only a sealed export. Every commit, path, added line, commit message and author identity newly reachable from the QA branch is validated before the first push, and the validated bytes are frozen. The publisher never runs agent git hooks, config or helpers. The transport has a fixed origin, never forces, and reaches only the bound `qa/` branch and the bound PR's create, update and fixed labels. An ambiguous outcome is held for read-only reconciliation, never retried or deleted. The publisher stays disabled in production until process isolation is proven (bu-mc01y5.7).
 - Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
@@ -209,7 +210,7 @@ access.
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
 - **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
-- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; publication runs only through the trusted publisher, which is disabled until isolation is proven
+- **GitHub API (`BUTLERS_QA_GH_READ_TOKEN`):** read-only PR-status polling by the dispatcher and the dashboard PR panel; publication runs only through the trusted publisher, which is disabled until isolation is proven
 
 ### Depends On QA Staffer
 

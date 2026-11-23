@@ -37,6 +37,7 @@ from butlers.core.fleet_conditions import fleet_condition_handoff_enabled
 from butlers.core.healing import reap_stale_worktrees, recover_stale_attempts
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.qa.dispatch import (
+    QA_GH_READ_TOKEN_KEY,
     QA_GH_TOKEN_KEY,
     QA_GIT_AUTHOR_EMAIL_KEY,
     QA_GIT_AUTHOR_NAME_KEY,
@@ -425,6 +426,7 @@ class QaModule(Module):
         self._pool: Any = None
         self._repo_root: Path = Path(".")
         self._credential_store: Any = None
+        self._last_write_token_notified_patrol_id: uuid.UUID | None = None
 
         # Managed repo clone — initialized on startup
         self._managed_clone: ManagedRepoClone | None = None
@@ -1313,6 +1315,7 @@ class QaModule(Module):
                     )
 
             # Phase 3: Dispatch
+            await self._refuse_write_token(patrol_id)
             gh_token = await self._resolve_gh_token()
             git_author_name, git_author_email = await self._resolve_git_identity()
             if not gh_token:  # None or empty string
@@ -1359,7 +1362,9 @@ class QaModule(Module):
                     config=dispatch_config,
                     repo_root=self._repo_root,
                     spawner=_spawner,
-                    gh_token=gh_token,
+                    # Investigation dispatch gets no GitHub token; the read-only token
+                    # below is for PR-status polling only.
+                    gh_token=None,
                     git_author_name=git_author_name,
                     git_author_email=git_author_email,
                     task_registry=self._watchdog_tasks,
@@ -1769,15 +1774,63 @@ class QaModule(Module):
     # ------------------------------------------------------------------
 
     async def _resolve_gh_token(self) -> str | None:
-        """Resolve BUTLERS_QA_GH_TOKEN from the credential store."""
+        """Resolve the read-only polling token (``BUTLERS_QA_GH_READ_TOKEN``).
+
+        The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved here or anywhere in the
+        daemon: investigators share the pod, so any credential held in memory or fetched
+        from the store is reachable by them.
+        """
         if self._credential_store is None:
             return None
         try:
-            token = await self._credential_store.resolve(QA_GH_TOKEN_KEY)
+            token = await self._credential_store.resolve(QA_GH_READ_TOKEN_KEY)
             return token
         except Exception:
-            logger.debug("QaModule: failed to resolve GH token", exc_info=True)
+            logger.debug("QaModule: failed to resolve GH read token", exc_info=True)
             return None
+
+    async def _refuse_write_token(self, patrol_id: uuid.UUID) -> bool:
+        """Report a leftover write-scoped key and refuse to load it; True when present.
+
+        Checks presence only (``has``), never ``resolve``, so the value never enters this
+        process.  One content-blind action-needed alert per patrol cycle.
+        """
+        if self._credential_store is None:
+            return False
+        try:
+            present = await self._credential_store.has(QA_GH_TOKEN_KEY)
+        except Exception:
+            logger.debug("QaModule: write-token presence check failed", exc_info=True)
+            return False
+        if not present:
+            return False
+        if self._last_write_token_notified_patrol_id == patrol_id:
+            return True
+        self._last_write_token_notified_patrol_id = patrol_id
+        logger.warning(
+            "QaModule: a write-scoped GitHub key (%s) exists in the credential store; it is "
+            "refused and never loaded. Investigator containment is not enforced (same pod, "
+            "root), so remove the key and rotate the token.",
+            QA_GH_TOKEN_KEY,
+        )
+        if self._notify_fn is not None:
+            try:
+                await self._notify_fn(
+                    channel="telegram",
+                    message=(
+                        "QA Staffer action needed: a write-scoped GitHub key "
+                        f"({QA_GH_TOKEN_KEY}) is still in the secrets store.\n\n"
+                        "It is refused and never loaded. Investigator containment is not "
+                        "enforced (same pod, root): delete the key from the secrets store and "
+                        "rotate the token."
+                    ),
+                    priority="high",
+                )
+            except Exception:
+                logger.warning(
+                    "QaModule: failed to send write-token notification (non-fatal)", exc_info=True
+                )
+        return True
 
     async def _resolve_git_identity(self) -> tuple[str | None, str | None]:
         """Resolve optional git author identity for QA-generated commits."""
@@ -1882,19 +1935,21 @@ class QaModule(Module):
         self._last_missing_token_notified_patrol_id = patrol_id
 
         logger.warning(
-            "QaModule: BUTLERS_QA_GH_TOKEN is missing — investigations cannot open PRs. "
-            "Provision the credential via: butler secrets set BUTLERS_QA_GH_TOKEN <token>"
+            "QaModule: BUTLERS_QA_GH_READ_TOKEN is missing — PR status polling is skipped and "
+            "PR state stays unknown. Provision a fine-grained read-only token via: "
+            "butler secrets set BUTLERS_QA_GH_READ_TOKEN <token>"
         )
 
         if self._notify_fn is None:
             return
 
         message = (
-            "QA Staffer alert: GitHub token is missing.\n\n"
-            "Investigations cannot open pull requests until the credential is provisioned.\n\n"
+            "QA Staffer alert: the read-only GitHub polling token is missing.\n\n"
+            "Pull request status stays unknown until the credential is provisioned.\n\n"
             "To fix, provision the secret via the butler CLI or dashboard:\n"
-            "  butler secrets set BUTLERS_QA_GH_TOKEN <your-github-token>\n\n"
-            "The token requires at least 'repo' scope to create pull requests."
+            "  butler secrets set BUTLERS_QA_GH_READ_TOKEN <your-read-only-token>\n\n"
+            "Use a fine-grained token with Pull requests, Commit statuses and Metadata read "
+            "only; never a write-scoped token."
         )
         try:
             await self._notify_fn(

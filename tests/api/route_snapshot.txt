@@ -2400,7 +2400,7 @@ SCHEMA QaAllTimeStats 8289d813f2fd
 SCHEMA QaCaseDossier ed4f31dd2018
 SCHEMA QaCaseSummary 0ea7d983c5d7
 SCHEMA QaCircuitBreaker f1e912d97992
-SCHEMA QaCredentialsStatus 90d8ddb11950
+SCHEMA QaCredentialsStatus 456016a13c44
 SCHEMA QaDismissal 087ba4ff726a
 SCHEMA QaFindingRecord 95c578be2648
 SCHEMA QaGitAuthorStatus 11ca80ec0825

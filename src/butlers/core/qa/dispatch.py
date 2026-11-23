@@ -188,7 +188,12 @@ def _flagged_event_detail(finding: QaFinding) -> str:
 #: The default QA PR labels; the reconciliation script binds ``pr_labels`` holds with them.
 DEFAULT_PR_LABELS = ("self-healing", "automated")
 
-#: CredentialStore key for the GitHub token used by QA investigations.
+#: CredentialStore key of the read-only GitHub token used only for PR-status polling
+#: (fine-grained: pull requests, commit statuses and metadata read).
+QA_GH_READ_TOKEN_KEY = "BUTLERS_QA_GH_READ_TOKEN"
+#: Legacy WRITE-scoped token key.  Investigators run as root in the daemon's pod, so a
+#: write credential is reachable by construction; the daemon never resolves this key
+#: (bu-ejow5p.1).  It is referenced only to detect and refuse a leftover secret.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
 QA_GIT_AUTHOR_NAME_KEY = "BUTLERS_QA_GIT_AUTHOR_NAME"
 QA_GIT_AUTHOR_EMAIL_KEY = "BUTLERS_QA_GIT_AUTHOR_EMAIL"
@@ -2663,7 +2668,8 @@ async def dispatch_qa_investigation(
     spawner:
         The QA staffer's ``Spawner`` instance.
     gh_token:
-        GitHub token from CredentialStore.resolve("BUTLERS_QA_GH_TOKEN").
+        Always ``None`` from the QA module: investigation dispatch needs no GitHub token
+        (the read-only polling token never reaches it).
     task_registry:
         Optional list to which watchdog tasks will be appended.
 

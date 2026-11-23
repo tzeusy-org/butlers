@@ -171,7 +171,7 @@ def _get_credentials_status_fn():
 
     Override via ``app.dependency_overrides[_get_credentials_status_fn]`` to
     inject a callable that returns a ``dict`` describing the QA credential
-    status (e.g., whether ``BUTLERS_QA_GH_TOKEN`` is set).
+    status (e.g., whether ``BUTLERS_QA_GH_READ_TOKEN`` is set).
 
     The callable must be an async function with no required arguments and
     must return a dict with at least ``{"gh_token_present": bool}``.
@@ -225,20 +225,21 @@ async def _resolve_github_token(db: DatabaseManager) -> str | None:
 
     Resolution order (first hit wins):
 
-    1. CredentialStore ``BUTLERS_QA_GH_TOKEN`` (the QA subsystem's canonical
-       token, used for PR creation).
+    1. CredentialStore ``BUTLERS_QA_GH_READ_TOKEN`` (the read-only polling token).
+       The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved (bu-ejow5p.1).
     2. Conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the environment
-       (ops provisions either via the daemon env).
+       (ops provisions either via the daemon env).  Owner-approved scope keeps this
+       fallback; an env token is not visible to the credential-store presence check.
 
-    Returns ``None`` when no token can be found — the PR panel then degrades
+    Returns ``None`` when no token can be found - the PR panel then degrades
     gracefully to the honest "unavailable" state.
     """
     try:
-        from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+        from butlers.core.qa.dispatch import QA_GH_READ_TOKEN_KEY
         from butlers.credential_store import CredentialStore
 
         pool = db.credential_shared_pool()
-        token = await CredentialStore(pool).resolve(QA_GH_TOKEN_KEY)
+        token = await CredentialStore(pool).resolve(QA_GH_READ_TOKEN_KEY)
         if token:
             return token
     except Exception:
@@ -265,6 +266,7 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
     swallows such failures and reports the status as "unknown" (all ``None``).
     """
     from butlers.core.qa.dispatch import (
+        QA_GH_READ_TOKEN_KEY,
         QA_GH_TOKEN_KEY,
         QA_GIT_AUTHOR_EMAIL_KEY,
         QA_GIT_AUTHOR_NAME_KEY,
@@ -273,7 +275,10 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
 
     store = CredentialStore(db.credential_shared_pool())
     return {
-        "gh_token_present": await store.has(QA_GH_TOKEN_KEY),
+        # The read-only polling key; the write key is only checked for presence so a
+        # leftover can be reported as action-needed (it is never resolved).
+        "gh_token_present": await store.has(QA_GH_READ_TOKEN_KEY),
+        "gh_write_token_present": await store.has(QA_GH_TOKEN_KEY),
         "git_author_name_present": await store.has(QA_GIT_AUTHOR_NAME_KEY),
         "git_author_email_present": await store.has(QA_GIT_AUTHOR_EMAIL_KEY),
     }
@@ -592,8 +597,15 @@ class QaCredentialsStatus(BaseModel):
     so the dashboard can distinguish "unknown" from "missing".
     """
 
+    gh_write_token_present: bool | None = None
+    """Whether a write-scoped ``BUTLERS_QA_GH_TOKEN`` is still in the credential store.
+
+    ``True`` is an action-needed condition: the daemon refuses and never loads it, but it
+    is reachable by investigators in the same pod until deleted and rotated.
+    """
+
     gh_token_present: bool | None = None
-    """Whether ``BUTLERS_QA_GH_TOKEN`` is set in the credential store.
+    """Whether the read-only ``BUTLERS_QA_GH_READ_TOKEN`` is set in the credential store.
 
     ``None`` means the status could not be determined (e.g., no daemon
     wired in).  ``True`` means the token is present; ``False`` means it
@@ -1775,14 +1787,21 @@ async def get_qa_summary(
 
             if parsed_creds is not None:
                 provisioning_hint: str | None = None
-                if parsed_creds.gh_token_present is False:
+                if parsed_creds.gh_write_token_present is True:
                     provisioning_hint = (
-                        "BUTLERS_QA_GH_TOKEN is missing. "
-                        "Provision via: butler secrets set BUTLERS_QA_GH_TOKEN <token> "
-                        "(requires 'repo' scope)"
+                        "A write-scoped BUTLERS_QA_GH_TOKEN is still in the secrets store. "
+                        "It is refused and never loaded; delete it and rotate the token "
+                        "(investigator containment is not enforced: same pod, root)"
+                    )
+                elif parsed_creds.gh_token_present is False:
+                    provisioning_hint = (
+                        "BUTLERS_QA_GH_READ_TOKEN is missing; PR status stays unknown. "
+                        "Provision a fine-grained read-only token via: "
+                        "butler secrets set BUTLERS_QA_GH_READ_TOKEN <token>"
                     )
                 credentials_status = QaCredentialsStatus(
                     gh_token_present=parsed_creds.gh_token_present,
+                    gh_write_token_present=parsed_creds.gh_write_token_present,
                     git_author_name_present=parsed_creds.git_author_name_present,
                     git_author_email_present=parsed_creds.git_author_email_present,
                     provisioning_hint=provisioning_hint,

@@ -715,7 +715,7 @@ class TestNotifyMissingGhToken:
         call = notify_calls[0]
         assert call["channel"] == "telegram"
         assert call["priority"] == "high"
-        assert "BUTLERS_QA_GH_TOKEN" in call["message"]
+        assert "BUTLERS_QA_GH_READ_TOKEN" in call["message"]
         assert "butler secrets set" in call["message"]
 
     async def test_noop_when_notify_fn_is_none(self):
