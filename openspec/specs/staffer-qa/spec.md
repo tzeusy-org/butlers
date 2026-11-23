@@ -282,7 +282,7 @@ Patrol cycles SHALL be recorded in `public.qa_patrols` for observability and das
 
 #### Scenario: Patrol record structure
 - **WHEN** a patrol cycle starts
-- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, suppressed, error, skipped_overlap), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], list of source names), `error_detail` (nullable text)
+- **THEN** a row is inserted with: `id` (UUIDv7), `started_at` (timestamptz), `completed_at` (nullable timestamptz), `status` (text: running, clean, findings_dispatched, suppressed, halted, error, skipped_overlap), `halt_reason` (nullable text: circuit_breaker, no_model or concurrency_cap, set only when status is halted; the breaker and the cap queue their findings, no_model does not), `findings_count` (int), `novel_count` (int), `dispatched_count` (int), `log_lookback_minutes` (int), `sources_polled` (text[], list of source names), `error_detail` (nullable text)
 
 #### Scenario: Patrol record is updated on completion
 - **WHEN** a patrol cycle completes (success or failure)
