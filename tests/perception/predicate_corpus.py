@@ -108,6 +108,34 @@ def corpus() -> list[tuple[str, object, bool]]:
     return cases
 
 
+def sized_document(target: int) -> dict:
+    """A valid document measuring exactly ``target`` bytes on the shared size measure.
+
+    The measure is compact canonical JSON with each float in plain decimal form (what jsonb
+    prints): ``1.23456789e-06`` is 14 bytes canonical but 16 in decimal, so 2 are added.
+    Control characters cost six bytes each, which lets the search hit the byte exactly.
+    """
+    from butlers.perception.model import canonical
+
+    leaf = {**READ, "capability": "c" * 128, "field": "f" * 64}
+    numeric = {**leaf, "value": 1.23456789e-6}
+    for controls in range(15 * 128):
+        widths = [max(0, min(128, controls - 128 * index)) for index in range(15)]
+        for trim in range(5):
+            leaves = [
+                {
+                    **leaf,
+                    "op": "eq",
+                    "value": "\x01" * w + "a" * (128 - w - (trim if i == 14 else 0)),
+                }
+                for i, w in enumerate(widths)
+            ]
+            document = {"tag": "all", "children": [numeric, *leaves]}
+            if len(canonical(document).encode()) + 2 == target:
+                return document
+    raise AssertionError(f"cannot build a {target}-byte document")
+
+
 def _peer_cases() -> list[tuple[str, object, bool]]:
     """Differences found against a native PostgreSQL 18 run, plus their neighbours."""
     effect = {"tag": "effect_settled", "effect_id": U1}
@@ -137,6 +165,11 @@ def _peer_cases() -> list[tuple[str, object, bool]]:
         ("below smallest non-zero", {**READ, "value": 1e-7}, False),
         ("tiny number x16", _all(*[{**wide, "value": 1e-300}] * 16), False),
         ("zero", {**READ, "value": 0}, True),
+        ("string with NUL", {**READ, "op": "eq", "value": "a\0b"}, False),
+        ("string with lone surrogate", {**READ, "op": "eq", "value": "\ud800"}, False),
+        ("name with NUL", {**READ, "capability": "a\0b"}, False),
+        ("exactly 8192 bytes with a long-expansion number", sized_document(8192), True),
+        ("exactly 8193 bytes with a long-expansion number", sized_document(8193), False),
         ("negative", {**READ, "op": "ne", "value": -5}, True),
         ("fraction", {**READ, "op": "ge", "value": 99.5}, True),
     ]

@@ -19,6 +19,7 @@ import math
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -40,6 +41,7 @@ ORDERED_OPS = frozenset({"lt", "le", "gt", "ge"})
 EXPECTATION_KINDS = frozenset(kind for kind in KINDS if kind.startswith("expect."))
 #: A read_check number is a finite double within this magnitude (0 or at least ``READ_MIN``): wider
 #: values would make the database's expanded numeric text, and so its size bound, diverge.
+MAX_NUMBER_TEXT = 40  # a numeric literal's own text, as the database bounds it
 READ_MAX = 10**15
 READ_MIN = 1e-6
 #: One canonical RFC 3339 UTC instant form for ``at`` (no compact offset, no leap second).
@@ -242,13 +244,45 @@ def _validate(node: object, depth: int) -> int:
     return 1
 
 
+def _scan(predicate: object) -> int:
+    """Walk every string and float once, without recursion.
+
+    A NUL or a lone surrogate in a string or key is refused: jsonb cannot store either. The
+    return value is the extra bytes jsonb's text form adds to Python's compact canonical JSON,
+    because it prints a numeric in plain decimal form (``1.5e-06`` becomes ``0.0000015``). The
+    size bound is measured on that one form in both validators.
+    """
+    extra, stack = 0, [predicate]
+    while stack:
+        node = stack.pop()
+        if type(node) is str:
+            if "\x00" in node:
+                raise PredicateError("predicate strings must not contain NUL")
+            try:
+                node.encode()
+            except UnicodeEncodeError:
+                raise PredicateError("predicate strings must be valid Unicode") from None
+        elif type(node) is float and math.isfinite(node):
+            extra += len(format(Decimal(repr(node)), "f")) - len(repr(node))
+        elif type(node) is dict:
+            stack.extend(node.keys())
+            stack.extend(node.values())
+        elif type(node) is list:
+            stack.extend(node)
+    return extra
+
+
 def validate(predicate: object) -> dict:
     """Return the canonical copy of a valid predicate or raise ``PredicateError``."""
     try:
+        extra = _scan(predicate)
         text = canonical(predicate)
-    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        too_big = len(text.encode()) + extra > MAX_BYTES
+    except PredicateError:
+        raise
+    except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as exc:
         raise PredicateError(f"predicate is not canonical JSON: {exc}") from None
-    if len(text.encode()) > MAX_BYTES:
+    if too_big:
         raise PredicateError("predicate exceeds 8KiB canonical JSON")
     try:
         leaf_count = _validate(predicate, 0)
@@ -260,6 +294,29 @@ def validate(predicate: object) -> dict:
     if leaf_count > MAX_LEAVES:
         raise PredicateError("predicate has more than 16 leaves")
     return json.loads(text)
+
+
+def _literal(text: str):
+    if len(text) > MAX_NUMBER_TEXT:
+        raise PredicateError(f"numeric literal exceeds {MAX_NUMBER_TEXT} characters")
+    return float(text)
+
+
+def _integer(text: str):
+    if len(text) > MAX_NUMBER_TEXT:
+        raise PredicateError(f"numeric literal exceeds {MAX_NUMBER_TEXT} characters")
+    return int(text)
+
+
+def loads(text: str) -> dict:
+    """Parse and validate JSON text, seeing each number's source text as the database does."""
+    try:
+        document = json.loads(text, parse_float=_literal, parse_int=_integer)
+    except PredicateError:
+        raise
+    except (ValueError, RecursionError) as exc:
+        raise PredicateError(f"predicate is not JSON: {exc}") from None
+    return validate(document)
 
 
 def digest(predicate: dict) -> str:

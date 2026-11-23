@@ -13,7 +13,10 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   registered `expect.*` perception kind, a UUID must be canonical lowercase and hyphenated, an `at`
   instant must be RFC 3339 UTC (`Z` or `+00:00`, no leap second), and a `read_check` number must be
   finite, at most 10^15 in magnitude, and zero or at least 10^-6. Effect statuses are distinct. The
-  validator raises only its own error, whatever the document holds.
+  size bound is one measure in both validators: compact canonical JSON with each float in plain
+  decimal form, which is what jsonb prints. A string with a NUL or a lone surrogate is refused,
+  and `predicate.loads(text)` also refuses a numeric literal over 40 characters. The validator
+  raises only its own error, whatever the document holds.
   It mirrors `perception_private.valid_predicate`, so the dark `perception_bind` store and
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the

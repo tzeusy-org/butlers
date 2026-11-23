@@ -146,3 +146,20 @@ def test_the_python_validator_raises_only_its_own_error_whatever_the_document_ho
             ast.validate(document)
         except ast.PredicateError:
             pass
+
+
+def test_loads_refuses_a_numeric_literal_longer_than_forty_characters():
+    long_literal = "0." + "1" * 45
+    text = (
+        '{"tag":"read_check","capability":"finance.balance","field":"available",'
+        f'"op":"lt","value":{long_literal}}}'
+    )
+    with pytest.raises(ast.PredicateError):
+        ast.loads(text)
+    assert ast.loads(text.replace(long_literal, "0.5"))["value"] == 0.5
+
+
+@pytest.mark.parametrize("text", ["{", "[1,", '{"tag": NaN}', "7" * 5000])
+def test_loads_raises_only_its_own_error(text):
+    with pytest.raises(ast.PredicateError):
+        ast.loads(text)
