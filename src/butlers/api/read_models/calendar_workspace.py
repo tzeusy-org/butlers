@@ -536,7 +536,7 @@ class CalendarWorkspaceRow:
     event_type: str = "default"
     #: The source's role (core_360): whose time its events are. Absent reads as ``unclassified``.
     source_time_role: str = "unclassified"
-    #: Whose calendar a household source is (core_365): the entity and its display name.
+    #: Whose calendar a household source is (core_368): the entity and its display name.
     source_subject_entity_id: UUID | None = None
     source_subject_label: str | None = None
 

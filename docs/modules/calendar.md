@@ -155,7 +155,7 @@ filters, sync-token cursor and degraded-health reasons are in
 
 ### Household context
 
-A `household_member`, `other_person` or `team` source may carry `role_subject_entity_id` (core_365,
+A `household_member`, `other_person` or `team` source may carry `role_subject_entity_id` (core_368,
 a reference to `public.entities`), which the owner sets with the role in `POST
 /api/calendar/sources/role`. Events on those sources that the owner is not attending are not owner
 time, but they are readable as attributed context.

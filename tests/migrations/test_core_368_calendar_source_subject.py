@@ -1,4 +1,4 @@
-"""core_365: ``role_subject_entity_id`` on each schema's ``calendar_sources`` (bu-5ii4gj.1 S3).
+"""core_368: ``role_subject_entity_id`` on each schema's ``calendar_sources`` (bu-5ii4gj.1 S3).
 
 Real migrated databases only. Synthetic ids only.
 """
@@ -47,7 +47,7 @@ def _run_in(db_url: str, schema: str, statement: str) -> list[tuple]:
 def _upgraded(postgres_container) -> tuple[str, object]:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_365")
+    command.upgrade(config, "core_368")
     return db_url, config
 
 
@@ -95,7 +95,7 @@ def test_two_schemas_each_get_the_column_its_foreign_key_and_its_check(
     db_url = create_migration_db(postgres_container, migration_db_name())
     for schema in ("general", "travel"):
         command.upgrade(
-            _build_alembic_config(db_url, chains=["core"], target_schema=schema), "core_365"
+            _build_alembic_config(db_url, chains=["core"], target_schema=schema), "core_368"
         )
     for schema in ("general", "travel"):
         found = _run_in(
@@ -119,19 +119,19 @@ def test_two_schemas_each_get_the_column_its_foreign_key_and_its_check(
 
 def test_downgrade_keeps_the_column_and_a_reupgrade_changes_nothing(postgres_container) -> None:
     db_url, config = _upgraded(postgres_container)
-    command.downgrade(config, "core_362")
+    command.downgrade(config, "core_367")
     assert _run(
         db_url,
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
         "AND table_name = 'calendar_sources' AND column_name = 'role_subject_entity_id'",
     )
-    command.upgrade(config, "core_365")  # the DDL no-op itself is pinned by the catalog-skip tests
+    command.upgrade(config, "core_368")  # the DDL no-op itself is pinned by the catalog-skip tests
 
 
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_362")
+    command.upgrade(config, "core_367")
     _run(db_url, "ALTER TABLE calendar_sources ADD COLUMN role_subject_entity_id TEXT")
     with pytest.raises(Exception, match="unexpected shape"):
-        command.upgrade(config, "core_365")
+        command.upgrade(config, "core_368")

@@ -54,7 +54,7 @@ _CHECKED: set[tuple[str, str]] = {
     # read the table; ``public.vendor_door_entity_pinned`` answers for both columns.
     ("vendor_doors", "owner_entity_id"),
     ("vendor_doors", "vendor_entity_id"),
-    # A household role's subject (core_365) must stay assigned. ``calendar_sources`` is one table
+    # A household role's subject (core_368) must stay assigned. ``calendar_sources`` is one table
     # per butler schema, so ``public.calendar_role_subject_entity_pinned`` answers across them.
     ("calendar_sources", "role_subject_entity_id"),
 }

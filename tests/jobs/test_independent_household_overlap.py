@@ -9,7 +9,7 @@ from sqlalchemy.engine import make_url
 
 from butlers.db import register_jsonb_codec
 from butlers.jobs import meeting_card
-from tests.migrations.test_core_365_calendar_source_subject import _run
+from tests.migrations.test_core_368_calendar_source_subject import _run
 
 pytestmark = [
     pytest.mark.integration,

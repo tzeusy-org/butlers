@@ -3626,9 +3626,9 @@ _NO_VENDOR_DOOR = """
 """
 
 
-# An owner-confirmed household subject names its entity on a calendar source (core_365). Archiving a
+# An owner-confirmed household subject names its entity on a calendar source (core_368). Archiving a
 # placeholder that a source's role names would silently unassign the household role, and this role
-# cannot read other butlers' calendar_sources: the core_365 definer answers across every schema.
+# cannot read other butlers' calendar_sources: the core_368 definer answers across every schema.
 _NO_CALENDAR_ROLE_SUBJECT = """
     AND NOT public.calendar_role_subject_entity_pinned(e.id)
 """

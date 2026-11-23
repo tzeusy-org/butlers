@@ -1,7 +1,7 @@
 """calendar_sources: whose calendar a household source is (bu-5ii4gj.1 S3, REQ-module-calendar-038).
 
-Revision ID: core_365
-Revises: core_362
+Revision ID: core_368
+Revises: core_367
 Create Date: 2026-11-23 00:00:00.000000
 
 Adds ``role_subject_entity_id UUID NULL`` to the schema's own ``calendar_sources``: a reference to
@@ -22,15 +22,15 @@ from sqlalchemy import text
 
 from alembic import op
 
-revision = "core_365"
-down_revision = "core_362"
+revision = "core_368"
+down_revision = "core_367"
 branch_labels = None
 depends_on = None
 
 # The foreign key takes SHARE ROW EXCLUSIVE on the shared public.entities in every schema's run, so
 # the whole upgrade (catalog read and DDL) is serialized across schemas (core_243, core_318).
 _LOCK = (
-    "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_365:calendar-source-subject', 0))"
+    "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_368:calendar-source-subject', 0))"
 )
 _PINNED_FUNCTION = "public.calendar_role_subject_entity_pinned(uuid)"
 # An owner-confirmed household subject must keep its entity, so the Relationship enrichment reap

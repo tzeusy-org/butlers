@@ -1,4 +1,4 @@
-"""core_365 takes its advisory lock first and issues DDL only where a schema needs it (bu-5ii4gj.1).
+"""core_368 takes its advisory lock first and issues DDL only where a schema needs it (bu-5ii4gj.1).
 
 The core chain runs once per butler schema, and the foreign key locks the shared
 ``public.entities`` each time, so the whole upgrade is serialized and an installed schema is a
@@ -16,12 +16,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _PATH = Path(__file__).resolve().parents[2] / (
-    "alembic/versions/core/core_365_calendar_source_subject.py"
+    "alembic/versions/core/core_368_calendar_source_subject.py"
 )
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("core_365_catalog_skip", _PATH)
+    spec = importlib.util.spec_from_file_location("core_368_catalog_skip", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
