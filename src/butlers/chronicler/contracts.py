@@ -269,6 +269,20 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         ),
         optional_schema=True,
     ),
+    # Plan changes from the calendar revision journal (bu-uhbhzq.1 slice 3): intent evidence,
+    # times and status only, never attendance and never counted as activity.
+    SourceAdapterState(
+        source_name="calendar.revisions",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        read_surface="connectors.calendar_event_revisions",
+        boundary_semantics=(
+            "one plan_changed intent point event per change/resync revision of an instance "
+            "starting on or before the local day it was observed (prior and new start, end, "
+            "status; prior_known=false without an earlier version); baseline rows and "
+            "no-op revisions emit nothing; never attendance, never counted as activity"
+        ),
+        optional_schema=True,
+    ),
     # Owner-outbound-message point events (bu-whhll.8, epic bu-whhll Tier 1).
     # Metadata-only "phone in hand" signal: timestamp + channel, never
     # content, never counterpart identity (see the adapter module docstring

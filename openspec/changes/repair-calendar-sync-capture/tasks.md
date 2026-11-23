@@ -9,4 +9,4 @@
 - [x] 2.1 core_369 `connectors.calendar_event_revisions`: append-only triggers, writer and Chronicler grants, init-db revokes.
 - [x] 2.2 `record_calendar_revisions` as the commit point in the baseline, incremental and 410 passes.
 - [x] 2.3 Verbatim title, location and attendees; scrubbed descriptions; policy-blocked rows keep no raw.
-- [ ] 2.4 Chronicler `plan_changed` adapter (slice 3).
+- [x] 2.4 Chronicler `plan_changed` adapter (slice 3): `adapters/calendar_revisions.py`, job, schedule, source contract, day-close wording.

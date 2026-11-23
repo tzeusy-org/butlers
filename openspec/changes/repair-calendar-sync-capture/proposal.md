@@ -10,5 +10,5 @@ every poll repeats the full sync, and each run logs "syncToken saved" regardless
   and no `orderBy`, because a sync-token request must repeat the initial request's filters.
 - A full sync whose last page carries no `nextSyncToken` saves no cursor, logs no "saved" line,
   reports degraded health naming the missing token, and waits a poll interval before trying again.
-- Slice 2 adds the append-only revision journal; slice 3 (the Chronicler `plan_changed` adapter)
-  follow as their own changes.
+- Slice 2 adds the append-only revision journal; slice 3 adds the Chronicler `plan_changed`
+  adapter (plan revisions are intent evidence, never attendance).

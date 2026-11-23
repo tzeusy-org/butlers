@@ -48,5 +48,10 @@ consecutive revisions; it is not stored.
   blocked by source policy keeps structure and times only (no raw payload). If policy cannot be
   evaluated, the batch is held like a failed journal write.
 - Only `connector_writer` (insert, select) and `butler_chronicler_rw` (select) can touch it.
+- Chronicler reads it through `calendar.revisions` (every 15 minutes): each `change` or `resync`
+  revision of an instance starting on or before the owner's local day of observation that changes
+  start, end or status becomes one `plan_changed` **intent** point event (prior and new times and
+  status only; `prior_known=false` when no earlier version was journaled). Baselines emit nothing,
+  and a plan change never asserts attendance or counts as activity.
 - If the write fails, nothing is submitted, the sync token is held and health is **degraded**
   ("Google Calendar revision journal write failed"); the next cycle journals the same delta.
