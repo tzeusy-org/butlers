@@ -186,6 +186,10 @@ async def run_day_sheet_push(
 
     outcome = None
     try:
+        # Re-check under the claim: a tick paused after its first check may resume after another
+        # holder delivered (and this claim was taken over once expired).
+        if await _date_delivered(pool, tomorrow, now - _DEDUP_WINDOW):
+            return {"outcome": "skipped", "reason": "already_sent"}
         sheet = await query_calendar_day_sheet(db, local_date=tomorrow, zone=zone, now=now)
         dedup_key = f"{JOB_NAME}:{tomorrow.isoformat()}:{sheet.digest}"
         failures, since_last = await failed_attempts(pool, dedup_key=dedup_key)

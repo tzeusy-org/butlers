@@ -309,3 +309,13 @@ async def test_an_old_holder_does_not_release_a_claim_retaken_after_expiry(repli
     assert "day_sheet/claim/2026-11-24" in pool.claimed_at  # the new holder's claim survives
     await job._release(pool, date(2026, 11, 24), new)
     assert "day_sheet/claim/2026-11-24" not in pool.claimed_at
+
+
+async def test_a_tick_paused_before_the_claim_rechecks_delivery_under_it(wired):
+    # The first check is negative; by the time this tick holds the claim another holder delivered.
+    wired.delivered.side_effect = [False, True]
+    result = await job.run_day_sheet_push(wired.db, now=SGT_NOW)
+    assert result["reason"] == "already_sent"
+    wired.read.assert_not_called()
+    wired.send.assert_not_called()
+    wired.release.assert_awaited_once()
