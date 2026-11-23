@@ -26,8 +26,11 @@ LINK_STATES: Final[tuple[str, ...]] = (
     "regressed",
     "closed",
 )
-#: States in which a recurrence is held back instead of investigated.
-SUPPRESSING_STATES: Final[frozenset[str]] = frozenset({"tracked", "fix_merged"})
+#: States in which a recurrence is held back instead of investigated. Only ``tracked`` holds a
+#: finding back: a ``fix_merged`` link annotates the dispatched finding instead, because until
+#: deployment evidence moves it to ``awaiting_recovery`` a real regression after a merge must
+#: never be hidden.
+SUPPRESSING_STATES: Final[frozenset[str]] = frozenset({"tracked"})
 #: A link with no explicit expiry lapses after this long, so it can never suppress forever.
 DEFAULT_LINK_TTL: Final[timedelta] = timedelta(days=14)
 #: The longest an owner may ask a link to last.
@@ -71,7 +74,8 @@ async def upsert_link(
 
     ``(fingerprint, tracker_ref)`` is unique, so a repeat write is idempotent. Re-linking a
     closed link reopens it as ``tracked``; any other state is kept, so a repeat never undoes
-    progress made by the PR/deploy lifecycle.
+    progress made by the PR/deploy lifecycle. A repeat is an explicit owner act: it restarts the
+    link's clock (``linked_at``), which the 90-day expiry CHECK is measured from.
     """
     row = await pool.fetchrow(
         f"""
@@ -80,6 +84,7 @@ async def upsert_link(
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (fingerprint, tracker_ref) DO UPDATE
             SET expires_at = EXCLUDED.expires_at,
+                linked_at = now(),
                 state = CASE
                     WHEN public.qa_known_issue_links.state = 'closed' THEN 'tracked'
                     ELSE public.qa_known_issue_links.state
@@ -156,15 +161,17 @@ async def sync_qa_pr_link(
 ) -> None:
     """Keep the link for QA's own pull request in step with the PR's observed state.
 
-    ``open`` creates the link (``qa_auto``) if none exists, and keeps an open, unexpired
-    link alive while the PR stays open; it never reopens a link the owner closed. ``merged``
-    moves the link to ``fix_merged`` and extends it, so a recurrence before the fix deploys is
-    held back instead of re-investigated. ``closed`` (without merge) closes a QA-made link.
+    ``open`` creates the link (``qa_auto``) if none exists, and keeps a ``tracked`` link alive
+    while the PR stays open; it never reopens a link the owner closed. ``merged`` moves the link
+    to ``fix_merged``, where a recurrence is annotated with the link rather than held back.
+    Neither extends the link past ``MAX_LINK_TTL`` from ``linked_at``. ``closed`` (without
+    merge) closes a QA-made link.
     A ref that is not a well-formed PR URL gets no link.
     """
     if not is_valid_tracker_ref("github_pr", pr_url):
         return
     fresh = datetime.now(UTC) + DEFAULT_LINK_TTL
+    cap_days = MAX_LINK_TTL.days
     if pr_state == "open":
         await pool.execute(
             """
@@ -172,24 +179,31 @@ async def sync_qa_pr_link(
                 (fingerprint, tracker_kind, tracker_ref, linked_by, expires_at)
             VALUES ($1, 'github_pr', $2, 'qa_auto', $3)
             ON CONFLICT (fingerprint, tracker_ref) DO UPDATE
-                SET expires_at = GREATEST(public.qa_known_issue_links.expires_at, $3)
+                SET expires_at = LEAST(
+                    GREATEST(public.qa_known_issue_links.expires_at, $3),
+                    public.qa_known_issue_links.linked_at + make_interval(days => $4)
+                )
               WHERE public.qa_known_issue_links.state = 'tracked'
             """,
             fingerprint,
             pr_url,
             fresh,
+            cap_days,
         )
     elif pr_state == "merged":
         await pool.execute(
             """
             UPDATE public.qa_known_issue_links
                SET state = 'fix_merged', fix_ref = $2,
-                   expires_at = GREATEST(expires_at, $3)
+                   expires_at = LEAST(
+                       GREATEST(expires_at, $3), linked_at + make_interval(days => $4)
+                   )
              WHERE fingerprint = $1 AND tracker_ref = $2 AND state = 'tracked'
             """,
             fingerprint,
             pr_url,
             fresh,
+            cap_days,
         )
     elif pr_state == "closed":
         await pool.execute(

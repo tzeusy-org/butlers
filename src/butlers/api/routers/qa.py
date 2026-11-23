@@ -47,10 +47,11 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
+from fastapi import Path as PathParam
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
@@ -734,6 +735,10 @@ class DismissRequest(BaseModel):
 
     dismissed_until: datetime | None = None
     dismissed_by: str = "dashboard_user"
+
+
+#: A finding fingerprint is a sha256 hex digest; anything else cannot name a finding.
+_FINGERPRINT_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class QaKnownIssueLink(BaseModel):
@@ -2894,7 +2899,7 @@ async def dismiss_known_issue(
     status_code=201,
 )
 async def link_known_issue(
-    fingerprint: str,
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
     body: KnownIssueLinkRequest,
     response: Response,
     *,
@@ -2960,7 +2965,7 @@ async def link_known_issue(
 
 @router.delete("/known-issues/{fingerprint}/link", response_model=ApiResponse[dict[str, bool]])
 async def unlink_known_issue(
-    fingerprint: str,
+    fingerprint: Annotated[str, PathParam(pattern=_FINGERPRINT_PATTERN)],
     tracker_ref: str = Query(..., min_length=1, max_length=300),
     *,
     db: Db,

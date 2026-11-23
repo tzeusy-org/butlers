@@ -24,12 +24,14 @@ import uuid
 from dataclasses import dataclass, field, replace
 
 import asyncpg
+from opentelemetry.metrics import Counter
 
 from butlers.core.healing.tracking import (
     get_active_attempt,
     get_publication_hold,
     get_recent_attempt,
 )
+from butlers.core.metrics import get_meter
 from butlers.core.qa.dismissals import is_dismissed
 from butlers.core.qa.findings import insert_finding
 from butlers.core.qa.known_issue_links import (
@@ -40,6 +42,29 @@ from butlers.core.qa.known_issue_links import (
 from butlers.core.qa.models import QaFinding
 
 logger = logging.getLogger(__name__)
+
+_link_failures: Counter | None = None
+
+
+def _record_link_lookup_failure(fingerprint: str, exc: Exception) -> None:
+    """Count and log one link-store failure; triage carries on as if no link existed."""
+    global _link_failures
+    logger.warning(
+        "Triage: known-issue link unavailable for fingerprint=%s, failing open: %s",
+        fingerprint[:12],
+        exc,
+    )
+    try:
+        if _link_failures is None:
+            _link_failures = get_meter().create_counter(
+                name="butlers.qa.known_issue_link_failures_total",
+                description="Known-issue link reads or writes that failed and failed open",
+                unit="failures",
+            )
+        _link_failures.add(1)
+    except Exception:  # metrics must never break triage
+        logger.debug("Triage: link failure counter unavailable", exc_info=True)
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -220,7 +245,13 @@ async def triage_findings(
         # Gate 2b: Tracked elsewhere (a bead, PR or issue the owner linked)
         # ------------------------------------------------------------------
         if dedup_reason is None:
-            link = await get_gating_link(pool, fp)
+            try:
+                link = await get_gating_link(pool, fp)
+            except Exception as exc:
+                # Fail open: an unreadable link store must never suppress a finding or fail the
+                # patrol. The finding dispatches as if no link existed.
+                link = None
+                _record_link_lookup_failure(fp, exc)
             if link is not None:
                 if link["state"] in SUPPRESSING_STATES:
                     dedup_reason = "tracked"
@@ -228,6 +259,16 @@ async def triage_findings(
                         "Triage: dedup fingerprint=%s reason=tracked ref=%s",
                         fp[:12],
                         link["tracker_ref"],
+                    )
+                elif link["state"] == "fix_merged":
+                    # The fix merged but is not known live: annotate, never hide, a recurrence.
+                    finding = replace(
+                        finding,
+                        structured_evidence={
+                            **(finding.structured_evidence or {}),
+                            "fix_merged_link": str(link["id"]),
+                            "tracker_ref": link["tracker_ref"],
+                        },
                     )
                 else:
                     # The fix is believed live and the failure is back: admit it as a
@@ -240,7 +281,10 @@ async def triage_findings(
                             "tracker_ref": link["tracker_ref"],
                         },
                     )
-                    await mark_link_regressed(pool, link["id"])
+                    try:
+                        await mark_link_regressed(pool, link["id"])
+                    except Exception as exc:
+                        _record_link_lookup_failure(fp, exc)
 
         # ------------------------------------------------------------------
         # Gate 3: Cooldown check

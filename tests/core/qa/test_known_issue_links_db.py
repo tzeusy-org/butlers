@@ -139,3 +139,40 @@ async def test_a_closed_unmerged_qa_pr_releases_its_fingerprint(db_pool) -> None
     await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
     await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="closed")
     assert await get_gating_link(db_pool, fp) is None
+
+
+async def test_a_qa_pr_never_extends_its_link_past_ninety_days_from_linking(db_pool) -> None:
+    from butlers.core.qa.known_issue_links import MAX_LINK_TTL, sync_qa_pr_link
+
+    fp = uuid.uuid4().hex * 2
+    pr = "https://github.com/o/r/pull/503"
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    # An old link whose fourteen-day extension would cross the cap is clamped to it.
+    await db_pool.execute(
+        "UPDATE public.qa_known_issue_links SET linked_at = now() - interval '85 days', "
+        "expires_at = now() + interval '1 day' WHERE fingerprint = $1",
+        fp,
+    )
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="merged")
+    linked_at, expires_at = await db_pool.fetchrow(
+        "SELECT linked_at, expires_at FROM public.qa_known_issue_links WHERE fingerprint = $1", fp
+    )
+    assert expires_at <= linked_at + MAX_LINK_TTL
+
+
+async def test_a_fix_merged_link_dispatches_the_recurrence_with_the_link_attached(db_pool) -> None:
+    from butlers.core.qa.known_issue_links import sync_qa_pr_link
+
+    fp = uuid.uuid4().hex * 2
+    pr = "https://github.com/o/r/pull/504"
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="merged")
+
+    result = await triage_findings(db_pool, await _patrol(db_pool), [_finding(fp)], 60)
+
+    assert len(result.novel_findings) == 1
+    evidence = result.novel_findings[0].finding.structured_evidence
+    assert evidence["tracker_ref"] == pr and "fix_merged_link" in evidence
+    link = await get_gating_link(db_pool, fp)
+    assert link is not None and link["state"] == "fix_merged"

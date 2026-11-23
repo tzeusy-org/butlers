@@ -56,12 +56,40 @@ async def _run(link, *, dismissed=False, recent=None, order=None):
     return result, inserted, regressed
 
 
-@pytest.mark.parametrize("state", ["tracked", "fix_merged"])
-async def test_a_live_link_marks_the_finding_tracked_and_dispatches_nothing(state) -> None:
-    result, inserted, _ = await _run(_link(state))
+async def test_a_tracked_link_marks_the_finding_tracked_and_dispatches_nothing() -> None:
+    result, inserted, _ = await _run(_link("tracked"))
     assert result.novel_findings == []
     assert result.dedup_counts == {"tracked": 1}
     assert [reason for _, reason in inserted] == ["tracked"]
+
+
+async def test_a_fix_merged_link_annotates_and_never_hides_a_recurrence() -> None:
+    link = _link("fix_merged")
+    result, inserted, regressed = await _run(link)
+    assert len(result.novel_findings) == 1 and result.dedup_counts == {None: 1}
+    evidence = result.novel_findings[0].finding.structured_evidence
+    assert evidence["fix_merged_link"] == str(link["id"])
+    assert evidence["tracker_ref"] == "bu-2cgabc"
+    assert [reason for _, reason in inserted] == [None]
+    regressed.assert_not_awaited()  # the link stays fix_merged until deployment evidence
+
+
+async def test_an_unreadable_link_store_fails_open_with_a_warning_and_a_count(caplog) -> None:
+    counter = MagicMock()
+    with (
+        patch("butlers.core.qa.triage.get_gating_link", AsyncMock(side_effect=OSError("db down"))),
+        patch("butlers.core.qa.triage._link_failures", counter),
+        patch("butlers.core.qa.triage.insert_finding", AsyncMock(return_value=uuid.uuid4())),
+        patch("butlers.core.qa.triage.get_active_attempt", AsyncMock(return_value=None)),
+        patch("butlers.core.qa.triage.is_dismissed", AsyncMock(return_value=False)),
+        patch("butlers.core.qa.triage.get_publication_hold", AsyncMock(return_value=False)),
+        patch("butlers.core.qa.triage.get_recent_attempt", AsyncMock(return_value=None)),
+        caplog.at_level("WARNING"),
+    ):
+        result = await triage_findings(MagicMock(), uuid.uuid4(), [_finding()], 60)
+    assert len(result.novel_findings) == 1 and result.dedup_counts == {None: 1}
+    assert "failing open" in caplog.text
+    counter.add.assert_called_once_with(1)
 
 
 async def test_no_link_leaves_the_finding_novel() -> None:
@@ -127,10 +155,13 @@ async def test_an_open_qa_pr_is_linked_and_a_merged_one_holds_the_fingerprint() 
     open_sql = pool.execute.await_args.args[0]
     assert "INSERT INTO public.qa_known_issue_links" in open_sql and "'qa_auto'" in open_sql
     assert "WHERE public.qa_known_issue_links.state = 'tracked'" in open_sql  # never reopens
+    assert "linked_at + make_interval" in open_sql  # never extended past the cap
 
     pool.execute.reset_mock()
     await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url=PR, pr_state="merged")
-    assert "state = 'fix_merged'" in pool.execute.await_args.args[0]
+    merged_sql = pool.execute.await_args.args[0]
+    assert "state = 'fix_merged'" in merged_sql
+    assert "linked_at + make_interval" in merged_sql  # never past the cap from linked_at
 
     pool.execute.reset_mock()
     await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url=PR, pr_state="closed")

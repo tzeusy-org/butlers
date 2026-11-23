@@ -1964,6 +1964,21 @@ class TestKnownIssueLinks:
             )
             assert response.status_code == status, value
 
+    async def test_a_fingerprint_that_is_not_a_sha256_digest_is_refused(self) -> None:
+        for bad in ("short", "A" * 64, "g" * 64, "a" * 65):
+            app, _ = _build_app()
+            post = await _call(
+                app,
+                "post",
+                f"/api/qa/known-issues/{bad}/link",
+                json={"tracker_kind": "bead", "tracker_ref": "bu-2cgabc"},
+            )
+            app, _ = _build_app()
+            delete = await _call(
+                app, "delete", f"/api/qa/known-issues/{bad}/link?tracker_ref=bu-2cgabc"
+            )
+            assert post.status_code == delete.status_code == 422, bad
+
     async def test_closing_a_link_reports_whether_one_was_open(self) -> None:
         app, _ = _build_app(fetchval_result=uuid.uuid4())
         ok = await _call(

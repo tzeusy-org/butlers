@@ -5,3 +5,4 @@
 - [x] 1.3 Owner-only link and unlink API
 - [x] 1.4 Auto-link QA's own PRs; dossier display (S2)
 - [ ] 1.5 Deployment evidence flips `fix_merged` to `awaiting_recovery` (S3)
+- [x] 1.6 Exact ACL convergence, fail-open triage, `fix_merged` annotates, 90-day CHECK

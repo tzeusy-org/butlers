@@ -1,7 +1,7 @@
 """qa_known_issue_links: owner-asserted links from a finding to the work item tracking it.
 
 Revision ID: core_372
-Revises: core_369
+Revises: core_371
 Create Date: 2026-11-24 00:00:00.000000
 
 bu-ejow5p.9. A finding already tracked by a bead, pull request or issue is held back by the
@@ -12,19 +12,23 @@ a repeat link is an idempotent upsert.
 
 ``state`` is the link's lifecycle: ``tracked`` and ``fix_merged`` hold the finding back;
 ``awaiting_recovery`` re-admits a recurrence as a regression; ``regressed`` and ``closed`` no
-longer gate. ``expires_at`` bounds a link so it cannot suppress forever.
+longer gate. ``expires_at`` is required and at most 90 days after ``linked_at`` (a CHECK), so a
+link cannot suppress forever.
 
-The core chain runs once per butler schema over the one shared ``public`` table: the install
-is idempotent, and only the last schema to leave this revision drops the table (core_246).
+The table is the QA suppression control, so its ACL is exact: the owner plus ``butler_qa_rw``
+with SELECT, INSERT, UPDATE and DELETE, no grant option, and nothing for PUBLIC or any other role.
+The core chain runs once per butler schema over the one shared ``public`` table. A run skips only
+when the table exists with exactly that ACL; any drift reruns the idempotent DDL and converges the
+ACL, and no privilege error is swallowed (core_370). Only the last schema to leave this revision
+drops the table (core_246).
 """
 
 from __future__ import annotations
 
 from alembic import op
-from butlers.db_authority.roles import butler_roles
 
 revision = "core_372"
-down_revision = "core_369"
+down_revision = "core_371"
 branch_labels = None
 depends_on = None
 
@@ -33,8 +37,57 @@ _TABLE = "public.qa_known_issue_links"
 _PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
 _QA_ROLE = "butler_qa_rw"
 
-#: Catalog-only read: true when an earlier schema's run already created the table.
-_ALREADY_INSTALLED = f"SELECT to_regclass('{_TABLE}') IS NOT NULL"
+#: Catalog-only read: true when the table exists with exactly the intended ACL and no column ACL.
+#: Any drift (an extra grantee, PUBLIC, a grant option, a missing or surplus privilege) is false,
+#: so the run converges instead of skipping.
+_ALREADY_INSTALLED = f"""
+WITH rel AS (
+    SELECT c.oid, c.relowner, c.relacl FROM pg_class c WHERE c.oid = to_regclass('{_TABLE}')
+),
+actual AS (
+    SELECT a.grantee, a.privilege_type, a.is_grantable
+    FROM rel CROSS JOIN LATERAL aclexplode(COALESCE(rel.relacl, acldefault('r', rel.relowner))) a
+    WHERE a.grantee <> rel.relowner
+),
+expected AS (
+    SELECT r.oid AS grantee, p.privilege_type, false AS is_grantable
+    FROM pg_roles r
+    CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) AS p(privilege_type)
+    WHERE r.rolname = '{_QA_ROLE}'
+)
+SELECT EXISTS (SELECT 1 FROM rel)
+   AND NOT EXISTS (SELECT 1 FROM (TABLE actual EXCEPT TABLE expected) drift)
+   AND NOT EXISTS (SELECT 1 FROM (TABLE expected EXCEPT TABLE actual) drift)
+   AND NOT EXISTS (
+       SELECT 1 FROM pg_attribute at, rel
+       WHERE at.attrelid = rel.oid AND at.attnum > 0 AND at.attacl IS NOT NULL
+   )
+"""
+
+#: Converge the ACL without swallowing anything: revoke every grantee but the owner and the QA
+#: role (PUBLIC included), then give the QA role exactly the four privileges, grant option off.
+_CONVERGE_ACL = f"""
+DO $$
+DECLARE
+    _rel regclass := to_regclass('{_TABLE}');
+    _grantee name;
+BEGIN
+    REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM PUBLIC;
+    FOR _grantee IN
+        SELECT r.rolname
+        FROM pg_class c
+        CROSS JOIN LATERAL aclexplode(c.relacl) a
+        JOIN pg_roles r ON r.oid = a.grantee
+        WHERE c.oid = _rel AND a.grantee <> c.relowner AND r.rolname <> '{_QA_ROLE}'
+    LOOP
+        EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE %s FROM %I', _rel, _grantee);
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_QA_ROLE}') THEN
+        REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {_QA_ROLE};
+        GRANT {_PRIVILEGES} ON TABLE {_TABLE} TO {_QA_ROLE};
+    END IF;
+END $$
+"""
 
 _DDL = f"""
 CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -48,28 +101,15 @@ CREATE TABLE IF NOT EXISTS {_TABLE} (
     state         TEXT NOT NULL DEFAULT 'tracked' CHECK (
         state IN ('tracked', 'fix_merged', 'awaiting_recovery', 'regressed', 'closed')
     ),
-    expires_at    TIMESTAMPTZ,
-    CONSTRAINT uq_qa_known_issue_links_ref UNIQUE (fingerprint, tracker_ref)
+    expires_at    TIMESTAMPTZ NOT NULL,
+    CONSTRAINT uq_qa_known_issue_links_ref UNIQUE (fingerprint, tracker_ref),
+    CONSTRAINT ck_qa_known_issue_links_expiry
+        CHECK (expires_at <= linked_at + interval '90 days')
 );
 CREATE INDEX IF NOT EXISTS idx_qa_known_issue_links_gate
     ON {_TABLE} (fingerprint)
     WHERE state IN ('tracked', 'fix_merged', 'awaiting_recovery');
 """
-
-
-def _for_existing_role(role: str, statement: str) -> None:
-    op.execute(
-        f"""
-        DO $$
-        BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
-                EXECUTE '{statement}';
-            END IF;
-        EXCEPTION
-            WHEN insufficient_privilege OR undefined_object OR undefined_table THEN NULL;
-        END $$
-        """
-    )
 
 
 def _installation_count() -> int:
@@ -108,13 +148,10 @@ def upgrade() -> None:
     if op.get_bind().exec_driver_sql(_ALREADY_INSTALLED).scalar():
         return
     op.execute(_DDL)
-    op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM PUBLIC")
     # The table is the QA suppression control: a role that can write it can silence QA. Only
     # the QA butler's runtime role touches it (the dashboard API reaches it as the database
     # owner); every other butler and the connector writer get nothing.
-    for role in (*butler_roles(), "connector_writer"):
-        _for_existing_role(role, f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {role}")
-    _for_existing_role(_QA_ROLE, f"GRANT {_PRIVILEGES} ON TABLE {_TABLE} TO {_QA_ROLE}")
+    op.execute(_CONVERGE_ACL)
 
 
 def downgrade() -> None:

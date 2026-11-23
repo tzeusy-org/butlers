@@ -20,8 +20,9 @@ pytestmark = [
 ]
 
 _INSERT = (
-    "INSERT INTO public.qa_known_issue_links (fingerprint, tracker_kind, tracker_ref, linked_by) "
-    "VALUES ('{fp}', '{kind}', '{ref}', 'owner')"
+    "INSERT INTO public.qa_known_issue_links "
+    "(fingerprint, tracker_kind, tracker_ref, linked_by, expires_at) "
+    "VALUES ('{fp}', '{kind}', '{ref}', 'owner', now() + interval '1 day')"
 )
 
 
@@ -59,10 +60,10 @@ def test_only_the_last_schema_drops_the_shared_table(postgres_container) -> None
     command.upgrade(second, "core_372")
     _run(db_url, _INSERT.format(fp="c" * 64, kind="github_pr", ref="https://github.com/o/r/pull/1"))
 
-    command.downgrade(first, "core_369")
+    command.downgrade(first, "core_371")
     assert _run(db_url, "SELECT count(*) FROM public.qa_known_issue_links") == [(1,)]
 
-    command.downgrade(second, "core_369")
+    command.downgrade(second, "core_371")
     assert _run(db_url, "SELECT to_regclass('public.qa_known_issue_links')") == [(None,)]
 
 
@@ -97,3 +98,53 @@ def test_only_the_qa_role_can_write_the_suppression_control(postgres_container) 
                 blocked.rollback()
     finally:
         engine.dispose()
+
+
+_ACL = """
+SELECT COALESCE(r.rolname, 'PUBLIC'), a.privilege_type, a.is_grantable
+FROM pg_class c
+CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+LEFT JOIN pg_roles r ON r.oid = a.grantee
+WHERE c.oid = 'public.qa_known_issue_links'::regclass AND a.grantee <> c.relowner
+ORDER BY 1, 2
+"""
+_EXACT_ACL = [("butler_qa_rw", p, False) for p in ("DELETE", "INSERT", "SELECT", "UPDATE")]
+
+
+def test_a_drifted_grant_is_repaired_when_the_next_schema_runs(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+    command.upgrade(first, "core_372")
+    assert _run(db_url, _ACL) == _EXACT_ACL
+
+    for drift in (
+        "GRANT SELECT ON TABLE public.qa_known_issue_links TO PUBLIC",
+        "GRANT INSERT ON TABLE public.qa_known_issue_links TO butler_general_rw",
+        "GRANT SELECT ON TABLE public.qa_known_issue_links TO connector_writer",
+        "GRANT DELETE ON TABLE public.qa_known_issue_links TO butler_qa_rw WITH GRANT OPTION",
+        "REVOKE UPDATE ON TABLE public.qa_known_issue_links FROM butler_qa_rw",
+        "GRANT TRUNCATE ON TABLE public.qa_known_issue_links TO butler_qa_rw",
+    ):
+        _run(db_url, drift)
+    assert _run(db_url, _ACL) != _EXACT_ACL
+
+    command.upgrade(second, "core_372")  # an already-installed table must not skip drift
+    assert _run(db_url, _ACL) == _EXACT_ACL
+
+
+def test_expiry_is_required_and_capped_at_ninety_days_from_linking(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core_372"
+    )
+    base = (
+        "INSERT INTO public.qa_known_issue_links "
+        "(fingerprint, tracker_kind, tracker_ref, linked_by, expires_at) "
+        "VALUES ('{fp}', 'bead', 'bu-x1', 'owner', {expiry})"
+    )
+    with pytest.raises(Exception, match="expires_at"):
+        _run(db_url, base.format(fp="e" * 64, expiry="NULL"))
+    with pytest.raises(Exception, match="ck_qa_known_issue_links_expiry"):
+        _run(db_url, base.format(fp="e" * 64, expiry="now() + interval '91 days'"))
+    _run(db_url, base.format(fp="e" * 64, expiry="now() + interval '89 days'"))
