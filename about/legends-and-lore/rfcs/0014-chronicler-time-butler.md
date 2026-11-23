@@ -3,8 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-04-24
 **Amended:** 2026-08-28 — Health-fact projection source contract reconciled;
-see Amendment 1. 2026-11-23 — connector-owned evidence and the routing-buffer
-inbox; see Amendment 2.
+see Amendment 1.
 
 ## Summary
 
@@ -268,34 +267,6 @@ or runtime behavior. It records the existing `mem_011` least-privilege grant;
 availability still depends on that approved read-only Health fact surface, and
 a missing optional surface remains an inactive source state rather than a
 direct-ingestion fallback.
-
-## Amendment 2: Connector-Owned Evidence; the Inbox Is a Routing Buffer
-
-**Authority:** Owner decision `run24-inbox-not-archive` (2026-11-22, run 24
-questionnaire, bead bu-uhbhzq.4): adopt the wording that `switchboard.message_inbox`
-is a routing buffer, never an evidence surface.
-
-D2's read surfaces are connector-owned, migration-tracked tables. For sources that had no
-such table, `switchboard.message_inbox` was the only verbatim copy of what arrived, and
-that table is a routing buffer: it exists to carry a message to its handler, and nothing
-promises how long a row stays. Amendment 2 settles three points.
-
-- **Evidence is connector-owned.** Every connector commits a durable evidence row before it
-  acknowledges an event, advances its checkpoint or submits it to Switchboard. A source
-  with a dedicated table keeps it (for example `connectors.owntracks_points`); a source
-  with none writes the shared append-only `connectors.evidence_journal`. The row holds no
-  more than the envelope's inbox `raw_payload` would hold at its ingestion tier, after
-  bearer scrubbing; tier-3 and policy-blocked events write none.
-- **The inbox is never an evidence surface.** Chronicler adapters do not read it, and no
-  retention or pruning contract is built on it. The partition-drop functions for it and for
-  the connector heartbeat log refuse unconditionally until a per-source retention contract
-  exists (bu-uhbhzq.7).
-- **Chronicler stays a reader.** Read grants on the journal arrive with its first
-  consumer; this amendment adds none, and Chronicler still owns no connector and ingests no
-  raw input directly.
-
-This amendment changes no ACL for Chronicler, credential or deployment. It records the
-ordering rule in `REQ-connector-base-spec-015`.
 
 ## Non-Goals
 
