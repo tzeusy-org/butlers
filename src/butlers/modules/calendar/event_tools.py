@@ -26,6 +26,7 @@ from .constants import (
     logger,
 )
 from .errors import CalendarAuthError, CalendarRequestError, _build_structured_error
+from .invitation_guard import guard_event_payload, pool_of, withhold_quarantined_pre_state
 from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
@@ -317,7 +318,7 @@ def register_event_tools(
             "status": "created",
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "event": module._event_to_payload(event),
+            "event": await guard_event_payload(pool_of(module), event, module._event_to_payload),
         }
         if conflict_result["conflicts"]:
             result["policy"] = resolved_conflict_policy
@@ -916,7 +917,7 @@ def register_event_tools(
             "status": "updated",
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "event": module._event_to_payload(event),
+            "event": await guard_event_payload(pool_of(module), event, module._event_to_payload),
         }
         if conflict_result["conflicts"]:
             result["policy"] = resolved_conflict_policy
@@ -950,7 +951,7 @@ def register_event_tools(
             source_id=source_id,
             origin_ref=normalized_event_id,
         )
-        return result
+        return await withhold_quarantined_pre_state(pool_of(module), existing_event, result)
 
     @_tool("core")
     async def calendar_delete_event(
@@ -1186,7 +1187,7 @@ def register_event_tools(
             source_id=source_id,
             origin_ref=normalized_event_id,
         )
-        return result
+        return await withhold_quarantined_pre_state(pool_of(module), existing_event, result)
 
     @_tool("core")
     async def calendar_update_event_instance(

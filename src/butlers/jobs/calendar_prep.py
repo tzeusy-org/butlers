@@ -68,7 +68,7 @@ import asyncpg
 
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time
-from butlers.core.temporal.invitation_quarantine import QUARANTINED_INVITATION_SQL
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.jobs.briefing import SGT, today_sgt
 
 logger = logging.getLogger(__name__)
@@ -356,7 +356,7 @@ async def run_relationship_calendar_prep_contribution(
             WHERE cee.entity_id = ANY($1::uuid[])
               AND ce.starts_at < $2
               AND COALESCE(ce.status, 'confirmed') <> 'cancelled'
-              AND NOT {QUARANTINED_INVITATION_SQL}
+              AND NOT {quarantined_invitation_sql("ce")}
             ORDER BY cee.entity_id, ce.starts_at DESC
             """,
             entity_id_list,

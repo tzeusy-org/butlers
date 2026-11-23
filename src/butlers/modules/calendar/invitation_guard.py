@@ -71,6 +71,17 @@ async def _stored_verdicts(pool: Any, events: list[CalendarEvent]) -> dict[str, 
     return verdicts
 
 
+def _verdict_for(event_id: str, verdicts: dict[str, str | None]) -> str | None:
+    """The stored verdict for an event. A recurring instance with no stored row of its own
+    inherits its series' verdict; one that has a row, even an unstamped one, keeps that row's
+    answer, so it never borrows trust from the series."""
+    keys = _keys(event_id)
+    for key in keys:
+        if key in verdicts:
+            return verdicts[key]
+    return None
+
+
 def _stub(event: CalendarEvent, verdict: str | None) -> dict[str, Any]:
     return {
         "event_id": event.event_id,
@@ -102,12 +113,40 @@ async def guard_provider_events(
             logger.warning("organizer verdict lookup failed; quarantining unstamped", exc_info=True)
     payloads: list[dict[str, Any]] = []
     for event in event_list:
-        verdict = next(
-            (verdicts[key] for key in _keys(event.event_id) if verdicts.get(key)),
-            None,
-        )
+        verdict = _verdict_for(event.event_id, verdicts)
         if is_quarantined_invitation(_as_metadata(event, verdict)):
             payloads.append(_stub(event, verdict))
         else:
             payloads.append(to_payload(event))
     return payloads
+
+
+def pool_of(module: Any) -> Any:
+    """The module's database pool, or None when it has none."""
+    db = getattr(module, "_db", None)
+    return getattr(db, "pool", None) if db is not None else None
+
+
+async def guard_event_payload(
+    pool: Any,
+    event: CalendarEvent,
+    to_payload: Callable[[CalendarEvent], dict[str, Any]],
+) -> dict[str, Any]:
+    """One event's payload, or its quarantine stub."""
+    return (await guard_provider_events(pool, [event], to_payload))[0]
+
+
+async def withhold_quarantined_pre_state(
+    pool: Any, event: CalendarEvent | None, result: dict[str, Any]
+) -> dict[str, Any]:
+    """The tool result with the event's pre-image withheld when it was a quarantined invitation.
+
+    The full pre-image stays in the persisted action result (the owner's dashboard undo needs
+    it); only the copy handed back to the model drops the third-party text.
+    """
+    if event is None or "pre_state" not in result:
+        return result
+    stub = await guard_event_payload(pool, event, lambda _: {})
+    if not stub.get("quarantined"):
+        return result
+    return {**result, "pre_state": {"event_id": event.event_id, "quarantined": True}}
