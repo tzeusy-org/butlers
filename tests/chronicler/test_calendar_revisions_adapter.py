@@ -227,6 +227,7 @@ _db = pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not avai
 
 @_db
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_real_query_pairs_each_change_with_its_prior_and_skips_baselines(
     db_pool,
 ) -> None:
@@ -301,6 +302,7 @@ async def test_a_blocked_or_missing_repair_state_refuses() -> None:
 
 @_db
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
 async def test_two_versions_of_one_event_in_one_batch_are_ordered_by_the_provider_clock(
     db_pool,
 ) -> None:
