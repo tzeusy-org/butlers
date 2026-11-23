@@ -30,6 +30,9 @@ pytestmark = pytest.mark.integration
 def _journal_writes_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
     """The evidence-journal write has its own tests; these are about the ingest handoff."""
     monkeypatch.setattr("butlers.connectors.gmail.commit_envelope", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        "butlers.connectors.telegram_bot.commit_envelope", AsyncMock(return_value=True)
+    )
 
 
 # -----------------------------------------------------------------------------
