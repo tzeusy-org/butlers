@@ -548,7 +548,7 @@ class MutationsMixin:
                 time_role=inferred_role_or_none(
                     calendar_id=resolved_calendar,
                     butler_specific=self._calendar_is_butler_specific
-                    and resolved_calendar == self._require_config().calendar_id,
+                    and resolved_calendar == self._resolved_calendar_id,
                 ),
             )
         if source_kind == SOURCE_KIND_INTERNAL_SCHEDULER:

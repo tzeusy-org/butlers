@@ -123,7 +123,7 @@ def test_existing_rows_are_classified_from_stored_facts_and_downgrade_keeps_evid
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_358")
+    command.upgrade(config, "core_359")
     _seed(db_url)
 
     command.upgrade(config, "core_360")
@@ -140,7 +140,7 @@ def test_existing_rows_are_classified_from_stored_facts_and_downgrade_keeps_evid
     table_state = _fetch(db_url, _TABLE_STATE)
     stored = _fetch(db_url, _ROLES)
 
-    command.downgrade(config, "core_358")
+    command.downgrade(config, "core_359")
     assert _fetch(db_url, _ROLES) == stored
 
     command.upgrade(config, "core_360")
@@ -171,7 +171,7 @@ def test_a_new_source_defaults_to_unclassified_and_the_checks_refuse_unknown_val
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_358")
+    command.upgrade(config, "core_359")
     _execute(db_url, "ALTER TABLE calendar_sources ADD COLUMN time_role INTEGER")
 
     with pytest.raises(Exception, match="unexpected shape"):

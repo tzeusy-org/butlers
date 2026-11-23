@@ -6396,3 +6396,32 @@ class TestSyncRegistersTheSourceRole:
         assert kwargs["metadata"]["butler_specific"] is (
             calendar_id == "butlers@group.calendar.google.com"
         )
+
+
+class TestMutationRegistersTheSourceRole:
+    """bu-5ii4gj.1: the mutation path stamps butler only on the resolved Butlers calendar."""
+
+    @pytest.mark.parametrize(
+        ("calendar_id", "expected"),
+        [
+            ("butlers@group.calendar.google.com", "butler"),
+            ("partner@example.test", None),
+            ("primary", "owner"),
+        ],
+    )
+    async def test_the_role_follows_the_calendar_not_the_module_flag(self, calendar_id, expected):
+        mod = CalendarModule()
+        mod._config = CalendarConfig(provider="google", calendar_id="primary")
+        mod._calendar_is_butler_specific = True
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
+        provider = MagicMock()
+        provider.name = "google"
+        provider.get_calendar_summary = AsyncMock(return_value="Cal")
+        mod._provider = provider
+        mod._ensure_calendar_source = AsyncMock(return_value=uuid.uuid4())
+
+        await mod._resolve_action_source_id(
+            source_kind="provider_event", lane="user", calendar_id=calendar_id
+        )
+
+        assert mod._ensure_calendar_source.await_args.kwargs["time_role"] == expected
