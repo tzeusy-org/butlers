@@ -507,7 +507,8 @@ After the owning Memory schema has finished downgrading to `mem_012`, use
 to restore discovery for active legacy rules that `mem_013` invalidated. The
 statement matches the original migration receipt and copies confidence from
 the owning rule. Retired, forgotten, previously invalid and other-schema rows
-keep their stored values. The statement refuses to run while `mem_013` or a
+keep their stored values. Rules and catalog copies marked `pii` or
+`confidential` stay excluded. The statement refuses to run while `mem_013` or a
 later Memory revision is applied and reports the number of rows restored. A
 repeat run reports zero unless a new migration invalidated more eligible rows.
 

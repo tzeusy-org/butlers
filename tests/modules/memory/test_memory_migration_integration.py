@@ -2491,21 +2491,26 @@ def test_restore_only_mem_013_staled_active_rules_after_real_downgrade(postgres_
         with engine.begin() as conn:
             conn.execute(
                 text("""
-                INSERT INTO general.rules (content, confidence, retired_at, metadata)
-                VALUES ('active', .75, NULL, '{}'), ('retired', .75, now(), '{}'),
-                       ('forgotten', .75, NULL, '{"forgotten": true}'),
-                       ('independently invalid', .75, NULL, '{}')
+                INSERT INTO general.rules (content, confidence, retired_at, metadata, sensitivity)
+                VALUES ('active', .75, NULL, '{}', 'normal'),
+                       ('retired', .75, now(), '{}', 'normal'),
+                       ('forgotten', .75, NULL, '{"forgotten": true}', 'normal'),
+                       ('independently invalid', .75, NULL, '{}', 'normal'),
+                       ('source pii', .75, NULL, '{}', 'pii'),
+                       ('source confidential', .75, NULL, '{}', 'confidential'),
+                       ('catalog pii', .75, NULL, '{}', 'normal')
             """)
             )
             conn.execute(
                 text("""
                 INSERT INTO public.memory_catalog
                     (source_schema, source_table, source_id, tenant_id, memory_type,
-                     summary, confidence, invalid_at, updated_at)
+                     summary, confidence, invalid_at, updated_at, sensitivity)
                 SELECT 'general', 'rules', id, tenant_id, 'rule', content,
                        CASE WHEN content = 'independently invalid' THEN 0 ELSE .75 END,
                        CASE WHEN content = 'independently invalid' THEN '2000-01-01Z'::timestamptz END,
-                       '2000-01-01Z'::timestamptz
+                       '2000-01-01Z'::timestamptz,
+                       CASE WHEN content = 'catalog pii' THEN 'pii' ELSE 'normal' END
                 FROM general.rules
             """)
             )
@@ -2513,7 +2518,15 @@ def test_restore_only_mem_013_staled_active_rules_after_real_downgrade(postgres_
         command.upgrade(config, "memory@mem_013")
         with engine.begin() as conn:
             staled = {row.summary: row for row in conn.execute(rows_sql)}
-            assert set(staled) == {"active", "retired", "forgotten", "independently invalid"}
+            assert set(staled) == {
+                "active",
+                "retired",
+                "forgotten",
+                "independently invalid",
+                "source pii",
+                "source confidential",
+                "catalog pii",
+            }
             assert all(
                 row.confidence == 0 and row.invalid_at is not None for row in staled.values()
             )

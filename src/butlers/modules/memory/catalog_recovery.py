@@ -40,6 +40,9 @@ BEGIN
       AND catalog.source_table = 'rules' AND catalog.memory_type = 'rule'
       AND catalog.source_id = rule.id AND catalog.tenant_id = rule.tenant_id
       AND rule.retired_at IS NULL AND (rule.metadata->>'forgotten')::boolean IS NOT TRUE
+      -- Match the catalog writer's exclusions and keep excluded legacy copies hidden.
+      AND COALESCE(rule.sensitivity, 'normal') NOT IN ('pii', 'confidential')
+      AND COALESCE(catalog.sensitivity, 'normal') NOT IN ('pii', 'confidential')
       AND catalog.confidence = 0 AND catalog.invalid_at = catalog.updated_at
       AND EXISTS (
           SELECT 1 FROM memory_events AS receipt
