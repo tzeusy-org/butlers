@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { formatOwnerDateTime } from "@/components/ui/time";
 
 const buttonClass =
   "min-h-9 rounded border border-border px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus disabled:opacity-50";
@@ -33,24 +34,10 @@ function humanize(token: string): string {
 }
 
 /** Time only: the invitation's title, organizer and guests are never rendered here. */
-export function formatQuarantineTime(item: CalendarQuarantinedInvitation): string {
-  try {
-    const opts: Intl.DateTimeFormatOptions = { timeZone: item.timezone };
-    const day = new Intl.DateTimeFormat(undefined, {
-      ...opts,
-      weekday: "short",
-      day: "numeric",
-      month: "short",
-    }).format(new Date(item.start_at));
-    const clock = new Intl.DateTimeFormat(undefined, {
-      ...opts,
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    return `${day}, ${clock.format(new Date(item.start_at))} to ${clock.format(new Date(item.end_at))} (${item.timezone})`;
-  } catch {
-    return `${item.start_at} to ${item.end_at}`;
-  }
+function quarantineTime(item: CalendarQuarantinedInvitation): string {
+  const start = formatOwnerDateTime(item.start_at, item.timezone);
+  const end = formatOwnerDateTime(item.end_at, item.timezone);
+  return `${start} to ${end} (${item.timezone})`;
 }
 
 /**
@@ -129,7 +116,7 @@ export function CalendarQuarantinePanel({
       <ul className="space-y-2">
         {items.map((item) => {
           const decision = decisions.get(item.entry_id);
-          const when = formatQuarantineTime(item);
+          const when = quarantineTime(item);
           const error = errors.get(item.entry_id);
           const locked = unavailable || decision?.phase === "pending";
           return (

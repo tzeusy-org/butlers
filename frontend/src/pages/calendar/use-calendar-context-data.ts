@@ -77,6 +77,7 @@ export function useCalendarContextData({
     ? [
         ...new Map(
           invitationPages
+            // eslint-disable-next-line no-restricted-syntax -- optional list inside a loaded page; availability is tracked by invitationsAvailable
             .flatMap((page) => page.data.quarantined ?? [])
             .map((item) => [item.entry_id, item] as const),
         ).values(),
