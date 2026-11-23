@@ -77,6 +77,7 @@ class SwitchboardModuleConfig(ToolGroupMixin, BaseModel):
     routing : list_butlers, route, correct_route, deliver
     lifecycle : connector_disconnect
     identity : identity_ignore_unknown_sender (approval-gated; bu-p7glz9)
+    watches : owner_watch_apply_card (approval-gated; bu-4c7nvp.1.5)
     extraction : log_extraction, extraction_log_list, extraction_log_undo
     backfill : create_backfill_job, backfill_pause, backfill_cancel,
                backfill_resume, backfill_list
@@ -112,6 +113,9 @@ class SwitchboardModule(Module):
                     "address": True,
                     "display_name": True,
                 }
+            ),
+            "owner_watch_apply_card": ToolMeta(
+                arg_sensitivities={"card_json": True, "digest": True}
             ),
             "connector_disconnect": ToolMeta(
                 arg_sensitivities={

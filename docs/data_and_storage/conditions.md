@@ -169,5 +169,12 @@ connection under a session advisory lock keyed by the dedup key, so racing runne
 candidate. Pause, delete and expiry withdraw the watch's pending, unclaimed candidates
 (`InsightDelivery.withdraw`); a replayed close finishes an interrupted withdrawal, and every tick
 (so also the first one after a restart) sweeps the pending candidates of all paused, deleted and
-expired watches. The approval-card and `never`-reply surfaces
-and the scheduled tick that runs the loop are a later slice.
+expired watches. The owner approval card rides the approvals spine (`butlers.watches.approval`): a proposed card parks
+one approval-gated pending action for the Switchboard tool `owner_watch_apply_card`, whose call is the
+card's canonical JSON and digest. The action id derives from the digest, so a replayed proposal parks
+once. Approve replays the call, which refuses anything that is not byte-for-byte the card Switchboard
+parked (stored in the Switchboard `state` table in the same transaction) and then approves that exact
+card as the owner through `WatchService.approve`. Reject or expiry changes nothing. Applying needs a
+service and a snapshot provider that production does not wire yet, so until the goal-runtime cutover
+the apply refuses with `owner_watches_unavailable`. The `never` reply and the scheduled tick are a
+later slice.
