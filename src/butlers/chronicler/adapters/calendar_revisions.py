@@ -37,7 +37,6 @@ from butlers.chronicler.adapters.base import (
     keyset_page,
 )
 from butlers.chronicler.models import Layer, PointEvent, Precision, Privacy
-from butlers.chronicler.routines import DEFAULT_TIMEZONE
 from butlers.chronicler.storage import upsert_point_event
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,10 @@ EVENT_TYPE_PLAN_CHANGED = "plan_changed"
 _EVIDENCE_TABLE = "connectors.calendar_event_revisions"
 DEFAULT_BATCH_LIMIT = 1000
 
-# The prior version is the latest earlier revision of the same provider event.
+# The prior version is the latest earlier revision of the same provider event. One sync batch is
+# one transaction, so its rows share ``observed_at`` and the same event can appear twice in it
+# with different etags (Google changes an event while the pages are being listed): the provider's
+# own ``updated`` then ``sequence`` order the versions before the id breaks any remaining tie.
 _REVISIONS = f"""(
     SELECT r.id, r.observed_at, r.observation, r.policy_blocked, r.all_day,
            r.status AS new_status, r.starts_at AS new_start, r.ends_at AS new_end,
@@ -60,8 +62,12 @@ _REVISIONS = f"""(
         WHERE q.endpoint_identity = r.endpoint_identity
           AND q.calendar_id = r.calendar_id
           AND q.event_id = r.event_id
-          AND (q.observed_at, q.id) < (r.observed_at, r.id)
-        ORDER BY q.observed_at DESC, q.id DESC
+          AND (q.observed_at, COALESCE(q.provider_updated, '-infinity'::timestamptz),
+               COALESCE(q.sequence, -1), q.id)
+              < (r.observed_at, COALESCE(r.provider_updated, '-infinity'::timestamptz),
+                 COALESCE(r.sequence, -1), r.id)
+        ORDER BY q.observed_at DESC, COALESCE(q.provider_updated, '-infinity'::timestamptz) DESC,
+                 COALESCE(q.sequence, -1) DESC, q.id DESC
         LIMIT 1
     ) AS p ON TRUE
     WHERE r.observation IN ('change', 'resync')
@@ -121,11 +127,26 @@ class CalendarRevisionsAdapter(ProjectionAdapter):
     keyset_cols: KeyCols = (("id", "uuid"),)
 
     def __init__(
-        self, *, batch_limit: int = DEFAULT_BATCH_LIMIT, timezone: str = DEFAULT_TIMEZONE
+        self, *, batch_limit: int = DEFAULT_BATCH_LIMIT, timezone: str | None = None
     ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
-        self.zone = ZoneInfo(timezone)
+        self.timezone = timezone  # an explicit override, as in the situation adapter
+
+    async def _owner_zone(self, chronicler_pool: asyncpg.Pool) -> ZoneInfo:
+        """The owner's configured zone, checked against the rollup's (situation's rule)."""
+        from butlers.core.general_settings import load_configured_general_timezone
+
+        repair_state = await chronicler_pool.fetchrow(
+            "SELECT timezone, blocked_reason FROM chronicler.daily_repair_control WHERE singleton"
+        )
+        if repair_state is None or repair_state["blocked_reason"]:
+            raise RuntimeError("daily repair timezone state missing or blocked")
+        configured = self.timezone or await load_configured_general_timezone(chronicler_pool)
+        zone = configured or repair_state["timezone"]
+        if zone != repair_state["timezone"]:
+            raise RuntimeError("calendar revisions/rollup timezone mismatch")
+        return ZoneInfo(zone)
 
     async def project(
         self,
@@ -139,6 +160,7 @@ class CalendarRevisionsAdapter(ProjectionAdapter):
         """Fetch the next page of revisions; emit one point event for each plan change."""
         del since_id  # the journal id is a UUID; the tiebreaker travels as ``since_key``
         result = AdapterResult(source_name=self.source_name)
+        zone = await self._owner_zone(chronicler_pool)
 
         rows = await self._fetch(pool, since, since_key)
         if rows is None:
@@ -156,7 +178,7 @@ class CalendarRevisionsAdapter(ProjectionAdapter):
             observed_at: datetime = row["observed_at"]  # NOT NULL in core_366
             if latest is None or observed_at > latest:
                 latest = observed_at
-            if not (starts_by_observed_day(row, self.zone) and _changed(row)):
+            if not (starts_by_observed_day(row, zone) and _changed(row)):
                 continue
             async with chronicler_pool.acquire() as conn:
                 await upsert_point_event(

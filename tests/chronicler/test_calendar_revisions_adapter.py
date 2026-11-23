@@ -60,25 +60,40 @@ def _pool(*rows: dict[str, Any], table: bool = True) -> AsyncMock:
     return pool
 
 
-def _chronicler_pool() -> AsyncMock:
+def _chronicler_pool(zone: str = "Asia/Singapore", blocked: str | None = None) -> AsyncMock:
     conn = AsyncMock()
     pool = AsyncMock()
     pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
+    pool.fetchrow = AsyncMock(return_value={"timezone": zone, "blocked_reason": blocked})
     return pool
 
 
-async def _project(*rows: dict[str, Any], table: bool = True):
+async def _project(
+    *rows: dict[str, Any],
+    table: bool = True,
+    zone: str = "Asia/Singapore",
+    configured: str | None = "Asia/Singapore",
+    blocked: str | None = None,
+):
     emitted: list[Any] = []
 
     async def upsert(conn: object, event: Any) -> Any:
         emitted.append(event)
         return event
 
-    with patch(
-        "butlers.chronicler.adapters.calendar_revisions.upsert_point_event", side_effect=upsert
+    with (
+        patch(
+            "butlers.chronicler.adapters.calendar_revisions.upsert_point_event", side_effect=upsert
+        ),
+        patch(
+            "butlers.core.general_settings.load_configured_general_timezone",
+            new=AsyncMock(return_value=configured),
+        ),
     ):
         result = await CalendarRevisionsAdapter().project(
-            _pool(*rows, table=table), chronicler_pool=_chronicler_pool(), since=None
+            _pool(*rows, table=table),
+            chronicler_pool=_chronicler_pool(zone, blocked),
+            since=None,
         )
     return result, emitted
 
@@ -243,7 +258,7 @@ async def test_the_real_query_pairs_each_change_with_its_prior_and_skips_baselin
         "butlers.chronicler.adapters.calendar_revisions.upsert_point_event", side_effect=upsert
     ):
         result = await CalendarRevisionsAdapter(timezone="UTC").project(
-            db_pool, chronicler_pool=_chronicler_pool(), since=None
+            db_pool, chronicler_pool=_chronicler_pool(zone="UTC"), since=None
         )
     assert result.watermark is not None and result.watermark_key
 
@@ -254,3 +269,66 @@ async def test_the_real_query_pairs_each_change_with_its_prior_and_skips_baselin
     unknown = next(e for e in emitted if not e.payload["prior_known"])
     assert unknown.payload["observation"] == "resync"
     assert len(emitted) == 2 and len(by_event) == 2  # the baseline emitted nothing
+
+
+async def test_the_configured_zone_moves_the_day_boundary() -> None:
+    # Observed 2026-11-24 04:00 UTC; the instance starts at 10:00 UTC the same day.
+    row = _row(
+        observed_at=datetime(2026, 11, 24, 4, 0, tzinfo=UTC),
+        new_start=datetime(2026, 11, 24, 10, 0, tzinfo=UTC),
+        new_end=datetime(2026, 11, 24, 11, 0, tzinfo=UTC),
+        prior_known=False,
+        prior_start=None,
+    )
+    # Singapore (UTC+8): observed day ends 16:00 UTC, so a 10:00 UTC start is today's plan.
+    _, singapore = await _project(row, zone="Asia/Singapore", configured="Asia/Singapore")
+    # Los Angeles (UTC-8): observed day ends 08:00 UTC, so 10:00 UTC is tomorrow's plan.
+    _, los_angeles = await _project(
+        row, zone="America/Los_Angeles", configured="America/Los_Angeles"
+    )
+    assert len(singapore) == 1 and los_angeles == []
+
+
+async def test_a_zone_that_disagrees_with_the_rollup_refuses() -> None:
+    with pytest.raises(RuntimeError, match="timezone mismatch"):
+        await _project(_row(), zone="Asia/Singapore", configured="Europe/London")
+
+
+async def test_a_blocked_or_missing_repair_state_refuses() -> None:
+    with pytest.raises(RuntimeError, match="missing or blocked"):
+        await _project(_row(), blocked="replay in progress")
+
+
+@_db
+@pytest.mark.integration
+async def test_two_versions_of_one_event_in_one_batch_are_ordered_by_the_provider_clock(
+    db_pool,
+) -> None:
+    """A batch is one transaction, so both rows share observed_at; ``updated`` orders them."""
+    observed = datetime(2026, 11, 24, 3, 0, tzinfo=UTC)
+    first_id, second_id = (
+        "00000000-0000-0000-0000-00000000000f",
+        "00000000-0000-0000-0000-000000000001",
+    )
+    for row_id, etag, updated, start_h in (
+        (first_id, "v1", datetime(2026, 11, 24, 1, 0, tzinfo=UTC), 6),  # the older version
+        (second_id, "v2", datetime(2026, 11, 24, 2, 0, tzinfo=UTC), 8),  # the newer, smaller id
+    ):
+        await db_pool.execute(
+            "INSERT INTO connectors.calendar_event_revisions (id, endpoint_identity, calendar_id, "
+            "event_id, etag, observation, status, starts_at, ends_at, observed_at, "
+            "provider_updated) VALUES ($1::uuid, 'ep', 'primary', 'e1', $2, 'change', "
+            "'confirmed', $3, $4, $5, $6)",
+            row_id,
+            etag,
+            datetime(2026, 11, 24, start_h, 0, tzinfo=UTC),
+            datetime(2026, 11, 24, start_h + 1, 0, tzinfo=UTC),
+            observed,
+            updated,
+        )
+    rows = await CalendarRevisionsAdapter(timezone="UTC")._fetch(db_pool, None, None)
+    newer = next(r for r in rows if str(r["id"]) == second_id)
+    # Despite the smaller id, the newer version's prior is the older one, not the reverse.
+    assert newer["prior_known"] is True and newer["prior_start"].hour == 6
+    older = next(r for r in rows if str(r["id"]) == first_id)
+    assert older["prior_known"] is False
