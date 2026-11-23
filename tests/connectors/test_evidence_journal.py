@@ -17,6 +17,9 @@ import pytest
 from butlers.connectors import evidence_journal as journal
 from butlers.connectors.evidence_journal import EvidenceNotCommitted
 from butlers.connectors.gmail import GmailConnectorRuntime
+from butlers.connectors.google_drive import GDriveAccountLoop
+from butlers.connectors.telegram_bot import TelegramBotConnector
+from butlers.connectors.telegram_user_client import TelegramUserClientConnector
 from butlers.connectors.whatsapp_user_client import WhatsAppUserClientConnector
 
 pytestmark = pytest.mark.unit
@@ -79,7 +82,37 @@ def _whatsapp(pool: Any, call_tool: AsyncMock) -> WhatsAppUserClientConnector:
     return connector
 
 
+def _generic(cls: type) -> Any:
+    """Builder for a connector whose submit method reads only these attributes."""
+
+    def build(pool: Any, call_tool: AsyncMock) -> Any:
+        connector = object.__new__(cls)
+        connector._db_pool = pool
+        connector._mcp_client = MagicMock(call_tool=call_tool)
+        connector._metrics = MagicMock()
+        connector._config = MagicMock()
+        connector._last_ingest_submit = None
+        return connector
+
+    return build
+
+
 _ADOPTERS = [
+    pytest.param(
+        _generic(TelegramBotConnector), "telegram-bot", "_submit_to_ingest", id="telegram-bot"
+    ),
+    pytest.param(
+        _generic(TelegramUserClientConnector),
+        "telegram-user-client",
+        "_submit_to_ingest",
+        id="telegram-user",
+    ),
+    pytest.param(
+        _generic(GDriveAccountLoop),
+        "google-drive",
+        "_submit_to_ingest_api",
+        id="google-drive",
+    ),
     pytest.param(_gmail, "gmail", "_submit_to_ingest_api", id="gmail"),
     pytest.param(_whatsapp, "whatsapp", "_submit_to_ingest", id="whatsapp-user"),
 ]
@@ -227,3 +260,102 @@ async def test_a_scrub_failure_writes_nothing_and_raises_a_content_blind_error(
         assert raised.value.__cause__ is None and raised.value.__suppress_context__
         assert "test-private-scrub-details" not in str(raised.value) + caplog.text
         assert pool.rows == {}
+
+
+def _health(pool: Any, call_tool: AsyncMock, policy: Any = None) -> Any:
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+    from butlers.connectors.google_health import (
+        RESOURCE_BUNDLES,
+        GoogleHealthConnector,
+        GoogleHealthConnectorConfig,
+    )
+
+    config = GoogleHealthConnectorConfig(
+        switchboard_mcp_url="http://localhost:41999/mcp",
+        poll_intervals={b.resource: b.default_interval_s for b in RESOURCE_BUNDLES},
+    )
+    connector = GoogleHealthConnector(config=config, shared_pool=pool, cursor_pool=None)
+    connector._ingestion_policy = policy
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    connector._mcp_client.call_tool = call_tool  # type: ignore[method-assign]
+    return connector
+
+
+async def test_google_health_commits_before_the_submit() -> None:
+    pool = _Journal()
+    connector = _health(pool, _ordered_call_tool(pool))
+    assert await connector._submit_envelope(_envelope("wellness"), resource="steps")
+    assert pool.order == ["journal", "submit"]
+    for _ in range(2):
+        await connector._submit_envelope(_envelope("wellness"), resource="steps")
+    assert len(pool.rows) == 1
+
+
+async def test_google_health_journal_failure_is_not_consumed_and_submits_nothing() -> None:
+    pool = _Journal()
+    pool.fail = OSError("connectors database unreachable")
+    call_tool = _ordered_call_tool(pool)
+    connector = _health(pool, call_tool)
+    outcome = await connector._submit_envelope(_envelope("wellness"), resource="steps")
+    assert not outcome  # FAILED: the sample is not consumed
+    call_tool.assert_not_awaited()
+
+
+async def test_google_health_failed_submit_keeps_the_row() -> None:
+    pool = _Journal()
+    connector = _health(pool, _ordered_call_tool(pool, fail=True))
+    assert not await connector._submit_envelope(_envelope("wellness"), resource="steps")
+    assert len(pool.rows) == 1
+
+
+async def test_a_policy_blocked_health_event_writes_no_row() -> None:
+    from types import SimpleNamespace
+
+    pool = _Journal()
+    policy = SimpleNamespace(
+        scope="connector_rule",
+        evaluate=lambda _e: SimpleNamespace(
+            allowed=False, action="block", matched_rule_type="sender_domain"
+        ),
+    )
+    call_tool = _ordered_call_tool(pool)
+    connector = _health(pool, call_tool, policy)
+    assert await connector._submit_envelope(_envelope("wellness"), resource="steps")
+    assert pool.rows == {}
+    call_tool.assert_not_awaited()
+
+
+async def test_spotify_session_row_keeps_the_envelope_raw() -> None:
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.connectors.spotify import (
+        ListeningSession,
+        build_session_summary_envelope,
+        persist_session_summary,
+        session_summary_raw,
+    )
+
+    started = datetime(2026, 11, 20, 10, 0, tzinfo=UTC)
+    session = ListeningSession(
+        context_uri="spotify:playlist:p1", started_at=started, track_names=["a", "b"]
+    )
+    session.drain_started_at = started + timedelta(minutes=9)
+    seen: list[Any] = []
+
+    class _Pool:
+        async def fetchval(self, sql: str, *args: Any) -> int:
+            seen.append((sql, args))
+            return 1
+
+    await persist_session_summary(
+        _Pool(), endpoint_identity="spotify:x", spotify_user_id="u", session=session
+    )
+    sql, args = seen[0]
+    assert "raw_payload" in sql and "(" in sql
+    stored = json.loads(args[-1])
+    envelope = build_session_summary_envelope(
+        endpoint_identity="spotify:x", spotify_user_id="u", session=session, observed_at="t"
+    )
+    assert stored == envelope["payload"]["raw"]
+    assert stored == session_summary_raw(session, session.drain_started_at)

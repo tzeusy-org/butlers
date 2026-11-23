@@ -185,6 +185,13 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 - `GET /health` -- Returns status (`healthy`/`unhealthy`), uptime, last checkpoint save, last ingest submit, and source API connectivity.
 - `GET /metrics` -- Prometheus metrics endpoint.
 
+## Capture manifest
+
+- **Provider offers:** Bot API updates (`getUpdates` or webhook), retained by Telegram for about 24 hours and not re-readable once the offset moves past them.
+- **We keep:** one `connectors.evidence_journal` row per submitted update (`source = telegram-bot`, `provider_id` = the update's external event id), committed before the Switchboard submit and the offset advance. `raw` is the envelope's inbox-equivalent at its tier after the bearer scrub. Policy-blocked updates are never journaled.
+- **If the journal write fails:** nothing is submitted and the polling offset (or a webhook's 2xx) is not confirmed, so Telegram redelivers. A failed submit keeps the row; the park and replay path is unchanged.
+- **Provider retention and backfill:** there is no backfill door after the 24-hour window, so this row is the verbatim copy.
+
 ## Idempotency and Resume
 
 - Primary dedupe identity: `update_id` + endpoint identity.

@@ -399,3 +399,67 @@ async def test_a_malformed_point_is_rejected_even_without_a_database() -> None:
         assert _ingests(call_tool) == []
     finally:
         await _stop(connector)
+
+
+_TRANSITION = {
+    "_type": "transition",
+    "tst": 1711360400,
+    "tid": "ph",
+    "event": "enter",
+    "desc": "Home",
+    "lat": 1.0,
+    "lon": 2.0,
+}
+
+
+async def test_a_transition_is_journaled_before_the_submit(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def fake_commit(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        order.append("journal")
+        return True
+
+    async def call_tool(tool: str, payload: dict | None = None) -> dict:
+        if tool == "ingest":
+            order.append("ingest")
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(owntracks, "commit_envelope", fake_commit)
+    connector = _connector(AsyncMock(side_effect=call_tool), _FakePool())
+    try:
+        assert (await _post(connector, _TRANSITION)).status_code == 200
+        assert order == ["journal", "ingest"]
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_transition_journal_write_submits_nothing(monkeypatch) -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    async def broken_commit(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        raise EvidenceNotCommitted("OSError")
+
+    monkeypatch.setattr(owntracks, "commit_envelope", broken_commit)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FakePool())
+    try:
+        assert (await _post(connector, _TRANSITION)).status_code == 503
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
+
+
+async def test_a_location_point_does_not_use_the_generic_journal(monkeypatch) -> None:
+    async def fail_if_called(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        raise AssertionError("locations live in owntracks_points")
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(owntracks, "commit_envelope", fail_if_called)
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(return_value={"status": "accepted"}), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 200
+    finally:
+        await _stop(connector)

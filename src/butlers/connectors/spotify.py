@@ -1081,7 +1081,7 @@ def build_listening_digest_envelope(
     }
 
 
-def session_summary_raw(session: ListeningSession) -> dict[str, Any]:
+def session_summary_raw(session: ListeningSession, session_end: datetime) -> dict[str, Any]:
     """The ``payload.raw`` of a session-summary envelope; also stored as ``raw_payload``.
 
     One definition feeds the envelope and the evidence row, so the row keeps exactly what the
@@ -1089,8 +1089,8 @@ def session_summary_raw(session: ListeningSession) -> dict[str, Any]:
     """
     return {
         "session_start": session.started_at.isoformat(),
-        "session_end": (session.drain_started_at or datetime.now(UTC)).isoformat(),
-        "duration_seconds": int(session.duration_seconds),
+        "session_end": session_end.isoformat(),
+        "duration_seconds": int(max(0.0, (session_end - session.started_at).total_seconds())),
         "track_count": session.track_count,
         "context_uri": session.context_uri,
         "context_name": _resolve_context_label(
@@ -1145,7 +1145,7 @@ def build_session_summary_envelope(
             "identity": spotify_user_id,
         },
         "payload": {
-            "raw": session_summary_raw(session),
+            "raw": session_summary_raw(session, session.drain_started_at or datetime.now(UTC)),
             "normalized_text": normalized_text,
         },
         "control": {
@@ -1279,7 +1279,7 @@ async def persist_session_summary(
         session.context_uri,
         session.context_name,
         # Text cast to jsonb, so the write needs no jsonb codec on this pool.
-        json.dumps(session_summary_raw(session), default=str),
+        json.dumps(session_summary_raw(session, ended_at), default=str),
     )
     return result is not None
 
