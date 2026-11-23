@@ -189,6 +189,31 @@ async def test_unparkable_poison_update_holds_the_offset_until_it_is_parked() ->
     assert [row[8] for row in pool.written] == ["error"]
 
 
+async def test_uncommitted_evidence_holds_the_offset_and_never_parks_the_update() -> None:
+    """A journal failure is not a poison update: re-fetch it, write no error row (bu-uhbhzq.4)."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    telegram = _FakeTelegram([_update(10), _update(11), _update(12)])
+    connector = _connector(telegram)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    delivered: list[str] = []
+    connector._submit_to_ingest = _failing_on(  # type: ignore[method-assign]
+        11, EvidenceNotCommitted("insert_failed"), delivered
+    )
+
+    with pytest.raises(EvidenceNotCommitted):
+        await connector._poll_once()
+
+    assert connector._last_update_id == 10
+    assert pool.written == []
+    assert len(connector._filtered_event_buffer) == 0
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    await connector._poll_once()
+    assert telegram.offsets == [None, 11]
+    assert connector._last_update_id == 12
+
+
 @pytest.mark.parametrize("failures", [1, 1025], ids=["first-error", "extended-outage"])
 async def test_polling_recovers_and_keeps_credentials_out_of_retry_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, failures: int

@@ -107,7 +107,7 @@ from prometheus_client import REGISTRY, Counter, Gauge
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.evidence_journal import commit_envelope
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -2413,11 +2413,21 @@ class GoogleHealthConnector:
 
         async with self._semaphore:
             start_t = time.perf_counter()
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A failed
+            # write is a FAILED outcome (not consumed, nothing submitted) and copies the sample
+            # nowhere: no error-buffer row, because the cursor holds and the sample is re-read.
+            # A failed submit keeps the journal row and parks below.
             try:
-                # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A
-                # failed write is a FAILED outcome (not consumed, nothing submitted); a failed
-                # submit keeps the row.
                 await commit_envelope(self._shared_pool, envelope)
+            except EvidenceNotCommitted as exc:
+                self._metrics.record_error("evidence_error", "journal")
+                logger.error(
+                    "GoogleHealthConnector: evidence not committed; holding the sample "
+                    "(failure_class=%s)",
+                    exc.reason,
+                )
+                return SubmissionOutcome.FAILED
+            try:
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
                 status = "success"

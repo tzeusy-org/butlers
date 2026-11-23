@@ -806,8 +806,8 @@ async def test_persist_spoken_session_upserts_bounded_metadata_without_raw_paylo
 
 
 @pytest.mark.asyncio
-async def test_spoken_evidence_failure_does_not_block_passive_submission() -> None:
-    from unittest.mock import patch
+async def test_spoken_evidence_failure_holds_the_start_event() -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
@@ -815,7 +815,7 @@ async def test_spoken_evidence_failure_does_not_block_passive_submission() -> No
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
     item = {
         "type": "episode",
         "id": "episode-1",
@@ -825,15 +825,11 @@ async def test_spoken_evidence_failure_does_not_block_passive_submission() -> No
         "show": {"id": "show-1", "name": "The Daily", "uri": "spotify:show:show-1"},
     }
 
-    with patch(
-        "butlers.connectors.spotify.persist_spoken_session", new_callable=AsyncMock
-    ) as persist:
-        persist.side_effect = RuntimeError("DB unavailable")
-        await connector._handle_spoken_playback(
-            {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
-        )
+    await connector._handle_spoken_playback(
+        {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
+    )
 
-    connector._submit_envelope.assert_awaited_once()
+    assert len(connector._held_spoken_starts) == 1
 
 
 @pytest.mark.asyncio
@@ -937,7 +933,13 @@ async def test_poll_cycle_track_after_spoken_closes_then_resumed_episode_opens_n
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
+
+    async def submit_running_evidence(envelope, *, evidence=None):
+        if evidence is not None:
+            await evidence()
+        return True
+
+    connector._submit_envelope = AsyncMock(side_effect=submit_running_evidence)
     connector._poll_recently_played = AsyncMock()
     connector._last_gap_fill_poll_at = float("inf")
 
@@ -1030,16 +1032,17 @@ async def test_emit_session_summary_persists_to_evidence_table() -> None:
     ) as mock_persist:
         mock_persist.return_value = True
         await connector._emit_session_summary(session, _OBSERVED)
+        connector._submit_envelope.assert_awaited_once()
+        await connector._submit_envelope.await_args.kwargs["evidence"]()
 
     mock_persist.assert_awaited_once()
     assert mock_persist.await_args.kwargs["session"] is session
-    connector._submit_envelope.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_emit_session_summary_evidence_failure_is_non_fatal() -> None:
-    """Persist failure must not abort ingest submission."""
-    from unittest.mock import patch
+async def test_emit_session_summary_holds_the_session_when_evidence_fails() -> None:
+    """A failed evidence write submits nothing and keeps the session for the next poll."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
@@ -1047,44 +1050,31 @@ async def test_emit_session_summary_evidence_failure_is_non_fatal() -> None:
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._cursor_pool = AsyncMock()
-    connector._submit_envelope = AsyncMock()
-    connector._ingestion_policy = None
-
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
     session = _make_closed_session()
 
-    with patch(
-        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
-    ) as mock_persist:
-        mock_persist.side_effect = RuntimeError("DB is down")
-        await connector._emit_session_summary(session, _OBSERVED)
+    await connector._emit_session_summary(session, _OBSERVED)
 
-    # Ingest submission must still happen despite the persist failure.
-    connector._submit_envelope.assert_awaited_once()
+    assert connector._held_session_summaries == {session.started_at: (session, _OBSERVED)}
 
 
 @pytest.mark.asyncio
-async def test_emit_session_summary_skips_persist_without_cursor_pool() -> None:
-    """No persist attempt when cursor_pool is None (graceful degradation)."""
-    from unittest.mock import patch
-
+async def test_emit_session_summary_without_cursor_pool_commits_nothing() -> None:
+    """No pool means no evidence: the write refuses and nothing reaches Switchboard."""
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
-    connector._cursor_pool = None  # explicitly no pool
-    connector._submit_envelope = AsyncMock()
+    connector._cursor_pool = None
     connector._ingestion_policy = None
-
+    connector._mcp_client.call_tool = AsyncMock()
     session = _make_closed_session()
 
-    with patch(
-        "butlers.connectors.spotify.persist_session_summary", new_callable=AsyncMock
-    ) as mock_persist:
-        await connector._emit_session_summary(session, _OBSERVED)
+    await connector._emit_session_summary(session, _OBSERVED)
 
-    mock_persist.assert_not_awaited()
-    connector._submit_envelope.assert_awaited_once()
+    connector._mcp_client.call_tool.assert_not_awaited()
+    assert session.started_at in connector._held_session_summaries
 
 
 # ---------------------------------------------------------------------------
