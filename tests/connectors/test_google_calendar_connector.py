@@ -803,3 +803,110 @@ def test_calendar_health_reports_revocation_as_error_and_api_failure_as_degraded
         "error",
         "error=invalid_grant, description=Token expired or revoked",
     )
+
+
+# ---------------------------------------------------------------------------
+# Sync token: the full sync must yield one, and its absence must be honest (bu-uhbhzq.1)
+# ---------------------------------------------------------------------------
+
+
+def _synced_runtime(account_config: CalendarAccountConfig, calls: list[dict[str, Any]]):
+    """A runtime over a fake Calendar API that, like Google, withholds a sync token when
+    ``orderBy`` is sent, and requires a sync-token request to repeat the initial filters."""
+    from unittest.mock import AsyncMock
+
+    runtime = CalendarConnectorRuntime(account_config)
+    runtime._cursor_pool = AsyncMock()
+    runtime._running = True
+
+    async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        if "syncToken" in params:
+            return {"items": [], "nextSyncToken": "token-2"}
+        page: dict[str, Any] = {"items": [{"id": "e1", "status": "confirmed"}]}
+        if "orderBy" not in params:
+            page["nextSyncToken"] = "token-1"
+        return page
+
+    runtime._gcal_api_get = api_get  # type: ignore[method-assign]
+    return runtime
+
+
+async def test_the_full_sync_persists_a_token_and_the_next_cycle_is_incremental(
+    account_config: CalendarAccountConfig,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+    saved: list[str] = []
+
+    async def save(pool: Any, connector_type: str, identity: str, token: str, **_: Any) -> None:
+        saved.append(token)
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._ensure_sync_token()
+        await runtime._run_one_poll_cycle()
+
+    assert saved[0] == "token-1"
+    full, incremental = calls[0], calls[1]
+    assert "orderBy" not in full
+    assert incremental["syncToken"] == "token-1"
+    for key in ("singleEvents", "showDeleted"):
+        assert incremental[key] == full[key] == "true"
+
+
+async def test_a_full_sync_without_a_token_is_degraded_and_never_logs_saved(
+    account_config: CalendarAccountConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+    original = runtime._gcal_api_get
+
+    async def no_token(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        data = await original(path, params)
+        data.pop("nextSyncToken", None)
+        return data
+
+    runtime._gcal_api_get = no_token  # type: ignore[method-assign]
+    runtime._record_source_api_success()
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+        caplog.at_level("INFO", logger="butlers.connectors.google_calendar"),
+    ):
+        await runtime._ensure_sync_token()
+
+    save.assert_not_called()
+    assert "syncToken saved" not in caplog.text
+    state, reason = runtime._get_health_state()
+    assert state == "degraded" and "sync token" in (reason or "")
+
+
+async def test_a_missing_token_waits_a_poll_interval_instead_of_repeating_the_full_sync(
+    account_config: CalendarAccountConfig,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+
+    async def no_token(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        return {"items": []}
+
+    runtime._gcal_api_get = no_token  # type: ignore[method-assign]
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        runtime._running = False
+
+    with (
+        patch("butlers.connectors.google_calendar.asyncio.sleep", fake_sleep),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._run_poll_loop()
+
+    assert len(calls) == 1, "the full sync ran more than once before the first wait"
+    assert sleeps == [account_config.poll_interval_s]

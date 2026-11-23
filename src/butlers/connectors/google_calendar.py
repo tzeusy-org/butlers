@@ -95,6 +95,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Filters every events.list sync request sends. Google issues a ``nextSyncToken`` only to a
+#: request without ``orderBy``, and a sync-token request must repeat the initial request's
+#: filters, so the full and the incremental pass share this one set (bu-uhbhzq.1).
+_SYNC_FILTER_PARAMS: dict[str, str] = {"singleEvents": "true", "showDeleted": "true"}
+
+_NO_SYNC_TOKEN_REASON = "Google Calendar full sync returned no sync token"
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -915,6 +922,8 @@ class CalendarConnectorRuntime:
         # parked as a replayable error row (bu-dhloi1.149).
         self._ingest_retry = IngestRetryBudget()
         self._hold_sync_token = False
+        # Set when a full sync's last page carried no nextSyncToken: capture is not working.
+        self._missing_sync_token = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1012,6 +1021,11 @@ class CalendarConnectorRuntime:
                 # instead of killing the account loop permanently.
                 if self._sync_token is None:
                     await self._ensure_sync_token()
+                    if self._sync_token is None:
+                        # No token to poll with (a full sync yields none, or one failed to
+                        # hold): wait a poll interval, never repeat the full sync back to back.
+                        await asyncio.sleep(self._config.poll_interval_s)
+                        continue
                 await self._run_one_poll_cycle()
             except asyncio.CancelledError:
                 raise
@@ -1277,10 +1291,7 @@ class CalendarConnectorRuntime:
             self._config.email,
         )
 
-        params: dict[str, Any] = {
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
+        params: dict[str, Any] = dict(_SYNC_FILTER_PARAMS)
 
         page_token: str | None = None
         all_events: list[dict[str, Any]] = []
@@ -1310,6 +1321,8 @@ class CalendarConnectorRuntime:
         for event in all_events:
             event_id = event.get("id", "")
             start_dt = _parse_event_start(event)
+            if event.get("status") == "cancelled":
+                continue  # showDeleted returns cancelled instances; they are not upcoming
             if start_dt and now <= start_dt <= window_end:
                 self._upcoming_events[event_id] = (event, start_dt)
 
@@ -1328,9 +1341,19 @@ class CalendarConnectorRuntime:
                 self._config.email,
             )
             return
-        if next_sync_token:
-            self._sync_token = next_sync_token
-            await self._save_sync_token(next_sync_token)
+        if not next_sync_token:
+            # Failure never impersonates health: no token means no incremental capture.
+            self._missing_sync_token = True
+            logger.error(
+                "Calendar: full sync for email=%s returned no nextSyncToken (%d events); "
+                "no cursor saved, capture is not incremental",
+                self._config.email,
+                len(all_events),
+            )
+            return
+        self._missing_sync_token = False
+        self._sync_token = next_sync_token
+        await self._save_sync_token(next_sync_token)
 
         logger.info(
             "Calendar: full sync complete for email=%s: %d events, syncToken saved",
@@ -1344,10 +1367,7 @@ class CalendarConnectorRuntime:
         Returns (events, next_sync_token).
         Raises _SyncTokenExpiredError on 410 Gone.
         """
-        params: dict[str, Any] = {
-            "syncToken": sync_token,
-            "showDeleted": "true",
-        }
+        params: dict[str, Any] = {"syncToken": sync_token, **_SYNC_FILTER_PARAMS}
 
         all_events: list[dict[str, Any]] = []
         next_sync_token: str | None = None
@@ -1714,6 +1734,8 @@ class CalendarConnectorRuntime:
         """Return (state, error_message) tuple for heartbeat."""
         if self._source_api_ok is None:
             return "degraded", "Starting up, API not yet checked"
+        if self._source_api_ok and self._missing_sync_token:
+            return "degraded", _NO_SYNC_TOKEN_REASON
         if self._source_api_ok:
             return "healthy", None
         if self._auth_error:
