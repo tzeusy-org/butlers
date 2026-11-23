@@ -22,6 +22,7 @@ from butlers.api.read_models.calendar_workspace import (
     shallow_asdict,
 )
 from butlers.core.temporal.day_sheet import (
+    DEFAULT_WINDOW,
     DayOccurrence,
     DaySheet,
     SourceRead,
@@ -61,9 +62,13 @@ async def query_calendar_day_sheet(
     end = datetime.combine(local_date + timedelta(days=1), time(0), tzinfo=zone).astimezone(UTC)
 
     def sheet(units: list[SourceRead], occurrences=()) -> DaySheet:
-        kwargs = {"window": window} if window is not None else {}
         return build_day_sheet(
-            list(occurrences), units, zone=zone.key, local_date=local_date, now=now, **kwargs
+            list(occurrences),
+            units,
+            zone=zone.key,
+            local_date=local_date,
+            now=now,
+            window=window or DEFAULT_WINDOW,
         )
 
     failed: set[str] = set()
@@ -95,8 +100,9 @@ async def query_calendar_day_sheet(
             known = [r.last_success_at for r in provider if r.last_success_at is not None]
             units.append(SourceRead(name=name, readable=False, as_of=min(known) if known else None))
         elif provider:
-            successes = [r.last_success_at for r in provider]
-            as_of = None if any(s is None for s in successes) else min(successes)
+            stamps = [r.last_success_at for r in provider if r.last_success_at is not None]
+            # One source that never succeeded makes the whole schema's freshness unknown.
+            as_of = min(stamps) if stamps and len(stamps) == len(provider) else None
             units.append(
                 SourceRead(name=name, readable=True, as_of=as_of, stale_after=_STALE_AFTER)
             )
