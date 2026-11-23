@@ -109,7 +109,9 @@ def upgrade() -> None:
     if secret_hash_exists:
         row = conn.execute(
             # noqa: S608 — not user-supplied SQL
-            _sa.text("SELECT COUNT(*) AS n FROM public.webhooks WHERE secret_hash IS NOT NULL")
+            _sa.text(
+                "SELECT COUNT(*) AS n FROM public.webhooks WHERE secret_hash IS NOT NULL"
+            )
         ).fetchone()
         affected = row[0] if row else 0
         if affected:

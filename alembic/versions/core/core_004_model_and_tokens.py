@@ -110,7 +110,8 @@ def _load_seed_entries() -> list[dict]:
     with open(defaults_path, "rb") as f:
         data = tomllib.load(f)
     return [
-        m for m in data.get("models", []) if m.get("complexity_tier", "medium") in _COMPLEXITY_TIERS
+        m for m in data.get("models", [])
+        if m.get("complexity_tier", "medium") in _COMPLEXITY_TIERS
     ]
 
 

@@ -246,7 +246,9 @@ def upgrade() -> None:
     """)
 
     # Create initial partitions for current month and next month.
-    op.execute("SELECT connectors.connectors_filtered_events_ensure_partition(now())")
+    op.execute(
+        "SELECT connectors.connectors_filtered_events_ensure_partition(now())"
+    )
 
     # -------------------------------------------------------------------------
     # 6. Grants for connector_writer role (best-effort; skipped if role absent)
@@ -290,7 +292,8 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     for role in _ALL_BUTLER_ROLES:
         _execute_best_effort(
-            f"GRANT USAGE ON SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)} TO {_quote_ident(role)}",
+            f"GRANT USAGE ON SCHEMA {_quote_ident(_CONNECTORS_SCHEMA)}"
+            f" TO {_quote_ident(role)}",
             role_name=role,
         )
         _execute_best_effort(
@@ -302,7 +305,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP FUNCTION IF EXISTS connectors_filtered_events_ensure_partition(TIMESTAMPTZ)")
+    op.execute(
+        "DROP FUNCTION IF EXISTS"
+        " connectors_filtered_events_ensure_partition(TIMESTAMPTZ)"
+    )
     op.execute(
         "DROP FUNCTION IF EXISTS"
         " connectors.connectors_filtered_events_ensure_partition(TIMESTAMPTZ)"

@@ -80,11 +80,14 @@ def downgrade() -> None:
         "SELECT pg_advisory_xact_lock("
         "hashtextextended('butlers:core_211:expected_signal_endpoint_identity', 0))"
     )
-    op.execute("DROP INDEX IF EXISTS public.ix_expected_signals_producer_endpoint")
+    op.execute(
+        "DROP INDEX IF EXISTS public.ix_expected_signals_producer_endpoint"
+    )
     op.execute(
         "ALTER TABLE public.expected_signals "
         "DROP CONSTRAINT IF EXISTS expected_signals_endpoint_identity_check"
     )
     op.execute(
-        "ALTER TABLE public.expected_signals DROP COLUMN IF EXISTS producer_endpoint_identity"
+        "ALTER TABLE public.expected_signals "
+        "DROP COLUMN IF EXISTS producer_endpoint_identity"
     )

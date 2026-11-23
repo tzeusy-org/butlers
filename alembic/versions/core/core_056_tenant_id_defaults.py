@@ -75,7 +75,8 @@ def upgrade() -> None:
             if not _table_exists(schema, table) or not _column_exists(schema, table, "tenant_id"):
                 continue
             op.execute(
-                f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN tenant_id SET DEFAULT \'shared\''
+                f'ALTER TABLE "{schema}"."{table}" '
+                "ALTER COLUMN tenant_id SET DEFAULT 'shared'"
             )
 
     # 2. Merge orphan 'owner' entities into their 'shared' counterparts.
@@ -163,7 +164,9 @@ def upgrade() -> None:
             )
 
         # Delete the orphan entity
-        op.execute(f"DELETE FROM public.entities WHERE id = '{source_id}'::uuid")
+        op.execute(
+            f"DELETE FROM public.entities WHERE id = '{source_id}'::uuid"
+        )
 
     # 3. Flip any remaining tenant_id='owner' rows to 'shared'
     for schema in _SCHEMAS:
@@ -177,7 +180,9 @@ def upgrade() -> None:
 
     # Also fix any entities with tenant_id='owner' that weren't in the merge pairs
     if _table_exists("public", "entities") and _column_exists("public", "entities", "tenant_id"):
-        op.execute("UPDATE public.entities SET tenant_id = 'shared' WHERE tenant_id = 'owner'")
+        op.execute(
+            "UPDATE public.entities SET tenant_id = 'shared' WHERE tenant_id = 'owner'"
+        )
 
 
 def downgrade() -> None:
@@ -187,5 +192,6 @@ def downgrade() -> None:
             if not _table_exists(schema, table) or not _column_exists(schema, table, "tenant_id"):
                 continue
             op.execute(
-                f'ALTER TABLE "{schema}"."{table}" ALTER COLUMN tenant_id SET DEFAULT \'owner\''
+                f'ALTER TABLE "{schema}"."{table}" '
+                "ALTER COLUMN tenant_id SET DEFAULT 'owner'"
             )
