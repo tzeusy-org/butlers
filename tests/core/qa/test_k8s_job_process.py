@@ -171,10 +171,31 @@ async def test_a_retried_create_adopts_the_identical_existing_job() -> None:
     assert (await _runner(api).run(_manifest(), timeout_s=600)).state == "succeeded"
 
 
-async def test_a_conflicting_job_under_the_same_name_is_not_adopted() -> None:
+def _pod_spec(m):
+    return m["spec"]["template"]["spec"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: _pod_spec(m)["containers"][0].update(command=["/bin/other"]),
+        lambda m: _pod_spec(m)["containers"][0].update(args=["--different"]),
+        lambda m: (
+            _pod_spec(m)["containers"][0].setdefault("securityContext", {}).update(privileged=True)
+        ),
+        lambda m: _pod_spec(m).setdefault("securityContext", {}).update(runAsUser=0),
+        lambda m: (
+            _pod_spec(m)
+            .setdefault("volumes", [])
+            .append({"name": "evil", "hostPath": {"path": "/"}})
+        ),
+    ],
+    ids=["command", "args", "container-security", "pod-security", "volumes"],
+)
+async def test_a_conflicting_job_under_the_same_name_is_not_adopted(mutate) -> None:
     api = FakeApi()
     other = _manifest()
-    other["spec"]["template"]["spec"]["containers"][0]["command"] = ["/bin/other"]
+    mutate(other)
     api.jobs[f"qa-{_ATTEMPT}"] = other
     api.create_status = 409
     with pytest.raises(JobLaunchRefused) as raised:

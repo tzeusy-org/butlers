@@ -246,6 +246,13 @@ class K8sJobProcess:
             await self._sleep(self._poll)
 
 
+def _volume_shape(volume: dict[str, Any]) -> tuple[str, str, str]:
+    """A volume's name, kind and claim, ignoring server-filled defaults such as ``defaultMode``."""
+    kind = next((k for k in volume if k != "name"), "")
+    claim = (volume.get(kind) or {}).get("claimName", "") if kind == "persistentVolumeClaim" else ""
+    return (str(volume.get("name", "")), kind, str(claim))
+
+
 def _fingerprint(job: dict[str, Any]) -> dict[str, Any] | None:
     """The fields the investigator template sets, normalised for comparing a stored Job.
 
@@ -262,6 +269,10 @@ def _fingerprint(job: dict[str, Any]) -> dict[str, Any] | None:
             "service_account": pod["serviceAccountName"],
             "image": container["image"],
             "command": container["command"],
+            "args": container.get("args"),
+            "pod_security": pod.get("securityContext"),
+            "container_security": container.get("securityContext"),
+            "volumes": sorted(_volume_shape(v) for v in pod.get("volumes", [])),
             "working_dir": container.get("workingDir"),
             "env": sorted((e["name"], e.get("value")) for e in container.get("env", [])),
             "mounts": sorted(
