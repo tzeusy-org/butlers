@@ -112,7 +112,9 @@ def upgrade() -> None:
         f"""
         DO $$
         BEGIN
-            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)}) THEN
+            IF EXISTS (
+                SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)}
+            ) THEN
                 GRANT SELECT, INSERT ON TABLE {_TABLE} TO {_quote_ident(_CONNECTOR_ROLE)};
             END IF;
         END;
