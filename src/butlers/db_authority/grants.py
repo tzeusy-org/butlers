@@ -230,6 +230,11 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
             ("condition_receipts", frozenset({"SELECT", "INSERT"})),
         )
     },
+    "owner_watches": _replay_widened(
+        _NONE,
+        {_SWITCHBOARD: frozenset({"SELECT", "INSERT", "UPDATE"})},
+        "core_364: owner watches, Switchboard evaluator only; RLS fences a replay",
+    ),
     "custody_commands": _replay_widened(
         _NONE,
         {},

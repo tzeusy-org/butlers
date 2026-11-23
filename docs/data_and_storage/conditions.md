@@ -140,5 +140,9 @@ generation, then cancels the old one), delivery defaults to `digest`, and `pause
 disable) cancels the instance without deleting the watch, its receipts or anything it observed.
 A create, renew or resume approval is refused unless the live grant still has the digest and
 sources on the card. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
-The store here is in-memory (`InMemoryWatchStore`); the Postgres store, the approval-card and
-reply surfaces and delivery through the insight broker are later slices.
+Two stores implement `WatchStore`: `InMemoryWatchStore` and `PostgresWatchStore` over
+`public.owner_watches` (core_364). The table is Switchboard-only behind row-level security (the
+core_323 posture), never deleted or truncated, with an immutable boundary, a version that rises
+by one, expiry that moves forward only with a new generation, closed rows frozen, and a trigger
+that backstops the cap of 50 active under one advisory lock. The approval-card and `never`-reply
+surfaces and delivery through the insight broker are later slices.
