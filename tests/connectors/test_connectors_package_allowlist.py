@@ -17,6 +17,7 @@ CONNECTOR_FILES = {
     "automated_evidence.py": "H:gmail",
     "blob_store.py": "K",
     "bridge_manager.py": "H:whatsapp_user_client",
+    "calendar_event_revisions.py": "H:google_calendar",
     "cursor_store.py": "K",
     "db_role.py": "K",
     "discretion.py": "K",

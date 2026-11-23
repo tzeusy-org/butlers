@@ -26,3 +26,22 @@ submits event changes to Switchboard as `ingest.v1` envelopes.
 
 - `checkpoint_cursor` is non-null for every `google_calendar` account.
 - The log line "performing initial full sync" appears once per account, not once per poll.
+
+## Revision journal
+
+Google keeps no edit history, so the connector appends every event version it observes to
+`connectors.calendar_event_revisions` (core_366) before it submits anything or saves the sync
+token. A row is keyed on `(endpoint_identity, calendar_id, event_id, etag)`: Google changes the
+etag on every modification, RSVPs included, so a replayed page adds nothing and an edit adds a row.
+`observation` says why it was seen: `baseline` (first full sync, routed nowhere), `change`
+(incremental) or `resync` (410 recovery). The kind of change is derived by diffing an event's
+consecutive revisions; it is not stored.
+
+- Append-only: triggers refuse UPDATE, DELETE and TRUNCATE; nothing is pruned until the
+  per-source retention contract (bu-uhbhzq.7).
+- Titles, locations, times and attendees are kept verbatim. Descriptions are scrubbed of links and
+  passcodes, and conference join links, pins and `hangoutLink` are removed. An event blocked by
+  source policy keeps structure and times only (no raw payload).
+- Only `connector_writer` (insert, select) and `butler_chronicler_rw` (select) can touch it.
+- If the write fails, nothing is submitted, the sync token is held and health is **degraded**
+  ("Google Calendar revision journal write failed"); the next cycle journals the same delta.

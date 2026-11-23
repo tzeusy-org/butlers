@@ -818,6 +818,8 @@ def _synced_runtime(account_config: CalendarAccountConfig, calls: list[dict[str,
     runtime = CalendarConnectorRuntime(account_config)
     runtime._cursor_pool = AsyncMock()
     runtime._running = True
+    # The revision journal has its own tests; these cases are about the sync token.
+    runtime._journal_events = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
         calls.append(dict(params))
