@@ -122,6 +122,22 @@ describe("QaVerdictOpener -- clauses", () => {
     expect(html).toContain("next probe in 15m");
   });
 
+  it("says the probe is due once its time has passed, not how long ago", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "circuit_breaker_tripped",
+      circuit_breaker: {
+        tripped: true,
+        consecutive_failures: 5,
+        dominant_cause: "publisher_unconfigured",
+        next_probe_at: "2026-07-05T05:01:00Z",
+      },
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("probe due");
+    expect(html).not.toContain("ago");
+  });
+
   it("says mixed causes without naming one", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,

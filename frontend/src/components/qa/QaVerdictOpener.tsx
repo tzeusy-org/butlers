@@ -12,7 +12,7 @@
 import type { QaSummary } from "@/api/types";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { formatRelativeCompact } from "@/components/ui/time";
-import { breakerCauseLabel, haltReasonLabel } from "@/lib/qa-breaker-cause";
+import { breakerCauseLabel, breakerProbeIsDue, haltReasonLabel } from "@/lib/qa-breaker-cause";
 import type { useQaSummary } from "@/hooks/use-qa";
 
 // Mirrors qa.py's _CIRCUIT_BREAKER_THRESHOLD default (5), used only as a
@@ -32,7 +32,11 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
     const probeAt = summary.circuit_breaker.next_probe_at;
     const probe =
       probeAt && !Number.isNaN(new Date(probeAt).getTime())
-        ? `, next probe ${formatRelativeCompact(new Date(probeAt))}`
+        ? `, ${
+            breakerProbeIsDue(probeAt)
+              ? "probe due"
+              : `next probe ${formatRelativeCompact(new Date(probeAt))}`
+          }`
         : "";
     clauses.push({
       key: "breaker-tripped",

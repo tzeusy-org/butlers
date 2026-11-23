@@ -1068,6 +1068,35 @@ describe("QaOverviewPage -- evidence-bearing reset + palette verb", () => {
     ).toContain("fail the same way");
   });
 
+  it("shows reason text wrapped in the page, not only as a hover title", () => {
+    openResetDialogWith({
+      dominant_cause: "execution_failure",
+      recent_attempts: MOCK_BREAKER_TRIPPED.recent_attempts.map((a) => ({
+        ...a,
+        reason_text: "provider rejected the request: a long explanation of the failure",
+      })),
+    });
+    const reasons = document.querySelectorAll('[data-testid="qa-breaker-reset-reason"]');
+    expect(reasons).toHaveLength(5);
+    expect(reasons[0].textContent).toContain("a long explanation");
+    expect(reasons[0].hasAttribute("title")).toBe(false);
+  });
+
+  it("uses the breaker's threshold in the forecast and says when the probe is due", () => {
+    openResetDialogWith({
+      threshold: 7,
+      dominant_cause: "execution_failure",
+      next_probe_at: "2000-01-01T00:00:00Z",
+    });
+    const dialog = document.querySelector('[data-testid="qa-breaker-reset-dialog"]');
+    expect(
+      dialog?.querySelector('[data-testid="qa-breaker-reset-forecast"]')?.textContent,
+    ).toContain("after 7 more");
+    expect(
+      dialog?.querySelector('[data-testid="qa-breaker-reset-dominant-cause"]')?.textContent,
+    ).toContain("probe due");
+  });
+
   it("withholds the reset forecast when the failures have different causes", () => {
     openResetDialogWith({
       dominant_cause: "mixed",

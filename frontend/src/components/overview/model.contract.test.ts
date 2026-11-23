@@ -177,6 +177,8 @@ interface ContractScenario {
     requires_butlers_source_row?: boolean;
     hidden_old_issue_groups?: number;
     requires_qa_activity?: boolean;
+    /** Words the QA attention row must carry; the backend briefing asserts the same string. */
+    qa_attention_text_contains?: string;
   };
 }
 
@@ -297,6 +299,13 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
           `scenario ${scenario.name}: row ${row.id} severity ${row.severity} exceeds cap ${bounds.max_severity_rank}`,
         ).toBeGreaterThanOrEqual(worstAllowedRank);
       }
+    }
+    if (bounds.qa_attention_text_contains !== undefined) {
+      const qaRow = rows.find((r) => r.kind === "qa");
+      expect(
+        `${qaRow?.title ?? ""} ${qaRow?.detail ?? ""}`,
+        `scenario ${scenario.name}: the QA attention row must name the cause`,
+      ).toContain(bounds.qa_attention_text_contains);
     }
     if (bounds.requires_degraded_signal) {
       // Mirrors the fleet degraded-source convention (butlers/CLAUDE.md): a

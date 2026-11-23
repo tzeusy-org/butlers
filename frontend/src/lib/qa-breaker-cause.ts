@@ -1,12 +1,11 @@
 // Words for the QA breaker's cause and the gate behind a halted patrol (bu-ejow5p.3).
 // Codes come from the API (core/qa/remediation_liveness.py, core/qa/patrol_status.py).
 
-const CAUSE_LABELS: Record<string, string> = {
-  publisher_unconfigured: "no publisher configured",
-  proposal_retention_unavailable: "proposal retention unavailable",
-  execution_failure: "investigation failures",
-  mixed: "mixed causes",
-};
+// One word list for the API and the page: ``src/butlers/core/qa/breaker_cause_labels.json`` is
+// canonical and this copy is checked against it (tests/core/qa/test_breaker_state.py).
+import causeLabels from "./qa-breaker-cause-labels.json";
+
+const CAUSE_LABELS: Record<string, string> = causeLabels;
 
 const HALT_REASON_LABELS: Record<string, string> = {
   circuit_breaker: "circuit breaker open",
@@ -26,6 +25,12 @@ export function haltReasonLabel(reason: string | null | undefined): string | nul
   return HALT_REASON_LABELS[reason] ?? reason.replace(/_/g, " ");
 }
 
+/** True once the next half-open probe is due: its time has passed (or is unreadable). */
+export function breakerProbeIsDue(nextProbeAt: string, now: number = Date.now()): boolean {
+  const at = new Date(nextProbeAt).getTime();
+  return !Number.isNaN(at) && at <= now;
+}
+
 export interface BreakerForecast {
   /** True only for a single cause, where "fix it or the next probe fails" is honest. */
   available: boolean;
@@ -36,7 +41,10 @@ export interface BreakerForecast {
  * What resetting the breaker is likely to do. Withheld on mixed or unknown causes: a forecast
  * over unlike failures would be a guess presented as a finding.
  */
-export function breakerResetForecast(cause: string | null | undefined): BreakerForecast {
+export function breakerResetForecast(
+  cause: string | null | undefined,
+  threshold: number,
+): BreakerForecast {
   if (!cause || cause === "mixed") {
     return {
       available: false,
@@ -47,7 +55,7 @@ export function breakerResetForecast(cause: string | null | undefined): BreakerF
   if (cause === "execution_failure") {
     return {
       available: true,
-      text: `All counted failures were ${label}. A reset re-admits dispatch; if the underlying fault persists the breaker reopens after five more.`,
+      text: `All counted failures were ${label}. A reset re-admits dispatch; if the underlying fault persists the breaker reopens after ${threshold} more.`,
     };
   }
   return {

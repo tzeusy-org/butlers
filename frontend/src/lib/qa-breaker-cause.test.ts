@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { breakerCauseLabel, breakerResetForecast, haltReasonLabel } from "./qa-breaker-cause";
+import {
+  breakerCauseLabel,
+  breakerProbeIsDue,
+  breakerResetForecast,
+  haltReasonLabel,
+} from "./qa-breaker-cause";
 
 describe("qa breaker cause words", () => {
   it("names known causes and shows an unknown code as text", () => {
@@ -17,12 +22,24 @@ describe("qa breaker cause words", () => {
   });
 
   it("withholds the reset forecast on mixed or unknown causes", () => {
-    expect(breakerResetForecast("mixed").available).toBe(false);
-    expect(breakerResetForecast(null).available).toBe(false);
+    expect(breakerResetForecast("mixed", 5).available).toBe(false);
+    expect(breakerResetForecast(null, 5).available).toBe(false);
+  });
+
+  it("uses the breaker's own threshold in the forecast", () => {
+    expect(breakerResetForecast("execution_failure", 7).text).toContain("after 7 more");
+  });
+
+  it("knows when a probe is due", () => {
+    const now = Date.parse("2026-07-05T05:00:00Z");
+    expect(breakerProbeIsDue("2026-07-05T04:57:00Z", now)).toBe(true);
+    expect(breakerProbeIsDue("2026-07-05T05:00:00Z", now)).toBe(true);
+    expect(breakerProbeIsDue("2026-07-05T05:15:00Z", now)).toBe(false);
+    expect(breakerProbeIsDue("not a time", now)).toBe(false);
   });
 
   it("forecasts a single structural cause as failing again until fixed", () => {
-    const forecast = breakerResetForecast("publisher_unconfigured");
+    const forecast = breakerResetForecast("publisher_unconfigured", 5);
     expect(forecast.available).toBe(true);
     expect(forecast.text).toContain("fail the same way");
   });

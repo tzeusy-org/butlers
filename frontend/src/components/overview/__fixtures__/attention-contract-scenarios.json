@@ -223,7 +223,8 @@
         "backend_state_class": "urgent",
         "min_attention_rows": 1,
         "max_attention_rows": 1,
-        "min_top_severity_rank": "critical"
+        "min_top_severity_rank": "critical",
+        "qa_attention_text_contains": "no publisher configured"
       }
     },
     {

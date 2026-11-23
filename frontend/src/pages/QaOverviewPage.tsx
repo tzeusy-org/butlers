@@ -54,7 +54,11 @@ import {
   useResetQaCircuitBreaker,
 } from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
-import { breakerCauseLabel, breakerResetForecast } from "@/lib/qa-breaker-cause";
+import {
+  breakerCauseLabel,
+  breakerProbeIsDue,
+  breakerResetForecast,
+} from "@/lib/qa-breaker-cause";
 import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 import { usePageSubject } from "@/lib/page-context.tsx";
 
@@ -340,6 +344,7 @@ function ResetBreakerDialog({
   attemptsAvailable,
   dominantCause,
   nextProbeAt,
+  threshold,
   onConfirm,
   pending,
 }: {
@@ -349,6 +354,7 @@ function ResetBreakerDialog({
   attemptsAvailable: boolean;
   dominantCause: string | null;
   nextProbeAt: string | null;
+  threshold: number;
   onConfirm: (causeRef: string) => void;
   pending: boolean;
 }) {
@@ -356,7 +362,7 @@ function ResetBreakerDialog({
   const [causeRef, setCauseRef] = useState("");
   const causeRefValid = /^[^:\s][^:]*:\s*\S.*$/.test(causeRef.trim());
   const causeLabel = breakerCauseLabel(dominantCause);
-  const forecast = breakerResetForecast(dominantCause);
+  const forecast = breakerResetForecast(dominantCause, threshold);
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent data-testid="qa-breaker-reset-dialog">
@@ -378,7 +384,14 @@ function ResetBreakerDialog({
             {nextProbeAt && (
               <span className="text-muted-foreground">
                 {" "}
-                · next automatic probe <Time value={nextProbeAt} mode="relative" />
+                ·{" "}
+                {breakerProbeIsDue(nextProbeAt) ? (
+                  "automatic probe due"
+                ) : (
+                  <>
+                    next automatic probe <Time value={nextProbeAt} mode="relative" />
+                  </>
+                )}
               </span>
             )}
           </p>
@@ -393,11 +406,15 @@ function ResetBreakerDialog({
               <li
                 key={attempt.id}
                 data-testid="qa-breaker-reset-attempt"
-                className="flex items-baseline justify-between gap-3"
+                className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5"
               >
                 <span className="truncate text-muted-foreground">{attempt.id}</span>
                 {attempt.reason_text && (
-                  <span className="min-w-0 flex-1 truncate" title={attempt.reason_text}>
+                  // Wrapped, not truncated: the text must be readable without a hover.
+                  <span
+                    data-testid="qa-breaker-reset-reason"
+                    className="order-last basis-full whitespace-normal break-words"
+                  >
                     {attempt.reason_text}
                   </span>
                 )}
@@ -848,6 +865,7 @@ export default function QaOverviewPage() {
         }}
         attempts={circuitBreaker.isError ? [] : (circuitBreaker.data?.data.recent_attempts ?? [])}
         attemptsAvailable={!circuitBreaker.isError}
+        threshold={circuitBreaker.data?.data.threshold ?? 5}
         dominantCause={circuitBreaker.isError ? null : (circuitBreaker.data?.data.dominant_cause ?? null)}
         nextProbeAt={circuitBreaker.isError ? null : (circuitBreaker.data?.data.next_probe_at ?? null)}
         onConfirm={confirmResetCircuitBreaker}
