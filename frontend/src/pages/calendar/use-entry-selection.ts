@@ -35,6 +35,19 @@ export function useEntrySelection({
   // the panel nor (through the null it gets back) move the grid anchor.
   const latestRequestRef = useRef(0);
 
+  // An explicit local selection (a click on a block, or closing the panel) is newer than any
+  // lookup still in flight: it invalidates them, so a late answer cannot replace what the owner
+  // just chose or move the grid anchor.
+  function openDetailPanel(entry: UnifiedCalendarEntry | null) {
+    latestRequestRef.current += 1;
+    setInvitationDetailLoading(false);
+    setSelectedEntry(entry);
+  }
+
+  function closeDetailPanel() {
+    openDetailPanel(null);
+  }
+
   async function openInvitation(entryId: string): Promise<UnifiedCalendarEntry | null> {
     const requestId = ++latestRequestRef.current;
     const isLatest = () => requestId === latestRequestRef.current;
@@ -130,8 +143,8 @@ export function useEntrySelection({
 
   return {
     selectedEntry,
-    openDetailPanel: setSelectedEntry,
-    closeDetailPanel: () => setSelectedEntry(null),
+    openDetailPanel,
+    closeDetailPanel,
     openInvitation,
     invitationDetailLoading,
     searchOpen,
