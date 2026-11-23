@@ -1647,6 +1647,49 @@ export interface CalendarDayBriefingResponse {
   entries: UnifiedCalendarEntry[];
 }
 
+/** One item on the owner's day sheet (GET /api/calendar/workspace/day-sheet). */
+export interface DaySheetItem {
+  ref: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  kind: "attended" | "tentative" | "butler";
+  title: string;
+  label_class: "owner_authored" | "third_party";
+  people_count: number;
+  conflict_ref: string | null;
+  door: string;
+}
+
+export interface DaySheetGap {
+  start: string;
+  end: string;
+}
+
+export interface DaySheetFreshness {
+  state: "current" | "stale" | "unreadable";
+  as_of: string | null;
+  sources_unreadable: string[];
+  sources_total: number;
+}
+
+/**
+ * The one projection of an owner-local day. `freshness.state` is explicit: an `unreadable` or
+ * `stale` sheet is never to be shown as a clear day, whatever `items` holds.
+ */
+export interface DaySheetResponse {
+  date: string;
+  zone: string;
+  freshness: DaySheetFreshness;
+  items: DaySheetItem[];
+  gaps: DaySheetGap[];
+  attended_minutes: number;
+  attended_count: number;
+  longest_gap: DaySheetGap | null;
+  digest: string;
+  text: string;
+}
+
 /** A single durable relationship note surfaced on the meeting-prep rail. */
 export interface CalendarPrepNote {
   /** Note category (e.g. `preference`, `context`). */

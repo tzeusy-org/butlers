@@ -51,6 +51,7 @@ import type {
   CalendarAuditParams,
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
+  DaySheetResponse,
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
@@ -1656,6 +1657,22 @@ export function getCalendarDayBriefing(params: {
   });
   return apiFetch<ApiResponse<CalendarDayBriefingResponse>>(
     `/calendar/workspace/day-briefing?${sp.toString()}`,
+  );
+}
+
+/**
+ * Fetch the owner's day sheet. Read-only, no model: `freshness.state` says when the read could not
+ * be trusted, so a failed or stale read is never rendered as a clear day.
+ */
+export function getCalendarDaySheet(
+  params: { date?: string; timezone?: string } = {},
+): Promise<ApiResponse<DaySheetResponse>> {
+  const sp = new URLSearchParams();
+  if (params.date) sp.set("date", params.date);
+  if (params.timezone) sp.set("timezone", params.timezone);
+  const query = sp.toString();
+  return apiFetch<ApiResponse<DaySheetResponse>>(
+    `/calendar/workspace/day-sheet${query ? `?${query}` : ""}`,
   );
 }
 

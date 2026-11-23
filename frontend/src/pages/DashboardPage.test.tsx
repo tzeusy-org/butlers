@@ -30,6 +30,9 @@ import * as overviewModel from "@/components/overview/model";
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlersBoard: vi.fn() }));
+vi.mock("@/hooks/use-calendar-workspace", () => ({
+  useDaySheet: () => ({ data: undefined, isLoading: true, isError: false, error: null }),
+}));
 vi.mock("@/hooks/use-spend", () => ({
   useSpendSummary: vi.fn(),
   useTopSessions: vi.fn(),
