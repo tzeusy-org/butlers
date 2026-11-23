@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 
 from butlers.watches.model import CapExceeded, Watch, WatchConflict, WatchState
@@ -12,6 +14,13 @@ class InMemoryWatchStore:
     def __init__(self) -> None:
         self.watches: dict[str, Watch] = {}
         self._lock = asyncio.Lock()
+        self._transition_locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def serialized(self, watch_id: str) -> AsyncIterator[None]:
+        lock = self._transition_locks.setdefault(watch_id, asyncio.Lock())
+        async with lock:
+            yield
 
     async def get(self, watch_id: str) -> Watch | None:
         return self.watches.get(watch_id)
