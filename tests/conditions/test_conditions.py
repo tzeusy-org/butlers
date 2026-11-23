@@ -73,7 +73,7 @@ TRANSITION = {
 }
 EXPECTATION = {
     "tag": "expectation",
-    "expectation_kind": "routine.window",
+    "expectation_kind": "expect.window",
     "subject": EXPECTED,
     "deviation": "missed",
 }
@@ -143,7 +143,7 @@ def evaluator(store):
 
 
 def expectation_ev(position=1, deviation="missed", **kw):
-    data = {"expectation_kind": "routine.window", "subject": EXPECTED, "deviation": deviation}
+    data = {"expectation_kind": "expect.window", "subject": EXPECTED, "deviation": deviation}
     return event("expectation", "perception:expect.window", position, data, **kw)
 
 
@@ -165,6 +165,7 @@ def mode_ev(position=1, change="entered", **kw):
 
 def read_ev(position: int = 1, value: object = 50, **kw):
     data = {"capability": "finance.balance", "field": "available", "value": value}
+    kw.setdefault("trusted", True)
     return event("read_check", "read_check:finance.balance", position, data, **kw)
 
 
@@ -428,6 +429,8 @@ class TestRefusal:
             {**EXPECTATION, "deviation": "late"},
             {**EXPECTATION, "subject": "not-a-uuid"},
             {**EXPECTATION, "expectation_kind": "Has Spaces"},
+            {**EXPECTATION, "expectation_kind": "routine.window"},  # well-formed, not a kind
+            {**EXPECTATION, "expectation_kind": "expect.unregistered"},
             {**ROUTINE_DEVIATION, "routine_id": "not-a-uuid"},
             {**CONDITION, "state": "open"},
             {**CONDITION, "source": "x" * 129},
@@ -975,6 +978,19 @@ class TestM7Leaves:
         await register(evaluator, READ_CHECK)
         out = await evaluator.evaluate("c1", [read_ev(value=read)], now=NOW)
         assert out.instance.result is Tri.UNKNOWN and out.intent is None
+
+    async def test_read_check_from_an_untrusted_source_is_unknown_even_when_in_schema(
+        self, evaluator
+    ):
+        await register(evaluator, READ_CHECK)
+        out = await evaluator.evaluate("c1", [read_ev(value=50, trusted=False)], now=NOW)
+        assert out.instance.result is Tri.UNKNOWN and out.intent is None
+
+    async def test_a_trusted_read_check_after_an_untrusted_one_still_fires(self, evaluator):
+        await register(evaluator, READ_CHECK)
+        await evaluator.evaluate("c1", [read_ev(1, value=50, trusted=False)], now=NOW)
+        out = await evaluator.evaluate("c1", [read_ev(2, value=50)], now=NOW)
+        assert out.intent is not None
 
     async def test_read_check_for_another_field_is_ignored(self, evaluator):
         await register(evaluator, READ_CHECK)

@@ -759,7 +759,7 @@ def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
         # REQ-owner-watches-001: the M7 leaves, accepted and refused as the Python validator does.
         {
             "tag": "expectation",
-            "expectation_kind": "routine.window",
+            "expectation_kind": "expect.window",
             "subject": str(OWNER),
             "deviation": "missed",
         },
@@ -1137,3 +1137,30 @@ def test_fixed_backup_catalog_rejects_drift_and_exports_all_ten(db):
     assert call(
         db, "SELECT count(*) FROM perception_backup.export_schema_v1()", {}, "butlers_backup_export"
     ) == len(ddl)
+
+
+def test_sql_and_python_predicate_validators_give_the_same_verdict(db):
+    """REQ-owner-watches-001: valid_predicate and ast.validate agree on every corpus document.
+
+    Includes 18 leaves via all -> 2 x any -> 9, the largest valid document (jsonb text spaces
+    every ':' and ',' while Python measures compact bytes) and non-canonical UUID spellings.
+    """
+    from butlers.conditions import predicate as ast
+    from tests.perception.predicate_corpus import corpus
+
+    for name, document, valid in corpus():
+        try:
+            ast.validate(document)
+            python = True
+        except ast.PredicateError:
+            python = False
+        try:
+            with db.begin_nested():
+                sql = db.execute(
+                    text("SELECT perception_private.valid_predicate(CAST(:p AS jsonb))"),
+                    {"p": json.dumps(document)},
+                ).scalar_one()
+        except DBAPIError:
+            sql = False  # a refusing raise (e.g. a malformed instant) is a refusal
+        assert python is valid, f"{name}: Python verdict drifted from the corpus"
+        assert bool(sql) is python, f"{name}: SQL={sql} Python={python}"

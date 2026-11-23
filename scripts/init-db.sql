@@ -9306,11 +9306,19 @@ BEGIN
 
     CREATE OR REPLACE FUNCTION perception_private.valid_predicate(p jsonb,depth integer DEFAULT 0)
     RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
-    DECLARE fields text[]; child jsonb;
+    DECLARE fields text[]; child jsonb; leaf_count integer;
+        uuid_re CONSTANT text:='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
     BEGIN
         IF depth>2 OR jsonb_typeof(p) IS DISTINCT FROM 'object'
             OR jsonb_typeof(p->'tag') IS DISTINCT FROM 'string'
-            OR octet_length(p::text)>8192 THEN RETURN false; END IF;
+            THEN RETURN false; END IF;
+        -- 8KiB of compact canonical JSON, as Python measures it: jsonb text adds one space after
+        -- every ':' and ',' outside strings, so subtract them (2n-1 per object, n-1 per array).
+        IF depth=0 AND octet_length(p::text)
+            -COALESCE((SELECT sum(GREATEST(2*(SELECT count(*) FROM jsonb_object_keys(t.v))-1,0))
+                FROM jsonb_path_query(p,'strict $.** ? (@.type() == "object")') AS t(v)),0)
+            -COALESCE((SELECT sum(GREATEST(jsonb_array_length(t.v)-1,0))
+                FROM jsonb_path_query(p,'strict $.** ? (@.type() == "array")') AS t(v)),0)>8192 THEN RETURN false; END IF;
         CASE p->>'tag'
         WHEN 'all','any' THEN
             IF p-ARRAY['tag','children']<>'{}'::jsonb
@@ -9319,6 +9327,12 @@ BEGIN
             FOR child IN SELECT value FROM jsonb_array_elements(p->'children') LOOP
                 IF NOT COALESCE(perception_private.valid_predicate(child,depth+1),false) THEN RETURN false; END IF;
             END LOOP;
+            -- At most 16 leaves in total, not per node (all->2 x any->9 is 18).
+            IF depth=0 THEN
+                SELECT count(*) INTO leaf_count
+                    FROM jsonb_path_query(p,'strict $.** ? (@.tag != "all" && @.tag != "any")');
+                IF leaf_count>16 THEN RETURN false; END IF;
+            END IF;
             RETURN true;
         WHEN 'at' THEN
             fields:=ARRAY['tag','instant','zone'];
@@ -9335,26 +9349,26 @@ BEGIN
                 NOT COALESCE(p->>'from' IN ('known','unknown','unmeasurable','unconfigured'),false) OR
                 NOT COALESCE(p->>'to' IN ('known','unknown','unmeasurable','unconfigured'),false) THEN RETURN false; END IF;
             IF p->'subject' IS DISTINCT FROM 'null'::jsonb THEN
-                IF jsonb_typeof(p->'subject') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
-                PERFORM (p->>'subject')::uuid;
+                IF jsonb_typeof(p->'subject') IS DISTINCT FROM 'string'
+                    OR NOT COALESCE(p->>'subject' ~ uuid_re,false) THEN RETURN false; END IF;
             END IF;
         WHEN 'decision' THEN
             fields:=ARRAY['tag','subject_id','outcome'];
             IF jsonb_typeof(p->'subject_id') IS DISTINCT FROM 'string'
                 OR jsonb_typeof(p->'outcome') IS DISTINCT FROM 'string'
                 OR NOT COALESCE(p->>'outcome' IN ('approved','rejected','expired','cancelled'),false) THEN RETURN false; END IF;
-            PERFORM (p->>'subject_id')::uuid;
+            IF NOT COALESCE(p->>'subject_id' ~ uuid_re,false) THEN RETURN false; END IF;
         WHEN 'owner_input' THEN
             fields:=ARRAY['tag','goal_id','binding_ref'];
             IF jsonb_typeof(p->'goal_id') IS DISTINCT FROM 'string'
                 OR jsonb_typeof(p->'binding_ref') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
-            PERFORM (p->>'goal_id')::uuid;
-            PERFORM (p->>'binding_ref')::uuid;
+            IF NOT COALESCE(p->>'goal_id' ~ uuid_re,false) THEN RETURN false; END IF;
+            IF NOT COALESCE(p->>'binding_ref' ~ uuid_re,false) THEN RETURN false; END IF;
         WHEN 'effect_settled' THEN
             fields:=ARRAY['tag','effect_id','status_set'];
             IF jsonb_typeof(p->'effect_id') IS DISTINCT FROM 'string'
                 OR jsonb_typeof(p->'status_set') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
-            PERFORM (p->>'effect_id')::uuid;
+            IF NOT COALESCE(p->>'effect_id' ~ uuid_re,false) THEN RETURN false; END IF;
             IF jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
                 OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
                     WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
@@ -9364,13 +9378,13 @@ BEGIN
             IF jsonb_typeof(p->'expectation_kind') IS DISTINCT FROM 'string'
                 OR jsonb_typeof(p->'subject') IS DISTINCT FROM 'string'
                 OR jsonb_typeof(p->'deviation') IS DISTINCT FROM 'string'
-                OR NOT COALESCE(p->>'expectation_kind' ~ '^[a-z0-9_.:-]{1,128}$',false)
+                OR NOT COALESCE(p->>'expectation_kind' IN ('expect.window'),false)
                 OR NOT COALESCE(p->>'deviation' IN ('pending','within','missed'),false) THEN RETURN false; END IF;
-            PERFORM (p->>'subject')::uuid;
+            IF NOT COALESCE(p->>'subject' ~ uuid_re,false) THEN RETURN false; END IF;
         WHEN 'routine_deviation' THEN
             fields:=ARRAY['tag','routine_id'];
             IF jsonb_typeof(p->'routine_id') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
-            PERFORM (p->>'routine_id')::uuid;
+            IF NOT COALESCE(p->>'routine_id' ~ uuid_re,false) THEN RETURN false; END IF;
         WHEN 'condition' THEN
             fields:=ARRAY['tag','source','state'];
             IF jsonb_typeof(p->'source') IS DISTINCT FROM 'string'

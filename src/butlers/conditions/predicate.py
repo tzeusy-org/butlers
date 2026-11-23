@@ -36,6 +36,8 @@ CONDITION_STATES = frozenset({"opened", "resolved"})
 MODE_CHANGES = frozenset({"entered", "exited"})
 READ_OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})
 ORDERED_OPS = frozenset({"lt", "le", "gt", "ge"})
+#: The registered ``expect.*`` perception kinds an ``expectation`` leaf may name.
+EXPECTATION_KINDS = frozenset(kind for kind in KINDS if kind.startswith("expect."))
 MAX_NAME_BYTES = 128
 MAX_FIELD_BYTES = 64
 #: A registered name (condition source, read capability, field, bundle): bounded lowercase ASCII.
@@ -128,7 +130,10 @@ def _read_value(node: dict) -> None:
 def _validate_m7(tag: str, node: dict) -> None:
     if tag == "expectation":
         _closed(node, {"tag", "expectation_kind", "subject", "deviation"})
-        _name(node["expectation_kind"], "expectation.expectation_kind", NAME_PATTERN)
+        if type(node["expectation_kind"]) is not str or (
+            node["expectation_kind"] not in EXPECTATION_KINDS
+        ):
+            raise PredicateError("expectation_kind must be a registered expect.* kind")
         _uuid(node["subject"], "expectation.subject")
         if node["deviation"] not in DEVIATIONS:
             raise PredicateError("unknown expectation deviation")
