@@ -12,6 +12,7 @@ import { format } from "date-fns";
 
 import { CalendarAgendaView } from "@/components/calendar/CalendarAgendaView";
 import { CalendarProposalsPanel } from "@/components/calendar/CalendarProposalsPanel";
+import { CalendarQuarantinePanel } from "@/components/calendar/CalendarQuarantinePanel";
 import { CalendarResponsePanel } from "@/components/calendar/CalendarResponsePanel";
 import { CalendarVerdictOpener } from "@/components/calendar/CalendarVerdictOpener";
 import { DayBriefingCard } from "@/components/calendar/DayBriefingCard";
@@ -194,6 +195,19 @@ export default function CalendarWorkspacePage() {
           void selection.openInvitation(entryId);
         }}
         invitationDetailLoading={selection.invitationDetailLoading}
+      />
+
+      <CalendarQuarantinePanel
+        items={context.quarantinedInvitations}
+        unavailable={
+          !context.invitationsAvailable ||
+          invitationsQuery.isPending ||
+          invitationsQuery.isPlaceholderData
+        }
+        onDecided={() => {
+          void queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
+          void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
+        }}
       />
 
       <CalendarResponsePanel
