@@ -117,9 +117,12 @@ def command_owner(work: Path) -> None:
     operations = producer.Operations.__new__(producer.Operations)
     operations.work, operations.sequence, operations.nested = work, 0, False
     operations.environment = producer.isolated_environment(os.environ["HOME"])
+    # Publish the pid atomically: write_text creates the file empty before it writes, and the
+    # driver polls for the file, so a plain write let it read "" under load (bu-j5lupg).
     child = (
         "import os,sys,time; from pathlib import Path; "
-        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(20)"
+        "target = Path(sys.argv[1]); partial = target.with_suffix('.tmp'); "
+        "partial.write_text(str(os.getpid())); os.replace(partial, target); time.sleep(20)"
     )
     operations.run([sys.executable, "-I", "-c", child, str(work / "child.pid")], work, timeout=25)
 
