@@ -428,7 +428,11 @@ same kind uses the same pattern:
   therefore keeps a fourth column, `placeholder_name BOOLEAN NOT NULL`, true
   while `canonical_name` still equals the `Unknown (<source_channel>
   <source_value>)` form built from those keys, so a promoted but unrenamed
-  entity stays out (D4 filter).
+  entity stays out (D4 filter). The same flag also covers legacy names
+  beginning `Unknown ` that contain a run of seven or more digits, contain a
+  WhatsApp JID, or carry a legacy `jid`, `jids` or `channel` metadata key.
+  Recompute the flag for existing entities so logical replication withdraws
+  already-published placeholders. A real rename clears the flag.
 - **Rows about a hidden entity.** A row filter cannot see another table's
   flags, so a fact, edge or withheld count about a hidden entity still
   replicates. [Observed] Soft delete keeps facts by design, archive and

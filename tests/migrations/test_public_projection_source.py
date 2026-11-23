@@ -65,12 +65,15 @@ def _literals(values: tuple[str, ...]) -> str:
 
 
 _FACT_COLUMNS = "(id, subject, predicate, sensitivity, validity)"
-_PUBLICATION = f"""
-CREATE PUBLICATION butlers_public_v1 FOR
+_ENTITY_PUBLICATION = """
     TABLE public.entities (
         id, canonical_name, entity_type, aliases, roles, merged_into,
         deleted, unidentified, placeholder_name
-    ) WHERE (deleted = false AND unidentified = false AND placeholder_name = false),
+    ) WHERE (deleted = false AND unidentified = false AND placeholder_name = false)
+"""
+_PUBLICATION = f"""
+CREATE PUBLICATION butlers_public_v1 FOR
+    {_ENTITY_PUBLICATION},
     TABLE general.facts {_FACT_COLUMNS} WHERE (
         sensitivity = 'normal' AND validity IN ('active', 'fading')
         AND predicate IN ({_literals(_GENERAL_PREDICATES)})
@@ -140,7 +143,12 @@ WHERE merged_into::text IS DISTINCT FROM CASE
    OR unidentified IS DISTINCT FROM COALESCE(metadata ->> 'unidentified' = 'true', false)
    OR placeholder_name IS DISTINCT FROM COALESCE(
         canonical_name = 'Unknown (' || (metadata ->> 'source_channel') || ' '
-            || (metadata ->> 'source_value') || ')', false)
+            || (metadata ->> 'source_value') || ')'
+        OR (left(canonical_name, 8) = 'Unknown ' AND (
+            canonical_name ~ '[0-9]{7,}'
+            OR lower(canonical_name) ~ '@(s[.]whatsapp[.]net|lid|c[.]us|g[.]us)([^[:alnum:].-]|$)'
+            OR metadata ? 'jid' OR metadata ? 'jids' OR metadata ? 'channel'
+        )), false)
 """
 _PUBLISH_KEY_PARITY = """
 SELECT id FROM public.entity_graph_edges
@@ -511,6 +519,13 @@ def test_helper_refuses_an_unsafe_identifier() -> None:
             (None, False, False, False),
         ),
         ("Channel only {u}", {"source_channel": "email"}, (None, False, False, False)),
+        ("Unknown (2025550107)", {}, (None, False, False, True)),
+        ("Unknown (321:9@lid)", {}, (None, False, False, True)),
+        ("Unknown legacy jid", {"jid": "321@lid"}, (None, False, False, True)),
+        ("Unknown legacy jids", {"jids": ["321@lid"]}, (None, False, False, True)),
+        ("Unknown legacy channel", {"channel": "whatsapp"}, (None, False, False, True)),
+        ("Named with jid", {"jid": "321@lid"}, (None, False, False, False)),
+        ("Unknown Person", {}, (None, False, False, False)),
     ],
 )
 async def test_flags_equal_their_metadata_on_insert(
@@ -656,6 +671,67 @@ async def test_a_promoted_sender_stays_out_until_renamed(projection: Projection)
                 == new_name
             )
         await _assert_parity(source)
+
+
+def test_upgrade_withdraws_an_already_published_legacy_placeholder(
+    logical_postgres: object,
+) -> None:
+    source_name = migration_db_name()
+    url = create_migrated_test_db(
+        logical_postgres,
+        source_name,
+        ["core"],
+        schemas={"core": "general"},
+        revisions={"core": "core_367"},
+    )
+
+    async def seed(projection: Projection) -> uuid.UUID:
+        async with projection.source() as source:
+            return await _entity(source, "Unknown (2025550107)")
+
+    async def check_publication(
+        projection: Projection, row_id: uuid.UUID, name: str | None
+    ) -> None:
+        await projection.caught_up()
+        async with projection.subscriber() as subscriber:
+            assert (
+                await subscriber.fetchval(
+                    "SELECT canonical_name FROM public.entities WHERE id = $1", row_id
+                )
+                == name
+            )
+
+    async def rename(projection: Projection, row_id: uuid.UUID) -> None:
+        async with projection.source() as source:
+            await source.execute(
+                "UPDATE public.entities SET canonical_name = 'Named Contact' WHERE id = $1",
+                row_id,
+            )
+
+    with replicated_projection(
+        logical_postgres,
+        source_name,
+        publication=f"""
+            CREATE PUBLICATION butlers_public_v1 FOR
+                {_ENTITY_PUBLICATION},
+                TABLE public.projection_barrier
+        """,
+        publication_name="butlers_public_v1",
+        subscription_name=f"sub_{source_name}",
+        subscriber_tables={"public.entities": _SUBSCRIBER_TABLES["public.entities"]},
+    ) as projection:
+        row_id = asyncio.run(seed(projection))
+        asyncio.run(check_publication(projection, row_id, "Unknown (2025550107)"))
+
+        config = _build_alembic_config(url, chains=["core"], target_schema="general")
+        command.upgrade(config, "core@core_368")
+        asyncio.run(check_publication(projection, row_id, None))
+
+        command.downgrade(config, "core@core_367")
+        asyncio.run(check_publication(projection, row_id, None))
+
+        asyncio.run(rename(projection, row_id))
+        asyncio.run(check_publication(projection, row_id, "Named Contact"))
 
 
 # -- REQ-public-mcp-projection-005: later restriction ---------------------------------------------
