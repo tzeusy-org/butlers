@@ -26,13 +26,13 @@ the evidence copy. Gmail, WhatsApp, Telegram bot and Telegram user client carry 
 their own page; the sources below have no page of their own.
 
 - **Google Drive.** Provider offers: the Drive changes feed (file metadata, no content). We keep:
-  one `connectors.evidence_journal` row per submitted change (`source = google-drive`, metadata
+  one `connectors.evidence_journal` row per submitted change (`source = google_drive`, metadata
   tier, `raw = null`, so ids and headers only), committed before the submit and before the page
   token commits. If the write fails, nothing is submitted and the page token holds. Provider
   retention and backfill: the changes feed is re-readable from a saved page token.
 - **Google Health.** Provider offers: the Google Health API samples per resource (steps, heart
   rate, sleep, workouts) with their own timestamps. We keep: one `connectors.evidence_journal`
-  row per submitted sample (`source` is the wellness channel), committed before the submit. If the
+  row per submitted sample (`source = wellness`), committed before the submit. If the
   write fails, the sample is not consumed and the poll checkpoint does not advance; a policy-blocked
   sample writes no row. Provider retention and backfill: samples are re-readable over the API's own
   history window.
