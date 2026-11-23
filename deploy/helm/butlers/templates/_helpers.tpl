@@ -33,6 +33,11 @@ nodeSelector:
 {{/* Postgres connection env, shared by every app container (the shared runtime login). */}}
 {{- define "butlers.postgresEnv" -}}
 {{- include "butlers.postgresLoginEnv" (dict "root" . "keyPrefix" "") -}}
+{{- if eq (toString .Values.database.migratorLogin.enabled) "true" }}
+{{- /* The runtime login owns nothing once split: daemons head-check, never migrate. */}}
+- name: BUTLERS_STARTUP_MIGRATIONS
+  value: "check"
+{{- end }}
 {{- end -}}
 
 {{/* The migrations initContainer's env: the migrator login when database.migratorLogin

@@ -51,7 +51,12 @@ from butlers.credentials import (
 from butlers.daemon_utils import _flatten_config_for_secret_scan
 from butlers.db import Database
 from butlers.exceptions import RuntimeBinaryNotFoundError
-from butlers.migrations import get_module_migration_chains, has_butler_chain, run_migrations
+from butlers.migrations import (
+    check_chain_at_head,
+    get_module_migration_chains,
+    has_butler_chain,
+    run_migrations,
+)
 from butlers.module_state import ModuleStartupStatus
 from butlers.owner_bootstrap import _ensure_owner_entity
 from butlers.storage import BlobStorageStartupError, S3BlobStore
@@ -228,22 +233,52 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
     logging.getLogger().addHandler(daemon._db_log_handler)
 
 
+# "run" (default): the daemon upgrades its own chains, as before the login split.
+# "check": the migrations step (`butlers db migrate`, run by the migrator login) owns
+# upgrades; the daemon's runtime login owns nothing, so it only verifies each chain is at
+# head and refuses to start (core/butler chain) or disables the module (module chain)
+# when one is behind. The chart sets "check" with database.migratorLogin.enabled
+# (bu-dss7he.6, docs/data_and_storage/migrator-login.md).
+STARTUP_MIGRATIONS_ENV = "BUTLERS_STARTUP_MIGRATIONS"
+_STARTUP_MIGRATION_MODES = ("run", "check")
+
+
+def startup_migration_mode() -> str:
+    """Return the configured mode; an unknown value refuses to start rather than guess."""
+    mode = os.environ.get(STARTUP_MIGRATIONS_ENV, "").strip() or "run"
+    if mode not in _STARTUP_MIGRATION_MODES:
+        raise ValueError(
+            f"{STARTUP_MIGRATIONS_ENV} must be one of {', '.join(_STARTUP_MIGRATION_MODES)}, "
+            f"not {mode!r}"
+        )
+    return mode
+
+
+async def _migrate_or_check(mode: str, db_url: str, chain: str, schema: str | None) -> None:
+    if mode == "check":
+        await asyncio.to_thread(check_chain_at_head, db_url, chain, schema)
+    else:
+        await run_migrations(db_url, chain=chain, schema=schema)
+
+
 async def _startup_core_migrations(daemon: Any, state: StartupState) -> None:
-    """Set migration inputs and run the core and butler-specific chains."""
+    """Set migration inputs and run (or head-check) the core and butler-specific chains."""
+    mode = startup_migration_mode()
     # 7. Run core Alembic migrations
     state.db_url = daemon._build_db_url()
     state.migration_schema = daemon.config.db_schema or None
-    await run_migrations(state.db_url, chain="core", schema=state.migration_schema)
+    await _migrate_or_check(mode, state.db_url, "core", state.migration_schema)
 
     # 7b. Run butler-specific Alembic migrations (if chain exists)
     if has_butler_chain(daemon.config.name):
-        logger.info("Running butler-specific migrations for: %s", daemon.config.name)
-        await run_migrations(state.db_url, chain=daemon.config.name, schema=state.migration_schema)
+        logger.info("Butler-specific migrations (%s) for: %s", mode, daemon.config.name)
+        await _migrate_or_check(mode, state.db_url, daemon.config.name, state.migration_schema)
 
 
 async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
     """Run module migrations and cascade isolated migration failures."""
     # 8. Run module Alembic migrations (non-fatal per-module)
+    mode = startup_migration_mode()
     chains = get_module_migration_chains(daemon._modules, daemon.config.name)
     for mod in daemon._modules:
         if mod.name in daemon._module_statuses:
@@ -263,7 +298,7 @@ async def _startup_module_migrations(daemon: Any, state: StartupState) -> None:
                 getattr(mod_cfg, "memory_schema", None) or state.migration_schema
             )
             try:
-                await run_migrations(state.db_url, chain=rev, schema=module_migration_schema)
+                await _migrate_or_check(mode, state.db_url, rev, module_migration_schema)
             except Exception as exc:
                 error_msg = str(exc)
                 daemon._module_statuses[mod.name] = ModuleStartupStatus(

@@ -64,7 +64,7 @@ The daemon provisions and connects a `Database` unless an already-connected inst
 
 ### Phase 7: Run Core and Butler Migrations
 
-Alembic runs the core chain and, where present, the butler-specific chain. These migrations create the mandatory state, schedule, session, and process-log tables.
+Alembic runs the core chain and, where present, the butler-specific chain. These migrations create the mandatory state, schedule, session, and process-log tables. With `BUTLERS_STARTUP_MIGRATIONS=check` (set by the chart once the migrator login is split; see [Migrator Login](../data_and_storage/migrator-login.md)) the daemon does not migrate: it reads each version table and raises `MigrationsNotAtHeadError`, refusing to start, when a core or butler chain is not exactly at head; a module chain that is behind disables only that module.
 
 ### Phase 8: Prepare Module Dependencies and Bootstrap State
 

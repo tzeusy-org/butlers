@@ -95,7 +95,7 @@ def _replay_init_db(bootstrap_url: str, connecting_user: str) -> None:
         engine.dispose()
 
 
-def test_transfer_moves_only_the_shared_logins_objects_and_activation_migrates(
+def test_transfer_moves_only_the_shared_logins_objects_and_migrator_replay_is_refused(
     postgres_container, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A template clone shares its login with the template database, which would make that

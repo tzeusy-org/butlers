@@ -40,7 +40,7 @@ The daemon creates or receives a connected `Database` and assigns `db.owner_butl
 
 ### Step 7: Run Core and Butler Migrations
 
-Core Alembic migrations run first (schema-scoped), followed by a butler-specific chain when one exists. This creates the state store, session log, scheduled tasks, and other core tables.
+Core Alembic migrations run first (schema-scoped), followed by a butler-specific chain when one exists. This creates the state store, session log, scheduled tasks, and other core tables. With `BUTLERS_STARTUP_MIGRATIONS=check` (set by the chart once the migrator login is split; see [Migrator Login](../data_and_storage/migrator-login.md)) the daemon does not migrate: it reads each version table and raises `MigrationsNotAtHeadError`, refusing to start, when a core or butler chain is not exactly at head; a module chain that is behind disables only that module.
 
 ### Step 8: Prepare Module Dependencies and Bootstrap State
 
