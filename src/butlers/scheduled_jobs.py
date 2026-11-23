@@ -662,53 +662,85 @@ async def _run_memory_episode_cleanup_job(
     return result
 
 
+async def _read_fact_horizon(pool: asyncpg.Pool) -> int | None:
+    """The superseded-fact horizon in days, or ``None`` to keep every superseded fact.
+
+    Fails closed: an unreadable policy, a missing table, a missing ``kind='fact'`` row and
+    an explicit NULL (the owner's "keep forever") all mean ``None``. The error is read here,
+    not swallowed by ``_fetch_retention_policy``, so it is logged and never becomes a default.
+    """
+    try:
+        row = await pool.fetchrow(
+            "SELECT ttl_days FROM public.memory_retention_policies WHERE kind = 'fact'"
+        )
+    except Exception:
+        logger.warning(
+            "memory_purge_superseded: fact retention policy unreadable; keeping every "
+            "superseded fact",
+            exc_info=True,
+        )
+        return None
+    if row is None:
+        logger.warning(
+            "memory_purge_superseded: no kind='fact' retention policy row; keeping every "
+            "superseded fact"
+        )
+        return None
+    ttl_days = row["ttl_days"]
+    return int(ttl_days) if ttl_days is not None else None
+
+
 async def _run_memory_purge_superseded_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Purge superseded facts older than a threshold.
+    """Purge orphaned ``ha_state`` facts, and superseded facts only past an owner horizon.
 
-    Consults public.memory_retention_policies for 'fact' kind to determine
-    the ttl_days threshold.  Falls back to 7 days when the policy table is
-    not yet available.
+    Superseded facts are closed validity intervals and are kept by default. They are deleted
+    only when ``public.memory_retention_policies`` holds a finite ``kind='fact'`` ``ttl_days``
+    that was read successfully, and then only for classes the per-class policy allows (see
+    ``purge_superseded_facts``). A missing or unreadable policy keeps everything.
+    ``job_args.older_than_days`` may lengthen a finite horizon and never shortens or enables
+    one. The ``ha_state`` purge always runs.
 
     Logs the number of removed rows to public.memory_compaction_log.
     """
     from butlers.core.memory_hooks import resolve_memory_runtime_pool
-    from butlers.modules.memory.storage import purge_superseded_facts
+    from butlers.modules.memory.storage import purge_ha_state_facts, purge_superseded_facts
 
     pool = resolve_memory_runtime_pool()
 
-    policy = await _fetch_retention_policy(pool, "fact")
-    # "ttl_days" absent  → table not yet migrated → fall back to 7.
-    # "ttl_days" = None  → explicit "no TTL" in DB → skip purge (return early).
-    if "ttl_days" not in policy:
-        older_than_days: int | None = 7
-    elif policy["ttl_days"] is None:
-        older_than_days = None  # no TTL cap; skip purge below
-    else:
-        older_than_days = int(policy["ttl_days"])
-
-    if job_args is not None and "older_than_days" in job_args:
+    horizon = await _read_fact_horizon(pool)
+    if horizon is not None and job_args is not None and "older_than_days" in job_args:
         raw = job_args["older_than_days"]
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0:
-            older_than_days = raw
-
-    if older_than_days is None:
-        # Policy explicitly says no TTL → skip fact purge.
-        # Keys match purge_superseded_facts's return contract.
-        return {"deleted": 0, "deleted_ha_state": 0, "skipped": "no_ttl_policy"}
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw > horizon:
+            horizon = raw
 
     size_before = await _table_size_bytes(pool, "facts")
-    result = await purge_superseded_facts(pool, older_than_days=older_than_days)
-    # purge_superseded_facts returns {"deleted", "deleted_ha_state"}.
-    total_removed = result.get("deleted", 0) + result.get("deleted_ha_state", 0)
+    superseded = await purge_superseded_facts(pool, older_than_days=horizon)
+    ha_state = await purge_ha_state_facts(pool)
+    superseded_deleted = superseded.get("deleted", 0)
+    ha_state_deleted = ha_state.get("deleted_ha_state", 0)
+    total_removed = superseded_deleted + ha_state_deleted
     if total_removed > 0:
         size_after = await _table_size_bytes(pool, "facts")
         bytes_freed: int | None = None
         if size_before is not None and size_after is not None:
             bytes_freed = max(0, size_before - size_after)
         await _log_compaction(pool, "fact", total_removed, bytes_freed=bytes_freed)
+    result: dict[str, Any] = {
+        "deleted": superseded_deleted,
+        "deleted_ha_state": ha_state_deleted,
+        "superseded_deleted": superseded_deleted,
+    }
+    if "skipped" in superseded:
+        result["superseded_skipped"] = superseded["skipped"]
+    if "error" in superseded or "error" in ha_state:
+        result["errors"] = sorted(
+            name
+            for name, part in (("superseded", superseded), ("ha_state", ha_state))
+            if "error" in part
+        )
     return result
 
 

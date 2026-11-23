@@ -3367,6 +3367,15 @@ async def update_retention_policies(
                 detail=f"Invalid kind '{entry.kind}'. Must be one of: {valid}",
             )
 
+    # A horizon of zero or less would make every deletable row eligible at once (data loss).
+    # NULL stays valid: it means no time-based expiry.
+    for entry in body.policies:
+        if entry.ttl_days is not None and entry.ttl_days <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"ttl_days for '{entry.kind}' must be positive, or null to keep forever",
+            )
+
     updated: list[MemoryRetentionPolicy] = []
     for entry in body.policies:
         async with pool.acquire() as conn, audit_transaction(conn):

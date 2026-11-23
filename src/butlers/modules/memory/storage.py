@@ -4262,74 +4262,72 @@ async def run_decay_sweep(pool: Pool) -> dict:
     return stats
 
 
-async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dict:
-    """Delete superseded facts and orphaned machine-generated facts.
+async def purge_superseded_facts(pool: Pool, *, older_than_days: int | None) -> dict:
+    """Delete superseded facts older than an owner-set horizon; ``None`` deletes nothing.
 
-    Superseded facts are dead weight — they are never queried. This function
-    removes them to reclaim disk space and keep index sizes manageable.
+    A superseded fact is a closed validity interval: it answers "what was true on that day"
+    (see ``facts_as_of``), so it is kept unless the owner has set a finite horizon in
+    ``public.memory_retention_policies`` (``kind='fact'``, NULL = keep forever; bu-uhbhzq.3).
+    Even with a horizon, only a fact whose ``retention_class`` has a per-class policy with
+    ``archive_before_delete = false`` and a non-NULL ``ttl_days`` is deleted, so an unknown
+    class, ``personal_profile``, ``health_log`` and ``financial_log`` are always kept. The age
+    runs from when the fact stopped being true (``dropped_at``, then ``invalid_at``, then
+    ``created_at``), not from when it was written.
 
-    Also purges ``ha_state`` facts regardless of validity. These are
-    machine-generated HA entity snapshots that should not persist — HA state
-    is always available in real-time via the HA API. Any surviving active
-    ``ha_state`` facts are zombies left over from when the snapshot loop was
-    disabled.
+    Deleting a fact nulls its successor's ``supersedes_id`` (``ON DELETE SET NULL``); that only
+    happens under a finite horizon.
 
     Args:
         pool: asyncpg connection pool.
-        older_than_days: Only delete superseded facts created more than this
-            many days ago (default 7). Keeps recent superseded facts for
-            short-term forensics.
+        older_than_days: The horizon, or ``None`` for no horizon.
 
     Returns:
-        dict with keys ``deleted`` (superseded rows removed) and
-        ``deleted_ha_state`` (ha_state rows removed).
+        ``{"deleted": n}``, or ``{"deleted": 0, "skipped": "no_horizon"}`` for no horizon.
 
-    [decision] A purged fact's ``public.memory_catalog`` row is marked stale
-    (``confidence = 0``, ``invalid_at`` set) in the same transaction as the
-    ``DELETE``, not deleted outright: butler roles hold no ``DELETE`` grant on
-    ``public.memory_catalog`` (core_009 — "DELETE withheld -- GC is
-    centralised"), so a catalog-row delete isn't even possible from a
-    butler's own role, and "mark stale" is exactly what the
-    memory-discovery-catalog spec's supersession scenario already does for
-    the analogous case. Superseded facts are normally already marked stale by
-    ``store_fact``'s own supersession cascade at write time (this re-assert
-    is then a harmless no-op); the cascade is what actually disowns catalog
-    rows for the unconditional ``ha_state`` purge below, which never goes
-    through supersession.
+    [decision] A deleted fact's ``public.memory_catalog`` row is marked stale
+    (``confidence = 0``, ``invalid_at`` set) in the same transaction as the ``DELETE``, not
+    deleted: butler roles hold no ``DELETE`` grant on it (core_009).
     """
+    if older_than_days is None:
+        return {"deleted": 0, "skipped": "no_horizon"}
     async with pool.acquire() as conn:
-        # Independent transaction from the ha_state purge below: a failure in
-        # one MUST NOT prevent the other from proceeding, so this block is its
-        # own try/except rather than letting an exception here propagate past
-        # the ha_state block entirely (that would silently violate the
-        # independence this comment — and the one below — promises).
-        deleted = 0
         try:
             async with conn.transaction():
                 deleted_rows = await conn.fetch(
                     "DELETE FROM facts "
                     "WHERE validity = 'superseded' "
-                    "AND created_at < now() - make_interval(days => $1) "
+                    "AND COALESCE(dropped_at, invalid_at, created_at) "
+                    "    < now() - make_interval(days => $1) "
+                    "AND retention_class IN ("
+                    "    SELECT retention_class FROM memory_policies "
+                    "    WHERE archive_before_delete = false AND ttl_days IS NOT NULL) "
                     "RETURNING id",
                     older_than_days,
                 )
                 deleted_ids = [row["id"] for row in deleted_rows]
                 await _cascade_catalog_disownment(conn, "facts", deleted_ids)
-            deleted = len(deleted_ids)
+            return {"deleted": len(deleted_ids)}
         except Exception:
             logger.error(
-                "purge_superseded_facts: superseded purge (or its catalog "
-                "disownment cascade) failed; skipping, ha_state purge below "
-                "still runs",
+                "purge_superseded_facts: superseded purge (or its catalog disownment cascade) "
+                "failed; nothing was deleted",
                 exc_info=True,
             )
+            return {"deleted": 0, "error": "purge_failed"}
 
-        # Purge orphaned ha_state facts — machine-generated snapshots that should
-        # not persist now that the snapshot loop is disabled. Independent
-        # transaction from the supersession purge above: a failure in one MUST
-        # NOT prevent the other from proceeding (matches the original
-        # two-independent-DELETEs behavior).
-        deleted_ha = 0
+
+async def purge_ha_state_facts(pool: Pool) -> dict:
+    """Delete orphaned ``ha_state`` facts regardless of validity.
+
+    These are machine-generated Home Assistant snapshots, not belief history: no code writes
+    them any more, so survivors are zombies from when the snapshot loop was disabled, and the
+    live state is always available from the HA API. Independent of the superseded purge, so
+    neither can stop the other.
+
+    Returns:
+        ``{"deleted_ha_state": n}``.
+    """
+    async with pool.acquire() as conn:
         try:
             async with conn.transaction():
                 ha_deleted_rows = await conn.fetch(
@@ -4337,11 +4335,43 @@ async def purge_superseded_facts(pool: Pool, *, older_than_days: int = 7) -> dic
                 )
                 ha_ids = [row["id"] for row in ha_deleted_rows]
                 await _cascade_catalog_disownment(conn, "facts", ha_ids)
-            deleted_ha = len(ha_ids)
+            return {"deleted_ha_state": len(ha_ids)}
         except Exception:
             logger.error(
-                "purge_superseded_facts: ha_state purge (or its catalog disownment cascade) failed",
+                "purge_ha_state_facts: ha_state purge (or its catalog disownment cascade) failed",
                 exc_info=True,
             )
+            return {"deleted_ha_state": 0, "error": "purge_failed"}
 
-    return {"deleted": deleted, "deleted_ha_state": deleted_ha}
+
+async def facts_as_of(
+    pool: Pool,
+    *,
+    subject: str,
+    predicate: str,
+    at: datetime,
+    entity_id: uuid.UUID | None = None,
+) -> list[dict[str, Any]]:
+    """The facts for ``(subject, predicate)`` whose validity interval contains ``at``.
+
+    A fact is true over ``[COALESCE(valid_at, created_at), COALESCE(invalid_at, dropped_at))``;
+    an open end means still current. A superseded fact closes at its ``invalid_at``, or at
+    ``dropped_at`` for a writer that set only that (``entity_fact_repoint``). A retracted fact
+    is never returned. Storage helper only: default retrieval, search and the catalog still
+    leave superseded rows out (bu-uhbhzq.3; the consumer is day replay, bu-uhbhzq.12).
+    """
+    rows = await pool.fetch(
+        "SELECT * FROM facts "
+        "WHERE subject = $1 AND predicate = $2 "
+        "AND ($3::uuid IS NULL OR entity_id = $3) "
+        "AND validity <> 'retracted' "
+        "AND COALESCE(valid_at, created_at) <= $4 "
+        "AND (COALESCE(invalid_at, dropped_at) IS NULL "
+        "     OR COALESCE(invalid_at, dropped_at) > $4) "
+        "ORDER BY COALESCE(valid_at, created_at), created_at, id",
+        subject,
+        predicate,
+        entity_id,
+        at,
+    )
+    return [dict(row) for row in rows]

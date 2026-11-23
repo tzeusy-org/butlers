@@ -277,6 +277,30 @@ async def test_put_retention_policies_empty_list_returns_400(app):
     assert resp.status_code == 400
 
 
+@pytest.mark.parametrize("ttl_days", [0, -1, -365])
+async def test_put_retention_policies_rejects_a_non_positive_ttl_before_writing(app, ttl_days):
+    """A zero or negative horizon would make every deletable row eligible; NULL is allowed."""
+    _wire_memory_mock(app)
+
+    with patch("butlers.api.routers.memory._audit.append") as mock_append:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.put(
+                "/api/memory/retention-policies",
+                json={
+                    "policies": [
+                        {"kind": "event", "ttl_days": None, "max_rows": 10},
+                        {"kind": "fact", "ttl_days": ttl_days, "max_rows": None},
+                    ]
+                },
+            )
+
+    assert resp.status_code == 422
+    assert "fact" in resp.json()["detail"]
+    mock_append.assert_not_called()
+
+
 async def test_put_retention_policies_returns_updated_rows(app):
     """PUT returns the updated policy rows from the DB."""
     _wire_memory_mock(app)
@@ -447,12 +471,18 @@ async def test_purge_superseded_uses_policy_ttl_days(monkeypatch):
     pool.fetchrow = AsyncMock(return_value=policy_row)
     _register_memory_runtime_pool(monkeypatch, pool)
 
-    with patch(
-        "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"deleted": 5, "deleted_ha_state": 0}),
-    ) as mock_purge:
-        with patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)):
-            await _run_memory_purge_superseded_job(pool, None)
+    with (
+        patch(
+            "butlers.modules.memory.storage.purge_superseded_facts",
+            new=AsyncMock(return_value={"deleted": 5}),
+        ) as mock_purge,
+        patch(
+            "butlers.modules.memory.storage.purge_ha_state_facts",
+            new=AsyncMock(return_value={"deleted_ha_state": 0}),
+        ),
+        patch("butlers.scheduled_jobs._table_size_bytes", new=AsyncMock(return_value=None)),
+    ):
+        await _run_memory_purge_superseded_job(pool, None)
 
     mock_purge.assert_awaited_once()
     _, kwargs = mock_purge.call_args
@@ -564,14 +594,20 @@ async def test_purge_superseded_passes_bytes_freed_to_log_compaction(monkeypatch
     from butlers.scheduled_jobs import _run_memory_purge_superseded_job
 
     pool = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=None)
+    pool.fetchrow = AsyncMock(return_value={"ttl_days": 30})
     _register_memory_runtime_pool(monkeypatch, pool)
 
     size_sequence = [16384, 8192]
 
-    with patch(
-        "butlers.modules.memory.storage.purge_superseded_facts",
-        new=AsyncMock(return_value={"deleted": 10, "deleted_ha_state": 2}),
+    with (
+        patch(
+            "butlers.modules.memory.storage.purge_superseded_facts",
+            new=AsyncMock(return_value={"deleted": 10}),
+        ),
+        patch(
+            "butlers.modules.memory.storage.purge_ha_state_facts",
+            new=AsyncMock(return_value={"deleted_ha_state": 2}),
+        ),
     ):
         with patch(
             "butlers.scheduled_jobs._table_size_bytes",
