@@ -130,3 +130,17 @@ leaves wait on bu-jv1moa.27.
   delivery, belong to their owners. The goal ledger feed and the rearm are
   `GoalRunner.feed_conditions` and `goal__wait_again` (see `docs/runtime/goal-runner.md`).
 - Watches and advanced rules stay with `bu-4c7nvp.1.5`.
+
+## Owner watches (dark)
+
+`butlers.watches` (REQ-owner-watches-003/004) builds the notify-only owner watch on this
+evaluator and adds no second one. A watch is one evaluator instance (its own `goal_id`) approved on an
+exact `WatchCard` whose digest binds the predicate, source and category boundary, grant digest,
+delivery mode, expiry and version. A spec has exactly `predicate`, `delivery` and `categories`; a
+recipient, URL, template or action refuses. At most 50 watches are active, each expires after 90
+days unless the owner approves a renewal card in the last seven (a renewal registers the next
+generation, then cancels the old one), delivery defaults to `digest`, and `pause` (`never`,
+disable) cancels the instance without deleting the watch, its receipts or anything it observed.
+A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
+The store here is in-memory (`InMemoryWatchStore`); the Postgres store, the approval-card and
+reply surfaces and delivery through the insight broker are later slices.
