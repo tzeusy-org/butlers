@@ -220,10 +220,11 @@ def test_a_second_schema_is_catalog_only_and_a_downgrade_keeps_the_shared_table(
     holder = engine.connect()
     try:
         assert _acl(engine) == _EXACT
-        # The peer's scenario: an open INSERT transaction on the journal (ROW EXCLUSIVE) blocks
-        # any DDL, even a no-op CREATE OR REPLACE TRIGGER, CREATE INDEX or REVOKE-then-GRANT on
-        # the table. The fresh second schema replays core_001/core_007's blanket grants, so its
-        # ACL has drifted: it must still succeed, through the ACL-only branch.
+        # The peer's scenario: an open INSERT transaction on the journal holds ROW EXCLUSIVE. That
+        # blocks table DDL (CREATE INDEX, CREATE OR REPLACE TRIGGER), but not the ACL-only
+        # REVOKE/GRANT. The fresh second schema replays core_001/core_007's blanket grants, so its
+        # ACL has drifted: the upgrade must still succeed, through the ACL-only branch, and a
+        # replay of the DDL would hit the lock timeout.
         holder.execute(text("BEGIN"))
         holder.execute(
             text(
