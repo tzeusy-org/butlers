@@ -6,6 +6,9 @@ receipts show the successor agrees. An empty search is not evidence. This page i
 that census. Nothing here deletes or switches anything; every successor named
 below is dark until the RFC 0038 switch (bu-enbrs2).
 
+The [first-switch source checklist](perception-first-switch-checklist.md) records the merged
+implementation and the activation evidence still required by bu-enbrs2.
+
 `tests/contracts/test_user_context_census.py` keeps the guarded tables honest in
 both directions: a new reference without a row fails, and a row whose reference
 is gone fails. A row key is `path::enclosing function` (`<module>` for a
@@ -157,7 +160,9 @@ not exist fails the guard.
 | `tests/perception/test_presence_reducer_postgres.py::test_leave_enter_and_quick_return_retraction_keep_history` | owner presence | departure retraction keeps stable identity and history |
 | `tests/perception/test_perception_postgres.py::test_replay_digest_and_stale_cas_are_immutable` | every perception writer | replay by digest is immutable; a stale CAS refuses |
 | `tests/perception/test_perception_postgres.py::test_retraction_is_atomic_stable_and_visible_outside_query_page` | every perception writer | retraction identity is stable |
-| `tests/connectors/test_owntracks_connector.py::test_successful_retention_purge_resets_degraded_connector_health` | raw location fixes | raw fixes expire under the connector's retention purge |
+| `tests/perception/test_place_retention_postgres.py::test_old_transitions_their_retraction_and_receipts_are_purged` | owner presence retention (bu-dhloi1.350) | old transitions, retractions and receipts expire together |
+| `tests/integration/test_owntracks_retention_execute_integration.py::test_a_grant_executed_twice_returns_its_first_receipt` | authorized raw-location retention | an executed deletion grant replays its existing receipt |
+| `tests/connectors/test_owntracks_connector.py::test_successful_retention_purge_resets_degraded_connector_health` | raw location fixes | a successful purge clears degraded connector health; this does not prove which fixes expire |
 | `roster/finance/tests/test_simplefin_bridge.py::test_overlap_window_replays_by_external_id_without_duplicate` | Finance typed records | an overlapping fetch replays without a duplicate |
 | `roster/finance/tests/test_facts.py::test_dedup_via_source_message_id` | Finance typed records | a re-delivered message makes one record |
 | `roster/travel/tests/test_bookings.py::test_reingesting_same_segment_is_idempotent` | Travel typed records | re-ingesting a segment is idempotent |
@@ -176,7 +181,7 @@ missing behaviour and its owner.
 | `timeline-400-day-bound` | `public.perception_timeline` refuses a window longer than 400 days (`22023`) | untested | bu-dhloi1.21 |
 | `owntracks-fix-expiry` | OwnTracks raw fixes older than the configured retention are deleted (only purge failure and health are pinned) | untested | bu-dhloi1.21 |
 | `no-duplicate-life-record-source` | Finance, Travel and Health typed records never write perception or `public.user_context` (only the perception writer-role contract is pinned) | untested | bu-dhloi1.21 |
-| `place-transition-retention` | place transitions are purged after 400 days; no retention job exists | missing, activation prerequisite | bu-dhloi1.350 |
+| `place-transition-retention` | `jobs.retention.prune_place_transitions` and the role-restricted purge landed dark in #5788; the retention identity/connection, schedule and activation evidence remain required | source present; activation prerequisite | bu-enbrs2 |
 | `expect-routine-replay` | `expect.*` routines (`chronicler.expectations`, `perception_expect_writer`, bu-xxfkhk): nothing on main publishes `expect.window`, so there is no replay or retention to pin | no feeder yet | bu-xxfkhk |
 <!-- /census -->
 
