@@ -347,6 +347,7 @@ hostAliases:
 {{- $w := list "butlers-up" "dashboard-api" "frontend" "log-cleanup" -}}
 {{- if .Values.butlersControl.enabled -}}{{- $w = append $w "butlers-control" -}}{{- end -}}
 {{- if .Values.sessionHost.enabled -}}{{- $w = append $w "session-host" -}}{{- end -}}
+{{- if .Values.qaInvestigator.enabled -}}{{- $w = append $w "qa-investigator" -}}{{- end -}}
 {{- if .Values.backup.enabled -}}{{- $w = append $w "backup" -}}{{- end -}}
 {{- if .Values.offsiteCopy.enabled -}}{{- $w = append $w "offsite-copy" -}}{{- end -}}
 {{- range $name, $c := .Values.connectors -}}

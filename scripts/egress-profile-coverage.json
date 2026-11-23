@@ -5884,6 +5884,52 @@
       "workloads": [
         "butlers-up"
       ]
+    },
+    "src/butlers/core/qa/investigator_job.py::<module>::config::5d5eb8ae6f2ba5588dfcf30547864ae0e082a95c17f3ae05767e3f361e8f8670": {
+      "class": "dynamic",
+      "observed": {
+        "path": "src/butlers/core/qa/investigator_job.py",
+        "scope": "<module>",
+        "kind": "config",
+        "sha256": "5d5eb8ae6f2ba5588dfcf30547864ae0e082a95c17f3ae05767e3f361e8f8670",
+        "authorities": [],
+        "config": "ANTHROPIC_BASE_URL",
+        "count": 1
+      },
+      "reason": "Investigator template sets ANTHROPIC_BASE_URL for the future credential-injecting model proxy; configured, not an authority grant, and the qa-investigator profile declares no route.",
+      "resolver": {
+        "path": "src/butlers/egress/claude.py",
+        "sha256": "7908370f2efc79ee5d94141b2b031718372dca9a31d231a020b460a53f18bcc8",
+        "source": "ANTHROPIC_BASE_URL",
+        "symbol": "child_environment"
+      },
+      "sites": [],
+      "workloads": [
+        "qa-investigator"
+      ]
+    },
+    "src/butlers/core/qa/investigator_job.py::build_investigator_job::config::5d5eb8ae6f2ba5588dfcf30547864ae0e082a95c17f3ae05767e3f361e8f8670": {
+      "class": "dynamic",
+      "observed": {
+        "path": "src/butlers/core/qa/investigator_job.py",
+        "scope": "build_investigator_job",
+        "kind": "config",
+        "sha256": "5d5eb8ae6f2ba5588dfcf30547864ae0e082a95c17f3ae05767e3f361e8f8670",
+        "authorities": [],
+        "config": "ANTHROPIC_BASE_URL",
+        "count": 1
+      },
+      "reason": "Investigator template sets ANTHROPIC_BASE_URL for the future credential-injecting model proxy; configured, not an authority grant, and the qa-investigator profile declares no route.",
+      "resolver": {
+        "path": "src/butlers/egress/claude.py",
+        "sha256": "7908370f2efc79ee5d94141b2b031718372dca9a31d231a020b460a53f18bcc8",
+        "source": "ANTHROPIC_BASE_URL",
+        "symbol": "child_environment"
+      },
+      "sites": [],
+      "workloads": [
+        "qa-investigator"
+      ]
     }
   },
   "local_resolvers": {
@@ -5942,7 +5988,7 @@
   "schema": "butlers.egress-profile-coverage/v2",
   "topology": {
     "deploy/helm/butlers/templates/_helpers.tpl": {
-      "sha256": "2d1fdd2da802b5087402c46895e1ced6f599e2db336c0d9cbe7e27eb05cb8e1e"
+      "sha256": "302b716988accf3fb82716177f04431e2497135eee50e12cd45006efda6c65dd"
     },
     "deploy/helm/butlers/templates/butlers-control.yaml": {
       "sha256": "744448dcaa3b8babad381a43dc8d875394760759cc29fb528069105c9f2b0d76"
@@ -5978,10 +6024,13 @@
       "sha256": "207a3e1da2b2bb9e453186056b7d7b0803e6b8af246ecb06ef9bdb21cb235f87"
     },
     "deploy/helm/butlers/templates/networkpolicy.yaml": {
-      "sha256": "6aa1ca4f158d1a61c0f21d2f67b10b0ab446f2cdd7188fc9426edc72e0774bdc"
+      "sha256": "166b1344fdda96ab9d87f0743d324f763b15c170be24f6b040187f26912e2a25"
     },
     "deploy/helm/butlers/templates/pvc.yaml": {
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
+    },
+    "deploy/helm/butlers/templates/qa-investigator.yaml": {
+      "sha256": "2915350464e1e1f9008550fac10fffa5d99ce3f34c1c4bcbb58409f6337aa79f"
     },
     "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
       "sha256": "0d0e63bb8391a8d2ef826855c90517e143e56f9845dae849b0b4383ba4ca7aaf"

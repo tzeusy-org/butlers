@@ -964,6 +964,20 @@
       ],
       "summary": "restic over SFTP to the owner's off-node device"
     },
+    "qa-investigator": {
+      "dynamic": [
+        {
+          "reason": "Investigator template env name for the future credential-injecting model proxy: no destination is granted by this metadata, and no route exists until a reviewed profile change adds one",
+          "source": "ANTHROPIC_BASE_URL"
+        }
+      ],
+      "external": [],
+      "gateway_port": null,
+      "held": null,
+      "internal": [],
+      "sites": [],
+      "summary": "bu-ejow5p.11 per-attempt QA investigator Job: cluster DNS only, no model route yet"
+    },
     "session-host": {
       "dynamic": [
         {

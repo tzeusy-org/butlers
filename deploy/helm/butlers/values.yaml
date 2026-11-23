@@ -182,6 +182,21 @@ sessionHost:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {memory: 512Mi}
 
+# bu-ejow5p.11 per-attempt QA investigator: dark. When enabled the chart renders the
+# machinery the daemon's Jobs run under (ServiceAccount without a token or RBAC, the
+# daemon's narrow Job-create Role, the exchange claim, and a ValidatingAdmissionPolicy that
+# refuses any Job in this namespace that is not the pinned investigator shape). The Jobs
+# themselves are created per attempt by the daemon, never by the chart. Requires
+# egressProfiles.enabled (a Job pod must start with no egress) and the service-plane
+# ServiceAccounts (the Role binds to the daemon's own account).
+qaInvestigator:
+  enabled: false
+  exchangeSize: 2Gi
+  # Fixed non-root UID/GID of the investigator process; the admission policy pins it.
+  uid: 10001
+  # Admission policy action: Deny enforces; Audit only logs (for a first look on a cluster).
+  admissionAction: Deny
+
 # RFC 0038 D7 service-plane caller authentication: dark. When enabled (requires
 # butlersControl.enabled), butlers-control and butlers-up run under their own
 # ServiceAccounts and BUTLERS_SERVICE_PLANE_AUTH=1. butlers-control mounts a projected,
