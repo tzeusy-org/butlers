@@ -100,6 +100,21 @@ partitions accumulate.
 
 ---
 
+### `switchboard.message_inbox` and `switchboard.connector_heartbeat_log`
+
+**Decision: KEEP until a per-source retention contract exists (bu-uhbhzq.7)**
+
+`message_inbox` is a routing buffer, never an evidence surface, yet for several sources
+its rows are the only verbatim copy of what arrived. The heartbeat log is evidence of source
+liveness. Both are monthly partitioned and ship drop functions with a short default
+(`1 month` and `7 days`). Since sw_086 both
+`switchboard_message_inbox_drop_expired_partitions` and
+`switchboard_connector_heartbeat_log_drop_expired_partitions` raise unconditionally, with or
+without arguments, so no caller can drop a partition. Nothing calls them today. A contract
+that names a horizon per source replaces this refusal.
+
+---
+
 ### `public.insight_candidates`
 
 **Decision: STATUS-GATED — terminal rows after 90 days; pruner [C], disabled by default**
