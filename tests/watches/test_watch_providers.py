@@ -36,6 +36,8 @@ KINDS = [
     "owner.suppression",
     "system.dep",
 ]
+from butlers.watches.approval import PROVIDERS as PROVIDERS_ABSENT  # noqa: E402
+
 PREDICATE = {"tag": "mode", "mode": "travel", "change": "entered"}
 
 
@@ -269,3 +271,33 @@ async def test_an_expired_cache_leaves_a_running_watch_alone(world):
     assert result["status"] == "ok"  # the tick re-prepared: a fresh read, nothing paused
     stored = await runtime.service.store.get(watch.id)
     assert stored is not None and stored.state is WatchState.ACTIVE
+
+
+async def test_the_tick_health_row_round_trips_to_the_collector_with_closed_words_only(world):
+    from butlers.capability_health.collectors import probe_owner_watches
+    from butlers.watches.health import KEY, StateReporter
+
+    pool = world["pool"]
+    await StateReporter(pool, now=lambda: NOW).report("x", "up", "tick_ok")
+    seen = await probe_owner_watches(pool, live=True, clock=lambda: NOW)
+    assert (seen.state, seen.cause) == ("available", None)
+    raw = await pool.fetchval("SELECT value::text FROM state WHERE key = $1", KEY)
+    assert set(json.loads(raw)) == {"state", "reason", "at"}  # no watch id, source or owner data
+    await StateReporter(pool, now=lambda: NOW).report("x", "degraded", "no_snapshot_provider")
+    seen = await probe_owner_watches(pool, live=True, clock=lambda: NOW)
+    assert (seen.state, seen.cause) == ("degraded", "provider_unavailable")
+    assert await pool.fetchval("SELECT count(*) FROM state WHERE key = $1", KEY) == 1
+    stale = await probe_owner_watches(pool, live=True, clock=lambda: NOW + timedelta(minutes=11))
+    assert stale.state is None  # an old report is no claim
+
+
+async def test_a_real_blind_tick_reports_through_the_reporter(world):
+    from butlers.watches.health import KEY, StateReporter
+
+    pool = world["pool"]
+    result = await tick.run_tick(
+        pool, now=NOW, live=True, providers=PROVIDERS_ABSENT, reporter=StateReporter(pool)
+    )
+    assert result == {"status": tick.BLIND}
+    value = json.loads(await pool.fetchval("SELECT value::text FROM state WHERE key = $1", KEY))
+    assert (value["state"], value["reason"]) == ("degraded", "no_snapshot_provider")

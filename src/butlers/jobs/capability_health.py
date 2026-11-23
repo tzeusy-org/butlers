@@ -22,6 +22,7 @@ from butlers.capability_health.collectors import (
     CREDENTIAL_DEPENDENCIES,
     credential_observations,
     probe_conditions,
+    probe_owner_watches,
 )
 from butlers.capability_health.model import Observation, reduce
 from butlers.capability_health.publish import HealthPublisher, PublishState, should_publish
@@ -175,6 +176,17 @@ async def run_capability_health_loop(
         except Exception:
             mark_tick_incomplete()
             logger.warning("capability health: conditions probe unavailable")
+        try:
+            from butlers.watches import tick as owner_watch_tick
+
+            observations.append(
+                await probe_owner_watches(
+                    db.pool("switchboard"), live=owner_watch_tick.OWNER_WATCHES_LIVE
+                )
+            )
+        except Exception:
+            mark_tick_incomplete()
+            logger.warning("capability health: owner watch probe unavailable")
         return observations
 
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, command_timeout=10)

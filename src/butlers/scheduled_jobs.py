@@ -307,10 +307,14 @@ async def _run_switchboard_owner_watch_tick_job(
     registered its database; otherwise the tick is blind and fires nothing.
     """
     del job_args
+    from butlers.watches.health import StateReporter
     from butlers.watches.providers import resolve_providers
     from butlers.watches.tick import run_tick
 
-    return await run_tick(pool, providers=await resolve_providers(pool))
+    # The tick reports its outcome to one state row; the capability-health collector publishes it.
+    return await run_tick(
+        pool, providers=await resolve_providers(pool), reporter=StateReporter(pool)
+    )
 
 
 async def _run_switchboard_insight_delivery_cycle_job(

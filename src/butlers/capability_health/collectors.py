@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -118,3 +119,41 @@ async def probe_conditions(
         with contextlib.suppress(Exception):
             await pool.release(connection)
     return Observation("conditions", "available", None, started)
+
+
+async def probe_owner_watches(
+    pool: Any,
+    *,
+    live: bool,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    deadline_s: float = PROBE_TIMEOUT_S,
+) -> Observation:
+    """The owner-watch tick's own report, read from its one ``state`` row.
+
+    Flag off: ``unconfigured`` (``not_configured``). Flag on: a fresh ``up`` report is available,
+    a ``degraded`` report is degraded, and no report, an old one or an unknown word is
+    unmeasured, never available. The row is closed words and a time, observed at its own ``at``.
+    """
+    from butlers.watches.health import DEGRADED, KEY, KNOWN, MAX_AGE_SECONDS, NO_SNAPSHOT_PROVIDER
+
+    now = clock()
+    if not live:
+        return Observation("owner_watches", "unconfigured", "not_configured", now)
+    unmeasured = Observation("owner_watches", None, None, now)
+    try:
+        raw = await asyncio.wait_for(
+            pool.fetchval("SELECT value FROM state WHERE key = $1", KEY), deadline_s
+        )
+        value = json.loads(raw) if isinstance(raw, str) else raw
+        state, reason = value["state"], value["reason"]
+        at = datetime.fromisoformat(value["at"])
+    except Exception:
+        return unmeasured  # absent, unreadable or malformed: says nothing
+    if (state, reason) not in KNOWN or at.tzinfo is None:
+        return unmeasured
+    if (now - at).total_seconds() > MAX_AGE_SECONDS or at > now:
+        return unmeasured
+    if state == DEGRADED:
+        cause = "provider_unavailable" if reason == NO_SNAPSHOT_PROVIDER else "signal_unmeasurable"
+        return Observation("owner_watches", "degraded", cause, at)
+    return Observation("owner_watches", "available", None, at)

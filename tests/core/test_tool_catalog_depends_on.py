@@ -115,3 +115,13 @@ async def test_depends_on_is_part_of_the_authorization_digest() -> None:
     plain = await _catalog()
     declared = await _catalog((sorted(DEPENDENCY_IDS)[0],))
     assert authorization_digest(plain) != authorization_digest(declared)
+
+
+def test_the_owner_watch_apply_card_depends_on_conditions_and_owner_watches() -> None:
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
+
+    (apply,) = [
+        t for t in TOOL_PRESENTATION_INVENTORY if t.canonical_name == "owner_watch_apply_card"
+    ]
+    assert apply.depends_on == ("conditions", "owner_watches")
+    assert "owner_watches" in DEPENDENCY_IDS

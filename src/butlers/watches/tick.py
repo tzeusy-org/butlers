@@ -5,9 +5,9 @@ claims each fired condition, delivers one notice and arms the next generation
 (``WatchRunner``). It runs only when ``OWNER_WATCHES_LIVE`` is on, and only with a production
 service and snapshot provider. Without a snapshot provider the tick is blind: it reports
 ``blind:no_snapshot_provider`` (result and warning log), fires nothing and changes nothing,
-so a missing provider can never read as healthy or as a fire. A dependency ``reporter`` is an
-optional seam: the scheduled job passes none, because no production reporter exists for this
-dependency yet, so the blind state is not published as capability health.
+so a missing provider can never read as healthy or as a fire. The scheduled job passes a
+``StateReporter`` (``butlers.watches.health``): the outcome lands in one Switchboard ``state`` row
+that the capability-health collector reads to publish the ``owner_watches`` dependency.
 """
 
 from __future__ import annotations
@@ -20,6 +20,13 @@ from typing import Any, Protocol
 
 from butlers.watches.approval import PROVIDERS, Providers, sweep_card_state
 from butlers.watches.delivery import InsightDelivery
+from butlers.watches.health import (
+    DEGRADED,
+    NO_SNAPSHOT_PROVIDER,
+    SOURCES_UNREADABLE,
+    TICK_OK,
+    UP,
+)
 from butlers.watches.runner import Deliver, WatchRunner
 
 logger = logging.getLogger(__name__)
@@ -48,12 +55,13 @@ async def run_tick(
         return {"status": "dark"}
     moment = now or datetime.now(UTC)
     service = providers.service_for()
+    reason = NO_SNAPSHOT_PROVIDER
     if service is not None and not await providers.prepare(moment):
-        service = None  # the live grant source is unreadable: blind, never a stale judgement
+        service, reason = None, SOURCES_UNREADABLE  # unreadable: blind, never a stale judgement
     snapshot = providers.snapshot_for(moment) if service is not None else None
     if service is None or snapshot is None:
         logger.warning("owner_watch_tick_blind reason=%s", BLIND)
-        await _degrade(reporter, "no_snapshot_provider")
+        await _degrade(reporter, reason)
         return {"status": BLIND}
     await _sweep_cards(pool, moment)
     delivery = deliver_for(pool)
@@ -72,11 +80,11 @@ async def _sweep_cards(pool: Any, now: datetime) -> None:
 
 
 async def _degrade(reporter: Reporter | None, reason: str) -> None:
-    await _report(reporter, "degraded", reason)
+    await _report(reporter, DEGRADED, reason)
 
 
 async def _healthy(reporter: Reporter | None) -> None:
-    await _report(reporter, "up", "tick_ok")
+    await _report(reporter, UP, TICK_OK)
 
 
 async def _report(reporter: Reporter | None, state: str, reason: str) -> None:

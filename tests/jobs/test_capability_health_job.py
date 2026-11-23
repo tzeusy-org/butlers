@@ -160,3 +160,35 @@ async def test_a_tick_that_raises_is_recorded_failed_and_the_loop_goes_on(ticks)
     with pytest.raises(asyncio.CancelledError):
         await task
     assert ticks[0] is True
+
+
+class Store:
+    """A perception writer double: refuses or fails one dependency's subject, commits the rest."""
+
+    def __init__(self, bad_subject, mode) -> None:
+        self.bad_subject, self.mode, self.written = bad_subject, mode, []
+
+    async def write(self, request):
+        subject = request.body["subject"]
+        self.written.append(subject)
+        if subject == self.bad_subject:
+            if self.mode == "raise":
+                raise ConnectionError("writer unavailable")
+            return {"status": "refused"}
+        return {"status": "committed", "generation": 1}
+
+
+@pytest.mark.parametrize("mode", ["raise", "refuse"])
+async def test_a_failed_owner_watches_publish_never_drops_the_other_dependencies(mode) -> None:
+    from butlers.capability_health.publish import HealthPublisher
+    from butlers.core.capability_dependencies import dependency_subject
+
+    bad = str(dependency_subject("owner_watches"))
+    store = Store(bad, mode)
+    state = {}
+    await job.run_tick(gather, HealthPublisher(store), state, NOW)
+    expected = {str(dependency_subject(d)) for d in DEPENDENCY_IDS}
+    assert set(store.written) == expected  # every dependency was attempted, once, in the one tick
+    assert len(store.written) == len(expected)
+    assert "owner_watches" not in state  # the failed one is retried next tick, not remembered
+    assert set(state) == DEPENDENCY_IDS - {"owner_watches"}  # all the others published

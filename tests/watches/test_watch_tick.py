@@ -172,3 +172,16 @@ async def test_the_scheduled_job_resolves_the_providers_and_stays_dark_by_defaul
     pool = SweepPool()
     result = await scheduled_jobs._run_switchboard_owner_watch_tick_job(pool, None)
     assert result == {"status": "dark"} and seen == [pool] and pool.deleted == []
+
+
+async def test_the_two_blind_causes_report_distinct_reasons(service):
+    for prov, reason in (
+        (providers(None), "no_snapshot_provider"),  # nothing is wired
+        (providers(service, prepared=False), "sources_unreadable"),  # wired but unreadable
+    ):
+        reporter = Reporter()
+        result = await tick.run_tick(
+            SweepPool(), now=NOW, live=True, providers=prov, reporter=reporter
+        )
+        assert result == {"status": tick.BLIND}
+        assert reporter.reports == [(tick.DEPENDENCY, "degraded", reason)]

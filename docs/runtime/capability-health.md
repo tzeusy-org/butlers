@@ -88,6 +88,14 @@ for the 300s heartbeat.
   probe time. A timeout or connection failure is down (`domain_unreachable`); any other failure is
   unmeasured, never available. The service's own `DependencyReporter` seam has no in-process consumer.
 
+- `owner_watches` is read from the owner-watch tick's own report, one Switchboard `state` row
+  (`owner_watch:tick_health`, only `{state, reason, at}`, written by `butlers.watches.health.StateReporter`). With
+  `OWNER_WATCHES_LIVE` off it is `unconfigured` (`not_configured`). With it on, a report within 10 minutes of `up`
+  is available; a blind tick is `degraded` (`provider_unavailable` when no provider is wired, `signal_unmeasurable`
+  when the live grant source is unreadable); no report, an old one or an unknown word is unmeasured. The
+  `owner_watch_apply_card` descriptor declares `depends_on=("conditions", "owner_watches")`. A failed publish for
+  this dependency is retried on the next tick and never drops or delays the others.
+
 ### Writer login and rollout
 
 The job publishes as `perception_health_writer` over its own small pool (at most two connections) from

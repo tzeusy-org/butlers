@@ -8710,7 +8710,7 @@ BEGIN
     -- and a configured freshness maximum is kept.
     IF EXISTS (SELECT 1 FROM perception_private.sources WHERE source='health.dependencies'
             AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health'])) THEN
-        FOREACH dep IN ARRAY ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram'] LOOP
+        FOREACH dep IN ARRAY ARRAY['conditions','google','home_assistant','owner_watches','owntracks','spotify','steam','telegram'] LOOP
             INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES
                 (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||dep),
                     'health.dependencies','dependency',dep),
@@ -8720,7 +8720,7 @@ BEGIN
         END LOOP;
         UPDATE perception_private.sources SET max_age_seconds=COALESCE(max_age_seconds,900),
             subjects=ARRAY(SELECT public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||d)
-                FROM unnest(ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram']) d),
+                FROM unnest(ARRAY['conditions','google','home_assistant','owner_watches','owntracks','spotify','steam','telegram']) d),
             evidence_sources=ARRAY['capability_health']
         WHERE source='health.dependencies'
             AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health']);

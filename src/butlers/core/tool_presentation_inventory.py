@@ -10273,6 +10273,7 @@ TOOL_PRESENTATION_INVENTORY = (
         "switchboard",
         "watches",
         "owner_watch_apply_card",
+        depends_on=("conditions", "owner_watches"),
         effect_class="record",
         output_trust="untrusted",
         output_sensitivity="sensitive",
