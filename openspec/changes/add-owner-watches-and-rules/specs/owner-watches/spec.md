@@ -77,7 +77,7 @@ Scope: v1-reserved
 
 ### Requirement: Watches have finite limits and delivery defaults
 
-At most 50 watches SHALL be active at once. A watch SHALL expire 90 days after approval or renewal, and the owner SHALL be offered a renewal card seven days before expiry; an unrenewed watch SHALL expire without deleting its observations. Delivery SHALL default to digest unless the owner chose right away. `never` or `disable` SHALL pause a watch without deleting its observations or receipts. A fired watch SHALL deliver once per fire intent; duplicate events, restart and late input SHALL NOT produce a second delivery.
+At most 50 watches SHALL be active at once. A watch SHALL expire 90 days after approval or renewal, and the owner SHALL be offered a renewal card seven days before expiry; an unrenewed watch SHALL expire without deleting its observations. Delivery SHALL default to digest unless the owner chose right away. `never` or `disable` SHALL pause a watch without deleting its observations or receipts. An evaluator instance fires once; the watch runner re-arms the next generation after delivery, so a watch keeps watching without a second approval. A fired watch SHALL deliver once per fire intent; duplicate events, restart and late input SHALL NOT produce a second delivery.
 
 ID: REQ-owner-watches-004
 Source: bu-nt2eda Q3; bu-4c7nvp.1.5
@@ -108,7 +108,7 @@ Scope: v1-reserved
 Finance `alert_config` facts SHALL migrate to watches through an explicit type-by-type mapping covering `large_transaction`, `budget_exceeded`, `new_merchant` and `price_change`. Each type SHALL map to a watch shape, be covered by an existing single-output path, or be shown blind. `large_transaction` becomes a watch, and its response flag SHALL be suppressed while the watch is active or paused and restored when the watch is deleted or expires. For `price_change`, `budget_exceeded` and `new_merchant` the stored `alert_config` fact does not govern the existing path, before or after migration (price changes are detected unconditionally, budget insights come from `budget_status` thresholds and new merchants from `anomaly_scan`), and no watch is created. Those three configs SHALL be shown to the owner as superseded or blind and SHALL NOT be shown as active alert settings. During and after migration a qualifying event SHALL produce one owner output: the legacy alert path and the watch SHALL NOT both notify. A migrated `large_transaction` watch SHALL carry the same threshold, currency and enabled state as its source fact, and migration SHALL NOT enable a disabled alert.
 
 ID: REQ-owner-watches-005
-Source: bu-4c7nvp.1.5; roster/finance/tools/alerts.py
+Source: bu-4c7nvp.1.5; roster/finance/tools/alerts.py; roster/finance/jobs/finance_jobs.py; roster/finance/tools/budgets.py; roster/finance/tools/anomaly_detection.py
 Scope: v1-reserved
 
 #### Scenario: A large-transaction alert migrates
@@ -116,10 +116,20 @@ Scope: v1-reserved
 - **WHEN** an enabled `large_transaction` alert_config is migrated
 - **THEN** a watch with the same threshold and currency exists, and one qualifying transaction produces one notification
 
-#### Scenario: A type has no evaluator
+#### Scenario: A type covered by its existing path is migrated
+
+- **WHEN** a `price_change`, `budget_exceeded` or `new_merchant` alert_config is migrated
+- **THEN** no watch is created, the config is shown to the owner as superseded or blind (not as an active setting), and its existing path still produces the one output
+
+#### Scenario: The large-transaction flag returns
+
+- **WHEN** a `large_transaction` watch is deleted or expires
+- **THEN** the response flag it suppressed is restored and the transaction still produces one output
+
+#### Scenario: A type no evaluator measures
 
 - **WHEN** a configured alert type has no evaluator that measures it
-- **THEN** the migrated watch is shown blind with its cause and no alert is invented
+- **THEN** it is shown blind with its cause and no alert is invented
 
 #### Scenario: Migration runs twice
 
