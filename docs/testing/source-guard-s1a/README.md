@@ -87,7 +87,7 @@ only census-selected test bodies: shared helpers, architecture code, ratchet
 data, self-tests and future TOML rows. S1a's architecture directory alone adds
 1,228 raw lines, including 785 lines of temporary offender data; the census
 module adds 237 and primitive/census self-tests add 212. Those are overhead,
-not evidence of reduction. The existing helper module adds 164 lines.
+not evidence of reduction. The existing helper module has a net +163 lines.
 
 ## Rule scope and exact existing offenders
 
@@ -145,6 +145,10 @@ that the admitted change-path sites should all be deleted in S2.
   `tests/scripts/test_scripts_readme_index.py`. Existing pragma and scoped
   binding behavior remains covered. All original shared primitive bodies are
   preserved, including the existing type-baseline diagnostic in `scopes`.
+- After restoring that original helper, the combined final scope (all 45 new
+  and 71 retained cases listed above) passed: **116 passed in 53.10 seconds**
+  with the repository's three-worker `loadfile` default. The three registry
+  calls took 29.24s, 17.99s and less than the five slowest reported entries.
 - Every rule rejects planted forbidden syntax in a scratch copy of a real
   clean source file, and passes again after restoration. Empty effective scope,
   escaped path literals, comments/docstrings, synthetic-tree declarations,
