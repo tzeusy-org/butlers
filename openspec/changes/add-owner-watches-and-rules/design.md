@@ -14,6 +14,14 @@ Every M7 consumer registers an instance through the same register/evaluate/consu
 count, 8KiB bound, grant check and three-valued unknown propagation apply unchanged. A watch is
 an instance with an owner-origin approval receipt, not a new evaluator or scheduler.
 
+Parity is decided on one canonical form, because the database only sees jsonb after it has
+normalized the document. The 8KiB bound is measured on compact canonical JSON with each number as
+jsonb prints it (plain decimal, scale kept, no sign on zero). A `read_check` number is judged on
+its exact decimal value: zero in any spelling, else 1e-6 <= |v| <= 1e15, and its jsonb text is at
+most 40 characters. UUIDs are canonical lowercase and hyphenated, an `at` instant is RFC 3339 UTC
+(`Z` or `+00:00`), a string never holds NUL or a lone surrogate, and a validator raises only its own
+error. One shared corpus runs against both validators on PostgreSQL.
+
 ## D2: Leaves read typed registry rows, never free text
 
 `expectation`, `routine_deviation`, `mode` and `condition` read existing typed rows by registered
