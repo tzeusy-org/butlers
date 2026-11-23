@@ -79,6 +79,7 @@ from butlers.core.healing.constants import (
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import DiffLine, InvestigationNotes
@@ -92,6 +93,7 @@ from butlers.core.qa.remediation_liveness import (
 )
 from butlers.core.qa.remediation_liveness import (
     active_loop_conditions,
+    classify_cause,
     evaluate_reset,
     record_reset_refusal,
 )
@@ -373,6 +375,9 @@ class QaPatrolSummary(BaseModel):
     log_lookback_minutes: int
     sources_polled: list[str] = Field(default_factory=list)
     error_detail: str | None = None
+    # The gate that stopped dispatch when ``status`` is ``halted``: ``circuit_breaker``,
+    # ``no_model`` or ``concurrency_cap``. ``None`` for every other status.
+    halt_reason: str | None = None
 
 
 class QaFindingRecord(BaseModel):
@@ -595,6 +600,12 @@ class QaCircuitBreaker(BaseModel):
     # fixtures/tests that construct this without a threshold keep working;
     # the real endpoint always sets it explicitly.
     threshold: int = QA_BREAKER_THRESHOLD
+    # Why it tripped: the one cause every counted failure shares, ``mixed`` when they differ,
+    # ``None`` while it is closed. ``cause_counts`` carries the per-cause counts.
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    # When the next half-open probe is admitted (None while closed).
+    next_probe_at: datetime | None = None
 
 
 class QaCredentialsStatus(BaseModel):
@@ -882,6 +893,10 @@ class CircuitBreakerAttempt(BaseModel):
     id: str
     status: str
     closed_at: str
+    # The cause code (``classify_cause``) and the first line of the attempt's own error text, so
+    # the owner can see why each counted attempt failed without opening it.
+    reason_class: str | None = None
+    reason_text: str | None = None
 
 
 class CircuitBreakerStatus(BaseModel):
@@ -891,6 +906,10 @@ class CircuitBreakerStatus(BaseModel):
     threshold: int
     recent_statuses: list[str]
     recent_attempts: list[CircuitBreakerAttempt]
+    dominant_cause: str | None = None
+    cause_counts: dict[str, int] = Field(default_factory=dict)
+    opened_at: datetime | None = None
+    next_probe_at: datetime | None = None
 
 
 class CircuitBreakerResetResponse(BaseModel):
@@ -1004,6 +1023,7 @@ def _row_to_patrol_summary(row: Any) -> QaPatrolSummary:
         log_lookback_minutes=row["log_lookback_minutes"],
         sources_polled=list(sources),
         error_detail=row["error_detail"],
+        halt_reason=row.get("halt_reason"),
     )
 
 
@@ -1303,11 +1323,14 @@ async def _fetch_recent_circuit_breaker_rows(
     *,
     limit: int,
     include_ids: bool = False,
+    include_detail: bool = False,
 ) -> list[asyncpg.Record]:
     """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
 
     status_col = f"{QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status"
     select_cols = f"id, {status_col}, closed_at" if include_ids else status_col
+    if include_detail:
+        select_cols = f"id, {status_col}, closed_at, error_detail"
     return await pool.fetch(
         f"""
         SELECT {select_cols}
@@ -1337,6 +1360,38 @@ def _compute_circuit_breaker_state(
         status in CIRCUIT_BREAKER_FAILURE_STATUSES for status in statuses
     )
     return statuses, consecutive_failures, tripped
+
+
+_REASON_TEXT_MAX = 200
+
+
+def _breaker_cause_fields(rows: list[Any], *, threshold: int) -> dict[str, Any]:
+    """Derived cause and probe schedule for the breaker, from rows newest first."""
+    state = derive_breaker_state(
+        [
+            {
+                "status": row["status"],
+                "error_detail": row.get("error_detail"),
+                "closed_at": row.get("closed_at"),
+            }
+            for row in rows
+        ],
+        threshold,
+    )
+    return {
+        "dominant_cause": state.dominant_cause,
+        "cause_counts": dict(state.cause_counts),
+        "opened_at": state.opened_at,
+        "next_probe_at": state.next_probe_at,
+    }
+
+
+def _reason_text(error_detail: str | None) -> str | None:
+    """First non-empty line of an attempt's error text, bounded."""
+    for line in (error_detail or "").splitlines():
+        if line.strip():
+            return line.strip()[:_REASON_TEXT_MAX]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1533,7 +1588,8 @@ async def get_qa_summary(
     last_patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE status != 'running'
         ORDER BY started_at DESC
@@ -1763,16 +1819,21 @@ async def get_qa_summary(
     # dispatcher semantics.
     cb_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
     cb_statuses, consecutive_failures, cb_tripped = _compute_circuit_breaker_state(
-        cb_rows,
+        cb_rows[:_CIRCUIT_BREAKER_THRESHOLD],
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cb_cause = _breaker_cause_fields(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
     circuit_breaker = QaCircuitBreaker(
         tripped=cb_tripped,
         consecutive_failures=consecutive_failures,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
+        dominant_cause=cb_cause["dominant_cause"],
+        cause_counts=cb_cause["cause_counts"],
+        next_probe_at=cb_cause["next_probe_at"],
     )
 
     # Active sources — derive from the most recent patrols (last 10)
@@ -1952,7 +2013,8 @@ async def list_patrols(
 
     rows = await pool.fetch(
         f"SELECT id, started_at, completed_at, status, findings_count, novel_count,"
-        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail"
+        f" dispatched_count, log_lookback_minutes, sources_polled, error_detail,"
+        f" halt_reason"
         f" FROM public.qa_patrols{where}"
         f" ORDER BY started_at DESC"
         f" OFFSET ${idx} LIMIT ${idx + 1}",
@@ -1984,7 +2046,8 @@ async def get_patrol(
     patrol_row = await pool.fetchrow(
         """
         SELECT id, started_at, completed_at, status, findings_count, novel_count,
-               dispatched_count, log_lookback_minutes, sources_polled, error_detail
+               dispatched_count, log_lookback_minutes, sources_polled, error_detail,
+               halt_reason
         FROM public.qa_patrols
         WHERE id = $1
         """,
@@ -2020,6 +2083,7 @@ async def get_patrol(
         log_lookback_minutes=summary.log_lookback_minutes,
         sources_polled=summary.sources_polled,
         error_detail=summary.error_detail,
+        halt_reason=summary.halt_reason,
         findings=findings,
     )
     return ApiResponse(data=detail)
@@ -3466,15 +3530,17 @@ async def get_circuit_breaker_status(
     """Return the current QA dispatch circuit breaker state."""
     pool = _shared_pool(db)
 
-    rows = await _fetch_recent_circuit_breaker_rows(
+    detail_rows = await _fetch_recent_circuit_breaker_rows(
         pool,
-        limit=_CIRCUIT_BREAKER_THRESHOLD,
-        include_ids=True,
+        limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+        include_detail=True,
     )
+    rows = detail_rows[:_CIRCUIT_BREAKER_THRESHOLD]
     statuses, _, tripped = _compute_circuit_breaker_state(
         rows,
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
     )
+    cause = _breaker_cause_fields(detail_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
 
     return ApiResponse(
         data=CircuitBreakerStatus(
@@ -3486,9 +3552,12 @@ async def get_circuit_breaker_status(
                     id=str(row["id"]),
                     status=row["status"],
                     closed_at=row["closed_at"].isoformat(),
+                    reason_class=classify_cause(row.get("error_detail")),
+                    reason_text=_reason_text(row.get("error_detail")),
                 )
                 for row in rows
             ],
+            **cause,
         ),
         meta=ApiMeta(),
     )

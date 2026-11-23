@@ -96,6 +96,7 @@ from butlers.core.healing.worktree import (
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
     hold_findings_for_retry,
@@ -3320,6 +3321,80 @@ async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> boo
         return True
 
 
+#: Session advisory lock that serializes the half-open probe across dispatchers and daemons.
+_PROBE_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_PROBE_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_BREAKER_ROWS_SQL = f"""
+    SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status, error_detail, closed_at
+    {QA_BREAKER_WHERE_SQL}
+    ORDER BY closed_at DESC
+    LIMIT $1
+"""
+
+
+async def _breaker_probe_due(pool: asyncpg.Pool, threshold: int) -> bool:
+    """Whether the open breaker's backoff has elapsed and no QA investigation is in flight.
+
+    Fails closed: an unreadable breaker is not due, so nothing probes through a broken read.
+    """
+    try:
+        rows = await pool.fetch(_BREAKER_ROWS_SQL, threshold + EXTRA_ROWS_FOR_BACKOFF)
+        state = derive_breaker_state(rows, threshold)
+        if not state.open or state.next_probe_at is None:
+            return False
+        if await pool.fetchval("SELECT clock_timestamp()") < state.next_probe_at:
+            return False
+        return await count_active_attempts(pool, qa_only=True) == 0
+    except Exception as exc:
+        logger.warning("QA dispatch: breaker probe schedule unreadable: %s", exc)
+        return False
+
+
+async def _acquire_probe_lock(pool: asyncpg.Pool) -> asyncpg.pool.PoolConnectionProxy | None:
+    """Take the probe lock on a dedicated connection, or return ``None`` when another holds it."""
+    conn = await pool.acquire()
+    try:
+        if await conn.fetchval(_PROBE_LOCK_SQL):
+            return conn
+    except Exception:
+        await pool.release(conn)
+        raise
+    await pool.release(conn)
+    return None
+
+
+async def _release_probe_lock(pool: asyncpg.Pool, conn: asyncpg.pool.PoolConnectionProxy) -> None:
+    try:
+        await conn.fetchval(_PROBE_UNLOCK_SQL)
+    finally:
+        await pool.release(conn)
+
+
+async def _record_probe(
+    pool: asyncpg.Pool,
+    triaged: TriagedFinding,
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> None:
+    """Record that one finding is admitted through the open breaker as its half-open probe."""
+    finding = triaged.finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=finding.fingerprint,
+            butler_name=finding.source_butler,
+            decision="breaker_probe",
+            reason=(
+                f"Half-open probe: {config.circuit_breaker_threshold} consecutive failures, "
+                "backoff elapsed"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record breaker_probe event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="breaker_probe")
+
+
 async def _hold_for_retry(
     pool: asyncpg.Pool,
     findings: list[TriagedFinding],
@@ -3445,13 +3520,18 @@ async def dispatch_novel_findings(
         # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
         # the rest as one decision instead of dropping them. Once the cap has been reached
         # nothing more launches, so the remainder stays a cap hold.
+        probing = False
         if (
             cap_skipped == 0
             and config.circuit_breaker_threshold > 0
             and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
         ):
-            results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
-            break
+            # Open. Once its backoff has elapsed this finding may go through as the one probe;
+            # otherwise the rest of the patrol is held.
+            if not await _breaker_probe_due(pool, config.circuit_breaker_threshold):
+                results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
+                break
+            probing = True
 
         # Once the cap is reached, stop calling dispatch for the remaining findings.
         # Continuing would insert a claim row per finding before rejecting it, and those
@@ -3479,19 +3559,36 @@ async def dispatch_novel_findings(
             held.append(triaged)
             continue
 
-        result = await dispatch_qa_investigation(
-            pool=pool,
-            triaged_finding=triaged,
-            patrol_id=patrol_id,
-            config=config,
-            repo_root=repo_root,
-            spawner=spawner,
-            gh_token=gh_token,
-            git_author_name=git_author_name,
-            git_author_email=git_author_email,
-            task_registry=task_registry,
-            metrics=metrics,
-        )
+        probe_conn: asyncpg.pool.PoolConnectionProxy | None = None
+        if probing:
+            # The lock is held across the claim, so two dispatchers cannot both probe: the second
+            # finds the first's in-flight attempt when it re-checks.
+            probe_conn = await _acquire_probe_lock(pool)
+            if probe_conn is None or not await _breaker_probe_due(
+                pool, config.circuit_breaker_threshold
+            ):
+                if probe_conn is not None:
+                    await _release_probe_lock(pool, probe_conn)
+                results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
+                break
+            await _record_probe(pool, triaged, config, metrics)
+        try:
+            result = await dispatch_qa_investigation(
+                pool=pool,
+                triaged_finding=triaged,
+                patrol_id=patrol_id,
+                config=config,
+                repo_root=repo_root,
+                spawner=spawner,
+                gh_token=gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                task_registry=task_registry,
+                metrics=metrics,
+            )
+        finally:
+            if probe_conn is not None:
+                await _release_probe_lock(pool, probe_conn)
         results.append(result)
 
     if held:
