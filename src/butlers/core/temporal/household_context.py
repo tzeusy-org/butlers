@@ -105,8 +105,8 @@ def household_events(
     """Context events for rows shaped with the keys ``household_event`` takes, in time order.
 
     A row is a mapping with ``time_role``, ``metadata``, ``starts_at``, ``ends_at``, ``all_day``,
-    ``source_id``, ``subject_entity_id``, ``subject_label`` and optionally ``event_type``; readers alias their own columns
-    to these. With a window, only events overlapping it are kept.
+    ``source_id``, ``subject_entity_id``, ``subject_label`` and optionally ``event_type``;
+    readers alias their own columns to these. With a window, only events overlapping it are kept.
     """
     events: list[HouseholdEvent] = []
     for row in rows:
