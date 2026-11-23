@@ -35,6 +35,7 @@ import uuid
 from typing import Any
 
 from butlers.core.qa import isolation_verifier as iv
+from butlers.core.qa.egress_gate import EXIT_NOT_ENFORCED
 
 _DEV_NAMESPACE = re.compile(r"^[a-z0-9-]+-dev$")
 _CANARY_PORT = 9
@@ -146,15 +147,35 @@ def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool 
     raise VerifierError("kubectl apply failed and was not an admission policy denial")
 
 
+def _gate_refused(namespace: str, job: str) -> bool:
+    """Whether the Job's container exited with the egress gate's refusal code."""
+    code = _kubectl(
+        [
+            "-n",
+            namespace,
+            "get",
+            "pods",
+            "-l",
+            f"job-name={job}",
+            "-o",
+            "jsonpath={.items[0].status.containerStatuses[0].state.terminated.exitCode}",
+        ],
+        check=False,
+    ).strip()
+    return code == str(EXIT_NOT_ENFORCED)
+
+
 def _run_one(
     args: argparse.Namespace, manifest: dict[str, Any]
-) -> tuple[dict[str, Any] | None, bool]:
-    """Apply and read one probe: ``(receipt, refused_by_admission)``."""
+) -> tuple[dict[str, Any] | None, bool, bool]:
+    """Apply and read one probe: ``(receipt, refused_by_admission, refused_by_egress_gate)``."""
     if _apply(args, manifest) == REFUSED:
-        return None, True
+        return None, True, False
     name = manifest["metadata"]["name"]
     _wait_job(args.namespace, name, 300)
-    return _receipt(args.namespace, name), False
+    receipt = _receipt(args.namespace, name)
+    gated = receipt is None and _gate_refused(args.namespace, name)
+    return receipt, False, gated
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -182,7 +203,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         baseline_manifest = _probe_job(args, host)
         created.append(("job", baseline_manifest["metadata"]["name"]))
-        baseline, baseline_refused = _run_one(args, baseline_manifest)
+        baseline, baseline_refused, _ = _run_one(args, baseline_manifest)
         failures = iv.baseline_verdict(None if baseline_refused else baseline)
 
         verdicts = []
@@ -190,12 +211,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for control in iv.INVERSE_CONTROLS:
             removed_manifest = iv.render_inverse(_probe_job(args, host), control)
             created.append(("job", removed_manifest["metadata"]["name"]))
-            removed, removed_refused = _run_one(args, removed_manifest)
+            removed, removed_refused, removed_gated = _run_one(args, removed_manifest)
             restored_manifest = _probe_job(args, host)
             created.append(("job", restored_manifest["metadata"]["name"]))
-            restored, _ = _run_one(args, restored_manifest)
+            restored, _, _ = _run_one(args, restored_manifest)
             verdicts.append(
-                iv.judge_control(control, removed, restored, removed_refused=removed_refused)
+                iv.judge_control(
+                    control,
+                    removed,
+                    restored,
+                    removed_refused=removed_refused,
+                    removed_gate_refused=removed_gated,
+                )
             )
             # Content-blind detail for a restored probe that did not pass: names and categories.
             restored_failed.append(

@@ -162,3 +162,10 @@ def test_a_job_without_a_receipt_logs_the_tail_of_its_output(monkeypatch, capsys
     )
     assert module._receipt("butlers-dev", "qa-x") is None
     assert "egress_gate:policy_not_enforced" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("code", "expected"), [("70", True), ("1", False), ("", False)])
+def test_a_container_exit_70_is_the_egress_gates_refusal(monkeypatch, code, expected) -> None:
+    module = _load()
+    monkeypatch.setattr(module, "_kubectl", lambda *a, **k: f"{code}\n")
+    assert module._gate_refused("butlers-dev", "qa-x") is expected

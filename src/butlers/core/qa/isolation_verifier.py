@@ -18,6 +18,7 @@ from typing import Any, Final
 from butlers.core.qa.investigator_job import (
     CONTAINER_NAME,
     INVESTIGATOR_COMPONENT,
+    INVESTIGATOR_PYTHON,
     build_investigator_job,
 )
 
@@ -43,7 +44,7 @@ def probe_command(
     recheck_after: int = 0,
 ) -> list[str]:
     """The pinned probe command: ``python -I -m`` the probe module with its targets."""
-    command = ["python", "-I", "-m", PROBE_MODULE]
+    command = [INVESTIGATOR_PYTHON, "-I", "-m", PROBE_MODULE]
     if recheck_after:
         command += ["--recheck-after", str(recheck_after)]
     for flag, values in (
@@ -136,7 +137,8 @@ class ControlVerdict:
     name: str
     red_when_removed: bool
     green_when_restored: bool
-    #: ``"admission"`` (the Job was refused), ``"probe"`` (admitted, the named check failed) or
+    #: ``"admission"`` (the Job was refused), ``"egress_gate"`` (admitted, the start-up gate
+    #: refused to run the container), ``"probe"`` (admitted, the named check failed) or
     #: ``None`` (nothing caught it: the control proves nothing).
     caught_by: str | None = None
 
@@ -160,6 +162,7 @@ def judge_control(
     restored: Mapping[str, Any] | None,
     *,
     removed_refused: bool = False,
+    removed_gate_refused: bool = False,
 ) -> ControlVerdict:
     """Score one inverse control; a missing check or receipt is never a catch.
 
@@ -170,6 +173,9 @@ def judge_control(
     """
     if removed_refused:
         caught_by: str | None = "admission"
+    elif removed_gate_refused:
+        # Admitted, but the egress gate refused to start the container (exit 70, no receipt).
+        caught_by = "egress_gate"
     elif removed is not None and _outcome(removed, control.expect) == "fail":
         caught_by = "probe"
     else:

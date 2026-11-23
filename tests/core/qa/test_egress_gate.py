@@ -113,4 +113,22 @@ def test_every_investigator_job_starts_under_the_gate() -> None:
     )
     command = job["spec"]["template"]["spec"]["containers"][0]["command"]
     assert command == gated_command(["agent", "run"])
-    assert command[:5] == ["python", "-I", "-m", gate.__name__, "--"]
+    assert command[:5] == ["/app/.venv/bin/python", "-I", "-m", gate.__name__, "--"]
+
+
+def test_the_interpreter_constant_matches_the_daemon_images_sealed_venv() -> None:
+    from pathlib import Path
+
+    from butlers.core.qa.investigator_job import DAEMON_VENV, INVESTIGATOR_PYTHON
+
+    dockerfile = (Path(__file__).resolve().parents[3] / "Dockerfile").read_text()
+    # The production stage copies the venv the production-install stage built at this path.
+    assert f"--environment {DAEMON_VENV} " in dockerfile
+    assert f"COPY --from=production-install {DAEMON_VENV} {DAEMON_VENV}" in dockerfile
+    assert INVESTIGATOR_PYTHON == f"{DAEMON_VENV}/bin/python"
+
+
+def test_a_job_must_outlive_the_gate_so_a_slow_policy_is_a_containment_failure() -> None:
+    from butlers.core.qa.investigator_job import MIN_DEADLINE_S
+
+    assert MIN_DEADLINE_S >= gate.DEFAULT_DEADLINE_S + 60

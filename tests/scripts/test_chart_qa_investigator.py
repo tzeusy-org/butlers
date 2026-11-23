@@ -582,3 +582,43 @@ def test_a_job_template_may_carry_no_toleration_at_all(on):
     job["spec"]["template"]["spec"]["tolerations"] = [dict(_DEFAULT_TOLERATIONS[0])]
     failures = _cel_admit(on, "job", job, _LAUNCHER)
     assert failures and any("no host namespace" in f for f in failures)
+
+
+_GATE = ["/app/.venv/bin/python", "-I", "-m", "butlers.core.qa.egress_gate", "--"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["/bin/true"],  # no gate at all
+        ["python", "-I", "-m", "butlers.core.qa.egress_gate", "--", "/bin/true"],  # base python
+        [*_GATE[:4]],  # no separator, no command
+        [*_GATE],  # the gate with nothing to run
+        ["/app/.venv/bin/python", "-m", "butlers.core.qa.egress_gate", "-I", "--", "x"],
+    ],
+    ids=["none", "base-interpreter", "no-separator", "nothing-to-run", "reordered"],
+)
+def test_a_job_or_pod_without_the_gate_prefix_is_denied(on, command):
+    job = _good_job()
+    job["spec"]["template"]["spec"]["containers"][0]["command"] = command
+    for kind, obj, who in (
+        ("job", job, _LAUNCHER),
+        ("pod", _pod_of(job), _CONTROLLER),
+    ):
+        failures = _cel_admit(on, kind, obj, who)
+        assert failures and any("egress gate" in f for f in failures), (kind, command, failures)
+
+
+def test_a_job_without_any_command_is_denied(on):
+    job = _good_job()
+    del job["spec"]["template"]["spec"]["containers"][0]["command"]
+    failures = _cel_admit(on, "job", job, _LAUNCHER)
+    assert failures and any("egress gate" in f for f in failures)
+
+
+def test_the_policy_literals_match_the_gate_constants():
+    from butlers.core.qa import investigator_job as ij
+
+    template = (_CHART / "templates" / "qa-investigator.yaml").read_text()
+    for word in ij.GATE_PREFIX:
+        assert f"'{word}'" in template, word

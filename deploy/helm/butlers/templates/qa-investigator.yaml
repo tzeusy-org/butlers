@@ -172,6 +172,13 @@ spec:
         variables.spec.containers.size() == 1 &&
         (!has(variables.spec.initContainers) || variables.spec.initContainers.size() == 0) &&
         (!has(variables.spec.ephemeralContainers) || variables.spec.ephemeralContainers.size() == 0)
+    - message: the container starts under the egress gate, from the daemon image's own venv interpreter
+      expression: >-
+        variables.spec.containers.all(c,
+          has(c.command) && c.command.size() >= 6 &&
+          c.command[0] == '/app/.venv/bin/python' && c.command[1] == '-I' &&
+          c.command[2] == '-m' && c.command[3] == 'butlers.core.qa.egress_gate' &&
+          c.command[4] == '--')
     - message: the pod runs under the runtime-default seccomp profile as the pinned non-root user and group
       expression: >-
         has(variables.spec.securityContext) &&

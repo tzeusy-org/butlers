@@ -28,6 +28,8 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, Final
 
+from butlers.core.qa.egress_gate import DEFAULT_DEADLINE_S as EGRESS_GATE_DEADLINE_S
+
 #: Component label value shared with the chart (selectors, NetworkPolicies, the admission policy).
 INVESTIGATOR_COMPONENT: Final[str] = "qa-investigator"
 INVESTIGATOR_SERVICE_ACCOUNT: Final[str] = "qa-investigator"
@@ -50,7 +52,9 @@ DEFAULT_RESOURCES: Final[dict[str, dict[str, str]]] = {
     "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "2Gi"},
 }
 SCRATCH_SIZE_LIMIT: Final[str] = "1Gi"
-MIN_DEADLINE_S: Final[int] = 60
+#: A Job must outlive the egress gate's own wait plus time to run: a slow policy is then reported
+#: as ``containment_not_enforced`` (the gate's exit) and not as a deadline overrun.
+MIN_DEADLINE_S: Final[int] = EGRESS_GATE_DEADLINE_S + 60
 MAX_DEADLINE_S: Final[int] = 4 * 60 * 60
 ATTEMPT_LABEL: Final[str] = "butlers.io/qa-attempt"
 CONTAINMENT_LABEL: Final[str] = "butlers.io/qa-containment"
@@ -88,10 +92,24 @@ def _env(name: str, value: str) -> dict[str, str]:
 #: CNI programs a NetworkPolicy after the pod starts, so the real command runs only once the
 #: cluster's own API server has been refused several times in a row. ``exec`` keeps PID 1.
 EGRESS_GATE_MODULE = "butlers.core.qa.egress_gate"
+#: The daemon image installs butlers only into this sealed venv (Dockerfile ``production-install``
+#: ``--environment /app/.venv``), and the Job pins PATH to the base interpreter first, so the gate
+#: and the probe must name the venv interpreter by absolute path. A test pins it to the Dockerfile.
+DAEMON_VENV = "/app/.venv"
+INVESTIGATOR_PYTHON = f"{DAEMON_VENV}/bin/python"
+#: The five leading words of every investigator container command; the admission policy requires
+#: exactly this prefix, so the gate is not enforced by the launcher alone.
+GATE_PREFIX: Final[tuple[str, ...]] = (
+    INVESTIGATOR_PYTHON,
+    "-I",
+    "-m",
+    EGRESS_GATE_MODULE,
+    "--",
+)
 
 
 def gated_command(command: Sequence[str]) -> list[str]:
-    return ["python", "-I", "-m", EGRESS_GATE_MODULE, "--", *command]
+    return [*GATE_PREFIX, *command]
 
 
 def build_investigator_job(

@@ -20,6 +20,7 @@ Standard library only: it runs with ``-I`` before the investigator's own tooling
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import socket
 import sys
@@ -49,7 +50,12 @@ def _reachable(host: str, port: int) -> bool:
 def target_from_env(env: dict[str, str] | os._Environ[str] = os.environ) -> tuple[str, int] | None:
     host = env.get("KUBERNETES_SERVICE_HOST", "")
     port = env.get("KUBERNETES_SERVICE_PORT", "")
-    if not host or not port.isdigit():
+    if not port.isdigit():
+        return None
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        # A name would resolve through DNS: a lookup failure must never count as "blocked".
         return None
     return host, int(port)
 

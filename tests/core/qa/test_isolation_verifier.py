@@ -44,12 +44,12 @@ def test_the_probe_job_is_the_production_template_with_only_the_command_and_cont
     probe_c = copy.deepcopy(probe)
     prod_c = copy.deepcopy(prod)
     # Both run under the egress gate; only what follows ``--`` differs.
-    gate = ["python", "-I", "-m", "butlers.core.qa.egress_gate", "--"]
+    gate = ["/app/.venv/bin/python", "-I", "-m", "butlers.core.qa.egress_gate", "--"]
     assert probe_c["spec"]["template"]["spec"]["containers"][0]["command"][:5] == gate
     probe_c["spec"]["template"]["spec"]["containers"][0]["command"] = gate + ["x"]
     assert probe_c == prod_c
     assert probe["spec"]["template"]["spec"]["containers"][0]["command"][5:9] == [
-        "python",
+        "/app/.venv/bin/python",
         "-I",
         "-m",
         iv.PROBE_MODULE,
@@ -141,3 +141,15 @@ def test_probe_command_carries_the_recheck_delay_only_when_asked() -> None:
     assert "--recheck-after" not in iv.probe_command()
     command = iv.probe_command(recheck_after=20)
     assert command[command.index("--recheck-after") + 1] == "20"
+
+
+def test_a_gate_refusal_scores_as_caught_by_the_egress_gate() -> None:
+    control = next(c for c in iv.INVERSE_CONTROLS if c.name == "no_tracker_egress_exclusion")
+    restored = _receipt(**{control.expect: "pass"})
+    verdict = iv.judge_control(control, None, restored, removed_gate_refused=True)
+    assert verdict.ok and verdict.caught_by == "egress_gate"
+    # Admission outranks it when both apply.
+    both = iv.judge_control(
+        control, None, restored, removed_refused=True, removed_gate_refused=True
+    )
+    assert both.caught_by == "admission"
