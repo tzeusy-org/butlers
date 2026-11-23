@@ -817,6 +817,29 @@ BEGIN
         _connector_role
     );
 
+    -- connectors.evidence_journal holds full message content and is append-only evidence
+    -- (core_361): connector_writer inserts and reads it, and no other role holds any privilege.
+    -- The blanket fleet and connector grants above (and the connectors-schema default
+    -- privileges) must not leave a butler role able to read it, or the writer able to rewrite it.
+    IF to_regclass('connectors.evidence_journal') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE connectors.evidence_journal FROM PUBLIC';
+        FOR _role IN
+            SELECT r.rolname
+            FROM pg_class c
+            CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+            JOIN pg_roles r ON r.oid = a.grantee
+            WHERE c.oid = 'connectors.evidence_journal'::regclass
+              AND a.grantee <> c.relowner
+              AND r.rolname <> _connector_role
+        LOOP
+            EXECUTE format('REVOKE ALL ON TABLE connectors.evidence_journal FROM %I', _role);
+        END LOOP;
+        EXECUTE format(
+            'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE connectors.evidence_journal FROM %I',
+            _connector_role
+        );
+    END IF;
+
     -- Cost claims are append/lifecycle evidence. Generic public-table bootstrap
     -- grants must not make their current assertion, resolution, or audit rows
     -- deletable. Forced RLS remains the authority fence; these revokes keep the

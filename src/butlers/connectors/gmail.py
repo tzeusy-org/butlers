@@ -89,6 +89,7 @@ from butlers.connectors.automated_evidence import (
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.email_spans import email_untrusted_spans
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -1661,6 +1662,25 @@ class GmailConnectorRuntime:
                             # park it as a visible error row and move on (replayable
                             # only if an envelope was built). A message deleted since
                             # the page was listed has nothing to ingest.
+                            if isinstance(exc, EvidenceNotCommitted):
+                                # Evidence before acknowledgement (bu-uhbhzq.4): without its
+                                # journal row the message is neither parked nor skipped and the
+                                # retry budget is not spent; hold the cursor on this page.
+                                logger.error(
+                                    "Backfill: evidence journal write failed for message %s "
+                                    "(job %s), holding the cursor: %s",
+                                    message_id,
+                                    job.job_id,
+                                    exc.reason,
+                                )
+                                await self._report_backfill_progress(
+                                    job_id=job.job_id,
+                                    rows_processed=rows_processed - reported_processed,
+                                    rows_skipped=rows_skipped - reported_skipped,
+                                    cost_spent_cents=cost_spent_cents,
+                                    cursor={"page_token": page_token or ""},
+                                )
+                                return
                             if (
                                 isinstance(exc, httpx.HTTPStatusError)
                                 and exc.response.status_code == 404
@@ -2260,6 +2280,8 @@ class GmailConnectorRuntime:
         ConnectionError,
         TimeoutError,
         httpx.HTTPError,
+        # The evidence row was not committed: nothing was submitted, so hold the cursor.
+        EvidenceNotCommitted,
     )
 
     async def _ingest_messages(self, message_ids: list[str]) -> None:
@@ -3689,6 +3711,10 @@ class GmailConnectorRuntime:
         status = "error"
 
         try:
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row is the commit
+            # point. A failed write raises, so nothing is submitted and the cursor holds; a
+            # failed submit below keeps the row. Duplicates and replays collapse on its key.
+            await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response

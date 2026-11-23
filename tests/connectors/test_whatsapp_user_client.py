@@ -50,6 +50,14 @@ def connector() -> WhatsAppUserClientConnector:
     return WhatsAppUserClientConnector(config, cursor_pool=MagicMock())
 
 
+@pytest.fixture
+def journal_commits(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """The evidence-journal write (its own tests cover it) so a submit test reaches the ingest."""
+    commit = AsyncMock(return_value=True)
+    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.commit_envelope", commit)
+    return commit
+
+
 def test_single_event_envelope_contract(connector: WhatsAppUserClientConnector) -> None:
     """Single event carries ingest.v1 schema, whatsapp source, mapped event/sender fields,
     and the 'whatsapp:<endpoint>:<msg_id>' idempotency key."""
@@ -570,6 +578,7 @@ async def test_backfill_failure_log_uses_failure_class_only(
 
 
 async def test_submit_to_ingest_success_log_is_content_blind(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -594,6 +603,7 @@ async def test_submit_to_ingest_success_log_is_content_blind(
 
 
 async def test_submit_to_ingest_error_result_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -611,6 +621,7 @@ async def test_submit_to_ingest_error_result_raises_content_blind_failure(
 
 
 async def test_submit_to_ingest_exception_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -2289,6 +2300,27 @@ async def test_final_flush_parks_a_failed_batch_at_once(
 
     assert len(pool.written) == 1
     assert "g1@g.us" not in connector._held_batches
+
+
+async def test_a_batch_without_its_journal_row_is_never_parked_or_released(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Evidence before acknowledgement: held through every retry and the final flush."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    events = [_wa_event("m1")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    failure = EvidenceNotCommitted("insert_failed")
+
+    await _flush_failing_wa(connector, "g1@g.us", submit_error=failure)
+    for final in (False, True):
+        await _flush_failing_wa(connector, "g1@g.us", retry=True, final=final, submit_error=failure)
+
+    assert not pool.written  # nothing parked
+    assert [h.events for h in connector._held_batches["g1@g.us"]] == [events]
+    assert connector._last_event_id != "m1"  # the checkpoint did not move
 
 
 @pytest.mark.parametrize("block", ["connector", "global"])
