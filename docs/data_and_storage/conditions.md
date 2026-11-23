@@ -255,3 +255,36 @@ route, as the owner and read-only. It is not the goal capability broker, because
   watches reading that capability stay blind (nothing fires, nothing is consumed), the tick still runs, and it
   reports `degraded` / `feed_unreadable`. A key skipped for the call budget counts the same: the watches reading it
   are as deaf as after a failure, so the capability is unhealthy for that tick, which the capability-health collector publishes as `signal_unmeasurable`.
+
+
+### Large-transaction suppression (S7)
+
+The Finance `large_transaction` alert and a covering `read_check` watch would tell the owner twice, so Finance asks
+one question before it flags. `public.owner_watch_covers_large_transaction(currency, amount)` (core_380) returns a
+boolean and nothing else: no watch id, predicate, threshold or time.
+
+- **Trust assumption.** The Switchboard is the watch trust root. Finance trusts a `true` answer and fails open on
+  everything else: an error, a timeout, `false`, NULL, a missing function or a missing grant all leave the legacy
+  flag firing. Nothing raises into `record_transaction`; a failed read logs one `owner_watch_cover_unavailable` line
+  and counts once (`butlers.finance.owner_watch_cover_failed`). The read runs in a savepoint when the caller holds a
+  transaction, per transaction, on both `record_transaction` and the import path (which calls it).
+- **Covered means.** An ACTIVE, unexpired watch whose whole predicate is one `read_check` on
+  `finance.transaction_amount.<ccy>` over `amount` with `gt` (amount above the value) or `ge` (at or above), and the
+  feed for that currency reported a fully successful poll within 7 minutes. A compound predicate, another currency,
+  a paused, expired or deleted watch, a threshold above the amount, or a stale or missing feed row covers nothing.
+- **Feed health.** The tick writes `owner_watch:feed_health` (capability to the time of its last fully successful
+  poll, on the database clock) in the Switchboard `state` table, and clears a capability the moment a poll of it
+  fails. The function compares that row with the database's `now()`, never a caller-supplied time, so a dead feed
+  stops suppressing within the window.
+- **Who can change it.** The function is `SECURITY DEFINER` with a pinned `search_path`, owned by the owner of
+  `public.owner_watches` (no runtime role bypasses or assumes it, so none can replace or alter it), revoked from
+  PUBLIC, executable by `butler_finance_rw` alone, and it refuses any other caller itself. The migration repairs a
+  drifted ACL, body or owner instead of skipping it.
+- **Covered is not delivered.** The owner approves the watch to replace the alert, so the watch's delivery settings
+  (cooldown, verbosity) govern what the owner sees, not the alert's. The proposal card says so: "Notices follow this
+  watch's delivery settings; the old alert stops while it is active." When the watch is paused, expires or its feed
+  goes stale, the legacy flag fires again.
+- **Proposal card.** The Finance read tool `alert_watch_proposals` turns an enabled `large_transaction` alert into a
+  proposed `read_check` watch (same threshold and currency, `gt`) for the Switchboard to park as an owner card, with
+  a stable digest so parking twice is idempotent. A disabled alert proposes nothing. `price_change`,
+  `budget_exceeded` and `new_merchant` are reported `superseded` with no watch. `alert_list` is unchanged.
