@@ -204,6 +204,8 @@ async def _apply_inline_ddl(conn: asyncpg.Connection) -> None:
             optional_schema BOOLEAN NOT NULL DEFAULT false,
             active BOOLEAN NOT NULL DEFAULT false,
             inactive_reason TEXT,
+            retired_at DATE,
+            retired_reason TEXT,
             schema_version INTEGER NOT NULL DEFAULT 1,
             registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

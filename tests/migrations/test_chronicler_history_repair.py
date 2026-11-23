@@ -460,7 +460,7 @@ def test_old_spotify_cache_repair_preserves_steam_unrelated_prose_and_health(pos
                     {"d": spotify.date(), "k": kind, "detail": '{"historical": true}'},
                 )
         config = _build_alembic_config(url, chains=["chronicler"], target_schema="chronicler")
-        command.upgrade(config, "chronicler@chronicler_030")
+        command.upgrade(config, "chronicler@chronicler_042")
 
         async def scenario():
             from butlers.chronicler.adapters import situation as mod
@@ -673,7 +673,7 @@ def test_quantitative_repair_respects_dst_and_blocks_mixed_zones(
     from butlers.chronicler.history_repair import acknowledge_replay, replay_epoch, run_rebuild
     from butlers.chronicler.rollups import _local_day_bounds_utc
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     async def scenario():
         pool = await asyncpg.create_pool(
@@ -757,7 +757,7 @@ def test_base_edit_under_unchanged_winning_override_dirties_effective_day(
     """Raw A and effective B must share the source transaction's invalidation."""
     from butlers.chronicler.history_repair import rebuild_day, try_lock
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     async def scenario():
         async def runtime_connection(conn):

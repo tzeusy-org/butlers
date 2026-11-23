@@ -79,8 +79,11 @@ The generic balance API retains its zero-filled response shape.
   `historical_health_unknown` and its flags are left as they were. The feeder-dark flag detail
   lists `dark_sources`, `retired_sources` and `configured_absent_sources`. Each run also drops a
   retired source from past `feeder_dark` flags dated on or after its `retired_at` (idempotent;
-  `corrected_by = 'retired_source'`). `daily_repair_days.availability_snapshot` is superseded by
-  the table and unused.
+  `corrected_by = 'retired_source'`); every correction, including a flag deleted because the
+  retired source was its only dark one, is first logged in the append-only
+  `retired_flag_corrections` with the original severity and detail. `day_source_availability` and
+  `retired_flag_corrections` also refuse `TRUNCATE`. `daily_repair_days.availability_snapshot` is
+  superseded by the table and unused.
 - **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
   usual, so a long night never yields both "slept more than usual" and "debt building".
 - **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to

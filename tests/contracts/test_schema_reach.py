@@ -896,6 +896,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "sanctioned:chronicler_042 (bu-uhbhzq.2): one-shot correction drops a retired source from past feeder_dark flags; schema and relation are constants, not caller-selected; inventory grants no privilege",
     (
         "src/butlers/chronicler/flags.py",
+        "chronicler.retired_flag_corrections",
+    ): "sanctioned:chronicler_042 (bu-uhbhzq.2): append-only trace of each retired-source correction to a past feeder_dark flag; schema and relation are constants, not caller-selected; inventory grants no privilege",
+    (
+        "src/butlers/chronicler/flags.py",
         "chronicler.source_adapter_state",
     ): "sanctioned:chronicler_042 (bu-uhbhzq.2): reads the declared retired sources for the one-shot flag correction; schema and relation are constants, not caller-selected; inventory grants no privilege",
     (

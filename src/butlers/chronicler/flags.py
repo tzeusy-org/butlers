@@ -514,8 +514,9 @@ async def freeze_day_availability(
         )
     await conn.execute(
         "UPDATE chronicler.daily_repair_days SET historical_flags_status = 'frozen', "
-        "updated_at = now() WHERE local_date = $1",
+        "updated_at = now() WHERE local_date = $1 AND timezone = $2",
         local_date,
+        timezone,
     )
     return "frozen"
 
@@ -545,8 +546,10 @@ async def correct_retired_feeder_dark(
     """One-shot, idempotent: drop a retired source from past ``feeder_dark`` flags.
 
     For each registered source with a ``retired_at``, a ``feeder_dark`` flag dated on or after
-    it stops naming that source; a flag left with no dark source is deleted. Other dark sources
-    are kept, and the stored detail records ``corrected_by = 'retired_source'``. No past
+    it stops naming that source; a flag left with no dark source is deleted. Each correction is
+    first logged in the append-only ``retired_flag_corrections`` (original severity and detail,
+    outcome). Other dark sources are kept, and the stored detail records
+    ``corrected_by = 'retired_source'``. No past
     narrative is regenerated. A second run changes nothing.
     """
     corrected = deleted = 0
@@ -567,6 +570,17 @@ async def correct_retired_feeder_dark(
             if isinstance(detail, str):
                 detail = json.loads(detail)
             remaining = [d for d in detail.get("dark_sources", []) if d != source["source_name"]]
+            await conn.execute(
+                "INSERT INTO chronicler.retired_flag_corrections "
+                "(local_date, flag_type, source_name, outcome, original_severity, original_detail) "
+                "VALUES ($1, $2, $3, $4, $5, $6::jsonb) ON CONFLICT DO NOTHING",
+                row["local_date"],
+                FLAG_FEEDER_DARK,
+                source["source_name"],
+                "source_removed" if remaining else "flag_deleted",
+                row["severity"],
+                json.dumps(detail),
+            )
             if not remaining:
                 await delete_daily_rollup_flag(
                     conn, local_date=row["local_date"], flag_type=FLAG_FEEDER_DARK

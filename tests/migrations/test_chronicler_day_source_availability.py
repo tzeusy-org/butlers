@@ -85,6 +85,31 @@ def test_the_table_is_append_only_and_the_columns_exist(postgres_container) -> N
             for sql in (
                 "UPDATE day_source_availability SET state = 'dark'",
                 "DELETE FROM day_source_availability",
+                "TRUNCATE day_source_availability",
+            ):
+                with pytest.raises(asyncpg.PostgresError, match="append-only"):
+                    await pool.execute(sql)
+        finally:
+            await pool.close()
+
+    asyncio.run(body())
+
+
+def test_the_correction_log_is_append_only_including_truncate(postgres_container) -> None:
+    url = _database(postgres_container)
+
+    async def body() -> None:
+        pool = await _pool(url)
+        try:
+            await pool.execute(
+                "INSERT INTO retired_flag_corrections "
+                "(local_date, flag_type, source_name, outcome) "
+                "VALUES ('2026-09-01', 'feeder_dark', 'health.meals', 'flag_deleted')"
+            )
+            for sql in (
+                "UPDATE retired_flag_corrections SET outcome = 'source_removed'",
+                "DELETE FROM retired_flag_corrections",
+                "TRUNCATE retired_flag_corrections",
             ):
                 with pytest.raises(asyncpg.PostgresError, match="append-only"):
                     await pool.execute(sql)

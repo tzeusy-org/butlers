@@ -9,6 +9,10 @@ Revises: chronicler_041
   ``available``, ``dark``, ``configured_absent`` or ``retired``. It is append-only (a trigger
   refuses UPDATE and DELETE), keyed ``(local_date, timezone, source_name, revision)``, and holds
   source names, states and timestamps only: no content and no endpoint identity.
+* ``retired_flag_corrections`` is the durable, append-only trace of the one-shot correction that
+  drops a retired source from a past ``feeder_dark`` flag (including when the flag is deleted
+  because that source was the only dark one): date, flag, source, the flag's original severity and
+  detail, and the outcome.
 
 Flag evaluation and narration read this record instead of current source state, so a source that
 recovers today no longer erases the days it was really down. The migration is additive; reverting
@@ -58,7 +62,7 @@ def upgrade() -> None:
         SET search_path = pg_catalog, pg_temp
         AS $fn$
         BEGIN
-            RAISE EXCEPTION 'day source availability is append-only'
+            RAISE EXCEPTION '% is append-only', TG_TABLE_NAME
                 USING ERRCODE = '55000';
         END;
         $fn$
@@ -74,8 +78,46 @@ def upgrade() -> None:
         FOR EACH ROW EXECUTE FUNCTION {_GUARD}
         """
     )
+    op.execute(
+        "DROP TRIGGER IF EXISTS day_source_availability_no_truncate ON day_source_availability"
+    )
+    # Row triggers do not fire on TRUNCATE; it needs its own statement-level trigger.
+    op.execute(
+        f"""
+        CREATE TRIGGER day_source_availability_no_truncate
+        BEFORE TRUNCATE ON day_source_availability
+        FOR EACH STATEMENT EXECUTE FUNCTION {_GUARD}
+        """
+    )
     op.execute(f"REVOKE ALL ON day_source_availability FROM PUBLIC, {_ROLE}")
     op.execute(f"GRANT SELECT, INSERT ON day_source_availability TO {_ROLE}")
+
+    op.execute(
+        """
+        CREATE TABLE IF NOT EXISTS retired_flag_corrections (
+            local_date DATE NOT NULL,
+            flag_type TEXT NOT NULL,
+            source_name TEXT NOT NULL,
+            outcome TEXT NOT NULL CHECK (outcome IN ('source_removed', 'flag_deleted')),
+            original_severity TEXT,
+            original_detail JSONB,
+            corrected_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (local_date, flag_type, source_name)
+        )
+        """
+    )
+    for trigger, timing in (
+        ("retired_flag_corrections_append_only", "BEFORE UPDATE OR DELETE"),
+        ("retired_flag_corrections_no_truncate", "BEFORE TRUNCATE"),
+    ):
+        scope = "STATEMENT" if "TRUNCATE" in timing else "ROW"
+        op.execute(f"DROP TRIGGER IF EXISTS {trigger} ON retired_flag_corrections")
+        op.execute(
+            f"CREATE TRIGGER {trigger} {timing} ON retired_flag_corrections "
+            f"FOR EACH {scope} EXECUTE FUNCTION {_GUARD}"
+        )
+    op.execute(f"REVOKE ALL ON retired_flag_corrections FROM PUBLIC, {_ROLE}")
+    op.execute(f"GRANT SELECT, INSERT ON retired_flag_corrections TO {_ROLE}")
 
 
 def downgrade() -> None:
@@ -93,6 +135,21 @@ def downgrade() -> None:
         $$
         """
     )
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF to_regclass('retired_flag_corrections') IS NOT NULL
+               AND EXISTS (SELECT 1 FROM retired_flag_corrections) THEN
+                RAISE EXCEPTION
+                    'refusing to drop retired_flag_corrections: it holds the only record of '
+                    'corrected past flags';
+            END IF;
+        END
+        $$
+        """
+    )
+    op.execute("DROP TABLE IF EXISTS retired_flag_corrections")
     op.execute("DROP TABLE IF EXISTS day_source_availability")
     op.execute(f"DROP FUNCTION IF EXISTS {_GUARD}")
     op.execute("ALTER TABLE source_adapter_state DROP COLUMN IF EXISTS retired_reason")

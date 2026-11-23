@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -203,6 +204,7 @@ class _Conn:
         self.existing = existing
         self.inserts: list[tuple[Any, ...]] = []
         self.updates: list[str] = []
+        self.update_args: list[tuple[Any, ...]] = []
 
     async def fetchval(self, _sql: str, *_args: Any) -> int:
         return self.existing
@@ -212,6 +214,7 @@ class _Conn:
             self.inserts.append(args)
         else:
             self.updates.append(sql)
+            self.update_args.append(args)
         return "OK"
 
 
@@ -242,6 +245,19 @@ async def test_the_first_run_after_the_day_closes_writes_one_row_per_source(obse
     assert len(conn.inserts) == len(flags.SOURCE_CRON_MINUTES)
     assert {row[2] for row in conn.inserts} == set(flags.SOURCE_CRON_MINUTES)
     assert any("'frozen'" in sql for sql in conn.updates)
+
+
+async def test_freezing_one_timezone_never_marks_another_timezones_repair_day(observed) -> None:
+    conn = _Conn()
+    await freeze_day_availability(
+        conn,  # type: ignore[arg-type]
+        local_date=date(2026, 11, 19),
+        timezone="Asia/Singapore",
+        now=datetime(2026, 11, 20, 12, 30, tzinfo=UTC),
+    )
+    (sql,) = [q for q in conn.updates if "daily_repair_days" in q]
+    assert "timezone = $2" in sql
+    assert conn.update_args[-1] == (date(2026, 11, 19), "Asia/Singapore")
 
 
 async def test_a_day_with_a_snapshot_is_never_written_again(observed) -> None:
@@ -321,17 +337,41 @@ async def test_the_correction_removes_only_the_retired_source(monkeypatch) -> No
                 [{"source_name": "health.meals", "retired_at": _RETIRED_AT}],
                 [only_meals, mixed],
             ]
-        )
+        ),
+        execute=AsyncMock(),
     )
 
     assert await correct_retired_feeder_dark(conn) == {"corrected": 1, "deleted": 1}
     assert deletes == [date(2026, 9, 1)]
     assert upserts[0]["detail"]["dark_sources"] == ["steam.play_history"]
     assert upserts[0]["detail"]["corrected_by"] == "retired_source"
+    # Every correction, including the deleted flag, is logged first with the original detail.
+    logged = [
+        (c.args[1], c.args[2], c.args[3], c.args[4], json.loads(c.args[6]))
+        for c in conn.execute.await_args_list
+        if "retired_flag_corrections" in c.args[0]
+    ]
+    assert logged == [
+        (
+            date(2026, 9, 1),
+            FLAG_FEEDER_DARK,
+            "health.meals",
+            "flag_deleted",
+            {"dark_sources": ["health.meals"]},
+        ),
+        (
+            date(2026, 9, 2),
+            FLAG_FEEDER_DARK,
+            "health.meals",
+            "source_removed",
+            {"dark_sources": ["health.meals", "steam.play_history"]},
+        ),
+    ]
 
 
 async def test_the_correction_with_nothing_to_correct_changes_nothing(monkeypatch) -> None:
     conn = SimpleNamespace(
-        fetch=AsyncMock(side_effect=[[{"source_name": "x", "retired_at": _RETIRED_AT}], []])
+        execute=AsyncMock(),
+        fetch=AsyncMock(side_effect=[[{"source_name": "x", "retired_at": _RETIRED_AT}], []]),
     )
     assert await correct_retired_feeder_dark(conn) == {"corrected": 0, "deleted": 0}
