@@ -568,6 +568,8 @@ def test_only_the_defaulted_tolerations_are_admitted_on_a_pod(on):
         {"operator": "Exists"},
         {"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoSchedule"},
         {"key": "dedicated", "operator": "Equal", "value": "gpu", "effect": "NoExecute"},
+        {**_DEFAULT_TOLERATIONS[0], "tolerationSeconds": 86400},
+        {k: v for k, v in _DEFAULT_TOLERATIONS[0].items() if k != "tolerationSeconds"},
     ):
         pod = _defaulted_pod()
         pod["spec"]["tolerations"].append(extra)

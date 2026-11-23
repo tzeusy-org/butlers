@@ -111,6 +111,10 @@ spec:
         apiVersions: [v1]
         operations: [CREATE]
         resources: [pods]
+      # Pods match on CREATE only (plus the ephemeral-container update below): the launcher and the
+      # investigator hold no pods update/patch verb (the launcher Role grants get/list/watch), so
+      # the only way a pod's spec comes to exist is the Job controller creating it from the
+      # validated template.
       # An ephemeral container is the way to add a container to a running pod.
       - apiGroups: [""]
         apiVersions: [v1]
@@ -155,7 +159,8 @@ spec:
         (!has(variables.spec.tolerations) || variables.spec.tolerations.all(t,
           has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
           has(t.operator) && t.operator == 'Exists' &&
-          has(t.effect) && t.effect == 'NoExecute')) &&
+          has(t.effect) && t.effect == 'NoExecute' &&
+          has(t.tolerationSeconds) && t.tolerationSeconds <= 300)) &&
         {{- else }}
         !has(variables.spec.tolerations) &&
         {{- end }}
