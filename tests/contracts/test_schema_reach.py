@@ -1542,6 +1542,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "src/butlers/modules/memory/storage.py",
+        '<dynamic:{events_qualifier}">',
+    ): (
+        "sanctioned:bu-r3fmja.7 F2 and REQ-module-memory-021: the shared rule endorsement "
+        "writer uses an identifier-validated optional schema with the fixed memory_events "
+        "table. Dashboard derives the source from configured Memory butlers. PostgreSQL "
+        "ACLs govern access."
+    ),
+    (
+        "src/butlers/modules/memory/storage.py",
         "<dynamic:{events_table}>",
     ): "sanctioned:bu-r3fmja.7 F2: the dynamic relation name is constrained to fixed memory_events; optional schema is caller input (Dashboard derives it from the selected butler configuration), and identifier validation is injection safety only, not authorization. PostgreSQL ACLs remain the access gate; this inventory entry grants no privilege",
     (

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 from enum import StrEnum
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ConsolidationStatus(StrEnum):
@@ -140,6 +141,7 @@ class Rule(BaseModel):
     source_episode_id: str | None = None
     source_episode_status: EpisodeSourceStatus | None = None
     source_butler: str | None = None
+    owning_source: str | None = None
     tenant_id: str = "owner"
     request_id: str | None = None
     retention_class: str = "rule"
@@ -170,6 +172,39 @@ class RuleEndorsement(BaseModel):
     endorsed_at: str | None = None
     endorsed_by: str | None = None
     changed: bool = False
+
+
+class LegacyRuleEndorsementSelection(BaseModel):
+    """A bounded list of explicitly selected rule IDs in preview order."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def distinct_ids(self):
+        if len(set(self.rule_ids)) != len(self.rule_ids):
+            raise ValueError("Rule IDs must be distinct")
+        return self
+
+
+class ConfirmLegacyRuleEndorsement(LegacyRuleEndorsementSelection):
+    confirmation_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class LegacyRuleEndorsementItem(BaseModel):
+    rule_id: str
+    content: str
+    scope: str
+    content_authority: Literal[None]
+    source_butler: str | None
+    source_episode_id: str | None
+    created_at: str
+
+
+class LegacyRuleEndorsementPreview(BaseModel):
+    rules: list[LegacyRuleEndorsementItem]
+    confirmation_digest: str
 
 
 class FactVouch(BaseModel):
