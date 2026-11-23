@@ -133,10 +133,12 @@ and SHALL NOT appear in the read, so an event is never both. Events on `unclassi
 `subscription`, `holidays`, `birthdays` and `butler` sources SHALL appear nowhere in it:
 unclassified counts as nothing.
 
-The meeting card, calendar prep, meeting debrief, the conflict scan and free-slot search SHALL
-show these events as context lines attributed to their subject, and SHALL NOT count them toward
-owner load, conflicts, day load or busy time, nor treat them as a meeting to prep or debrief.
-`GET /api/calendar/household-time` SHALL serve the read for a window.
+The meeting card, the conflict scan and free-slot search SHALL show these events as context
+attributed to their subject (a card line, `household_context` on the scan and on the free-slot
+result), and no owner-time reader SHALL count them toward owner load, conflicts, day load or busy
+time, nor treat them as a meeting to prep or debrief. Calendar prep and meeting debrief carry no
+time context, so they only exclude them.
+`GET /api/calendar/workspace/household-time` SHALL serve the read for a window.
 
 ID: REQ-module-calendar-038
 Source: bu-5ii4gj.1 (run 26 move 1), slice S3

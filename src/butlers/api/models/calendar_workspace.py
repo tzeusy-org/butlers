@@ -567,7 +567,7 @@ class HouseholdSubjectGroup(BaseModel):
 
 
 class HouseholdTimeResponse(BaseModel):
-    """Response payload for GET /api/calendar/household-time.
+    """Response payload for GET /api/calendar/workspace/household-time.
 
     Context only: nothing here counts toward owner load. ``available=False`` means the read
     could not run, so an empty list is not "nobody has anything on".

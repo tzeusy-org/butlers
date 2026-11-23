@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
+from butlers.core.temporal.household_context import household_events
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -23,6 +24,31 @@ from .errors import CalendarAuthError, _build_structured_error
 from .google_mapping import _coerce_zoneinfo
 from .models import BusyWindow, CalendarEvent, CalendarEventCreate
 from .provider import CalendarProvider
+
+_HOUSEHOLD_CONTEXT_SQL = """
+    SELECT cs.time_role AS time_role, ce.metadata AS metadata, ce.starts_at AS starts_at,
+           ce.ends_at AS ends_at, ce.all_day AS all_day, cs.id AS source_id,
+           cs.role_subject_entity_id AS subject_entity_id, ce.event_type AS event_type,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id) AS subject_label
+    FROM calendar_events ce
+    JOIN calendar_sources cs ON cs.id = ce.source_id
+    WHERE ce.recurrence_rule IS NULL AND ce.status <> 'cancelled'
+      AND cs.time_role IN ('household_member', 'other_person', 'team')
+      AND ce.starts_at < $2 AND ce.ends_at > $1
+    UNION ALL
+    SELECT cs.time_role, ce.metadata || ci.metadata, ci.starts_at, ci.ends_at, ce.all_day,
+           cs.id, cs.role_subject_entity_id, ce.event_type,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id)
+    FROM calendar_event_instances ci
+    JOIN calendar_events ce ON ce.id = ci.event_id
+    JOIN calendar_sources cs ON cs.id = ce.source_id
+    WHERE ce.recurrence_rule IS NOT NULL AND ce.status <> 'cancelled' AND ci.status <> 'cancelled'
+      AND cs.time_role IN ('household_member', 'other_person', 'team')
+      AND ci.starts_at < $2 AND ci.ends_at > $1
+"""
+
 
 _SLOT_WEEKDAY_CODES: tuple[str, ...] = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 
@@ -466,7 +492,50 @@ class ConflictsMixin:
             "slots": slots,
             "duration_minutes": duration_minutes,
             "calendar_ids": resolved_ids,
+            "household_context": await self._household_context(search_start, search_end),
         }
+
+    async def _household_context(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Other people's events in the window as time-and-subject context, never busy time.
+
+        They do not remove a slot (free/busy spans owner calendars only); this lists them beside
+        the slots so a proposal can say whose calendar a window sits next to. No title, location
+        or attendee leaves this read (REQ-module-calendar-038). Fail-open: an unreadable ledger
+        gives an empty list.
+        """
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        if pool is None:
+            return []
+        try:
+            rows = await pool.fetch(_HOUSEHOLD_CONTEXT_SQL, start, end)
+        except Exception:
+            logger.warning("Failed to read household context", exc_info=True)
+            return []
+        events = household_events(
+            {
+                "time_role": row["time_role"],
+                "metadata": row["metadata"],
+                "starts_at": row["starts_at"],
+                "ends_at": row["ends_at"],
+                "all_day": row["all_day"],
+                "source_id": row["source_id"],
+                "subject_entity_id": row["subject_entity_id"],
+                "subject_label": row["subject_label"],
+                "event_type": row["event_type"],
+            }
+            for row in rows
+        )
+        return [
+            {
+                "role": e.role,
+                "subject_entity_id": e.subject_entity_id,
+                "subject_label": e.subject_label,
+                "start_at": e.starts_at.isoformat(),
+                "end_at": e.ends_at.isoformat(),
+                "all_day": e.all_day,
+            }
+            for e in events
+        ]
 
     @staticmethod
     def _build_suggested_slots(

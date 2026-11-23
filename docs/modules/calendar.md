@@ -153,6 +153,22 @@ The Google Calendar connector captures events separately from this module's own 
 filters, sync-token cursor and degraded-health reasons are in
 [Google Calendar connector](../connectors/google-calendar.md).
 
+### Household context
+
+A `household_member`, `other_person` or `team` source may carry `role_subject_entity_id` (core_365,
+a reference to `public.entities`), which the owner sets with the role in `POST
+/api/calendar/sources/role`. Events on those sources that the owner is not attending are not owner
+time, but they are readable as attributed context.
+
+- `GET /api/calendar/workspace/household-time` groups them by subject. The conflict scan, the
+  free-slot result and the meeting card show the same events as context
+  (`household_context`, "Also on Alex's calendar: 14:00-15:00").
+- Opaque by construction: window, role and subject name only. No title, location, description or
+  attendee leaves the read, for any non-owner role (`HouseholdEvent` has no such field).
+- Never load: they add no conflict, day load or busy time, and `unclassified`, `subscription`,
+  `holidays`, `birthdays` and `butler` sources appear nowhere in the read. The calendar context
+  producer reports their count as `household_events` and sets no signal.
+
 ## Rate Limiting
 
 Ordinary Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).
