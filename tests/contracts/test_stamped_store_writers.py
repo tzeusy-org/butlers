@@ -80,7 +80,7 @@ NO_TEXT = {
     "src/butlers/modules/memory/storage.py::_forget_plain",
     "src/butlers/modules/memory/storage.py::confirm_memory",
     "src/butlers/modules/memory/storage.py::endorse_fact",
-    "src/butlers/modules/memory/storage.py::endorse_rule",
+    "src/butlers/modules/memory/storage.py::_write_rule_endorsement",
     "src/butlers/modules/memory/storage.py::get_memory",
     "src/butlers/modules/memory/storage.py::mark_helpful",
     "src/butlers/modules/memory/storage.py::retire_rule",

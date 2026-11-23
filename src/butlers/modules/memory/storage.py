@@ -283,15 +283,20 @@ def _validate_consolidation_narrative_edge(
         )
 
 
+def _memory_schema_qualifier(memory_schema: str | None) -> str:
+    if memory_schema is None:
+        return ""
+    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
+        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
+    return f'"{memory_schema}".'
+
+
 def _qualified_memory_relation(table: str, memory_schema: str | None = None) -> str:
     """Return a fixed memory relation, optionally pinned to its owning schema."""
     if table not in _MEMORY_RELATION_TABLES:
         raise ValueError(f"Unsupported memory relation: {table!r}")
-    if memory_schema is None:
-        return table
-    if not _SQL_IDENTIFIER_PATTERN.fullmatch(memory_schema):
-        raise ValueError(f"Unsafe memory schema identifier: {memory_schema!r}")
-    return f'"{memory_schema}"."{table}"'
+    qualifier = _memory_schema_qualifier(memory_schema)
+    return f'{qualifier}"{table}"' if qualifier else table
 
 
 def _memory_relation(memory_type: str, memory_schema: str | None = None) -> str:
@@ -3528,10 +3533,10 @@ async def _write_rule_endorsement(
     )
     if endorsed_at is None:
         raise RuleNotEndorsableError("The rule changed during endorsement")
-    events_table = _qualified_memory_relation("memory_events", memory_schema)
+    events_qualifier = _memory_schema_qualifier(memory_schema)
     await conn.execute(
         f"""
-        INSERT INTO {events_table}
+        INSERT INTO {events_qualifier}"memory_events"
             (event_type, actor, tenant_id, memory_type, memory_id, payload)
         VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
         """,
