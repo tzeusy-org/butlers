@@ -31,7 +31,13 @@ export function useEntrySelection({
   const [searchOpen, setSearchOpen] = useState(false);
   const [flashedEntryId, setFlashedEntryId] = useState<string | null>(null);
 
+  // The latest requested entry wins: an earlier fetch that resolves last must neither replace
+  // the panel nor (through the null it gets back) move the grid anchor.
+  const latestRequestRef = useRef(0);
+
   async function openInvitation(entryId: string): Promise<UnifiedCalendarEntry | null> {
+    const requestId = ++latestRequestRef.current;
+    const isLatest = () => requestId === latestRequestRef.current;
     setInvitationDetailLoading(true);
     try {
       const response = await queryClient.fetchQuery({
@@ -39,13 +45,14 @@ export function useEntrySelection({
         queryFn: () => getCalendarWorkspaceEntry(entryId),
       });
       if (response.data.entry_id !== entryId) throw new Error("Entry identity mismatch");
+      if (!isLatest()) return null;
       setSelectedEntry(response.data);
       return response.data;
     } catch {
-      toast.error("Invitation details unavailable. Try again shortly.");
+      if (isLatest()) toast.error("Invitation details unavailable. Try again shortly.");
       return null;
     } finally {
-      setInvitationDetailLoading(false);
+      if (isLatest()) setInvitationDetailLoading(false);
     }
   }
 

@@ -73,7 +73,11 @@ const entry = {
   linked_people: [],
 };
 
-function stubFetch(known: boolean, gate?: Promise<void>) {
+function stubFetch(
+  known: boolean,
+  gate?: Promise<void>,
+  lookup?: (id: string) => Promise<typeof entry>,
+) {
   const fetch = vi.fn(async (input: string) => {
     const url = new URL(input, "http://localhost");
     let data: unknown;
@@ -87,7 +91,7 @@ function stubFetch(known: boolean, gate?: Promise<void>) {
           },
         );
       }
-      data = entry;
+      data = lookup ? await lookup(url.pathname.split("/").at(-1) ?? "") : entry;
     } else if (url.pathname.endsWith("/invitations")) {
       data = {
         entries: [],
@@ -252,4 +256,61 @@ it("leaving /calendar before the entry fetch resolves does not navigate back", a
   });
   expect(screen.getByTestId("pathname").textContent).toBe("/elsewhere");
   expect(screen.getByTestId("location").textContent).toBe("");
+});
+
+it("keeps the newer entry when an earlier calendar door resolves last", async () => {
+  let release: () => void = () => {};
+  const firstGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const newer = {
+    ...entry,
+    entry_id: "entry-2",
+    title: "Second door meeting",
+    start_at: "2026-07-06T09:00:00Z",
+    end_at: "2026-07-06T10:00:00Z",
+  };
+  stubFetch(true, undefined, async (id) => {
+    if (id === entry.entry_id) {
+      await firstGate;
+      return entry;
+    }
+    expect(id).toBe(newer.entry_id);
+    return newer;
+  });
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const { container } = render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter
+        initialEntries={["/calendar?view=user&range=week&anchor=2026-07-01&entry=entry-1"]}
+      >
+        <NavCapture />
+        <Routes>
+          <Route path="/calendar" element={<CalendarWorkspacePage />} />
+        </Routes>
+        <Probe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  const olderKey = ["calendar-workspace-entry", entry.entry_id];
+  const panel = () => container.querySelector('[data-testid="entry-detail-panel"]');
+  await waitFor(() => expect(qc.getQueryState(olderKey)?.fetchStatus).toBe("fetching"));
+  act(() => navigateRef?.("/calendar?view=user&range=week&anchor=2026-07-01&entry=entry-2"));
+  await waitFor(() => {
+    expect(panel()?.textContent).toContain(newer.title);
+    expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-06");
+  });
+
+  await act(async () => {
+    const pending = qc.fetchQuery({
+      queryKey: olderKey,
+      queryFn: async () => { throw new Error("Expected to join the original request"); },
+    });
+    release();
+    expect(await pending).toMatchObject({ data: entry });
+  });
+  expect(panel()?.textContent).toContain(newer.title);
+  expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-06");
 });
