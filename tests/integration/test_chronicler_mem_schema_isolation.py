@@ -417,7 +417,20 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
             "A superseded fact awaiting scheduled purge.",
             engine,
             source_butler="chronicler",
+            retention_class="transient",
         )
+        # Superseded facts are kept as validity history unless the owner has set a finite
+        # horizon (bu-uhbhzq.3), and only a deletable retention class is purged ('transient'
+        # is; 'operational', the default, has no TTL and is always kept).
+        admin = await asyncpg.connect(isolated_db_url)
+        try:
+            await admin.execute(
+                "INSERT INTO public.memory_retention_policies (kind, ttl_days, updated_by) "
+                "VALUES ('fact', 7, 'test') "
+                "ON CONFLICT (kind) DO UPDATE SET ttl_days = EXCLUDED.ttl_days"
+            )
+        finally:
+            await admin.close()
         await memory_pool.execute(
             "UPDATE facts SET validity = 'superseded', "
             "created_at = now() - interval '8 days' WHERE id = $1",
