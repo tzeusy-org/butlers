@@ -164,3 +164,18 @@ async def test_a_none_end_makes_the_day_unreadable_not_a_500(app):
 
     assert response.status_code == 200
     assert response.json()["data"]["freshness"]["state"] == "unreadable"
+
+
+async def test_the_read_is_not_scoped_by_butler_attribution_and_spans_a_wide_window(app):
+    """No ``butlers=`` row filter (it drops provider rows) and an all-day-safe window."""
+    app, db = _build_app(app, workspace_rows={"general": [row("a", DAY)]})
+    await get_sheet(app)
+    window = [
+        c for c in db.fan_out_with_status.await_args_list if "calendar_event_instances" in c.args[0]
+    ]
+    assert window
+    for call in window:
+        assert call.kwargs.get("butler_names") is not None  # default calendar-schema targets
+        assert "butler_name" not in call.args[0].split("WHERE", 1)[1]
+        start, end = call.args[1][2], call.args[1][1]
+        assert end - start >= timedelta(hours=24 + 52)

@@ -125,3 +125,38 @@ async def test_an_unreadable_schema_makes_the_sheet_unreadable_not_clear(db) -> 
     assert sheet.freshness.state == "unreadable"
     assert "unreadable" in text
     assert "Nothing on your calendar" not in text
+
+
+async def test_an_all_day_event_across_the_date_line_is_listed_on_the_owners_date(db) -> None:
+    """Kiritimati (UTC+14) July 1 and Pago Pago (UTC-11) July 1 share a date with no UTC overlap."""
+    general = await db("core")
+    owner = await _source(general, "owner", lane="user", role="owner")
+    start = datetime(2026, 6, 30, 10, 0, tzinfo=UTC)  # July 1 00:00 in Pacific/Kiritimati
+    event_id = await general.fetchval(
+        """
+        INSERT INTO calendar_events
+            (source_id, origin_ref, title, timezone, starts_at, ends_at, all_day, status,
+             metadata, source_butler)
+        VALUES ($1, 'trip', 'Title trip', 'Pacific/Kiritimati', $2, $3, true, 'confirmed',
+                '{}'::jsonb, 'general')
+        RETURNING id
+        """,
+        owner,
+        start,
+        start + timedelta(days=1),
+    )
+    await general.execute(
+        "INSERT INTO calendar_event_instances (event_id, source_id, origin_instance_ref, "
+        "timezone, starts_at, ends_at) VALUES ($1, $2, 'trip:0', 'Pacific/Kiritimati', $3, $4)",
+        event_id,
+        owner,
+        start,
+        start + timedelta(days=1),
+    )
+    manager = db_manager({"general": general}, modules={"general": {"calendar"}})
+
+    sheet = await query_calendar_day_sheet(
+        manager, local_date=DAY, zone=ZoneInfo("Pacific/Pago_Pago")
+    )
+
+    assert [(i.title, i.all_day) for i in sheet.items] == [("Title trip", True)]

@@ -35,6 +35,9 @@ from butlers.modules.calendar.constants import (
 
 logger = logging.getLogger(__name__)
 
+# An all-day event is a date range read in its own zone, so across the date line it can share the
+# owner's date with no UTC overlap. Read a day either side and let the pure date matcher decide.
+_ALL_DAY_SLACK = timedelta(hours=26)
 _STALE_AFTER = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
 
 
@@ -73,12 +76,14 @@ async def query_calendar_day_sheet(
 
     failed: set[str] = set()
     try:
-        source_rows, failed_sources = await query_calendar_sources(db, butlers=butlers)
+        # No ``butlers=`` scope: it adds an attribution row filter that drops provider rows;
+        # the default target is already the calendar-enabled schemas.
+        source_rows, failed_sources = await query_calendar_sources(db)
         failed.update(failed_sources)
         workspace: list[dict] = []
         for view in ("user", "butler"):
             rows, failed_view = await query_calendar_workspace(
-                db, view=view, start=start, end=end, butlers=butlers
+                db, view=view, start=start - _ALL_DAY_SLACK, end=end + _ALL_DAY_SLACK
             )
             failed.update(failed_view)
             workspace.extend(shallow_asdict(row) for row in rows)
