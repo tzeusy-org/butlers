@@ -224,3 +224,64 @@ def test_already_installed_watch_does_not_lock_out_a_reader(postgres_container):
             assert version.scalar_one() == "core_364"
     finally:
         engine.dispose()
+
+
+def _drifted_then_repaired(postgres_container, drift: list[str]):
+    """Install in two schemas, apply ``drift`` as the bootstrap login, re-run one schema's chain."""
+    url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(url, chains=["core"], target_schema=_FIRST)
+    second = _build_alembic_config(url, chains=["core"], target_schema=_SECOND)
+    command.upgrade(first, "core_364")
+    command.upgrade(second, "core_364")
+    bootstrap = migration_bootstrap_db_url(postgres_container, urlparse(url).path.lstrip("/"))
+    for statement in drift:
+        _run(bootstrap, statement)
+    command.downgrade(second, "core_363")  # the other schema still depends on the table
+    command.upgrade(second, "core_364")  # the catalog check sees drift, so the chain converges
+    return url
+
+
+def _scalar(url: str, statement: str):
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            return connection.execute(text(statement)).scalar()
+    finally:
+        engine.dispose()
+
+
+def test_a_stray_grant_to_an_unregistered_role_is_revoked_on_repair(postgres_container):
+    url = _drifted_then_repaired(
+        postgres_container,
+        [
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'stray_watch_reader')"
+            " THEN CREATE ROLE stray_watch_reader NOLOGIN; END IF; END $$",
+            "GRANT SELECT, DELETE ON public.owner_watches TO stray_watch_reader",
+            "GRANT SELECT ON public.owner_watches TO PUBLIC",
+        ],
+    )
+    grantees = _scalar(
+        url,
+        "SELECT string_agg(g, ',' ORDER BY g) FROM ("
+        "SELECT DISTINCT CASE WHEN a.grantee = 0 THEN 'PUBLIC' "
+        "ELSE pg_get_userbyid(a.grantee) END AS g "
+        "FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a "
+        "WHERE c.oid = 'public.owner_watches'::regclass AND a.grantee <> c.relowner) q",
+    )
+    assert grantees == "butler_switchboard_rw", grantees
+
+
+def test_an_extra_restrictive_policy_is_dropped_on_repair(postgres_container):
+    url = _drifted_then_repaired(
+        postgres_container,
+        [
+            "CREATE POLICY owner_watches_extra ON public.owner_watches AS RESTRICTIVE"
+            " FOR ALL TO PUBLIC USING (false)",
+        ],
+    )
+    policies = _scalar(
+        url,
+        "SELECT string_agg(polname, ',' ORDER BY polname) FROM pg_policy "
+        "WHERE polrelid = 'public.owner_watches'::regclass",
+    )
+    assert policies == "owner_watches_switchboard", policies

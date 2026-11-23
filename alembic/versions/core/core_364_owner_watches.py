@@ -151,10 +151,35 @@ def _for_existing_role(role: str, statement: str) -> None:
 
 
 def _grants_and_policy() -> None:
+    # Converge, never only patch known roles: revoke from PUBLIC and from every current grantee
+    # except the owner (a stray grant to a role this migration has never heard of), then grant
+    # the exact set. Every policy other than the expected one is dropped first, so an extra
+    # (for example restrictive) policy cannot survive an upgrade that reports success.
+    op.execute(
+        """
+        DO $$
+        DECLARE grantee_oid oid;
+        BEGIN
+            FOR grantee_oid IN
+                SELECT DISTINCT a.grantee
+                FROM pg_class c
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+                WHERE c.oid = 'public.owner_watches'::regclass AND a.grantee <> c.relowner
+            LOOP
+                IF grantee_oid = 0 THEN
+                    REVOKE ALL PRIVILEGES ON TABLE public.owner_watches FROM PUBLIC;
+                ELSE
+                    EXECUTE format(
+                        'REVOKE ALL PRIVILEGES ON TABLE public.owner_watches FROM %I',
+                        pg_get_userbyid(grantee_oid));
+                END IF;
+            END LOOP;
+        END $$
+        """
+    )
     op.execute("REVOKE ALL PRIVILEGES ON TABLE public.owner_watches FROM PUBLIC")
     for role in (*butler_roles(), "connector_writer"):
-        # Switchboard too: init-db default privileges hand it blanket DML (with DELETE)
-        # before the exact grant below.
+        # Also a belt for a role the table ACL does not list yet (a default-privilege replay).
         _for_existing_role(role, f"REVOKE ALL PRIVILEGES ON TABLE public.owner_watches FROM {role}")
     _for_existing_role(
         _SWITCHBOARD,
@@ -162,7 +187,19 @@ def _grants_and_policy() -> None:
     )
     op.execute("ALTER TABLE public.owner_watches ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE public.owner_watches NO FORCE ROW LEVEL SECURITY")
-    op.execute("DROP POLICY IF EXISTS owner_watches_switchboard ON public.owner_watches")
+    op.execute(
+        """
+        DO $$
+        DECLARE policy_name name;
+        BEGIN
+            FOR policy_name IN
+                SELECT polname FROM pg_policy WHERE polrelid = 'public.owner_watches'::regclass
+            LOOP
+                EXECUTE format('DROP POLICY %I ON public.owner_watches', policy_name);
+            END LOOP;
+        END $$
+        """
+    )
     op.execute(
         f"""
         CREATE POLICY owner_watches_switchboard ON public.owner_watches
