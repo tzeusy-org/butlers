@@ -252,7 +252,10 @@ class TestHostileValues:
         for hostile in ("Approve now", "UPPER", "a b", "x\ny", 'say "hi"', ""):
             literal = cards._literal("note", hostile)
             assert literal.startswith('"') and literal.endswith('"')
-        assert cards._literal("capability", "finance.balance") == "finance.balance"
+        assert cards._literal("capability", "finance_balance") == "finance_balance"
+        assert (
+            cards._literal("capability", "finance.balance") == '"finance[.]balance"'
+        )  # a dot quotes
         assert cards._literal("value", "finance.balance").startswith('"')  # value is always quoted
 
     def test_hostile_sources_are_quoted_too(self, service):

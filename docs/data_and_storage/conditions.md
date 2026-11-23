@@ -184,5 +184,7 @@ the apply refuses with `owner_watches_unavailable`. An owner `never` on a watch 
 the insight feedback commits (`butlers.watches.never.pause_on_never`); the model-callable mute tool
 passes no owner origin and so pauses nothing, and a pause that fails never fails the reply. The
 scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` only when
-`OWNER_WATCHES_LIVE` is on; without a snapshot provider it reports `blind:no_snapshot_provider`,
-degrades the watch dependency and fires nothing.
+`OWNER_WATCHES_LIVE` is on; without a snapshot provider it reports `blind:no_snapshot_provider` in its result and a warning
+log, and fires and changes nothing. The tick takes an optional dependency reporter, but no
+production reporter is wired to the scheduled job (the `owner_watches` dependency is not a declared
+capability dependency), so a blind tick is visible in the job result and log only.

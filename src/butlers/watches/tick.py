@@ -4,8 +4,10 @@ One tick sweeps closed watches, expires the unrenewed, repairs a watch with no c
 claims each fired condition, delivers one notice and arms the next generation
 (``WatchRunner``). It runs only when ``OWNER_WATCHES_LIVE`` is on, and only with a production
 service and snapshot provider. Without a snapshot provider the tick is blind: it reports
-``blind:no_snapshot_provider``, degrades the watch dependency, fires nothing and changes
-nothing, so a missing provider can never read as healthy or as a fire.
+``blind:no_snapshot_provider`` (result and warning log), fires nothing and changes nothing,
+so a missing provider can never read as healthy or as a fire. A dependency ``reporter`` is an
+optional seam: the scheduled job passes none, because no production reporter exists for this
+dependency yet, so the blind state is not published as capability health.
 """
 
 from __future__ import annotations
@@ -45,13 +47,13 @@ async def run_tick(
     if not (OWNER_WATCHES_LIVE if live is None else live):
         return {"status": "dark"}
     moment = now or datetime.now(UTC)
-    await sweep_card_state(pool, now=moment)
     service = providers.service_for()
     snapshot = providers.snapshot_for(moment) if service is not None else None
     if service is None or snapshot is None:
         logger.warning("owner_watch_tick_blind reason=%s", BLIND)
         await _degrade(reporter, "no_snapshot_provider")
         return {"status": BLIND}
+    await _sweep_cards(pool, moment)
     delivery = deliver_for(pool)
     runner = WatchRunner(service, delivery, lambda _now: snapshot)
     report = await runner.tick(moment)
@@ -59,11 +61,26 @@ async def run_tick(
     return {"status": "ok", **asdict(report)}
 
 
+async def _sweep_cards(pool: Any, now: datetime) -> None:
+    """Clear spent card state; a sweep failure never stops the tick (the next tick retries)."""
+    try:
+        await sweep_card_state(pool, now=now)
+    except Exception:
+        logger.warning("owner_watch_card_sweep_failed", exc_info=True)
+
+
 async def _degrade(reporter: Reporter | None, reason: str) -> None:
-    if reporter is not None:
-        await reporter.report(DEPENDENCY, "degraded", reason)
+    await _report(reporter, "degraded", reason)
 
 
 async def _healthy(reporter: Reporter | None) -> None:
-    if reporter is not None:
-        await reporter.report(DEPENDENCY, "up", "tick_ok")
+    await _report(reporter, "up", "tick_ok")
+
+
+async def _report(reporter: Reporter | None, state: str, reason: str) -> None:
+    if reporter is None:
+        return
+    try:
+        await reporter.report(DEPENDENCY, state, reason)
+    except Exception:
+        logger.warning("owner_watch_tick_report_failed", exc_info=True)

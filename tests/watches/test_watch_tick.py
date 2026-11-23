@@ -105,10 +105,40 @@ def service():
     )
 
 
-async def test_a_live_tick_sweeps_old_card_snapshots_even_when_blind(service):
+async def test_a_blind_tick_changes_nothing_and_does_not_sweep(service):
     pool = SweepPool()
-    await tick.run_tick(pool, now=NOW, live=True, providers=providers(None))
+    result = await tick.run_tick(pool, now=NOW, live=True, providers=providers(None))
+    assert result == {"status": tick.BLIND} and pool.deleted == []
+
+
+async def test_a_live_tick_with_a_snapshot_sweeps_old_card_snapshots(service):
+    pool = SweepPool()
+    await tick.run_tick(pool, now=NOW, live=True, providers=providers(service))
     assert len(pool.deleted) == 1 and pool.deleted[0][0] == "owner_watch:card:"
+
+
+async def test_a_failing_sweep_or_reporter_never_stops_the_tick(service):
+    class Broken(SweepPool):
+        async def execute(self, *args, **kwargs):
+            raise RuntimeError("sweep down")
+
+    class BrokenReporter:
+        async def report(self, dependency, state, reason):
+            raise RuntimeError("reporter down")
+
+    result = await tick.run_tick(
+        Broken(),
+        now=NOW,
+        live=True,
+        providers=providers(service),
+        reporter=BrokenReporter(),
+        deliver_for=lambda pool: Recorder(),
+    )
+    assert result["status"] == "ok"
+    blind = await tick.run_tick(
+        Broken(), now=NOW, live=True, providers=providers(None), reporter=BrokenReporter()
+    )
+    assert blind == {"status": tick.BLIND}
 
 
 async def test_a_dark_tick_sweeps_nothing(service):

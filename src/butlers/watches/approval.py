@@ -87,7 +87,7 @@ def card_args(card: WatchCard) -> dict[str, Any]:
     )
 
 
-_BARE = re.compile(r"[a-z0-9][a-z0-9_.:\-]{0,127}")
+_BARE = re.compile(r"[a-z0-9][a-z0-9_:\-]{0,127}")
 
 
 def _literal(key: str, value: Any) -> str:
