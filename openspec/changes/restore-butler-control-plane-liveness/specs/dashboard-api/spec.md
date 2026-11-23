@@ -47,7 +47,7 @@ Scope: v1-mandatory
 #### Scenario: Incomplete patrol cannot make deployment ready
 - **WHEN** a recent QA row is `running`, `error`, `skipped_overlap`, synthetic `suppressed`, legacy-provenance-unknown, from an older enabled-source configuration, or lacks successful completion evidence for any enabled discovery source, and no earlier qualifying patrol remains fresh
 - **THEN** the `qa_patrol` readiness check remains false even if that nonqualifying row has a recent timestamp
-- **AND** a completed scheduled `clean`, `findings_dispatched`, `halted` (findings held by a halting gate; discovery still ran), or genuine filtered-finding `suppressed` patrol with current-config all-source-success provenance can renew it
+- **AND** a completed scheduled `clean`, `findings_dispatched`, `halted` (findings stopped by a halting gate; discovery still ran), or genuine filtered-finding `suppressed` patrol with current-config all-source-success provenance can renew it
 
 #### Scenario: Nonqualifying row does not erase a still-fresh completed patrol
 - **WHEN** a synthetic, skipped, running, or failed row is newer than a still-fresh qualifying patrol under the current enabled-source configuration

@@ -545,7 +545,7 @@ class TestFullCycleNoFindings:
 
 
 class TestHaltedPatrol:
-    """A patrol whose findings were held behind a halting gate says so (bu-ejow5p.3)."""
+    """A patrol whose dispatch a halting gate stopped says so (bu-ejow5p.3)."""
 
     @staticmethod
     def _triaged(count: int):

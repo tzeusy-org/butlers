@@ -58,8 +58,8 @@ when every one of these is true:
 - It has `origin='scheduled'` and `discovery_complete=true`.
 - Its `status` is `clean`, `findings_dispatched`, `halted`, or `suppressed`. A suppressed
   patrol completed discovery and then filtered its findings by cooldown or
-  severity, so it counts. A halted patrol completed discovery and then held its findings
-  behind a halting gate (open breaker, no model, full cap), so it counts too.
+  severity, so it counts. A halted patrol completed discovery and then had dispatch stopped
+  by a halting gate (open breaker, no model, full cap), so it counts too.
 - Its `enabled_sources_config_digest` matches the roster's current
   `[modules.qa].enabled_sources`.
 
