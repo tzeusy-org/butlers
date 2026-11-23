@@ -1,7 +1,7 @@
 """connectors.evidence_journal: one append-only evidence journal for sources with no table.
 
 Revision ID: core_361
-Revises: core_359
+Revises: core_360
 Create Date: 2026-11-23 00:00:00.000000
 
 bu-uhbhzq.4 slice 3.  For gmail, google-drive, google-health, telegram-bot, telegram-user and
@@ -36,7 +36,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_361"
-down_revision = "core_359"
+down_revision = "core_360"
 branch_labels = None
 depends_on = None
 

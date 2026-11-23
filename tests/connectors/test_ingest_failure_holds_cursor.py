@@ -329,6 +329,33 @@ async def test_gmail_backfill_parks_an_item_whose_retries_are_spent(evaluated) -
     assert row[_PAYLOAD]["payload"]["normalized_text"] == "text m2"
 
 
+async def test_gmail_backfill_never_parks_or_skips_a_message_without_its_journal_row(
+    evaluated,
+) -> None:
+    """Evidence before acknowledgement: a failed journal write holds the cursor, however often."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    async def submit(envelope: dict) -> None:
+        if envelope["event"]["external_event_id"] == "m2":
+            raise EvidenceNotCommitted("insert_failed")
+
+    runtime = _gmail_runtime(AsyncMock(side_effect=submit))
+    runtime._db_pool = pool = FilteredEventsPool()  # a working park store
+    for _ in range(runtime._backfill_ingest_retry.max_attempts + 2):
+        runtime._fetch_backfill_message_page = AsyncMock(  # type: ignore[method-assign]
+            return_value=([{"id": "m1"}, {"id": "m2"}, {"id": "m3"}], "p2")
+        )
+        await runtime._execute_backfill_job(_job())
+
+    assert pool.written == []  # nothing parked
+    assert len(runtime._filtered_event_buffer) == 0
+    reports = _reports(runtime)
+    assert all(r.get("status") != "completed" for r in reports)
+    assert reports[-1]["cursor"] == {"page_token": ""}  # the cursor never moved past the page
+    assert all(r["rows_skipped"] == 0 for r in reports)
+    assert runtime._backfill_ingest_retry.attempts("m2") == 0  # the retry budget is not spent
+
+
 async def test_gmail_fetch_failure_parks_a_visible_row_that_replay_refuses(evaluated) -> None:
     """A message that never fetched has nothing real to replay (bu-dhloi1.149)."""
     from butlers.connectors.filtered_event_buffer import drain_replay_pending

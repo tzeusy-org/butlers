@@ -260,7 +260,7 @@ The connector exposes a FastAPI health server on `CONNECTOR_HEALTH_PORT` (defaul
 
 - **Provider offers:** the Gmail messages API (headers, bodies, labels, attachments) and the history cursor.
 - **We keep:** one `connectors.evidence_journal` row per message (`source = email`, `provider_id` = message id), committed before the Switchboard submit and the cursor advance. `raw` is the envelope's inbox-equivalent at its tier: full payload at tier 1, headers and ids only at tier 2. Tier 3 and policy-blocked messages are never journaled. Attachments stay in the blob store.
-- **If the journal write fails:** nothing is submitted and the batch cursor holds. A failed submit keeps the row; the park and replay path is unchanged.
+- **If the journal write fails:** nothing is submitted and the batch cursor holds. A failed journal write is never parked or counted as skipped, in live polling or backfill: the backfill stops its page and holds `next_page_token`. A failed submit keeps the row; the park and replay path is unchanged for submit failures.
 - **Provider retention and backfill:** the mailbox is the provider's copy; the backfill door re-reads it by message id, and a re-read collapses on the journal's unique key.
 
 ## Idempotency and Resume

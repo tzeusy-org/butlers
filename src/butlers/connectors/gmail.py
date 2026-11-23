@@ -1662,6 +1662,25 @@ class GmailConnectorRuntime:
                             # park it as a visible error row and move on (replayable
                             # only if an envelope was built). A message deleted since
                             # the page was listed has nothing to ingest.
+                            if isinstance(exc, EvidenceNotCommitted):
+                                # Evidence before acknowledgement (bu-uhbhzq.4): without its
+                                # journal row the message is neither parked nor skipped and the
+                                # retry budget is not spent; hold the cursor on this page.
+                                logger.error(
+                                    "Backfill: evidence journal write failed for message %s "
+                                    "(job %s), holding the cursor: %s",
+                                    message_id,
+                                    job.job_id,
+                                    exc.reason,
+                                )
+                                await self._report_backfill_progress(
+                                    job_id=job.job_id,
+                                    rows_processed=rows_processed - reported_processed,
+                                    rows_skipped=rows_skipped - reported_skipped,
+                                    cost_spent_cents=cost_spent_cents,
+                                    cursor={"page_token": page_token or ""},
+                                )
+                                return
                             if (
                                 isinstance(exc, httpx.HTTPStatusError)
                                 and exc.response.status_code == 404

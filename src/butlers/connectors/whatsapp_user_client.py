@@ -1665,6 +1665,12 @@ class WhatsAppUserClientConnector:
                 chat_ref,
                 failure_class,
             )
+            if isinstance(exc, EvidenceNotCommitted):
+                # Evidence before acknowledgement (bu-uhbhzq.4): no journal row, so the batch is
+                # never parked or released and the retry budget is not spent. It stays held and
+                # the checkpoint does not move.
+                self._hold_batch(chat_jid, held, batch_event_id, buffered_events)
+                return
             if not final and not self._batch_retry.failed(batch_event_id):
                 self._hold_batch(chat_jid, held, batch_event_id, buffered_events)
                 return

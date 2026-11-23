@@ -2302,6 +2302,27 @@ async def test_final_flush_parks_a_failed_batch_at_once(
     assert "g1@g.us" not in connector._held_batches
 
 
+async def test_a_batch_without_its_journal_row_is_never_parked_or_released(
+    connector: WhatsAppUserClientConnector,
+) -> None:
+    """Evidence before acknowledgement: held through every retry and the final flush."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    events = [_wa_event("m1")]
+    connector._chat_buffers["g1@g.us"] = _wa_chat_buffer("g1@g.us", list(events))
+    connector._batch_retry = IngestRetryBudget(1)
+    connector._db_pool = pool = FilteredEventsPool()  # type: ignore[assignment]
+    failure = EvidenceNotCommitted("insert_failed")
+
+    await _flush_failing_wa(connector, "g1@g.us", submit_error=failure)
+    for final in (False, True):
+        await _flush_failing_wa(connector, "g1@g.us", retry=True, final=final, submit_error=failure)
+
+    assert not pool.written  # nothing parked
+    assert [h.events for h in connector._held_batches["g1@g.us"]] == [events]
+    assert connector._last_event_id != "m1"  # the checkpoint did not move
+
+
 @pytest.mark.parametrize("block", ["connector", "global"])
 async def test_held_then_dropped_releases_hold_and_budget(
     connector: WhatsAppUserClientConnector, block: str
