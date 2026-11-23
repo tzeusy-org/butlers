@@ -324,13 +324,17 @@ class WatchService:
         return written
 
     async def _commit_with_registration(
-        self, watch: Watch, expected_version: int, snapshot: Snapshot
+        self,
+        watch: Watch,
+        expected_version: int,
+        snapshot: Snapshot,
+        cursors: Mapping[str, int] | None = None,
     ) -> Watch:
         """Register the new generation, then commit it; undo the registration if the CAS loses.
 
         Register-before-commit means a committed ACTIVE watch always has its condition.
         """
-        await self._register(watch, snapshot)
+        await self._register(watch, snapshot, cursors)
         try:
             return await self.store.write(watch, expected_version=expected_version, cap=self.cap)
         except BaseException:
@@ -417,15 +421,36 @@ class WatchService:
     ) -> Watch | None:
         """Register the next generation after a fire; its floor is the fired one's cursors.
 
-        Registering is idempotent and the store write is a version CAS, so a crash between the two
-        or a racing runner replays to the same single next generation. An expired watch is not
-        rearmed (``expire_due`` closes it).
+        Serialized with every other transition of the watch and judged against the committed row,
+        so a runner holding a stale read, a racing runner or a replay arms at most one next
+        generation. An expired or no longer ACTIVE watch is not rearmed.
         """
-        if snapshot.now >= watch.expires_at or watch.state is not WatchState.ACTIVE:
-            return None
-        following = replace(watch, generation=watch.generation + 1, version=watch.version + 1)
-        await self._register(following, snapshot, cursors)
-        return await self.store.write(following, expected_version=watch.version, cap=self.cap)
+        async with self.store.serialized(watch.id):
+            current = await self.store.get(watch.id)
+            if (
+                current is None
+                or current.state is not WatchState.ACTIVE
+                or current.generation != watch.generation
+                or snapshot.now >= current.expires_at
+            ):
+                return None
+            following = replace(
+                current, generation=current.generation + 1, version=current.version + 1
+            )
+            return await self._commit_with_registration(
+                following, current.version, snapshot, cursors
+            )
+
+    async def repair(self, watch: Watch, snapshot: Snapshot) -> bool:
+        """Register the condition of an ACTIVE watch that has none; True when it did."""
+        async with self.store.serialized(watch.id):
+            current = await self.store.get(watch.id)
+            if current is None or current.state is not WatchState.ACTIVE:
+                return False
+            if await self._has_instance(current):
+                return False
+            await self._register(current, snapshot)
+            return True
 
     async def renewal_due(self, now: datetime) -> list[Watch]:
         return [w for w in await self.store.list_all() if w.due_for_renewal(now)]
