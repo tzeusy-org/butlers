@@ -311,7 +311,9 @@ _REPLAY_WIDENED: dict[str, RelationGrant] = {
         "migration: concierge full; chronicler and travel read",
     ),
     "qa_known_issue_links": _replay_widened(
-        _DML, _NO_CONNECTOR, "migration: owner and QA links to tracked defects; no connector access"
+        _NONE,
+        {"butler_qa_rw": _DML},
+        "migration: QA suppression control; QA butler only, no other butler or connector",
     ),
     "qa_publication_exports": _replay_widened(
         _SELECT,

@@ -109,3 +109,33 @@ async def test_expired_and_closed_links_do_not_gate_and_a_repeat_link_is_idempot
 
     await upsert_link(db_pool, expires_at=datetime.now(UTC) - timedelta(seconds=1), **kwargs)
     assert await get_gating_link(db_pool, fp) is None  # reopened but already expired
+
+
+async def test_qa_pr_lifecycle_moves_its_link_and_never_reopens_an_owner_close(db_pool) -> None:
+    from butlers.core.qa.known_issue_links import sync_qa_pr_link
+
+    fp = uuid.uuid4().hex * 2
+    pr = "https://github.com/o/r/pull/501"
+
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    link = await get_gating_link(db_pool, fp)
+    assert link is not None and link["linked_by"] == "qa_auto" and link["state"] == "tracked"
+
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="merged")
+    link = await get_gating_link(db_pool, fp)
+    assert link is not None and link["state"] == "fix_merged" and link["fix_ref"] == pr
+
+    # The owner closes it; a later open-PR sync must not bring it back.
+    assert await close_link(db_pool, fingerprint=fp, tracker_ref=pr) is not None
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    assert await get_gating_link(db_pool, fp) is None
+
+
+async def test_a_closed_unmerged_qa_pr_releases_its_fingerprint(db_pool) -> None:
+    from butlers.core.qa.known_issue_links import sync_qa_pr_link
+
+    fp = uuid.uuid4().hex * 2
+    pr = "https://github.com/o/r/pull/502"
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="open")
+    await sync_qa_pr_link(db_pool, fingerprint=fp, pr_url=pr, pr_state="closed")
+    assert await get_gating_link(db_pool, fp) is None

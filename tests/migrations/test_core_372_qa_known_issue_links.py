@@ -64,3 +64,36 @@ def test_only_the_last_schema_drops_the_shared_table(postgres_container) -> None
 
     command.downgrade(second, "core_369")
     assert _run(db_url, "SELECT to_regclass('public.qa_known_issue_links')") == [(None,)]
+
+
+def test_only_the_qa_role_can_write_the_suppression_control(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    command.upgrade(
+        _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core_372"
+    )
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as connection:
+            held = {
+                role: {
+                    p
+                    for p in ("SELECT", "INSERT", "UPDATE", "DELETE")
+                    if connection.execute(
+                        text("SELECT has_table_privilege(:r, 'public.qa_known_issue_links', :p)"),
+                        {"r": role, "p": p},
+                    ).scalar_one()
+                }
+                for role in ("butler_qa_rw", "butler_general_rw", "connector_writer")
+            }
+        assert held["butler_qa_rw"] == {"SELECT", "INSERT", "UPDATE", "DELETE"}
+        assert held["butler_general_rw"] == set()
+        assert held["connector_writer"] == set()
+
+        with engine.begin() as connection:
+            connection.execute(text('SET LOCAL ROLE "butler_general_rw"'))
+            with connection.begin_nested() as blocked:
+                with pytest.raises(Exception, match="permission denied"):
+                    connection.execute(text(_INSERT.format(fp="d" * 64, kind="bead", ref="bu-9")))
+                blocked.rollback()
+    finally:
+        engine.dispose()

@@ -31,6 +31,7 @@ depends_on = None
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_372:qa_known_issue_links', 0))"
 _TABLE = "public.qa_known_issue_links"
 _PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE"
+_QA_ROLE = "butler_qa_rw"
 
 #: Catalog-only read: true when an earlier schema's run already created the table.
 _ALREADY_INSTALLED = f"SELECT to_regclass('{_TABLE}') IS NOT NULL"
@@ -108,12 +109,12 @@ def upgrade() -> None:
         return
     op.execute(_DDL)
     op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM PUBLIC")
-    for role in butler_roles():
-        _for_existing_role(role, f"GRANT {_PRIVILEGES} ON TABLE {_TABLE} TO {role}")
-    # No connector access: links are owner/QA state, not connector input.
-    _for_existing_role(
-        "connector_writer", f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM connector_writer"
-    )
+    # The table is the QA suppression control: a role that can write it can silence QA. Only
+    # the QA butler's runtime role touches it (the dashboard API reaches it as the database
+    # owner); every other butler and the connector writer get nothing.
+    for role in (*butler_roles(), "connector_writer"):
+        _for_existing_role(role, f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {role}")
+    _for_existing_role(_QA_ROLE, f"GRANT {_PRIVILEGES} ON TABLE {_TABLE} TO {_QA_ROLE}")
 
 
 def downgrade() -> None:
