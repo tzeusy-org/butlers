@@ -13,6 +13,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 import asyncpg
@@ -62,6 +63,14 @@ def _values(watch: Watch) -> tuple[Any, ...]:
     )
 
 
+@dataclass
+class _LocalLock:
+    """A process-local transition lock and how many holders and waiters still use it."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class PostgresWatchStore:
     def __init__(self, pool: asyncpg.Pool, *, lock_pool: asyncpg.Pool) -> None:
         # ``lock_pool`` is a small pool of its own for the per-watch session locks. A transition
@@ -72,7 +81,7 @@ class PostgresWatchStore:
             raise ValueError("lock_pool must be a pool of its own, not the store's pool")
         self._pool = pool
         self._lock_pool = lock_pool
-        self._local: dict[str, asyncio.Lock] = {}
+        self._local: dict[str, _LocalLock] = {}
 
     @asynccontextmanager
     async def serialized(self, watch_id: str) -> AsyncIterator[None]:
@@ -84,27 +93,36 @@ class PostgresWatchStore:
         releases the lock.
         """
         key = f"butlers:owner-watch:{watch_id}"
-        async with self._local.setdefault(watch_id, asyncio.Lock()):
+        entry = self._local.setdefault(watch_id, _LocalLock())
+        entry.users += 1
+        try:
+            async with entry.lock:
+                async with self._held(key):
+                    yield
+        finally:
+            entry.users -= 1
+            if entry.users == 0:
+                self._local.pop(watch_id, None)  # evict idle locks
+
+    @asynccontextmanager
+    async def _held(self, key: str) -> AsyncIterator[None]:
+        """A session advisory lock on a dedicated connection; a lost session releases it."""
+        try:
+            connection = await self._lock_pool.acquire()
             try:
-                connection = await self._lock_pool.acquire()
-                try:
-                    await connection.execute(
-                        "SELECT pg_advisory_lock(hashtextextended($1, 0))", key
-                    )
-                except BaseException:
-                    await self._lock_pool.release(connection)
-                    raise
-            except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
-                raise ConnectionError(f"watch store unavailable: {type(exc).__name__}") from exc
+                await connection.execute("SELECT pg_advisory_lock(hashtextextended($1, 0))", key)
+            except BaseException:
+                await self._lock_pool.release(connection)
+                raise
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
+            raise ConnectionError(f"watch store unavailable: {type(exc).__name__}") from exc
+        try:
+            yield
+        finally:
             try:
-                yield
+                await connection.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key)
             finally:
-                try:
-                    await connection.execute(
-                        "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key
-                    )
-                finally:
-                    await self._lock_pool.release(connection)
+                await self._lock_pool.release(connection)
 
     async def get(self, watch_id: str) -> Watch | None:
         try:
@@ -129,6 +147,12 @@ class PostgresWatchStore:
             async with self._pool.acquire() as connection, connection.transaction():
                 return await self._write(connection, watch, expected_version, cap)
         except (asyncpg.SerializationError, asyncpg.DeadlockDetectedError) as exc:
+            raise WatchConflict(watch.id) from exc
+        except asyncpg.UniqueViolationError as exc:
+            # Two inserts of one id raced past the row lock: the winner committed.
+            committed = await self.get(watch.id)
+            if expected_version is None and committed is not None:
+                return committed  # a replayed approval returns the committed watch
             raise WatchConflict(watch.id) from exc
         except asyncpg.CheckViolationError as exc:
             if "owner watches may be active" in str(exc):

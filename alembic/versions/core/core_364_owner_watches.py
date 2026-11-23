@@ -203,8 +203,63 @@ def _installation_count() -> int:
     return count
 
 
+# Catalog-only: the table, its three triggers and functions, the index, the policy, the RLS flags
+# (enabled, not forced) and the exact ACL (the Switchboard role exactly SELECT+INSERT+UPDATE, no
+# other grantee) are all in place. A later schema's chain that finds them returns without DDL,
+# because CREATE OR REPLACE TRIGGER and CREATE INDEX IF NOT EXISTS lock the table even as a no-op.
+# ``to_regclass`` takes no relation lock.
+_ALREADY_INSTALLED = f"""
+SELECT to_regclass('public.owner_watches') IS NOT NULL
+AND (
+    SELECT count(*) FROM pg_trigger
+    WHERE tgrelid = to_regclass('public.owner_watches') AND NOT tgisinternal
+      AND tgname IN ('owner_watch_guard', 'owner_watch_cap', 'owner_watches_no_truncate')
+) = 3
+AND (
+    SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.proname IN ('owner_watch_guard', 'owner_watch_cap', 'owner_watch_no_truncate')
+) = 3
+AND EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public' AND indexname = 'owner_watches_state_idx'
+)
+AND EXISTS (
+    SELECT 1 FROM pg_policy
+    WHERE polrelid = to_regclass('public.owner_watches')
+      AND polname = 'owner_watches_switchboard'
+)
+AND EXISTS (
+    SELECT 1 FROM pg_class
+    WHERE oid = to_regclass('public.owner_watches')
+      AND relrowsecurity AND NOT relforcerowsecurity
+)
+AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+    LEFT JOIN pg_roles r ON r.oid = a.grantee
+    WHERE c.oid = to_regclass('public.owner_watches') AND a.grantee <> c.relowner
+      AND (r.rolname IS DISTINCT FROM '{_SWITCHBOARD}'
+           OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE'))
+)
+AND (
+    NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_SWITCHBOARD}')
+    OR (
+        SELECT count(*) FROM pg_class c
+        CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+        JOIN pg_roles r ON r.oid = a.grantee
+        WHERE c.oid = to_regclass('public.owner_watches')
+          AND r.rolname = '{_SWITCHBOARD}'
+          AND a.privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+    ) = 3
+)
+"""
+
+
 def upgrade() -> None:
     op.execute(_LOCK)
+    if op.get_bind().exec_driver_sql(_ALREADY_INSTALLED).scalar():
+        return
     op.execute(_DDL)
     op.execute(_TRIGGERS)
     _grants_and_policy()
@@ -218,9 +273,13 @@ def downgrade() -> None:
         f"""
         DO $$
         BEGIN
-            IF to_regclass('public.owner_watches') IS NOT NULL
-               AND EXISTS (SELECT 1 FROM public.owner_watches) THEN
-                RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+            IF to_regclass('public.owner_watches') IS NOT NULL THEN
+                -- Wait out every uncommitted insert first: a row the check cannot see yet would
+                -- otherwise commit while the DROP waits, and the DROP would erase it.
+                LOCK TABLE public.owner_watches IN ACCESS EXCLUSIVE MODE;
+                IF EXISTS (SELECT 1 FROM public.owner_watches) THEN
+                    RAISE EXCEPTION '{_ROLLBACK_REFUSAL}';
+                END IF;
             END IF;
         END
         $$

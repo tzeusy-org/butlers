@@ -269,3 +269,39 @@ class TestTableGuards:
         await self.seed()
         with pytest.raises(asyncpg.PostgresError):
             await self.runtime.execute("DELETE FROM public.owner_watches")
+
+
+class TestConcurrencyNits:
+    @pytest.fixture(autouse=True)
+    def _bind(self, pools, lock_pool):
+        self.owner, self.runtime = pools
+        self.locks = lock_pool
+
+    async def test_idle_local_locks_are_evicted(self):
+        store = PostgresWatchStore(self.runtime, lock_pool=self.locks)
+        async with store.serialized("evict-me"):
+            assert "evict-me" in store._local
+        assert store._local == {}
+
+    async def test_a_concurrent_insert_of_one_id_replays_not_a_connection_error(self):
+        store = PostgresWatchStore(self.runtime, lock_pool=self.locks)
+        watch = make_watch("racing")
+        results = await asyncio.gather(
+            *(store.write(watch, expected_version=None, cap=50) for _ in range(8))
+        )
+        assert {r.id for r in results} == {"racing"}
+        assert len(await store.list_all()) == 1
+
+    async def test_a_unique_violation_on_a_versioned_write_is_a_conflict(self, monkeypatch):
+        import asyncpg as driver
+
+        from butlers.watches import WatchConflict
+
+        store = PostgresWatchStore(self.runtime, lock_pool=self.locks)
+
+        async def violate(*args, **kwargs):
+            raise driver.UniqueViolationError("duplicate key")
+
+        monkeypatch.setattr(store, "_write", violate)
+        with pytest.raises(WatchConflict):
+            await store.write(make_watch("x"), expected_version=1, cap=50)

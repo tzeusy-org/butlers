@@ -74,3 +74,43 @@ def test_two_schemas_share_one_table_and_only_the_last_to_leave_drops_it(postgre
 
     command.upgrade(first, "core_364")
     assert table_exists(db_url, "owner_watches")
+
+
+def test_the_catalog_check_is_true_once_installed_and_false_when_a_piece_is_missing(
+    postgres_container,
+):
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_364_owner_watches.py"
+    spec = importlib.util.spec_from_file_location("core_364_for_catalog_check", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    name = migration_db_name()
+    db_url = create_migration_db(postgres_container, name)
+    config = _build_alembic_config(db_url, chains=["core"], target_schema=_FIRST)
+
+    def installed() -> bool:
+        engine = create_engine(db_url)
+        try:
+            with engine.connect() as connection:
+                return bool(connection.exec_driver_sql(module._ALREADY_INSTALLED).scalar())
+        finally:
+            engine.dispose()
+
+    assert installed() is False
+    command.upgrade(config, "core_364")
+    assert installed() is True
+    bootstrap = migration_bootstrap_db_url(postgres_container, urlparse(db_url).path.lstrip("/"))
+    _run(bootstrap, "DROP TRIGGER owner_watch_cap ON public.owner_watches")
+    assert installed() is False
+    _run(
+        bootstrap,
+        "CREATE TRIGGER owner_watch_cap BEFORE INSERT OR UPDATE ON public.owner_watches"
+        " FOR EACH ROW EXECUTE FUNCTION public.owner_watch_cap()",
+    )
+    assert installed() is True
+    _run(bootstrap, "ALTER TABLE public.owner_watches FORCE ROW LEVEL SECURITY")
+    assert installed() is False  # a forced RLS flag is not the installed posture
