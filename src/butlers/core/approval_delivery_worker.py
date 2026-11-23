@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from butlers.core.owner_delivery import OwnerDeliveryHeld
 from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.metrics_registry import get_or_create_counter
 
@@ -328,6 +329,11 @@ class ApprovalDeliveryWorker:
                     subject,
                     owner_recipient=owner_recipient,
                 )
+        except OwnerDeliveryHeld:
+            # An owner mode holds the push: the same closed reason a quiet period uses. The
+            # subject keeps its urgency and the card is rechecked on the next attempt.
+            await self._prestart_retry(claim, "quiet_hours")
+            return True
         except Exception:
             await self._prestart_retry(claim, "provider_preflight_failed")
             return True

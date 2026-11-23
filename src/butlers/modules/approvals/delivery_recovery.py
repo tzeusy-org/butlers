@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Any, Literal
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_holds as holds
 from butlers.core.approval_delivery_worker import (
     SAFE_REASON_CODES,
     DeliveryClaim,
@@ -23,6 +24,7 @@ from butlers.modules.approvals.notifications import (
     build_approval_request_envelope,
 )
 from butlers.modules.approvals.owner_delivery_bridge import (
+    open_approval_subject,
     owner_presentation_for,
     prepare_telegram_presentation,
 )
@@ -515,15 +517,22 @@ class ApprovalDeliveryRepository:
                 )
                 if action is None:
                     raise od.OwnerDeliveryRefused("claim_unavailable")
-                presentation = await prepare_telegram_presentation(
-                    connection,
-                    action=action,
-                    intent_id=action["intent_id"],
-                    rfc_presentation_id=claim.presentation_id,
-                    rfc_generation=claim.presentation_generation,
-                    owner_recipient=owner_recipient,
+                subject = await open_approval_subject(connection, action)
+                hold = await holds.consume(
+                    connection, subject, action_id=action["id"], defers_push=True
                 )
-                return dict(presentation.tokens)
+                if hold is None:
+                    presentation = await prepare_telegram_presentation(
+                        connection,
+                        action=action,
+                        intent_id=action["intent_id"],
+                        rfc_presentation_id=claim.presentation_id,
+                        rfc_generation=claim.presentation_generation,
+                        owner_recipient=owner_recipient,
+                    )
+                    return dict(presentation.tokens)
+        # Raised after the transaction commits, so the hold receipt is kept.
+        raise od.OwnerDeliveryHeld
 
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""

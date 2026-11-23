@@ -63,6 +63,14 @@ class OwnerDeliveryRefused(Exception):
         self.reason = reason
 
 
+class OwnerDeliveryHeld(Exception):
+    """An owner mode holds this subject's push now; the caller retries later.
+
+    Raised only after the hold receipt is committed. It is not a refusal: nothing is wrong
+    with the subject, and the hold never changes its urgency.
+    """
+
+
 def mint_token() -> tuple[str, str]:
     """A fresh ``(token, verifier)``; persist only the verifier."""
     nonce = secrets.token_bytes(TOKEN_NONCE_BYTES)
@@ -1046,6 +1054,7 @@ __all__ = [
     "URGENCY_REASONS",
     "Urgency",
     "urgency_from_decision",
+    "OwnerDeliveryHeld",
     "OwnerDeliveryRefused",
     "Presentation",
     "Redemption",

@@ -200,6 +200,17 @@ async def test_worker_retries_before_handoff_when_owner_delivery_refuses() -> No
     repository.mark_handoff_started.assert_not_awaited()
 
 
+async def test_worker_defers_the_push_while_an_owner_mode_holds_it() -> None:
+    repository = _Repository(None)
+    repository.prepare_owner_delivery.side_effect = od.OwnerDeliveryHeld()
+    renderer = _Renderer()
+    worker = ApprovalDeliveryWorker(repository, renderer, _Runtime())
+    assert await worker.process_one() is True
+    repository.record_prestart_retry.assert_awaited_once_with(repository.claim, "quiet_hours")
+    repository.mark_handoff_started.assert_not_awaited()
+    assert renderer.calls == []
+
+
 def test_a_presentations_repr_never_shows_its_tokens() -> None:
     """A dataclass repr reaches logs and tracebacks; the raw token must not."""
     presentation = od.Presentation(

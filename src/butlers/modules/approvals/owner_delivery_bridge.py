@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_holds as holds
 from butlers.modules.approvals.previews import args_digest
 
 #: Card actions minted for an approval presentation. ``ack`` exists in the ledger for
@@ -181,6 +182,8 @@ async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Prese
     if action.get("status") != "pending" or not await od.rollout_enabled(conn):
         return None
     subject = await open_approval_subject(conn, action)
+    # The dashboard is read on demand, so a mode only annotates it; it never defers it.
+    await holds.consume(conn, subject, action_id=action["id"], defers_push=False)
     now = await conn.fetchval("SELECT clock_timestamp()")
     presentation = await od.present(
         conn,

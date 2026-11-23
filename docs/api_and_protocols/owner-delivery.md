@@ -67,7 +67,8 @@ same ownership check first:
 | `advance_generation` | API, from `defer_pending_action`; the id comes from `lock_open_subject`, which filters on `current_schema()` |
 | `begin_send`, `lock_subject_of` | Daemon, under row security; the id comes from `owner_presentation_for`, which filters on `current_schema()` |
 | `record_send` | Daemon, under row security; same source of id |
-| `delivery_inputs`, `record_holding_reason`, `bridge_existing` | No production caller yet; a first caller must supply the check |
+| `delivery_inputs`, `bridge_existing` | No production caller yet; a first caller must supply the check |
+| `record_holding_reason` | `owner_delivery_holds.consume`, with a subject just opened for the locked action in `current_schema()` |
 
 Lock order (`owner_delivery.LOCK_ORDER`): the subject, then the rows below it: the action's
 RFC 0023 delivery rows and the subject's presentations and tokens. Those two groups have no
@@ -243,8 +244,32 @@ only when the quiet-hours and the context gate both interrupt. A model priority,
 owner-origin goal, an unreadable authority (the evaluation runs in a savepoint) or an unknown
 cause is routine. `open_subject` takes an `Urgency`, never a priority. The pair is written
 with the row; a replay returns the stored pair and a trigger (core_357) refuses any update.
-Rows from before core_357 read as routine. Owner mode holds (#5783, #5776) and the owner law
-may only hold a subject, never raise it; consuming them is not done here.
+Rows from before core_357 read as routine.
+
+## Mode holds and owner law
+
+`owner_delivery_holds` (bu-dhloi1.22.1) lets owner modes and the owner law **hold** a subject and
+never raise its urgency. It is dark twice: behind the owner-delivery rollout flag and behind
+`perception.flags.OWNER_DELIVERY_MODE_HOLDS_LIVE`.
+
+- **Mode holds.** `prepare_owner_delivery` reads the `owner.mode` projection as the owner reader
+  (`SET LOCAL ROLE` in a savepoint, restored before the overlay is read) and each active mode's
+  profile from `switchboard.owner_mode_overlay`, with no row lock: the overlay's row security has
+  no runtime policy until activation, so a locking read would see zero rows and fall back to the
+  default profile. A mode whose profile holds `proactive` defers the Telegram push: the hold
+  receipt `{stage: "owner_mode", generation, terms}` is committed, then `OwnerDeliveryHeld` makes
+  the worker retry with the existing `quiet_hours` reason. The dashboard card is annotated, never
+  held.
+- **What is never held.** A subject whose derived urgency is an interrupt (the owner's own flag or
+  clause, or a home-safety producer) is not held. An approval subject has no sender, bill or
+  medication kind, so `proactive` is the only class it carries.
+- **Unknown holds nothing.** A stale, unknown, off-shape or unreadable `owner.mode`, an
+  unreadable overlay, or a role that cannot be assumed means no mode hold, as an unknown posture
+  never manufactures urgency.
+- **Owner law.** The broker's hold on the parked action (`switchboard.owner_policy_holds`, keyed
+  by the effect, which is the action's id) is attached as `holding_reason` for display. An
+  `always_ask` term is what parked the action, so its card is not held. A mode hold's receipt
+  takes the slot when both apply.
 
 ## Later-owned inputs (not active here)
 

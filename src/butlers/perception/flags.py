@@ -30,3 +30,8 @@ LEGACY_PARITY_LIVE = False
 #: horizon. Activation also needs a connection for the ``perception_retention`` identity and a
 #: schedule; neither exists, so this stays off until the owner switches it on.
 PLACE_RETENTION_LIVE = False
+
+#: Owner-delivery subjects defer their push while an active owner mode holds proactive items
+#: (``core.owner_delivery_holds``). Holds only hold; they never raise urgency. Reads need the
+#: owner reader role and overlay grants that exist only at activation.
+OWNER_DELIVERY_MODE_HOLDS_LIVE = False
