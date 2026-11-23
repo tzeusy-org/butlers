@@ -26,7 +26,9 @@ def quarantined_invitation_sql(alias: str = "e") -> str:
             ) AS att
             WHERE att ->> 'self' = 'true'
               AND COALESCE(att ->> 'organizer', 'false') <> 'true'
-              AND lower(COALESCE(att ->> 'response_status', att ->> 'responseStatus', ''))
+              AND lower(regexp_replace(
+                    COALESCE(att ->> 'response_status', att ->> 'responseStatus', ''),
+                    '^\\s+|\\s+$', '', 'g'))
                   NOT IN ('accepted', 'declined', 'tentative')
               AND (lower(btrim(COALESCE({metadata} ->> 'organizer', ''))) = ''
                    OR lower(btrim(att ->> 'email'))

@@ -178,8 +178,12 @@ location or any other free text, so third-party text can never raise an invitati
   interaction sync all skip a quarantined invitation, including one on the owner's own calendar.
   Readers that filter in SQL before a `LIMIT` (the Chronicler calendar adapter) use the twin
   `QUARANTINED_INVITATION_SQL`; a parity test runs both on a real Postgres, and a contract test
-  fails when a new `calendar_events` reader neither applies the quarantine nor is exempted with a
-  reason. `GET /api/calendar/workspace/invitations` returns a separate `quarantined` list with
+  fails when a SQL statement reading `calendar_events` carries neither the predicate nor an inline
+  `-- quarantine-exempt: <reason>` comment. The provider-direct tools `calendar_list_events` and
+  `calendar_get_event` read the provider, so each event is checked against the verdict stamped on
+  its stored row (one batched lookup, the series row for a recurring instance): a quarantined,
+  unstamped or unreadable-stamp invitation comes back as a stub with its time, `organizer_verdict`
+  and the fixed title `[quarantined invitation]`, never its description, attendees or location. `GET /api/calendar/workspace/invitations` returns a separate `quarantined` list with
   time, verdict and lure badges only, and reports `issues_available = false` when a row has no
   verdict. Provider free/busy (`calendar_find_free_slots`) is the provider's own answer and is not
   affected.

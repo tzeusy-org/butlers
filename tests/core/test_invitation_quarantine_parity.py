@@ -53,6 +53,31 @@ _CASES: list[dict[str, Any] | None] = [
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "unknown"},
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "bogus"},
     {},
+    # String booleans: `->> = 'true'` accepts the string, so the Python twin must too.
+    {"organizer": "sam@example.org", "attendees": [_att(**{"self": "true"}), _ORGANIZER]},
+    {"organizer": "sam@example.org", "attendees": [_att(**{"self": "True"}), _ORGANIZER]},
+    {"organizer": "sam@example.org", "attendees": [_att(organizer="true")]},
+    {"organizer": "sam@example.org", "attendees": [_att(organizer="false")]},
+    {"organizer": "sam@example.org", "attendees": [_att(organizer="True")]},
+    # Untrimmed status: the Python twin strips; so must the SQL.
+    {"organizer": "sam@example.org", "attendees": [_att(" accepted "), _ORGANIZER]},
+    {"organizer": "sam@example.org", "attendees": [_att("\tdeclined\n"), _ORGANIZER]},
+    {"organizer": "sam@example.org", "attendees": [_att("  "), _ORGANIZER]},
+    # A null `response_status` falls through to the raw Google `responseStatus` in both.
+    {"organizer": "sam@example.org", "attendees": [_att(None, response_status=None)]},
+    {
+        "organizer": "sam@example.org",
+        "attendees": [_att(None, response_status=None, responseStatus="accepted")],
+    },
+    {
+        "organizer": "sam@example.org",
+        "attendees": [_att(None, response_status=None, responseStatus=" Declined ")],
+    },
+    {
+        "organizer": "sam@example.org",
+        "attendees": [_att("needsAction", responseStatus="accepted")],
+    },
+    {"organizer": "sam@example.org", "attendees": [_att(None, responseStatus=5)]},
 ]
 
 

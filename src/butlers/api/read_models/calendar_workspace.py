@@ -989,6 +989,7 @@ async def query_calendar_workspace_entry(
     not-found (a misleading 404 would otherwise mask a 503, bu-sn71y).
     """
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard entry read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1121,6 +1122,7 @@ async def query_calendar_workspace(
         args.append(limit)
         idx += 1
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard window read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1456,6 +1458,7 @@ async def _query_invitation_copies(
 ) -> tuple[list[CalendarWorkspaceRow], list[str]]:
     """Read only relevant provider copies, without pre-dedup eligibility filters."""
     sql = f"""
+        -- quarantine-exempt: split in Python by is_quarantined_invitation into the quarantine panel
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1996,6 +1999,7 @@ def _build_search_sql(
 
     where = " AND ".join(conditions)
     return f"""
+        -- quarantine-exempt: owner-facing dashboard search; no prompt
         SELECT {WORKSPACE_COLUMNS}, {rank_expr} AS search_rank
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id

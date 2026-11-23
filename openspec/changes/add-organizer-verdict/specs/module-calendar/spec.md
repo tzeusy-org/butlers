@@ -94,7 +94,12 @@ Scope: v1-mandatory
 #### Scenario: No reader takes quarantined text into a prompt
 
 - **WHEN** the meeting card, prep, debrief, household context, context producer or Chronicler calendar adapter reads a quarantined invitation, including one on the owner's own calendar
-- **THEN** it contributes no time, no context and no text, and a contract test fails when a new `calendar_events` reader neither applies the quarantine nor is listed as exempt with a reason
+- **THEN** it contributes no time, no context and no text, and a contract test fails when a SQL statement reading `calendar_events` carries neither the quarantine predicate nor an inline `-- quarantine-exempt: <reason>` comment
+
+#### Scenario: Provider-direct event reads return a stub for a quarantined invitation
+
+- **WHEN** `calendar_list_events` or `calendar_get_event` returns an event whose owner attendee is unanswered and whose stored organizer verdict is `first_contact`, `blocked`, `unknown` or missing, or the verdict lookup fails
+- **THEN** the event is returned as its time, `organizer_verdict` and the title `[quarantined invitation]`, with no description, attendees or location
 
 #### Scenario: Provider free/busy is not a reader of stored invitations
 

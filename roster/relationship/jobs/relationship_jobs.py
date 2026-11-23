@@ -1417,6 +1417,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     try:
         cal_rows = await db_pool.fetch(
             """
+            -- quarantine-exempt: filtered in Python by is_owner_attending
             SELECT
                 id,
                 title,
@@ -1481,12 +1482,12 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
         if not isinstance(attendees_raw, list) or not attendees_raw:
             continue
 
-        # Same RSVP rule as the calendar conflict radar (shared helper).
-        owner_declined = not is_owner_attending(meta)
-
-        if owner_declined:
+        # Same RSVP rule as the calendar conflict radar (shared helper): an event the owner
+        # declined, or an unanswered invitation from an untrusted organizer, is not attended.
+        if not is_owner_attending(meta):
             logger.debug(
-                "interaction_sync: skipping calendar event %s — owner declined",
+                "interaction_sync: skipping calendar event %s — owner not attending "
+                "(declined or quarantined invitation)",
                 event_id,
             )
             continue

@@ -46,6 +46,11 @@ TRUSTED_ORGANIZER_VERDICTS = frozenset({"owner", "known_entity", "known_domain"}
 _ANSWERED = frozenset({"accepted", "declined", "tentative"})
 
 
+def _is_true(value: Any) -> bool:
+    """A JSON ``true`` or the string ``"true"``: what the SQL twin's ``->> = 'true'`` accepts."""
+    return value is True or value == "true"
+
+
 def is_quarantined_invitation(metadata: Any) -> bool:
     """Whether this is an unanswered invitation from an organizer the owner has no reason to trust.
 
@@ -65,14 +70,16 @@ def is_quarantined_invitation(metadata: Any) -> bool:
     organizer_key = organizer.strip().casefold() if isinstance(organizer, str) else ""
     unanswered_self = False
     for attendee in attendees:
-        if not isinstance(attendee, Mapping) or attendee.get("self") is not True:
+        if not isinstance(attendee, Mapping) or not _is_true(attendee.get("self")):
             continue
-        if attendee.get("organizer") is True:
+        if _is_true(attendee.get("organizer")):
             return False
         email = attendee.get("email")
         if organizer_key and isinstance(email, str) and email.strip().casefold() == organizer_key:
             return False
-        raw = attendee.get("response_status", attendee.get("responseStatus"))
+        raw = attendee.get("response_status")
+        if raw is None:  # the SQL twin's COALESCE: a null falls through to the raw Google spelling
+            raw = attendee.get("responseStatus")
         status = raw.strip().lower() if isinstance(raw, str) else ""
         if status not in _ANSWERED:
             unanswered_self = True

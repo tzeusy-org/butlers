@@ -27,6 +27,7 @@ from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.modules.calendar.google_mapping import WORKING_LOCATION_EVENT_TYPE
 
 _ACTIVE_DECLARATIONS_SQL = f"""
+-- quarantine-exempt: filtered in Python by is_owner_attending and asserts_owner_time
 SELECT ce.id, ce.status, ce.event_type, ce.starts_at, ce.ends_at, ce.all_day, ce.metadata,
        ce.working_location_type, ce.working_location_label, cs.time_role
 FROM calendar_events ce

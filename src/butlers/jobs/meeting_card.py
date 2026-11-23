@@ -109,6 +109,7 @@ _PENDING_CARDS_SQL = """
 """
 
 _STILL_SCHEDULED_SQL = """
+    -- quarantine-exempt: existence check; returns no event text
     SELECT EXISTS (
         SELECT 1 FROM calendar_events ce
         WHERE ce.id = $1 AND ce.recurrence_rule IS NULL
@@ -122,6 +123,7 @@ _STILL_SCHEDULED_SQL = """
 """
 
 _OCCURRENCE_SQL = """
+    -- quarantine-exempt: filtered in Python by counts_as_owner_time
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
            ce.starts_at AS starts_at, ce.ends_at AS ends_at, ce.metadata AS metadata,
            cs.time_role AS time_role
