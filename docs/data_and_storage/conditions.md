@@ -159,5 +159,12 @@ the fired one's cursors as its floor. Delivery is `InsightDelivery`, a proposal 
 broker keyed `owner_watch:<watch>:g<generation>` with a fixed, content-free line; `right_away` raises
 the candidate's priority (70, against 40 for the digest) and never interrupts quiet hours. A failed
 delivery leaves the watch fired and retried, never rearmed past a lost notice; a crash after delivery
-replays to the same key and the same next generation. The approval-card and `never`-reply surfaces
+replays to the same key and the same next generation. Each tick step holds the watch's transition
+lock and re-reads the committed row and the live grant first, so a paused, deleted, expired or
+re-granted watch sends nothing. Generation 1 may fire on the current snapshot; every later one is
+registered with seeding off and the fire cursor as its floor, so a condition that stays true fires
+again only on a new event past the cursor. Delivery runs its duplicate check and insert on one
+connection under a session advisory lock keyed by the dedup key, so racing runners queue one
+candidate. Pause, delete and expiry withdraw the watch's pending, unclaimed candidates
+(`InsightDelivery.withdraw`); a replayed close finishes an interrupted withdrawal. The approval-card and `never`-reply surfaces
 and the scheduled tick that runs the loop are a later slice.

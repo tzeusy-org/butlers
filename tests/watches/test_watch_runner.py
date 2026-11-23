@@ -9,7 +9,7 @@ import pytest
 
 from butlers.conditions import ConditionEvaluator, ConditionEvent, Grant, Snapshot, State
 from butlers.conditions.memory import InMemoryConditionStore
-from butlers.watches import OwnerApproval, WatchConflict, WatchService, WatchState
+from butlers.watches import OwnerApproval, WatchService, WatchState
 from butlers.watches.delivery import MESSAGE, PRIORITY, InsightDelivery
 from butlers.watches.memory import InMemoryWatchStore
 from butlers.watches.runner import WatchRunner
@@ -170,8 +170,7 @@ class TestFailureAndRecovery:
         # A second runner still holding the old row loses the CAS and changes nothing.
         fired = conditions.instances[f"{watch.id}:1"]
         old_row = type(stale)(**{**stale.__dict__, "version": 1, "generation": 1})
-        with pytest.raises(WatchConflict):
-            await service.rearm(old_row, fired.cursors, Snapshot(now=NOW))
+        assert await service.rearm(old_row, fired.cursors, Snapshot(now=NOW)) is None
         assert (await service.store.get(watch.id)).generation == 2
 
     async def test_an_active_watch_with_no_instance_is_repaired(self, service, runner, conditions):
@@ -212,10 +211,27 @@ class TestStates:
         assert (report.delivered, report.rearmed) == (1, 1)
 
 
+class _Held:
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def __aenter__(self):
+        return self.connection
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class FakePool:
     def __init__(self, existing=None):
         self.existing = existing
         self.queries = []
+
+    def acquire(self):
+        return _Held(self)
+
+    async def execute(self, query, *args):
+        self.queries.append((query, args))
 
     async def fetchval(self, query, *args):
         self.queries.append((query, args))
@@ -273,3 +289,41 @@ class TestInsightDelivery:
         broker.status = "error"
         with pytest.raises(RuntimeError):
             await InsightDelivery(FakePool(), now=lambda: NOW)(self.notice(service))
+
+
+class TestPendingNoticesAreWithdrawnWhenAWatchCloses:
+    async def _watch_with_withdraw(self, conditions, closed):
+        async def withdraw(watch):
+            closed.append((watch.id, watch.state))
+
+        service = WatchService(
+            InMemoryWatchStore(), ConditionEvaluator(conditions), grant_for, withdraw=withdraw
+        )
+        return service, await make_watch(service)
+
+    async def test_pause_withdraws_the_pending_notice(self, conditions):
+        closed = []
+        service, watch = await self._watch_with_withdraw(conditions, closed)
+        await service.pause(watch.id, origin="owner", now=NOW)
+        assert closed == [(watch.id, WatchState.ACTIVE)]
+
+    async def test_expiry_withdraws_the_pending_notice(self, conditions):
+        closed = []
+        service, watch = await self._watch_with_withdraw(conditions, closed)
+        await service.expire_due(watch.expires_at + timedelta(seconds=1))
+        assert [c[0] for c in closed] == [watch.id]
+
+    async def test_a_replayed_pause_finishes_an_interrupted_withdrawal(self, conditions):
+        closed = []
+        service, watch = await self._watch_with_withdraw(conditions, closed)
+        real = service.withdraw
+
+        async def crash(_watch):
+            raise ConnectionError("died after the commit")
+
+        service.withdraw = crash
+        with pytest.raises(ConnectionError):
+            await service.pause(watch.id, origin="owner", now=NOW)
+        service.withdraw = real
+        await service.pause(watch.id, origin="owner", now=NOW)
+        assert closed == [(watch.id, WatchState.PAUSED)]
