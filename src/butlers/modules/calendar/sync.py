@@ -9,6 +9,7 @@ from typing import Any
 
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.temporal.calendar_source_roles import inferred_role_or_none
 
 from .constants import (
     DEFAULT_INTERNAL_PROJECTION_INTERVAL_MINUTES,
@@ -232,6 +233,9 @@ class SyncMixin:
                     "projection": "provider_sync",
                     "butler_specific": is_butler_cal,
                 },
+                time_role=inferred_role_or_none(
+                    calendar_id=calendar_id, butler_specific=is_butler_cal
+                ),
             )
         except Exception as exc:
             logger.debug("Failed to ensure provider calendar source '%s': %s", source_key, exc)

@@ -6350,3 +6350,40 @@ async def test_google_calendar_snapshot_precondition_refuses_concurrent_change(
         assert provider._request_with_bearer.await_args.kwargs["params"] == {"sendUpdates": "all"}
     finally:
         await provider.shutdown()
+
+
+class TestSyncRegistersTheSourceRole:
+    """bu-5ii4gj.1: a source first created by sync gets the role the sync path can infer."""
+
+    @pytest.mark.parametrize(
+        ("calendar_id", "butler_specific", "expected"),
+        [
+            ("primary", False, "owner"),
+            ("butlers@group.calendar.google.com", True, "butler"),
+            ("shared@example.test", False, None),
+        ],
+    )
+    async def test_sync_passes_the_inferred_role(self, calendar_id, butler_specific, expected):
+        mod = CalendarModule()
+        mod._db = SimpleNamespace(pool=MagicMock())
+        mod._config = CalendarConfig(provider="google")
+        mod._sync_states[calendar_id] = CalendarSyncState()
+        mod._calendar_is_butler_specific = butler_specific
+        provider = MagicMock()
+        provider.name = "google"
+        provider.get_calendar_summary = AsyncMock(return_value="Cal")
+        provider.sync_incremental = AsyncMock(return_value=([], [], "tok"))
+        mod._provider = provider
+        mod._source_sync_enabled = AsyncMock(return_value=True)
+        mod._ensure_calendar_source = AsyncMock(return_value=uuid.uuid4())
+        mod._load_projection_cursor = AsyncMock(return_value=None)
+        mod._project_provider_changes = AsyncMock()
+        mod._upsert_projection_cursor = AsyncMock()
+        mod._record_projection_action = AsyncMock()
+        mod._save_sync_state = AsyncMock()
+        mod._project_internal_sources = AsyncMock(return_value=False)
+        mod._publish_calendar_fleet_event = AsyncMock()
+
+        await mod._sync_calendar(calendar_id)
+
+        assert mod._ensure_calendar_source.await_args.kwargs["time_role"] == expected

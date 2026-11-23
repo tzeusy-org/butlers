@@ -1,10 +1,12 @@
 ## 1. Slice 1: roles, classifier, predicate, readers
 
-- [ ] 1.1 Migration `core_360` adds `calendar_sources.time_role` and `role_basis` and backfills.
-- [ ] 1.2 `butlers.core.temporal.calendar_source_roles`: classifier, role constants, predicate.
-- [ ] 1.3 Discovery registers each calendar with its classified role; rediscovery keeps `owner_confirmed`.
-- [ ] 1.4 Context producer, radar and day load, working location, meeting card, prep and debrief use the predicate.
-- [ ] 1.5 `calendar_find_free_slots` with no ids spans owner-time sources only.
+- [x] 1.1 Migration `core_360` adds `calendar_sources.time_role` and `role_basis` and backfills.
+- [x] 1.2 `butlers.core.temporal.calendar_source_roles`: classifier, role constants, predicate.
+- [x] 1.3 Discovery registers each calendar with its classified role; rediscovery keeps `owner_confirmed`.
+- [x] 1.4 Context producer, radar and day load, working location, meeting card, prep and debrief use the predicate.
+- [x] 1.5 `calendar_find_free_slots` with no ids spans owner-time sources only.
+- [x] 1.6 Sync and mutation paths register the role they can infer (primary alias, butler calendar).
+- [x] 1.7 The radar reports how many unclassified calendars and events it skipped.
 
 ## 2. Deferred
 

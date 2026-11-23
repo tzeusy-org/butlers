@@ -21,3 +21,8 @@ Scope: v1-mandatory
 
 - **WHEN** the same event lists the owner as a `self` attendee who has not declined
 - **THEN** it remains a radar candidate
+
+#### Scenario: Skipped unclassified calendars are counted
+
+- **WHEN** events on `unclassified` sources are left out because the owner is not invited
+- **THEN** the scan reports how many calendars and events were skipped, so an empty issue list is not read as a clear window

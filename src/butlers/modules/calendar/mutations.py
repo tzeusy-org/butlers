@@ -12,6 +12,7 @@ import asyncpg
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.core.audit import write_audit_entry
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION, require_permission
+from butlers.core.temporal.calendar_source_roles import inferred_role_or_none
 from butlers.modules.approvals.execution_context import (
     approval_tool_args_digest,
     get_approval_execution_context,
@@ -544,6 +545,11 @@ class MutationsMixin:
                 display_name=display_name,
                 writable=True,
                 metadata={"projection": "provider_sync"},
+                time_role=inferred_role_or_none(
+                    calendar_id=resolved_calendar,
+                    butler_specific=self._calendar_is_butler_specific
+                    and resolved_calendar == self._require_config().calendar_id,
+                ),
             )
         if source_kind == SOURCE_KIND_INTERNAL_SCHEDULER:
             return await self._ensure_calendar_source(

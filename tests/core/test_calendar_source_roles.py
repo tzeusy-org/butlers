@@ -129,3 +129,24 @@ def test_counts_as_owner_time_composes_rsvp_and_transparency() -> None:
     assert counts_as_owner_time("unclassified", {}) is False
     assert counts_as_owner_time("unclassified", _meta(_SELF)) is True
     assert counts_as_owner_time("unclassified", _meta(_SELF, transparency="transparent")) is False
+
+
+# -- sync and mutation paths: a role from what they know (bu-5ii4gj.1 review) ---------------------
+
+
+def test_inferred_role_covers_the_primary_alias_and_the_butler_calendar() -> None:
+    from butlers.core.temporal.calendar_source_roles import inferred_role_or_none
+
+    assert inferred_role_or_none(calendar_id="primary") == "owner"
+    assert inferred_role_or_none(
+        calendar_id="x@group.calendar.google.com", butler_specific=True
+    ) == ("butler")
+    assert inferred_role_or_none(calendar_id="en.sg#holiday@group.v.calendar.google.com") == (
+        "holidays"
+    )
+
+
+def test_an_uninferable_calendar_returns_none_so_a_stored_role_is_kept() -> None:
+    from butlers.core.temporal.calendar_source_roles import inferred_role_or_none
+
+    assert inferred_role_or_none(calendar_id="someone@example.test") is None

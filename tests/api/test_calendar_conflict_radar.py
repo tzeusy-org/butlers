@@ -1249,3 +1249,23 @@ async def test_conflicts_endpoint_never_counts_holidays_or_birthdays(app):
     app, _ = _build_app(app, workspace_rows={"general": [mine, holiday]})
 
     assert (await _get(app)).json()["data"]["issues"] == []
+
+
+async def test_conflicts_endpoint_reports_how_many_unclassified_calendars_were_skipped(app):
+    """The coverage line: an unclassified source's solo events are left out, and said so."""
+    shared_a = _ws_row(entry_id="a", title="Block A", start=_DAY, time_role="unclassified")
+    shared_b = _ws_row(
+        entry_id="b", title="Block B", start=_DAY + timedelta(hours=3), time_role="unclassified"
+    )
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY + timedelta(hours=5))
+    holiday = _ws_row(
+        entry_id="holiday", title="Holiday", start=_DAY + timedelta(hours=7), time_role="holidays"
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [shared_a, shared_b, mine, holiday]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["unclassified_events"] == 2
+    # Every synthetic row gets its own source id, so two events are two calendars here.
+    assert data["unclassified_sources"] == 2
+    assert data["issues"] == []

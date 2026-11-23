@@ -47,9 +47,14 @@ from butlers.api.db import DatabaseManager
 from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
+    is_owner_attending,
     is_status_event,
 )
-from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
+from butlers.core.temporal.calendar_source_roles import (
+    DEFAULT_ROLE,
+    counts_as_owner_time,
+    normalize_role,
+)
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     DetectedIssue,
@@ -1241,6 +1246,11 @@ class CalendarConflictScan:
     #: change when a resync makes another schema's copy of the same event survive the
     #: collapse. Opaque provider ids only, never a title.
     entry_identity_keys: dict[str, str] = field(default_factory=dict)
+    #: Calendars whose events were left out because their source is ``unclassified`` and the owner
+    #: is not invited, and how many events that is. A coverage line, so a missing conflict is not
+    #: mistaken for a clear window (REQ-calendar-conflict-overcommitment-radar-002).
+    unclassified_sources: int = 0
+    unclassified_events: int = 0
 
 
 def _entry_identity_key(row: Mapping[str, Any]) -> str:
@@ -1534,6 +1544,21 @@ async def query_calendar_conflicts(
         and counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
     ]
 
+    unclassified = [
+        row
+        for row in deduped
+        if normalize_role(row.get("source_time_role")) == DEFAULT_ROLE
+        and is_calendar_analysis_candidate(
+            metadata=row.get("event_metadata"),
+            all_day=row.get("all_day") is True,
+            starts_at=row["instance_starts_at"],
+            ends_at=row["instance_ends_at"],
+            timezone=row.get("instance_timezone") or row.get("event_timezone"),
+        )
+        and not counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
+        and is_owner_attending(row.get("event_metadata"))
+    ]
+
     issues = detect_conflict_issues(
         candidates,
         display_tz=display_tz,
@@ -1577,6 +1602,8 @@ async def query_calendar_conflicts(
         available=not failed,
         dedup_available=rules_read and pins_read,
         entry_identity_keys=identity_keys,
+        unclassified_sources=len({str(row.get("source_id")) for row in unclassified}),
+        unclassified_events=len(unclassified),
     )
 
 

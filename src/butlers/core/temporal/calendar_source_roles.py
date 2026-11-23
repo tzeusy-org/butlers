@@ -51,6 +51,8 @@ _INVITATION_ROLES: frozenset[str] = frozenset(
     {"household_member", "other_person", "team", "unclassified"}
 )
 
+#: The provider alias for the account's own primary calendar.
+PRIMARY_ALIAS_ID = "primary"
 HOLIDAY_CALENDAR_SUFFIX = "#holiday@group.v.calendar.google.com"
 BIRTHDAY_CALENDAR_ID = "addressbook#contacts@group.v.calendar.google.com"
 
@@ -78,6 +80,22 @@ def classify_calendar_source(
         if calendar_id == BIRTHDAY_CALENDAR_ID:
             return "birthdays", BASIS_PROVIDER_INFERRED
     return DEFAULT_ROLE, BASIS_PROVIDER_INFERRED
+
+
+def inferred_role_or_none(*, calendar_id: str | None, butler_specific: bool = False) -> str | None:
+    """The role a sync or mutation path can infer for a calendar it names, else ``None``.
+
+    These paths know a calendar id and whether it is the butler-specific calendar, not the
+    calendarList facts. The provider's ``primary`` alias id is the owner's primary calendar. An
+    uninferable calendar returns ``None`` so the stored role (discovery's, or the owner's) is kept
+    rather than overwritten with the default.
+    """
+    role, _basis = classify_calendar_source(
+        calendar_id=calendar_id,
+        primary=calendar_id == PRIMARY_ALIAS_ID,
+        is_butlers_calendar=butler_specific,
+    )
+    return None if role == DEFAULT_ROLE else role
 
 
 def owner_time_roles_sql() -> str:
