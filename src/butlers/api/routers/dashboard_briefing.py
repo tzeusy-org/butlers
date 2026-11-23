@@ -84,6 +84,7 @@ from butlers.api.models import ApiResponse
 from butlers.api.projection_grants import ACTIVE_GRANTS_LIVENESS_SQL, liveness_attention_items
 from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
+from butlers.core.qa.breaker_state import cause_label
 from butlers.core.qa.patrol_status import is_valid_patrol_status
 from butlers.credential_store import CredentialStore
 
@@ -617,17 +618,29 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
     # per-pool-failure-but-keep-going pattern in _fetch_approvals_state.
     circuit_breaker_tripped = False
     circuit_breaker_consecutive_failures = 0
+    circuit_breaker_dominant_cause: str | None = None
     try:
         from butlers.api.routers.qa import (
             _CIRCUIT_BREAKER_THRESHOLD,
+            _breaker_cause_fields,
             _compute_circuit_breaker_state,
             _fetch_recent_circuit_breaker_rows,
         )
+        from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF
 
-        cb_rows = await _fetch_recent_circuit_breaker_rows(pool, limit=_CIRCUIT_BREAKER_THRESHOLD)
-        _, circuit_breaker_consecutive_failures, circuit_breaker_tripped = (
-            _compute_circuit_breaker_state(cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD)
+        cb_rows = await _fetch_recent_circuit_breaker_rows(
+            pool,
+            limit=_CIRCUIT_BREAKER_THRESHOLD + EXTRA_ROWS_FOR_BACKOFF,
+            include_detail=True,
         )
+        _, circuit_breaker_consecutive_failures, circuit_breaker_tripped = (
+            _compute_circuit_breaker_state(
+                cb_rows[:_CIRCUIT_BREAKER_THRESHOLD], threshold=_CIRCUIT_BREAKER_THRESHOLD
+            )
+        )
+        circuit_breaker_dominant_cause = _breaker_cause_fields(
+            cb_rows, threshold=_CIRCUIT_BREAKER_THRESHOLD
+        )["dominant_cause"]
     except Exception as exc:
         if _is_missing_relation_error(exc, "healing_attempts") or _is_missing_relation_error(
             exc, "breaker_resets"
@@ -646,6 +659,7 @@ async def _fetch_qa_state(db: DatabaseManager) -> tuple[dict | None, bool]:
         {
             "circuit_breaker_tripped": circuit_breaker_tripped,
             "circuit_breaker_consecutive_failures": circuit_breaker_consecutive_failures,
+            "circuit_breaker_dominant_cause": circuit_breaker_dominant_cause,
             # ``error`` is the canonical terminal patrol failure.  Detail is
             # optional diagnostic context, never a second failure signal.
             "last_patrol_failed": bool(last_patrol_status == "error"),
@@ -674,6 +688,8 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
 
     if qa_state.get("circuit_breaker_tripped"):
         n = qa_state.get("circuit_breaker_consecutive_failures", 0)
+        cause = cause_label(qa_state.get("circuit_breaker_dominant_cause"))
+        failures = f"{n} consecutive failure{'' if n == 1 else 's'}"
         # severity="high" -- the briefing's attention-item vocabulary tops
         # out at "high" (no "critical" tier); this mirrors
         # attention_item_from_audit_group_row's "briefing maps critical to
@@ -685,7 +701,9 @@ def _qa_attention_item(qa_state: dict | None) -> dict | None:
             "type": "qa",
             "butler": "qa",
             "description": (
-                f"QA circuit breaker tripped ({n} consecutive failure{'' if n == 1 else 's'})"
+                f"QA circuit breaker open: {cause} ({failures})"
+                if cause
+                else f"QA circuit breaker tripped ({failures})"
             ),
             "link": "/qa",
             "occurrences": n,

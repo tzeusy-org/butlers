@@ -87,6 +87,7 @@ from butlers.connectors.home_assistant_wellness import (
     WellnessRule,
     parse_rules_extra,
 )
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.home_assistant_client import (
@@ -377,7 +378,7 @@ class HAWebSocketClient:
             try:
                 await self._ws_command(
                     {"type": "subscribe_events", "event_type": event_type},
-                    timeout=5.0,
+                    timeout_s=5.0,
                 )
                 logger.debug("HAWebSocketClient: subscribed to %s", event_type)
             except Exception as exc:
@@ -588,21 +589,21 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
+        timeout_s: float = 10.0,
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
         Args:
             command: Command dict (``type`` + payload). The ``id`` field
                 will be overwritten with an auto-incrementing value.
-            timeout: Seconds to wait before raising ``asyncio.TimeoutError``.
+            timeout_s: Seconds to wait before raising ``asyncio.TimeoutError``.
 
         Returns:
             The ``result`` payload from the HA response.
 
         Raises:
             RuntimeError: If WebSocket is not connected, or HA returns an error.
-            asyncio.TimeoutError: If response doesn't arrive within ``timeout``.
+            asyncio.TimeoutError: If response doesn't arrive within ``timeout_s``.
         """
         if self._ws_connection is None or not self._connected:
             raise RuntimeError("HAWebSocketClient: not connected — cannot send command")
@@ -618,7 +619,7 @@ class HAWebSocketClient:
 
         try:
             await self._ws_connection.send_json(command)
-            return await asyncio.wait_for(fut, timeout=timeout)
+            return await asyncio.wait_for(fut, timeout=timeout_s)
         except Exception:
             self._ws_pending.pop(cmd_id, None)
             raise
@@ -1731,7 +1732,7 @@ async def _ingest_live(mcp_client: Any, envelope: dict[str, Any]) -> None:
     """
     for attempt in range(1, _LIVE_INGEST_ATTEMPTS + 1):
         try:
-            await mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(mcp_client, envelope)
             return
         except ConnectionError:
             if attempt >= _LIVE_INGEST_ATTEMPTS:
@@ -1793,7 +1794,7 @@ async def emit_with_wellness_promotion(
         try:
             scrubbed = scrub_ha_envelope(ha_envelope)
             if on_failed is None:
-                await mcp_client.call_tool("ingest", scrubbed)
+                await submit_ingest(mcp_client, scrubbed)
             else:
                 await _ingest_live(mcp_client, scrubbed)
             if metrics is not None:
@@ -1857,7 +1858,7 @@ async def emit_with_wellness_promotion(
     try:
         scrubbed_wellness = scrub_ha_envelope(wellness_envelope)
         if on_failed is None:
-            await mcp_client.call_tool("ingest", scrubbed_wellness)
+            await submit_ingest(mcp_client, scrubbed_wellness)
         else:
             await _ingest_live(mcp_client, scrubbed_wellness)
         if metrics is not None:
@@ -2070,7 +2071,7 @@ async def _main() -> None:
 
     # Filter persistence (for recording dropped events)
     async def _submit_envelope_for_replay(envelope: dict[str, Any]) -> None:
-        await connector._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(connector._mcp_client, envelope)
 
     ha_filter_persistence = HAFilterPersistence(
         endpoint_identity=endpoint_identity,

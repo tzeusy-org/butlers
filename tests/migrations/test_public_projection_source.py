@@ -682,7 +682,7 @@ def test_upgrade_withdraws_an_already_published_legacy_placeholder(
         source_name,
         ["core"],
         schemas={"core": "general"},
-        revisions={"core": "core_368"},
+        revisions={"core": "core_370"},
     )
 
     async def seed(projection: Projection) -> uuid.UUID:
@@ -724,10 +724,10 @@ def test_upgrade_withdraws_an_already_published_legacy_placeholder(
         asyncio.run(check_publication(projection, row_id, "Unknown (2025550107)"))
 
         config = _build_alembic_config(url, chains=["core"], target_schema="general")
-        command.upgrade(config, "core@core_369")
+        command.upgrade(config, "core@core_371")
         asyncio.run(check_publication(projection, row_id, None))
 
-        command.downgrade(config, "core@core_368")
+        command.downgrade(config, "core@core_370")
         asyncio.run(check_publication(projection, row_id, None))
 
         asyncio.run(rename(projection, row_id))

@@ -116,6 +116,7 @@ from butlers.connectors.filtered_event_buffer import (
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -1446,7 +1447,7 @@ class ActivityWatchConnector:
         start_t = time.perf_counter()
         status = "success"
         try:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
         except Exception:
             status = "error"
             raise
@@ -1528,7 +1529,7 @@ class ActivityWatchConnector:
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
         """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # Checkpoint

@@ -1194,3 +1194,24 @@ class TestVendorDoorBackfillMigration:
         await _sub(pool, "C", "https://other.example.org/cancel", "extracted")
         await _apply(pool, load_migration(_MIGRATION_021, "finance_021"), "upgrade")
         assert await pool.fetchval("SELECT count(*) FROM public.vendor_doors") == 0
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_spending_summary_maintenance_is_finance_only_and_reversible(db):
+    pool = await _finance_at(db, "finance_021")
+    module = load_migration(
+        _FINANCE_MIGRATIONS / "022_spending_summary_maintenance.py", "finance_022"
+    )
+    has_maintenance = "SELECT has_table_privilege($1, $2, 'MAINTAIN')"
+    view = "finance.spending_summaries"
+    assert not await pool.fetchval(has_maintenance, "butler_finance_rw", view)
+
+    await _apply(pool, module, "upgrade")
+    await _apply(pool, module, "upgrade")
+    assert await pool.fetchval(has_maintenance, "butler_finance_rw", view)
+    assert not await pool.fetchval(has_maintenance, "butler_relationship_rw", view)
+    assert not await pool.fetchval(has_maintenance, "butler_finance_rw", "finance.transactions")
+
+    await _apply(pool, module, "downgrade")
+    assert not await pool.fetchval(has_maintenance, "butler_finance_rw", view)
+    assert await pool.fetchval("SELECT count(*) FROM finance.spending_summaries") == 0

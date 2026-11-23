@@ -1997,6 +1997,62 @@ async def test_endorse_rule_returns_receipt_and_404_409_mappings(app):
     assert retired.status_code == 409
 
 
+async def test_legacy_endorsement_rejects_unconfirmed_and_cross_source_batches(app):
+    first, second = uuid.uuid4(), uuid.uuid4()
+    shared_author_id = uuid.uuid4()
+
+    def source_pool(rule_id, author):
+        async def fetch(sql, *_args):
+            if "FROM public.entities" in sql:
+                return [Record({"id": shared_author_id, "canonical_name": author})]
+            return [
+                Record(
+                    _make_rule_row(rule_id=rule_id)
+                    | {"authority_entity_id": shared_author_id, "content_authority": "third_party"}
+                )
+            ]
+
+        return AsyncMock(fetch=AsyncMock(side_effect=fetch), fetchval=AsyncMock(return_value=1))
+
+    atlas = source_pool(first, "Atlas author")
+    memory = source_pool(second, "Memory author")
+    manager = db_manager({"atlas": atlas, "memory": memory})
+    for source in manager.butler_names:
+        manager.register_configured_modules(source, frozenset({"memory"}))
+    app.dependency_overrides[get_db] = lambda: manager
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        ids = [str(first), str(second)]
+        assert (
+            await client.post("/api/memory/rules/endorse-legacy", json={"rule_ids": ids})
+        ).status_code == 422
+        assert (
+            await client.post(
+                "/api/memory/rules/endorse-legacy",
+                json={
+                    "rule_ids": ids,
+                    "confirmation_digest": "a" * 64,
+                    "actor": str(uuid.uuid4()),
+                    "schema": "atlas",
+                },
+            )
+        ).status_code == 422
+        assert (
+            await client.post("/api/memory/rules/endorse-legacy/preview", json={"rule_ids": ids})
+        ).status_code == 409
+        held = await client.get("/api/memory/rules", params={"held": True})
+        assert held.status_code == 200
+        assert {row["id"]: row["authority_entity_name"] for row in held.json()["data"]} == {
+            str(first): "Atlas author",
+            str(second): "Memory author",
+        }
+
+    atlas.acquire.assert_not_called()
+    memory.acquire.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Cross-butler memory failure semantics (bu-25a6k)
 # ---------------------------------------------------------------------------

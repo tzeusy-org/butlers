@@ -843,6 +843,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
     (
+        "src/butlers/chronicler/adapters/calendar_revisions.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control read for the owner timezone; schema and relation are constants, not caller-selected",
+    (
         "src/butlers/chronicler/adapters/situation.py",
         "chronicler.daily_repair_control",
     ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
@@ -1540,6 +1544,15 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{rules_relation}>",
     ): "dynamic-local: memory relation helpers/source-schema selectors; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
+    (
+        "src/butlers/modules/memory/storage.py",
+        '<dynamic:{events_qualifier}">',
+    ): (
+        "sanctioned:bu-r3fmja.7 F2 and REQ-module-memory-021: the shared rule endorsement "
+        "writer uses an identifier-validated optional schema with the fixed memory_events "
+        "table. Dashboard derives the source from configured Memory butlers. PostgreSQL "
+        "ACLs govern access."
+    ),
     (
         "src/butlers/modules/memory/storage.py",
         "<dynamic:{events_table}>",

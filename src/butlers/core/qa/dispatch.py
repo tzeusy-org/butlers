@@ -96,6 +96,7 @@ from butlers.core.healing.worktree import (
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
     hold_findings_for_retry,
@@ -3307,17 +3308,103 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
-async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> bool:
-    """Whether dispatch must halt: the breaker is open, or its state cannot be read.
+async def _breaker_halt_state(pool: asyncpg.Pool, threshold: int) -> str | None:
+    """``"open"``, ``"unreadable"`` or ``None``: whether dispatch must halt, and why.
 
     Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
     rather than raising out of the batch or launching with the safeguard unreadable.
     """
     try:
-        return await _is_circuit_breaker_tripped(pool, threshold)
+        return "open" if await _is_circuit_breaker_tripped(pool, threshold) else None
     except Exception as exc:
         logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
-        return True
+        return "unreadable"
+
+
+#: Session advisory lock that serializes the half-open probe across dispatchers and daemons.
+_PROBE_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_PROBE_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_BREAKER_ROWS_SQL = f"""
+    SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status, error_detail, closed_at
+    {QA_BREAKER_WHERE_SQL}
+    ORDER BY closed_at DESC
+    LIMIT $1
+"""
+
+
+async def _breaker_probe_blocker(pool: asyncpg.Pool, config: QaDispatchConfig) -> str | None:
+    """Why the open breaker cannot admit a probe now, or ``None`` when one is due.
+
+    ``"backoff"``: the wait since the newest failure has not elapsed. ``"in_flight"``: a QA
+    investigation (a row or a cluster Job, counted as the cap gate counts them) is running.
+    ``"unreadable"``: the schedule could not be read, so nothing probes through a broken read.
+    """
+    try:
+        rows = await pool.fetch(
+            _BREAKER_ROWS_SQL, config.circuit_breaker_threshold + EXTRA_ROWS_FOR_BACKOFF
+        )
+        state = derive_breaker_state(rows, config.circuit_breaker_threshold)
+        if not state.open or state.next_probe_at is None:
+            return "backoff"
+        if await pool.fetchval("SELECT clock_timestamp()") < state.next_probe_at:
+            return "backoff"
+        if await count_active_attempts(pool, qa_only=True) > 0:
+            return "in_flight"
+        if config.job_isolation is not None:
+            jobs = await active_job_count(config.job_isolation)
+            if jobs is None:
+                return "unreadable"
+            if jobs > 0:
+                return "in_flight"
+        return None
+    except Exception as exc:
+        logger.warning("QA dispatch: breaker probe schedule unreadable: %s", exc)
+        return "unreadable"
+
+
+async def _acquire_probe_lock(pool: asyncpg.Pool) -> asyncpg.pool.PoolConnectionProxy | None:
+    """Take the probe lock on a dedicated connection, or return ``None`` when another holds it."""
+    conn = await pool.acquire()
+    try:
+        if await conn.fetchval(_PROBE_LOCK_SQL):
+            return conn
+    except Exception:
+        await pool.release(conn)
+        raise
+    await pool.release(conn)
+    return None
+
+
+async def _release_probe_lock(pool: asyncpg.Pool, conn: asyncpg.pool.PoolConnectionProxy) -> None:
+    try:
+        await conn.fetchval(_PROBE_UNLOCK_SQL)
+    finally:
+        await pool.release(conn)
+
+
+async def _record_probe(
+    pool: asyncpg.Pool,
+    triaged: TriagedFinding,
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> None:
+    """Record that one finding is admitted through the open breaker as its half-open probe."""
+    finding = triaged.finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=finding.fingerprint,
+            butler_name=finding.source_butler,
+            decision="breaker_probe",
+            reason=(
+                f"Half-open probe: {config.circuit_breaker_threshold} consecutive failures, "
+                "backoff elapsed"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record breaker_probe event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="breaker_probe")
 
 
 async def _hold_for_retry(
@@ -3343,11 +3430,22 @@ async def _hold_for_retry(
         return False
 
 
+def _halt_cause(why: str, config: QaDispatchConfig) -> str:
+    """The event's account of why the breaker held the patrol (``why`` from the blocker)."""
+    if why == "unreadable":
+        return "Circuit breaker unreadable"
+    if why == "in_flight":
+        return "Circuit breaker open, probe in progress"
+    return f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive failures"
+
+
 async def _halt_batch(
     pool: asyncpg.Pool,
     remaining: list[TriagedFinding],
     config: QaDispatchConfig,
     metrics: ButlerMetrics | None,
+    *,
+    why: str = "backoff",
 ) -> list[QaDispatchResult]:
     """Hold the rest of a patrol behind an open breaker: no claims, one event.
 
@@ -3377,8 +3475,7 @@ async def _halt_batch(
             butler_name=lead.source_butler,
             decision="circuit_breaker",
             reason=(
-                f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
-                f"failures; {len(remaining)} finding(s) held for a later patrol"
+                f"{_halt_cause(why, config)}; {len(remaining)} finding(s) held for a later patrol"
             ),
         )
     except Exception as evt_exc:
@@ -3445,13 +3542,24 @@ async def dispatch_novel_findings(
         # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
         # the rest as one decision instead of dropping them. Once the cap has been reached
         # nothing more launches, so the remainder stays a cap hold.
-        if (
-            cap_skipped == 0
-            and config.circuit_breaker_threshold > 0
-            and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
-        ):
-            results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
-            break
+        probing = False
+        halt_state = (
+            await _breaker_halt_state(pool, config.circuit_breaker_threshold)
+            if cap_skipped == 0 and config.circuit_breaker_threshold > 0
+            else None
+        )
+        if halt_state is not None:
+            # Open. Once its backoff has elapsed this finding may go through as the one probe;
+            # otherwise the rest of the patrol is held. An unreadable breaker never probes.
+            blocker = "unreadable" if halt_state == "unreadable" else None
+            if blocker is None:
+                blocker = await _breaker_probe_blocker(pool, config)
+            if blocker is not None:
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+            probing = True
 
         # Once the cap is reached, stop calling dispatch for the remaining findings.
         # Continuing would insert a claim row per finding before rejecting it, and those
@@ -3479,19 +3587,41 @@ async def dispatch_novel_findings(
             held.append(triaged)
             continue
 
-        result = await dispatch_qa_investigation(
-            pool=pool,
-            triaged_finding=triaged,
-            patrol_id=patrol_id,
-            config=config,
-            repo_root=repo_root,
-            spawner=spawner,
-            gh_token=gh_token,
-            git_author_name=git_author_name,
-            git_author_email=git_author_email,
-            task_registry=task_registry,
-            metrics=metrics,
-        )
+        probe_conn: asyncpg.pool.PoolConnectionProxy | None = None
+        if probing:
+            # The lock is held across the claim, so two dispatchers cannot both probe: the second
+            # finds the first's in-flight attempt when it re-checks.
+            probe_conn = await _acquire_probe_lock(pool)
+            blocker = (
+                "in_flight" if probe_conn is None else await _breaker_probe_blocker(pool, config)
+            )
+            if blocker is not None:
+                if probe_conn is not None:
+                    await _release_probe_lock(pool, probe_conn)
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+        try:
+            result = await dispatch_qa_investigation(
+                pool=pool,
+                triaged_finding=triaged,
+                patrol_id=patrol_id,
+                config=config,
+                repo_root=repo_root,
+                spawner=spawner,
+                gh_token=gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                task_registry=task_registry,
+                metrics=metrics,
+            )
+        finally:
+            if probe_conn is not None:
+                await _release_probe_lock(pool, probe_conn)
+        if probing and result.accepted:
+            # Recorded only for a probe that launched: a finding a gate refused spent nothing.
+            await _record_probe(pool, triaged, config, metrics)
         results.append(result)
 
     if held:

@@ -17,6 +17,7 @@ from __future__ import annotations
 from butlers.chronicler.adapters.activitywatch import ActivityWatchWindowAdapter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.calendar import CalendarCompletedAdapter
+from butlers.chronicler.adapters.calendar_revisions import CalendarRevisionsAdapter
 from butlers.chronicler.adapters.comms import CommsSocialAdapter
 from butlers.chronicler.adapters.exercise import ExerciseInferredAdapter
 from butlers.chronicler.adapters.focus import FocusInferredAdapter
@@ -61,6 +62,7 @@ __all__ = [
     "OwnTracksPlaceClusterAdapter",
     "OwnTracksPointAdapter",
     "OwnTracksSsidPresenceAdapter",
+    "CalendarRevisionsAdapter",
     "OwnerOutboundMessageAdapter",
     "ProjectionAdapter",
     "ReadingInferredAdapter",

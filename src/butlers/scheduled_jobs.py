@@ -2052,6 +2052,16 @@ async def _run_chronicler_project_activitywatch_job(
     return await run_project_activitywatch(pool, job_args)
 
 
+async def _run_chronicler_project_calendar_revisions_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run Chronicler's calendar plan-change (revision journal) projection job."""
+    from butlers.chronicler.jobs import run_project_calendar_revisions
+
+    return await run_project_calendar_revisions(pool, job_args)
+
+
 async def _run_chronicler_project_owner_outbound_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -2540,6 +2550,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             ),
             "chronicler_project_owntracks_ssid": _run_chronicler_project_owntracks_ssid_job,
             "chronicler_project_activitywatch": _run_chronicler_project_activitywatch_job,
+            "chronicler_project_calendar_revisions": _run_chronicler_project_calendar_revisions_job,
             "chronicler_project_owner_outbound": _run_chronicler_project_owner_outbound_job,
             "chronicler_project_steam": _run_chronicler_project_steam_job,
             "chronicler_project_steam_status": _run_chronicler_project_steam_status_job,

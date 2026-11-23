@@ -2029,7 +2029,7 @@ async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
             side_effect=RuntimeError("db down"),
         ),
         patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
-        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
         patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
     ):
         results = await dispatch_novel_findings(
@@ -2045,3 +2045,185 @@ async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
     hold.assert_awaited_once()
     assert hold.await_args.args[2] == "circuit_breaker"
     assert [r.reason for r in results] == ["circuit_breaker"] * 3
+    # The event says the state was unreadable, never that failures were counted.
+    reason = event.await_args.kwargs["reason"]
+    assert "unreadable" in reason and "consecutive" not in reason
+
+
+def _probe_patches(*, due, lock="conn"):
+    """Open breaker, probe due per ``due`` (one answer per call), and the probe lock result."""
+    conn = MagicMock() if lock == "conn" else None
+    return (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._breaker_probe_blocker",
+            new_callable=AsyncMock,
+            side_effect=[None if d else "in_flight" for d in due],
+        ),
+        patch(
+            "butlers.core.qa.dispatch._acquire_probe_lock",
+            new_callable=AsyncMock,
+            return_value=conn,
+        ),
+        patch("butlers.core.qa.dispatch._release_probe_lock", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+    )
+
+
+async def _dispatch_probe(findings, patches, launch):
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
+        run = stack.enter_context(
+            patch("butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=launch)
+        )
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(max_concurrent=10),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+    return results, run, mocks
+
+
+@pytest.mark.asyncio
+async def test_a_due_probe_admits_exactly_one_finding_and_holds_the_rest():
+    findings = [_make_triaged() for _ in range(3)]
+
+    async def launch(*_a, **_k):
+        return QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched")
+
+    # due for finding 0; the probe is then in flight, so it is no longer due for 1 and 2
+    patches = _probe_patches(due=[True, True, False])
+    results, run, mocks = await _dispatch_probe(findings, patches, launch)
+    release, hold, event = mocks[3], mocks[5], mocks[6]
+
+    assert run.call_count == 1
+    assert run.call_args.kwargs["triaged_finding"] is findings[0]
+    release.assert_awaited_once()
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings[1:]]
+    decisions = [c.kwargs["decision"] for c in event.await_args_list]
+    assert decisions == ["breaker_probe", "circuit_breaker"]
+    assert [r.reason for r in results] == ["dispatched", "circuit_breaker", "circuit_breaker"]
+
+
+@pytest.mark.asyncio
+async def test_a_probe_lock_held_elsewhere_holds_the_whole_patrol():
+    findings = [_make_triaged() for _ in range(2)]
+    patches = _probe_patches(due=[True], lock=None)
+    results, run, mocks = await _dispatch_probe(findings, patches, None)
+
+    run.assert_not_called()
+    assert [r.reason for r in results] == ["circuit_breaker"] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_loses_the_recheck_under_the_lock_holds_the_patrol():
+    findings = [_make_triaged() for _ in range(2)]
+    patches = _probe_patches(due=[True, False])  # another dispatcher launched it first
+    results, run, mocks = await _dispatch_probe(findings, patches, None)
+
+    run.assert_not_called()
+    mocks[3].assert_awaited_once()  # the lock is still released
+    assert [r.reason for r in results] == ["circuit_breaker"] * 2
+
+
+@pytest.mark.asyncio
+async def test_a_finding_a_gate_rejects_does_not_spend_the_probe():
+    findings = [_make_triaged() for _ in range(2)]
+    answers = iter(
+        [
+            QaDispatchResult(accepted=False, fingerprint="a" * 64, reason="cooldown"),
+            QaDispatchResult(accepted=True, fingerprint="b" * 64, reason="dispatched"),
+        ]
+    )
+
+    async def launch(*_a, **_k):
+        return next(answers)
+
+    patches = _probe_patches(due=[True, True, True, True])
+    results, run, _ = await _dispatch_probe(findings, patches, launch)
+
+    assert run.call_count == 2
+    assert [r.reason for r in results] == ["cooldown", "dispatched"]
+
+
+@pytest.mark.asyncio
+async def test_probe_blocker_names_why_no_probe_is_due():
+    from datetime import UTC, datetime, timedelta
+
+    from butlers.core.qa.dispatch import _breaker_probe_blocker
+
+    newest = datetime(2026, 11, 23, 12, 0, tzinfo=UTC)
+    rows = [
+        {"status": "failed", "error_detail": None, "closed_at": newest - timedelta(minutes=i)}
+        for i in range(5)
+    ]
+
+    async def blocker(now_offset_min, in_flight=0, fetched=rows, jobs=None):
+        pool = MagicMock()
+        pool.fetch = AsyncMock(return_value=fetched)
+        pool.fetchval = AsyncMock(return_value=newest + timedelta(minutes=now_offset_min))
+        config = QaDispatchConfig(job_isolation=MagicMock() if jobs is not None else None)
+        with (
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                return_value=in_flight,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.active_job_count",
+                new_callable=AsyncMock,
+                return_value=None if jobs == "unreadable" else jobs,
+            ),
+        ):
+            return await _breaker_probe_blocker(pool, config)
+
+    assert await blocker(14) == "backoff"
+    assert await blocker(15) is None
+    assert await blocker(15, in_flight=1) == "in_flight"
+    assert await blocker(15, jobs=1) == "in_flight"  # a Job the cluster still runs
+    assert await blocker(15, jobs=0) is None
+    assert await blocker(15, jobs="unreadable") == "unreadable"
+    assert await blocker(60, fetched=rows[:3]) == "backoff"  # not open
+    bad = MagicMock()
+    bad.fetch = AsyncMock(side_effect=RuntimeError("db down"))
+    assert await _breaker_probe_blocker(bad, QaDispatchConfig()) == "unreadable"
+
+
+@pytest.mark.asyncio
+async def test_halt_event_names_the_real_cause():
+    for blocker, expected in (
+        ("in_flight", "probe in progress"),
+        ("backoff", "5 consecutive failures"),
+    ):
+        patches = _probe_patches(due=[False])
+        patches[1].kwargs["side_effect"] = [blocker]
+        results, run, mocks = await _dispatch_probe([_make_triaged()], patches, None)
+        assert expected in mocks[6].await_args.kwargs["reason"], blocker
+
+
+@pytest.mark.asyncio
+async def test_a_refused_probe_records_no_probe_event():
+    findings = [_make_triaged()]
+
+    async def launch(*_a, **_k):
+        return QaDispatchResult(accepted=False, fingerprint="a" * 64, reason="cooldown")
+
+    patches = _probe_patches(due=[True, True])
+    results, run, mocks = await _dispatch_probe(findings, patches, launch)
+    assert [c.kwargs["decision"] for c in mocks[6].await_args_list] == []

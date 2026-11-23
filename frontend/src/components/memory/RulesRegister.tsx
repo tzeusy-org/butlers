@@ -30,23 +30,29 @@
 // - (memory house-ledger redesign, graduated) MEMORY_LANGUAGE.md §3b, §6
 // ---------------------------------------------------------------------------
 
-import { useNavigate } from "react-router";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryProvenanceLine } from "@/components/memory/MemoryProvenanceLine";
 import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
 import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Mono } from "@/components/ui/Mono";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
+import { Time } from "@/components/ui/time";
 import { Voice } from "@/components/ui/Voice";
-import { useRules } from "@/hooks/use-memory";
+import { useEndorseGuidance, useLegacyRuleEndorsementPreview, useRules } from "@/hooks/use-memory";
 import {
   type MemoryMaturity,
   useMemoryUrlState,
 } from "@/hooks/use-memory-url-state";
+import { useRegisterCommands } from "@/lib/command-registry";
 import { formatNumeral } from "@/lib/memory-overture";
 import { cn } from "@/lib/utils";
-import type { MemoryRule } from "@/api/types.ts";
+import type { LegacyRuleEndorsementPreview, MemoryRule } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -54,6 +60,7 @@ import type { MemoryRule } from "@/api/types.ts";
 
 /** Rules register page size (offset pagination, MEMORY_LANGUAGE.md §3b). */
 export const RULES_PAGE_SIZE = 50;
+const HELD_RULE_SELECTION_LIMIT = 100;
 
 /**
  * Maturity filter pills, in display order. `all` is the default (unfiltered)
@@ -202,6 +209,191 @@ export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number 
   );
 }
 
+type EndorsementReview =
+  | { kind: "single"; rule: MemoryRule }
+  | { kind: "batch"; preview: LegacyRuleEndorsementPreview };
+
+function isHeldRule(rule: MemoryRule): boolean {
+  return rule.held === true && !rule.retired_at && !rule.endorsed_at
+    && rule.metadata.forgotten !== true;
+}
+
+function HeldRuleReview({ rules, offset }: { rules: MemoryRule[]; offset: number }) {
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [review, setReview] = useState<EndorsementReview | null>(null);
+  const [results, setResults] = useState<Array<{ id: string; content: string; status: string }>>([]);
+  const submitLock = useRef(false);
+  const { mutate: previewBatch, error: previewError, isPending: previewPending } =
+    useLegacyRuleEndorsementPreview();
+  const {
+    mutate: endorse,
+    reset: resetEndorse,
+    error: endorseError,
+    isPending: endorsePending,
+  } = useEndorseGuidance();
+  const busy = previewPending || endorsePending;
+  const isOpen = review != null;
+  const selected = rules.filter((rule) =>
+    selectedIds.includes(rule.id) && isHeldRule(rule) && rule.content_authority === null);
+  const selectedSource = selected[0]?.owning_source;
+
+  const reviewSingle = useCallback((rule: MemoryRule) => {
+    resetEndorse();
+    setReview({ kind: "single", rule });
+  }, [resetEndorse]);
+  const commands = useMemo(() => busy || isOpen ? [] : rules.filter(isHeldRule).map((rule) => ({
+    id: `memory-endorse-${rule.id}`,
+    label: `Endorse ${rule.content}`,
+    keywords: ["memory", "held", "guidance"],
+    perform: () => reviewSingle(rule),
+  })), [busy, isOpen, reviewSingle, rules]);
+  useRegisterCommands(commands);
+
+  function reviewBatch() {
+    resetEndorse();
+    previewBatch(selected.map((rule) => rule.id), {
+      onSuccess: (preview) => setReview({ kind: "batch", preview }),
+    });
+  }
+
+  function confirmReview() {
+    if (review === null || submitLock.current) return;
+    submitLock.current = true;
+    const items = review.kind === "single"
+      ? [{ rule_id: review.rule.id, content: review.rule.content }]
+      : review.preview.rules;
+    const content = new Map(items.map((item) => [item.rule_id, item.content]));
+    endorse(review.kind === "single" ? review.rule.id : review.preview, {
+      onSuccess: (receipts) => {
+        setResults(receipts.flatMap((receipt) => {
+          const text = content.get(receipt.rule_id);
+          if (text === undefined) return [];
+          return [{
+            id: receipt.rule_id,
+            content: text,
+            status: receipt.endorsed_at
+              ? (receipt.changed ? "Endorsed" : "Already endorsed")
+              : "No endorsement recorded",
+          }];
+        }));
+        setReview(null);
+        setSelectedIds([]);
+      },
+      onSettled: () => { submitLock.current = false; },
+    });
+  }
+
+  return (
+    <>
+      {results.length > 0 && (
+        <div role="status" className="text-sm">
+          <ul className="space-y-1">
+            {results.map(({ id, content, status }) => <li key={id}>{status} · {content}</li>)}
+          </ul>
+        </div>
+      )}
+      {selected.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" size="sm" onClick={reviewBatch} disabled={busy}>
+            {previewPending ? "Loading selection…" : `Review ${selected.length} selected`}
+          </Button>
+          <Button type="button" size="sm" variant="ghost" disabled={busy}
+            onClick={() => setSelectedIds([])}>
+            Clear selection
+          </Button>
+        </div>
+      )}
+      {previewError && selected.length > 0 && (
+        <p role="alert" className="text-sm text-destructive">{previewError.message}</p>
+      )}
+      {rules.length > 0 && (
+        <div className="flex flex-col">
+          {rules.map((rule, index) => {
+            const held = isHeldRule(rule);
+            const batchEligible = held && rule.content_authority === null && !!rule.owning_source;
+            const checked = selectedIds.includes(rule.id);
+            const anotherSource = Boolean(selectedSource && rule.owning_source !== selectedSource);
+            return (
+              <div key={rule.id}>
+                <DirectiveRow rule={rule} index={offset + index} />
+                <div className="flex flex-wrap items-start justify-between gap-2 px-1 pb-3">
+                  <div>
+                    <MemoryProvenanceLine record={rule} showHeldLink={false} />
+                    {rule.source_episode_id && (rule.source_episode_status === "available" ? (
+                      <Link className="text-xs underline underline-offset-2"
+                        to={`/memory/episodes/${encodeURIComponent(rule.source_episode_id)}`}>
+                        Source episode
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {rule.source_episode_status === "expired" ? "Source expired" : "Source unresolved"}
+                      </span>
+                    ))}
+                  </div>
+                  {held && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {batchEligible && (
+                        <label className="inline-flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${rule.content}`}
+                            checked={checked}
+                            disabled={busy || anotherSource || (!checked && selected.length >= HELD_RULE_SELECTION_LIMIT)}
+                            onChange={(event) => setSelectedIds((ids) => event.target.checked
+                              ? [...ids, rule.id] : ids.filter((id) => id !== rule.id))}
+                          />
+                          Select legacy rule
+                        </label>
+                      )}
+                      <Button type="button" size="sm" variant="outline" disabled={busy}
+                        aria-label={`Endorse ${rule.content}`} onClick={() => reviewSingle(rule)}>
+                        Endorse
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <ConfirmDialog
+        open={isOpen}
+        onOpenChange={(open) => { if (!open && !endorsePending) setReview(null); }}
+        title={review?.kind === "batch" ? "Endorse selected legacy guidance" : "Endorse this guidance"}
+        description="Endorsed guidance can steer future sessions."
+        confirmLabel="Endorse guidance"
+        pendingLabel="Endorsing…"
+        pending={endorsePending}
+        onConfirm={confirmReview}
+      >
+        <div className="max-h-[45vh] space-y-2 overflow-y-auto text-sm">
+          {review?.kind === "single" && (
+            <>
+              <p className="break-words">{review.rule.content}</p>
+              <MemoryProvenanceLine record={review.rule} showHeldLink={false} />
+            </>
+          )}
+          {review?.kind === "batch" && (
+            <ul className="space-y-2">
+              {review.preview.rules.map((rule) => (
+                <li key={rule.rule_id}>
+                  <p className="break-words">{rule.content}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Unverified source · {rule.scope}{rule.source_butler && ` · ${rule.source_butler}`}
+                    {" · Stored "}<Time value={rule.created_at} mode="absolute" precision="second" />
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {endorseError && <p role="alert" className="text-destructive">{endorseError.message}</p>}
+        </div>
+      </ConfirmDialog>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Filter pills
 // ---------------------------------------------------------------------------
@@ -248,24 +440,24 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
 
   // `all` is the unfiltered view; the API takes a concrete maturity string.
   const maturityFilter = maturity === "all" ? undefined : maturity;
+  const pageSize = state.held === true ? HELD_RULE_SELECTION_LIMIT : RULES_PAGE_SIZE;
 
   const { data: response, isError, isPending, refetch } = useRules({
     ...(state.held === true ? { held: true } : {}),
     maturity: maturityFilter,
     scope: butlerScope,
     offset,
-    limit: RULES_PAGE_SIZE,
+    limit: pageSize,
   });
 
   // useRules() returns PaginatedResponse<MemoryRule> = { data, meta }; unwrap
   // .data before mapping (mirror FactsRegister / MemoryOverture unwrap).
-  const rules = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
   const poolsFailed = response?.meta?.pools_failed ?? [];
 
   // anti_pattern pinned top, then maturity rank, then confidence desc.
-  const ordered = orderRules(rules);
+  const ordered = useMemo(() => orderRules(response?.data ?? []), [response?.data]);
 
   const onSelectMaturity = (m: MemoryMaturity) => {
     // Switching filter resets paging to the first page.
@@ -275,12 +467,19 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   return (
     <div className="flex flex-col gap-4">
       <MaturityPills maturity={maturity} onSelect={onSelectMaturity} />
-      {state.held === true && <div className="flex items-center gap-3">
+      {state.held === true ? <div className="flex items-center gap-3">
         <Voice>Guidance waiting for you</Voice>
         <Pill selected={false} onClick={() => setState({ held: undefined, offset: 0 })}>
           Show all guidance
         </Pill>
-      </div>}
+      </div> : (
+        <Pill selected={false} onClick={() => setState({ held: true, offset: 0 })}>
+          Guidance waiting for you
+        </Pill>
+      )}
+      {state.held === true && isPending && (
+        <p role="status" className="text-sm text-muted-foreground">Loading held guidance…</p>
+      )}
 
       <PoolsDegradedNote
         label="Rules"
@@ -308,7 +507,7 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
                 : "Nothing of this maturity."}
           </Voice>
         )
-      ) : (
+      ) : state.held === true ? null : (
         <div className="flex flex-col">
           {ordered.map((rule, i) => (
             <DirectiveRow key={rule.id} rule={rule} index={i} />
@@ -316,12 +515,16 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
         </div>
       )}
 
+      {state.held === true && (
+        <HeldRuleReview key={`${butlerScope ?? ""}:${maturity}:${offset}`} rules={ordered} offset={offset} />
+      )}
+
       <MemoryPaginationFooter
         offset={offset}
         count={ordered.length}
         total={total}
         hasMore={hasMore}
-        pageSize={RULES_PAGE_SIZE}
+        pageSize={pageSize}
         partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />

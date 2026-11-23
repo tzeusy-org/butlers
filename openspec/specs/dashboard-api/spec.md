@@ -908,6 +908,15 @@ pools without memory tables are silently skipped.
 - **THEN** pools without memory tables (episodes, facts, rules) are silently skipped
 - **AND** results from pools with memory tables are merged and paginated
 
+#### Scenario: Owner previews and confirms legacy rule endorsement
+
+- **WHEN** the owner submits an explicit ordered selection of rule IDs to `POST /api/memory/rules/endorse-legacy/preview`
+- **THEN** the API resolves one owning source through the pool registry and returns the exact eligible guidance with a confirmation digest, without changing the rules
+- **WHEN** the owner submits that selection and digest to `POST /api/memory/rules/endorse-legacy`
+- **THEN** the API binds the digest to the selected source, IDs, content and provenance under the endorsement transaction, and returns committed per-rule receipts
+- **AND** the API derives actor identity from the owner route and rejects caller-supplied actor or schema overrides
+- **AND** missing or changed source data, an invalid digest, or an unavailable source prevents all effects
+
 #### Scenario: Stats names genuinely-failed pools without failing the request
 - **WHEN** `GET /api/memory/stats` fans out and a pool with memory tables
   fails its stats query (a genuine error — not a legitimately-absent memory

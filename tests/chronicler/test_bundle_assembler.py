@@ -1011,3 +1011,24 @@ def test_bundle_marks_which_unknowns_the_recap_may_mention() -> None:
     owner_day = bundle.bundle["owner_day"]
     assert owner_day["recap_mention"] == ["Sleep not captured (source dark)"]
     assert len(owner_day["unknowns"]) == 3  # always stored, mentioned or not
+
+
+def test_a_plan_change_is_reported_as_a_plan_change_not_a_scheduled_appointment() -> None:
+    """bu-uhbhzq.1 S3: an intent plan_changed event never reads as attendance or activity."""
+    event = _event(
+        source_name="calendar.revisions",
+        source_ref="connectors.calendar_event_revisions:fixture-1",
+        title="Planned calendar event changed",
+        occurred_at=datetime(2026, 4, 25, 12, 0, tzinfo=UTC),
+        payload={"prior_known": True, "new": {"start": None, "end": None, "status": "cancelled"}},
+    )
+    event["event_type"] = "plan_changed"
+    event["layer"] = "intent"
+    bundle = assemble_day_close_bundle(
+        date_label="2026-04-25", timezone="Asia/Singapore", episodes=[], events=[event]
+    )
+    observations = bundle.bundle["owner_day"]["observations"]
+    assert [row["kind"] for row in observations] == ["plan_change"]
+    text = observations[0]["text"]
+    assert "changed" in text and "attendance" in text and "unknown" in text
+    assert "scheduled" not in text
