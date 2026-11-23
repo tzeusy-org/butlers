@@ -1,6 +1,6 @@
 # RFC 0019: Proactive Egress and Automation (Parked / Rejected)
 
-**Status:** Calendar-based auto-responses **Rejected** (owner, 2026-06-14); event-driven automation rule engine **Parked** — doctrine decision deferred
+**Status:** Calendar-based auto-responses **Rejected** (owner, 2026-06-14); event-driven automation rule engine **Parked** — doctrine decision deferred, except owner-authored notify-only watches (see "Notify-only owner watches", narrowed by the owner's bu-nt2eda decision)
 **Date:** 2026-06-14
 
 ---
@@ -52,11 +52,14 @@ consequences:
   surface than RFC 0011 ever opened, and RFC 0011's brokered-not-direct
   principle is the floor any such design must clear, not the ceiling.
 
-- **Butlers is not a general automation platform.** `about/heart-and-soul/vision.md`
-  ("What Butlers Is Not", ~L31-49) frames Butlers as a single-user personal
-  assistant that acts autonomously *on its own cron schedules and manifesto-scoped
-  domains* — not as a user-programmable rule engine for arbitrary
-  trigger→action chains. Capability B below directly tensions with this framing.
+- **Butlers is not an unrestricted agent.** `about/heart-and-soul/vision.md`
+  ("What Butlers Is Not") says a generalist "cannot grant itself access, bypass
+  domain rules" and that permissions and approval gates are enforced by the
+  runtime. The earlier wording of this bullet cited a vision clause against
+  user-programmable rule engines; no such clause exists in vision.md, so the
+  tension below rests on Non-Negotiable Rule 4 and the approval-gate doctrine,
+  not on a vision statement. Capability B below still tensions with that line
+  for any effect beyond notifying the owner.
 
 - **The daemon is deterministic infrastructure; judgment lives in ephemeral
   sessions.** `about/heart-and-soul/architecture.md` (~L80-84) and Non-Negotiable
@@ -178,12 +181,13 @@ enrichment, face-recognition media tagging) live in the
 [Ideas Ledger](../ideas-ledger.md#egress-owner-delegated-actions-rfc-0019), each
 with its unpark condition.
 
-## Proposed notify-only narrowing (2026-10-24; adoption pending)
+## Notify-only owner watches (narrowing; adopted on the owner's merge of the bu-4c7nvp.1.5 contract PR)
 
 This is bu-dhloi1.19's exact review carrier for bu-nt2eda's recorded notify-only
-direction. It does not label new words already adopted, release a runtime or
-reopen calendar auto-responses. Until reserved exact-text adoption, the parked
-contract above remains current. After adoption the following is the sole
+direction (Q1 = A, Q2 = A without optional git promotion, Q3 limits), adopted
+by the owner's exact-text merge of the `add-owner-watches-and-rules` change. It
+does not release a runtime, authorize a deploy or reopen calendar
+auto-responses. The following is the sole
 narrow exception to “nothing else accepted / no spec or implementation” above;
 the general trigger-to-action engine and all other egress remain parked.
 
