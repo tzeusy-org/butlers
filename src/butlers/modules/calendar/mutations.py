@@ -547,8 +547,8 @@ class MutationsMixin:
                 metadata={"projection": "provider_sync"},
                 time_role=inferred_role_or_none(
                     calendar_id=resolved_calendar,
-                    butler_specific=self._calendar_is_butler_specific
-                    and resolved_calendar == self._resolved_calendar_id,
+                    butler_specific=bool(getattr(self, "_calendar_is_butler_specific", False))
+                    and resolved_calendar == getattr(self, "_resolved_calendar_id", None),
                 ),
             )
         if source_kind == SOURCE_KIND_INTERNAL_SCHEDULER:

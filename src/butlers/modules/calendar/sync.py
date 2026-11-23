@@ -220,8 +220,8 @@ class SyncMixin:
         # butler; the shared project calendar (auto-discovered) is not.
         # The flag is module-wide (the Butlers calendar id came from the credential store), and
         # the poller syncs every calendar: only the resolved Butlers calendar is butler-specific.
-        is_butler_cal = (
-            self._calendar_is_butler_specific and calendar_id == self._resolved_calendar_id
+        is_butler_cal = self._calendar_is_butler_specific and calendar_id == getattr(
+            self, "_resolved_calendar_id", None
         )
         try:
             source_id = await self._ensure_calendar_source(

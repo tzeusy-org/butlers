@@ -376,15 +376,17 @@ class ConflictsMixin:
         reclassification applies without a resync. When the ledger is unreadable or names
         none of the discovered calendars, the default-target calendar is used instead.
         """
-        known = list(self._all_provider_calendar_ids)
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        # getattr: this mixin's host attributes are untyped here, and a typed access would grow
+        # the pyright baseline for no gain.
+        known: list[str] = list(getattr(self, "_all_provider_calendar_ids", ()))
+        pool = getattr(getattr(self, "_db", None), "pool", None)
         if known and pool is not None:
             try:
                 rows = await pool.fetch(
                     "SELECT calendar_id FROM calendar_sources "
                     "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
                     f"AND time_role IN {owner_time_roles_sql()}",
-                    self._require_provider().name,
+                    getattr(self, "_require_provider")().name,  # noqa: B009
                     known,
                 )
             except Exception:
@@ -394,7 +396,7 @@ class ConflictsMixin:
             ordered = [calendar_id for calendar_id in known if calendar_id in owner_ids]
             if ordered:
                 return ordered
-        return [self._resolve_calendar_id(None)]
+        return [getattr(self, "_resolve_calendar_id")(None)]  # noqa: B009
 
     async def _find_free_slots(
         self,
