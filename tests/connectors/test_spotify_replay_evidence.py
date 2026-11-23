@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.connectors import spotify
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.filtered_event_buffer import REPLAY_UNAVAILABLE_KEY, FilteredEventBuffer
 from tests.connectors.test_spotify_connector import (
     _ENDPOINT,
     _NOW,
@@ -16,7 +16,7 @@ from tests.connectors.test_spotify_connector import (
 
 
 @pytest.mark.parametrize("kind", ["music", "spoken"])
-@pytest.mark.parametrize("disposition", ["filtered", "parked"])
+@pytest.mark.parametrize("disposition", ["filtered", "legacy_preview", "parked"])
 async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, monkeypatch):
     connector = spotify.SpotifyConnector(
         spotify.SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
@@ -70,7 +70,7 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
         }
         await connector._handle_spoken_playback({"item": item}, item, _NOW, _OBSERVED)
 
-    if disposition == "filtered":
+    if disposition != "parked":
         assert not evidence_committed
         connector._mcp_client.call_tool.assert_not_awaited()
         await connector._flush_filtered_events()
@@ -81,15 +81,21 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
     conn.executemany.assert_awaited_once()
     _, rows = conn.executemany.await_args.args
     [inserted] = rows
-    assert inserted[8] == ("filtered" if disposition == "filtered" else "error")
+    assert inserted[8] == ("error" if disposition == "parked" else "filtered")
 
     # Model the owner replay request mutating only the row's status. The
     # real drain still claims/rebuilds/submits exactly the stored envelope.
+    replay_payload = dict(inserted[9])
+    if disposition == "legacy_preview":
+        # Pre-marker writers stored the same pruned preview payload.
+        assert replay_payload.pop(REPLAY_UNAVAILABLE_KEY)
+        assert replay_payload["payload"]["raw"] == {}
+        assert "idempotency_key" not in replay_payload.get("control", {})
     conn.fetch.return_value = [
         {
             "id": 1,
             "external_message_id": inserted[3],
-            "full_payload": inserted[9],
+            "full_payload": replay_payload,
             "received_at": inserted[0],
         }
     ]
@@ -102,4 +108,5 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
         assert conn.execute.await_args.args[1] == "replay_complete"
         assert submit_observations == [True, True]
     else:
-        assert False not in submit_observations
+        assert conn.execute.await_args.args[1] == "replay_failed"
+        assert submit_observations == []

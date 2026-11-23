@@ -1680,13 +1680,29 @@ class OwnTracksConnector:
             logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
-        """Replay drain submit: journal the stored envelope idempotently, then send it.
+        """Replay drain submit: confirm or write the evidence row, then send.
 
-        A legacy row parked before evidence-first has no points or journal row; the write is a
-        no-op for one that does. A failed write raises, so the drain records the failure and
-        nothing is sent (bu-uhbhzq.4).
+        A location replays only if its ``owntracks_points`` row exists (found by idempotency
+        key): the dedicated table keeps its own retention, so no generic journal copy is made,
+        and a missing row is not replayable. A transition or waypoint set journals the stored
+        envelope idempotently first (a legacy row parked before evidence-first has none). A
+        failed check or write raises, so the drain records the failure and nothing is sent
+        (bu-uhbhzq.4).
         """
-        await commit_envelope(self._db_pool, envelope)
+        key = str((envelope.get("control") or {}).get("idempotency_key") or "")
+        if key.endswith(":location"):
+            if self._db_pool is None:
+                raise EvidenceNotCommitted("no_pool")
+            try:
+                found = await self._db_pool.fetchval(
+                    f"SELECT 1 FROM {_LOCATION_EVIDENCE_TABLE} WHERE idempotency_key = $1", key
+                )
+            except Exception as exc:
+                raise EvidenceNotCommitted(type(exc).__name__) from None
+            if not found:
+                raise EvidenceNotCommitted("replay_evidence_missing")
+        else:
+            await commit_envelope(self._db_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     # ------------------------------------------------------------------

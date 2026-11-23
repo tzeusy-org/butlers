@@ -3125,10 +3125,50 @@ class SpotifyConnector:
             logger.warning("SpotifyConnector: replay drain failed: %s", exc)
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Replay drain submit: journal the stored envelope, then send it (no filter gate)."""
+        """Replay drain submit: confirm the evidence already exists, then send (no filter gate).
+
+        An owner replay bypasses policy re-evaluation; the gate applies to first delivery only.
+        Evidence is verified instead: the stored envelope must carry its original idempotency
+        key and that key must have a committed row in the envelope's own evidence table.
+        Nothing is written here, so a replay never makes a broader copy, and a preview with no
+        original identity is refused (it sends nothing).
+        """
         await self._submit_envelope(
-            envelope, evidence=lambda: self._write_envelope_evidence(envelope), replay=True
+            envelope, evidence=lambda: self._verify_replay_evidence(envelope), replay=True
         )
+
+    async def _verify_replay_evidence(self, envelope: dict[str, Any]) -> None:
+        key = str((envelope.get("control") or {}).get("idempotency_key") or "")
+        if not key or self._cursor_pool is None:
+            raise EvidenceNotCommitted("replay_evidence_missing" if not key else "no_pool")
+        if ":session:" in key:
+            query, args = (
+                f"SELECT 1 FROM {_SESSION_EVIDENCE_TABLE} WHERE idempotency_key = $1",
+                (key,),
+            )
+        elif ":spoken:" in key:
+            query, args = (
+                f"SELECT 1 FROM {_SPOKEN_SESSION_EVIDENCE_TABLE} WHERE idempotency_key = $1",
+                (key,),
+            )
+        else:
+            source = envelope.get("source") or {}
+            event = envelope.get("event") or {}
+            query, args = (
+                "SELECT 1 FROM connectors.evidence_journal WHERE source = $1 AND "
+                "endpoint_identity = $2 AND provider_id = $3 AND provider_revision = ''",
+                (
+                    str(source.get("channel", "")),
+                    str(source.get("endpoint_identity", "")),
+                    str(event.get("external_event_id", "")),
+                ),
+            )
+        try:
+            found = await self._cursor_pool.fetchval(query, *args)
+        except Exception as exc:
+            raise EvidenceNotCommitted(type(exc).__name__) from None
+        if not found:
+            raise EvidenceNotCommitted("replay_evidence_missing")
 
     # ------------------------------------------------------------------
     # Health state callbacks

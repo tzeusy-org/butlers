@@ -14,9 +14,13 @@ scrubbing. That ceiling applies to the generic journal only: a dedicated evidenc
 its own documented retention (for OwnTracks, `connectors.owntracks_points.raw_payload` and the
 Chronicler location-retention contract in `docs/connectors/owntracks.md`). A tier-3 or
 policy-blocked event that is never submitted SHALL write no row, and the filtered row it
-leaves SHALL be marked not replayable: replay of any event SHALL write its evidence before
-it submits, and an event whose evidence cannot be rebuilt SHALL be refused, never sent as a
-preview alone.
+leaves SHALL NOT be replayable as evidence. An explicit owner replay bypasses filter
+re-evaluation (the Replay Queue Drain Loop requirement): the policy gate applies to first
+delivery only, and evidence validation applies to both. Before a replay submits, the stored
+envelope SHALL be verified: it SHALL carry its original idempotency key, and evidence for it
+SHALL already exist or be rebuildable from the item's own dedicated table. A replay SHALL NOT
+create a broader copy of a row that a dedicated table already holds. Anything that fails the
+check is not replayable: it sends nothing and writes no evidence.
 
 ID: REQ-connector-base-spec-015
 Source: owner decision run24-inbox-not-archive (bu-uhbhzq.4, 2026-11-22); RFC 0014 D2; REQ-connector-owntracks-001
@@ -37,9 +41,15 @@ Scope: v1-mandatory
 
 #### Scenario: Every Spotify envelope takes one submit path
 
-- **WHEN** the Spotify connector sends a closed session, spoken start, context start, listening digest, gap-fill digest or replay
+- **WHEN** the Spotify connector first sends a closed session, spoken start, context start, listening digest or gap-fill digest
 - **THEN** it SHALL pass the ingestion-policy gate, write that envelope's evidence, and only then submit
 - **AND** a failed write, or a failed submit whose park is not durable, SHALL retain the item for the next poll
+
+#### Scenario: A replay verifies evidence and never re-runs policy
+
+- **WHEN** an owner replays a parked Spotify or OwnTracks item
+- **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row by idempotency key, or a journal row)
+- **AND** a preview with no original idempotency key, or an OwnTracks location whose `owntracks_points` row is missing, SHALL be refused with nothing sent
 
 #### Scenario: Duplicates collapse and revisions append
 

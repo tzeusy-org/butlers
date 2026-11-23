@@ -68,3 +68,45 @@ async def test_legacy_owntracks_parked_event_gets_journal_row_before_replay(kind
     conn.fetch.assert_awaited_once()
     assert conn.execute.await_args.args[1] == "replay_complete"
     assert submit_observations == [True]
+
+
+async def _location_replay(found):
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    connector = owntracks.OwnTracksConnector(
+        owntracks.OwnTracksConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"),
+        webhook_token="synthetic-fixture",
+    )
+    observed = datetime(2026, 1, 1, tzinfo=UTC)
+    body = {"_type": "location", "tid": "XY", "tst": int(observed.timestamp()), "lat": 1, "lon": 2}
+    envelope = owntracks.build_location_envelope(body, "owntracks:XY", observed.isoformat(), "full")
+    pool = SimpleNamespace(fetchval=AsyncMock(return_value=found))
+    connector._db_pool = pool
+    connector._mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
+    return connector, envelope, pool
+
+
+async def test_a_location_replay_checks_its_point_and_writes_no_journal_copy():
+    connector, envelope, pool = await _location_replay(found=1)
+
+    await connector._submit_envelope(envelope)
+
+    pool.fetchval.assert_awaited_once()
+    query, key = pool.fetchval.await_args.args
+    assert "connectors.owntracks_points" in query and "evidence_journal" not in query
+    assert key == envelope["control"]["idempotency_key"]
+    connector._mcp_client.call_tool.assert_awaited_once()
+
+
+async def test_a_location_replay_without_its_point_sends_nothing():
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector, envelope, pool = await _location_replay(found=None)
+
+    with pytest.raises(EvidenceNotCommitted):
+        await connector._submit_envelope(envelope)
+
+    pool.fetchval.assert_awaited_once()
+    connector._mcp_client.call_tool.assert_not_awaited()
