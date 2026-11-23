@@ -147,3 +147,41 @@ async def test_an_allowed_gap_fill_writes_evidence_and_the_track_rows(connector,
     connector._mcp_client.call_tool.assert_awaited_once()
     journal.assert_awaited_once()
     assert connector._last_recently_played_cursor == str(int(_NOW.timestamp() * 1000))
+
+
+async def test_a_null_name_and_a_nul_uri_are_normalized_where_they_are_read(connector):
+    """A null name or a NUL in the uri must not make a batch that never persists."""
+    connector._get_recently_played = AsyncMock(
+        return_value=[
+            {
+                "track": {"id": "a", "uri": "spotify:track:\x00a", "name": None},
+                "played_at": _NOW.isoformat(),
+            }
+        ]
+    )
+    connector._ingestion_policy = None
+    seen = []
+
+    async def observed(track_uri, played_at_ms):
+        seen.append(track_uri)
+        return False
+
+    connector._gap_fill_play_already_observed = observed
+    persist = AsyncMock(return_value=True)
+    connector._persist_gap_fill_track_plays = persist
+    journal = AsyncMock()
+    spotify_commit = journal
+    import butlers.connectors.spotify as module
+
+    original = module.commit_envelope
+    module.commit_envelope = spotify_commit
+    try:
+        await connector._poll_recently_played(_NOW, _NOW.isoformat())
+    finally:
+        module.commit_envelope = original
+
+    assert seen == ["spotify:track:a"]  # the lookup never sees the NUL
+    [row] = persist.await_args.args[0]
+    assert row["track_uri"] == "spotify:track:a" and row["track_name"] == "unknown"
+    assert connector._pending_gap_persist is None
+    assert connector._last_recently_played_cursor == str(int(_NOW.timestamp() * 1000))

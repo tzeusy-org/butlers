@@ -200,6 +200,13 @@ spotify_token_refreshes_total = Counter(
 # ---------------------------------------------------------------------------
 
 
+def _plain_text(value: Any, fallback: str) -> str:
+    """A string field from the API with NUL removed; *fallback* when it is missing or empty."""
+    if not isinstance(value, str):
+        return fallback
+    return value.replace("\x00", "") or fallback
+
+
 @dataclass
 class _PendingGapPersist:
     """A delivered gap-fill digest whose track-play rows are not yet committed."""
@@ -2639,9 +2646,13 @@ class SpotifyConnector:
 
         for item_wrapper in items_ordered:
             track = item_wrapper.get("track") or {}
-            track_id = track.get("id", "")
-            track_name = track.get("name", "unknown")
-            track_uri = track.get("uri") or (f"spotify:track:{track_id}" if track_id else "")
+            # Normalized once, where it is read: Postgres text rejects NUL and the API can send
+            # null, either of which would make a batch that never persists.
+            track_id = _plain_text(track.get("id"), "")
+            track_name = _plain_text(track.get("name"), "unknown")
+            track_uri = _plain_text(
+                track.get("uri"), f"spotify:track:{track_id}" if track_id else ""
+            )
             duration_ms_raw = track.get("duration_ms")
             gap_duration_ms = (
                 duration_ms_raw
