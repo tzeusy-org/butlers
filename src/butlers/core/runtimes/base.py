@@ -34,7 +34,7 @@ class JobLaunchRefused(RuntimeError):
     """
 
     def __init__(self, category: str, message: str | None = None) -> None:
-        super().__init__(message or category)
+        super().__init__(message or f"launch_refused:{category}")
         self.category = category
 
 

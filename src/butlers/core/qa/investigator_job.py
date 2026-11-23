@@ -88,6 +88,7 @@ def build_investigator_job(
     model_proxy_url: str | None = None,
     containment: str = "pod",
     resources: dict[str, dict[str, str]] | None = None,
+    working_dir: str = WORKSPACE_MOUNT,
 ) -> dict[str, Any]:
     """Render the Job manifest for one attempt (initial investigation or review follow-up).
 
@@ -98,6 +99,8 @@ def build_investigator_job(
     """
     if not command:
         raise InvestigatorJobError("a container command is required")
+    if working_dir != WORKSPACE_MOUNT and not working_dir.startswith(WORKSPACE_MOUNT + "/"):
+        raise InvestigatorJobError("working_dir must be inside the workspace mount")
     if not MIN_DEADLINE_S <= deadline_s <= MAX_DEADLINE_S:
         raise InvestigatorJobError(
             f"deadline_s must be between {MIN_DEADLINE_S} and {MAX_DEADLINE_S} seconds"
@@ -127,7 +130,7 @@ def build_investigator_job(
         "name": CONTAINER_NAME,
         "image": image,
         "command": list(command),
-        "workingDir": WORKSPACE_MOUNT,
+        "workingDir": working_dir,
         "env": env,
         "securityContext": {
             "allowPrivilegeEscalation": False,

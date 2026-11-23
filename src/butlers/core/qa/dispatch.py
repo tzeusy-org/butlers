@@ -89,6 +89,7 @@ from butlers.core.healing.tracking import (
 )
 from butlers.core.healing.worktree import (
     WorktreeCreationError,
+    _branch_name,
     create_healing_worktree,
     remove_healing_worktree,
 )
@@ -101,6 +102,12 @@ from butlers.core.qa.findings import (
     update_finding_dedup_reason,
     update_finding_dispatch_queued,
 )
+from butlers.core.qa.job_isolation import (
+    JobIsolation,
+    cleanup_attempt,
+    import_artifacts,
+    prepare_attempt_clone,
+)
 from butlers.core.qa.journal import (
     record_escalated_event,
     record_event,
@@ -111,9 +118,13 @@ from butlers.core.qa.journal import (
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
-from butlers.core.qa.publication.export import GitIdentity
+from butlers.core.qa.publication.export import ExportRefused, GitIdentity
+from butlers.core.qa.publication.proposal import (
+    _NOTES_FILE as _PR_NOTES_FILE,
+)
 from butlers.core.qa.publication.proposal import (
     publish_investigation,
+    resolve_branch_head,
     retain_unpublished_proposal,
 )
 from butlers.core.qa.publication.publisher import (
@@ -372,6 +383,9 @@ class QaDispatchConfig:
     publication_hold_days: int = 7
     """Days a retained unpublished proposal holds its fingerprint while no publisher exists;
     capped at the 30-day export retention."""
+    job_isolation: JobIsolation | None = None
+    """Run each attempt in a per-attempt credential-free Job (bu-ejow5p.11). ``None`` (the
+    default) keeps the in-daemon worktree path; the isolated path ships dark."""
     publisher: QaPublisher | None = None
     """Trusted deterministic publisher.  ``None`` (the production default) disables
     publication: a committed investigation fails ``publication_unavailable``."""
@@ -583,6 +597,20 @@ async def _detect_no_op_branch(
     except Exception:  # noqa: BLE001
         logger.debug("_detect_no_op_branch: subprocess failed, assuming not a no-op", exc_info=True)
         return False
+
+
+async def _job_branch_is_no_op(seal_root: Path, branch_name: str, base_sha: str | None) -> bool:
+    """No-op detection for an isolated attempt, without running git in the pod-written clone.
+
+    The branch head is read straight from the ref files (no symlinks, 40-hex only); it equals the
+    trusted base commit exactly when the agent committed nothing. Anything unreadable is "not a
+    no-op", so the sealer decides (and refuses) rather than this check guessing.
+    """
+    try:
+        _objects, head = resolve_branch_head(seal_root, branch_name)
+    except ExportRefused:
+        return False
+    return base_sha is not None and head == base_sha
 
 
 async def _resolve_pr_by_head(
@@ -1212,7 +1240,14 @@ async def _run_investigation_session(
             attempt_id=attempt_id,
             dashboard_base_url=config.dashboard_base_url,
         )
-        agent_cwd = _prepare_agent_workspace(worktree_path)
+        isolation = config.job_isolation
+        seal_root = repo_root
+        agent_cwd: Path | None = None
+        job_launch = None
+        if isolation is None:
+            agent_cwd = _prepare_agent_workspace(worktree_path)
+        else:
+            job_launch = isolation.launch(attempt_id, deadline_s=config.timeout_minutes * 60)
 
         # Build sandboxed environment for the agent
         sandbox_env = build_agent_env(
@@ -1233,11 +1268,25 @@ async def _run_investigation_session(
             prompt=prompt,
             trigger_source="qa",
             complexity=EXECUTOR_COMPLEXITY,
-            cwd=str(agent_cwd),
+            cwd=str(agent_cwd) if agent_cwd is not None else None,
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
             timeout_override=config.timeout_minutes * 60,
+            qa_job_launch=job_launch,
         )
+
+        if isolation is not None:
+            # The pod is terminal (or never ran). Everything the daemon reads from the attempt
+            # from here on comes from the daemon-owned scratch copy; the pod-written clone is
+            # only ever opened by the in-process sealer, never by git.
+            scratch = await asyncio.to_thread(
+                import_artifacts,
+                isolation,
+                attempt_id,
+                [_UNFIXABLE_FILE, _INVESTIGATION_NOTES_JSON, _PR_NOTES_FILE],
+            )
+            seal_root = worktree_path
+            worktree_path = scratch
 
         if result.session_id is not None:
             # Capture the session_id locally; do NOT call update_attempt_status here because
@@ -1366,7 +1415,11 @@ async def _run_investigation_session(
         # push or open a PR from the agent-controlled worktree until the isolated
         # publisher lands (bu-mc01y5.6-.7).  Only no-op detection (local git log,
         # no credential) still runs so empty investigations stay "unfixable".
-        if await _detect_no_op_branch(repo_root, branch_name, build_agent_env()):
+        if (
+            await _job_branch_is_no_op(seal_root, branch_name, base_sha)
+            if isolation is not None
+            else await _detect_no_op_branch(repo_root, branch_name, build_agent_env())
+        ):
             # The investigation agent produced no commits — classify as unfixable
             # so the fingerprint is not left in an active state and a future
             # investigation cycle will not re-attempt the same finding.
@@ -1413,11 +1466,14 @@ async def _run_investigation_session(
             )
             return
 
-        diff_snapshot = await _capture_commit_diff_snapshot(worktree_path)
+        # No git runs in a pod-written clone: an isolated attempt records no diff snapshot yet.
+        diff_snapshot = (
+            [] if isolation is not None else await _capture_commit_diff_snapshot(worktree_path)
+        )
         if config.publisher is not None:
             publication = await publish_investigation(
                 config.publisher,
-                repo_root=repo_root,
+                repo_root=seal_root,
                 worktree_path=worktree_path,
                 attempt_id=attempt_id,
                 finding=finding,
@@ -1471,7 +1527,7 @@ async def _run_investigation_session(
         )
         refusal = await retain_unpublished_proposal(
             pool,
-            repo_root=repo_root,
+            repo_root=seal_root,
             attempt_id=attempt_id,
             branch_name=branch_name,
             base_sha=base_sha,
@@ -1661,6 +1717,8 @@ async def _run_investigation_session(
             otel_span=_inv_span,
         )
     finally:
+        if config.job_isolation is not None:
+            await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
         if metrics is not None:
             metrics.recovery_workflow_end(workflow="qa")
         if _HAS_OTEL and _inv_span is not None:
@@ -3111,14 +3169,30 @@ async def dispatch_qa_investigation(
         logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
         try:
-            worktree_path, branch_name = await create_healing_worktree(
-                repo_root,
-                finding.source_butler,
-                fp,
-                prefix=_QA_PREFIX,
-                base_ref=_base_ref,
-            )
-        except WorktreeCreationError as wt_exc:
+            if config.job_isolation is not None:
+                # Independent clone in the exchange: no shared .git with the daemon's repository.
+                branch_name = _branch_name(finding.source_butler, fp, prefix=_QA_PREFIX)
+                worktree_path = await prepare_attempt_clone(
+                    config.job_isolation,
+                    attempt_id=attempt_id,
+                    trusted_repo=repo_root,
+                    base_sha=_base_ref,
+                    branch_name=branch_name,
+                    author=(
+                        (git_author_name.strip(), git_author_email.strip())
+                        if git_author_name and git_author_email
+                        else None
+                    ),
+                )
+            else:
+                worktree_path, branch_name = await create_healing_worktree(
+                    repo_root,
+                    finding.source_butler,
+                    fp,
+                    prefix=_QA_PREFIX,
+                    base_ref=_base_ref,
+                )
+        except (WorktreeCreationError, RuntimeError, OSError) as wt_exc:
             logger.warning(
                 "QA dispatch failed: worktree creation error (fingerprint=%s): %s",
                 fp[:12],
@@ -3128,7 +3202,9 @@ async def dispatch_qa_investigation(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=f"Worktree creation failed: {wt_exc.git_output or str(wt_exc)}",
+                error_detail=(
+                    f"Worktree creation failed: {getattr(wt_exc, 'git_output', None) or wt_exc}"
+                ),
             )
             return QaDispatchResult(
                 accepted=False,
