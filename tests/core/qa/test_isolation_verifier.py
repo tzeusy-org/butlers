@@ -27,7 +27,9 @@ def _job():
     )
 
 
-def test_the_probe_job_is_the_production_template_with_only_the_command_changed() -> None:
+def test_the_probe_job_is_the_production_template_with_only_the_command_and_containment_label_changed() -> (
+    None
+):
     probe = _job()
     prod = build_investigator_job(
         attempt_id=uuid.UUID(int=1),
@@ -37,6 +39,7 @@ def test_the_probe_job_is_the_production_template_with_only_the_command_changed(
         exchange_claim="butlers-qa-exchange",
         command=["x"],
         deadline_s=300,
+        containment="probe",  # the one label the probe changes, so the sweep ignores it
     )
     probe_c = copy.deepcopy(probe)
     prod_c = copy.deepcopy(prod)
@@ -59,10 +62,6 @@ def test_each_inverse_control_changes_something_and_leaves_the_original_alone(co
     assert mutated != job
 
 
-def test_host_pid_is_the_only_control_expected_to_be_refused_by_admission() -> None:
-    assert [c.name for c in iv.INVERSE_CONTROLS if c.expect == iv.VAP_REFUSED] == ["host_pid"]
-
-
 def _receipt(**outcomes):
     return {
         "passed": all(v == "pass" for v in outcomes.values()),
@@ -73,29 +72,35 @@ def _receipt(**outcomes):
 def test_a_control_needs_red_when_removed_and_pass_when_restored() -> None:
     control = next(c for c in iv.INVERSE_CONTROLS if c.name == "run_as_root")
     good = iv.judge_control(control, _receipt(uid_not_root="fail"), _receipt(uid_not_root="pass"))
-    assert good.ok
+    assert good.ok and good.caught_by == "probe"
     never_red = iv.judge_control(
         control, _receipt(uid_not_root="pass"), _receipt(uid_not_root="pass")
     )
-    assert not never_red.ok and not never_red.red_when_removed
+    assert not never_red.ok and never_red.caught_by is None
     stays_red = iv.judge_control(
         control, _receipt(uid_not_root="fail"), _receipt(uid_not_root="fail")
     )
     assert not stays_red.ok and not stays_red.green_when_restored
 
 
-def test_a_missing_check_is_never_a_pass() -> None:
+def test_an_admission_refusal_is_red_for_every_control_and_records_the_layer() -> None:
+    for control in iv.INVERSE_CONTROLS:
+        restored = _receipt(**{control.expect: "pass"})
+        verdict = iv.judge_control(control, None, restored, removed_refused=True)
+        assert verdict.ok and verdict.caught_by == "admission", control.name
+
+
+def test_a_missing_check_or_receipt_is_never_a_catch() -> None:
     control = next(c for c in iv.INVERSE_CONTROLS if c.name == "run_as_root")
     assert not iv.judge_control(control, _receipt(other="fail"), _receipt(other="pass")).ok
+    assert not iv.judge_control(control, None, _receipt(uid_not_root="pass")).ok
     assert iv.baseline_verdict(_receipt(uid_not_root="pass")) != []
     assert iv.baseline_verdict(None) == list(iv.BASELINE_CHECKS)
 
 
-def test_host_pid_needs_a_refusal_and_a_passing_restore() -> None:
-    control = next(c for c in iv.INVERSE_CONTROLS if c.name == "host_pid")
-    ok_restored = _receipt(uid_not_root="pass")
-    assert iv.judge_control(control, None, ok_restored).ok
-    assert not iv.judge_control(control, _receipt(uid_not_root="pass"), ok_restored).ok
+def test_probe_jobs_carry_the_probe_containment_label_so_the_sweep_ignores_them() -> None:
+    job = _job()
+    assert job["metadata"]["labels"]["butlers.io/qa-containment"] == "probe"
 
 
 def test_the_canary_pod_carries_only_synthetic_secret_references() -> None:

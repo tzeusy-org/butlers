@@ -31,7 +31,6 @@ BASELINE_CHECKS: Final[tuple[str, ...]] = (
     "app_is_read_only",
     "workspace_writable",
 )
-VAP_REFUSED: Final[str] = "refused_by_admission"
 
 
 def probe_command(
@@ -57,7 +56,12 @@ def probe_command(
 
 
 def build_probe_job(attempt_id: uuid.UUID, **job_args: Any) -> dict[str, Any]:
-    """The production template with the probe as its command (``command`` must be passed)."""
+    """The production template with the probe as its command (``command`` must be passed).
+
+    The containment label is ``probe`` so the daemon's orphan sweep and Job count, which select
+    ``pod``, never touch a verifier's Job.
+    """
+    job_args.setdefault("containment", "probe")
     return build_investigator_job(attempt_id=attempt_id, **job_args)
 
 
@@ -94,11 +98,11 @@ def _no_tracker_egress_exclusion(job: dict[str, Any]) -> None:
 
 @dataclass(frozen=True)
 class InverseControl:
-    """One hardening removed, and what must observably break."""
+    """One hardening removed, and the probe check that must catch it if admission does not."""
 
     name: str
     mutate: Callable[[dict[str, Any]], None]
-    #: The probe check that must go RED, or ``VAP_REFUSED`` when admission must refuse the Job.
+    #: The probe check that must go RED when the Job is admitted.
     expect: str
 
 
@@ -106,7 +110,7 @@ INVERSE_CONTROLS: Final[tuple[InverseControl, ...]] = (
     InverseControl("automount_on", _automount_on, "no_service_account_token"),
     InverseControl("run_as_root", _run_as_root, "uid_not_root"),
     InverseControl("writable_root", _writable_root, "root_is_read_only"),
-    InverseControl("host_pid", _host_pid, VAP_REFUSED),
+    InverseControl("host_pid", _host_pid, "no_foreign_processes"),
     InverseControl(
         "no_tracker_egress_exclusion",
         _no_tracker_egress_exclusion,
@@ -124,9 +128,14 @@ def render_inverse(job: Mapping[str, Any], control: InverseControl) -> dict[str,
 
 @dataclass(frozen=True)
 class ControlVerdict:
+    """RED when the hardening is removed (caught by a layer), PASS once restored."""
+
     name: str
     red_when_removed: bool
     green_when_restored: bool
+    #: ``"admission"`` (the Job was refused), ``"probe"`` (admitted, the named check failed) or
+    #: ``None`` (nothing caught it: the control proves nothing).
+    caught_by: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -135,7 +144,7 @@ class ControlVerdict:
 
 def _outcome(receipt: Mapping[str, Any] | None, check: str) -> str:
     if receipt is None:
-        return VAP_REFUSED
+        return "no_receipt"
     for row in receipt.get("checks", []):
         if row.get("check") == check:
             return str(row.get("outcome"))
@@ -146,19 +155,24 @@ def judge_control(
     control: InverseControl,
     removed: Mapping[str, Any] | None,
     restored: Mapping[str, Any] | None,
+    *,
+    removed_refused: bool = False,
 ) -> ControlVerdict:
-    """RED when the hardening is removed, PASS once restored; a missing check is never a pass.
+    """Score one inverse control; a missing check or receipt is never a catch.
 
-    ``removed`` is ``None`` when admission refused the mutated Job (the expected result for the
-    ``host_pid`` control); ``restored`` must always be a real receipt.
+    ``removed_refused`` is true when admission refused the mutated Job: under the default Deny
+    action that is the expected catch for every control, and it counts as RED. When the Job was
+    admitted (Audit mode, or a hole in the policy), the probe's named check must fail instead.
+    The restored template must always produce a real receipt that passes the named check.
     """
-    if control.expect == VAP_REFUSED:
-        red = removed is None
-        green = restored is not None and restored.get("passed") is True
-        return ControlVerdict(control.name, red, green)
-    red = removed is not None and _outcome(removed, control.expect) == "fail"
+    if removed_refused:
+        caught_by: str | None = "admission"
+    elif removed is not None and _outcome(removed, control.expect) == "fail":
+        caught_by = "probe"
+    else:
+        caught_by = None
     green = restored is not None and _outcome(restored, control.expect) == "pass"
-    return ControlVerdict(control.name, red, green)
+    return ControlVerdict(control.name, caught_by is not None, green, caught_by)
 
 
 def baseline_verdict(receipt: Mapping[str, Any] | None) -> list[str]:

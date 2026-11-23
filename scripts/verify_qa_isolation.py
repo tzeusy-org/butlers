@@ -9,9 +9,13 @@ production), reads each probe's content-blind receipt from the pod log and judge
 2. each inverse control (one hardening removed) goes RED, and the restored template passes it.
 
 A synthetic canary Secret (random value, piped to kubectl on stdin, never printed) backs a
-canary-publisher pod; the investigator must not read it or reach the pod. Nothing real is used:
-no GitHub credential, no provider mutation. Cluster acts are the owner's: this script is run by a
-human and refuses any namespace that is not a ``-dev`` namespace.
+canary-publisher pod; the investigator must not reach that pod. The canary file and environment
+live only in the canary pod, so the investigator's forbidden-path and forbidden-env checks are
+sanity checks that the inverse controls cannot break open; the load-bearing proof of secrecy is
+the refused connection to the canary pod and the absence of any mounted secret. Nothing real is
+used: no GitHub credential, no provider mutation. Cluster acts are the owner's: this script is run
+by a human and refuses any namespace that is not a ``-dev`` namespace, and any kube context that
+does not look like a dev cluster.
 
 The output is a receipt of check names, outcomes and digests, safe to attach to a review.
 """
@@ -32,6 +36,7 @@ from butlers.core.qa import isolation_verifier as iv
 
 _DEV_NAMESPACE = re.compile(r"^[a-z0-9-]+-dev$")
 _CANARY_PORT = 9
+_DEV_CONTEXT = re.compile(r"dev|k3d")
 
 
 def _kubectl(args: list[str], *, stdin: str | None = None, check: bool = True) -> str:
@@ -101,12 +106,15 @@ def _apply(args: argparse.Namespace, manifest: dict[str, Any]) -> bool:
     return result.returncode == 0
 
 
-def _run_one(args: argparse.Namespace, manifest: dict[str, Any]) -> dict[str, Any] | None:
+def _run_one(
+    args: argparse.Namespace, manifest: dict[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    """Apply and read one probe: ``(receipt, refused_by_admission)``."""
     if not _apply(args, manifest):
-        return None
+        return None, True
     name = manifest["metadata"]["name"]
     _wait_job(args.namespace, name, 300)
-    return _receipt(args.namespace, name)
+    return _receipt(args.namespace, name), False
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
@@ -134,18 +142,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
         baseline_manifest = _probe_job(args, host)
         created.append(("job", baseline_manifest["metadata"]["name"]))
-        baseline = _run_one(args, baseline_manifest)
-        failures = iv.baseline_verdict(baseline)
+        baseline, baseline_refused = _run_one(args, baseline_manifest)
+        failures = iv.baseline_verdict(None if baseline_refused else baseline)
 
         verdicts = []
         for control in iv.INVERSE_CONTROLS:
             removed_manifest = iv.render_inverse(_probe_job(args, host), control)
             created.append(("job", removed_manifest["metadata"]["name"]))
-            removed = _run_one(args, removed_manifest)
+            removed, removed_refused = _run_one(args, removed_manifest)
             restored_manifest = _probe_job(args, host)
             created.append(("job", restored_manifest["metadata"]["name"]))
-            restored = _run_one(args, restored_manifest)
-            verdicts.append(iv.judge_control(control, removed, restored))
+            restored, _ = _run_one(args, restored_manifest)
+            verdicts.append(
+                iv.judge_control(control, removed, restored, removed_refused=removed_refused)
+            )
     finally:
         for kind, name in created:
             _kubectl(
@@ -162,6 +172,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "name": v.name,
                 "red_when_removed": v.red_when_removed,
                 "green_when_restored": v.green_when_restored,
+                "caught_by": v.caught_by,
             }
             for v in verdicts
         ],
@@ -197,6 +208,13 @@ def main(argv: list[str] | None = None) -> int:
     if not _DEV_NAMESPACE.match(args.namespace):
         sys.stderr.write("refusing: the verifier only runs in a -dev namespace\n")
         return 2
+    if args.mode == "run":
+        context = _kubectl(["config", "current-context"], check=False).strip()
+        if not _DEV_CONTEXT.search(context):
+            sys.stderr.write(
+                "refusing: the current kube context does not look like a dev cluster\n"
+            )
+            return 2
     result = render(args) if args.mode == "render" else run(args)
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0 if args.mode == "render" or result["passed"] else 1

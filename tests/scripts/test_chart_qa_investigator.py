@@ -510,3 +510,25 @@ def test_the_pod_policy_also_judges_ephemeral_container_updates(on):
     assert any(
         "pods/ephemeralcontainers" in r["resources"] and "UPDATE" in r["operations"] for r in rules
     )
+
+
+def test_every_verifier_inverse_control_is_refused_by_admission_and_the_restored_probe_is_not(on):
+    """Under the default Deny action admission catches all five controls; the verifier scores
+    that as RED (caught_by=admission). The restored probe Job must be admitted."""
+    from butlers.core.qa import isolation_verifier as iv
+
+    probe = iv.build_probe_job(
+        _ATTEMPT,
+        release="butlers",
+        namespace=_NS,
+        image=_IMAGE,
+        exchange_claim="butlers-qa-exchange",
+        command=iv.probe_command(),
+        deadline_s=300,
+    )
+    on_docs = on
+    assert _cel_admit(on_docs, "job", probe, _LAUNCHER) == []
+    for control in iv.INVERSE_CONTROLS:
+        mutated = iv.render_inverse(probe, control)
+        failures = _cel_admit(on_docs, "job", mutated, _LAUNCHER)
+        assert failures, f"{control.name} was admitted by the Job policy"
