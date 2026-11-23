@@ -36,6 +36,7 @@ from butlers.api.models.memory import (
     _DEFAULT_EMBEDDING_MODEL,
     ButlerMemoryStats,
     CompactionLogEntry,
+    ConfirmLegacyRuleEndorsement,
     ConsolidationStatus,
     EntityDetail,
     EntityGraphCoverage,
@@ -46,6 +47,8 @@ from butlers.api.models.memory import (
     FactVouch,
     GraphHealthCoverage,
     GraphHealthPoolCoverage,
+    LegacyRuleEndorsementPreview,
+    LegacyRuleEndorsementSelection,
     MemoryActivity,
     MemoryCatalogSearchResult,
     MemoryGap,
@@ -76,8 +79,10 @@ from butlers.modules.memory.storage import (
     FactNotEndorsableError,
     RuleNotEndorsableError,
     endorse_fact,
+    endorse_legacy_rules,
     endorse_rule,
     get_links,
+    preview_legacy_rule_endorsements,
 )
 from butlers.modules.memory.tools.entities import SYSTEM_METADATA_KEYS
 
@@ -252,6 +257,7 @@ async def _fan_out_memory_queries(
     butler_filter: str | None = None,
     tracker: DegradedSources,
     expected_absent_columns: tuple[str, ...] = (),
+    required_sources: list[str] | None = None,
 ) -> list[object]:
     """Run a query across candidate pools and skip pools without memory schema.
 
@@ -264,11 +270,21 @@ async def _fan_out_memory_queries(
     is recorded on it -- callers surface ``tracker.names`` in the response
     envelope or choose an honest error response, so a genuinely unreachable
     pool is never indistinguishable from a truthful empty result.
+    A supplied module census names required sources even when startup never
+    established their pools. A missing pool or relation then counts as degraded.
     """
-    if butler_filter is not None:
+    pools: list[tuple[str, object]]
+    if required_sources is not None:
+        pools = []
+        for name in required_sources:
+            try:
+                pools.append((name, db.pool(name)))
+            except KeyError:
+                tracker.mark(name, msg=f"required memory source for {query_name!r} has no pool")
+    elif butler_filter is not None:
         # Narrow to exactly one pool; return early when the butler is unknown.
         try:
-            pools: list[tuple[str, object]] = [(butler_filter, db.pool(butler_filter))]
+            pools = [(butler_filter, db.pool(butler_filter))]
         except KeyError:
             logger.debug(
                 "Butler %r not found in pool registry; returning empty for query %s",
@@ -286,7 +302,7 @@ async def _fan_out_memory_queries(
         try:
             return await query_fn(name, pool)
         except Exception as exc:
-            if not _is_missing_memory_schema_error(
+            if required_sources is not None or not _is_missing_memory_schema_error(
                 exc,
                 schema_absent_at_start=_memory_schema_absent_at_start(db, name),
                 expected_absent_columns=expected_absent_columns,
@@ -382,18 +398,26 @@ async def _resolve_entity_names(db: DatabaseManager, facts: list[Fact]) -> list[
     return facts
 
 
-async def _resolve_rule_provenance(db: DatabaseManager, rule: Rule) -> Rule:
+async def _resolve_rule_provenance(
+    db: DatabaseManager, rules: list[Rule], *, source_name: str | None = None
+) -> None:
     """Resolve author and endorser names without substituting the rule's subject or request."""
-    entity_ids = {eid for eid in (rule.authority_entity_id, rule.endorsed_by) if eid}
-    if entity_ids:
-        rows = await _any_pool(db).fetch(
-            "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1)",
-            [_uuid.UUID(eid) for eid in sorted(entity_ids)],
-        )
-        names = {str(row["id"]): row["canonical_name"] for row in rows}
-        rule.authority_entity_name = names.get(rule.authority_entity_id)
-        rule.endorsed_by_name = names.get(rule.endorsed_by)
-    return rule
+    entity_ids = {
+        eid for rule in rules for eid in (rule.authority_entity_id, rule.endorsed_by) if eid
+    }
+    if not entity_ids:
+        return
+    pool = db.pool(source_name) if source_name is not None else cast(asyncpg.Pool, _any_pool(db))
+    rows = await pool.fetch(
+        "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1)",
+        [_uuid.UUID(eid) for eid in sorted(entity_ids)],
+    )
+    names = {str(row["id"]): row["canonical_name"] for row in rows}
+    for rule in rules:
+        if rule.authority_entity_id is not None:
+            rule.authority_entity_name = names.get(rule.authority_entity_id)
+        if rule.endorsed_by is not None:
+            rule.endorsed_by_name = names.get(rule.endorsed_by)
 
 
 # ---------------------------------------------------------------------------
@@ -1529,14 +1553,20 @@ async def list_rules(
             0,
             row_limit,
         )
-        return total, list(rows)
+        return total, [dict(row, owning_source=butler_name) for row in rows]
 
     tracker = DegradedSources(logger)
+    required_sources = db.configured_butlers_with_module("memory") if held else None
+    if held and required_sources is None:
+        unavailable = set(db.configured_butler_names) - set(db.butler_names)
+        for name in sorted(unavailable):
+            tracker.mark(name, msg="configured source with unknown modules has no pool")
     per_pool = await _fan_out_memory_queries(
         db,
         query_name="rules",
         query_fn=_query_pool,
         tracker=tracker,
+        required_sources=required_sources,
     )
     total = sum(pool_total for pool_total, _ in per_pool)
     merged_rows: list[object] = []
@@ -1546,6 +1576,21 @@ async def list_rules(
     rows = merged_rows[offset : offset + limit]
 
     data = [_row_to_rule(r) for r in rows]
+
+    async def _resolve_source_provenance(source_name: str, rules: list[Rule]) -> None:
+        try:
+            await _resolve_rule_provenance(db, rules, source_name=source_name)
+        except (asyncpg.PostgresError, OSError, TimeoutError, KeyError):
+            tracker.mark(source_name, msg="rule attribution source unavailable")
+
+    if held:
+        source_rules: dict[str, list[Rule]] = {}
+        for rule in data:
+            if rule.owning_source is not None:
+                source_rules.setdefault(rule.owning_source, []).append(rule)
+        await asyncio.gather(
+            *(_resolve_source_provenance(name, group) for name, group in source_rules.items())
+        )
 
     meta_fields: dict[str, object] = {"total": total, "offset": offset, "limit": limit}
     if tracker.failed:
@@ -1594,7 +1639,8 @@ async def get_rule(
     if not rows:
         _raise_memory_detail_miss(resource="Rule", tracker=tracker)
 
-    rule = await _resolve_rule_provenance(db, _row_to_rule(rows[0]))
+    rule = _row_to_rule(rows[0])
+    await _resolve_rule_provenance(db, [rule])
     return ApiResponse[Rule](data=rule)
 
 
@@ -1745,17 +1791,105 @@ async def endorse_held_rule(
             continue
         if receipt is None:
             continue
-        return ApiResponse[RuleEndorsement](
-            data=RuleEndorsement(
-                rule_id=str(receipt["rule_id"]),
-                content_authority=receipt["content_authority"],
-                endorsed_at=str(receipt["endorsed_at"]) if receipt["endorsed_at"] else None,
-                endorsed_by=str(receipt["endorsed_by"]) if receipt["endorsed_by"] else None,
-                changed=receipt["changed"],
-            )
-        )
+        return ApiResponse[RuleEndorsement](data=_rule_endorsement_response(receipt))
 
     _raise_memory_detail_miss(resource="Rule", tracker=tracker)
+
+
+def _rule_endorsement_response(receipt: dict) -> RuleEndorsement:
+    return RuleEndorsement(
+        rule_id=str(receipt["rule_id"]),
+        content_authority=receipt["content_authority"],
+        endorsed_at=str(receipt["endorsed_at"]) if receipt["endorsed_at"] else None,
+        endorsed_by=str(receipt["endorsed_by"]) if receipt["endorsed_by"] else None,
+        changed=receipt["changed"],
+    )
+
+
+async def _legacy_endorsement_source(
+    db: DatabaseManager, rule_ids: list[_uuid.UUID]
+) -> tuple[str, asyncpg.Pool, str | None, _uuid.UUID]:
+    """Resolve one unambiguous existing source without trusting request metadata."""
+    required_sources = db.configured_butlers_with_module("memory")
+    if not required_sources:
+        raise HTTPException(status_code=503, detail="Rule sources are unavailable. Try again.")
+
+    async def _locate(name: str, pool: object) -> tuple[str, set[_uuid.UUID]] | None:
+        relation = _memory_relation(db, name, "rules")
+        rows = await cast(asyncpg.Pool, pool).fetch(
+            f"SELECT id FROM {relation} WHERE id = ANY($1::uuid[])", rule_ids
+        )
+        return (name, {row["id"] for row in rows}) if rows else None
+
+    tracker = DegradedSources(logger)
+    matches = cast(
+        list[tuple[str, set[_uuid.UUID]]],
+        await _fan_out_memory_queries(
+            db,
+            query_name="legacy_endorsement_source",
+            query_fn=_locate,
+            tracker=tracker,
+            required_sources=required_sources,
+        ),
+    )
+    if tracker.failed:
+        raise HTTPException(status_code=503, detail="Rule sources are unavailable. Try again.")
+    if len(matches) != 1 or matches[0][1] != set(rule_ids):
+        raise HTTPException(status_code=409, detail="Select existing legacy rules from one source.")
+
+    name, _ = matches[0]
+    pool = db.pool(name)
+    owner = await fetch_owner_entity_id(pool)
+    if owner is None:
+        raise HTTPException(status_code=503, detail="The dashboard owner identity is unavailable.")
+    return name, pool, _memory_source_schema(db, name), owner
+
+
+@router.post(
+    "/rules/endorse-legacy/preview",
+    response_model=ApiResponse[LegacyRuleEndorsementPreview],
+    dependencies=[Depends(require_dashboard_owner_control)],
+)
+async def preview_legacy_rule_endorsement(
+    selection: LegacyRuleEndorsementSelection, *, db: Db
+) -> ApiResponse[LegacyRuleEndorsementPreview]:
+    """Return the persisted guidance and digest without endorsing any rule."""
+    name, pool, schema, owner = await _legacy_endorsement_source(db, selection.rule_ids)
+    try:
+        preview = await preview_legacy_rule_endorsements(
+            pool, selection.rule_ids, memory_schema=schema, source_name=name, endorsed_by=owner
+        )
+    except RuleNotEndorsableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ApiResponse[LegacyRuleEndorsementPreview](
+        data=LegacyRuleEndorsementPreview.model_validate(preview)
+    )
+
+
+@router.post(
+    "/rules/endorse-legacy",
+    response_model=ApiResponse[list[RuleEndorsement]],
+    dependencies=[Depends(require_dashboard_owner_control)],
+)
+async def confirm_legacy_rule_endorsement(
+    selection: ConfirmLegacyRuleEndorsement, *, db: Db
+) -> ApiResponse[list[RuleEndorsement]]:
+    """Commit an eligible preview under the owning source's transaction."""
+    name, pool, schema, owner = await _legacy_endorsement_source(db, selection.rule_ids)
+    try:
+        receipts = await endorse_legacy_rules(
+            pool,
+            selection.rule_ids,
+            memory_schema=schema,
+            source_name=name,
+            endorsed_by=owner,
+            confirmation_digest=selection.confirmation_digest,
+        )
+    except RuleNotEndorsableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ApiResponse[list[RuleEndorsement]](
+        data=[_rule_endorsement_response(receipt) for receipt in receipts]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3061,6 +3195,7 @@ def _row_to_rule(r) -> Rule:
             else ("unresolved" if source_episode_id else None)
         ),
         source_butler=r["source_butler"],
+        owning_source=r.get("owning_source"),
         created_at=str(r["created_at"]),
         last_applied_at=str(r["last_applied_at"]) if r["last_applied_at"] else None,
         last_evaluated_at=str(r["last_evaluated_at"]) if r["last_evaluated_at"] else None,

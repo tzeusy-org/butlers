@@ -588,6 +588,8 @@ OP POST /api/memory/facts/{fact_id}/retract 5ae242e0fe9d
 OP POST /api/memory/facts/{fact_id}/vouch 1a6c55b8af49
 OP POST /api/memory/gaps/{gap_id}/dismiss 550159b8f877
 OP POST /api/memory/reembed 7836b979383e
+OP POST /api/memory/rules/endorse-legacy 76a845e18d9c
+OP POST /api/memory/rules/endorse-legacy/preview 0d6e3ceb1ecf
 OP POST /api/memory/rules/{rule_id}/endorse 9d85f99576fc
 OP POST /api/notifications/ack-failed 5338c3b3047a
 OP POST /api/notifications/{notification_id}/escalate 968f63b9f6db
@@ -1295,6 +1297,8 @@ ROUTE APIRoute POST '/api/memory/facts/{fact_id}/retract' name=retract_fact op=r
 ROUTE APIRoute POST '/api/memory/facts/{fact_id}/vouch' name=vouch_held_fact op=vouch_held_fact_api_memory_facts__fact_id__vouch_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/gaps/{gap_id}/dismiss' name=dismiss_memory_gap op=dismiss_memory_gap_api_memory_gaps__gap_id__dismiss_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/reembed' name=run_reembed op=run_reembed_api_memory_reembed_post tags=memory schema=True
+ROUTE APIRoute POST '/api/memory/rules/endorse-legacy' name=confirm_legacy_rule_endorsement op=confirm_legacy_rule_endorsement_api_memory_rules_endorse_legacy_post tags=memory schema=True
+ROUTE APIRoute POST '/api/memory/rules/endorse-legacy/preview' name=preview_legacy_rule_endorsement op=preview_legacy_rule_endorsement_api_memory_rules_endorse_legacy_preview_post tags=memory schema=True
 ROUTE APIRoute POST '/api/memory/rules/{rule_id}/endorse' name=endorse_held_rule op=endorse_held_rule_api_memory_rules__rule_id__endorse_post tags=memory schema=True
 ROUTE APIRoute POST '/api/notifications/ack-failed' name=ack_failed_notifications op=ack_failed_notifications_api_notifications_ack_failed_post tags=notifications schema=True
 ROUTE APIRoute POST '/api/notifications/{notification_id}/escalate' name=escalate_notification op=escalate_notification_api_notifications__notification_id__escalate_post tags=notifications schema=True
@@ -1571,6 +1575,7 @@ SCHEMA ApiResponse_InstanceFacts_ 6a1d5bd34069
 SCHEMA ApiResponse_InventoryData_ c431d2927164
 SCHEMA ApiResponse_KillResponse_ 261891711dc0
 SCHEMA ApiResponse_LatencyStats_ 0d3ab6404371
+SCHEMA ApiResponse_LegacyRuleEndorsementPreview_ 2e4afc66c684
 SCHEMA ApiResponse_MCPToolCallResponse_ 928ae270cea7
 SCHEMA ApiResponse_MemoryAccess_ 7119c44bf1a5
 SCHEMA ApiResponse_MemoryGapDismissal_ 2801ba2697a3
@@ -1703,6 +1708,7 @@ SCHEMA ApiResponse_list_RegistryEntry__ 28e9421e5711
 SCHEMA ApiResponse_list_ReplayHistoryEntry__ 708b7d8f28cb
 SCHEMA ApiResponse_list_RoutineRow__ 834ad1fe85a0
 SCHEMA ApiResponse_list_RoutingInstruction__ 63a73dca509c
+SCHEMA ApiResponse_list_RuleEndorsement__ 3c9745241509
 SCHEMA ApiResponse_list_SavedViewEntry__ 7b652973cd96
 SCHEMA ApiResponse_list_ScheduleCost__ 872f699ebccc
 SCHEMA ApiResponse_list_Schedule__ e15d7ae1d7b6
@@ -1909,6 +1915,7 @@ SCHEMA ConditionCreateRequest 426a7c203a9d
 SCHEMA ConditionEntry 3a9f1a0713d0
 SCHEMA ConditionUpdateRequest ac4ca7f5f87f
 SCHEMA ConditionsFacts fbf835dad1a9
+SCHEMA ConfirmLegacyRuleEndorsement 0475aa108b6f
 SCHEMA ConflictEventRef efcc18dfe2f9
 SCHEMA ConflictIssue 437d3d1463d5
 SCHEMA ConflictScanResponse 864b121f6867
@@ -2183,6 +2190,9 @@ SCHEMA LatencyStats 73c304837e5f
 SCHEMA LatestMeasurementEntry 050b6d4e9df1
 SCHEMA LatestMeasurementsResponse 3bac8602f979
 SCHEMA LegModel ed5e1552e26c
+SCHEMA LegacyRuleEndorsementItem ebdf659be19b
+SCHEMA LegacyRuleEndorsementPreview a84d25f10007
+SCHEMA LegacyRuleEndorsementSelection 997bd11cf466
 SCHEMA LinkedChatMessage 621df8bbf00d
 SCHEMA LinkedContactSummary ed96b55cb102
 SCHEMA LocationRetentionPolicyResponse f986f3f4948f
@@ -2473,7 +2483,7 @@ SCHEMA RoutingEntry 527f144a1a74
 SCHEMA RoutingInstruction b169576412a1
 SCHEMA RoutingInstructionCreate c5da07f8a894
 SCHEMA RoutingInstructionUpdate 193a477ef0ec
-SCHEMA Rule 5ed1953810e7
+SCHEMA Rule ebf9dabc8662
 SCHEMA RuleConstraintSuggestion 92a374a72f9f
 SCHEMA RuleEndorsement 5108fa5b7079
 SCHEMA RulePromotionAutoApplied c31855a41c8d

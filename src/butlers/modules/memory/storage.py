@@ -15,6 +15,7 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime, timedelta
+from hmac import compare_digest
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.embedding import EmbeddingEngine, embed_async
@@ -22,6 +23,7 @@ from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
+    from asyncpg.pool import PoolConnectionProxy
 
 from butlers.core import entity_graph_edges
 from butlers.core.chronicler_visibility import local_fact_visibility_condition
@@ -3491,71 +3493,213 @@ async def endorse_rule(
             )
             if row is None:
                 return None
-            receipt: dict[str, Any] = {
-                "rule_id": rule_id,
-                "content_authority": row["content_authority"],
-                "endorsed_at": row["endorsed_at"],
-                "endorsed_by": row["endorsed_by"],
-                "changed": False,
-            }
             if row["endorsed_at"] is not None or is_owner_class(row["content_authority"]):
-                return receipt
+                return _rule_endorsement_receipt(row)
             if row["retired_at"] is not None or row["forgotten"]:
                 raise RuleNotEndorsableError("retired or forgotten rules cannot be endorsed")
 
-            endorsed = await conn.fetchrow(
-                f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
-                f" WHERE id = $1 RETURNING endorsed_at",
-                rule_id,
-                endorsed_by,
-            )
-            receipt.update(endorsed_at=endorsed["endorsed_at"], endorsed_by=endorsed_by)
-            receipt["changed"] = True
+            return await _write_rule_endorsement(conn, table, row, endorsed_by, memory_schema)
 
-            await conn.execute(
-                """
-                INSERT INTO memory_events
-                    (event_type, actor, tenant_id, memory_type, memory_id, payload)
-                VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
-                """,
-                row["tenant_id"],
-                rule_id,
-                {
-                    "endorsed_by": str(endorsed_by) if endorsed_by else None,
-                    "content_authority": row["content_authority"],
-                },
-            )
 
-            if await conn.fetchval(
-                "SELECT to_regclass('public.memory_catalog')"
-            ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
-                source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
-                await conn.execute(
-                    f"""
-                    INSERT INTO public.memory_catalog (
-                        source_schema, source_table, source_id, source_butler, tenant_id,
-                        entity_id, summary, embedding, search_vector, memory_type,
-                        title, scope, confidence, retention_class, sensitivity,
-                        content_authority, updated_at
-                    )
-                    SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
-                           r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
-                           r.scope, r.confidence, r.retention_class, r.sensitivity,
-                           r.content_authority, now()
-                    FROM {table} r WHERE r.id = $2
-                    ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
-                        summary = EXCLUDED.summary,
-                        embedding = EXCLUDED.embedding,
-                        search_vector = EXCLUDED.search_vector,
-                        confidence = EXCLUDED.confidence,
-                        content_authority = EXCLUDED.content_authority,
-                        invalid_at = NULL,
-                        updated_at = now()
-                    """,
-                    source_schema,
-                    rule_id,
+def _rule_endorsement_receipt(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "rule_id": row["id"],
+        "content_authority": row["content_authority"],
+        "endorsed_at": row["endorsed_at"],
+        "endorsed_by": row["endorsed_by"],
+        "changed": False,
+    }
+
+
+async def _write_rule_endorsement(
+    conn: Connection | PoolConnectionProxy,
+    table: str,
+    row: Mapping[str, Any],
+    endorsed_by: uuid.UUID | None,
+    memory_schema: str | None,
+) -> dict[str, Any]:
+    """Write effects for a locked, eligible row on the caller's transaction."""
+    rule_id = row["id"]
+    endorsed_at = await conn.fetchval(
+        f"UPDATE {table} SET endorsed_at = now(), endorsed_by = $2"
+        f" WHERE id = $1 RETURNING endorsed_at",
+        rule_id,
+        endorsed_by,
+    )
+    if endorsed_at is None:
+        raise RuleNotEndorsableError("The rule changed during endorsement")
+    events_table = _qualified_memory_relation("memory_events", memory_schema)
+    await conn.execute(
+        f"""
+        INSERT INTO {events_table}
+            (event_type, actor, tenant_id, memory_type, memory_id, payload)
+        VALUES ('rule_endorsed', 'owner', $1, 'rule', $2, $3)
+        """,
+        row["tenant_id"],
+        rule_id,
+        {
+            "endorsed_by": str(endorsed_by) if endorsed_by else None,
+            "content_authority": row["content_authority"],
+        },
+    )
+
+    if await conn.fetchval(
+        "SELECT to_regclass('public.memory_catalog')"
+    ) is not None and not _is_catalog_write_excluded(row["sensitivity"]):
+        source_schema = memory_schema or await conn.fetchval("SELECT current_schema()")
+        await conn.execute(
+            f"""
+            INSERT INTO public.memory_catalog (
+                source_schema, source_table, source_id, source_butler, tenant_id,
+                entity_id, summary, embedding, search_vector, memory_type,
+                title, scope, confidence, retention_class, sensitivity,
+                content_authority, updated_at
+            )
+            SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
+                   r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
+                   r.scope, r.confidence, r.retention_class, r.sensitivity,
+                   r.content_authority, now()
+            FROM {table} r WHERE r.id = $2
+            ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
+                summary = EXCLUDED.summary,
+                embedding = EXCLUDED.embedding,
+                search_vector = EXCLUDED.search_vector,
+                confidence = EXCLUDED.confidence,
+                content_authority = EXCLUDED.content_authority,
+                invalid_at = NULL,
+                updated_at = now()
+            """,
+            source_schema,
+            rule_id,
+        )
+    return _rule_endorsement_receipt(row) | {
+        "endorsed_at": endorsed_at,
+        "endorsed_by": endorsed_by,
+        "changed": True,
+    }
+
+
+async def _read_legacy_endorsement_selection(
+    db: Pool | Connection | PoolConnectionProxy,
+    table: str,
+    rule_ids: list[uuid.UUID],
+    *,
+    lock: bool,
+) -> list[Mapping[str, Any]]:
+    if not 1 <= len(rule_ids) <= 100 or len(set(rule_ids)) != len(rule_ids):
+        raise RuleNotEndorsableError("Select 1 to 100 distinct legacy rules")
+    rows = await db.fetch(
+        f"""SELECT id, content, scope, content_authority, authority_entity_id,
+                   endorsed_at, endorsed_by, retired_at, tenant_id, sensitivity,
+                   source_butler, source_episode_id, created_at, taint_goal_id,
+                   taint_invocation_id, forgotten_at,
+                   COALESCE((metadata->>'forgotten')::boolean, false) AS forgotten
+            FROM {table} WHERE id = ANY($1::uuid[]) ORDER BY id"""
+        + (" FOR UPDATE" if lock else ""),
+        rule_ids,
+    )
+    if len(rows) != len(rule_ids):
+        raise RuleNotEndorsableError("Some selected rules are missing")
+    if any(
+        row["content_authority"] is not None
+        or row["retired_at"] is not None
+        or row["forgotten"]
+        or row["forgotten_at"] is not None
+        or row["taint_goal_id"] is not None
+        or row["taint_invocation_id"] is not None
+        for row in rows
+    ):
+        raise RuleNotEndorsableError("Select only current legacy rules without authority")
+    by_id = {row["id"]: row for row in rows}
+    return [by_id[rule_id] for rule_id in rule_ids]
+
+
+def _legacy_endorsement_preview(
+    rows: list[Mapping[str, Any]],
+    *,
+    source_name: str,
+    memory_schema: str | None,
+    endorsed_by: uuid.UUID,
+) -> dict[str, Any]:
+    # Endorsement stamps do not affect the accepted selection. They can change
+    # between preview and commit when an overlapping owner request commits first.
+    rules = [
+        {
+            "rule_id": str(row["id"]),
+            "content": row["content"],
+            "scope": row["scope"],
+            "content_authority": row["content_authority"],
+            "source_butler": row["source_butler"],
+            "source_episode_id": str(row["source_episode_id"])
+            if row["source_episode_id"]
+            else None,
+            "created_at": row["created_at"].isoformat(),
+        }
+        for row in rows
+    ]
+    snapshot = json.dumps(
+        [
+            source_name,
+            memory_schema,
+            str(endorsed_by),
+            rules,
+            [
+                [row["tenant_id"], row["sensitivity"], str(row["authority_entity_id"])]
+                for row in rows
+            ],
+        ],
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return {
+        "rules": rules,
+        "confirmation_digest": hashlib.sha256(snapshot.encode("utf-8")).hexdigest(),
+    }
+
+
+async def preview_legacy_rule_endorsements(
+    pool: Pool,
+    rule_ids: list[uuid.UUID],
+    *,
+    endorsed_by: uuid.UUID,
+    source_name: str,
+    memory_schema: str | None = None,
+) -> dict[str, Any]:
+    """Capture the exact ordered selection without writing any endorsement."""
+    table = _memory_relation("rule", memory_schema)
+    rows = await _read_legacy_endorsement_selection(pool, table, rule_ids, lock=False)
+    return _legacy_endorsement_preview(
+        rows, source_name=source_name, memory_schema=memory_schema, endorsed_by=endorsed_by
+    )
+
+
+async def endorse_legacy_rules(
+    pool: Pool,
+    rule_ids: list[uuid.UUID],
+    *,
+    endorsed_by: uuid.UUID,
+    confirmation_digest: str,
+    source_name: str,
+    memory_schema: str | None = None,
+) -> list[dict[str, Any]]:
+    """Validate the complete owner selection before writing in one transaction."""
+    table = _memory_relation("rule", memory_schema)
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await _read_legacy_endorsement_selection(conn, table, rule_ids, lock=True)
+            expected = _legacy_endorsement_preview(
+                rows, source_name=source_name, memory_schema=memory_schema, endorsed_by=endorsed_by
+            )["confirmation_digest"]
+            if not compare_digest(expected, confirmation_digest):
+                raise RuleNotEndorsableError(
+                    "The selection changed. Review the current rules again."
                 )
-    return receipt
+            return [
+                _rule_endorsement_receipt(row)
+                if row["endorsed_at"] is not None
+                else await _write_rule_endorsement(conn, table, row, endorsed_by, memory_schema)
+                for row in rows
+            ]
 
 
 class FactNotEndorsableError(ValueError):

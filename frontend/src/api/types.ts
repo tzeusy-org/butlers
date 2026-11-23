@@ -3186,6 +3186,27 @@ export interface FactVouch {
   changed: boolean;
 }
 
+export interface RuleEndorsement {
+  rule_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
+}
+
+export interface LegacyRuleEndorsementPreview {
+  confirmation_digest: string;
+  rules: Array<{
+    rule_id: string;
+    content: string;
+    scope: string;
+    content_authority: null;
+    source_butler: string | null;
+    source_episode_id: string | null;
+    created_at: string;
+  }>;
+}
+
 /** A behavioral rule from the long-term memory tier. */
 export interface MemoryRule {
   id: string;
@@ -3203,6 +3224,7 @@ export interface MemoryRule {
   /** Whether a source episode is still available, expired, or cannot be resolved. */
   source_episode_status?: EpisodeSourceStatus | null;
   source_butler: string | null;
+  owning_source?: string | null;
   created_at: string;
   last_applied_at: string | null;
   last_evaluated_at: string | null;
