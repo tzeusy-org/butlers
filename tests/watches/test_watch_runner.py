@@ -327,3 +327,70 @@ class TestPendingNoticesAreWithdrawnWhenAWatchCloses:
         service.withdraw = real
         await service.pause(watch.id, origin="owner", now=NOW)
         assert closed == [(watch.id, WatchState.PAUSED)]
+
+
+class TestSweepAndEdgeTriggering:
+    async def test_a_sweep_withdraws_for_every_closed_watch_and_skips_active_ones(self, conditions):
+        swept = []
+
+        async def withdraw(watch):
+            swept.append((watch.id, watch.state))
+
+        service = WatchService(
+            InMemoryWatchStore(), ConditionEvaluator(conditions), grant_for, withdraw=withdraw
+        )
+        active = await make_watch(service)
+        paused = await make_watch(service, delivery="right_away")
+        await service.pause(paused.id, origin="owner", now=NOW)
+        swept.clear()
+        assert await service.sweep_closed() == 1
+        assert swept == [(paused.id, WatchState.PAUSED)]
+        assert active.id not in [w[0] for w in swept]
+
+    async def test_every_tick_sweeps(self, conditions, recorder):
+        swept = []
+
+        async def withdraw(watch):
+            swept.append(watch.id)
+
+        service = WatchService(
+            InMemoryWatchStore(), ConditionEvaluator(conditions), grant_for, withdraw=withdraw
+        )
+        watch = await make_watch(service)
+        await service.pause(watch.id, origin="owner", now=NOW)
+        swept.clear()
+        runner = WatchRunner(service, recorder, lambda now: Snapshot(now=now))
+        assert (await runner.tick(NOW)).swept == 1 and swept == [watch.id]
+
+    async def test_a_resume_is_edge_triggered_from_the_last_fire_cursor(self, service, conditions):
+        watch = await make_watch(service)
+        await fire(service, watch, position=3)  # fires: last fire cursor is 3
+        fired = conditions.instances[watch.instance_id]
+        runner = WatchRunner(service, Recorder(), lambda now: Snapshot(now=now))
+        await runner.tick(NOW)  # delivers and re-arms generation 2
+        await service.pause(watch.id, origin="owner", now=NOW)
+        card = await service.propose_update(watch.id, resume=True)
+        resumed = await service.approve(
+            card, OwnerApproval(card_digest=card.digest, origin="owner"), Snapshot(now=NOW)
+        )
+        instance = conditions.instances[resumed.instance_id]
+        assert resumed.generation == 3 and instance.floor == fired.cursors
+        assert instance.state is State.OPEN  # not seeded: state already true does not fire
+        stale = await service.evaluator.evaluate(resumed.instance_id, [bundle_event(3)], now=NOW)
+        assert stale.instance.state is State.OPEN  # at the floor: ignored
+        past = await service.evaluator.evaluate(resumed.instance_id, [bundle_event(4)], now=NOW)
+        assert past.instance.state is State.FIRED  # past the last fire cursor: counts
+
+    async def test_a_renewal_is_edge_triggered_too(self, service, conditions):
+        watch = await make_watch(service)
+        await fire(service, watch, position=3)
+        runner = WatchRunner(service, Recorder(), lambda now: Snapshot(now=now))
+        await runner.tick(NOW)
+        later = (await service.store.get(watch.id)).expires_at - timedelta(days=7)
+        card = await service.propose_renew(watch.id, now=later)
+        renewed = await service.approve(
+            card, OwnerApproval(card_digest=card.digest, origin="owner"), Snapshot(now=later)
+        )
+        instance = conditions.instances[renewed.instance_id]
+        assert renewed.generation == 3 and instance.floor == {SOURCE: 3}
+        assert instance.state is State.OPEN

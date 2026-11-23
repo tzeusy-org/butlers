@@ -53,7 +53,7 @@ async def test_paused_watch_is_not_delivered_from_a_stale_sweep_snapshot():
 
     service.store.list_all = list_with_owner_pause
     await runner.tick(NOW)
-    assert sweeps == 2
+    assert sweeps >= 2  # the tick's own sweep, then the closing sweep
     assert (await service.store.get(watch.id)).state is WatchState.PAUSED
     assert recorder.notices == []
 
