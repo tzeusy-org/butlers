@@ -88,9 +88,9 @@ pinned by a test in ``tests/scripts/test_check_duplicate_toplevel_names.py``.
 
 Scope
 -----
-``src/``, ``tests/``, ``roster/`` and ``conftest.py`` -- exactly the repo's lint
-gate scope. ``alembic/`` and ``scripts/`` are outside it by standing repo
-convention and are not scanned here either.
+``src/``, ``tests/``, ``roster/`` and ``scripts/`` -- the repo's four lint
+roots -- plus root ``conftest.py``. ``alembic/`` and ``frontend/`` remain
+outside this scope.
 
 Scanning nothing is a failure
 -----------------------------
@@ -146,10 +146,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = Path(__file__).resolve().parent / "duplicate-toplevel-names-baseline.json"
 
-# The repo's lint gate scope, verbatim. Directories are walked recursively;
+# The repo's four lint roots plus root conftest.py. Directories are walked recursively;
 # files are taken as-is. An entry that does not exist under --root is skipped,
 # so this list can name paths a partial tree does not carry.
-SCAN_PATHS = ("src", "tests", "roster", "conftest.py")
+SCAN_PATHS = ("src", "tests", "roster", "scripts", "conftest.py")
 
 # Never reported. See "What counts as a duplicate" in the module docstring.
 IGNORED_NAMES = frozenset({"_"})
