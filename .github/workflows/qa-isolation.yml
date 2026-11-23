@@ -65,7 +65,7 @@ jobs:
           cp src/butlers/core/qa/isolation_probe.py ctx/butlers/core/qa/
           cat > ctx/Dockerfile <<'DOCKERFILE'
           FROM python:3.12-slim
-          RUN mkdir /app /workspace && chmod 0777 /workspace
+          RUN mkdir /app /workspace && chmod 0777 /workspace && echo staged > /app/staged.txt
           COPY butlers /usr/local/lib/python3.12/site-packages/butlers
           DOCKERFILE
           docker build -t localhost:5111/qa-probe:ci ctx
@@ -112,7 +112,7 @@ jobs:
             --namespace "${NAMESPACE}" --image "${IMAGE}" \
             --refused-tcp "tracker=${api}:443" \
             --reachable-tcp "dns=${dns}:53" \
-            --readable-path /workspace | tee receipt.json
+            --readable-path /app/staged.txt | tee receipt.json
           # A receipt that does not say passed:true is a failure, whatever the exit path was.
           jq -e '.passed == true' receipt.json
       - uses: actions/upload-artifact@v4
