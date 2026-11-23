@@ -14,6 +14,7 @@ import asyncpg
 import pytest
 
 from alembic import command
+from butlers.api.routers.goals import _SUMMARY_SELECT
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -40,7 +41,10 @@ def ledger_url(postgres_container) -> str:
 async def _plan(url: str, sql: str, *args) -> str:
     conn = await asyncpg.connect(url)
     try:
-        await conn.execute("SET enable_seqscan = off")
+        # The tables are nearly empty, so cost estimates would pick a bitmap scan plus a Sort.
+        # Disabling those asks the real question: CAN the index serve the ordered page.
+        for setting in ("enable_seqscan", "enable_bitmapscan", "enable_sort"):
+            await conn.execute(f"SET {setting} = off")
         rows = await conn.fetch(f"EXPLAIN {sql}", *args)
     finally:
         await conn.close()
@@ -60,8 +64,8 @@ def test_the_goal_list_page_is_served_in_order_from_the_created_index(ledger_url
     plan = asyncio.run(
         _plan(
             ledger_url,
-            """
-        SELECT g.id FROM switchboard.goals g
+            # The router's own statement, so the test cannot drift from what runs.
+            f"""{_SUMMARY_SELECT}
         WHERE g.exposed = $1 AND (g.created_at, g.id) < ($2, $3)
         ORDER BY g.created_at DESC, g.id DESC LIMIT 51
         """,
@@ -71,7 +75,8 @@ def test_the_goal_list_page_is_served_in_order_from_the_created_index(ledger_url
         )
     )
     assert _GOALS_INDEX in plan, plan
-    assert "Sort" not in plan, plan
+    # The page itself is not sorted (the region subquery's own ORDER BY may be).
+    assert "Sort" not in plan.splitlines()[1], plan
 
 
 def test_the_region_filter_probes_the_region_index(ledger_url) -> None:
