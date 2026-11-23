@@ -141,37 +141,27 @@ def test_the_downgrade_drops_an_empty_journal(fresh_db) -> None:
 _PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
 
 # Disposable logins the migration fixtures create in the shared cluster: each is a member of
-# connector_writer (INHERIT TRUE), so it inherits exactly the writer's privileges. They are the
-# only principals excluded, matched by name; a runtime role that gained the membership by
-# accident is NOT excluded, and fails the effective-privilege check below.
-_FIXTURE_LOGIN = r"^migration_(test|tmpl)_"
+# connector_writer (INHERIT TRUE), so it inherits exactly the writer's privileges. A role is
+# excluded only if its name matches AND pg_auth_members confirms the membership; a named role
+# without the membership (another worker mid-bootstrap) stays in the checks and passes with no
+# grant, and a runtime role that gained the membership by accident is not named like a fixture
+# and fails the effective-privilege check.
+_NOT_A_FIXTURE_MEMBER = (
+    "NOT (rolname ~ '^migration_(test|tmpl)_' AND EXISTS ("
+    "SELECT 1 FROM pg_auth_members m WHERE m.member = pg_roles.oid "
+    "AND m.roleid = 'connector_writer'::regrole))"
+)
 
 
 async def _journal_privileges_by_principal(db_pool: asyncpg.Pool) -> dict[str, set[str]]:
-    """Effective journal privileges per non-owner principal, fixture logins excluded.
+    """Effective journal privileges per non-owner principal, confirmed fixture logins excluded.
 
     The principals are the fleet and butler runtime roles and the other connector roles; PUBLIC
-    is checked through its catalog grant. The excluded fixture logins are asserted to be
-    members of connector_writer (pg_auth_members), so the exclusion is explicit.
+    is checked through its catalog grant.
     """
-    fixtures = {
-        r[0]
-        for r in await db_pool.fetch(
-            "SELECT rolname FROM pg_roles WHERE rolname ~ $1", _FIXTURE_LOGIN
-        )
-    }
-    members = {
-        r[0]
-        for r in await db_pool.fetch(
-            "SELECT m.member::regrole::text FROM pg_auth_members m "
-            "WHERE m.roleid = 'connector_writer'::regrole"
-        )
-    }
-    assert fixtures <= members, fixtures - members
     roles = await db_pool.fetch(
         "SELECT rolname FROM pg_roles WHERE rolname <> current_user AND NOT rolsuper "
-        "AND rolname !~ '^pg_' AND rolname !~ $1",
-        _FIXTURE_LOGIN,
+        f"AND rolname !~ '^pg_' AND {_NOT_A_FIXTURE_MEMBER}"
     )
     effective: dict[str, set[str]] = {}
     for role in roles:
@@ -307,7 +297,9 @@ def test_the_connector_writer_cannot_rewrite_the_journal_even_after_a_bootstrap_
                 text(
                     "SELECT rolname FROM pg_roles WHERE rolname <> 'connector_writer' "
                     "AND rolname <> current_user AND NOT rolsuper AND rolname !~ '^pg_' "
-                    "AND rolname !~ '^migration_(test|tmpl)_' "
+                    "AND NOT (rolname ~ '^migration_(test|tmpl)_' AND EXISTS ("
+                    "SELECT 1 FROM pg_auth_members m WHERE m.member = pg_roles.oid "
+                    "AND m.roleid = 'connector_writer'::regrole)) "
                     "AND has_table_privilege(rolname, 'connectors.evidence_journal', 'SELECT')"
                 )
             ).scalars()
