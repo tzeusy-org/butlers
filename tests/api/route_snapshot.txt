@@ -34,6 +34,7 @@ OP DELETE /api/oauth/google/credentials a75110f3c863
 OP DELETE /api/projections/{projection_id} c36ca2ec3ef8
 OP DELETE /api/qa/dismissals/{fingerprint} f5ea825f2fb5
 OP DELETE /api/qa/known-issues/{fingerprint}/dismiss d557015576ad
+OP DELETE /api/qa/known-issues/{fingerprint}/link 3eb3b3311322
 OP DELETE /api/qa/settings/allowed-repos/{owner}/{repo} 7cd50ca32136
 OP DELETE /api/relationship/entities/{entity_id} 6a42dc60bbdc
 OP DELETE /api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash} 6e09857ae6fa
@@ -611,6 +612,7 @@ OP POST /api/qa/circuit-breaker/reset abb5b2f66997
 OP POST /api/qa/dev/synthetic-findings 7c3867151090
 OP POST /api/qa/force-patrol e061d785d64e
 OP POST /api/qa/known-issues/{fingerprint}/dismiss 5076b8ce2a52
+OP POST /api/qa/known-issues/{fingerprint}/link a85350da7dfd
 OP POST /api/qa/settings/allowed-repos c266d311aaea
 OP POST /api/qa/settings/repo/sync 22d317681c49
 OP POST /api/relationship/care/duties dec3d9fe105a
@@ -759,6 +761,7 @@ ROUTE APIRoute DELETE '/api/oauth/google/credentials' name=delete_google_credent
 ROUTE APIRoute DELETE '/api/projections/{projection_id}' name=revoke_projection op=revoke_projection_api_projections__projection_id__delete tags=projections schema=True
 ROUTE APIRoute DELETE '/api/qa/dismissals/{fingerprint}' name=delete_dismissal op=delete_dismissal_api_qa_dismissals__fingerprint__delete tags=qa schema=True
 ROUTE APIRoute DELETE '/api/qa/known-issues/{fingerprint}/dismiss' name=undismiss_known_issue op=undismiss_known_issue_api_qa_known_issues__fingerprint__dismiss_delete tags=qa schema=True
+ROUTE APIRoute DELETE '/api/qa/known-issues/{fingerprint}/link' name=unlink_known_issue op=unlink_known_issue_api_qa_known_issues__fingerprint__link_delete tags=qa schema=True
 ROUTE APIRoute DELETE '/api/qa/settings/allowed-repos/{owner}/{repo}' name=delete_allowed_repo op=delete_allowed_repo_api_qa_settings_allowed_repos__owner___repo__delete tags=qa schema=True
 ROUTE APIRoute DELETE '/api/relationship/entities/{entity_id}' name=forget_entity op=forget_entity_api_relationship_entities__entity_id__delete tags=relationship schema=True
 ROUTE APIRoute DELETE '/api/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}' name=delete_entity_contact op=delete_entity_contact_api_relationship_entities__entity_id__contacts__predicate___value_hash__delete tags=relationship schema=True
@@ -1321,6 +1324,7 @@ ROUTE APIRoute POST '/api/qa/circuit-breaker/reset' name=reset_circuit_breaker o
 ROUTE APIRoute POST '/api/qa/dev/synthetic-findings' name=create_synthetic_finding op=create_synthetic_finding_api_qa_dev_synthetic_findings_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/force-patrol' name=force_patrol op=force_patrol_api_qa_force_patrol_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/known-issues/{fingerprint}/dismiss' name=dismiss_known_issue op=dismiss_known_issue_api_qa_known_issues__fingerprint__dismiss_post tags=qa schema=True
+ROUTE APIRoute POST '/api/qa/known-issues/{fingerprint}/link' name=link_known_issue op=link_known_issue_api_qa_known_issues__fingerprint__link_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/settings/allowed-repos' name=create_allowed_repo op=create_allowed_repo_api_qa_settings_allowed_repos_post tags=qa schema=True
 ROUTE APIRoute POST '/api/qa/settings/repo/sync' name=sync_repo op=sync_repo_api_qa_settings_repo_sync_post tags=qa schema=True
 ROUTE APIRoute POST '/api/relationship/care/duties' name=create_care_duty op=create_care_duty_api_relationship_care_duties_post tags=relationship schema=True
@@ -1614,6 +1618,7 @@ SCHEMA ApiResponse_QaCaseDossier_ b5096100962b
 SCHEMA ApiResponse_QaDismissal_ fac40485167b
 SCHEMA ApiResponse_QaFindingRecord_ dc4b99284e9b
 SCHEMA ApiResponse_QaGitAuthorStatus_ d6fc18614ad3
+SCHEMA ApiResponse_QaKnownIssueLink_ 86bce5be79b2
 SCHEMA ApiResponse_QaPatrolDetail_ c3390ea292eb
 SCHEMA ApiResponse_QaRepoConfig_ ee6bbd89cac8
 SCHEMA ApiResponse_QaRepoSyncResponse_ 2019787da9eb
@@ -2192,6 +2197,7 @@ SCHEMA KeysetResponse_SessionSummary_ 23c565004ed5
 SCHEMA KillRequest c17df2ef3e5a
 SCHEMA KillResponse e305f49359bf
 SCHEMA KnownIssue 2a45bb3faa39
+SCHEMA KnownIssueLinkRequest f54c4732470d
 SCHEMA Label 917e5c6b6d48
 SCHEMA LatencyStats 73c304837e5f
 SCHEMA LatestMeasurementEntry 050b6d4e9df1
@@ -2427,7 +2433,7 @@ SCHEMA PublicMcpSummary 2b840c550458
 SCHEMA QaActiveBreakdown d40c17eb9585
 SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd
-SCHEMA QaCaseDossier ed4f31dd2018
+SCHEMA QaCaseDossier 3d30d332b3f1
 SCHEMA QaCaseSummary 0ea7d983c5d7
 SCHEMA QaCircuitBreaker 8bf3e6ef1ca1
 SCHEMA QaCredentialsStatus 456016a13c44
@@ -2437,6 +2443,7 @@ SCHEMA QaGitAuthorStatus 11ca80ec0825
 SCHEMA QaGitAuthorUpdate ad009dd109f0
 SCHEMA QaInvestigation 371ef9cc455e
 SCHEMA QaJournalEvent fa1859cb8e91
+SCHEMA QaKnownIssueLink 211ae679aff7
 SCHEMA QaKpiBlock 3d42bd9431cb
 SCHEMA QaLoopCondition 147cc33769bb
 SCHEMA QaMetaReviewFinding 1a712e44641b
