@@ -337,6 +337,10 @@ class FailoverContext:
         sandbox environment (``env_override``). A provider auth rejection there
         says the sandbox cannot reach the credential, not that the model is
         unhealthy, so it is labelled ``executor_env_unfit`` (bu-ejow5p.5).
+    job_isolated:
+        True when the attempt ran (or tried to launch) as a per-attempt Job. The attempt
+        owns one exchange directory, one Job name and one sealed output, so a second model
+        attempt against it is never safe and no failure there is failover-eligible.
     """
 
     exception: BaseException
@@ -344,6 +348,7 @@ class FailoverContext:
     process_info: dict[str, Any] | None = None
     trigger_context: dict[str, Any] | None = None
     executor_env: bool = False
+    job_isolated: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +395,12 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
 
     exc_msg = str(exc).lower()
     exc_class = type(exc).__name__
+
+    if ctx.job_isolated:
+        return FailoverDecision(
+            eligible=False,
+            reason="job_attempt_not_retryable: a per-attempt Job owns its exchange and name",
+        )
 
     # ------------------------------------------------------------------
     # GATE 2: Guardrail terminations — intentional, not a systemic failure.

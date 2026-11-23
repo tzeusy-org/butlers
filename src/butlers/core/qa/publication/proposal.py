@@ -260,6 +260,7 @@ async def retain_unpublished_proposal(
     branch_name: str,
     base_sha: str | None,
     identity: GitIdentity | None,
+    isolated: bool = False,
 ) -> PublicationResult | None:
     """Seal and retain a committed investigation when no publisher is injected.
 
@@ -289,7 +290,9 @@ async def retain_unpublished_proposal(
         )
         return await _refuse(pool, attempt_id, PublicationStatus.REFUSED, "unbound_export")
     try:
-        await retention.retain_export(pool, attempt_id, export)
+        await retention.retain_export(
+            pool, attempt_id, export, sealed_before_isolation=not isolated
+        )
     except PublicationRefused as exc:
         # Nothing was retained and no receipt is claimed: the caller keeps today's fail-closed
         # path, so the case stays ambiguous rather than falsely unpublished.

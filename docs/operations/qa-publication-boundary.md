@@ -29,6 +29,21 @@ token. Re-adding the old key re-enables nothing, because no publisher exists.
 `scripts/qa_reconcile_publications.py` reads its token from the operator's own environment and is
 unaffected.
 
+### Containment labels and the sealed-before-isolation flag (bu-ejow5p.11)
+
+- `healing_attempts.containment` is `job` for an investigation run in a per-attempt
+  credential-free Job and `none` for one run in the daemon's own process tree. `NULL` (a row from
+  before the label existed) reads as `none`.
+- `qa_publication_exports.sealed_before_isolation` is set when the export is sealed and cannot
+  change afterwards (the retained-export guard refuses any UPDATE that alters it, for every role).
+  It is true for every export whose investigation did not run in a Job, and it defaults to true,
+  so an unlabelled export is flagged rather than trusted.
+- **Publisher precondition:** a publisher MUST require a per-pull-request owner approval record
+  for a flagged export before it pushes anything. No publisher is configured today, so nothing
+  enforces this yet; the flag exists so that the first publisher cannot forget the distinction.
+- A PR review follow-up runs the agent in the daemon and is refused while Job isolation is
+  configured (`follow_up_isolation_unavailable`).
+
 ## Publisher architecture
 
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls

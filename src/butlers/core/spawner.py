@@ -123,7 +123,11 @@ from butlers.core.qa.executor_profile import (
 )
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
-from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
+from butlers.core.runtimes.base import (
+    QaJobLaunch,
+    RuntimeAdapter,
+    validated_session_timeout_overhead_s,
+)
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.core.session_process_logs import write as session_process_log_write
@@ -970,6 +974,7 @@ class Spawner:
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
         attachments: Sequence[Mapping[str, Any]] | None = None,
+        qa_job_launch: QaJobLaunch | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -1072,7 +1077,13 @@ class Spawner:
         ------
         RuntimeError
             If the spawner has been stopped and is no longer accepting triggers.
+        ValueError
+            If ``qa_job_launch`` is given with a non-executor ``trigger_source``.
         """
+        if qa_job_launch is not None and not is_executor_trigger(trigger_source):
+            # A caller that asked for per-attempt isolation must never get an in-daemon run.
+            raise ValueError("qa_job_launch is only valid for an executor trigger source")
+
         if route_lease_lost is not None and route_lease_lost.is_set():
             raise RouteInboxLeaseLost("route inbox processing lease was already lost")
 
@@ -1178,6 +1189,7 @@ class Spawner:
                         dashboard_turn_id=dashboard_turn_id,
                         route_lease_lost=route_lease_lost,
                         attachments=attachments,
+                        qa_job_launch=qa_job_launch,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -1210,6 +1222,7 @@ class Spawner:
                             dashboard_turn_id=dashboard_turn_id,
                             route_lease_lost=route_lease_lost,
                             attachments=attachments,
+                            qa_job_launch=qa_job_launch,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1582,6 +1595,7 @@ class Spawner:
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
         attachments: Sequence[Mapping[str, Any]] | None = None,
+        qa_job_launch: QaJobLaunch | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -2823,7 +2837,19 @@ class Spawner:
                     runtime_invoked = True
                     if runtime_session_id:
                         session_timing.mark(runtime_session_id, "invoke_start_ms")
-                    invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
+                    if qa_job_launch is not None and is_executor_trigger(trigger_source):
+                        # bu-ejow5p.11: an isolated QA attempt runs in a per-attempt Job.
+                        invoke_coro = runtime.invoke_in_job(
+                            prompt=invoke_kwargs["prompt"],
+                            system_prompt=invoke_kwargs["system_prompt"],
+                            mcp_servers=invoke_kwargs["mcp_servers"],
+                            launch=qa_job_launch,
+                            model=invoke_kwargs["model"],
+                            runtime_args=invoke_kwargs.get("runtime_args"),
+                        )
+                    else:
+                        invoke_coro = runtime.invoke(**invoke_kwargs)
+                    invoke_task = asyncio.create_task(invoke_coro)
                     if runtime_session_id:
                         self._invoke_tasks_by_session[runtime_session_id] = invoke_task
                         self._pending_invoke_sessions.discard(runtime_session_id)
@@ -3015,6 +3041,7 @@ class Spawner:
                         process_info=runtime.last_process_info,
                         executor_env=is_executor_trigger(trigger_source)
                         and env_override is not None,
+                        job_isolated=qa_job_launch is not None,
                     )
                 )
 
