@@ -143,13 +143,10 @@ def summarize(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-async def run(dsn: str) -> dict[str, Any]:
-    conn = await asyncpg.connect(dsn, command_timeout=60)
-    try:
-        async with conn.transaction(readonly=True):
-            rows = await conn.fetch(CANDIDATES_SQL)
-    finally:
-        await conn.close()
+async def collect(conn: asyncpg.Connection) -> dict[str, Any]:
+    """The report for the candidates *conn* can see. One read-only transaction."""
+    async with conn.transaction(readonly=True):
+        rows = await conn.fetch(CANDIDATES_SQL)
     return summarize(
         {
             "key": r["key"],
@@ -159,6 +156,14 @@ async def run(dsn: str) -> dict[str, Any]:
         }
         for r in rows
     )
+
+
+async def run(dsn: str) -> dict[str, Any]:
+    conn = await asyncpg.connect(dsn, command_timeout=60)
+    try:
+        return await collect(conn)
+    finally:
+        await conn.close()
 
 
 def main(argv: list[str] | None = None, *, stdin=None) -> int:
