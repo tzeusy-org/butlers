@@ -8,7 +8,7 @@ refuses. Nothing here reads a clock, a database or a model.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
@@ -90,7 +90,10 @@ class WatchCard:
     sources: tuple[str, ...]
     categories: tuple[str, ...]
     delivery: str
-    expires_at: datetime
+    # A create or renew card binds the lifetime (expiry is that long after approval, REQ-004);
+    # an update or delete card binds the watch's current expiry and carries no lifetime.
+    expires_at: datetime | None
+    lifetime: timedelta | None = None
     resume: bool = False  # an update that also re-activates a paused watch
 
     @property
@@ -104,7 +107,8 @@ class WatchCard:
             "sources": list(self.sources),
             "categories": list(self.categories),
             "delivery": self.delivery,
-            "expires_at": self.expires_at.isoformat(),
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "lifetime_days": self.lifetime.days if self.lifetime else None,
             "resume": self.resume,
         }
 
@@ -118,5 +122,5 @@ class OwnerApproval:
     """The owner's approval of one exact card, built only by the trusted approval boundary."""
 
     card_digest: str
-    origin: str = field(default=OWNER)
+    origin: str  # required: no default may stand in for the owner
     approved_at: datetime | None = None
