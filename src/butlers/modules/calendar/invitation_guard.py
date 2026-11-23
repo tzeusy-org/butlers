@@ -21,6 +21,7 @@ from .models import CalendarEvent
 logger = logging.getLogger(__name__)
 
 QUARANTINED_TITLE = "[quarantined invitation]"
+PRE_STATE_WITHHELD = "pre_state_withheld"
 
 
 def _keys(event_id: str) -> list[str]:
@@ -136,17 +137,25 @@ async def guard_event_payload(
     return (await guard_provider_events(pool, [event], to_payload))[0]
 
 
-async def withhold_quarantined_pre_state(
+async def mark_quarantined_pre_state(
     pool: Any, event: CalendarEvent | None, result: dict[str, Any]
-) -> dict[str, Any]:
-    """The tool result with the event's pre-image withheld when it was a quarantined invitation.
+) -> None:
+    """Flag ``result`` when its pre-image is a quarantined invitation's.
 
-    The full pre-image stays in the persisted action result (the owner's dashboard undo needs
-    it); only the copy handed back to the model drops the third-party text.
+    The flag is stored with the result, so a replay of the same request still withholds the
+    pre-image. The full pre-image stays in the stored result: the owner's dashboard undo needs it.
     """
     if event is None or "pre_state" not in result:
-        return result
+        return
     stub = await guard_event_payload(pool, event, lambda _: {})
-    if not stub.get("quarantined"):
+    if stub.get("quarantined"):
+        result[PRE_STATE_WITHHELD] = True
+
+
+def redact_pre_state(result: dict[str, Any]) -> dict[str, Any]:
+    """The copy of a tool result handed to the model: no third-party pre-image."""
+    if not result.get(PRE_STATE_WITHHELD):
         return result
-    return {**result, "pre_state": {"event_id": event.event_id, "quarantined": True}}
+    pre_state = result.get("pre_state")
+    event_id = pre_state.get("event_id") if isinstance(pre_state, dict) else None
+    return {**result, "pre_state": {"event_id": event_id, "quarantined": True}}

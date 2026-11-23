@@ -243,3 +243,73 @@ async def test_conflict_titles_do_not_return_a_quarantined_invitations_text() ->
     )
     assert result["conflicts"][0]["title"] == "[quarantined invitation]"
     _assert_no_leak(result)
+
+
+async def _tools_with_replay(replay_for: dict[str, Any] | None, provider: Any):
+    mcp = FastMCP("quarantine-replay")
+    module = CalendarModule()
+    module._provider = provider
+    module._resolved_calendar_id = "primary"
+    await module.register_tools(
+        mcp=mcp,
+        config={"provider": "google", "calendar_id": "primary"},
+        db=SimpleNamespace(pool=_Pool({}), db_name="b", db_schema="general"),
+        butler_name="test",
+    )
+    return module, mcp
+
+
+async def _first_call_then_replay(tool: str, **kwargs: Any) -> tuple[dict, dict, dict]:
+    """Run a write once (capturing what is stored), then replay the stored result."""
+    from unittest.mock import AsyncMock, patch
+
+    from tests.modules.test_module_calendar import _ProviderDouble
+
+    class _Deleting(_ProviderDouble):
+        async def delete_event(self, *, calendar_id, event_id, **_):
+            self.delete_calls.append({"calendar_id": calendar_id, "event_id": event_id})
+
+    provider = _Deleting(event=_invite("evt-1", organizer_listed=False))
+    module, mcp = await _tools_with_replay(None, provider)
+    patches = (
+        patch(
+            "butlers.modules.calendar.mutations.require_permission",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "butlers.modules.calendar.party.parties_are_owner",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    )
+    with patches[0], patches[1]:
+        with patch.object(
+            module, "_finalize_workspace_mutation", new_callable=AsyncMock
+        ) as finalize:
+            first = await (await tool_fn(mcp, tool))(event_id="evt-1", **kwargs)
+        stored = dict(finalize.await_args.kwargs["action_result"])
+        with patch.object(
+            module,
+            "_prepare_workspace_mutation",
+            new_callable=AsyncMock,
+            return_value=("key", {**stored, "idempotent_replay": True}),
+        ):
+            replayed = await (await tool_fn(mcp, tool))(event_id="evt-1", **kwargs)
+    return first, replayed, stored
+
+
+async def test_a_replayed_update_does_not_return_the_quarantined_pre_image() -> None:
+    first, replayed, stored = await _first_call_then_replay("calendar_update_event", title="x")
+    assert stored["pre_state"]["description"] == INJECTION  # kept for the owner's undo
+    for result in (first, replayed):
+        assert result["pre_state"] == {"event_id": "evt-1", "quarantined": True}
+        _assert_no_leak(result)
+
+
+async def test_a_replayed_delete_does_not_return_the_quarantined_pre_image() -> None:
+    first, replayed, stored = await _first_call_then_replay("calendar_delete_event")
+    assert stored["pre_state"]["description"] == INJECTION
+    for result in (first, replayed):
+        assert result["pre_state"] == {"event_id": "evt-1", "quarantined": True}
+        _assert_no_leak(result)
