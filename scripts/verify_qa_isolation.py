@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Verify QA investigator isolation against a dev cluster (bu-ejow5p.11).
 
-``render`` prints the manifests the run would apply (no cluster access). ``run`` applies them with
+``render`` prints the manifests the run would apply (no cluster access). ``dry-run`` sends the
+same Jobs to the API server with ``--dry-run=server`` (nothing is created) to check admission.
+``run`` applies them with
 ``kubectl`` as the launcher service account (so the admission policy is exercised as in
 production), reads each probe's content-blind receipt from the pod log and judges:
 
@@ -93,11 +95,12 @@ def _probe_job(args: argparse.Namespace, canary_host: str) -> dict[str, Any]:
     )
 
 
-def _apply(args: argparse.Namespace, manifest: dict[str, Any]) -> bool:
+def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool = False) -> bool:
     """Apply as the launcher service account; ``False`` when admission refused it."""
     as_arg = f"--as=system:serviceaccount:{args.namespace}:{args.launcher_sa}"
+    extra = ["--dry-run=server"] if dry_run else []
     result = subprocess.run(  # noqa: S603
-        ["kubectl", as_arg, "apply", "-f", "-"],
+        ["kubectl", as_arg, "apply", *extra, "-f", "-"],
         input=json.dumps(manifest),
         capture_output=True,
         text=True,
@@ -179,6 +182,43 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def dry_run(args: argparse.Namespace) -> dict[str, Any]:
+    """Server-side dry-run: creates nothing, deletes nothing, reads no pod.
+
+    Admission (including the ValidatingAdmissionPolicies) evaluates server-side dry-run
+    requests, so this checks the installed policies against the real API server's CEL type and
+    cost checking, which a chart render and cel-python cannot. With ``--policies-file`` (a
+    ``helm template`` of the chart) the policies and bindings are also dry-run applied as the
+    current user. The probe Job must be admitted and every inverse control refused.
+    """
+    policies_valid: bool | None = None
+    if args.policies_file:
+        result = subprocess.run(  # noqa: S603
+            ["kubectl", "apply", "--dry-run=server", "-f", args.policies_file],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        policies_valid = result.returncode == 0
+    host = "192.0.2.1"
+    probe_admitted = _apply(args, _probe_job(args, host), dry_run=True)
+    refused = {
+        c.name: not _apply(args, iv.render_inverse(_probe_job(args, host), c), dry_run=True)
+        for c in iv.INVERSE_CONTROLS
+    }
+    verdict = iv.judge_dry_run(
+        policies_valid=policies_valid, probe_admitted=probe_admitted, refused=refused
+    )
+    return {
+        "schema": 1,
+        "mode": "dry-run",
+        "passed": verdict.ok,
+        "policies_valid": verdict.policies_valid,
+        "probe_admitted": verdict.probe_admitted,
+        "unrefused_controls": list(verdict.unrefused_controls),
+    }
+
+
 def render(args: argparse.Namespace) -> dict[str, Any]:
     host = "<canary-pod-ip>"
     return {
@@ -191,7 +231,7 @@ def render(args: argparse.Namespace) -> dict[str, Any]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("mode", choices=["render", "run"])
+    parser.add_argument("mode", choices=["render", "dry-run", "run"])
     parser.add_argument("--namespace", required=True)
     parser.add_argument("--image", required=True, help="the daemon image, by digest")
     parser.add_argument("--release", default="butlers")
@@ -199,6 +239,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--launcher-sa", default="butlers-up")
     parser.add_argument("--refused-tcp", action="append", default=[], metavar="NAME=HOST:PORT")
     parser.add_argument("--reachable-tcp", action="append", default=[], metavar="NAME=HOST:PORT")
+    parser.add_argument(
+        "--policies-file", help="dry-run: a `helm template` of the chart's policies and bindings"
+    )
     parser.add_argument("--readable-path", action="append", default=[])
     return parser
 
@@ -208,14 +251,15 @@ def main(argv: list[str] | None = None) -> int:
     if not _DEV_NAMESPACE.match(args.namespace):
         sys.stderr.write("refusing: the verifier only runs in a -dev namespace\n")
         return 2
-    if args.mode == "run":
+    if args.mode in ("run", "dry-run"):
         context = _kubectl(["config", "current-context"], check=False).strip()
         if not _DEV_CONTEXT.search(context):
             sys.stderr.write(
                 "refusing: the current kube context does not look like a dev cluster\n"
             )
             return 2
-    result = render(args) if args.mode == "render" else run(args)
+    modes = {"render": render, "dry-run": dry_run, "run": run}
+    result = modes[args.mode](args)
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0 if args.mode == "render" or result["passed"] else 1
 

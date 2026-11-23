@@ -108,3 +108,15 @@ def test_the_canary_pod_carries_only_synthetic_secret_references() -> None:
     env = pod["spec"]["containers"][0]["env"][0]
     assert "value" not in env
     assert env["valueFrom"]["secretKeyRef"]["name"] == "qa-isolation-canary"
+
+
+def test_a_dry_run_passes_only_when_the_probe_is_admitted_and_every_control_refused() -> None:
+    every = {c.name: True for c in iv.INVERSE_CONTROLS}
+    assert iv.judge_dry_run(policies_valid=True, probe_admitted=True, refused=every).ok
+    assert iv.judge_dry_run(policies_valid=None, probe_admitted=True, refused=every).ok
+    assert not iv.judge_dry_run(policies_valid=False, probe_admitted=True, refused=every).ok
+    assert not iv.judge_dry_run(policies_valid=True, probe_admitted=False, refused=every).ok
+    one_open = {**every, "host_pid": False}
+    verdict = iv.judge_dry_run(policies_valid=True, probe_admitted=True, refused=one_open)
+    assert verdict.unrefused_controls == ("host_pid",) and not verdict.ok
+    assert not iv.judge_dry_run(policies_valid=True, probe_admitted=True, refused={}).ok

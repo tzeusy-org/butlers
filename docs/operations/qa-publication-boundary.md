@@ -52,18 +52,26 @@ namespace that is not `-dev`.
 
 1. `render --namespace <ns>-dev --image <repo@sha256:...>` prints the probe Job and the five
    inverse controls without touching a cluster; review them first.
-2. `run` creates a synthetic canary Secret (random value, piped on stdin, never printed) and a
+2. `dry-run --namespace <ns>-dev --image <repo@sha256:...> [--policies-file <helm template output>]`
+   sends the probe Job and the five inverse controls to the API server with
+   `--dry-run=server` as the launcher service account, and creates nothing. Admission, including
+   the ValidatingAdmissionPolicies, evaluates dry-run requests, so this is the server-side CEL
+   type and cost check that a chart render and the cel-python tests cannot give. With
+   `--policies-file` the policies and bindings are dry-run applied too. It passes when the probe
+   is admitted and every inverse control is refused (default `Deny` action). Both `dry-run` and
+   `run` also refuse a kube context that does not look like a dev cluster.
+3. `run` creates a synthetic canary Secret (random value, piped on stdin, never printed) and a
    canary-publisher pod, then applies each Job as the launcher service account so the admission
    policy is exercised. The probe is `python -I -m butlers.core.qa.isolation_probe`.
-3. Negative probes: uid is the pinned non-root user; no foreign process is visible; no
+4. Negative probes: uid is the pinned non-root user; no foreign process is visible; no
    service-account directory; `/` and `/app` are read-only; the canary file and environment are
    unreadable; TCP to the canary publisher and to any `--refused-tcp` target (give it `tracker=`,
    the daemon ports 41100-41112 and Postgres) is refused. Positive controls: the workspace is
    writable, each `--readable-path` is readable, each `--reachable-tcp` (the model route) connects.
-4. Inverse controls render the same template with exactly one hardening removed (token mounted,
+5. Inverse controls render the same template with exactly one hardening removed (token mounted,
    run as root, writable root, no tracker-egress exclusion, hostPID). The named probe must go RED,
    hostPID must be refused by the admission policy, and the restored template must PASS.
-5. The output is a content-blind receipt: check names, outcomes and digests only. Attach it to the
+6. The output is a content-blind receipt: check names, outcomes and digests only. Attach it to the
    review. It is operational evidence for that cluster and revision, not provider-side least
    privilege, and it does not close `bu-vc90le`.
 

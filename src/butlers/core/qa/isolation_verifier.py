@@ -175,6 +175,33 @@ def judge_control(
     return ControlVerdict(control.name, caught_by is not None, green, caught_by)
 
 
+@dataclass(frozen=True)
+class DryRunVerdict:
+    """Outcome of a server-side dry-run: nothing was created, admission alone judged."""
+
+    policies_valid: bool | None
+    probe_admitted: bool
+    unrefused_controls: tuple[str, ...]
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.policies_valid is not False and self.probe_admitted and not self.unrefused_controls
+        )
+
+
+def judge_dry_run(
+    *, policies_valid: bool | None, probe_admitted: bool, refused: Mapping[str, bool]
+) -> DryRunVerdict:
+    """Under the Deny action the probe is admitted and every inverse control is refused.
+
+    ``policies_valid`` is ``None`` when no policy file was supplied (installed policies only).
+    A control missing from ``refused`` counts as not refused.
+    """
+    unrefused = tuple(c.name for c in INVERSE_CONTROLS if not refused.get(c.name, False))
+    return DryRunVerdict(policies_valid, probe_admitted, unrefused)
+
+
 def baseline_verdict(receipt: Mapping[str, Any] | None) -> list[str]:
     """Names of baseline checks that did not pass on the unmodified template (empty = good)."""
     if receipt is None:
@@ -231,10 +258,12 @@ __all__ = [
     "INVESTIGATOR_COMPONENT",
     "ControlVerdict",
     "InverseControl",
+    "DryRunVerdict",
     "baseline_verdict",
     "build_probe_job",
     "canary_pod",
     "judge_control",
+    "judge_dry_run",
     "probe_command",
     "render_inverse",
 ]
