@@ -425,7 +425,7 @@ async def run_meeting_card(
                     for e in context
                     if e.overlaps(row["starts_at"], row.get("ends_at") or row["starts_at"])
                 ],
-                timezone="Asia/Singapore",
+                timezone=SGT,
                 limit=2,
             ),
         )

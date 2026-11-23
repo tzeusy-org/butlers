@@ -1,7 +1,7 @@
 """calendar_sources: whose calendar a household source is (bu-5ii4gj.1 S3, REQ-module-calendar-038).
 
 Revision ID: core_365
-Revises: core_360
+Revises: core_361
 Create Date: 2026-11-23 00:00:00.000000
 
 Adds ``role_subject_entity_id UUID NULL`` to the schema's own ``calendar_sources``: a reference to
@@ -23,7 +23,7 @@ from sqlalchemy import text
 from alembic import op
 
 revision = "core_365"
-down_revision = "core_360"
+down_revision = "core_361"
 branch_labels = None
 depends_on = None
 

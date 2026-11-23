@@ -86,7 +86,7 @@ def test_a_rerun_is_a_noop_and_downgrade_keeps_the_column(postgres_container) ->
         "SELECT c.relfilenode::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
         "WHERE n.nspname = current_schema() AND c.relname = 'calendar_sources'",
     )
-    command.downgrade(config, "core_360")
+    command.downgrade(config, "core_361")
     assert _run(
         db_url,
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
@@ -107,7 +107,7 @@ def test_a_rerun_is_a_noop_and_downgrade_keeps_the_column(postgres_container) ->
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_360")
+    command.upgrade(config, "core_361")
     _run(db_url, "ALTER TABLE calendar_sources ADD COLUMN role_subject_entity_id TEXT")
     with pytest.raises(Exception, match="unexpected shape"):
         command.upgrade(config, "core_365")

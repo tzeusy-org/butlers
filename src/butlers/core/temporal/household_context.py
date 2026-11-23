@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -142,9 +142,9 @@ def household_time(
     return dict(grouped)
 
 
-def context_line(event: HouseholdEvent, *, timezone: str = "UTC") -> str:
+def context_line(event: HouseholdEvent, *, timezone: str | tzinfo = "UTC") -> str:
     """One attributed line, such as ``Also on Alex's calendar: 14:00-15:00``. Time only."""
-    tz = ZoneInfo(timezone)
+    tz = ZoneInfo(timezone) if isinstance(timezone, str) else timezone
     owner = f"{event.subject_label}'s" if event.subject_label else f"{_ROLE_NOUN[event.role]}'s"
     if event.all_day:
         return f"Also on {owner} calendar: all day"
@@ -156,7 +156,7 @@ def context_line(event: HouseholdEvent, *, timezone: str = "UTC") -> str:
 def context_lines(
     events: Iterable[HouseholdEvent],
     *,
-    timezone: str = "UTC",
+    timezone: str | tzinfo = "UTC",
     limit: int = 5,
 ) -> list[str]:
     """Context lines for events in time order, capped so a busy household cannot flood a card."""
