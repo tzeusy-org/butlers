@@ -5,7 +5,8 @@ a calendar Block cannot silently block the same sender's email or messages. The 
 no wildcard (``connector:<type>:<endpoint_identity>`` is matched exactly), so one rule is written
 per registered calendar endpoint, in one transaction. An endpoint registered later is still
 covered for trust: the verdict reads every calendar scope, so a rule in any of them decides the
-stamp; only the connector's ingest-time suppression is per endpoint.
+stamp; only the connector's ingest-time suppression is per endpoint, which
+``reconcile_endpoint_rules`` keeps current for endpoints registered later.
 
 A Vouch removes the Block rules this verb wrote and a Block removes the Vouch rules it wrote;
 rules the owner wrote any other way, and every ``global`` rule, are left alone. A Vouch is
@@ -42,6 +43,7 @@ _VERB_RULE: dict[Verb, tuple[str, str]] = {
     "vouch": (VOUCH_CREATED_BY, "pass_through"),
     "block": (BLOCK_CREATED_BY, "block"),
 }
+_RECONCILE_LOCK = "calendar-organizer-reconcile"
 _OPPOSITE: dict[Verb, str] = {"vouch": BLOCK_CREATED_BY, "block": VOUCH_CREATED_BY}
 
 
@@ -72,6 +74,10 @@ async def apply_decision(pool: Any, address: str, verb: Verb) -> DecisionResult:
         raise ValueError("an organizer address is required")
     created_by, action = _VERB_RULE[verb]
     async with pool.acquire() as conn, conn.transaction():
+        # Verbs share this lock; the endpoint reconcile takes it exclusively.
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))", _RECONCILE_LOCK
+        )
         # Serialise concurrent verbs on one organizer so opposite verbs cannot interleave.
         await conn.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -169,3 +175,55 @@ async def restamp_organizer(pool: Any, address: str) -> int:
             stamp,
         )
     return len(rows)
+
+
+async def reconcile_endpoint_rules(pool: Any) -> int:
+    """Copy the owner's Vouch and Block rules onto calendar endpoints registered after the verb.
+
+    The verdict already reads every calendar scope, so trust never needed this; it makes the
+    connector's ingest-time suppression of a Block cover a newly registered endpoint too. Only
+    rules the verbs wrote (``calendar_vouch`` / ``calendar_block``) are copied, one per address and
+    verb. Idempotent: an endpoint that already has the rule gets nothing. Returns rules written.
+    ``pool`` is the Switchboard pool.
+    """
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", _RECONCILE_LOCK)
+        written = await conn.fetch(
+            """
+            INSERT INTO switchboard.ingestion_rules
+                (scope, rule_type, condition, action, priority, enabled, name, created_by)
+            SELECT ep.scope, 'sender_address', src.condition, src.action, src.priority, TRUE,
+                   src.name, src.created_by
+            FROM (
+                SELECT DISTINCT $1 || endpoint_identity AS scope
+                FROM switchboard.connector_registry
+                WHERE connector_type = $2 AND endpoint_identity <> ''
+            ) ep
+            CROSS JOIN (
+                SELECT DISTINCT ON (created_by, lower(btrim(condition ->> 'address')))
+                       created_by, condition, action, priority, name,
+                       lower(btrim(condition ->> 'address')) AS address
+                FROM switchboard.ingestion_rules
+                WHERE deleted_at IS NULL AND enabled = TRUE
+                  AND rule_type = 'sender_address'
+                  AND created_by = ANY($3::text[])
+                  AND starts_with(scope, $1)
+                  AND coalesce(condition ->> 'address', '') <> ''
+                ORDER BY created_by, lower(btrim(condition ->> 'address')), id
+            ) src
+            WHERE NOT EXISTS (
+                SELECT 1 FROM switchboard.ingestion_rules x
+                WHERE x.deleted_at IS NULL AND x.enabled = TRUE
+                  AND x.scope = ep.scope AND x.created_by = src.created_by
+                  AND x.rule_type = 'sender_address'
+                  AND lower(btrim(x.condition ->> 'address')) = src.address
+            )
+            RETURNING id
+            """,
+            f"connector:{CONNECTOR_TYPE}:",
+            CONNECTOR_TYPE,
+            [VOUCH_CREATED_BY, BLOCK_CREATED_BY],
+        )
+    if written:
+        logger.info("Calendar organizer rules copied to new endpoints: %d", len(written))
+    return len(written)

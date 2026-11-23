@@ -11,6 +11,7 @@ from butlers.core.temporal.calendar_provenance import is_quarantined_invitation
 from butlers.modules.calendar.organizer_decisions import (
     NoCalendarEndpoint,
     apply_decision,
+    reconcile_endpoint_rules,
     restamp_organizer,
 )
 from butlers.modules.calendar.organizer_verdict import VERDICT_VERSION
@@ -185,3 +186,59 @@ async def test_an_organizer_without_an_address_is_refused(db, bad) -> None:
     await _seed(pool)
     with pytest.raises(ValueError):
         await apply_decision(pool, bad, "vouch")
+
+
+_NEW_ENDPOINT = "google_calendar:user:new@example.com"
+
+
+async def _scope_rules(pool, scope):
+    rows = await pool.fetch(
+        "SELECT created_by, action FROM switchboard.ingestion_rules "
+        "WHERE deleted_at IS NULL AND scope = $1 ORDER BY created_by",
+        scope,
+    )
+    return [(r["created_by"], r["action"]) for r in rows]
+
+
+async def test_reconcile_copies_only_verb_rules_to_a_new_endpoint_and_is_idempotent(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, "friend@else.test", "vouch")
+    # A manual connector rule must never be copied.
+    await pool.execute(
+        "INSERT INTO switchboard.ingestion_rules (scope, rule_type, condition, action, priority, "
+        "enabled, name, created_by) VALUES ($1, 'sender_address', $2::jsonb, 'block', 50, TRUE, "
+        "'manual', 'owner')",
+        f"connector:google_calendar:{_ENDPOINTS[0]}",
+        {"address": "manual@else.test"},
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    new_scope = f"connector:google_calendar:{_NEW_ENDPOINT}"
+    assert await reconcile_endpoint_rules(pool) == 2
+    assert await _scope_rules(pool, new_scope) == [
+        ("calendar_block", "block"),
+        ("calendar_vouch", "pass_through"),
+    ]
+    assert await reconcile_endpoint_rules(pool) == 0  # idempotent
+
+
+async def test_reconcile_skips_removed_decisions_and_other_connectors(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, _STRANGER, "vouch")  # removes the block
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('gmail', 'gmail:user:me@example.com'), ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1  # only the vouch
+    assert await _scope_rules(pool, "connector:gmail:gmail:user:me@example.com") == []
+    assert await _scope_rules(pool, f"connector:google_calendar:{_NEW_ENDPOINT}") == [
+        ("calendar_vouch", "pass_through")
+    ]
