@@ -27,7 +27,60 @@ branch_labels = None
 depends_on = None
 
 
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_359:breaker-reset-cause', 0))"
+
+_ALREADY_APPLIED = """
+SELECT (
+    SELECT count(*) FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'breaker_resets'
+      AND column_name IN ('cause_code', 'cause_ref', 'outcome', 'refusal_reason')
+) = 4 AND EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'public.breaker_resets'::regclass
+      AND conname = 'breaker_resets_outcome_check'
+)
+"""
+
+
+def _installation_count() -> int:
+    """Count schema-local core chains that still depend on the shared columns."""
+    bind = op.get_bind()
+    schemas = bind.exec_driver_sql(
+        """
+        SELECT namespace.nspname
+        FROM pg_class version_table
+        JOIN pg_namespace namespace ON namespace.oid = version_table.relnamespace
+        WHERE version_table.relname = 'alembic_version'
+          AND version_table.relkind IN ('r', 'p')
+          AND left(namespace.nspname, 3) <> 'pg_'
+          AND namespace.nspname <> 'information_schema'
+        """
+    ).scalars()
+    quote = bind.dialect.identifier_preparer.quote
+    count = 0
+    for schema in schemas:
+        installed = bind.exec_driver_sql(
+            f"""
+            SELECT EXISTS (
+                SELECT 1 FROM {quote(schema)}.alembic_version
+                WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
+                    THEN substring(version_num FROM 6)::integer >= 359
+                    ELSE false END
+            )
+            """
+        ).scalar()
+        count += int(bool(installed))
+    return count
+
+
 def upgrade() -> None:
+    # The chain runs once per butler schema over this one shared table. Serialize the schemas, and
+    # let a later one that finds the work done read the catalog only: ADD COLUMN IF NOT EXISTS
+    # takes ACCESS EXCLUSIVE even as a no-op, held to the end of the transaction (bu-opskk2).
+    op.execute(_LOCK)
+    done = op.get_bind().exec_driver_sql(_ALREADY_APPLIED)
+    if done.scalar():
+        return
     op.execute("ALTER TABLE public.breaker_resets ADD COLUMN IF NOT EXISTS cause_code TEXT")
     op.execute("ALTER TABLE public.breaker_resets ADD COLUMN IF NOT EXISTS cause_ref TEXT")
     op.execute(
@@ -54,6 +107,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Only the last schema still on this revision undoes the shared change (core_246 pattern);
+    # earlier schemas touch no table, so the DELETE below never holds a row lock while another
+    # worker waits for the ALTERs' ACCESS EXCLUSIVE lock.
+    op.execute(_LOCK)
+    if _installation_count() > 1:
+        return
     # Refusal rows are not resets; drop them so the downgraded filter-less readers stay correct.
     # The core chain runs once per butler schema over this one shared table, so an earlier
     # schema's downgrade has already dropped the column: guard the delete on its existence.

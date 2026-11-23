@@ -58,8 +58,26 @@ def _installation_count() -> int:
     return count
 
 
+_HAS_LEASE_COLUMNS = """
+    SELECT count(*) = 2
+    FROM pg_attribute
+    WHERE attrelid = to_regclass('connectors.filtered_events')
+      AND attname IN ('claim_token', 'claimed_at')
+      AND attnum > 0
+      AND NOT attisdropped
+"""
+
+
 def upgrade() -> None:
     op.execute(_LOCK)
+    # Every per-schema core chain runs this over one shared table. ``ADD COLUMN IF NOT EXISTS``
+    # takes ACCESS EXCLUSIVE on the table even when both columns exist, and that lock lives to
+    # the end of the surrounding transaction. A later chain that skips the work holds it while
+    # waiting on a later migration's advisory lock (core_346 locks, then UPDATEs the same table),
+    # and the lock-holder of that advisory lock waits on this table lock: a deadlock (bu-opskk2).
+    # So a chain that finds the columns reads the catalog only and takes no table lock.
+    if op.get_bind().exec_driver_sql(_HAS_LEASE_COLUMNS).scalar():
+        return
     # Short lock wait: ingestion writes this table continuously.
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute(
