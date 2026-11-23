@@ -140,8 +140,12 @@ class TestConnectorBridgeAndIngest:
         assert len(connector._chat_buffers["200@s.whatsapp.net"].messages) == 1
         assert connector._last_event_id == "msg-3"
 
-    async def test_connector_submits_batch_to_switchboard_on_flush(self):
+    async def test_connector_submits_batch_to_switchboard_on_flush(self, monkeypatch):
         """Flushing a buffered chat submits an ingest.v1 envelope to Switchboard."""
+        monkeypatch.setattr(
+            "butlers.connectors.whatsapp_user_client.commit_envelope",
+            AsyncMock(return_value=True),  # the journal has its own tests
+        )
         connector = _make_connector()
         mock_mcp = AsyncMock()
         mock_mcp.call_tool = AsyncMock(return_value={"status": "ok"})
