@@ -66,21 +66,17 @@ contributions = (combined or {}).get("contributions", [])
 If `state_get` returns null or empty, proceed in **calendar-only mode**: skip the
 "Today's Highlights" section entirely and build the summary from the calendar alone.
 
-### Step 3: Fetch Tomorrow's Events
+### Step 3: Read the Day Sheet Marker
 
-Call `calendar_list_events` with the computed start and end bounds (SGT, 00:00 to
-23:59 tomorrow):
+The deterministic `day_sheet_push` job (22:30 owner-local) sends tomorrow's calendar itself and
+records `day_sheet/pushed/<tomorrow-SGT>` with an `outcome`. Call `state_get` on that key.
 
-```python
-events = calendar_list_events(
-    start=start.isoformat(),
-    end=end.isoformat(),
-)
-```
-
-For each event, extract title, start time (SGT), duration, location, and any
-description notes. Sort events by start time (ascending) to build a chronological
-timeline.
+- `outcome == "delivered"`: the calendar was sent separately. Do not enumerate or describe events.
+- Any other outcome: the calendar was not confirmed delivered. Say nothing about tomorrow's
+  events and never say the day is clear.
+- No marker (the job is not enabled): fall back to `calendar_list_events` for tomorrow
+  (00:00 to 23:59 SGT), sorted by start time. If that call fails, say the calendar could not be
+  read. Never write "No events scheduled for tomorrow" for a failed read.
 
 ### Step 4: Compose the Multi-Domain Summary
 
@@ -97,11 +93,10 @@ Do not title this an "end-of-day briefing"; it is sent at the end of the day,
 Then assemble the body sections:
 
 **Calendar — [Day, Date]**
-List tomorrow's events in chronological order (times in SGT). For each event:
-title, time, duration, location. Include prep notes (documents to review, travel
-time, items to bring), inferred from the event title, description, and location.
-Note any free blocks between events. If there are no events:
-"No events scheduled for tomorrow."
+With a `delivered` marker: one line, "Tomorrow's day sheet was sent separately." With a marker that
+is not `delivered`: one line, "Tomorrow's calendar could not be confirmed." With no marker: list
+the events from Step 3 chronologically (times in SGT): title, time, duration, location, prep
+notes, free blocks.
 
 **Today's Highlights**
 Include this section **only** if at least one specialist contribution has
@@ -149,8 +144,8 @@ Do not wait for a user reply.
 - Today's and tomorrow's dates determined in SGT (UTC+8)
 - `state_get('briefing/combined/<today-SGT>')` attempted; specialist contributions
   used when present, calendar-only fallback when absent or empty
-- `calendar_list_events` called with correct SGT start/end bounds for tomorrow
-- Calendar timeline composed with chronological events, prep notes, and free blocks
+- `day_sheet/pushed/<tomorrow-SGT>` read; events enumerated only when no marker exists
+- A failed calendar read is never reported as an empty day
 - "Today's Highlights" included only when at least one contribution has
   `has_updates=true`, grouped under the fixed domain labels
 - Optional "Heads-up" included only for cross-domain conflicts

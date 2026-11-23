@@ -1681,6 +1681,16 @@ async def _run_collect_briefing_contributions_job(
     return await run_collect_briefing_contributions(pool=pool)
 
 
+async def _run_day_sheet_push_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Send tomorrow's day sheet to the owner (dark unless DAY_SHEET_PUSH_ENABLED)."""
+    from butlers.jobs.day_sheet_push import run_day_sheet_push
+
+    return await run_day_sheet_push(pool, job_args, origin_butler="general")
+
+
 # ---------------------------------------------------------------------------
 # Situational context-bus producers (RFC 0009)
 #
@@ -2441,6 +2451,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
+            "day_sheet_push": _run_day_sheet_push_job,
             "context_producer_calendar": _run_context_producer_calendar_job,
             # Retention pruners (disabled by default — see docs/operations/data-retention.md)
             **_retention_pruner_job_handlers("general"),
