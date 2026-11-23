@@ -54,11 +54,20 @@ export function useEntrySelection({
   // ``updateQuery`` is read through a ref so the async tail never replays a stale URL.
   const updateRef = useRef(updateQuery);
   updateRef.current = updateQuery;
+  // Not a cleanup-cancel flag: dropping the param re-runs the effect, which must not cancel the
+  // fetch it just started. Only leaving the page should stop the navigation that follows it.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   useEffect(() => {
     if (!entryParam) return;
     updateRef.current({ entry: null });
     void openInvitation(entryParam).then((entry) => {
-      if (entry) {
+      if (entry && mountedRef.current) {
         updateRef.current({
           view: entry.view === "butler" ? "butler" : "user",
           range: "day",
