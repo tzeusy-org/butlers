@@ -38,7 +38,8 @@ from butlers.core.qa import isolation_verifier as iv
 
 _DEV_NAMESPACE = re.compile(r"^[a-z0-9-]+-dev$")
 _CANARY_PORT = 9
-_DEV_CONTEXT = re.compile(r"dev|k3d")
+#: A whole segment must be dev or k3d ("butlers-dev", "k3d-qa"); "prod-devops" must not match.
+_DEV_CONTEXT = re.compile(r"(^|[-_.@/])(dev|k3d)([-_.@/]|$)")
 
 
 def _kubectl(args: list[str], *, stdin: str | None = None, check: bool = True) -> str:
@@ -95,8 +96,30 @@ def _probe_job(args: argparse.Namespace, canary_host: str) -> dict[str, Any]:
     )
 
 
-def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool = False) -> bool:
-    """Apply as the launcher service account; ``False`` when admission refused it."""
+class VerifierError(RuntimeError):
+    """A cluster call failed in a way that is not an admission decision: never a catch."""
+
+
+ADMITTED = "admitted"
+REFUSED = "refused"
+
+
+def _is_policy_denial(stderr: str) -> bool:
+    """True only for this feature's ValidatingAdmissionPolicy denying the request."""
+    return (
+        "ValidatingAdmissionPolicy" in stderr
+        and "denied request" in stderr
+        and "-qa-investigator-" in stderr
+    )
+
+
+def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool = False) -> str:
+    """Apply as the launcher service account: ``ADMITTED`` or ``REFUSED``.
+
+    A failure counts as a refusal (an admission catch) only when stderr is this feature's policy
+    denying the request. Any other failure (no cluster, forbidden, bad manifest, timeout) raises
+    ``VerifierError``: it must never be scored as a control being caught.
+    """
     as_arg = f"--as=system:serviceaccount:{args.namespace}:{args.launcher_sa}"
     extra = ["--dry-run=server"] if dry_run else []
     result = subprocess.run(  # noqa: S603
@@ -106,14 +129,18 @@ def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool 
         text=True,
         check=False,
     )
-    return result.returncode == 0
+    if result.returncode == 0:
+        return ADMITTED
+    if _is_policy_denial(result.stderr or ""):
+        return REFUSED
+    raise VerifierError("kubectl apply failed and was not an admission policy denial")
 
 
 def _run_one(
     args: argparse.Namespace, manifest: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, bool]:
     """Apply and read one probe: ``(receipt, refused_by_admission)``."""
-    if not _apply(args, manifest):
+    if _apply(args, manifest) == REFUSED:
         return None, True
     name = manifest["metadata"]["name"]
     _wait_job(args.namespace, name, 300)
@@ -201,9 +228,9 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
         )
         policies_valid = result.returncode == 0
     host = "192.0.2.1"
-    probe_admitted = _apply(args, _probe_job(args, host), dry_run=True)
+    probe_admitted = _apply(args, _probe_job(args, host), dry_run=True) == ADMITTED
     refused = {
-        c.name: not _apply(args, iv.render_inverse(_probe_job(args, host), c), dry_run=True)
+        c.name: _apply(args, iv.render_inverse(_probe_job(args, host), c), dry_run=True) == REFUSED
         for c in iv.INVERSE_CONTROLS
     }
     verdict = iv.judge_dry_run(
@@ -253,13 +280,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.mode in ("run", "dry-run"):
         context = _kubectl(["config", "current-context"], check=False).strip()
-        if not _DEV_CONTEXT.search(context):
+        if "prod" in context or not _DEV_CONTEXT.search(context):
             sys.stderr.write(
                 "refusing: the current kube context does not look like a dev cluster\n"
             )
             return 2
     modes = {"render": render, "dry-run": dry_run, "run": run}
-    result = modes[args.mode](args)
+    try:
+        result = modes[args.mode](args)
+    except (VerifierError, RuntimeError, TimeoutError) as exc:
+        sys.stderr.write(f"verifier error (not a pass): {type(exc).__name__}\n")
+        return 3
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0 if args.mode == "render" or result["passed"] else 1
 

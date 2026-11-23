@@ -45,24 +45,81 @@ def test_dry_run_refuses_a_non_dev_namespace_and_a_non_dev_context(capsys, monke
     assert "does not look like a dev cluster" in capsys.readouterr().err
 
 
-def test_dry_run_sends_every_manifest_server_side_and_creates_nothing(monkeypatch, capsys) -> None:
-    module = _load()
+_DENIAL = (
+    'Error from server (Forbidden): ValidatingAdmissionPolicy "butlers-qa-investigator-job" '
+    'with binding "butlers-qa-investigator-job" denied request: the pod has no host namespace'
+)
+
+
+def _stub(monkeypatch, module, results):
+    """``results``: list of (returncode, stderr), consumed per kubectl apply call."""
     calls: list[list[str]] = []
 
     class _Done:
-        returncode = 0
+        def __init__(self, code, err):
+            self.returncode, self.stderr = code, err
 
     def fake_run(command, **kwargs):
         calls.append(command)
-        done = _Done()
-        # Admit the probe (first call), refuse every mutated Job after it.
-        done.returncode = 0 if len(calls) == 1 else 1
-        return done
+        return _Done(*results[min(len(calls) - 1, len(results) - 1)])
 
-    monkeypatch.setattr(module, "_kubectl", lambda *a, **k: "k3d-dev\n")
+    monkeypatch.setattr(module, "_kubectl", lambda *a, **k: "k3d-qa\n")
     monkeypatch.setattr(module.subprocess, "run", fake_run)
+    return calls
+
+
+def test_dry_run_sends_every_manifest_server_side_and_creates_nothing(monkeypatch, capsys) -> None:
+    module = _load()
+    calls = _stub(monkeypatch, module, [(0, ""), (1, _DENIAL)])
     assert module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["passed"] is True and out["unrefused_controls"] == []
     assert calls and all("--dry-run=server" in c for c in calls)
     assert all(c[1].startswith("--as=system:serviceaccount:butlers-dev:") for c in calls)
+
+
+def test_a_failure_that_is_not_a_policy_denial_is_an_error_never_a_catch(
+    monkeypatch, capsys
+) -> None:
+    module = _load()
+    for stderr in (
+        "The connection to the server was refused",
+        'Error from server (Forbidden): jobs.batch is forbidden: User "x" cannot create',
+        'ValidatingAdmissionPolicy "some-other-policy" with binding "b" denied request: no',
+    ):
+        _stub(monkeypatch, module, [(0, ""), (1, stderr)])
+        code = module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE])
+        assert code == 3, stderr
+        assert "not a pass" in capsys.readouterr().err
+
+
+def test_an_admitted_control_is_reported_unrefused(monkeypatch, capsys) -> None:
+    module = _load()
+    _stub(monkeypatch, module, [(0, "")])
+    assert module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE]) == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["passed"] is False and len(out["unrefused_controls"]) == 5
+
+
+@pytest.mark.parametrize(
+    ("context", "accepted"),
+    [
+        ("k3d-qa", True),
+        ("butlers-dev", True),
+        ("dev", True),
+        ("arn:aws:eks:x:cluster/team-dev", True),
+        ("prod-devops", False),
+        ("devops", False),
+        ("butlers-prod", False),
+        ("k3d-prod", False),
+        ("", False),
+    ],
+)
+def test_the_context_check_matches_whole_segments_and_rejects_prod(
+    monkeypatch, capsys, context, accepted
+) -> None:
+    module = _load()
+    monkeypatch.setattr(module, "_kubectl", lambda *a, **k: context + "\n")
+    monkeypatch.setattr(module, "dry_run", lambda args: {"passed": True})
+    code = module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE])
+    assert (code == 0) is accepted
