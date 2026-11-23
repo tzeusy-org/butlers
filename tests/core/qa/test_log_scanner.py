@@ -1138,10 +1138,13 @@ async def test_discover_skips_codex_cli_timeout_log_with_session_records(tmp_pat
 @pytest.fixture
 def real_logging(tmp_path):
     """Run the real configure_logging file pipeline, restoring the root logger afterwards."""
-    from butlers.core.logging import configure_logging
+    from butlers.core.logging import _butler_context, configure_logging
 
     root = logging.getLogger()
     saved_handlers, saved_level = list(root.handlers), root.level
+    # configure_logging binds the butler ContextVar for the whole thread; restore it so a later
+    # test on this worker does not see "finance" (bu-dmcjtm).
+    saved_butler = _butler_context.get()
     configure_logging(level="INFO", fmt="json", log_root=tmp_path, butler_name="finance")
     try:
         yield tmp_path
@@ -1151,6 +1154,7 @@ def real_logging(tmp_path):
                 handler.close()
                 root.removeHandler(handler)
         root.setLevel(saved_level)
+        _butler_context.set(saved_butler)
 
 
 def _fail_on_date(day: str) -> None:
