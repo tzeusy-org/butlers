@@ -12,8 +12,10 @@
   renewal, pause, delete, in-memory store. Dark; no table, tool or delivery.
 - [x] 2.2b Postgres watch store: `public.owner_watches` (core_364), grants manifest, two-schema
   migration test, store contract on both stores.
-- [ ] 2.2c The owner approval-card and `never` reply surfaces that call the service, and delivery
-  through the insight broker.
+- [x] 2.2c The watch loop (`butlers.watches.runner`: claim a fire, deliver one notice, arm the next
+  generation) and delivery through the insight broker (`butlers.watches.delivery`).
+- [ ] 2.2d The owner approval-card and `never` reply surfaces that call the service, and the
+  scheduled tick that runs the loop.
 - [ ] 2.3 Finance `alert_config` migration.
 - [ ] 2.4 Guards, wake_when and automatic tighten-only modes.
 - [ ] 2.5 Correlation rule and graduation card.
