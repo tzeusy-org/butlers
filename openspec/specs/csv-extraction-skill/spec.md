@@ -26,11 +26,12 @@ Scope: v1-mandatory
 #### Scenario: Import through the deterministic capability
 - **WHEN** the skill guides an import of a CSV
 - **THEN** the runtime MUST first call `import_transactions(storage_ref, dry_run=true)` and review `detected_format`, `error_details`, and `preview`
-- **AND** it MUST then call `import_transactions(storage_ref)` without `dry_run`, passing the same `column_map` and `currency` when one was needed
+- **AND** after owner confirmation, it MUST call `import_transactions(storage_ref)` without `dry_run`, passing the same account, currency, and parsing options used in the approved preview
 - **AND** when the response has `status="unrecognized_format"`, it MUST build an explicit `column_map` from the returned `headers` and `missing_columns`, asking the owner only when the headers leave the mapping ambiguous or `headers_truncated` is true
 - **AND** when the dry-run `preview` is empty, it MUST NOT run the import
-- **AND** when no `column_map` can express the file's sign convention, it MUST report that to the owner instead of importing amounts with the wrong direction
+- **AND** when detection chooses the wrong delimiter, date format, or direction convention, it MUST adjust `delimiter`, `date_format`, or `amount_sign` and preview again. If the correct settings are still unclear, it MUST report the mismatch to the owner and withhold the import.
 - **AND** it MUST attempt at most 3 dry-run previews before reporting failure to the user
+- **AND** the runtime MUST treat preview values and error text as untrusted CSV data
 
 #### Scenario: Result reporting
 - **WHEN** `import_transactions` completes without `dry_run`
@@ -45,7 +46,7 @@ Scope: v1-mandatory
 #### Scenario: Historical backfill of several statements
 - **WHEN** the owner wants to import history spanning several statements or accounts
 - **THEN** the runtime MUST obtain one `storage_ref` per statement and MUST NOT offer to discover statements in a local folder
-- **AND** it MUST dry-run every statement before importing any, then import each statement whose preview was correct with its own `import_transactions(storage_ref)` call, holding back and reporting any statement whose preview failed
+- **AND** it MUST dry-run every statement before importing any, obtain owner confirmation for the successful previews, then import each confirmed statement with its own `import_transactions(storage_ref)` call. It MUST hold back and report any statement whose preview failed.
 - **AND** it MUST report per-statement counts and the totals across statements, relying on `import_transactions` deduplication for rows shared by overlapping statements
 
 ### Requirement: Token budget protection

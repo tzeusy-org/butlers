@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -124,3 +125,57 @@ def test_repo_skill_files_use_yaml_frontmatter() -> None:
     assert missing_name == []
     assert mismatched_name == []
     assert missing_description == []
+
+
+# RFC 0038 D18 grants engineering executors a shell in an isolated worktree.
+_ENGINEERING_ONLY_SKILLS = frozenset({"roster/qa/.agents/skills/investigation-notes/SKILL.md"})
+_SKILL_SHELL_OR_HTTP = re.compile(
+    r"\b(?:import_csv|urllib|subprocess)\b|\brequests\.|\bcurl\s+|"
+    r"\b(?:write|run|execute)\s+(?:a|the)\s+script\b|"
+    r"^\s*(?:\$\s*)?(?:python(?:3(?:\.\d+)?)?|bash|sh|mkdir)\s+|"
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|HEAD)\s+(?:https?://|/api/)",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _skill_execution_instructions(text: str) -> list[str]:
+    """Scan shipped instructions while allowing Markdown link destinations."""
+    # Only URLs in Markdown destinations and autolinks are plain references.
+    # Keep any visible labels, prose and fenced examples under the same scan.
+    text = re.sub(r"(?<=\]\()https?://[^\s)]+(?=\))|<https?://[^\s>]+>", "", text)
+    return [match.group().strip() for match in _SKILL_SHELL_OR_HTTP.finditer(text)]
+
+
+def test_roster_skills_use_capabilities_without_shell_or_http() -> None:
+    """Owner-facing skill instructions stay within the RFC 0038 D2/D3 surface."""
+    for instruction in (
+        "import_csv.py",
+        "urllib.request",
+        "requests.post(url)",
+        "curl url",
+        "subprocess.run(cmd)",
+        "python import.py",
+        "$ python3 -c code",
+        "Write a script",
+        "Run the script",
+        "POST /api/finance/transactions/bulk",
+    ):
+        assert _skill_execution_instructions(instruction), instruction
+    assert not _skill_execution_instructions(
+        "[reference](https://example.test/urllib)\n"
+        "```python\nawait import_transactions(storage_ref=ref, dry_run=True)\n```"
+    )
+
+    repo_root = Path(__file__).resolve().parents[2]
+    skills = {
+        skill.relative_to(repo_root).as_posix(): skill
+        for skill in repo_root.glob("roster/**/SKILL.md")
+    }
+    assert skills and _ENGINEERING_ONLY_SKILLS.issubset(skills)
+    violations = {}
+    for location, skill in sorted(skills.items()):
+        if location in _ENGINEERING_ONLY_SKILLS:
+            continue
+        if instructions := _skill_execution_instructions(skill.read_text(encoding="utf-8")):
+            violations[location] = instructions
+    assert not violations, violations

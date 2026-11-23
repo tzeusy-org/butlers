@@ -8,11 +8,14 @@ while the result still said ``baselines_triggered``. The trigger now runs the pr
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import asyncpg
 import pytest
+
+from butlers.testing.fake_pool import FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -31,23 +34,20 @@ def _csv(rows: int) -> MagicMock:
     return blob_store
 
 
-async def _import(pool: MagicMock, rows: int) -> dict:
+async def _import(pool: FakePool, rows: int) -> dict:
     from butlers.tools.finance.data_import import import_transactions
 
     return await import_transactions(
-        pool,
+        cast(asyncpg.Pool, pool),
         blob_store=_csv(rows),
         storage_ref="s3://bucket/finance/import.csv",
         origin_butler="finance",
     )
 
 
-def _pool() -> MagicMock:
-    pool = MagicMock()
-    pool.execute = AsyncMock(return_value="INSERT 0 1")
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=False)  # no MV, no merchant mappings
-    return pool
+def _pool() -> FakePool:
+    # No stored duplicates, materialized view, or merchant mappings.
+    return fake_pool(fetch=[], fetchval=False, execute="INSERT 0 1")
 
 
 async def test_a_50_row_import_refreshes_the_bands_in_the_budget_zone_and_others_do_not():
