@@ -19,6 +19,8 @@ that consent; it adds no scope, account, or connector.
 - REQ-connector-google-health-015 replaces "Workout ingestion remains deferred"
   with a source contract; the chronicler-source-compatibility workout scenario and
   RFC 0014 Amendment 1 are updated to match.
+- The Memory migration seeds `workout_session` and promotes an existing proposed
+  definition. Curated definitions and stored facts stay intact.
 
 ## Deferred slices
 
@@ -26,9 +28,6 @@ that consent; it adds no scope, account, or connector.
   reference does not document reconcile tombstone semantics, so this is not claimed.
 - Weight and body-fat into health measurements with owner-dominance (slice 2).
 - "Last <activity>" answers from episodes with an evidence door (slice 3).
-- `predicate_registry` seed for `workout_session`: deferred behind the open
-  `mem_013` migration to avoid a forked Alembic chain; the predicate is accepted
-  as a novel predicate meanwhile.
 
 ## Impact
 
