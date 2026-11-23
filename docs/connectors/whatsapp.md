@@ -448,7 +448,7 @@ docker compose build connector-whatsapp-user
 ## Capture manifest
 
 - **Provider offers:** the WhatsApp Web bridge's message events (text, media references, reactions) in order; no server-side history we can re-read after a session loss.
-- **We keep:** one `connectors.evidence_journal` row per submitted batch (`source = whatsapp`, `provider_id` = the batch event id), committed before the Switchboard submit and the checkpoint save. `raw` is the envelope's inbox-equivalent at its ingestion tier after the bearer scrub. Policy-filtered and discretion-ignored batches are never journaled.
+- **We keep:** one `connectors.evidence_journal` row per submitted batch (`source = whatsapp_user_client`, `provider_id` = the batch event id), committed before the Switchboard submit and the checkpoint save. `raw` is the envelope's inbox-equivalent at its ingestion tier after the bearer scrub. Policy-filtered and discretion-ignored batches are never journaled.
 - **If the journal write fails:** nothing is submitted, the checkpoint does not move, and the batch keeps its hold and retry path. A failed submit keeps the row.
 - **Provider retention and backfill:** WhatsApp offers no durable history door, so this row is the verbatim copy; `message_inbox` is a routing buffer, not evidence.
 
