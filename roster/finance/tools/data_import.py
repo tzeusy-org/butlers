@@ -792,7 +792,7 @@ async def _check_duplicate(
 
 
 async def _check_duplicates_batch(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     batch: list[dict[str, Any]],
     account_id: str | None,
 ) -> set[int]:
@@ -887,7 +887,7 @@ async def _insert_batch(
 
 
 async def _write_csv_batch(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     batch: list[dict[str, Any]],
     account_id: str | None,
     import_batch_id: str,

@@ -243,7 +243,6 @@
     "[\"roster/finance/tools/claim_reconciliation.py\", \"reportArgumentType\", \"38262cfc39e2756beb9d8784d301d4fe3db733e522c7d3785cb01892974e0dac\"]": 1,
     "[\"roster/finance/tools/claim_reconciliation.py\", \"reportMissingImports\", \"8e00c3762ee09caadaa01c80b833e812d368756b395848c4d929bce91e4a64f3\"]": 1,
     "[\"roster/finance/tools/data_import.py\", \"reportMissingImports\", \"be36bf1c6b2c7c18543eebf85ce81a7f36a637b61f4626fde08ed5942ef668b2\"]": 1,
-    "[\"roster/finance/tools/data_import.py\", \"reportReturnType\", \"a15af33dad79b508f692cd009925db1fae360854deb35f31df03e2e474c51d8c\"]": 1,
     "[\"roster/finance/tools/feed_reconciliation.py\", \"reportMissingImports\", \"8e00c3762ee09caadaa01c80b833e812d368756b395848c4d929bce91e4a64f3\"]": 1,
     "[\"roster/finance/tools/overview.py\", \"reportMissingImports\", \"b3954efe241a17910ecf8f637d109ead001c6677c9b079e5202a61cfdbc6c60c\"]": 1,
     "[\"roster/finance/tools/overview.py\", \"reportMissingImports\", \"ccf8c5e534816f20af66b790449962188fe507df1b132c3d19cbfb4e30c06d5e\"]": 1,

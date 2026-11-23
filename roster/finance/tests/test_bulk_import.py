@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.roster_imports import roster_module
 from butlers.tools.finance.transactions import (  # pyright: ignore[reportMissingImports]
     bulk_record_transactions,
 )
@@ -90,7 +91,7 @@ async def test_mcp_bulk_counts_existing_duplicate_as_skipped(finance_pool):
 
 
 async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finance_pool):
-    from butlers.tools.finance.data_import import import_transactions
+    import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
     blob = AsyncMock(scheme="s3", bucket="bucket")
     blob.get.return_value = (
@@ -140,7 +141,7 @@ async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finan
 
 
 async def test_blob_csv_deduplicates_shared_scope_batches_and_concurrent_replays(finance_pool):
-    from butlers.tools.finance.data_import import import_transactions
+    import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
     statement = (
         b"Date,Merchant,Amount\n2026-01-15,Books,-5\n2026-01-15,Books,-5\n"

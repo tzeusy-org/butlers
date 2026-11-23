@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastmcp import FastMCP
 
+from butlers.roster_imports import roster_module
 from butlers.testing.fake_pool import fake_pool
 from butlers.testing.mcp import registered_tools
 
@@ -158,7 +159,7 @@ class TestImportTransactionsToolRegistration:
 
     @pytest.mark.parametrize("column_map", ["{", "[]", '{"date": 1}'])
     async def test_invalid_column_mapping_never_reads_blob(self, column_map):
-        from butlers.tools.finance.data_import import import_transactions
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
         blob_store = AsyncMock()
         tools, _, _ = await self._register_with_data_import(
@@ -326,7 +327,7 @@ class TestCsvParsingOptions:
         ids=["semicolon-day-first", "pipe-split-columns", "tab-signed-over-automatic-split"],
     )
     async def test_blob_preview_uses_explicit_options(self, csv, options, expected):
-        from butlers.tools.finance.data_import import import_transactions
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
         blob = AsyncMock(scheme="s3", bucket="bucket")
         blob.get.return_value = csv.encode()
@@ -357,7 +358,7 @@ class TestCsvParsingOptions:
         ],
     )
     async def test_invalid_options_refuse_before_blob_read(self, option, value):
-        from butlers.tools.finance.data_import import import_transactions
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
         blob = AsyncMock(scheme="s3", bucket="bucket")
         result = await import_transactions(
@@ -373,7 +374,7 @@ class TestCsvParsingOptions:
         blob.get.assert_not_awaited()
 
     async def test_preview_and_row_errors_bound_untrusted_csv_values(self):
-        from butlers.tools.finance.data_import import import_transactions
+        import_transactions = roster_module("finance", "tools/data_import").import_transactions
 
         long_value = "q" * 20_000
         csv = f"Date,Payee,Amount\n2026-01-17,{long_value},1.00\n2026-01-18,Refund,{long_value}\n"
