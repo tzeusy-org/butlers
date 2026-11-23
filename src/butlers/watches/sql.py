@@ -9,7 +9,10 @@ backstop at the contract maximum. ``write`` is a version CAS. A driver outage ra
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import asyncpg
@@ -62,6 +65,39 @@ def _values(watch: Watch) -> tuple[Any, ...]:
 class PostgresWatchStore:
     def __init__(self, pool: asyncpg.Pool) -> None:
         self._pool = pool
+        self._local: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def serialized(self, watch_id: str) -> AsyncIterator[None]:
+        """One transition of one watch at a time, across processes.
+
+        A process-local lock first (so waiters do not each pin a connection), then a session
+        advisory lock on a dedicated connection held across the whole transition: the read, the
+        condition side effects and the CAS write. A lost connection ends the session and
+        releases the lock.
+        """
+        key = f"butlers:owner-watch:{watch_id}"
+        async with self._local.setdefault(watch_id, asyncio.Lock()):
+            try:
+                connection = await self._pool.acquire()
+                try:
+                    await connection.execute(
+                        "SELECT pg_advisory_lock(hashtextextended($1, 0))", key
+                    )
+                except BaseException:
+                    await self._pool.release(connection)
+                    raise
+            except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
+                raise ConnectionError(f"watch store unavailable: {type(exc).__name__}") from exc
+            try:
+                yield
+            finally:
+                try:
+                    await connection.execute(
+                        "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key
+                    )
+                finally:
+                    await self._pool.release(connection)
 
     async def get(self, watch_id: str) -> Watch | None:
         try:
@@ -129,8 +165,14 @@ class PostgresWatchStore:
             )
         else:
             await connection.execute(
-                "UPDATE public.owner_watches SET version = $2, generation = $3, delivery = $9, "
-                "state = $10, expires_at = $12, approval_digest = $13 WHERE id = $1",
-                *_values(watch),
+                "UPDATE public.owner_watches SET version = $2, generation = $3, delivery = $4, "
+                "state = $5, expires_at = $6, approval_digest = $7 WHERE id = $1",
+                watch.id,
+                watch.version,
+                watch.generation,
+                watch.delivery,
+                watch.state.value,
+                watch.expires_at,
+                watch.approval_digest,
             )
         return watch
