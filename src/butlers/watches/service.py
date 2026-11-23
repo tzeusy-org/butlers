@@ -2,10 +2,11 @@
 
 Every change that defines or widens a watch is an exact card the owner approves: the card digest
 binds the predicate, source and category boundary, grant digest, delivery mode, expiry and
-version. A model, a routine or source text can only produce a card; it never installs one. A
-watch notifies the owner only (it has no recipient field), at most ``MAX_ACTIVE`` are active, each
-lives 90 days unless the owner approves a renewal card in the last seven, and ``pause`` stops one
-without deleting anything it observed. Delivery is not here: a fire is the evaluator's intent.
+version. Only a model proposes a card; mail, source text and read-check output are evidence and
+produce none, and a proposal never installs a watch. A watch notifies the owner only (it has no
+recipient field), at most ``MAX_ACTIVE`` are active, each lives 90 days from approval unless the
+owner approves a renewal card in the last seven, and ``pause`` stops one without deleting
+anything it observed. Delivery is not here: a fire is the evaluator's intent.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from butlers.conditions import ConditionEvaluator, Grant, RegistrationRefused, Snapshot, State, Tri
@@ -92,7 +93,6 @@ class WatchService:
             raise WatchRefused("categories must be a list of known sensitivity categories")
         watch_id = watch_id or str(uuid.uuid4())
         grant = self.grant_for(watch_id)
-        expires_at = now + LIFETIME
         try:
             predicate = check_registration(
                 spec["predicate"],
@@ -100,7 +100,7 @@ class WatchService:
                 instance_id=f"{watch_id}:1",
                 goal_id=watch_id,
                 starts_at=now,
-                expires_at=expires_at,
+                expires_at=now + LIFETIME,  # validation only: the real expiry starts at approval
             )
         except RegistrationRefused as exc:
             raise WatchRefused(str(exc)) from None
@@ -113,7 +113,8 @@ class WatchService:
             sources=tuple(sorted(grant.sources)),
             categories=tuple(sorted(set(categories))),
             delivery=delivery,
-            expires_at=expires_at,
+            expires_at=None,
+            lifetime=LIFETIME,
         )
 
     async def propose_update(
@@ -130,7 +131,7 @@ class WatchService:
         watch = await self._open(watch_id)
         if not watch.due_for_renewal(now):
             raise WatchRefused("a renewal card is offered only in the last seven days")
-        return self._card(watch, Action.RENEW, watch.delivery, now + LIFETIME)
+        return self._card(watch, Action.RENEW, watch.delivery, None, lifetime=LIFETIME)
 
     async def propose_delete(self, watch_id: str) -> WatchCard:
         watch = await self._open(watch_id)
@@ -141,8 +142,9 @@ class WatchService:
         watch: Watch,
         action: Action,
         delivery: str,
-        expires_at: datetime,
+        expires_at: datetime | None,
         resume: bool = False,
+        lifetime: timedelta | None = None,
     ) -> WatchCard:
         return WatchCard(
             action=action,
@@ -154,6 +156,7 @@ class WatchService:
             categories=watch.categories,
             delivery=delivery,
             expires_at=expires_at,
+            lifetime=lifetime,
             resume=resume,
         )
 
@@ -165,9 +168,8 @@ class WatchService:
         if approval.card_digest != card.digest:
             raise WatchRefused("the approval is for a different card")
         now = snapshot.now
-        if card.expires_at <= now:
-            raise WatchRefused("the card's expiry has passed")
         if card.action is Action.CREATE:
+            self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
             return await self._create(card, snapshot)
         current = await self.store.get(card.watch_id)
         if current is None:
@@ -187,6 +189,8 @@ class WatchService:
             raise WatchRefused("a card cannot change a watch's boundary; create a new watch")
         if card.action is Action.DELETE:
             return await self._delete(current, card, now)
+        if card.action is Action.RENEW or (card.resume and current.state is WatchState.PAUSED):
+            self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
         if card.action is Action.RENEW:
             return await self._renew(current, card, snapshot)
         return await self._update(current, card, snapshot)
@@ -207,7 +211,7 @@ class WatchService:
             delivery=card.delivery,
             state=WatchState.ACTIVE,
             created_at=snapshot.now,
-            expires_at=card.expires_at,
+            expires_at=snapshot.now + (card.lifetime or LIFETIME),
             approval_digest=card.digest,
         )
         # Reserve the slot first: a refused cap registers no instance.
@@ -220,7 +224,14 @@ class WatchService:
             raise
         return stored
 
+    def _grant_is_current(self, watch_id: str, grant_digest: str, sources: tuple[str, ...]) -> None:
+        """Refuse unless the live grant is the one the owner approved (digest and sources)."""
+        grant = self.grant_for(watch_id)
+        if grant.digest != grant_digest or tuple(sorted(grant.sources)) != tuple(sorted(sources)):
+            raise WatchRefused("the grant changed since the card was proposed")
+
     async def _register(self, watch: Watch, snapshot: Snapshot) -> None:
+        self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
         await self.evaluator.register(
             instance_id=watch.instance_id,
             predicate=watch.predicate,
@@ -244,25 +255,30 @@ class WatchService:
             version=current.version + 1,
             approval_digest=card.digest,
         )
-        written = await self.store.write(closed, expected_version=current.version, cap=self.cap)
+        # Stop the instance first: a recorded deletion must never leave a live instance behind.
         await self._cancel(current, now)
-        return written
+        return await self.store.write(closed, expected_version=current.version, cap=self.cap)
 
     async def _renew(self, current: Watch, card: WatchCard, snapshot: Snapshot) -> Watch:
         if not current.due_for_renewal(snapshot.now):
             raise WatchRefused("a renewal is approved only in the last seven days")
-        if not current.expires_at < card.expires_at <= snapshot.now + LIFETIME:
-            raise WatchRefused("a renewal extends expiry by at most 90 days")
+        expires_at = snapshot.now + (card.lifetime or LIFETIME)
         renewed = replace(
             current,
             version=current.version + 1,
             generation=current.generation + 1,
-            expires_at=card.expires_at,
+            expires_at=expires_at,
             approval_digest=card.digest,
         )
         # Register the next generation before stopping the old one, so a failure loses no watch.
         await self._register(renewed, snapshot)
-        written = await self.store.write(renewed, expected_version=current.version, cap=self.cap)
+        try:
+            written = await self.store.write(
+                renewed, expected_version=current.version, cap=self.cap
+            )
+        except BaseException:
+            await self._cancel(renewed, snapshot.now)  # the lost CAS leaves no second instance
+            raise
         await self._cancel(current, snapshot.now)
         return written
 
