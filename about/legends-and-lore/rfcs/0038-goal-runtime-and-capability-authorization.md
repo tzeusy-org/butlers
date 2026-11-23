@@ -2405,12 +2405,13 @@ days unless renewed (renewal card seven days prior), delivery defaults to
 digest, and `never`/disable pauses without deleting observations. Finance
 `alert_config` migrates by an explicit type-by-type mapping with one output per
 event. Guards and `wake_when` coalesce replay and never make stale events
-realtime; only tighten-only modes (`asleep`, `house_unattended`) and the
-travel-derived in-flight posture flag enter automatically (in-flight never arms
-the absence plan, which needs declared or confirmed travel), the adopted sick
-exemptions apply, and loosening uses the existing step-up. The first correlation is delay x commitment on typed rows with no model
-run; a repeated judgment may be offered as a rule after three useful verdicts
-and no `never` in 60 days, and only the owner's approval of that exact card
+realtime. Only the tighten-only modes (`asleep`, `house_unattended`) and the
+travel-derived in-flight posture flag enter automatically. In-flight never arms
+the absence plan, which needs declared or confirmed travel. The adopted sick
+exemptions apply. Loosening uses the existing step-up. The first correlation is
+delay x commitment on typed rows with no model run; a repeated judgment may be
+offered as a rule after three useful verdicts and no `never` in 60 days, and
+only the owner's approval of that exact card
 creates it. Consumers land dark and roll back without losing receipts.
 
 M7 separately owns typed boundary enforcement and its held semantic decision,

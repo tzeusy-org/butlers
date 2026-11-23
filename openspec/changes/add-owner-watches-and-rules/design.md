@@ -31,8 +31,11 @@ read-check output are evidence only. Delivery is the owner only, through the RFC
 
 Finance `alert_config` facts have four types. Each maps to a watch shape, is covered by its
 existing single-output path, or is shown blind. `large_transaction` becomes a watch and its
-response flag is suppressed while the watch exists; `price_change`, `budget_exceeded` and
-`new_merchant` keep their existing paths with no watch. The old and new path never both alert.
+response flag is suppressed while the watch is active or paused, and restored on delete or expiry.
+For `price_change`, `budget_exceeded` and `new_merchant` the stored config does not govern the
+existing path today (price changes are detected unconditionally, budget insights come from
+`budget_status` thresholds, new merchants from `anomaly_scan`), so no watch exists and the config is
+shown as superseded or blind, never as an active setting. The old and new path never both alert.
 
 ## D5: Modes only tighten automatically
 
@@ -41,9 +44,3 @@ travel-derived in-flight posture flag, which is not the `travel` mode (RFC 0038 
 entry never arms the absence plan; that needs declared or confirmed travel. The adopted sick
 exemptions (safety, medication, bills due within 48h, replies to people) apply. Any loosening
 uses the existing step-up boundary.
-
-## Open verification points
-
-- `budget_exceeded` and `new_merchant` are stored by `alert_configure` but only `large_transaction`
-  and `price_change` have an evaluator consuming the stored config on main. Slice 2.3 verifies
-  this against the code before mapping.
