@@ -866,7 +866,7 @@ async def test_current_playback_is_not_duplicated_by_later_recently_played_item(
     connector._persist_in_progress_session = AsyncMock()
     connector._submit_envelope = AsyncMock()
     connector._gap_fill_play_already_observed = AsyncMock(return_value=True)
-    connector._persist_gap_fill_track_play = AsyncMock(return_value=True)
+    connector._persist_gap_fill_track_plays = AsyncMock(return_value=True)
     payload = {
         "is_playing": True,
         "timestamp": 100_000,
@@ -892,7 +892,7 @@ async def test_current_playback_is_not_duplicated_by_later_recently_played_item(
     connector._gap_fill_play_already_observed.assert_awaited_once_with(
         track_uri="spotify:track:track-1", played_at_ms=130_000
     )
-    connector._persist_gap_fill_track_play.assert_not_awaited()
+    connector._persist_gap_fill_track_plays.assert_not_awaited()
     assert connector._last_recently_played_cursor == "130000"
 
 
@@ -1796,7 +1796,7 @@ async def test_gap_fill_digest_is_rebuilt_after_a_failed_delivery_not_skipped() 
     connector._endpoint_identity = _ENDPOINT
     connector._spotify_user_id = _SPOTIFY_USER_ID
     connector._gap_fill_play_already_observed = AsyncMock(return_value=False)
-    connector._persist_gap_fill_track_play = AsyncMock(return_value=True)
+    connector._persist_gap_fill_track_plays = AsyncMock(return_value=True)
     connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
     track = {"id": "track-1", "uri": "spotify:track:track-1", "name": "Song 1"}
     played_at = datetime.fromtimestamp(130, tz=UTC).isoformat().replace("+00:00", "Z")
@@ -1806,32 +1806,87 @@ async def test_gap_fill_digest_is_rebuilt_after_a_failed_delivery_not_skipped() 
 
     with pytest.raises(EvidenceNotCommitted):
         await connector._poll_recently_played(_NOW, _OBSERVED)
-    connector._persist_gap_fill_track_play.assert_not_awaited()
+    connector._persist_gap_fill_track_plays.assert_not_awaited()
     assert connector._last_recently_played_cursor is None
 
     connector._submit_envelope = AsyncMock(return_value=True)
     await connector._poll_recently_played(_NOW, _OBSERVED)
     connector._submit_envelope.assert_awaited_once()
-    connector._persist_gap_fill_track_play.assert_awaited_once()
+    connector._persist_gap_fill_track_plays.assert_awaited_once()
     assert connector._last_recently_played_cursor == "130000"
 
 
-async def test_held_deliveries_and_admitted_sessions_are_capped_oldest_first() -> None:
+async def test_the_poll_pauses_at_the_held_cap_and_nothing_is_evicted(monkeypatch) -> None:
     from butlers.connectors import spotify as module
     from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    monkeypatch.setattr(module, "_HELD_LIMIT", 2)
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    connector._get_currently_playing = AsyncMock(return_value=None)
+    for n in range(2):
+        await connector._deliver(f"k{n}", {}, AsyncMock())
+
+    await connector._execute_poll_cycle()
+
+    assert list(connector._held) == ["k0", "k1"]  # still held, none dropped
+    connector._get_currently_playing.assert_not_awaited()  # polling is paused
+    assert connector._get_health_state() == ("degraded", "held_backpressure")
+
+    connector._submit_envelope = AsyncMock(return_value=True)
+    from datetime import timedelta
+
+    await connector._retry_held_notifications(_NOW + timedelta(minutes=5))
+    assert connector._held == {}
+    await connector._execute_poll_cycle()
+    connector._get_currently_playing.assert_awaited()
+    assert connector._get_health_state()[1] != "held_backpressure"
+
+
+async def test_gap_fill_track_plays_commit_in_one_transaction() -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
 
     connector = SpotifyConnector(
         SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
     )
-    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
-    before = module.spotify_held_evictions_total.labels(kind="held")._value.get()
-    for n in range(module._HELD_LIMIT + 3):
-        await connector._deliver(f"k{n}", {}, AsyncMock())
-    assert len(connector._held) == module._HELD_LIMIT
-    assert next(iter(connector._held)) == "k3"
-    assert module.spotify_held_evictions_total.labels(kind="held")._value.get() == before + 3
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    log: list[str] = []
 
-    for n in range(module._HELD_LIMIT + 2):
-        connector._admit_spoken(f"s{n}")
-    assert len(connector._admitted_spoken) == module._HELD_LIMIT
-    assert "s0" not in connector._admitted_spoken
+    class Conn:
+        async def execute(self, *_args):
+            log.append("insert")
+            if log.count("insert") == 2:
+                raise RuntimeError("synthetic write failure")
+
+        @asynccontextmanager
+        async def transaction(self):
+            log.append("begin")
+            try:
+                yield
+            except Exception:
+                log.append("rollback")
+                raise
+            log.append("commit")
+
+    @asynccontextmanager
+    async def acquire():
+        yield Conn()
+
+    connector._cursor_pool = SimpleNamespace(acquire=acquire)
+    rows = [
+        {
+            "track_uri": f"spotify:track:{n}",
+            "track_name": "t",
+            "duration_ms": None,
+            "played_at_ms": n,
+        }
+        for n in (1, 2)
+    ]
+
+    assert await connector._persist_gap_fill_track_plays(rows) is False
+    assert log == ["begin", "insert", "insert", "rollback"]

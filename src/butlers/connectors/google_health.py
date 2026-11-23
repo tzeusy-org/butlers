@@ -107,7 +107,11 @@ from prometheus_client import REGISTRY, Counter, Gauge
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -2459,8 +2463,12 @@ class GoogleHealthConnector:
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard — bypasses filter gate (replay path)."""
-        await commit_envelope(self._shared_pool, envelope)
+        """Replay path (no filter gate): confirm the journal row exists, write nothing, send.
+
+        A parked sample was journaled before its submit. A legacy row or a preview with no
+        original idempotency key has no such row and is refused (bu-uhbhzq.4).
+        """
+        await require_committed(self._shared_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     async def _flush_filtered_events(self) -> None:

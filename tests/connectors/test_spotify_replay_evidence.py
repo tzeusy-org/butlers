@@ -110,3 +110,32 @@ async def test_spotify_replay_cannot_submit_before_evidence(kind, disposition, m
     else:
         assert conn.execute.await_args.args[1] == "replay_failed"
         assert submit_observations == []
+
+
+@pytest.mark.parametrize("kind", ["session", "spoken", "ctx", "digest"])
+async def test_a_replay_only_reads_evidence_and_makes_no_copy(kind):
+    keys = {
+        "session": f"spotify:{_ENDPOINT}:session:1",
+        "spoken": f"spotify:{_ENDPOINT}:spoken:1:ep",
+        "ctx": f"spotify:{_ENDPOINT}:ctx:1:uri",
+        "digest": f"spotify:{_ENDPOINT}:digest:1",
+    }
+    connector = spotify.SpotifyConnector(
+        spotify.SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector._cursor_pool = SimpleNamespace(
+        fetchval=AsyncMock(return_value=1), execute=AsyncMock()
+    )
+    envelope = {
+        "source": {"channel": "spotify", "endpoint_identity": _ENDPOINT},
+        "event": {"external_event_id": "e", "observed_at": _OBSERVED},
+        "control": {"idempotency_key": keys[kind]},
+    }
+
+    await connector._submit_to_ingest_direct(envelope)
+
+    queries = [c.args[0].lstrip() for c in connector._cursor_pool.fetchval.await_args_list]
+    assert queries and all(q.startswith("SELECT") for q in queries)
+    connector._cursor_pool.execute.assert_not_awaited()
+    connector._mcp_client.call_tool.assert_awaited_once()

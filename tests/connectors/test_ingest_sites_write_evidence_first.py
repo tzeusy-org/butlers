@@ -14,8 +14,9 @@ from pathlib import Path
 import pytest
 
 from butlers.connectors import google_health, owntracks
+from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
-_EVIDENCE_CALLS = {"commit_envelope", "persist_location_point"}
+_EVIDENCE_CALLS = {"commit_envelope", "persist_location_point", "require_committed"}
 
 
 def _ingest_sites(module) -> list[tuple[str, int, list[int]]]:
@@ -49,3 +50,30 @@ def test_each_ingest_site_commits_evidence_before_it_submits(module) -> None:
 
 def test_owntracks_replay_hook_is_among_the_guarded_sites() -> None:
     assert "_submit_envelope" in {name for name, _, _ in _ingest_sites(owntracks)}
+
+
+async def test_a_health_replay_verifies_the_journal_row_and_writes_nothing() -> None:
+    from unittest.mock import AsyncMock
+
+    from tests.connectors.test_google_health_connector import _make_connector, _privacy_envelope
+
+    connector = _make_connector()
+    connector._shared_pool = AsyncMock()
+    connector._mcp_client.call_tool = AsyncMock(return_value={"status": "accepted"})
+    envelope = _privacy_envelope()
+    envelope["control"]["idempotency_key"] = "synthetic-key"
+
+    connector._shared_pool.fetchval.return_value = 1
+    await connector._submit_to_ingest_direct(envelope)
+    query = connector._shared_pool.fetchval.await_args.args[0]
+    assert "SELECT" in query and "INSERT" not in query
+    connector._mcp_client.call_tool.assert_awaited_once()
+
+    for refused in (None, "no-key"):
+        connector._mcp_client.call_tool.reset_mock()
+        connector._shared_pool.fetchval.return_value = None
+        if refused == "no-key":
+            envelope["control"].pop("idempotency_key")
+        with pytest.raises(EvidenceNotCommitted):
+            await connector._submit_to_ingest_direct(envelope)
+        connector._mcp_client.call_tool.assert_not_awaited()

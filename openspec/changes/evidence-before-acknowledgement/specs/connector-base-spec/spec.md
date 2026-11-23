@@ -44,11 +44,14 @@ Scope: v1-mandatory
 - **WHEN** the Spotify connector first sends a closed session, spoken start, context start, listening digest or gap-fill digest
 - **THEN** it SHALL pass the ingestion-policy gate, write that envelope's evidence, and only then submit
 - **AND** a failed write, or a failed submit whose park is not durable, SHALL retain the item for the next poll
+- **AND** when the retained items reach a fixed cap the connector SHALL stop consuming new one-shot events (pause its playback poll), report health `degraded` with reason `held_backpressure`, and keep retrying; it SHALL NOT evict a retained item
+- **AND** an event the source shows only while polling is paused is a source limit, not an event the connector consumed and skipped
+- **AND** a digest's track-play rows SHALL be written in one transaction after the digest is delivered, so a failed write holds the cursor and the retry rebuilds the same digest with the same idempotency key
 
 #### Scenario: A replay verifies evidence and never re-runs policy
 
-- **WHEN** an owner replays a parked Spotify or OwnTracks item
-- **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row by idempotency key, or a journal row)
+- **WHEN** an owner replays a parked Spotify, Google Health or OwnTracks item
+- **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row or a journal row, found by idempotency key; a replay writes none)
 - **AND** a preview with no original idempotency key, or an OwnTracks location whose `owntracks_points` row is missing, SHALL be refused with nothing sent
 
 #### Scenario: Duplicates collapse and revisions append

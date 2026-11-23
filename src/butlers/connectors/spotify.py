@@ -58,12 +58,16 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -111,7 +115,7 @@ _CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
-_HELD_LIMIT = 500  # per map; oldest evicted first and counted
+_HELD_LIMIT = 500  # held deliveries pause polling at this size; nothing is evicted
 _POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked Spotify event keeps a preview only"
 
 # Spotify API URLs
@@ -159,10 +163,10 @@ spotify_digests_total = Counter(
     labelnames=["endpoint_identity"],
 )
 
-spotify_held_evictions_total = Counter(
-    "connector_spotify_held_evictions_total",
-    "Held deliveries or admitted-session keys dropped because their cap was reached",
-    labelnames=["kind"],
+spotify_held_backpressure = Gauge(
+    "connector_spotify_held_backpressure",
+    "1 while held deliveries have reached the cap and playback polling is paused",
+    labelnames=["endpoint_identity"],
 )
 
 spotify_sessions_total = Counter(
@@ -1583,7 +1587,7 @@ async def gap_fill_play_already_observed(
 
 
 async def record_gap_fill_track_play(
-    pool: asyncpg.Pool,
+    pool: Any,
     *,
     endpoint_identity: str,
     spotify_user_id: str,
@@ -1677,6 +1681,7 @@ class SpotifyConnector:
         # retry order.
         self._held: dict[str, _HeldDelivery] = {}
         self._held_retry_now: datetime | None = None
+        self._backpressure = False
         # Spoken sessions whose start passed the policy gate and committed evidence; only
         # these may be updated in place.
         self._admitted_spoken: dict[str, None] = {}  # insertion-ordered set
@@ -2297,6 +2302,22 @@ class SpotifyConnector:
         now = datetime.now(UTC)
         observed_at = now.isoformat()
 
+        # Held deliveries are tried first. At the cap the connector stops consuming new one-shot
+        # events (backpressure) and keeps retrying; nothing is evicted. What the source shows
+        # only while polling is paused is a source limit, not an event the connector skipped.
+        await self._retry_held_notifications(now)
+        self._backpressure = len(self._held) >= _HELD_LIMIT
+        if self._endpoint_identity:
+            spotify_held_backpressure.labels(endpoint_identity=self._endpoint_identity).set(
+                1 if self._backpressure else 0
+            )
+        if self._backpressure:
+            logger.error(
+                "SpotifyConnector: %d held deliveries; playback polling paused until they drain",
+                len(self._held),
+            )
+            return
+
         # --- Poll currently-playing ---
         currently_playing = await self._get_currently_playing()
 
@@ -2692,11 +2713,13 @@ class SpotifyConnector:
                 retain=False,
             )
 
+        # All of the digest's track-play rows go in together or not at all. On a failure the
+        # cursor holds, and the next poll rebuilds the same digest (same idempotency key), which
+        # Switchboard deduplicates.
+        rows = [row for _ms, row in steps if row is not None]
         last_cursor_ms = 0
-        for played_at_ms, play_row in steps:
-            if play_row is not None and not await self._persist_gap_fill_track_play(**play_row):
-                break
-            last_cursor_ms = max(last_cursor_ms, played_at_ms)
+        if not rows or await self._persist_gap_fill_track_plays(rows):
+            last_cursor_ms = max((ms for ms, _row in steps), default=0)
 
         if last_cursor_ms:
             # Advance only through recent items whose durable reconciliation succeeded.
@@ -2810,27 +2833,19 @@ class SpotifyConnector:
             logger.debug("SpotifyConnector: gap-fill reconciliation failed (non-fatal): %s", exc)
             return None
 
-    async def _persist_gap_fill_track_play(
-        self,
-        *,
-        track_uri: str,
-        track_name: str,
-        duration_ms: int | None,
-        played_at_ms: int,
-    ) -> bool:
-        """Record one recently-played (gap-fill) track. Best-effort; never blocks ingest."""
+    async def _persist_gap_fill_track_plays(self, rows: list[dict[str, Any]]) -> bool:
+        """Record a digest's recently-played tracks in one transaction (all or none)."""
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
             return False
         try:
-            await record_gap_fill_track_play(
-                self._cursor_pool,
-                endpoint_identity=self._endpoint_identity,
-                spotify_user_id=self._spotify_user_id,
-                track_uri=track_uri,
-                track_name=track_name,
-                duration_ms=duration_ms,
-                played_at_ms=played_at_ms,
-            )
+            async with self._cursor_pool.acquire() as conn, conn.transaction():
+                for row in rows:
+                    await record_gap_fill_track_play(
+                        conn,
+                        endpoint_identity=self._endpoint_identity,
+                        spotify_user_id=self._spotify_user_id,
+                        **row,
+                    )
             return True
         except Exception as exc:
             logger.debug(
@@ -2921,7 +2936,6 @@ class SpotifyConnector:
         self._admitted_spoken[key] = None
         while len(self._admitted_spoken) > _HELD_LIMIT:
             self._admitted_spoken.pop(next(iter(self._admitted_spoken)))
-            spotify_held_evictions_total.labels(kind="admitted_spoken").inc()
 
     async def _deliver(
         self,
@@ -2953,11 +2967,6 @@ class SpotifyConnector:
             )
             self._held.pop(key, None)
             self._held[key] = _HeldDelivery(envelope, evidence, on_sent)
-            while len(self._held) > _HELD_LIMIT:
-                # Oldest first. Held items do not survive a restart; the source re-poll
-                # covers what it can.
-                self._held.pop(next(iter(self._held)))
-                spotify_held_evictions_total.labels(kind="held").inc()
             return "held"
         self._held.pop(key, None)
         if not admitted:
@@ -3152,17 +3161,8 @@ class SpotifyConnector:
                 (key,),
             )
         else:
-            source = envelope.get("source") or {}
-            event = envelope.get("event") or {}
-            query, args = (
-                "SELECT 1 FROM connectors.evidence_journal WHERE source = $1 AND "
-                "endpoint_identity = $2 AND provider_id = $3 AND provider_revision = ''",
-                (
-                    str(source.get("channel", "")),
-                    str(source.get("endpoint_identity", "")),
-                    str(event.get("external_event_id", "")),
-                ),
-            )
+            await require_committed(self._cursor_pool, envelope)
+            return
         try:
             found = await self._cursor_pool.fetchval(query, *args)
         except Exception as exc:
@@ -3186,6 +3186,8 @@ class SpotifyConnector:
                 or self._auth_error_message
                 or "Spotify credentials require attention",
             )
+        if self._backpressure:
+            return "degraded", "held_backpressure"
         if self._source_api_ok is None:
             return "degraded", "transport=starting"
         if self._source_api_ok:

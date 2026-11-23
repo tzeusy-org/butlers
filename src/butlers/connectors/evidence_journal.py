@@ -206,3 +206,34 @@ __all__ = [
     "commit_envelope",
     "inbox_equivalent_raw",
 ]
+
+
+_VERIFY = """
+SELECT 1 FROM connectors.evidence_journal
+WHERE source = $1 AND endpoint_identity = $2 AND idempotency_key = $3
+LIMIT 1
+"""
+
+
+async def require_committed(pool: Any, envelope: Mapping[str, Any]) -> None:
+    """Replay check: the envelope's own journal row must already exist. Writes nothing.
+
+    A replay may only send what was recorded before it was first submitted, so the stored
+    envelope must carry its original idempotency key and a journal row must exist for it. A
+    legacy row or a preview without that identity raises ``EvidenceNotCommitted`` and the
+    caller sends nothing.
+    """
+    key = (envelope.get("control") or {}).get("idempotency_key")
+    if not key:
+        raise EvidenceNotCommitted("replay_evidence_missing")
+    if pool is None:
+        raise EvidenceNotCommitted("no_pool")
+    source = envelope.get("source") or {}
+    try:
+        found = await pool.fetchval(
+            _VERIFY, str(source.get("channel", "")), str(source.get("endpoint_identity", "")), key
+        )
+    except Exception as exc:
+        raise EvidenceNotCommitted(type(exc).__name__) from None
+    if not found:
+        raise EvidenceNotCommitted("replay_evidence_missing")
