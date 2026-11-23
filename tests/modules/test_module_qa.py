@@ -574,14 +574,17 @@ class TestHaltedPatrol:
             for _ in range(count)
         ]
 
-    async def _run(self, reasons: list[str], accepted: int = 0):
+    async def _run(self, reasons: list[str], accepted: int = 0, gate: str | None = None):
         import butlers.modules.qa as qa_module
         from butlers.core.qa.dispatch import QaDispatchResult
 
         triaged = self._triaged(len(reasons))
         results = [
             QaDispatchResult(
-                accepted=index < accepted, fingerprint=t.finding.fingerprint, reason=reason
+                accepted=index < accepted,
+                fingerprint=t.finding.fingerprint,
+                reason=reason,
+                gate=gate,
             )
             for index, (t, reason) in enumerate(zip(triaged, reasons, strict=True))
         ]
@@ -667,6 +670,17 @@ class TestHaltedPatrol:
             qa_module._qa_findings_total = original
         assert result["status"] == "error"
         assert labels == ["novel", "novel"]
+
+    async def test_a_failed_hold_keeps_halted_with_its_gate_and_is_labelled_hold_failed(self):
+        result, written, labels = await self._run(["hold_failed"] * 2, gate="circuit_breaker")
+        assert result["status"] == "halted"
+        assert written["halt_reason"] == "circuit_breaker"
+        assert labels == ["hold_failed"] * 2
+
+    async def test_a_failed_cap_hold_names_the_cap(self):
+        _, written, _ = await self._run(["hold_failed"], gate="concurrency_cap")
+        assert written["status"] == "halted"
+        assert written["halt_reason"] == "concurrency_cap"
 
     async def test_cooldown_only_is_still_suppressed_not_halted(self):
         result, written, _ = await self._run(["cooldown", "cooldown"])

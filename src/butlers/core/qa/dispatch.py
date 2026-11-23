@@ -413,12 +413,16 @@ class QaDispatchResult:
         Short machine-readable reason code (``"dispatched"`` on success).
     attempt_id:
         UUID of the created ``healing_attempts`` row, or ``None``.
+    gate:
+        The halting gate that stopped this finding when ``reason`` is ``"hold_failed"`` (the
+        write that queues it failed), so the patrol still records why remediation stopped.
     """
 
     accepted: bool
     fingerprint: str | None
     reason: str
     attempt_id: uuid.UUID | None = None
+    gate: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -3358,7 +3362,10 @@ async def _halt_batch(
     if not await _hold_for_retry(pool, remaining, "circuit_breaker", metrics):
         return [
             QaDispatchResult(
-                accepted=False, fingerprint=t.finding.fingerprint, reason="hold_failed"
+                accepted=False,
+                fingerprint=t.finding.fingerprint,
+                reason="hold_failed",
+                gate="circuit_breaker",
             )
             for t in remaining
         ]
@@ -3493,7 +3500,12 @@ async def dispatch_novel_findings(
         if not await _hold_for_retry(pool, held, "concurrency_cap", metrics):
             lost = {t.finding.fingerprint for t in held}
             results = [
-                QaDispatchResult(accepted=False, fingerprint=r.fingerprint, reason="hold_failed")
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=r.fingerprint,
+                    reason="hold_failed",
+                    gate="concurrency_cap",
+                )
                 if (r.reason == "concurrency_cap" and r.fingerprint in lost)
                 else r
                 for r in results

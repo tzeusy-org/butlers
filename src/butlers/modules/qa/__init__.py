@@ -428,7 +428,7 @@ def _record_findings_metric(triage_result: Any, dispatch_results: list[Any]) -> 
         gate_by_id = {
             t.finding_id: r.reason
             for t, r in zip(triage_result.novel_findings, dispatch_results, strict=False)
-            if not r.accepted and r.reason in HALT_REASONS
+            if not r.accepted and (r.reason in HALT_REASONS or r.reason == "hold_failed")
         }
         for tf in triage_result.all_findings:
             dedup_label = tf.dedup_reason
@@ -1472,7 +1472,7 @@ class QaModule(Module):
             # by cooldown or severity threshold (novel_count > 0 but nothing
             # dispatched and no dispatch error).
             halt_reason = (
-                derive_halt_reason(r.reason for r in dispatch_results if not r.accepted)
+                derive_halt_reason(r.gate or r.reason for r in dispatch_results if not r.accepted)
                 if dispatched_count == 0
                 else None
             )

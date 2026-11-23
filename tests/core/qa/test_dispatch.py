@@ -1981,6 +1981,7 @@ async def test_a_failed_hold_is_counted_and_not_reported_as_held():
         )
 
     assert [r.reason for r in results] == ["hold_failed"] * 2
+    assert {r.gate for r in results} == {"circuit_breaker"}
     event.assert_not_called()
     decisions = [c.kwargs["decision"] for c in metrics.record_recovery_dispatch_decision.mock_calls]
     assert decisions == ["hold_failed"]
@@ -2013,6 +2014,7 @@ async def test_a_failed_cap_hold_is_not_reported_as_capped():
         )
 
     assert [r.reason for r in results] == ["hold_failed"] * 3
+    assert {r.gate for r in results} == {"concurrency_cap"}
     assert metrics.record_recovery_dispatch_decision.call_count == 1
 
 
