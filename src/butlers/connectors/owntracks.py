@@ -1680,7 +1680,13 @@ class OwnTracksConnector:
             logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
-        """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
+        """Replay drain submit: journal the stored envelope idempotently, then send it.
+
+        A legacy row parked before evidence-first has no points or journal row; the write is a
+        no-op for one that does. A failed write raises, so the drain records the failure and
+        nothing is sent (bu-uhbhzq.4).
+        """
+        await commit_envelope(self._db_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     # ------------------------------------------------------------------
