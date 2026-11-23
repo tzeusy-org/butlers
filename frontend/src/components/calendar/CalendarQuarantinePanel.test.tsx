@@ -22,6 +22,7 @@ const item: CalendarQuarantinedInvitation = {
   verdict: "first_contact",
   lure_badges: ["mass_invite"],
 };
+const live = () => screen.getByRole("status", { name: "" }) as HTMLElement;
 const ok = (over = {}) => ({
   data: {
     verb: "vouch" as const,
@@ -56,9 +57,9 @@ it("vouches at once, optimistically, with no confirmation", async () => {
   await userEvent.click(screen.getByRole("button", { name: /Vouch for the sender/ }));
   expect(decideCalendarOrganizer).toHaveBeenCalledWith({ entry_id: item.entry_id, verb: "vouch" });
   expect(screen.getByText("Vouched")).toBeTruthy(); // optimistic
-  expect(screen.getByRole("status").textContent).toContain("Vouching");
+  expect(screen.getByText("Vouching…")).toBeTruthy();
   done(ok());
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Block undoes this"));
+  await waitFor(() => expect(live().textContent).toContain("Block undoes this"));
   expect(onDecided).toHaveBeenCalledTimes(1);
 });
 
@@ -86,16 +87,14 @@ it("blocks after confirmation", async () => {
   await userEvent.click(screen.getByRole("button", { name: /Block the sender/ }));
   await userEvent.click(screen.getByRole("button", { name: "Block sender" }));
   expect(decideCalendarOrganizer).toHaveBeenCalledWith({ entry_id: item.entry_id, verb: "block" });
-  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Blocked"));
+  await waitFor(() => expect(live().textContent).toContain("Sender blocked"));
 });
 
 it("surfaces a failed re-stamp from the response", async () => {
   vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok({ restamp_degraded: true }));
   render(<CalendarQuarantinePanel items={[item]} unavailable={false} />);
   await userEvent.click(screen.getByRole("button", { name: /Vouch for the sender/ }));
-  await waitFor(() =>
-    expect(screen.getByRole("status").textContent).toContain("will update shortly"),
-  );
+  await waitFor(() => expect(live().textContent).toContain("will update shortly"));
 });
 
 it("hides Block for an already blocked sender and disables controls when unavailable", () => {
@@ -110,4 +109,47 @@ it("hides Block for an already blocked sender and disables controls when unavail
 it("renders nothing without quarantined invitations", () => {
   const { container } = render(<CalendarQuarantinePanel items={[]} unavailable={false} />);
   expect(container.firstChild).toBeNull();
+});
+
+it("returns focus to the Block button on Cancel", async () => {
+  render(<CalendarQuarantinePanel items={[item]} unavailable={false} />);
+  const block = screen.getByRole("button", { name: /Block the sender/ });
+  await userEvent.click(block);
+  await userEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(document.activeElement).toBe(block));
+});
+
+it("moves focus to the panel after a confirmed Block", async () => {
+  vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok({ verb: "block" }));
+  render(<CalendarQuarantinePanel items={[item]} unavailable={false} />);
+  await userEvent.click(screen.getByRole("button", { name: /Block the sender/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Block sender" }));
+  const panel = screen.getByRole("region", { name: "Quarantined invitations" });
+  await waitFor(() => expect(document.activeElement).toBe(panel));
+});
+
+it("says a vouch did not lift a global block, from the refetched verdict", async () => {
+  vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok());
+  const blocked = { ...item, verdict: "blocked" as const };
+  const { rerender } = render(<CalendarQuarantinePanel items={[blocked]} unavailable={false} />);
+  await userEvent.click(screen.getByRole("button", { name: /Vouch for the sender/ }));
+  await waitFor(() => expect(live().textContent).toContain("Still blocked by a global rule"));
+  expect(live().textContent).not.toContain("Block undoes this");
+  rerender(<CalendarQuarantinePanel items={[blocked]} unavailable={false} />);
+});
+
+it("announces a vouch whose row left the list and moves focus to the panel", async () => {
+  vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok());
+  let items = [item];
+  const onDecided = vi.fn(() => {
+    items = [];
+    rerender(<CalendarQuarantinePanel items={items} unavailable={false} onDecided={onDecided} />);
+  });
+  const { rerender } = render(
+    <CalendarQuarantinePanel items={items} unavailable={false} onDecided={onDecided} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: /Vouch for the sender/ }));
+  const panel = await screen.findByRole("region", { name: "Quarantined invitations" });
+  await waitFor(() => expect(live().textContent).toContain("Sender vouched"));
+  expect(document.activeElement).toBe(panel);
 });

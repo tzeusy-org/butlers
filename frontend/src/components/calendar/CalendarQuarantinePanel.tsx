@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { decideCalendarOrganizer } from "@/api/index";
 import type { CalendarOrganizerVerb, CalendarQuarantinedInvitation } from "@/api/types";
@@ -25,7 +25,8 @@ const VERDICT_LABEL: Record<CalendarQuarantinedInvitation["verdict"], string> = 
 
 type Decision = {
   verb: CalendarOrganizerVerb;
-  phase: "pending" | "done";
+  // pending: request in flight; saved: accepted, list refetch in flight; settled: refetched.
+  phase: "pending" | "saved" | "settled";
   restampDegraded: boolean;
 };
 
@@ -38,6 +39,14 @@ function quarantineTime(item: CalendarQuarantinedInvitation): string {
   const start = formatOwnerDateTime(item.start_at, item.timezone);
   const end = formatOwnerDateTime(item.end_at, item.timezone);
   return `${start} to ${end} (${item.timezone})`;
+}
+
+function outcomeText(decision: Decision, row: CalendarQuarantinedInvitation | undefined): string {
+  if (decision.verb === "block") return "Sender blocked.";
+  // A Vouch never overrides a global block: report the verdict the server now holds.
+  if (row?.verdict === "blocked") return "Vouch saved. Still blocked by a global rule.";
+  if (decision.restampDegraded) return "Vouch saved. Existing invitations will update shortly.";
+  return "Sender vouched. Block undoes this.";
 }
 
 /**
@@ -53,7 +62,8 @@ export function CalendarQuarantinePanel({
 }: {
   items: CalendarQuarantinedInvitation[];
   unavailable: boolean;
-  onDecided?: () => void;
+  /** Refetch the list; the panel waits for it so it can report the verdict that resulted. */
+  onDecided?: () => void | Promise<unknown>;
 }) {
   const [decisions, setDecisions] = useState(new Map<string, Decision>());
   const [errors, setErrors] = useState(new Map<string, string>());
@@ -61,8 +71,28 @@ export function CalendarQuarantinePanel({
   const busy = useRef(new Set<string>());
   const regionRef = useRef<HTMLElement>(null);
   const blockButtons = useRef(new Map<string, HTMLButtonElement>());
+  const closedBy = useRef<"cancel" | "confirm">("cancel");
+  const returnTo = useRef<string | null>(null);
+  const announced = useRef(new Set<string>());
+  const [announcement, setAnnouncement] = useState("");
 
-  if (items.length === 0 && decisions.size === 0 && errors.size === 0) return null;
+  useEffect(() => {
+    // Once a decision has settled (accepted and the list refetched), announce the real outcome
+    // in a panel-level live region that outlives the row, and keep focus from falling to <body>
+    // (a vouched row leaves the list, and its disabled button drops focus).
+    for (const [entryId, decision] of decisions) {
+      if (decision.phase !== "settled" || announced.current.has(entryId)) continue;
+      announced.current.add(entryId);
+      const row = items.find((item) => item.entry_id === entryId);
+      setAnnouncement(outcomeText(decision, row));
+      const active = document.activeElement;
+      if (!active || active === document.body || regionRef.current?.contains(active)) {
+        regionRef.current?.focus();
+      }
+    }
+  }, [decisions, items]);
+
+  if (items.length === 0 && decisions.size === 0 && errors.size === 0 && !announcement) return null;
 
   async function decide(item: CalendarQuarantinedInvitation, verb: CalendarOrganizerVerb) {
     if (unavailable || busy.current.has(item.entry_id)) return;
@@ -80,11 +110,19 @@ export function CalendarQuarantinePanel({
       setDecisions((prev) =>
         new Map(prev).set(item.entry_id, {
           verb,
-          phase: "done",
+          phase: "saved",
           restampDegraded: response.data.restamp_degraded,
         }),
       );
-      onDecided?.();
+      try {
+        await onDecided?.();
+      } catch {
+        // The refetch failing leaves the optimistic text; the poll will correct it.
+      }
+      setDecisions((prev) => {
+        const current = prev.get(item.entry_id);
+        return current ? new Map(prev).set(item.entry_id, { ...current, phase: "settled" }) : prev;
+      });
     } catch {
       // Roll back: the row returns to its server verdict.
       setDecisions((prev) => {
@@ -128,7 +166,7 @@ export function CalendarQuarantinePanel({
             >
               <span className="text-sm">{when}</span>
               <span className="text-sm text-muted-foreground">
-                {decision
+                {decision && decision.phase !== "settled"
                   ? decision.verb === "vouch"
                     ? "Vouched"
                     : "Blocked"
@@ -160,7 +198,11 @@ export function CalendarQuarantinePanel({
                     if (element) blockButtons.current.set(item.entry_id, element);
                     else blockButtons.current.delete(item.entry_id);
                   }}
-                  onClick={() => setConfirming(item)}
+                  onClick={() => {
+                    returnTo.current = item.entry_id;
+                    closedBy.current = "cancel";
+                    setConfirming(item);
+                  }}
                 >
                   Block
                 </button>
@@ -170,20 +212,20 @@ export function CalendarQuarantinePanel({
                   {decision.verb === "vouch" ? "Vouching…" : "Blocking…"}
                 </span>
               ) : null}
-              {decision?.phase === "done" ? (
-                <span role="status" className="text-sm">
-                  {decision.restampDegraded
-                    ? "Saved. Existing invitations from this sender will update shortly."
-                    : decision.verb === "vouch"
-                      ? "Vouched. Block undoes this."
-                      : "Blocked."}
-                </span>
+              {decision?.phase === "saved" ? (
+                <span className="text-sm">Saved, checking the result…</span>
+              ) : null}
+              {decision?.phase === "settled" ? (
+                <span className="text-sm">{outcomeText(decision, item)}</span>
               ) : null}
               {error ? <p role="alert" className="w-full text-sm">{error}</p> : null}
             </li>
           );
         })}
       </ul>
+      <p role="status" aria-live="polite" className="text-sm">
+        {announcement}
+      </p>
       <AlertDialog
         open={confirming !== null}
         onOpenChange={(open) => {
@@ -192,11 +234,13 @@ export function CalendarQuarantinePanel({
       >
         <AlertDialogContent
           onCloseAutoFocus={(event) => {
-            const target = confirming ? blockButtons.current.get(confirming.entry_id) : null;
-            if (target) {
-              event.preventDefault();
-              target.focus();
-            }
+            // There is no trigger element for Radix to return to, so place focus ourselves:
+            // Cancel goes back to that row's Block button; a confirmed Block unmounts it (the
+            // status moves to the live region), so focus the panel.
+            event.preventDefault();
+            const target = returnTo.current ? blockButtons.current.get(returnTo.current) : null;
+            if (closedBy.current === "cancel" && target) target.focus();
+            else regionRef.current?.focus();
           }}
         >
           <AlertDialogHeader>
@@ -211,6 +255,7 @@ export function CalendarQuarantinePanel({
             <AlertDialogAction
               onClick={() => {
                 const item = confirming;
+                closedBy.current = "confirm";
                 setConfirming(null);
                 if (item) void decide(item, "block");
               }}

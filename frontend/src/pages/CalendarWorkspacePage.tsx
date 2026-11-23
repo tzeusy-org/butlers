@@ -204,10 +204,12 @@ export default function CalendarWorkspacePage() {
           invitationsQuery.isPending ||
           invitationsQuery.isPlaceholderData
         }
-        onDecided={() => {
-          void queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] });
-          void queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] });
-        }}
+        onDecided={() =>
+          Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["calendar-invitations"] }),
+            queryClient.invalidateQueries({ queryKey: ["calendar-workspace"] }),
+          ])
+        }
       />
 
       <CalendarResponsePanel
