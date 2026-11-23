@@ -50,6 +50,15 @@ its server and disposes of it as a unit through container teardown.
 
 `_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
 
+Routine autovacuum is disabled in the disposable shared, restore-drill ACL, and
+Public MCP test clusters. A real PostgreSQL 17 autovacuum worker in another
+database can have missing login fields in `pg_stat_activity`, which makes the
+Relationship cutover refuse an unreadable census during otherwise quiet fixture
+setup. Tests that exercise the cutover's refusal use controlled activity, and
+tests that need vacuum can issue it explicitly. The restore-drill ACL fixture
+gives its migration login temporary `pg_read_all_stats` access while applying
+the Relationship chain and revokes the grant before its ACL probes.
+
 Teardown requests container removal and anonymous PGDATA volume deletion everywhere except GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), decided by `_delete_session_data_volume`. CI has observed 25-60+ s volume-removal calls alongside restore-client timeouts. Retaining the volume until the disposable hosted VM is discarded mitigates possible teardown contention; these different-run observations do not establish causality, guarantee test/teardown ordering, or prove successful cleanup. Developer and self-hosted runners retain volume deletion and the existing removal retry/warning behavior.
 
 The ordinary backup/privileged restore client retains its 120 s budget and requests named-container cleanup with a separate 10 s budget after a timeout. Its timeout note exposes only capture presence, counts, and a fixed backup-marker observation; captured content is never copied into the note. Empty capture leaves execution stage unknown, and cleanup is not credited merely because it was requested. Native restore receipt, owner, and ACL assertions remain the acceptance checks.

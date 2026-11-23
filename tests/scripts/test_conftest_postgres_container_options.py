@@ -53,6 +53,11 @@ class _RecordingContainer:
         self.volumes: list[tuple[str, str, str]] = []
         self.env: dict[str, str] = {}
         self.kwargs: dict[str, object] = {}
+        self.command: str | None = None
+
+    def with_command(self, command: str) -> Any:
+        self.command = command
+        return self
 
     def with_volume_mapping(self, host: str, container: str, mode: str = "ro") -> Any:
         self.volumes.append((host, container, mode))
@@ -86,6 +91,7 @@ def test_unshifted_process_leaves_the_container_clock_alone() -> None:
 
     assert container.volumes == []
     assert container.env == {}
+    assert container.command == "postgres -c autovacuum=off"
 
 
 @pytest.mark.parametrize(
@@ -98,6 +104,7 @@ def test_shifted_process_shares_its_offset_with_the_container(preload: str) -> N
     mounted = root_conftest._CONTAINER_FAKETIME_LIBRARY
     assert container.volumes == [(_LIBRARY, mounted, "ro")]
     assert container.env == {"LD_PRELOAD": mounted, "FAKETIME": "+45d"}
+    assert container.command == "postgres -c autovacuum=off"
     assert container.kwargs == {"shm_size": root_conftest._POSTGRES_SHM_SIZE, "user": "postgres"}
 
 

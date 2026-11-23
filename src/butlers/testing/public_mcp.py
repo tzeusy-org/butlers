@@ -64,8 +64,9 @@ def public_mcp_cluster():
     with (
         PostgresContainer("pgvector/pgvector:pg17", username="postgres", password=uuid.uuid4().hex)
         .with_kwargs(tmpfs={"/controller/run": "rw,mode=0777"}, shm_size="256m")
+        # Match the shared fixture's quiet activity census during migrations.
         .with_command(
-            "postgres -c wal_level=logical -c max_replication_slots=64 "
+            "postgres -c autovacuum=off -c wal_level=logical -c max_replication_slots=64 "
             "-c max_wal_senders=32 -c max_slot_wal_keep_size=256MB"
         ) as postgres
     ):
