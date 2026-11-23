@@ -7,6 +7,7 @@ backstop below the Python store, and the per-schema two-chain install.
 
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import urlparse
 
 import asyncpg
@@ -65,6 +66,27 @@ class TestPostgresWatchStoreContract(WatchStoreContract):
 
     def make_store(self):
         return PostgresWatchStore(self.runtime)
+
+
+class TestCrossProcessSerialization:
+    @pytest.fixture(autouse=True)
+    def _bind(self, pools):
+        self.owner, self.runtime = pools
+
+    async def test_two_store_instances_exclude_each_other_through_the_advisory_lock(self):
+        first, second = PostgresWatchStore(self.runtime), PostgresWatchStore(self.runtime)
+        inside, overlap = 0, 0
+
+        async def hold(store):
+            nonlocal inside, overlap
+            async with store.serialized("w1"):
+                inside += 1
+                overlap = max(overlap, inside)
+                await asyncio.sleep(0.05)
+                inside -= 1
+
+        await asyncio.gather(hold(first), hold(second), hold(first), hold(second))
+        assert overlap == 1
 
 
 class TestTableGuards:

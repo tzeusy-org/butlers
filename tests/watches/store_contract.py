@@ -106,3 +106,36 @@ class WatchStoreContract:
         )
         await store.write(renewed, expected_version=1, cap=50)
         assert (await store.get("w1")) == renewed
+
+    async def test_serialized_excludes_a_second_holder_of_the_same_watch(self):
+        store = self.make_store()
+        inside, overlap = 0, 0
+
+        async def hold(watch_id):
+            nonlocal inside, overlap
+            async with store.serialized(watch_id):
+                inside += 1
+                overlap = max(overlap, inside)
+                await asyncio.sleep(0.02)
+                inside -= 1
+
+        await asyncio.gather(hold("w1"), hold("w1"), hold("w1"))
+        assert overlap == 1
+
+    async def test_serialized_lets_different_watches_proceed_together(self):
+        store = self.make_store()
+        arrived = asyncio.Barrier(2)
+
+        async def hold(watch_id):
+            async with store.serialized(watch_id):
+                await asyncio.wait_for(arrived.wait(), timeout=5)
+
+        await asyncio.gather(hold("w1"), hold("w2"))
+
+    async def test_serialized_releases_after_an_error(self):
+        store = self.make_store()
+        with pytest.raises(RuntimeError):
+            async with store.serialized("w1"):
+                raise RuntimeError("boom")
+        async with store.serialized("w1"):
+            pass
