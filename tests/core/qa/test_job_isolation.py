@@ -477,7 +477,7 @@ async def test_jobs_count_toward_the_batch_concurrency_cap(tmp_path) -> None:
         patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
     ):
         results = await dispatch_novel_findings(
-            pool=MagicMock(),
+            pool=MagicMock(fetch=AsyncMock(return_value=[]), execute=AsyncMock()),
             novel_findings=[_make_triaged(), _make_triaged()],
             patrol_id=uuid.uuid4(),
             config=config,
@@ -502,7 +502,7 @@ async def test_an_unreadable_fleet_stops_the_batch(tmp_path) -> None:
         patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
     ):
         results = await dispatch_novel_findings(
-            pool=MagicMock(),
+            pool=MagicMock(fetch=AsyncMock(return_value=[]), execute=AsyncMock()),
             novel_findings=[_make_triaged()],
             patrol_id=uuid.uuid4(),
             config=config,
