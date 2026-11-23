@@ -162,14 +162,20 @@ def test_the_day_is_the_owner_local_day_across_dst() -> None:
     assert result.load.attended_minutes == 25 * 60
 
 
-def test_any_unreadable_source_makes_the_sheet_unreadable_and_names_it() -> None:
-    result = sheet([occ("a", at(9), at(10))], sources(unreadable=("travel",)))
+def test_any_unreadable_source_lists_nothing_and_says_since_when() -> None:
+    srcs = [
+        SourceRead("general", True, as_of=NOW, stale_after=timedelta(minutes=30)),
+        SourceRead("travel", False, as_of=NOW - timedelta(hours=1)),
+    ]
+    result = sheet([occ("a", at(9), at(10))], srcs)
+    text = render_day_sheet_text(result)
 
     assert result.freshness.state == "unreadable"
     assert result.freshness.sources_unreadable == ["travel"]
-    text = render_day_sheet_text(result)
-    assert "1 of 2" in text and "unreadable" in text
-    assert "Title a" in text  # the readable part is still shown
+    assert "Calendar unreadable since 22:00 (1 of 2 sources: travel)." in text  # 14:00 UTC
+    assert "Title a" not in text and "Longest free" not in text
+    assert result.items == [] and result.gaps == [] and result.longest_gap is None
+    assert result.load.attended_minutes == 0
 
 
 def test_all_sources_unreadable_lists_nothing_and_never_says_clear() -> None:
@@ -177,7 +183,7 @@ def test_all_sources_unreadable_lists_nothing_and_never_says_clear() -> None:
     text = render_day_sheet_text(result)
 
     assert result.freshness.state == "unreadable"
-    assert "unreadable" in text and "2 of 2" in text
+    assert "Calendar unreadable (2 of 2 sources" in text
     assert "Nothing on your calendar" not in text
 
 
@@ -197,6 +203,7 @@ def test_a_stale_read_is_prefixed_with_its_as_of_time() -> None:
     result = sheet([occ("a", at(9), at(10))], sources(age=timedelta(hours=3)))
 
     assert result.freshness.state == "stale"
+    assert result.gaps == [] and result.longest_gap is None  # no free window from stale data
     text = render_day_sheet_text(result)
     assert text.splitlines()[0].startswith("As of 20:00")  # 12:00 UTC is 20:00 local
     assert "Nothing on your calendar" not in text
@@ -247,3 +254,42 @@ def test_each_item_has_a_door_and_an_invalid_zone_is_refused() -> None:
     assert sheet([occ("a", at(9), at(10))]).items[0].door == "/calendar?entry=a"
     with pytest.raises(ValueError):
         build_day_sheet([], sources(), zone="Not/AZone", local_date=DAY, now=NOW)
+
+
+def test_the_digest_changes_when_a_title_or_conflict_changes() -> None:
+    base = occ("a", at(9), at(10), title="Review")
+    renamed = occ("a", at(9), at(10), title="Review (moved room)")
+    # Same first 80 characters, different tail: truncation must not hide a re-title.
+    long_a = occ("a", at(9), at(10), title="x" * 90 + "one")
+    long_b = occ("a", at(9), at(10), title="x" * 90 + "two")
+
+    assert sheet([base]).digest != sheet([renamed]).digest
+    assert sheet([long_a]).digest != sheet([long_b]).digest
+    assert sheet([base], conflicts={"a": "p1"}).digest != sheet([base]).digest
+
+
+def test_an_all_day_event_matches_on_its_date_in_any_zone() -> None:
+    # A Pacific all-day event for 24 Nov is still 24 Nov for an owner in Singapore.
+    pacific = ZoneInfo("America/Los_Angeles")
+    start = datetime(2026, 11, 24, 0, 0, tzinfo=pacific)
+    end = datetime(2026, 11, 25, 0, 0, tzinfo=pacific)
+    holiday = occ("trip", start, end, all_day=True)
+
+    assert [i.ref for i in sheet([holiday]).items] == ["trip"]
+    next_day = build_day_sheet(
+        [holiday], sources(), zone=ZONE, local_date=DAY + timedelta(days=1), now=NOW
+    )
+    assert next_day.items == []
+
+
+def test_all_day_items_are_not_meetings() -> None:
+    result = sheet(
+        [occ("trip", at(0), at(0, day=date(2026, 11, 25)), all_day=True), occ("m", at(9), at(10))]
+    )
+    assert result.load.count == 1
+    assert "across 1 meeting." in render_day_sheet_text(result)
+
+
+def test_butler_titles_are_defanged_too() -> None:
+    result = sheet([occ("hold", at(9), at(10), time_role="butler", title="Call a@b.example")])
+    assert "a[@]b[.]example" in render_day_sheet_text(result)

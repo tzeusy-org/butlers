@@ -19,11 +19,14 @@ Free gaps SHALL be computed inside the day window against attended, tentative an
 The sheet's `freshness.state` SHALL be `unreadable` when any source could not be read or when no source
 is known, `stale` when every source was read but one's last sync is older than its staleness bound,
 and `current` otherwise, and it SHALL name the unreadable sources. The text SHALL say "Nothing on your
-calendar" only when the state is `current` and the sheet has no items. When every source is unreadable
-the text SHALL say the calendar is unreadable and SHALL list no items; when some are, it SHALL list the
-readable items and say how many sources are unreadable. A stale sheet's text SHALL be prefixed with its
-as-of time. Third-party event titles SHALL be defanged in the text. The sheet SHALL carry a digest over
-its day, zone and items that is equal for equal content.
+calendar" only when the state is `current` and the sheet has no items. When any source is unreadable the sheet SHALL list no items and compute no free window or load, and
+the text SHALL say "Calendar unreadable since HH:MM (N of M sources)", where HH:MM is the oldest last
+good read among the unreadable sources and is omitted when none is known. A stale sheet's text SHALL be
+prefixed with its as-of time, and a sheet whose state is not `current` SHALL carry no free gaps and no
+longest free window. An all-day event SHALL be matched to the owner's local date by its own date
+range, not by an instant. Every event title SHALL be defanged in the text, which is plain text for a message sent without a
+parse mode. The sheet SHALL carry a digest over its day, zone and items, including each full title and
+conflict ref, that is equal for equal content and changes when a title or a conflict changes.
 
 ID: REQ-module-calendar-036
 Source: bu-5ii4gj.2 (run 26 move 2), slice S1
@@ -43,6 +46,11 @@ Scope: v1-mandatory
 
 - **WHEN** every source was read recently and the day has no owner-time items
 - **THEN** the text says "Nothing on your calendar"
+
+#### Scenario: A partly unreadable read lists nothing
+
+- **WHEN** one of two sources could not be read
+- **THEN** the text says "Calendar unreadable since HH:MM (1 of 2 sources)" and lists no item, free window or load
 
 #### Scenario: A stale read says so
 

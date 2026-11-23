@@ -23,8 +23,9 @@ reads as "No events scheduled for tomorrow" (bu-5ii4gj.2, calendar pursuit run 2
   event enumeration (a butler-general delta lands with it).
 - S4: the Overview strip.
 
-## Decisions to confirm
+## Decisions
 
-- Gaps are computed inside a configurable day window, default 08:00 to 20:00 owner-local, because no
-  working-hours setting exists yet. A transparent event is omitted entirely (the behaviour matrix's
+- Gaps are computed inside a day window, the named constant `DEFAULT_WINDOW` (08:00 to 20:00
+  owner-local), because no working-hours setting exists yet. An engineering default.
+- A transparent event is omitted entirely, matching the owner-time predicate (the behaviour matrix's
   "shown if owner-authored" needs an authorship fact the projection does not store).

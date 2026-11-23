@@ -28,6 +28,8 @@ from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 ItemKind = Literal["attended", "tentative", "butler"]
 FreshnessState = Literal["current", "stale", "unreadable"]
 
+#: The owner-local span free gaps are computed in. An engineering default: no working-hours
+#: setting exists yet, so a gap at 03:00 is not offered as free time.
 DEFAULT_WINDOW: tuple[time, time] = (time(8, 0), time(20, 0))
 MIN_GAP = timedelta(minutes=15)
 _TITLE_LIMIT = 80
@@ -90,6 +92,8 @@ class Freshness:
     as_of: datetime | None
     sources_unreadable: list[str]
     sources_total: int
+    #: The oldest last good read among the unreadable sources, when one is known.
+    unreadable_since: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -168,6 +172,7 @@ def _freshness(sources: Sequence[SourceRead], now: datetime) -> Freshness:
     readable = [s for s in sources if s.readable]
     as_of_values = [_utc(s.as_of) for s in readable if s.as_of is not None]
     as_of = min(as_of_values) if as_of_values else None
+    since_values = [_utc(s.as_of) for s in sources if not s.readable and s.as_of is not None]
     if not sources or unreadable:
         state: FreshnessState = "unreadable"
     elif any(
@@ -178,7 +183,11 @@ def _freshness(sources: Sequence[SourceRead], now: datetime) -> Freshness:
     else:
         state = "current"
     return Freshness(
-        state=state, as_of=as_of, sources_unreadable=unreadable, sources_total=len(sources)
+        state=state,
+        as_of=as_of,
+        sources_unreadable=unreadable,
+        sources_total=len(sources),
+        unreadable_since=min(since_values) if since_values else None,
     )
 
 
@@ -202,10 +211,19 @@ def build_day_sheet(
     for occurrence in occurrences:
         if not _eligible(occurrence):
             continue
-        start, end = _utc(occurrence.starts_at), _utc(occurrence.ends_at)
-        end = max(end, start)
-        if start >= day_end or (end <= day_start and start < day_start):
-            continue
+        if occurrence.all_day:
+            # An all-day event is a date range, not an instant: it is on this day when the date
+            # is in range, in whatever zone the provider wrote it, so no zone double-lists it.
+            first = occurrence.starts_at.date()
+            last = max(occurrence.ends_at.date(), first + timedelta(days=1))
+            if not first <= local_date < last:
+                continue
+            start, end = day_start, day_end
+        else:
+            start, end = _utc(occurrence.starts_at), _utc(occurrence.ends_at)
+            end = max(end, start)
+            if start >= day_end or (end <= day_start and start < day_start):
+                continue
         entries.append((occurrence, start, end, _kind(occurrence)))
     entries.sort(key=lambda e: (not e[0].all_day, e[1], e[0].ref))
 
@@ -234,7 +252,7 @@ def build_day_sheet(
 
     attended = clipped({"attended"})
     attended_minutes = sum(int((e - s).total_seconds() // 60) for s, e in attended)
-    count = sum(1 for _o, _s, _e, kind in entries if kind == "attended")
+    count = sum(1 for o, _s, _e, kind in entries if kind == "attended" and not o.all_day)
 
     win_start = max(_utc(datetime.combine(local_date, window[0], tzinfo=tz)), day_start)
     win_end = min(_utc(datetime.combine(local_date, window[1], tzinfo=tz)), day_end)
@@ -252,13 +270,31 @@ def build_day_sheet(
         gaps.append(Gap(cursor.astimezone(tz), win_end.astimezone(tz)))
     longest = max(gaps, key=lambda g: (g.end - g.start, -g.start.timestamp()), default=None)
 
+    freshness = _freshness(sources, now)
+    if freshness.state == "unreadable":
+        # Whatever the readable part held is incomplete: list nothing and compute nothing.
+        items, gaps, longest, attended_minutes, count = [], [], None, 0, 0
+    elif freshness.state == "stale":
+        gaps, longest = [], None  # a free window claimed from stale data would be a guess
+
+    # The digest is the delivery dedup key, so it covers everything the text shows: the full
+    # (pre-truncation, pre-defang) title and the conflict ref, not only the times.
+    full_titles = {o.ref: " ".join(str(o.title or "").split()) for o, *_ in entries}
     digest = hashlib.sha256(
         json.dumps(
             [
                 local_date.isoformat(),
                 zone,
                 [
-                    [i.ref, _utc(i.start).isoformat(), _utc(i.end).isoformat(), i.kind, i.all_day]
+                    [
+                        i.ref,
+                        _utc(i.start).isoformat(),
+                        _utc(i.end).isoformat(),
+                        i.kind,
+                        i.all_day,
+                        full_titles.get(i.ref, ""),
+                        i.conflict_ref,
+                    ]
                     for i in items
                 ],
             ],
@@ -269,7 +305,7 @@ def build_day_sheet(
     return DaySheet(
         date=local_date,
         zone=zone,
-        freshness=_freshness(sources, now),
+        freshness=freshness,
         items=items,
         gaps=gaps,
         load=Load(attended_minutes=attended_minutes, count=count),
@@ -298,15 +334,17 @@ def render_day_sheet_text(sheet: DaySheet) -> str:
     if state.sources_total == 0:
         lines.append("Calendar unreadable: no calendar source is known.")
         return "\n".join(lines)
-    if unreadable == state.sources_total:
-        lines.append(f"Calendar unreadable ({unreadable} of {state.sources_total} sources).")
-        return "\n".join(lines)
     if unreadable:
+        since = (
+            f" since {state.unreadable_since.astimezone(tz):%H:%M}"
+            if state.unreadable_since is not None
+            else ""
+        )
         names = ", ".join(state.sources_unreadable)
         lines.append(
-            f"{unreadable} of {state.sources_total} calendar sources unreadable ({names}); "
-            "this list may be incomplete."
+            f"Calendar unreadable{since} ({unreadable} of {state.sources_total} sources: {names})."
         )
+        return "\n".join(lines)
 
     if not sheet.items:
         lines.append(
@@ -317,9 +355,7 @@ def render_day_sheet_text(sheet: DaySheet) -> str:
         return "\n".join(lines)
 
     for item in sheet.items:
-        title = (
-            item.title if item.label_class == "owner_authored" else defang_delivery_text(item.title)
-        )
+        title = defang_delivery_text(item.title)
         mark = "? " if item.kind == "tentative" else ""
         suffix = " (butler hold)" if item.kind == "butler" else ""
         when = "All day" if item.all_day else f"{item.start:%H:%M}-{item.end:%H:%M}"

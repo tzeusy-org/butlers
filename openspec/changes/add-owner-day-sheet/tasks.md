@@ -8,3 +8,7 @@
 - [ ] 2.1 Endpoint and hook (S2).
 - [ ] 2.2 `day_sheet_push` and the tomorrow-prep prompt change, with a butler-general delta (S3).
 - [ ] 2.3 Overview strip (S4).
+
+## 3. Deferred
+
+- [ ] 3.1 The `claim` item kind (what needs the owner) and a `basis` field on the sheet.
