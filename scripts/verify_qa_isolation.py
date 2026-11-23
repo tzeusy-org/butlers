@@ -219,6 +219,7 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
     current user. The probe Job must be admitted and every inverse control refused.
     """
     policies_valid: bool | None = None
+    policies_error: str | None = None
     if args.policies_file:
         result = subprocess.run(  # noqa: S603
             ["kubectl", "apply", "--dry-run=server", "-f", args.policies_file],
@@ -227,6 +228,10 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
             check=False,
         )
         policies_valid = result.returncode == 0
+        if not policies_valid:
+            # The server's own words, first line only, so the receipt says why (no manifest text).
+            lines = (result.stderr or "").strip().splitlines()
+            policies_error = lines[0][:300] if lines else "kubectl failed with no output"
     host = "192.0.2.1"
     probe_admitted = _apply(args, _probe_job(args, host), dry_run=True) == ADMITTED
     refused = {
@@ -241,6 +246,7 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "dry-run",
         "passed": verdict.ok,
         "policies_valid": verdict.policies_valid,
+        "policies_error": policies_error,
         "probe_admitted": verdict.probe_admitted,
         "unrefused_controls": list(verdict.unrefused_controls),
     }

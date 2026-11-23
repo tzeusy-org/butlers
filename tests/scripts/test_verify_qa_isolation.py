@@ -123,3 +123,33 @@ def test_the_context_check_matches_whole_segments_and_rejects_prod(
     monkeypatch.setattr(module, "dry_run", lambda args: {"passed": True})
     code = module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE])
     assert (code == 0) is accepted
+
+
+def test_a_failed_policies_apply_records_the_servers_first_line(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    module = _load()
+    policies = tmp_path / "p.yaml"
+    policies.write_text("kind: x")
+    calls = []
+
+    class _Done:
+        def __init__(self, code, err):
+            self.returncode, self.stderr = code, err
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        if "--as=" not in " ".join(command):
+            return _Done(
+                1, 'The ValidatingAdmissionPolicy "p" is invalid: type check failed\nsecond'
+            )
+        return _Done(0, "") if len(calls) == 2 else _Done(1, _DENIAL)
+
+    monkeypatch.setattr(module, "_kubectl", lambda *a, **k: "k3d-qa\n")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    argv = ["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE]
+    code = module.main([*argv, "--policies-file", str(policies)])
+    out = json.loads(capsys.readouterr().out)
+    assert code == 1 and out["policies_valid"] is False
+    assert out["policies_error"].endswith("type check failed")
+    assert "second" not in out["policies_error"]
