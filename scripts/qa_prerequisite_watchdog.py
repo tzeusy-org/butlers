@@ -33,7 +33,7 @@ from typing import Any
 
 #: The QA prerequisites named by the run 25 owner gate. ``<prefix>.*`` watches a child family.
 WATCHED: tuple[str, ...] = (
-    "bu-mc01y5.7",
+    "bu-ejow5p.11",
     "bu-6a9xxw.*",
     "bu-gjmx8w",
     "bu-ratgnb",

@@ -15,6 +15,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db, get_mcp_manager
+from butlers.core.qa import publisher_wiring
 from butlers.core.qa import remediation_liveness as rl
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -136,7 +137,9 @@ async def test_summary_is_not_healthy_while_a_loop_condition_is_active(db_pool) 
 
 
 @pytest.mark.pg_clock
-async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(db_pool) -> None:
+async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(
+    db_pool, monkeypatch
+) -> None:
     pool = db_pool
     patrol_id = await _patrol(pool, "error")
     for _ in range(5):
@@ -152,15 +155,39 @@ async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(db
         "SELECT cause_ref, refusal_reason FROM public.breaker_resets WHERE outcome = 'refused'"
     )
     assert sorted((r["cause_ref"], r["refusal_reason"]) for r in refused if r["cause_ref"]) == [
-        ("retry", "structural_cause_present:publisher_unconfigured")
+        ("retry", "structural_cause_not_named:publisher_unconfigured")
     ]
     assert len(refused) == 2
+    # An identical refusal inside the window is not recorded again.
+    await _call(
+        app,
+        "POST",
+        "/api/qa/circuit-breaker/reset",
+        json={"cause_ref": "execution_failure:retry"},
+    )
+    assert (
+        await pool.fetchval("SELECT count(*) FROM public.breaker_resets WHERE outcome = 'refused'")
+        == 2
+    )
     assert (
         await pool.fetchval("SELECT count(*) FROM public.breaker_resets WHERE outcome = 'reset'")
         == 0
     )
     assert (await _call(app, "GET", "/api/qa/circuit-breaker")).json()["data"]["tripped"] is True
 
+    # The right code with a fresh reference is still refused while the capability is missing.
+    still = (
+        await _call(
+            app,
+            "POST",
+            "/api/qa/circuit-breaker/reset",
+            json={"cause_ref": "publisher_unconfigured:PR-1"},
+        )
+    ).json()["data"]
+    assert still["reset"] is False
+    assert still["refusal_reason"] == "structural_cause_present:publisher_unconfigured"
+
+    monkeypatch.setattr(publisher_wiring, "production_publisher_wired", lambda: True)
     ok = await _call(
         app,
         "POST",
@@ -175,7 +202,8 @@ async def test_reset_is_refused_without_a_cause_while_the_cause_is_structural(db
 
 
 @pytest.mark.pg_clock
-async def test_a_reference_whose_claim_was_disproved_cannot_be_reused(db_pool) -> None:
+async def test_a_reference_whose_claim_was_disproved_cannot_be_reused(db_pool, monkeypatch) -> None:
+    monkeypatch.setattr(publisher_wiring, "production_publisher_wired", lambda: True)
     pool = db_pool
     patrol_id = await _patrol(pool, "error")
     for _ in range(5):

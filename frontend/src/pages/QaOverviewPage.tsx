@@ -683,7 +683,8 @@ export default function QaOverviewPage() {
     resetCircuitBreaker.mutate(causeRef, {
       onSuccess: (res) => {
         if (res.data?.reset === false) {
-          toast.error(res.data.message);
+          const reason = res.data.refusal_reason;
+          toast.error(reason ? `${res.data.message} (${reason})` : res.data.message);
           return;
         }
         toast.success(res.data?.message ?? "Circuit breaker reset");

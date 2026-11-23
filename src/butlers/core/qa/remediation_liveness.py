@@ -37,6 +37,7 @@ from typing import Any, Final, Literal
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
     QA_BREAKER_WHERE_SQL,
     QA_PROPOSAL_RETAINED_STATUS,
 )
@@ -47,11 +48,12 @@ from butlers.core.infra_conditions import (
     reconcile_snapshot,
 )
 from butlers.core.job_health import mark_tick_incomplete
+from butlers.core.qa import publisher_wiring
 
 logger = logging.getLogger(__name__)
 
 IDENTITY_VERSION: Final[int] = 1
-BREAKER_THRESHOLD: Final[int] = 5
+BREAKER_THRESHOLD: Final[int] = QA_BREAKER_THRESHOLD
 BREAKER_OPEN_AFTER: Final[timedelta] = timedelta(hours=6)
 PROPOSAL_UNADOPTED_AFTER: Final[timedelta] = timedelta(days=7)
 FUNNEL_WINDOW: Final[timedelta] = timedelta(days=14)
@@ -249,7 +251,7 @@ async def measure_proposal_unadopted(pool: Any) -> Measurement:
 
 
 async def measure_funnel(pool: Any) -> Measurement:
-    """Absence claim: made only when at least one opportunity exists to measure it against."""
+    """Present only on enough opportunities; thin evidence (fewer than K) is unmeasurable."""
     markers = [f"{marker}%" for marker in STRUCTURAL_CAUSE_MARKERS]
     row = await _safe(
         pool,
@@ -262,8 +264,11 @@ async def measure_funnel(pool: Any) -> Measurement:
     if row is None or not row["opportunities"]:
         return Measurement(FUNNEL_SOURCE, "unmeasurable")
     opportunities, merged = int(row["opportunities"]), int(row["merged"])
-    if merged > 0 or opportunities < FUNNEL_MIN_OPPORTUNITIES:
-        return Measurement(FUNNEL_SOURCE, "absent")
+    if merged > 0:
+        return Measurement(FUNNEL_SOURCE, "absent")  # A merged fix is a positive measurement.
+    if opportunities < FUNNEL_MIN_OPPORTUNITIES:
+        # Too few opportunities to claim the funnel is empty: neither opens nor resolves.
+        return Measurement(FUNNEL_SOURCE, "unmeasurable")
     return Measurement(
         FUNNEL_SOURCE,
         "present",
@@ -362,6 +367,27 @@ _PRIOR_STRUCTURAL_SQL = """
 """
 
 
+async def structural_cause_present(pool: Any, cause: str) -> bool | None:
+    """Re-evaluate a structural cause from current state: present, absent, or ``None`` (unknown).
+
+    Evidence is the live wiring, never the failure history: after a fix lands no attempt has run
+    yet (the breaker is what stops one), so history would keep a fixed cause "present" forever.
+    An unknown cause code or an unreadable probe is ``None``; the caller refuses.
+    """
+    if cause == "publisher_unconfigured":
+        return not publisher_wiring.production_publisher_wired()
+    if cause == "proposal_retention_unavailable":
+        try:
+            await pool.fetchval("SELECT 1 FROM public.qa_publication_exports LIMIT 1")
+        except Exception as exc:  # noqa: BLE001 - reduced to a typed log
+            logger.warning(
+                "QA breaker reset: retention probe failed (category=%s)", type(exc).__name__
+            )
+            return True
+        return False
+    return None
+
+
 def parse_cause_ref(raw: str | None) -> tuple[str, str] | None:
     """Split ``<cause_code>:<reference>``; both parts must be non-empty."""
     if raw is None:
@@ -379,8 +405,10 @@ async def evaluate_reset(
     """Decide whether a manual reset names a cause it can credibly claim to address.
 
     A reset must name ``<cause_code>:<reference>``. When the streak's dominant cause is
-    structural, the code must match it, and a reference that already bought a reset whose
-    attempts then failed on the same structural marker is refused: the claim was disproved.
+    structural, the code must match it, the cause must be absent when re-evaluated from current
+    state now (a still-missing capability refuses whatever reference is named), and a reference
+    that already bought a reset whose attempts then failed on the same structural marker is
+    refused: the claim was disproved.
     """
     parsed = parse_cause_ref(raw_cause_ref)
     if parsed is None:
@@ -389,6 +417,11 @@ async def evaluate_reset(
     dominant = dominant_cause(details)
     if dominant is not None and is_structural(dominant):
         if code != dominant:
+            return ResetDecision(False, code, ref, reason=f"structural_cause_not_named:{dominant}")
+        present = await structural_cause_present(pool, dominant)
+        if present is None:
+            return ResetDecision(False, code, ref, reason="evidence_unreadable")
+        if present:
             return ResetDecision(False, code, ref, reason=f"structural_cause_present:{dominant}")
         marker = next(m for m, c in STRUCTURAL_CAUSE_MARKERS.items() if c == dominant)
         try:
@@ -404,10 +437,20 @@ async def evaluate_reset(
     return ResetDecision(True, code, ref)
 
 
+#: One refusal row per identical (reference, reason) per window: a retrying operator or a polling
+#: client must not grow the ledger without bound, and the first row already is the audit record.
+REFUSAL_DEDUPE_WINDOW: Final[timedelta] = timedelta(minutes=10)
 _RECORD_REFUSAL_SQL = """
     INSERT INTO public.breaker_resets
         (breaker, reset_by, reason, cause_code, cause_ref, outcome, refusal_reason)
-    VALUES ('qa', $1, $2, $3, $4, 'refused', $5)
+    SELECT 'qa', $1, $2, $3::text, $4::text, 'refused', $5::text
+    WHERE NOT EXISTS (
+        SELECT 1 FROM public.breaker_resets
+        WHERE breaker = 'qa' AND outcome = 'refused'
+          AND cause_ref IS NOT DISTINCT FROM $4::text
+          AND refusal_reason IS NOT DISTINCT FROM $5::text
+          AND reset_at > clock_timestamp() - make_interval(secs => $6)
+    )
 """
 
 
@@ -426,6 +469,7 @@ async def record_reset_refusal(pool: Any, decision: ResetDecision, *, reset_by: 
             decision.cause_code,
             decision.cause_ref,
             decision.reason,
+            REFUSAL_DEDUPE_WINDOW.total_seconds(),
         )
     except Exception as exc:  # noqa: BLE001 - reduced to a typed log
         logger.warning("QA breaker reset refusal not persisted (category=%s)", type(exc).__name__)

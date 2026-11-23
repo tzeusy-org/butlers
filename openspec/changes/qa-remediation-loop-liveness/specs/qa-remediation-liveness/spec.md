@@ -23,7 +23,7 @@ Scope: v1-mandatory
 #### Scenario: No verified fix
 - **WHEN** at least 3 launched investigations in the last 14 days reached the publication stage and none was merged
 - **THEN** one `qa_loop_funnel` condition is active
-- **AND** with zero such investigations the condition is unmeasurable, not absent
+- **AND** with fewer than 3 such investigations (including zero) the condition is unmeasurable, not absent; a merged fix makes it absent
 
 ### Requirement: Unmeasurable evidence never resolves
 A condition check SHALL be present, absent or unmeasurable. An unreadable table or an empty opportunity set SHALL be unmeasurable and SHALL neither open nor resolve a condition.
@@ -37,7 +37,7 @@ Scope: v1-mandatory
 - **THEN** no condition opens or resolves and the tick is marked incomplete
 
 ### Requirement: Cause-bound breaker reset
-A manual QA breaker reset SHALL name the cause it addresses as `<cause_code>:<reference>` and SHALL be recorded with that cause. While the streak's dominant cause is structural, the reset SHALL name that cause, and a reference whose earlier reset was followed by a failure on the same structural cause SHALL be refused. A liveness condition SHALL never auto-reset, auto-publish, unpause or widen authority.
+A manual QA breaker reset SHALL name the cause it addresses as `<cause_code>:<reference>` and SHALL be recorded with that cause. While the streak's dominant cause is structural, the reset SHALL name that cause and SHALL be refused while that cause is still present, re-evaluated from current state at reset time (not from the failure history); an unknown or unreadable probe SHALL refuse. A reference whose earlier reset was followed by a failure on the same structural cause SHALL also be refused. A liveness condition SHALL never auto-reset, auto-publish, unpause or widen authority.
 
 ID: REQ-qa-remediation-liveness-003
 Source: owner gate bu-l34qcx (approved 2026-11-22); dossier move 8
@@ -47,9 +47,17 @@ Scope: v1-mandatory
 - **WHEN** a reset names no cause, or the dominant cause is structural and the reset names another
 - **THEN** it is refused with `refusal_reason` and recorded as a `breaker_resets` row with `outcome = 'refused'`, which never clears the breaker
 
-#### Scenario: Reset naming the structural cause
-- **WHEN** the dominant cause is `publisher_unconfigured` and the reset names `publisher_unconfigured:<reference>` with a fresh reference
+#### Scenario: Reset while the structural cause is still present
+- **WHEN** the dominant cause is `publisher_unconfigured`, the reset names `publisher_unconfigured:<reference>`, and no publisher is wired in the production dispatcher
+- **THEN** it is refused with `structural_cause_present:publisher_unconfigured` whatever the reference, and recorded as a refused row
+
+#### Scenario: Reset naming a structural cause that is gone
+- **WHEN** the dominant cause is `publisher_unconfigured`, a publisher is now wired, and the reset names `publisher_unconfigured:<reference>` with a fresh reference
 - **THEN** the reset is accepted and `cause_code` and `cause_ref` are recorded
+
+#### Scenario: Identical refusals are not re-recorded
+- **WHEN** the same reference is refused for the same reason again within 10 minutes
+- **THEN** no further refused row is written
 
 #### Scenario: Disproved claim
 - **WHEN** the same cause and reference already reset the breaker and the same structural failure followed

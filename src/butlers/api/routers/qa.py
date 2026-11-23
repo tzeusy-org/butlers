@@ -74,6 +74,7 @@ from butlers.core.failover_classifier import is_provider_auth_marker
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
     QA_BREAKER_WHERE_SQL,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
@@ -593,7 +594,7 @@ class QaCircuitBreaker(BaseModel):
     # Optional (default mirrors _CIRCUIT_BREAKER_THRESHOLD) so existing
     # fixtures/tests that construct this without a threshold keep working;
     # the real endpoint always sets it explicitly.
-    threshold: int = 5
+    threshold: int = QA_BREAKER_THRESHOLD
 
 
 class QaCredentialsStatus(BaseModel):
@@ -1286,7 +1287,7 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 # (the canonical definition). Threshold matches QaDispatchConfig default.
 # ---------------------------------------------------------------------------
 
-_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_THRESHOLD = QA_BREAKER_THRESHOLD
 # Only real launched QA investigations (healing_session_id IS NOT NULL) that
 # closed AFTER the latest manual reset count toward the breaker. Consulting
 # ``public.breaker_resets`` (rather than a forged clean-patrol sentinel) is what

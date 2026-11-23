@@ -122,6 +122,53 @@ describe("QaVerdictOpener -- clauses", () => {
     expect(html).toContain("below target: publisher_unconfigured");
   });
 
+  it("says the ledger is unreadable instead of claiming there is no patrol history", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "unknown",
+      last_patrol: null,
+      loop_conditions_known: false,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("can&#x27;t read the QA condition ledger right now");
+    expect(html).not.toContain("no patrol history yet");
+  });
+
+  it("still says no patrol history when the ledger is readable", () => {
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "unknown",
+      last_patrol: null,
+      loop_conditions_known: true,
+    };
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    expect(html).toContain("no patrol history yet");
+    expect(html).not.toContain("condition ledger");
+  });
+
+  it("keeps clause keys unique when one source carries several causes", () => {
+    const condition = (cause: string) => ({
+      source: "qa_loop_capability",
+      summary: `QA remediation capability is below target: ${cause}`,
+      cause,
+      first_detected_at: "2026-11-20T00:00:00Z",
+    });
+    const summary: QaSummary = {
+      ...HEALTHY_SUMMARY,
+      staffer_status: "degraded",
+      loop_conditions: [condition("publisher_unconfigured"), condition("proposal_retention_unavailable")],
+    };
+    const errors: unknown[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((...args) => {
+      errors.push(args);
+    });
+    const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
+    spy.mockRestore();
+    expect(html).toContain("publisher_unconfigured");
+    expect(html).toContain("proposal_retention_unavailable");
+    expect(JSON.stringify(errors)).not.toContain("unique \"key\"");
+  });
+
   it("names a failed last patrol and doors to its patrol detail page", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,

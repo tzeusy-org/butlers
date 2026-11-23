@@ -129,7 +129,9 @@ async def test_funnel_present_only_when_enough_opportunities_and_no_merge() -> N
         return ScriptedPool({"opportunities": {"opportunities": opportunities, "merged": merged}})
 
     assert (await rl.measure_funnel(scripted(3, 0))).state == "present"
-    assert (await rl.measure_funnel(scripted(2, 0))).state == "absent"  # below K: no absence claim
+    # Below K there is too little evidence to claim the funnel is empty: unmeasurable, which
+    # neither opens nor resolves a condition.
+    assert (await rl.measure_funnel(scripted(2, 0))).state == "unmeasurable"
     assert (await rl.measure_funnel(scripted(9, 1))).state == "absent"
 
 
@@ -193,24 +195,51 @@ async def test_reset_allowed_for_non_structural_cause_with_any_named_cause() -> 
 async def test_reset_refused_when_structural_cause_is_not_named() -> None:
     decision = await rl.evaluate_reset(ScriptedPool({}), "execution_failure:retry", [PUB] * 5)
     assert not decision.allowed
-    assert decision.reason == "structural_cause_present:publisher_unconfigured"
+    assert decision.reason == "structural_cause_not_named:publisher_unconfigured"
 
 
-async def test_reset_allowed_when_structural_cause_is_named_with_a_fresh_reference() -> None:
+@pytest.fixture
+def publisher_wired(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.core.qa import publisher_wiring
+
+    monkeypatch.setattr(publisher_wiring, "production_publisher_wired", lambda: True)
+
+
+async def test_reset_refused_while_the_named_structural_cause_is_still_present() -> None:
+    """No reference buys a reset while the capability is still missing."""
+    for ref in ("publisher_unconfigured:PR-1", "publisher_unconfigured:PR-2"):
+        decision = await rl.evaluate_reset(ScriptedPool({"breaker_resets": None}), ref, [PUB] * 5)
+        assert not decision.allowed
+        assert decision.reason == "structural_cause_present:publisher_unconfigured"
+
+
+async def test_presence_probes_are_closed_and_fail_toward_refusal() -> None:
+    assert await rl.structural_cause_present(ScriptedPool({}), "no_such_cause") is None
+    readable = ScriptedPool({"qa_publication_exports": 1})
+    assert await rl.structural_cause_present(readable, "proposal_retention_unavailable") is False
+    broken = ScriptedPool({}, fail=True)
+    assert await rl.structural_cause_present(broken, "proposal_retention_unavailable") is True
+
+
+async def test_reset_allowed_when_structural_cause_is_named_with_a_fresh_reference(
+    publisher_wired: None,
+) -> None:
     pool = ScriptedPool({"breaker_resets": None})
     decision = await rl.evaluate_reset(pool, "publisher_unconfigured:PR-1", [PUB] * 5)
     assert decision.allowed
     assert (decision.cause_code, decision.cause_ref) == ("publisher_unconfigured", "PR-1")
 
 
-async def test_reset_refused_when_the_same_claim_was_already_disproved() -> None:
+async def test_reset_refused_when_the_same_claim_was_already_disproved(
+    publisher_wired: None,
+) -> None:
     pool = ScriptedPool({"breaker_resets": 1})
     decision = await rl.evaluate_reset(pool, "publisher_unconfigured:PR-1", [PUB] * 5)
     assert not decision.allowed
     assert decision.reason == "structural_cause_unchanged:publisher_unconfigured"
 
 
-async def test_reset_refused_when_prior_evidence_is_unreadable() -> None:
+async def test_reset_refused_when_prior_evidence_is_unreadable(publisher_wired: None) -> None:
     decision = await rl.evaluate_reset(
         ScriptedPool({}, fail=True), "publisher_unconfigured:PR-1", [PUB] * 5
     )
@@ -234,12 +263,14 @@ async def test_refusal_is_persisted_as_a_refused_row_with_its_reason() -> None:
     assert await rl.record_reset_refusal(pool, decision, reset_by="dashboard") is True
     sql, args = pool.calls[0]
     assert "'refused'" in sql
+    assert "NOT EXISTS" in sql  # identical refusals inside the window are not re-inserted
     assert args == (
         "dashboard",
         "Manual reset refused",
         "execution_failure",
         "retry",
         "structural_cause_present:x",
+        rl.REFUSAL_DEDUPE_WINDOW.total_seconds(),
     )
 
 

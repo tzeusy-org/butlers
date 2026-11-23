@@ -1,7 +1,7 @@
 """breaker_resets: record the cause each manual reset claims to address (bu-ejow5p.8).
 
 Revision ID: core_359
-Revises: core_357
+Revises: core_358
 
 REQ-qa-remediation-liveness-003.  A manual QA breaker reset buys five more attempts. When the
 failure streak was caused by a missing capability (for example no publisher), a reset that does not
@@ -22,7 +22,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_359"
-down_revision = "core_357"
+down_revision = "core_358"
 branch_labels = None
 depends_on = None
 

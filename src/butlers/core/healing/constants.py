@@ -3,6 +3,10 @@
 CIRCUIT_BREAKER_FAILURE_STATUSES = frozenset({"failed", "timeout", "anonymization_failed"})
 UNFIXABLE_SENTINEL_FILENAME = "UNFIXABLE"
 
+#: Consecutive launched-execution failures that trip the QA circuit breaker. One constant for
+#: dispatch admission, the dashboard and the remediation-liveness conditions (bu-ejow5p.8).
+QA_BREAKER_THRESHOLD = 5
+
 #: Marker prefix of the ``error_detail`` a QA attempt carries when publication is unavailable.
 QA_PUBLICATION_UNAVAILABLE_PREFIX = "publication_unavailable:"
 #: Effective status of a ``failed`` attempt that kept a sealed, retained proposal.

@@ -46,7 +46,7 @@ def test_blocked_prerequisite_is_stalled_after_the_window(tmp_path: Path) -> Non
     path = _export(
         tmp_path,
         [
-            _row("bu-mc01y5.7", "blocked", "lane-1", "2026-11-10T00:00:00Z"),
+            _row("bu-ejow5p.11", "blocked", "lane-1", "2026-11-10T00:00:00Z"),
             _row("bu-6a9xxw.1", "closed", "", "2026-11-01T00:00:00Z"),
             _row("bu-gjmx8w", "in_progress", "lane-2", "2026-11-01T00:00:00Z"),
             _row("bu-ratgnb", "open", "", "2026-11-22T00:00:00Z"),
@@ -54,7 +54,7 @@ def test_blocked_prerequisite_is_stalled_after_the_window(tmp_path: Path) -> Non
     )
     findings = wd.evaluate(wd.load_issues(path), NOW, days=7)
     states = _states(findings)
-    assert states["bu-mc01y5.7"] == "stalled"
+    assert states["bu-ejow5p.11"] == "stalled"
     assert states["bu-6a9xxw.1"] == "ok"
     assert states["bu-gjmx8w"] == "ok"  # owned and not blocked
     assert states["bu-ratgnb"] == "ok"  # unowned but only one day old
@@ -65,7 +65,7 @@ def test_unowned_open_item_stalls_and_family_prefix_matches_children(tmp_path: P
     path = _export(
         tmp_path,
         [
-            _row("bu-mc01y5.7", "closed", "", "2026-11-01T00:00:00Z"),
+            _row("bu-ejow5p.11", "closed", "", "2026-11-01T00:00:00Z"),
             _row("bu-6a9xxw.1", "closed", "", "2026-11-01T00:00:00Z"),
             _row("bu-6a9xxw.2", "open", "", "2026-11-01T00:00:00Z"),
             _row("bu-gjmx8w", "closed", "", "2026-11-01T00:00:00Z"),
@@ -80,7 +80,7 @@ def test_missing_rows_and_unreadable_exports_claim_nothing(tmp_path: Path) -> No
     only_one = _export(tmp_path, [_row("bu-gjmx8w", "closed", "", "2026-11-01T00:00:00Z")])
     findings = wd.evaluate(wd.load_issues(only_one), NOW)
     states = _states(findings)
-    assert states["bu-mc01y5.7"] == "unknown"
+    assert states["bu-ejow5p.11"] == "unknown"
     assert states["bu-6a9xxw.*"] == "unknown"
     assert wd.exit_code(findings) == 2
 
@@ -92,8 +92,8 @@ def test_missing_rows_and_unreadable_exports_claim_nothing(tmp_path: Path) -> No
 
 
 def test_cli_prints_report_and_exit_code(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    path = _export(tmp_path, [_row("bu-mc01y5.7", "blocked", "x", "2026-11-01T00:00:00Z")])
+    path = _export(tmp_path, [_row("bu-ejow5p.11", "blocked", "x", "2026-11-01T00:00:00Z")])
     code = wd.main([str(path), "--now", "2026-11-23T00:00:00Z"])
     out = capsys.readouterr().out
     assert code == 1
-    assert "stalled  bu-mc01y5.7: blocked for 22d" in out
+    assert "stalled  bu-ejow5p.11: blocked for 22d" in out
