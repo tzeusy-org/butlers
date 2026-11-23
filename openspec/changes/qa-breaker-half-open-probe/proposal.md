@@ -17,6 +17,6 @@ why it stopped or when it will try again (bu-ejow5p.3, slice S3 of Breaker v2).
   carries its cause class and the first line of its own error text.
 - Patrol reads carry `halt_reason`.
 
-## Deferred
+## Dashboard
 
-- The briefing and `/qa` clauses, links and the reset dialog's evidence and forecast (S3b, frontend).
+- The `/qa` opener names the breaker cause and next probe and links a halted patrol; the reset dialog shows the cause, each attempt's reason and a forecast that is withheld on mixed causes.

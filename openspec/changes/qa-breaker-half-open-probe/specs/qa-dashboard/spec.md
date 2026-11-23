@@ -39,3 +39,26 @@ Scope: v1-mandatory
 
 - **WHEN** a patrol read returns status `halted`
 - **THEN** `halt_reason` is `circuit_breaker`, `no_model` or `concurrency_cap`
+
+### Requirement: QA Surfaces Name The Breaker Cause And Halting Gate
+
+The `/qa` verdict opener SHALL name the open breaker's cause and next probe time when the API supplies them, and SHALL link a halted last patrol with the gate that halted it. A patrol's status label SHALL carry the gate for a `halted` status wherever patrol status is shown. The breaker reset dialog SHALL show the dominant cause, each counted attempt's reason text and a forecast of what a reset will do; the forecast SHALL be withheld when the cause is `mixed` or unknown, because a prediction over unlike failures is a guess.
+
+ID: REQ-qa-dashboard-903
+Source: bu-ejow5p.3 (run 25 move 3), slice S3b; owner decision on bu-ejow5p.3 adopting the bead design
+Scope: v1-mandatory
+
+#### Scenario: The opener names the cause and the next probe
+
+- **WHEN** the breaker is open with a single cause and a next probe time
+- **THEN** the opener reads that the breaker is open for that cause with its next probe time
+
+#### Scenario: A halted patrol is linked with its gate
+
+- **WHEN** the last patrol's status is `halted`
+- **THEN** the opener links the patrol and names its `halt_reason`
+
+#### Scenario: A mixed cause gets no forecast
+
+- **WHEN** the reset dialog opens while `dominant_cause` is `mixed`
+- **THEN** it states that no forecast is available and makes no claim about a reset's outcome

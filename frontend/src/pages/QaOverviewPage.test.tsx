@@ -1029,6 +1029,55 @@ describe("QaOverviewPage -- evidence-bearing reset + palette verb", () => {
     expect(evidenceText).toContain("unfixable");
   });
 
+  function openResetDialogWith(breaker: Record<string, unknown>) {
+    setupTripped();
+    (useQaCircuitBreaker as AnyMock).mockReturnValue({
+      data: { data: { ...MOCK_BREAKER_TRIPPED, ...breaker } },
+      isLoading: false,
+      isError: false,
+    });
+    mount();
+    const btn = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Reset QA circuit breaker"]',
+    );
+    act(() => {
+      btn?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  }
+
+  it("names the cause, each attempt's reason and a forecast in the reset dialog", () => {
+    openResetDialogWith({
+      dominant_cause: "publisher_unconfigured",
+      cause_counts: { publisher_unconfigured: 5 },
+      next_probe_at: "2026-05-16T00:55:00Z",
+      recent_attempts: MOCK_BREAKER_TRIPPED.recent_attempts.map((a) => ({
+        ...a,
+        reason_class: "publisher_unconfigured",
+        reason_text: "publication_unavailable: no publisher configured",
+      })),
+    });
+    const dialog = document.querySelector('[data-testid="qa-breaker-reset-dialog"]');
+    expect(dialog?.querySelector('[data-testid="qa-breaker-reset-dominant-cause"]')?.textContent).toContain(
+      "no publisher configured",
+    );
+    expect(
+      dialog?.querySelector('[data-testid="qa-breaker-reset-evidence"]')?.textContent,
+    ).toContain("publication_unavailable: no publisher configured");
+    expect(
+      dialog?.querySelector('[data-testid="qa-breaker-reset-forecast"]')?.textContent,
+    ).toContain("fail the same way");
+  });
+
+  it("withholds the reset forecast when the failures have different causes", () => {
+    openResetDialogWith({
+      dominant_cause: "mixed",
+      cause_counts: { execution_failure: 2, publisher_unconfigured: 3 },
+    });
+    const forecast = document.querySelector('[data-testid="qa-breaker-reset-forecast"]');
+    expect(forecast?.textContent).toContain("No forecast");
+    expect(forecast?.textContent).not.toContain("fail the same way");
+  });
+
   it("does not register the reset palette verb while the breaker is closed", () => {
     (useQaSummary as AnyMock).mockReturnValue({
       data: { data: MOCK_SUMMARY },

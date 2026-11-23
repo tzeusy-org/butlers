@@ -54,6 +54,7 @@ import {
   useResetQaCircuitBreaker,
 } from "@/hooks/use-qa";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
+import { breakerCauseLabel, breakerResetForecast } from "@/lib/qa-breaker-cause";
 import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 import { usePageSubject } from "@/lib/page-context.tsx";
 
@@ -337,6 +338,8 @@ function ResetBreakerDialog({
   onOpenChange,
   attempts,
   attemptsAvailable,
+  dominantCause,
+  nextProbeAt,
   onConfirm,
   pending,
 }: {
@@ -344,12 +347,16 @@ function ResetBreakerDialog({
   onOpenChange: (open: boolean) => void;
   attempts: CircuitBreakerAttempt[];
   attemptsAvailable: boolean;
+  dominantCause: string | null;
+  nextProbeAt: string | null;
   onConfirm: (causeRef: string) => void;
   pending: boolean;
 }) {
   // The reset must name the cause it addresses (REQ-qa-remediation-liveness-003).
   const [causeRef, setCauseRef] = useState("");
   const causeRefValid = /^[^:\s][^:]*:\s*\S.*$/.test(causeRef.trim());
+  const causeLabel = breakerCauseLabel(dominantCause);
+  const forecast = breakerResetForecast(dominantCause);
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent data-testid="qa-breaker-reset-dialog">
@@ -361,6 +368,21 @@ function ResetBreakerDialog({
             recorded and un-fabricated.
           </AlertDialogDescription>
         </AlertDialogHeader>
+
+        {causeLabel && (
+          <p
+            data-testid="qa-breaker-reset-dominant-cause"
+            className="font-mono text-[11px] text-foreground"
+          >
+            Cause: {causeLabel}
+            {nextProbeAt && (
+              <span className="text-muted-foreground">
+                {" "}
+                · next automatic probe <Time value={nextProbeAt} mode="relative" />
+              </span>
+            )}
+          </p>
+        )}
 
         {attempts.length > 0 ? (
           <ul
@@ -374,6 +396,11 @@ function ResetBreakerDialog({
                 className="flex items-baseline justify-between gap-3"
               >
                 <span className="truncate text-muted-foreground">{attempt.id}</span>
+                {attempt.reason_text && (
+                  <span className="min-w-0 flex-1 truncate" title={attempt.reason_text}>
+                    {attempt.reason_text}
+                  </span>
+                )}
                 <span className="text-destructive uppercase tracking-[0.08em]">
                   {attempt.status}
                 </span>
@@ -393,6 +420,15 @@ function ResetBreakerDialog({
             {attemptsAvailable
               ? "No failing attempts on record: the breaker's evidence is empty."
               : "Failing-attempt evidence unavailable: the circuit-breaker source is unreachable."}
+          </p>
+        )}
+
+        {causeLabel && (
+          <p
+            data-testid="qa-breaker-reset-forecast"
+            className="font-mono text-[11px] text-muted-foreground"
+          >
+            {forecast.text}
           </p>
         )}
 
@@ -523,7 +559,7 @@ function PatrolPulseStrip() {
           Recent patrols
         </span>
         {rows.map((patrol) => {
-          const status = getQaPatrolStatusPresentation(patrol.status);
+          const status = getQaPatrolStatusPresentation(patrol.status, patrol.halt_reason);
           return (
             <Tip
               key={patrol.id}
@@ -812,6 +848,8 @@ export default function QaOverviewPage() {
         }}
         attempts={circuitBreaker.isError ? [] : (circuitBreaker.data?.data.recent_attempts ?? [])}
         attemptsAvailable={!circuitBreaker.isError}
+        dominantCause={circuitBreaker.isError ? null : (circuitBreaker.data?.data.dominant_cause ?? null)}
+        nextProbeAt={circuitBreaker.isError ? null : (circuitBreaker.data?.data.next_probe_at ?? null)}
         onConfirm={confirmResetCircuitBreaker}
         pending={resetCircuitBreaker.isPending}
       />

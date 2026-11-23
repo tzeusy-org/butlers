@@ -211,7 +211,7 @@ export default function QaPatrolDetailPage() {
   const dispatched = patrol.findings.filter((f) => f.healing_attempt_id);
   const duration = formatDuration(patrol.started_at, patrol.completed_at);
   const sourcesLabel = patrol.sources_polled.map(formatSourceType).join(", ");
-  const status = getQaPatrolStatusPresentation(patrol.status);
+  const status = getQaPatrolStatusPresentation(patrol.status, patrol.halt_reason);
 
   return (
     <div className="space-y-8">
