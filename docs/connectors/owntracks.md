@@ -131,7 +131,7 @@ A point that can never be stored (a malformed or out-of-range `tst`, `lat`, `lon
 or one the database refuses as data) is acknowledged and not ingested, counted and logged by
 reason category only, because OwnTracks resends in order and a resend would fail the same way.
 NUL characters are stripped from text fields first. Connection, serialization, deadlock,
-missing-table and privilege errors still answer 503. `message_inbox` is a routing buffer, not
+missing-table and privilege errors still answer 503. Transitions and waypoints have no points table, so they are written to `connectors.evidence_journal` (`source = owntracks`) before the submit; a failed write answers 503 and submits nothing. The connector refuses to start without a database pool: with no pool every point would answer 503, so it exits with a startup error instead. `message_inbox` is a routing buffer, not
 an evidence surface.
 
 ## Privacy note

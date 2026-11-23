@@ -31,7 +31,7 @@ def _connector(call_tool: AsyncMock, db_pool: Any = None) -> OwnTracksConnector:
     connector = OwnTracksConnector(
         config=OwnTracksConnectorConfig(switchboard_mcp_url="http://test-switchboard/mcp"),
         webhook_token="test-token",
-        db_pool=db_pool,
+        db_pool=db_pool or _FakePool(),
     )
     connector._mcp_client = AsyncMock()
     connector._mcp_client.call_tool = call_tool
@@ -134,13 +134,37 @@ async def test_a_park_that_is_not_written_answers_503_and_parks_on_the_resend() 
         await _stop(connector)
 
 
-async def test_with_no_database_a_spent_point_is_never_acknowledged() -> None:
-    connector = _connector(AsyncMock(side_effect=_always_unreachable), db_pool=None)
-    try:
-        for _ in range(connector._ingest_retry.max_attempts + 1):
-            assert (await _post(connector, _POINT)).status_code == 503
-    finally:
-        await _stop(connector)
+async def test_it_refuses_to_start_without_a_database_pool() -> None:
+    """No pool means no evidence journal: it must not serve a webhook that can only answer 503."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = OwnTracksConnector(
+        config=OwnTracksConnectorConfig(switchboard_mcp_url="http://test-switchboard/mcp"),
+        webhook_token="test-token",
+        db_pool=None,
+    )
+    with pytest.raises(EvidenceNotCommitted) as refused:
+        await connector.start()
+    assert refused.value.reason == "no_pool"
+    assert connector._running is False
+
+
+async def test_the_runner_exits_when_the_pool_cannot_be_created(monkeypatch) -> None:
+    import asyncpg
+
+    async def unreachable(**_kwargs: Any) -> Any:
+        raise OSError("synthetic: database down")
+
+    monkeypatch.setattr(asyncpg, "create_pool", unreachable)
+    monkeypatch.setattr(owntracks, "configure_logging", lambda *a, **k: None)
+    monkeypatch.setattr(
+        owntracks.OwnTracksConnectorConfig,
+        "from_env",
+        classmethod(lambda cls: cls(switchboard_mcp_url="http://test-switchboard/mcp")),
+    )
+    with pytest.raises(SystemExit) as exited:
+        await owntracks.run_owntracks_connector()
+    assert exited.value.code == 1
 
 
 async def test_a_slow_replay_drain_does_not_hold_the_answer(monkeypatch) -> None:
@@ -397,5 +421,96 @@ async def test_a_malformed_point_is_rejected_even_without_a_database() -> None:
             response = await _post(connector, {**_POINT, **bad})
             assert response.status_code == 200
         assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
+
+
+_TRANSITION = {
+    "_type": "transition",
+    "tst": 1711360400,
+    "tid": "ph",
+    "event": "enter",
+    "desc": "Home",
+    "lat": 1.0,
+    "lon": 2.0,
+}
+
+
+async def test_a_transition_is_journaled_before_the_submit(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def fake_commit(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        order.append("journal")
+        return True
+
+    async def call_tool(tool: str, payload: dict | None = None) -> dict:
+        if tool == "ingest":
+            order.append("ingest")
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(owntracks, "commit_envelope", fake_commit)
+    connector = _connector(AsyncMock(side_effect=call_tool), _FakePool())
+    try:
+        assert (await _post(connector, _TRANSITION)).status_code == 200
+        assert order == ["journal", "ingest"]
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_transition_journal_write_submits_nothing(monkeypatch) -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    async def broken_commit(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        raise EvidenceNotCommitted("OSError")
+
+    monkeypatch.setattr(owntracks, "commit_envelope", broken_commit)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FakePool())
+    try:
+        assert (await _post(connector, _TRANSITION)).status_code == 503
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
+
+
+async def test_a_location_point_does_not_use_the_generic_journal(monkeypatch) -> None:
+    async def fail_if_called(pool: Any, envelope: dict, **kwargs: Any) -> bool:
+        raise AssertionError("locations live in owntracks_points")
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(owntracks, "commit_envelope", fail_if_called)
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(return_value={"status": "accepted"}), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 200
+    finally:
+        await _stop(connector)
+
+
+async def test_evidence_scrub_failure_keeps_location_unacknowledged(monkeypatch, caplog) -> None:
+    """A scrub failure is not a duplicate: 503, no ingest, no checkpoint; a retry writes once."""
+
+    def scrub_unavailable(*_args, **_kwargs):
+        raise RuntimeError("test-private-scrub-details")
+
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    pool = _FailingPool(error=None)
+    connector = _connector(call_tool, pool)
+    saved = AsyncMock()
+    connector._save_checkpoint = saved
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(owntracks, "scrub_evidence_json", scrub_unavailable)
+            response = await _post(connector, _POINT)
+
+        assert response.status_code == 503
+        assert (len(pool.args_seen), len(_ingests(call_tool)), saved.await_count) == (0, 0, 0)
+        assert "test-private-scrub-details" not in caplog.text
+
+        response = await _post(connector, _POINT)  # the scrub recovered
+        assert response.status_code == 200
+        assert len(pool.args_seen) == len(_ingests(call_tool)) == 1
     finally:
         await _stop(connector)

@@ -77,6 +77,7 @@ from prometheus_client import Counter
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -920,7 +921,7 @@ async def persist_location_point(
     acknowledges (bu-uhbhzq.4). NUL characters are stripped from text first.
     A point the server refuses as data (SQLSTATE class 22) raises
     ``LocationPointRejected``; any other error, including a client-side encode error,
-    propagates, so the webhook answers 503. A scrub failure is logged and skipped.
+    propagates, so the webhook answers 503. A scrub failure raises ``EvidenceNotCommitted`` (503).
 
     Args:
         pool: asyncpg connection pool (connector_writer role).
@@ -945,8 +946,11 @@ async def persist_location_point(
     try:
         raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
     except Exception:
-        logger.warning("owntracks: bearer scrub failed; evidence write skipped")
-        return False
+        # Not a duplicate: nothing was written, so the point must not be acknowledged. Content
+        # blind, with no chained cause (the original text can echo the payload): the webhook
+        # answers 503, nothing is submitted or checkpointed, and the phone resends.
+        logger.warning("owntracks: bearer scrub failed; evidence not committed")
+        raise EvidenceNotCommitted("scrub_failed") from None
 
     try:
         result = await pool.fetchval(
@@ -1111,6 +1115,10 @@ class OwnTracksConnector:
 
     async def start(self) -> None:
         """Full startup sequence followed by the main webhook server loop."""
+        if self._db_pool is None:
+            # Evidence before acknowledgement (bu-uhbhzq.4): with no pool every point would
+            # answer 503 forever, so refuse to start instead of serving a dead webhook.
+            raise EvidenceNotCommitted("no_pool")
         logger.info("OwnTracksConnector starting")
         self._running = True
         self._main_loop = asyncio.get_running_loop()
@@ -1512,15 +1520,16 @@ class OwnTracksConnector:
         # failure below keeps the row; it is evidence, not a replay queue (bu-uhbhzq.4).
         if payload_type == "location":
             try:
-                fields = location_point_fields(body)  # validated whether or not a pool exists
-                if self._db_pool is not None:
-                    await persist_location_point(
-                        self._db_pool,
-                        endpoint_identity=device.endpoint_identity,
-                        trigger=body.get("t") or None,
-                        raw_payload=body,
-                        **fields,
-                    )
+                fields = location_point_fields(body)
+                if self._db_pool is None:
+                    raise EvidenceNotCommitted("no_pool")
+                await persist_location_point(
+                    self._db_pool,
+                    endpoint_identity=device.endpoint_identity,
+                    trigger=body.get("t") or None,
+                    raw_payload=body,
+                    **fields,
+                )
             except LocationPointRejected as rejected:
                 # Content-blind: the reason category only. Acknowledged, not ingested.
                 device.metrics.record_error(
@@ -1574,6 +1583,12 @@ class OwnTracksConnector:
                     "checkpoint_tst": checkpoint_tst,
                 },
             )
+
+        # Transitions and waypoints have no points table: they go to the generic evidence
+        # journal, before the submit (bu-uhbhzq.4). A failed write raises (503, nothing
+        # submitted); location points were committed to owntracks_points above.
+        if payload_type != "location":
+            await commit_envelope(self._db_pool, envelope)
 
         # Submit to Switchboard
         retry_key = str(envelope["control"]["idempotency_key"])
@@ -1665,7 +1680,29 @@ class OwnTracksConnector:
             logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
-        """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
+        """Replay drain submit: confirm or write the evidence row, then send.
+
+        A location replays only if its ``owntracks_points`` row exists (found by idempotency
+        key): the dedicated table keeps its own retention, so no generic journal copy is made,
+        and a missing row is not replayable. A transition or waypoint set journals the stored
+        envelope idempotently first (a legacy row parked before evidence-first has none). A
+        failed check or write raises, so the drain records the failure and nothing is sent
+        (bu-uhbhzq.4).
+        """
+        key = str((envelope.get("control") or {}).get("idempotency_key") or "")
+        if key.endswith(":location"):
+            if self._db_pool is None:
+                raise EvidenceNotCommitted("no_pool")
+            try:
+                found = await self._db_pool.fetchval(
+                    f"SELECT 1 FROM {_LOCATION_EVIDENCE_TABLE} WHERE idempotency_key = $1", key
+                )
+            except Exception as exc:
+                raise EvidenceNotCommitted(type(exc).__name__) from None
+            if not found:
+                raise EvidenceNotCommitted("replay_evidence_missing")
+        else:
+            await commit_envelope(self._db_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     # ------------------------------------------------------------------
@@ -2037,9 +2074,12 @@ async def run_owntracks_connector() -> None:
                 raise
         logger.info("OwnTracksConnector: DB pool connected to %s", shared_db_name)
     except Exception:
-        logger.warning(
-            "OwnTracksConnector: failed to create DB pool; running without DB", exc_info=True
-        )
+        logger.error("OwnTracksConnector: failed to create DB pool", exc_info=True)
+    if db_pool is None:
+        # No pool means no evidence journal, and a point is acknowledged only after its
+        # evidence is committed (bu-uhbhzq.4): refuse to start.
+        logger.error("OwnTracksConnector: startup aborted: a database pool is required")
+        raise SystemExit(1)
 
     # Resolve webhook token (fail-closed)
     cred_store: CredentialStore | None = None

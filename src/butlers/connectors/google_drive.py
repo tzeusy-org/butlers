@@ -55,6 +55,7 @@ from pydantic import BaseModel
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -1369,6 +1370,17 @@ class GDriveAccountLoop:
             key = str(envelope["control"]["idempotency_key"])
             try:
                 await self._submit_to_ingest_api(envelope)
+            except EvidenceNotCommitted as exc:
+                # Evidence before acknowledgement (bu-uhbhzq.4): never parked, never retried
+                # against the budget; the envelope stays unsent and the page token held.
+                logger.error(
+                    "Drive: evidence journal write failed for %s (email=%s); holding the "
+                    "page token (failure_class=%s)",
+                    envelope["event"]["external_event_id"],
+                    self.email,
+                    exc.reason,
+                )
+                return False
             except Exception as exc:
                 if not self._ingest_retry.failed(key):
                     logger.warning(
@@ -1514,6 +1526,9 @@ class GDriveAccountLoop:
         status = "error"
 
         try:
+            # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
+            # write raises, so nothing is submitted; a failed submit below keeps the row.
+            await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response

@@ -167,6 +167,32 @@ async def test_a_park_that_is_not_written_keeps_the_token_held() -> None:
     assert _saved_tokens(account) == ["T2"]
 
 
+async def test_a_change_without_its_journal_row_is_never_parked_and_holds_the_token(
+    monkeypatch,
+) -> None:
+    """Evidence before acknowledgement: no journal row, so no submit, no park, no token move."""
+    from butlers.connectors import google_drive
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    monkeypatch.setattr(
+        google_drive,
+        "commit_envelope",
+        AsyncMock(side_effect=EvidenceNotCommitted("insert_failed")),
+    )
+    account, sent, _ = _account()  # a working park store
+    for _ in range(account._ingest_retry.max_attempts + 2):
+        await account._poll_once()
+
+    assert sent == []  # nothing reached Switchboard
+    assert _pool(account).written == []  # nothing parked
+    assert _saved_tokens(account) == []  # held at T1
+    account._save_metadata_cache_to_store.assert_not_awaited()  # type: ignore[attr-defined]
+
+    monkeypatch.undo()  # the journal is back: the same page goes through and the token moves
+    await account._poll_once()
+    assert _saved_tokens(account) == ["T2"]
+
+
 async def test_stop_parks_a_spent_digest_durably_then_commits_the_token() -> None:
     account, sent, _ = _account(batch_window_s=1, fail=[True] * 10)
     attempts = account._ingest_retry.max_attempts

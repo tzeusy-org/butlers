@@ -44,11 +44,12 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Thread
@@ -57,12 +58,22 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
@@ -104,6 +115,8 @@ _CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
+_HELD_LIMIT = 500  # held deliveries pause polling at this size; nothing is evicted
+_POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked Spotify event keeps a preview only"
 
 # Spotify API URLs
 _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -150,6 +163,18 @@ spotify_digests_total = Counter(
     labelnames=["endpoint_identity"],
 )
 
+spotify_held_backpressure = Gauge(
+    "connector_spotify_held_backpressure",
+    "1 while held deliveries have reached the cap and playback polling is paused",
+    labelnames=["endpoint_identity"],
+)
+
+spotify_held_oldest_age_seconds = Gauge(
+    "connector_spotify_held_oldest_age_seconds",
+    "Age of the oldest held delivery; a growing value means a stuck item",
+    labelnames=["endpoint_identity"],
+)
+
 spotify_sessions_total = Counter(
     "connector_spotify_sessions_total",
     "Total number of listening sessions closed",
@@ -173,6 +198,30 @@ spotify_token_refreshes_total = Counter(
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+def _plain_text(value: Any, fallback: str) -> str:
+    """A string field from the API with NUL removed; *fallback* when it is missing or empty."""
+    if not isinstance(value, str):
+        return fallback
+    return value.replace("\x00", "") or fallback
+
+
+@dataclass
+class _PendingGapPersist:
+    """A delivered gap-fill digest whose track-play rows are not yet committed."""
+
+    rows: list[dict[str, Any]]
+    cursor_ms: int
+    first_failed: float = field(default_factory=time.monotonic)
+
+
+@dataclass
+class _HeldDelivery:
+    envelope: dict[str, Any]
+    evidence: Callable[[], Awaitable[Any]]
+    on_sent: Callable[[], None] | None
+    held_since: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -1080,6 +1129,25 @@ def build_listening_digest_envelope(
     }
 
 
+def session_summary_raw(session: ListeningSession, session_end: datetime) -> dict[str, Any]:
+    """The ``payload.raw`` of a session-summary envelope; also stored as ``raw_payload``.
+
+    One definition feeds the envelope and the evidence row, so the row keeps exactly what the
+    inbox would hold (bu-uhbhzq.4).
+    """
+    return {
+        "session_start": session.started_at.isoformat(),
+        "session_end": session_end.isoformat(),
+        "duration_seconds": int(max(0.0, (session_end - session.started_at).total_seconds())),
+        "track_count": session.track_count,
+        "context_uri": session.context_uri,
+        "context_name": _resolve_context_label(
+            context_uri=session.context_uri, context_name=session.context_name
+        ),
+        "tracks": session.track_names,
+    }
+
+
 def build_session_summary_envelope(
     *,
     endpoint_identity: str,
@@ -1125,15 +1193,7 @@ def build_session_summary_envelope(
             "identity": spotify_user_id,
         },
         "payload": {
-            "raw": {
-                "session_start": session.started_at.isoformat(),
-                "session_end": (session.drain_started_at or datetime.now(UTC)).isoformat(),
-                "duration_seconds": duration_s,
-                "track_count": session.track_count,
-                "context_uri": session.context_uri,
-                "context_name": context_label,
-                "tracks": session.track_names,
-            },
+            "raw": session_summary_raw(session, session.drain_started_at or datetime.now(UTC)),
             "normalized_text": normalized_text,
         },
         "control": {
@@ -1240,9 +1300,11 @@ async def persist_session_summary(
             track_count,
             track_names,
             context_uri,
-            context_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            context_name,
+            raw_payload
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ($11::text)::jsonb)
         ON CONFLICT (idempotency_key) DO UPDATE SET
+            raw_payload      = EXCLUDED.raw_payload,
             ended_at         = EXCLUDED.ended_at,
             duration_seconds = EXCLUDED.duration_seconds,
             track_count      = EXCLUDED.track_count,
@@ -1264,6 +1326,8 @@ async def persist_session_summary(
         list(session.track_names),
         session.context_uri,
         session.context_name,
+        # Text cast to jsonb, so the write needs no jsonb codec on this pool.
+        json.dumps(session_summary_raw(session, ended_at), default=str),
     )
     return result is not None
 
@@ -1546,7 +1610,7 @@ async def gap_fill_play_already_observed(
 
 
 async def record_gap_fill_track_play(
-    pool: asyncpg.Pool,
+    pool: Any,
     *,
     endpoint_identity: str,
     spotify_user_id: str,
@@ -1634,6 +1698,17 @@ class SpotifyConnector:
         self._spoken_session_tracker = SpokenSessionTracker(
             idle_timeout_s=config.session_idle_timeout_s,
         )
+        # Envelopes not yet delivered: the evidence write failed, or the submit failed and its
+        # park was not durable. The trackers hand an item over once, so each waits here until
+        # its write and submit (or durable park) succeed (bu-uhbhzq.4). Insertion order is
+        # retry order.
+        self._held: dict[str, _HeldDelivery] = {}
+        self._held_retry_now: datetime | None = None
+        self._backpressure = False
+        self._pending_gap_persist: _PendingGapPersist | None = None
+        # Spoken sessions whose start passed the policy gate and committed evidence; only
+        # these may be updated in place.
+        self._admitted_spoken: dict[str, None] = {}  # insertion-ordered set
 
         # Auth error state
         self._auth_error: bool = False
@@ -2251,6 +2326,32 @@ class SpotifyConnector:
         now = datetime.now(UTC)
         observed_at = now.isoformat()
 
+        # Held deliveries are tried first. At the cap the connector stops consuming new one-shot
+        # events (backpressure) and keeps retrying; nothing is evicted. What the source shows
+        # only while polling is paused is a source limit, not an event the connector skipped.
+        await self._retry_held_notifications(now)
+        await self._retry_pending_gap_persist()
+        self._backpressure = len(self._held) >= _HELD_LIMIT
+        if self._endpoint_identity:
+            # One clock read, so an empty queue reports exactly 0. A pending gap-fill row write
+            # counts: a poison batch that fails every poll shows up as a growing age.
+            clock = time.monotonic()
+            since = [h.held_since for h in self._held.values()]
+            if self._pending_gap_persist is not None:
+                since.append(self._pending_gap_persist.first_failed)
+            spotify_held_oldest_age_seconds.labels(endpoint_identity=self._endpoint_identity).set(
+                clock - min(since) if since else 0
+            )
+            spotify_held_backpressure.labels(endpoint_identity=self._endpoint_identity).set(
+                1 if self._backpressure else 0
+            )
+        if self._backpressure:
+            logger.error(
+                "SpotifyConnector: %d held deliveries; playback polling paused until they drain",
+                len(self._held),
+            )
+            return
+
         # --- Poll currently-playing ---
         currently_playing = await self._get_currently_playing()
 
@@ -2314,6 +2415,8 @@ class SpotifyConnector:
         # Reset to active poll interval
         self._current_poll_interval_s = self._config.poll_active_s
 
+        await self._retry_held_notifications(now)
+
         # Update session tracker
         events, closed_sessions = self._session_tracker.process_playback(
             track_id=track_id,
@@ -2373,9 +2476,19 @@ class SpotifyConnector:
                 raw_payload=payload,
                 observed_at=observed_at,
             )
-            await self._submit_envelope(envelope)
-            if self._endpoint_identity:
-                spotify_context_starts_total.labels(endpoint_identity=self._endpoint_identity).inc()
+
+            def context_sent() -> None:
+                if self._endpoint_identity:
+                    spotify_context_starts_total.labels(
+                        endpoint_identity=self._endpoint_identity
+                    ).inc()
+
+            await self._deliver(
+                f"ctx:{envelope['event']['external_event_id']}",
+                envelope,
+                lambda: self._write_envelope_evidence(envelope),
+                on_sent=context_sent,
+            )
 
         # Emit periodic listening digest if due
         if self._session_tracker.check_digest_due(now):
@@ -2387,10 +2500,21 @@ class SpotifyConnector:
                     session=session,
                     observed_at=observed_at,
                 )
-                await self._submit_envelope(digest_envelope)
+
+                def digest_sent() -> None:
+                    if self._endpoint_identity:
+                        spotify_digests_total.labels(
+                            endpoint_identity=self._endpoint_identity
+                        ).inc()
+
+                # Marked emitted now: a held digest is retried, not rebuilt.
+                await self._deliver(
+                    f"digest:{digest_envelope['event']['external_event_id']}",
+                    digest_envelope,
+                    lambda: self._write_envelope_evidence(digest_envelope),
+                    on_sent=digest_sent,
+                )
                 self._session_tracker.mark_digest_emitted(now)
-                if self._endpoint_identity:
-                    spotify_digests_total.labels(endpoint_identity=self._endpoint_identity).inc()
 
         if self._endpoint_identity:
             spotify_polls_total.labels(
@@ -2420,6 +2544,7 @@ class SpotifyConnector:
 
     async def _advance_music_for_no_playback(self, now: datetime, observed_at: str) -> None:
         """Close music state without changing the active Spotify polling cadence."""
+        await self._retry_held_notifications(now)
         closed_sessions = self._session_tracker.process_no_playback(now=now)
         for closed in closed_sessions:
             await self._emit_session_summary(closed, observed_at)
@@ -2461,6 +2586,7 @@ class SpotifyConnector:
         item = normalize_spoken_item(item_payload)
         if item is None:
             return
+        await self._retry_held_notifications(now)
         self._current_poll_interval_s = self._config.poll_active_s
         events, closed_sessions = self._spoken_session_tracker.process_playback(item, now=now)
         for closed in closed_sessions:
@@ -2470,20 +2596,17 @@ class SpotifyConnector:
         if session is None:
             return
         if "spoken_session" in events:
-            await self._submit_envelope(
-                build_spoken_session_envelope(
-                    endpoint_identity=self._endpoint_identity,
-                    spotify_user_id=self._spotify_user_id,
-                    session=session,
-                    observed_at=observed_at,
-                )
-            )
-        await self._persist_spoken_session(session)
+            # The start event's evidence write is this session's first persist.
+            await self._emit_spoken_start(session, observed_at)
+        else:
+            await self._persist_spoken_session(session)
 
     async def _persist_spoken_session(self, session: SpokenSession) -> None:
         """Persist spoken evidence best-effort so ingest remains replayable on failure."""
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
             return
+        if _spoken_session_key(self._endpoint_identity, session) not in self._admitted_spoken:
+            return  # denied by policy, or its start is still held
         try:
             await persist_spoken_session(
                 self._cursor_pool,
@@ -2500,6 +2623,8 @@ class SpotifyConnector:
         Gap-fill tracks are batched into a single digest envelope rather than
         emitting per-track events, to reduce downstream token costs.
         """
+        if not await self._retry_pending_gap_persist():
+            return
         try:
             items = await self._get_recently_played(self._last_recently_played_cursor)
         except Exception as exc:
@@ -2514,13 +2639,20 @@ class SpotifyConnector:
 
         # Accumulate gap-fill tracks by context for batched submission
         gap_tracks: list[dict[str, Any]] = []
-        last_cursor_ms = 0
+        # Cursor steps in play order: (played_at_ms, track-play row to write once the digest is
+        # delivered, or None). The rows go in after delivery so a lost digest is rebuilt, not
+        # skipped as "already observed" (bu-uhbhzq.4).
+        steps: list[tuple[int, dict[str, Any] | None]] = []
 
         for item_wrapper in items_ordered:
             track = item_wrapper.get("track") or {}
-            track_id = track.get("id", "")
-            track_name = track.get("name", "unknown")
-            track_uri = track.get("uri") or (f"spotify:track:{track_id}" if track_id else "")
+            # Normalized once, where it is read: Postgres text rejects NUL and the API can send
+            # null, either of which would make a batch that never persists.
+            track_id = _plain_text(track.get("id"), "")
+            track_name = _plain_text(track.get("name"), "unknown")
+            track_uri = _plain_text(
+                track.get("uri"), f"spotify:track:{track_id}" if track_id else ""
+            )
             duration_ms_raw = track.get("duration_ms")
             gap_duration_ms = (
                 duration_ms_raw
@@ -2555,19 +2687,19 @@ class SpotifyConnector:
                 if already_observed is None:
                     break
                 if already_observed:
-                    last_cursor_ms = max(last_cursor_ms, played_at_ms)
+                    steps.append((played_at_ms, None))
                     continue
-                persisted = await self._persist_gap_fill_track_play(
-                    track_uri=track_uri,
-                    track_name=track_name,
-                    duration_ms=gap_duration_ms,
-                    played_at_ms=played_at_ms,
-                )
-                if not persisted:
-                    break
+                play_row: dict[str, Any] | None = {
+                    "track_uri": track_uri,
+                    "track_name": track_name,
+                    "duration_ms": gap_duration_ms,
+                    "played_at_ms": played_at_ms,
+                }
+            else:
+                play_row = None
 
             gap_tracks.append({"name": track_name, "played_at_ms": played_at_ms})
-            last_cursor_ms = max(last_cursor_ms, played_at_ms)
+            steps.append((played_at_ms, play_row))
 
         # Emit a single batched gap-fill digest if we found any tracks
         if gap_tracks:
@@ -2613,7 +2745,31 @@ class SpotifyConnector:
                     "ingestion_tier": "full",
                 },
             }
-            await self._submit_envelope(envelope)
+            # The cursor owns this retry: a held digest raises and the cursor stays put.
+            outcome = await self._deliver(
+                f"gap:{external_event_id}",
+                envelope,
+                lambda: self._write_envelope_evidence(envelope),
+                retain=False,
+            )
+            if outcome == "blocked":
+                # Policy denied the digest: no content is written (only the content-minimized
+                # filtered preview exists), but the cursor still moves past these tracks so
+                # they are not re-evaluated every poll.
+                steps = [(ms, None) for ms, _row in steps]
+
+        # All of the digest's track-play rows go in together or not at all. On a failure the
+        # cursor holds, and the next poll rebuilds the same digest (same idempotency key), which
+        # Switchboard deduplicates.
+        rows = [row for _ms, row in steps if row is not None]
+        last_cursor_ms = max((ms for ms, _row in steps), default=0)
+        if rows and not await self._persist_gap_fill_track_plays(rows):
+            # The digest is delivered, so its batch is fixed: only this row write is retried
+            # (next poll, no resend), and the cursor moves once it commits. Tracks that arrive
+            # meanwhile go into a later digest that excludes this batch. Held in memory: a
+            # restart before the commit can send the batch's digest once more.
+            self._pending_gap_persist = _PendingGapPersist(rows, last_cursor_ms)
+            return
 
         if last_cursor_ms:
             # Advance only through recent items whose durable reconciliation succeeded.
@@ -2727,94 +2883,191 @@ class SpotifyConnector:
             logger.debug("SpotifyConnector: gap-fill reconciliation failed (non-fatal): %s", exc)
             return None
 
-    async def _persist_gap_fill_track_play(
-        self,
-        *,
-        track_uri: str,
-        track_name: str,
-        duration_ms: int | None,
-        played_at_ms: int,
-    ) -> bool:
-        """Record one recently-played (gap-fill) track. Best-effort; never blocks ingest."""
+    async def _retry_pending_gap_persist(self) -> bool:
+        """Retry a delivered digest's row transaction; True when nothing is left pending."""
+        pending = self._pending_gap_persist
+        if pending is None:
+            return True
+        if not await self._persist_gap_fill_track_plays(pending.rows):
+            return False
+        self._pending_gap_persist = None
+        try:
+            current = int(self._last_recently_played_cursor or 0)
+        except ValueError:
+            current = 0
+        self._last_recently_played_cursor = str(max(current, pending.cursor_ms))
+        return True
+
+    async def _persist_gap_fill_track_plays(self, rows: list[dict[str, Any]]) -> bool:
+        """Record a digest's recently-played tracks in one transaction (all or none)."""
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
             return False
         try:
-            await record_gap_fill_track_play(
-                self._cursor_pool,
-                endpoint_identity=self._endpoint_identity,
-                spotify_user_id=self._spotify_user_id,
-                track_uri=track_uri,
-                track_name=track_name,
-                duration_ms=duration_ms,
-                played_at_ms=played_at_ms,
-            )
+            async with self._cursor_pool.acquire() as conn, conn.transaction():
+                for row in rows:
+                    await record_gap_fill_track_play(
+                        conn,
+                        endpoint_identity=self._endpoint_identity,
+                        spotify_user_id=self._spotify_user_id,
+                        track_uri=row["track_uri"].replace("\x00", ""),
+                        # Postgres text rejects NUL, which would make the batch a poison pill.
+                        track_name=row["track_name"].replace("\x00", ""),
+                        duration_ms=row["duration_ms"],
+                        played_at_ms=row["played_at_ms"],
+                    )
             return True
         except Exception as exc:
-            logger.debug(
-                "SpotifyConnector: gap-fill track-play persist failed (non-fatal): %s", exc
+            logger.error(
+                "SpotifyConnector: gap-fill track-play persist failed (failure_class=%s)",
+                type(exc).__name__,
             )
             return False
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
-        """Emit a session summary ingest envelope and persist to evidence table.
+        """Deliver a closed session's summary: gate, evidence row, then Switchboard.
 
-        The ingest submission path (Switchboard) is unchanged.  In addition,
-        the session is persisted to ``connectors.spotify_listening_sessions``
-        which is the durable evidence surface for Chronicler (RFC 0014 §D9).
-        Evidence persistence failures are logged and do not abort the ingest.
+        The evidence row is ``connectors.spotify_listening_sessions`` (the durable surface for
+        Chronicler, RFC 0014 §D9). A policy-denied session writes nothing; a failed write
+        submits nothing and the session is held for the next poll.
         """
         if session.track_count == 0:
             return
-
-        # ── Durable evidence write (Chronicler read surface) ──────────────
-        if self._cursor_pool is not None and self._endpoint_identity and self._spotify_user_id:
-            try:
-                inserted = await persist_session_summary(
-                    self._cursor_pool,
-                    endpoint_identity=self._endpoint_identity,
-                    spotify_user_id=self._spotify_user_id,
-                    session=session,
-                )
-                if inserted:
-                    logger.debug(
-                        "SpotifyConnector: persisted session evidence start=%s tracks=%d",
-                        session.started_at.isoformat(),
-                        session.track_count,
-                    )
-                else:
-                    logger.debug(
-                        "SpotifyConnector: duplicate session evidence skipped start=%s",
-                        session.started_at.isoformat(),
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "SpotifyConnector: failed to persist session evidence (non-fatal): %s",
-                    exc,
-                )
-
-        # ── Ingest submission (Switchboard) ───────────────────────────────
         envelope = build_session_summary_envelope(
             endpoint_identity=self._endpoint_identity,
             spotify_user_id=self._spotify_user_id,
             session=session,
             observed_at=observed_at,
         )
-        await self._submit_envelope(envelope)
 
-        if self._endpoint_identity:
-            spotify_sessions_total.labels(endpoint_identity=self._endpoint_identity).inc()
-            spotify_session_duration_seconds.labels(
-                endpoint_identity=self._endpoint_identity
-            ).observe(session.duration_seconds)
+        def sent() -> None:
+            if self._endpoint_identity:
+                spotify_sessions_total.labels(endpoint_identity=self._endpoint_identity).inc()
+                spotify_session_duration_seconds.labels(
+                    endpoint_identity=self._endpoint_identity
+                ).observe(session.duration_seconds)
+
+        await self._deliver(
+            f"session:{session.started_at.isoformat()}",
+            envelope,
+            lambda: self._write_session_evidence(session),
+            on_sent=sent,
+        )
+
+    async def _write_session_evidence(self, session: ListeningSession) -> None:
+        if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
+            raise EvidenceNotCommitted("no_pool")
+        await persist_session_summary(
+            self._cursor_pool,
+            endpoint_identity=self._endpoint_identity,
+            spotify_user_id=self._spotify_user_id,
+            session=session,
+        )
+
+    async def _write_spoken_evidence(self, session: SpokenSession) -> None:
+        if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
+            raise EvidenceNotCommitted("no_pool")
+        await persist_spoken_session(
+            self._cursor_pool,
+            endpoint_identity=self._endpoint_identity,
+            spotify_user_id=self._spotify_user_id,
+            session=session,
+        )
+
+    async def _write_envelope_evidence(self, envelope: dict[str, Any]) -> None:
+        """Generic journal row for envelopes that have no evidence table of their own."""
+        await commit_envelope(self._cursor_pool, envelope)
+
+    async def _retry_held_notifications(self, now: datetime) -> None:
+        """Try each held envelope again: one attempt per poll (a poll shares one *now*)."""
+        if self._held_retry_now == now:
+            return
+        self._held_retry_now = now
+        for key, held in list(self._held.items()):
+            await self._deliver(key, held.envelope, held.evidence, on_sent=held.on_sent)
+
+    async def _emit_spoken_start(self, session: SpokenSession, observed_at: str) -> None:
+        """Deliver a spoken session's start event: gate, evidence row, then Switchboard."""
+        key = _spoken_session_key(self._endpoint_identity, session)
+        envelope = build_spoken_session_envelope(
+            endpoint_identity=self._endpoint_identity,
+            spotify_user_id=self._spotify_user_id,
+            session=session,
+            observed_at=observed_at,
+        )
+        await self._deliver(
+            f"spoken:{key}",
+            envelope,
+            lambda: self._write_spoken_evidence(session),
+            on_sent=lambda: self._admit_spoken(key),
+        )
+
+    def _admit_spoken(self, key: str) -> None:
+        """Record that a spoken session's start was delivered, so it may be updated in place."""
+        self._admitted_spoken[key] = None
+        while len(self._admitted_spoken) > _HELD_LIMIT:
+            self._admitted_spoken.pop(next(iter(self._admitted_spoken)))
+
+    async def _deliver(
+        self,
+        key: str,
+        envelope: dict[str, Any],
+        evidence: Callable[[], Awaitable[Any]],
+        *,
+        on_sent: Callable[[], None] | None = None,
+        retain: bool = True,
+    ) -> Literal["sent", "blocked", "held"]:
+        """Send *envelope* through the one submit path and report what happened.
+
+        ``sent``: evidence committed and the envelope handed over (or durably parked).
+        ``blocked``: the policy gate dropped it; nothing was written. ``held``: the evidence
+        write failed, or the submit failed and its park was not durable. With *retain* the
+        item waits in ``self._held`` for the next poll; without it the caller owns the retry.
+        """
+        try:
+            admitted = await self._submit_envelope(envelope, evidence=evidence)
+        except (EvidenceNotCommitted, ParkNotDurableError) as exc:
+            if not retain:
+                raise
+            logger.error(
+                "SpotifyConnector: %s; holding the envelope (failure_class=%s)",
+                "evidence not committed"
+                if isinstance(exc, EvidenceNotCommitted)
+                else "park not durable",
+                getattr(exc, "reason", type(exc).__name__),
+            )
+            previous = self._held.pop(key, None)
+            self._held[key] = _HeldDelivery(
+                envelope,
+                evidence,
+                on_sent,
+                held_since=previous.held_since if previous else time.monotonic(),
+            )
+            return "held"
+        self._held.pop(key, None)
+        if not admitted:
+            return "blocked"
+        if on_sent is not None:
+            on_sent()
+        return "sent"
 
     # ------------------------------------------------------------------
     # Ingest submission (with filter gate)
     # ------------------------------------------------------------------
 
-    async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
-        """Evaluate filter gate, then submit to Switchboard.
+    async def _submit_envelope(
+        self,
+        envelope: dict[str, Any],
+        *,
+        evidence: Callable[[], Awaitable[Any]],
+        replay: bool = False,
+    ) -> bool:
+        """The only path to Switchboard: gate, commit *evidence*, then submit.
 
-        Filtered events go to the filtered_event_buffer.
+        Filtered events go to the filtered_event_buffer and write no evidence; their stored
+        row cannot be replayed, because it keeps a preview only. A failed *evidence* write
+        raises ``EvidenceNotCommitted`` and nothing is submitted. A *replay* skips the gate and
+        raises on a failed submit instead of parking it. Returns False only when the policy
+        gate dropped the envelope.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2831,7 +3084,7 @@ class SpotifyConnector:
         )
 
         # Evaluate policy (synchronous; triggers background refresh if stale)
-        if self._ingestion_policy is not None:
+        if self._ingestion_policy is not None and not replay:
             try:
                 decision = self._ingestion_policy.evaluate(ing_env)
                 if not decision.allowed:
@@ -2841,6 +3094,25 @@ class SpotifyConnector:
                         decision.action,
                     )
                     if self._filtered_event_buffer is not None:
+                        stored = FilteredEventBuffer.full_payload(
+                            channel=source.get("channel", ""),
+                            provider=source.get("provider", ""),
+                            endpoint_identity=source.get("endpoint_identity", ""),
+                            external_event_id=event.get("external_event_id", ""),
+                            external_thread_id=event.get("external_thread_id"),
+                            observed_at=event.get("observed_at", ""),
+                            sender_identity=sender.get("identity", ""),
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a
+                            # bounded preview only; the full raw payload is NOT
+                            # retained.
+                            raw={},
+                            normalized_text=payload.get("normalized_text", ""),
+                            policy_tier=control.get("policy_tier", "default"),
+                        )
+                        # No evidence row was written and the preview is all that is kept, so
+                        # an owner replay must not submit it (bu-uhbhzq.4).
+                        stored[REPLAY_UNAVAILABLE_KEY] = _POLICY_FILTERED_NOT_REPLAYABLE
                         self._filtered_event_buffer.record(
                             external_message_id=event.get("external_event_id", ""),
                             source_channel=source.get("channel", ""),
@@ -2851,27 +3123,20 @@ class SpotifyConnector:
                                 action=decision.action,
                                 rule_type=decision.matched_rule_type or "unknown",
                             ),
-                            full_payload=FilteredEventBuffer.full_payload(
-                                channel=source.get("channel", ""),
-                                provider=source.get("provider", ""),
-                                endpoint_identity=source.get("endpoint_identity", ""),
-                                external_event_id=event.get("external_event_id", ""),
-                                external_thread_id=event.get("external_thread_id"),
-                                observed_at=event.get("observed_at", ""),
-                                sender_identity=sender.get("identity", ""),
-                                # Filtered-content privacy tier (bu-glbjx): content
-                                # the connector chose not to submit persists a
-                                # bounded preview only; the full raw payload is NOT
-                                # retained.
-                                raw={},
-                                normalized_text=payload.get("normalized_text", ""),
-                                policy_tier=control.get("policy_tier", "default"),
-                            ),
+                            full_payload=stored,
                         )
-                    return
+                    return False
             except Exception as exc:
                 # Fail-open: log and proceed with submission
                 logger.debug("SpotifyConnector: policy evaluation error (fail-open): %s", exc)
+
+        try:
+            await evidence()
+        except EvidenceNotCommitted:
+            raise
+        except Exception as exc:
+            # Class name only, no chained cause: the original text can echo content.
+            raise EvidenceNotCommitted(type(exc).__name__) from None
 
         # Submit to Switchboard
         async with self._semaphore:
@@ -2896,6 +3161,8 @@ class SpotifyConnector:
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("SpotifyConnector: ingest submission failed: %s", exc)
+                if replay:
+                    raise
                 # The poll moves past this item, so the error row is its only copy: commit
                 # it before returning. A park that is not written raises, which keeps the
                 # recently-played cursor where it is (bu-dhloi1.274).
@@ -2909,6 +3176,7 @@ class SpotifyConnector:
                         full_payload=envelope,
                         error_detail=str(exc),
                     )
+        return True
 
     # ------------------------------------------------------------------
     # Filtered events
@@ -2941,8 +3209,41 @@ class SpotifyConnector:
             logger.warning("SpotifyConnector: replay drain failed: %s", exc)
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard (used by replay drain — skips filter gate)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        """Replay drain submit: confirm the evidence already exists, then send (no filter gate).
+
+        An owner replay bypasses policy re-evaluation; the gate applies to first delivery only.
+        Evidence is verified instead: the stored envelope must carry its original idempotency
+        key and that key must have a committed row in the envelope's own evidence table.
+        Nothing is written here, so a replay never makes a broader copy, and a preview with no
+        original identity is refused (it sends nothing).
+        """
+        await self._submit_envelope(
+            envelope, evidence=lambda: self._verify_replay_evidence(envelope), replay=True
+        )
+
+    async def _verify_replay_evidence(self, envelope: dict[str, Any]) -> None:
+        key = str((envelope.get("control") or {}).get("idempotency_key") or "")
+        if not key or self._cursor_pool is None:
+            raise EvidenceNotCommitted("replay_evidence_missing" if not key else "no_pool")
+        if ":session:" in key:
+            query, args = (
+                f"SELECT 1 FROM {_SESSION_EVIDENCE_TABLE} WHERE idempotency_key = $1",
+                (key,),
+            )
+        elif ":spoken:" in key:
+            query, args = (
+                f"SELECT 1 FROM {_SPOKEN_SESSION_EVIDENCE_TABLE} WHERE idempotency_key = $1",
+                (key,),
+            )
+        else:
+            await require_committed(self._cursor_pool, envelope)
+            return
+        try:
+            found = await self._cursor_pool.fetchval(query, *args)
+        except Exception as exc:
+            raise EvidenceNotCommitted(type(exc).__name__) from None
+        if not found:
+            raise EvidenceNotCommitted("replay_evidence_missing")
 
     # ------------------------------------------------------------------
     # Health state callbacks
@@ -2960,6 +3261,8 @@ class SpotifyConnector:
                 or self._auth_error_message
                 or "Spotify credentials require attention",
             )
+        if self._backpressure:
+            return "degraded", "held_backpressure"
         if self._source_api_ok is None:
             return "degraded", "transport=starting"
         if self._source_api_ok:

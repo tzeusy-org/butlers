@@ -2904,10 +2904,12 @@ def test_real_steam_status_to_play_rollup_keeps_spotify_uncounted(postgres_conta
                 spotify_connector._spotify_user_id = "f1-native"
                 submitted = []
 
-                async def ignore_spotify_ingest(envelope):
+                async def ignore_spotify_ingest(tool_name, envelope):
                     submitted.append(envelope)
+                    return {"status": "accepted"}
 
-                spotify_connector._submit_envelope = ignore_spotify_ingest
+                # The double sits below the submit path, so the real evidence write still runs.
+                spotify_connector._mcp_client.call_tool = ignore_spotify_ingest
                 session = ListeningSession(
                     context_uri="spotify:playlist:f1-native",
                     started_at=spotify_start.astimezone(UTC),

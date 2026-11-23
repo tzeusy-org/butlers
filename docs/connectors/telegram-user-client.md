@@ -180,6 +180,13 @@ services:
     restart: unless-stopped
 ```
 
+## Capture manifest
+
+- **Provider offers:** MTProto message history for the chats the account can read, with message ids, so a missed range can be re-read.
+- **We keep:** one `connectors.evidence_journal` row per submitted batch or message (`source = telegram_user_client`, `provider_id` = the envelope's external event id), committed before the Switchboard submit and the checkpoint advance. `raw` is the envelope's inbox-equivalent at its tier after the bearer scrub, including the login-code scrub. Discretion-ignored and policy-blocked messages are never journaled.
+- **If the journal write fails:** nothing is submitted, the checkpoint does not move, and the batch or message stays held and is retried without spending its retry budget; it is never parked. A failed submit keeps the row.
+- **Provider retention and backfill:** history is re-readable by message id while the account stays in the chat.
+
 ## Idempotency and Resume
 
 - Dedupe identity: stable Telegram event/message ID + auto-resolved endpoint identity.

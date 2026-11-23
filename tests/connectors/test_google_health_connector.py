@@ -2529,6 +2529,8 @@ async def test_submission_error_retains_raw_payload() -> None:
     from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 
     connector = _make_connector()
+    connector._shared_pool = AsyncMock()
+    connector._shared_pool.fetchval.return_value = 1  # the journal commits
     connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
     connector._ingestion_policy = None
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
@@ -2536,6 +2538,7 @@ async def test_submission_error_retains_raw_payload() -> None:
     envelope = _privacy_envelope()
     assert not await connector._submit_envelope(envelope, resource="steps")
 
+    connector._mcp_client.call_tool.assert_awaited_once()
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
     row = rows[0]
@@ -2553,10 +2556,14 @@ async def test_submission_error_retains_raw_payload() -> None:
         (ConnectionError("switchboard down"), "FAILED", 1),
     ],
 )
-async def test_submission_classifies_the_ingest_reply(reply, outcome, error_rows) -> None:
+async def test_submission_classifies_the_ingest_reply(
+    reply, outcome, error_rows, monkeypatch
+) -> None:
     """Only an ingest error-status reply is a rejection; every exception stays transient."""
     from butlers.connectors import google_health as gh
     from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    monkeypatch.setattr(gh, "commit_envelope", AsyncMock(return_value=True))  # journal has tests
 
     connector = _make_connector()
     connector._ingestion_policy = None

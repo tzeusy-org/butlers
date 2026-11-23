@@ -107,6 +107,11 @@ from prometheus_client import REGISTRY, Counter, Gauge
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -2412,6 +2417,20 @@ class GoogleHealthConnector:
 
         async with self._semaphore:
             start_t = time.perf_counter()
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A failed
+            # write is a FAILED outcome (not consumed, nothing submitted) and copies the sample
+            # nowhere: no error-buffer row, because the cursor holds and the sample is re-read.
+            # A failed submit keeps the journal row and parks below.
+            try:
+                await commit_envelope(self._shared_pool, envelope)
+            except EvidenceNotCommitted as exc:
+                self._metrics.record_error("evidence_error", "journal")
+                logger.error(
+                    "GoogleHealthConnector: evidence not committed; holding the sample "
+                    "(failure_class=%s)",
+                    exc.reason,
+                )
+                return SubmissionOutcome.FAILED
             try:
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
@@ -2444,7 +2463,12 @@ class GoogleHealthConnector:
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard — bypasses filter gate (replay path)."""
+        """Replay path (no filter gate): confirm the journal row exists, write nothing, send.
+
+        A parked sample was journaled before its submit. A legacy row or a preview with no
+        original idempotency key has no such row and is refused (bu-uhbhzq.4).
+        """
+        await require_committed(self._shared_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     async def _flush_filtered_events(self) -> None:
