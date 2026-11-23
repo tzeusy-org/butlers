@@ -225,3 +225,28 @@ async def test_a_reference_whose_claim_was_disproved_cannot_be_reused(db_pool, m
     assert (await _call(app, "POST", "/api/qa/circuit-breaker/reset", json=fresh)).json()["data"][
         "reset"
     ] is True
+
+
+@pytest.mark.pg_clock
+async def test_an_unprobed_cause_does_not_wedge_the_breaker(db_pool) -> None:
+    """Retention has no probe: a fresh reference resets (marked unprobed), a repeat is refused."""
+    pool = db_pool
+    patrol_id = await _patrol(pool, "error")
+    retention = "publication_unretained: export_pruned"
+    for _ in range(5):
+        await _attempt(pool, patrol_id, "failed", retention)
+    app = _app_for(pool)
+    claim = {"cause_ref": "proposal_retention_unavailable:PR-9"}
+    ok = (await _call(app, "POST", "/api/qa/circuit-breaker/reset", json=claim)).json()["data"]
+    assert ok["reset"] is True
+    row = await pool.fetchrow(
+        "SELECT outcome, refusal_reason FROM public.breaker_resets WHERE outcome = 'reset'"
+    )
+    assert (row["outcome"], row["refusal_reason"]) == ("reset", "unprobed")
+    assert (await _call(app, "GET", "/api/qa/circuit-breaker")).json()["data"]["tripped"] is False
+
+    for _ in range(5):
+        await _attempt(pool, patrol_id, "failed", retention)
+    again = (await _call(app, "POST", "/api/qa/circuit-breaker/reset", json=claim)).json()["data"]
+    assert again["reset"] is False
+    assert again["refusal_reason"] == "structural_cause_unchanged:proposal_retention_unavailable"

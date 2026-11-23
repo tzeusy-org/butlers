@@ -3559,12 +3559,15 @@ async def reset_circuit_breaker(
 
     await pool.execute(
         """
-        INSERT INTO public.breaker_resets (breaker, reset_by, reason, cause_code, cause_ref)
-        VALUES ('qa', 'dashboard', $1, $2, $3)
+        INSERT INTO public.breaker_resets
+            (breaker, reset_by, reason, cause_code, cause_ref, refusal_reason)
+        VALUES ('qa', 'dashboard', $1, $2, $3, $4)
         """,
         "Manual reset via QA dashboard",
         decision.cause_code,
         decision.cause_ref,
+        # 'unprobed' marks a reset accepted with no live probe of its cause (outcome stays 'reset').
+        decision.reason if decision.unprobed else None,
     )
 
     # The cached briefing can otherwise retain the pre-reset urgent verdict for

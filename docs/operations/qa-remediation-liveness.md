@@ -30,10 +30,10 @@ where `<ref>` is the PR, bead or deploy that changed the cause. Causes come from
 `execution_failure`). While the dominant cause is structural the reset must name it, and is refused while the cause is
 still present. `publisher_unconfigured` is re-evaluated from the live wiring
 (`butlers.core.qa.publisher_wiring`). `proposal_retention_unavailable` has no honest probe yet (a
-retention refusal is recorded only on the attempt), so it reads unknown and the reset is refused as
-`evidence_unreadable` until one exists. An unreadable probe always refuses. If five more
-identical structural failures follow a reset, the same `<ref>` is refused (`structural_cause_unchanged`);
-fix the cause and use a new reference.
+retention refusal is recorded only on the attempt). Unknown is not present, so a fresh `<ref>` is accepted and
+recorded as unprobed (`refusal_reason = 'unprobed'` on the `outcome = 'reset'` row). A probe that exists and
+fails always refuses (`evidence_unreadable`). If five more identical structural failures follow a reset, the same
+`<ref>` is refused (`structural_cause_unchanged`); fix the cause and use a new reference.
 
 Every refusal is recorded as a `public.breaker_resets` row with `outcome = 'refused'` and its
 `refusal_reason`, so the decision is auditable. An identical refusal within 10 minutes is not recorded again. Refusal rows never clear the breaker: admission counts

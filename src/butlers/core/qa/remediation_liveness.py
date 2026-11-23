@@ -352,6 +352,8 @@ class ResetDecision:
     cause_code: str | None = None
     cause_ref: str | None = None
     reason: str | None = None
+    #: The reset was accepted with no live probe of the cause: recorded, and disprovable.
+    unprobed: bool = False
 
 
 _MAX_REF = 200
@@ -367,19 +369,27 @@ _PRIOR_STRUCTURAL_SQL = """
 """
 
 
+#: Structural causes with a live probe. Any other structural cause has none: its reset is accepted
+#: as unprobed (unknown is not present) and held to the disproved-reference rule instead.
+PROBED_CAUSES: Final[frozenset[str]] = frozenset({"publisher_unconfigured"})
+UNPROBED_REASON: Final[str] = "unprobed"
+
+
 async def structural_cause_present(pool: Any, cause: str) -> bool | None:
-    """Re-evaluate a structural cause from current state: present, absent, or ``None`` (unknown).
+    """Re-evaluate a probed structural cause from current state: present, absent, or ``None``.
 
     Evidence is the live wiring, never the failure history: after a fix lands no attempt has run
     yet (the breaker is what stops one), so history would keep a fixed cause "present" forever.
-    A cause with no honest probe, or an unreadable probe, is ``None``; the caller refuses.
+    ``None`` means the probe exists and failed; the caller refuses. Callers must not ask about a
+    cause outside ``PROBED_CAUSES``: ``proposal_retention_unavailable`` has no honest probe yet
+    (a retention refusal is recorded only as an attempt's ``error_detail``).
     """
     if cause == "publisher_unconfigured":
-        return not publisher_wiring.production_publisher_wired()
-    # ``proposal_retention_unavailable`` has no honest probe yet: the cause is a retention
-    # refusal (export_unretained, unknown_attempt, export_changed, export_pruned) that is recorded
-    # only as an attempt's error_detail, and a readable export table proves nothing about it.
-    # Until the retention outcome is observable, it is unknown, which refuses.
+        try:
+            return not publisher_wiring.production_publisher_wired()
+        except Exception as exc:  # noqa: BLE001 - a failed probe is unknown, never absent
+            logger.warning("QA reset probe failed (category=%s)", type(exc).__name__)
+            return None
     return None
 
 
@@ -413,11 +423,15 @@ async def evaluate_reset(
     if dominant is not None and is_structural(dominant):
         if code != dominant:
             return ResetDecision(False, code, ref, reason=f"structural_cause_not_named:{dominant}")
-        present = await structural_cause_present(pool, dominant)
-        if present is None:
-            return ResetDecision(False, code, ref, reason="evidence_unreadable")
-        if present:
-            return ResetDecision(False, code, ref, reason=f"structural_cause_present:{dominant}")
+        unprobed = dominant not in PROBED_CAUSES
+        if not unprobed:
+            present = await structural_cause_present(pool, dominant)
+            if present is None:
+                return ResetDecision(False, code, ref, reason="evidence_unreadable")
+            if present:
+                return ResetDecision(
+                    False, code, ref, reason=f"structural_cause_present:{dominant}"
+                )
         marker = next(m for m, c in STRUCTURAL_CAUSE_MARKERS.items() if c == dominant)
         try:
             prior = await pool.fetchval(_PRIOR_STRUCTURAL_SQL, code, ref, f"{marker}%")
@@ -429,6 +443,8 @@ async def evaluate_reset(
             return ResetDecision(False, code, ref, reason="evidence_unreadable")
         if prior:
             return ResetDecision(False, code, ref, reason=f"structural_cause_unchanged:{dominant}")
+        if unprobed:
+            return ResetDecision(True, code, ref, reason=UNPROBED_REASON, unprobed=True)
     return ResetDecision(True, code, ref)
 
 

@@ -213,18 +213,38 @@ async def test_reset_refused_while_the_named_structural_cause_is_still_present()
         assert decision.reason == "structural_cause_present:publisher_unconfigured"
 
 
-async def test_causes_without_an_honest_probe_are_unknown_and_refuse(
-    publisher_wired: None,
-) -> None:
-    assert await rl.structural_cause_present(ScriptedPool({}), "no_such_cause") is None
-    # A readable export table says nothing about a retention refusal, so it must not read "absent".
-    readable = ScriptedPool({"qa_publication_exports": 1})
-    assert await rl.structural_cause_present(readable, "proposal_retention_unavailable") is None
-    broken = ScriptedPool({}, fail=True)
-    assert await rl.structural_cause_present(broken, "proposal_retention_unavailable") is None
+RETENTION = ["publication_unretained: x"] * 5
+
+
+async def test_a_cause_without_a_probe_accepts_a_fresh_reference_as_unprobed() -> None:
+    """Unknown is not present: with no probe the breaker must not wedge, and the claim is recorded."""
+    assert "proposal_retention_unavailable" not in rl.PROBED_CAUSES
     decision = await rl.evaluate_reset(
-        readable, "proposal_retention_unavailable:PR-9", ["publication_unretained: x"] * 5
+        ScriptedPool({"breaker_resets": None}), "proposal_retention_unavailable:PR-9", RETENTION
     )
+    assert decision.allowed and decision.unprobed and decision.reason == "unprobed"
+    assert decision.cause_ref == "PR-9"
+
+
+async def test_an_unprobed_reference_is_refused_once_the_same_failure_recurs() -> None:
+    decision = await rl.evaluate_reset(
+        ScriptedPool({"breaker_resets": 1}), "proposal_retention_unavailable:PR-9", RETENTION
+    )
+    assert not decision.allowed
+    assert decision.reason == "structural_cause_unchanged:proposal_retention_unavailable"
+
+
+async def test_a_probed_cause_whose_probe_raises_is_evidence_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from butlers.core.qa import publisher_wiring
+
+    def boom() -> bool:
+        raise RuntimeError("probe broke")
+
+    monkeypatch.setattr(publisher_wiring, "production_publisher_wired", boom)
+    assert await rl.structural_cause_present(ScriptedPool({}), "publisher_unconfigured") is None
+    decision = await rl.evaluate_reset(ScriptedPool({}), "publisher_unconfigured:PR-1", [PUB] * 5)
     assert not decision.allowed and decision.reason == "evidence_unreadable"
 
 
