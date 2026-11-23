@@ -45,6 +45,13 @@ from butlers.core.owner import resolve_owner_entity_id_two_step
 from butlers.watches import tick
 from butlers.watches.approval import PROVIDERS, Providers
 from butlers.watches.delivery import InsightDelivery
+from butlers.watches.feed import (
+    ReadFeed,
+    ReadTransport,
+    SwitchboardReadTransport,
+    registered_sources,
+    validate_reads,
+)
 from butlers.watches.model import GrantUnavailable
 from butlers.watches.service import WatchService
 from butlers.watches.sql import PostgresWatchStore
@@ -115,8 +122,10 @@ class OwnerWatchRuntime:
         *,
         clock: Clock = lambda: datetime.now(UTC),
         ttl: timedelta = SOURCES_TTL,
+        transport: ReadTransport | None = None,
     ) -> None:
         self._pool = pool
+        self._transport = transport
         self._clock = clock
         self._ttl = ttl
         self._sources: Sources | None = None
@@ -125,6 +134,7 @@ class OwnerWatchRuntime:
             ConditionEvaluator(PostgresConditionStore(pool)),
             self.grant_for,
             withdraw=InsightDelivery(pool).withdraw,
+            validate_reads=validate_reads,
         )
 
     async def prepare(self, now: datetime | None = None) -> bool:
@@ -142,7 +152,9 @@ class OwnerWatchRuntime:
         sources = self._fresh()
         return Grant(
             goal_id=watch_id,
-            sources=frozenset({SOURCE_CLOCK, *(f"perception:{k}" for k in sources.kinds)}),
+            sources=frozenset(
+                {SOURCE_CLOCK, *(f"perception:{k}" for k in sources.kinds), *registered_sources()}
+            ),
             subjects=frozenset({sources.owner, None}),
         )
 
@@ -153,11 +165,15 @@ class OwnerWatchRuntime:
             return None
         return Snapshot(now=now, unmeasurable=sources.unwritten)
 
+    def feed(self) -> ReadFeed | None:
+        return ReadFeed(self._transport) if self._transport is not None else None
+
     def providers(self) -> Providers:
         return Providers(
             service_for=lambda: self.service,
             snapshot_for=self.snapshot_for,
             prepare=self.prepare,
+            feed_for=self.feed,
         )
 
 
@@ -202,7 +218,11 @@ async def resolve_providers(pool: Any, *, live: bool | None = None) -> Providers
             except Exception:
                 logger.warning("owner_watch_lock_pool_unavailable", exc_info=True)
                 return PROVIDERS
-            _runtime = (pool, OwnerWatchRuntime(pool, lock_pool), lock_pool)
+            _runtime = (
+                pool,
+                OwnerWatchRuntime(pool, lock_pool, transport=SwitchboardReadTransport(pool)),
+                lock_pool,
+            )
         return _runtime[1].providers()
 
 

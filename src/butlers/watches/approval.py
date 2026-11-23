@@ -46,6 +46,7 @@ _ACTION_NAMESPACE: Final = UUID("6f1d2a52-3c1e-4f43-9a55-0b5e6c1d7a02")
 
 ServiceFor = Callable[[], WatchService | None]
 Prepare = Callable[[datetime], Awaitable[bool]]
+FeedFor = Callable[[], Any]
 SnapshotFor = Callable[[datetime], Snapshot | None]
 
 _VERBS: Final = {
@@ -68,6 +69,10 @@ async def _prepared(now: datetime) -> bool:
     return True
 
 
+def _no_feed() -> Any:
+    return None
+
+
 @dataclass(frozen=True)
 class Providers:
     """What an apply and a tick need from production. All default to absent or no-op.
@@ -80,6 +85,7 @@ class Providers:
     service_for: ServiceFor = _no_service
     snapshot_for: SnapshotFor = _no_snapshot
     prepare: Prepare = _prepared
+    feed_for: FeedFor = _no_feed
 
 
 PROVIDERS = Providers()

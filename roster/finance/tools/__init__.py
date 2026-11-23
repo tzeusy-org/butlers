@@ -162,8 +162,10 @@ try:
         alert_configure,
         alert_list,
         detect_price_changes,
+        transaction_amounts_since,
     )
 except (ImportError, AttributeError):
+    transaction_amounts_since = None  # type: ignore[assignment]
     alert_configure = None  # type: ignore[assignment]
     alert_list = None  # type: ignore[assignment]
     detect_price_changes = None  # type: ignore[assignment]
@@ -234,6 +236,7 @@ __all__ = [
     "alert_configure",
     "alert_list",
     "detect_price_changes",
+    "transaction_amounts_since",
     # SPO backfill (bu-ofv8)
     "backfill_spo_transactions",
     "BackfillResult",

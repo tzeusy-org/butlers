@@ -24,9 +24,15 @@ DEGRADED: Final = "degraded"
 TICK_OK: Final = "tick_ok"
 NO_SNAPSHOT_PROVIDER: Final = "no_snapshot_provider"
 SOURCES_UNREADABLE: Final = "sources_unreadable"
+FEED_UNREADABLE: Final = "feed_unreadable"
 #: The closed vocabulary the collector accepts; anything else reads as unmeasured.
 KNOWN: Final = frozenset(
-    {(UP, TICK_OK), (DEGRADED, NO_SNAPSHOT_PROVIDER), (DEGRADED, SOURCES_UNREADABLE)}
+    {
+        (UP, TICK_OK),
+        (DEGRADED, NO_SNAPSHOT_PROVIDER),
+        (DEGRADED, SOURCES_UNREADABLE),
+        (DEGRADED, FEED_UNREADABLE),
+    }
 )
 
 

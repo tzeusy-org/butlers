@@ -342,6 +342,64 @@ def evaluate_large_transaction_alert(
 
 
 # ---------------------------------------------------------------------------
+# transaction_amounts_since (the owner-watch read feed, bu-4c7nvp.1.5)
+# ---------------------------------------------------------------------------
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+_AMOUNTS_MAX_LIMIT = 100
+#: A row committed this recently may still be in flight beside an older timestamp; the feed reads
+#: only past this settle lag so a later commit is never skipped by an earlier cursor.
+_AMOUNTS_SETTLE_LAG = timedelta(seconds=60)
+
+
+async def transaction_amounts_since(
+    pool: asyncpg.Pool, currency: str, after_us: int, limit: int
+) -> dict[str, Any]:
+    """The largest absolute amount recorded at each instant in one currency, after a cursor.
+
+    Read-only and content-blind: each row is ``{id, amount, currency, recorded_us}`` and nothing
+    else (no merchant, description, account or category). Rows page by insertion time
+    (``created_at``, microseconds since the epoch), never by transaction date, so a late import of
+    an old-dated transaction is not skipped. Rows created in the same instant (one import) are one
+    reading, the largest. Deleted rows and rows inside the settle lag are excluded.
+    """
+    if type(currency) is not str or len(currency) != 3 or not currency.isalpha():
+        raise ValueError("currency must be a three-letter code")
+    if type(after_us) is not int or after_us < 0:
+        raise ValueError("after_us must be a non-negative integer")
+    if type(limit) is not int or not 1 <= limit <= _AMOUNTS_MAX_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_AMOUNTS_MAX_LIMIT}")
+    after = _EPOCH + timedelta(microseconds=after_us)
+    rows = await pool.fetch(
+        """
+        SELECT DISTINCT ON (created_at) id, abs(amount) AS amount, currency, created_at
+        FROM transactions
+        WHERE deleted_at IS NULL
+          AND upper(currency) = upper($1)
+          AND created_at > $2
+          AND created_at <= now() - $3::interval
+        ORDER BY created_at, abs(amount) DESC, id
+        LIMIT $4
+        """,
+        currency,
+        after,
+        _AMOUNTS_SETTLE_LAG,
+        limit,
+    )
+    return {
+        "rows": [
+            {
+                "id": str(row["id"]),
+                "amount": f"{row['amount']:.2f}",
+                "currency": str(row["currency"]).upper(),
+                "recorded_us": (row["created_at"] - _EPOCH) // timedelta(microseconds=1),
+            }
+            for row in rows
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
 # detect_price_changes
 # ---------------------------------------------------------------------------
 

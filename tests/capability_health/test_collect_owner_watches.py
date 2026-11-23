@@ -54,6 +54,7 @@ async def test_a_fresh_ok_report_is_available_at_its_own_time():
     [
         ("no_snapshot_provider", "provider_unavailable"),
         ("sources_unreadable", "signal_unmeasurable"),
+        ("feed_unreadable", "signal_unmeasurable"),
     ],
 )
 async def test_a_blind_report_is_degraded_with_its_own_cause(reason, cause):

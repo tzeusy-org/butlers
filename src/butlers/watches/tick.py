@@ -22,6 +22,7 @@ from butlers.watches.approval import PROVIDERS, Providers, sweep_card_state
 from butlers.watches.delivery import InsightDelivery
 from butlers.watches.health import (
     DEGRADED,
+    FEED_UNREADABLE,
     NO_SNAPSHOT_PROVIDER,
     SOURCES_UNREADABLE,
     TICK_OK,
@@ -64,11 +65,32 @@ async def run_tick(
         await _degrade(reporter, reason)
         return {"status": BLIND}
     await _sweep_cards(pool, moment)
+    feed_ok = await _poll_feed(providers, service, moment)
     delivery = deliver_for(pool)
     runner = WatchRunner(service, delivery, lambda _now: snapshot)
     report = await runner.tick(moment)
-    await _healthy(reporter)
-    return {"status": "ok", **asdict(report)}
+    if feed_ok:
+        await _healthy(reporter)
+    else:
+        await _degrade(reporter, FEED_UNREADABLE)
+    return {"status": "ok", **asdict(report), "feed_ok": feed_ok}
+
+
+async def _poll_feed(providers: Providers, service: Any, now: datetime) -> bool:
+    """Poll the read feed so a reading can fire a watch before the runner claims fires.
+
+    False when any poll failed (the watches reading it are blind) or the feed itself broke; the
+    rest of the tick still runs. No feed, or no watch reading one, is fine.
+    """
+    feed = providers.feed_for()
+    if feed is None:
+        return True
+    try:
+        report = await feed.poll(service, now)
+    except Exception:
+        logger.warning("owner_watch_feed_failed", exc_info=True)
+        return False
+    return report.failed == 0
 
 
 async def _sweep_cards(pool: Any, now: datetime) -> None:
