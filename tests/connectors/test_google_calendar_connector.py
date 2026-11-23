@@ -1024,7 +1024,6 @@ async def test_a_later_full_sync_with_a_token_clears_degraded_health(
 @pytest.mark.parametrize("restart", [False, True])
 async def test_cleared_expired_cursor_keeps_recovery_ingest_mode(account_config, restart):
     from unittest.mock import AsyncMock
-
     from butlers.connectors.google_calendar import _SyncTokenExpiredError
 
     runtime = _synced_runtime(account_config, [])
@@ -1063,6 +1062,7 @@ async def test_cleared_expired_cursor_keeps_recovery_ingest_mode(account_config,
             patch.object(runtime, "_process_event", AsyncMock(return_value=True)) as process,
         ):
             await runtime._ensure_sync_token()
+        assert runtime._journal_events.await_args.args == ([event], "resync")
         process.assert_awaited_once_with(event)
         assert durable_token == "replacement"
 
