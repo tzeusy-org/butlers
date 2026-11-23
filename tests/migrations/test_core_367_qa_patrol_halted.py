@@ -1,4 +1,4 @@
-"""core_366 (bu-ejow5p.3): ``qa_patrols`` accepts ``halted`` and records its ``halt_reason``.
+"""core_367 (bu-ejow5p.3): ``qa_patrols`` accepts ``halted`` and records its ``halt_reason``.
 
 Real-Postgres contract; Docker-only like its migration siblings.
 """
@@ -35,7 +35,7 @@ def test_halted_is_accepted_with_a_reason_and_other_values_are_still_refused(
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema="general")
-    command.upgrade(config, "core_366")
+    command.upgrade(config, "core_367")
 
     _run(
         db_url,
@@ -53,7 +53,7 @@ def test_downgrade_rereads_halted_rows_as_suppressed_and_a_rerun_is_clean(
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema="general")
-    command.upgrade(config, "core_366")
+    command.upgrade(config, "core_367")
     _run(
         db_url,
         "INSERT INTO public.qa_patrols (status, halt_reason) VALUES ('halted', 'no_model')",
@@ -67,5 +67,5 @@ def test_downgrade_rereads_halted_rows_as_suppressed_and_a_rerun_is_clean(
         "WHERE table_name = 'qa_patrols' AND column_name = 'halt_reason'",
     ) == [(0,)]
 
-    command.upgrade(config, "core_366")
+    command.upgrade(config, "core_367")
     assert _run(db_url, "SELECT status FROM public.qa_patrols") == [("suppressed",)]

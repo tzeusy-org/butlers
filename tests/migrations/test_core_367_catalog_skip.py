@@ -1,4 +1,4 @@
-"""core_366: a later schema's upgrade finds the halted status installed and issues no DDL.
+"""core_367: a later schema's upgrade finds the halted status installed and issues no DDL.
 
 The core chain runs once per butler schema over the one shared ``public.qa_patrols``. Dropping and
 re-adding the status check rescans the table even as a no-op, so later schemas read the catalog
@@ -16,11 +16,11 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-_PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_366_qa_patrol_halted.py"
+_PATH = Path(__file__).resolve().parents[2] / "alembic/versions/core/core_367_qa_patrol_halted.py"
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("core_366_catalog_skip", _PATH)
+    spec = importlib.util.spec_from_file_location("core_367_catalog_skip", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

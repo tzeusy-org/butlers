@@ -7,7 +7,7 @@ manifesto counts as healthy discovery. ``halted`` says remediation stopped, and 
 halted patrol keeps counting as coverage.
 
 The core chain runs once per butler schema over this shared table, so every statement is
-idempotent and only the last schema to leave core_366 removes the status and the column
+idempotent and only the last schema to leave core_367 removes the status and the column
 (core_246 pattern). Rows already written stay readable as text after a downgrade: ``halted``
 reads back as the status it replaced, ``suppressed``.
 """
@@ -16,14 +16,14 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_366"
+revision = "core_367"
 down_revision = "core_362"
 branch_labels = None
 depends_on = None
 
 _TABLE = "public.qa_patrols"
 _CHECK = "ck_qa_patrols_status"
-_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_366:qa-patrol-halted', 0))"
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_367:qa-patrol-halted', 0))"
 _OLD = ("running", "clean", "findings_dispatched", "error", "skipped_overlap", "suppressed")
 _NEW = (*_OLD, "halted")
 
@@ -71,7 +71,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 366
+                    THEN substring(version_num FROM 6)::integer >= 367
                     ELSE false END
             )
             """
@@ -91,7 +91,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(_LOCK)
-    # One shared table serves every schema still at core_366; only the last one removes it.
+    # One shared table serves every schema still at core_367; only the last one removes it.
     if _installation_count() > 1:
         return
     op.execute(f"UPDATE {_TABLE} SET status = 'suppressed' WHERE status = 'halted'")
