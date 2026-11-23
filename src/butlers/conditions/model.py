@@ -70,6 +70,9 @@ class ConditionEvent:
     # The S1 label of the row the producer read it from. None (an unlabelled producer) is
     # missing provenance: a fire it holds joins the unknown label.
     label: Label | None = None
+    # A read_check output counts only when its producer is a trusted typed boundary (the
+    # quarantined boundaries of bu-4c7nvp.1.2). Output of an untrusted producer is unknown.
+    trusted: bool = False
 
     def __post_init__(self) -> None:
         if str(UUID(self.id)) != self.id:

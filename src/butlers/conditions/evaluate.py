@@ -109,6 +109,8 @@ def _m7_leaf(leaf: Leaf, cur: Tri, ev: ConditionEvent) -> Tri:
     if not ev.measurable:
         return Tri.UNKNOWN
     if tag == "read_check":
+        if not ev.trusted:
+            return Tri.UNKNOWN  # provenance: only a trusted typed boundary may measure
         verdict = _compare(body["op"], data.get("value"), body["value"])
         if verdict is None:
             return Tri.UNKNOWN

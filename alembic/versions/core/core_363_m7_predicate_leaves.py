@@ -13,6 +13,10 @@ core_322, core_328 and core_333; this revision re-runs that installer and then p
 that the bootstrap really applied the new body. A database whose bootstrap predates this change
 fails here, loudly.
 
+The body also counts leaves across the whole tree, measures the 8KiB bound as compact JSON, accepts
+only canonical lowercase hyphenated UUIDs, and requires ``expectation_kind`` to be a registered
+``expect.*`` kind, so it accepts exactly what the Python validator accepts.
+
 Nothing else changes: no table, grant, role or registry row, and no source is registered for a
 new leaf, so a binding naming one still refuses at ``perception_bind``'s source boundary until a
 later change registers its source. The installer is idempotent and shared across schemas.
@@ -22,8 +26,8 @@ this revision must not roll back what core_322 installed, and one schema's downg
 change a definition the others still run. The older body comes back with the older bootstrap, and
 core_322's downgrade remains the history-preserving rollback of the whole interface.
 
-The number follows main at the time of writing (core_361 and core_362 are claimed by open
-changes); renumber on rebase if they merge first.
+The number follows main at the time of writing (core_360 is the tip; core_361 and core_362 are
+claimed by open changes); renumber and re-point down_revision on rebase if they merge first.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ down_revision = "core_360"
 branch_labels = None
 depends_on = None
 
-_VALID_PREDICATE_SHA = "62c736fbd75064b981f1e4dff807bced34488ec0f1db84607211340798ab1fe3"
+_VALID_PREDICATE_SHA = "303bd722b1c161f1e97b81f8021b0bc4243d038a67303bf657ef90b0127bc26f"
 _APPLIED_SQL = f"""
 SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                WHERE n.nspname = 'perception_private' AND p.proname = 'valid_predicate'
