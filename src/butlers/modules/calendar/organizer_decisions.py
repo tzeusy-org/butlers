@@ -8,7 +8,10 @@ covered for trust: the verdict reads every calendar scope, so a rule in any of t
 stamp; only the connector's ingest-time suppression is per endpoint.
 
 A Vouch removes the Block rules this verb wrote and a Block removes the Vouch rules it wrote;
-rules the owner wrote any other way, and every ``global`` rule, are left alone and still win.
+rules the owner wrote any other way, and every ``global`` rule, are left alone. A Vouch is
+evaluated first (priority 10), so it beats a manual same-scope block at a higher priority number;
+a same-scope block at a lower number, or at 10 and older, still wins, and a global block always
+wins.
 After the rules change, the organizer's stored events are re-stamped at once instead of waiting
 for the sweep.
 """
@@ -69,6 +72,11 @@ async def apply_decision(pool: Any, address: str, verb: Verb) -> DecisionResult:
         raise ValueError("an organizer address is required")
     created_by, action = _VERB_RULE[verb]
     async with pool.acquire() as conn, conn.transaction():
+        # Serialise concurrent verbs on one organizer so opposite verbs cannot interleave.
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"calendar-organizer-decision:{address}",
+        )
         identities = await conn.fetch(
             "SELECT DISTINCT endpoint_identity FROM switchboard.connector_registry"
             " WHERE connector_type = $1",

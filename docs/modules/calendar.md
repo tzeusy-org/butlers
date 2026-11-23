@@ -193,7 +193,9 @@ location or any other free text, so third-party text can never raise an invitati
   events at once (REQ-module-calendar-042). The organizer address is read from the stored event.
   Block writes `block` and Vouch writes `pass_through` in `connector:google_calendar:<endpoint>`
   scopes only, so the same sender's email is never blocked. A verb is idempotent and removes the
-  opposite rules it wrote; a global or other connector block still wins. A Vouch only lifts an
+  opposite rules it wrote and keeps manual rules. The Vouch (priority 10) is evaluated first: a
+  same-scope block at a lower priority number, or at 10 and older, still wins, and a global block
+  always wins. Concurrent verbs on one organizer serialise on an advisory lock. A Vouch only lifts an
   otherwise first-contact organizer to `vouched` (trusted). A calendar endpoint registered later is
   covered for trust, because the verdict reads every calendar scope; only the connector's
   ingest-time suppression of a Block is per endpoint.

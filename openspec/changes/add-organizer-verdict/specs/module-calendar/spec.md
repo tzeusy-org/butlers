@@ -11,7 +11,7 @@ count, guests-hidden flag, event type, conference domain) and the owner-owned lo
 values: the identity class of the organizer address, whether connector or global ingestion
 policy blocks it, and whether the owner vouched for it. The function SHALL NOT accept or read an event title, description, location or
 any other free text. Precedence SHALL be `owner`, then `blocked`, then `known_entity`, then
-`known_domain`, then `first_contact`. When either lookup could not be read the verdict SHALL be
+`known_domain`, then `vouched`, then `first_contact`. When either lookup could not be read the verdict SHALL be
 `unknown`, never a `known_*` value and never `owner` unless the organizer address equals the
 owner's own address.
 
@@ -115,10 +115,12 @@ organizer is missing or is the owner. A verb SHALL write ordinary ingestion rule
 calendar connector only and never to `global`, one per registered calendar endpoint, in one
 transaction: Block writes `block` and Vouch writes `pass_through`, so a calendar Block never blocks
 the same sender's email or messages. A verb SHALL be idempotent, and a Vouch SHALL remove the Block
-rules the verb wrote and a Block the Vouch rules it wrote, leaving rules the owner wrote any other
+rules the verb wrote and a Block the Vouch rules it wrote, keeping rules the owner wrote any other
 way. A Vouch SHALL yield the `vouched` verdict only for an organizer that is otherwise
-`first_contact`, and SHALL NOT override a block: a global or a connector block that still matches
-wins. After the rules change the organizer's stored events SHALL be re-stamped at once, and
+`first_contact`. A Vouch rule has priority 10 and is evaluated first among connector rules, so it
+beats a manual same-scope block at a higher priority number; a same-scope block at a lower number,
+or at 10 and older, still wins, and a global block always wins. Concurrent verbs on one organizer
+SHALL serialise. After the rules change the organizer's stored events SHALL be re-stamped at once, and
 `verdict_version` SHALL advance so earlier stamps are re-stamped by the sweep.
 
 ID: REQ-module-calendar-042
