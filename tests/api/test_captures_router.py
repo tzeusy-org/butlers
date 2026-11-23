@@ -387,7 +387,6 @@ def traced(monkeypatch, caplog):
     monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
     caplog.set_level(logging.DEBUG)
     monkeypatch.setattr(captures, "_capture_service", lambda: _FakeService)
-    monkeypatch.setattr(captures, "REQUEST_TIMEOUT_S", 1.0)
     try:
         yield exporter
     finally:
@@ -436,12 +435,16 @@ _OUTCOMES = [
     ],
 )
 async def test_sentinel_matrix_exposes_no_intake_on_any_outcome(
-    traced, seams, caplog, door, path, behavior, body, status_code, code, category
+    traced, seams, caplog, monkeypatch, door, path, behavior, body, status_code, code, category
 ):
     conn = _Conn()
     seams.manager = _manager(conn)
     _FakeService.behavior = behavior
+    # Context issuance keeps the production deadline (a 1s cut 504s under hosted CI load); only
+    # the intended timeout POST gets the short one.
     context = await _context(seams.app, door)
+    if behavior == "timeout":
+        monkeypatch.setattr(captures, "REQUEST_TIMEOUT_S", 1.0)
     logging.getLogger("capture_privacy_control").warning("capture-log-live-control")
     status, response, _ = await _raw(
         seams.app, "POST", path, body, [*_owner_key(), (b"x-capture-intake", context.encode())]
