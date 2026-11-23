@@ -63,8 +63,13 @@ from prometheus_client import Counter, Histogram
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.evidence_journal import EvidenceNotCommitted
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
@@ -106,6 +111,7 @@ _CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
+_POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked Spotify event keeps a preview only"
 
 # Spotify API URLs
 _SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
@@ -175,6 +181,13 @@ spotify_token_refreshes_total = Counter(
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class _HeldDelivery:
+    envelope: dict[str, Any]
+    evidence: Callable[[], Awaitable[Any]]
+    on_sent: Callable[[], None] | None
 
 
 @dataclass
@@ -1651,11 +1664,12 @@ class SpotifyConnector:
         self._spoken_session_tracker = SpokenSessionTracker(
             idle_timeout_s=config.session_idle_timeout_s,
         )
-        # Notifications whose evidence write failed: the trackers hand a closed session (or a
-        # spoken start) over once, so each waits here until its write and submit succeed
-        # (bu-uhbhzq.4). Keyed by the evidence row's identity; insertion order is retry order.
-        self._held_session_summaries: dict[datetime, tuple[ListeningSession, str]] = {}
-        self._held_spoken_starts: dict[str, tuple[SpokenSession, str]] = {}
+        # Envelopes not yet delivered: the evidence write failed, or the submit failed and its
+        # park was not durable. The trackers hand an item over once, so each waits here until
+        # its write and submit (or durable park) succeed (bu-uhbhzq.4). Insertion order is
+        # retry order.
+        self._held: dict[str, _HeldDelivery] = {}
+        self._held_retry_now: datetime | None = None
         # Spoken sessions whose start passed the policy gate and committed evidence; only
         # these may be updated in place.
         self._admitted_spoken: set[str] = set()
@@ -2339,7 +2353,7 @@ class SpotifyConnector:
         # Reset to active poll interval
         self._current_poll_interval_s = self._config.poll_active_s
 
-        await self._retry_held_notifications()
+        await self._retry_held_notifications(now)
 
         # Update session tracker
         events, closed_sessions = self._session_tracker.process_playback(
@@ -2400,9 +2414,19 @@ class SpotifyConnector:
                 raw_payload=payload,
                 observed_at=observed_at,
             )
-            await self._submit_envelope(envelope)
-            if self._endpoint_identity:
-                spotify_context_starts_total.labels(endpoint_identity=self._endpoint_identity).inc()
+
+            def context_sent() -> None:
+                if self._endpoint_identity:
+                    spotify_context_starts_total.labels(
+                        endpoint_identity=self._endpoint_identity
+                    ).inc()
+
+            await self._deliver(
+                f"ctx:{envelope['event']['external_event_id']}",
+                envelope,
+                lambda: self._write_envelope_evidence(envelope),
+                on_sent=context_sent,
+            )
 
         # Emit periodic listening digest if due
         if self._session_tracker.check_digest_due(now):
@@ -2414,10 +2438,21 @@ class SpotifyConnector:
                     session=session,
                     observed_at=observed_at,
                 )
-                await self._submit_envelope(digest_envelope)
+
+                def digest_sent() -> None:
+                    if self._endpoint_identity:
+                        spotify_digests_total.labels(
+                            endpoint_identity=self._endpoint_identity
+                        ).inc()
+
+                # Marked emitted now: a held digest is retried, not rebuilt.
+                await self._deliver(
+                    f"digest:{digest_envelope['event']['external_event_id']}",
+                    digest_envelope,
+                    lambda: self._write_envelope_evidence(digest_envelope),
+                    on_sent=digest_sent,
+                )
                 self._session_tracker.mark_digest_emitted(now)
-                if self._endpoint_identity:
-                    spotify_digests_total.labels(endpoint_identity=self._endpoint_identity).inc()
 
         if self._endpoint_identity:
             spotify_polls_total.labels(
@@ -2447,7 +2482,7 @@ class SpotifyConnector:
 
     async def _advance_music_for_no_playback(self, now: datetime, observed_at: str) -> None:
         """Close music state without changing the active Spotify polling cadence."""
-        await self._retry_held_notifications()
+        await self._retry_held_notifications(now)
         closed_sessions = self._session_tracker.process_no_playback(now=now)
         for closed in closed_sessions:
             await self._emit_session_summary(closed, observed_at)
@@ -2489,7 +2524,7 @@ class SpotifyConnector:
         item = normalize_spoken_item(item_payload)
         if item is None:
             return
-        await self._retry_held_notifications()
+        await self._retry_held_notifications(now)
         self._current_poll_interval_s = self._config.poll_active_s
         events, closed_sessions = self._spoken_session_tracker.process_playback(item, now=now)
         for closed in closed_sessions:
@@ -2639,7 +2674,13 @@ class SpotifyConnector:
                     "ingestion_tier": "full",
                 },
             }
-            await self._submit_envelope(envelope)
+            # The cursor owns this retry: a held digest raises and the cursor stays put.
+            await self._deliver(
+                f"gap:{external_event_id}",
+                envelope,
+                lambda: self._write_envelope_evidence(envelope),
+                retain=False,
+            )
 
         if last_cursor_ms:
             # Advance only through recent items whose durable reconciliation succeeded.
@@ -2782,12 +2823,11 @@ class SpotifyConnector:
             return False
 
     async def _emit_session_summary(self, session: ListeningSession, observed_at: str) -> None:
-        """Gate, commit the session's evidence row, then submit its summary.
+        """Deliver a closed session's summary: gate, evidence row, then Switchboard.
 
-        Order (bu-uhbhzq.4): ingestion policy, then ``connectors.spotify_listening_sessions``
-        (the durable evidence surface for Chronicler, RFC 0014 §D9), then Switchboard. A
-        policy-denied session writes nothing. A failed write submits nothing: the session is
-        held and tried again on the next poll, because the tracker hands it over only once.
+        The evidence row is ``connectors.spotify_listening_sessions`` (the durable surface for
+        Chronicler, RFC 0014 §D9). A policy-denied session writes nothing; a failed write
+        submits nothing and the session is held for the next poll.
         """
         if session.track_count == 0:
             return
@@ -2797,25 +2837,20 @@ class SpotifyConnector:
             session=session,
             observed_at=observed_at,
         )
-        try:
-            await self._submit_envelope(
-                envelope, evidence=lambda: self._write_session_evidence(session)
-            )
-        except EvidenceNotCommitted as exc:
-            logger.error(
-                "SpotifyConnector: session evidence not committed; holding the summary "
-                "(failure_class=%s)",
-                exc.reason,
-            )
-            self._held_session_summaries[session.started_at] = (session, observed_at)
-            return
-        self._held_session_summaries.pop(session.started_at, None)
 
-        if self._endpoint_identity:
-            spotify_sessions_total.labels(endpoint_identity=self._endpoint_identity).inc()
-            spotify_session_duration_seconds.labels(
-                endpoint_identity=self._endpoint_identity
-            ).observe(session.duration_seconds)
+        def sent() -> None:
+            if self._endpoint_identity:
+                spotify_sessions_total.labels(endpoint_identity=self._endpoint_identity).inc()
+                spotify_session_duration_seconds.labels(
+                    endpoint_identity=self._endpoint_identity
+                ).observe(session.duration_seconds)
+
+        await self._deliver(
+            f"session:{session.started_at.isoformat()}",
+            envelope,
+            lambda: self._write_session_evidence(session),
+            on_sent=sent,
+        )
 
     async def _write_session_evidence(self, session: ListeningSession) -> None:
         if self._cursor_pool is None or not self._endpoint_identity or not self._spotify_user_id:
@@ -2837,15 +2872,20 @@ class SpotifyConnector:
             session=session,
         )
 
-    async def _retry_held_notifications(self) -> None:
-        """Try each held session summary and spoken start again (one attempt each)."""
-        for held_session, observed_at in list(self._held_session_summaries.values()):
-            await self._emit_session_summary(held_session, observed_at)
-        for held_spoken, observed_at in list(self._held_spoken_starts.values()):
-            await self._emit_spoken_start(held_spoken, observed_at)
+    async def _write_envelope_evidence(self, envelope: dict[str, Any]) -> None:
+        """Generic journal row for envelopes that have no evidence table of their own."""
+        await commit_envelope(self._cursor_pool, envelope)
+
+    async def _retry_held_notifications(self, now: datetime) -> None:
+        """Try each held envelope again: one attempt per poll (a poll shares one *now*)."""
+        if self._held_retry_now == now:
+            return
+        self._held_retry_now = now
+        for key, held in list(self._held.items()):
+            await self._deliver(key, held.envelope, held.evidence, on_sent=held.on_sent)
 
     async def _emit_spoken_start(self, session: SpokenSession, observed_at: str) -> None:
-        """Gate, commit the spoken session's evidence row, then submit its start event."""
+        """Deliver a spoken session's start event: gate, evidence row, then Switchboard."""
         key = _spoken_session_key(self._endpoint_identity, session)
         envelope = build_spoken_session_envelope(
             endpoint_identity=self._endpoint_identity,
@@ -2853,21 +2893,48 @@ class SpotifyConnector:
             session=session,
             observed_at=observed_at,
         )
-        try:
-            admitted = await self._submit_envelope(
-                envelope, evidence=lambda: self._write_spoken_evidence(session)
-            )
-        except EvidenceNotCommitted as exc:
-            logger.error(
-                "SpotifyConnector: spoken evidence not committed; holding the start event "
-                "(failure_class=%s)",
-                exc.reason,
-            )
-            self._held_spoken_starts[key] = (session, observed_at)
-            return
-        self._held_spoken_starts.pop(key, None)
-        if admitted:
+        outcome = await self._deliver(
+            f"spoken:{key}", envelope, lambda: self._write_spoken_evidence(session)
+        )
+        if outcome == "sent":
             self._admitted_spoken.add(key)
+
+    async def _deliver(
+        self,
+        key: str,
+        envelope: dict[str, Any],
+        evidence: Callable[[], Awaitable[Any]],
+        *,
+        on_sent: Callable[[], None] | None = None,
+        retain: bool = True,
+    ) -> Literal["sent", "blocked", "held"]:
+        """Send *envelope* through the one submit path and report what happened.
+
+        ``sent``: evidence committed and the envelope handed over (or durably parked).
+        ``blocked``: the policy gate dropped it; nothing was written. ``held``: the evidence
+        write failed, or the submit failed and its park was not durable. With *retain* the
+        item waits in ``self._held`` for the next poll; without it the caller owns the retry.
+        """
+        try:
+            admitted = await self._submit_envelope(envelope, evidence=evidence)
+        except (EvidenceNotCommitted, ParkNotDurableError) as exc:
+            if not retain:
+                raise
+            logger.error(
+                "SpotifyConnector: %s; holding the envelope (failure_class=%s)",
+                "evidence not committed"
+                if isinstance(exc, EvidenceNotCommitted)
+                else "park not durable",
+                getattr(exc, "reason", type(exc).__name__),
+            )
+            self._held[key] = _HeldDelivery(envelope, evidence, on_sent)
+            return "held"
+        self._held.pop(key, None)
+        if not admitted:
+            return "blocked"
+        if on_sent is not None:
+            on_sent()
+        return "sent"
 
     # ------------------------------------------------------------------
     # Ingest submission (with filter gate)
@@ -2877,13 +2944,16 @@ class SpotifyConnector:
         self,
         envelope: dict[str, Any],
         *,
-        evidence: Callable[[], Awaitable[Any]] | None = None,
+        evidence: Callable[[], Awaitable[Any]],
+        replay: bool = False,
     ) -> bool:
-        """Evaluate filter gate, commit *evidence* if given, then submit to Switchboard.
+        """The only path to Switchboard: gate, commit *evidence*, then submit.
 
-        Filtered events go to the filtered_event_buffer and write no evidence. A failed
-        *evidence* write raises ``EvidenceNotCommitted`` and nothing is submitted. Returns
-        False only when the policy gate dropped the envelope.
+        Filtered events go to the filtered_event_buffer and write no evidence; their stored
+        row cannot be replayed, because it keeps a preview only. A failed *evidence* write
+        raises ``EvidenceNotCommitted`` and nothing is submitted. A *replay* skips the gate and
+        raises on a failed submit instead of parking it. Returns False only when the policy
+        gate dropped the envelope.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2900,7 +2970,7 @@ class SpotifyConnector:
         )
 
         # Evaluate policy (synchronous; triggers background refresh if stale)
-        if self._ingestion_policy is not None:
+        if self._ingestion_policy is not None and not replay:
             try:
                 decision = self._ingestion_policy.evaluate(ing_env)
                 if not decision.allowed:
@@ -2910,6 +2980,25 @@ class SpotifyConnector:
                         decision.action,
                     )
                     if self._filtered_event_buffer is not None:
+                        stored = FilteredEventBuffer.full_payload(
+                            channel=source.get("channel", ""),
+                            provider=source.get("provider", ""),
+                            endpoint_identity=source.get("endpoint_identity", ""),
+                            external_event_id=event.get("external_event_id", ""),
+                            external_thread_id=event.get("external_thread_id"),
+                            observed_at=event.get("observed_at", ""),
+                            sender_identity=sender.get("identity", ""),
+                            # Filtered-content privacy tier (bu-glbjx): content
+                            # the connector chose not to submit persists a
+                            # bounded preview only; the full raw payload is NOT
+                            # retained.
+                            raw={},
+                            normalized_text=payload.get("normalized_text", ""),
+                            policy_tier=control.get("policy_tier", "default"),
+                        )
+                        # No evidence row was written and the preview is all that is kept, so
+                        # an owner replay must not submit it (bu-uhbhzq.4).
+                        stored[REPLAY_UNAVAILABLE_KEY] = _POLICY_FILTERED_NOT_REPLAYABLE
                         self._filtered_event_buffer.record(
                             external_message_id=event.get("external_event_id", ""),
                             source_channel=source.get("channel", ""),
@@ -2920,36 +3009,20 @@ class SpotifyConnector:
                                 action=decision.action,
                                 rule_type=decision.matched_rule_type or "unknown",
                             ),
-                            full_payload=FilteredEventBuffer.full_payload(
-                                channel=source.get("channel", ""),
-                                provider=source.get("provider", ""),
-                                endpoint_identity=source.get("endpoint_identity", ""),
-                                external_event_id=event.get("external_event_id", ""),
-                                external_thread_id=event.get("external_thread_id"),
-                                observed_at=event.get("observed_at", ""),
-                                sender_identity=sender.get("identity", ""),
-                                # Filtered-content privacy tier (bu-glbjx): content
-                                # the connector chose not to submit persists a
-                                # bounded preview only; the full raw payload is NOT
-                                # retained.
-                                raw={},
-                                normalized_text=payload.get("normalized_text", ""),
-                                policy_tier=control.get("policy_tier", "default"),
-                            ),
+                            full_payload=stored,
                         )
                     return False
             except Exception as exc:
                 # Fail-open: log and proceed with submission
                 logger.debug("SpotifyConnector: policy evaluation error (fail-open): %s", exc)
 
-        if evidence is not None:
-            try:
-                await evidence()
-            except EvidenceNotCommitted:
-                raise
-            except Exception as exc:
-                # Class name only, no chained cause: the original text can echo content.
-                raise EvidenceNotCommitted(type(exc).__name__) from None
+        try:
+            await evidence()
+        except EvidenceNotCommitted:
+            raise
+        except Exception as exc:
+            # Class name only, no chained cause: the original text can echo content.
+            raise EvidenceNotCommitted(type(exc).__name__) from None
 
         # Submit to Switchboard
         async with self._semaphore:
@@ -2974,6 +3047,8 @@ class SpotifyConnector:
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("SpotifyConnector: ingest submission failed: %s", exc)
+                if replay:
+                    raise
                 # The poll moves past this item, so the error row is its only copy: commit
                 # it before returning. A park that is not written raises, which keeps the
                 # recently-played cursor where it is (bu-dhloi1.274).
@@ -3020,8 +3095,10 @@ class SpotifyConnector:
             logger.warning("SpotifyConnector: replay drain failed: %s", exc)
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard (used by replay drain — skips filter gate)."""
-        await self._mcp_client.call_tool("ingest", envelope)
+        """Replay drain submit: journal the stored envelope, then send it (no filter gate)."""
+        await self._submit_envelope(
+            envelope, evidence=lambda: self._write_envelope_evidence(envelope), replay=True
+        )
 
     # ------------------------------------------------------------------
     # Health state callbacks

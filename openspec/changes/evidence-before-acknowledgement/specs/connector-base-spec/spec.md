@@ -8,9 +8,15 @@ acknowledges that event, advances its checkpoint or cursor, or submits it to Swi
 SHALL rely on it as the verbatim copy of what arrived. A source with no evidence table of its
 own SHALL write `connectors.evidence_journal`; a source with a dedicated evidence table
 (`connectors.owntracks_points`, the Spotify and Steam tables) keeps that table as its surface.
-The evidence row SHALL hold no more than the envelope's `message_inbox.raw_payload` would hold
-at the envelope's ingestion tier, after bearer scrubbing; a tier-3 or policy-blocked event
-that is never submitted SHALL write no row.
+A row in `connectors.evidence_journal` SHALL hold no more than the envelope's
+`message_inbox.raw_payload` would hold at the envelope's ingestion tier, after bearer
+scrubbing. That ceiling applies to the generic journal only: a dedicated evidence table keeps
+its own documented retention (for OwnTracks, `connectors.owntracks_points.raw_payload` and the
+Chronicler location-retention contract in `docs/connectors/owntracks.md`). A tier-3 or
+policy-blocked event that is never submitted SHALL write no row, and the filtered row it
+leaves SHALL be marked not replayable: replay of any event SHALL write its evidence before
+it submits, and an event whose evidence cannot be rebuilt SHALL be refused, never sent as a
+preview alone.
 
 ID: REQ-connector-base-spec-015
 Source: owner decision run24-inbox-not-archive (bu-uhbhzq.4, 2026-11-22); RFC 0014 D2; REQ-connector-owntracks-001
@@ -28,6 +34,12 @@ Scope: v1-mandatory
 - **WHEN** the evidence row is committed and the Switchboard submit then fails
 - **THEN** the evidence row SHALL remain
 - **AND** the existing park and replay path SHALL deliver the event, with no second replay queue
+
+#### Scenario: Every Spotify envelope takes one submit path
+
+- **WHEN** the Spotify connector sends a closed session, spoken start, context start, listening digest, gap-fill digest or replay
+- **THEN** it SHALL pass the ingestion-policy gate, write that envelope's evidence, and only then submit
+- **AND** a failed write, or a failed submit whose park is not durable, SHALL retain the item for the next poll
 
 #### Scenario: Duplicates collapse and revisions append
 

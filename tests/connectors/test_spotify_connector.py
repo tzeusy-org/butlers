@@ -829,7 +829,7 @@ async def test_spoken_evidence_failure_holds_the_start_event() -> None:
         {"timestamp": 1711447200000, "item": item}, item, _NOW, _OBSERVED
     )
 
-    assert len(connector._held_spoken_starts) == 1
+    assert len(connector._held) == 1
 
 
 @pytest.mark.asyncio
@@ -1055,7 +1055,7 @@ async def test_emit_session_summary_holds_the_session_when_evidence_fails() -> N
 
     await connector._emit_session_summary(session, _OBSERVED)
 
-    assert connector._held_session_summaries == {session.started_at: (session, _OBSERVED)}
+    assert list(connector._held) == [f"session:{session.started_at.isoformat()}"]
 
 
 @pytest.mark.asyncio
@@ -1074,7 +1074,7 @@ async def test_emit_session_summary_without_cursor_pool_commits_nothing() -> Non
     await connector._emit_session_summary(session, _OBSERVED)
 
     connector._mcp_client.call_tool.assert_not_awaited()
-    assert session.started_at in connector._held_session_summaries
+    assert len(connector._held) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1122,13 +1122,15 @@ async def test_policy_block_persists_no_raw_payload() -> None:
         ),
     )
 
-    await connector._submit_envelope(_privacy_envelope())
+    await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "filtered"
     assert row[9]["payload"]["raw"] == {}
+    # No evidence row exists for it, so an owner replay must be refused, not submitted.
+    assert row[9]["replay_unavailable"]
 
 
 @pytest.mark.asyncio
@@ -1148,7 +1150,7 @@ async def test_submission_error_retains_raw_payload() -> None:
     expected_raw = envelope["payload"]["raw"]
     assert expected_raw, "envelope fixture must carry a non-empty raw payload"
 
-    await connector._submit_envelope(envelope)
+    await connector._submit_envelope(envelope, evidence=AsyncMock())
 
     rows = pool.written
     assert len(rows) == 1
@@ -1171,11 +1173,11 @@ async def test_unwritten_error_row_raises_so_the_poll_does_not_move_past_the_ite
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))
 
     with pytest.raises(ParkNotDurableError):
-        await connector._submit_envelope(_privacy_envelope())
+        await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
     assert pool.written == []
 
     pool.fail_writes = False
-    await connector._submit_envelope(_privacy_envelope())
+    await connector._submit_envelope(_privacy_envelope(), evidence=AsyncMock())
     assert [row[8] for row in pool.written] == ["error"]
 
 
