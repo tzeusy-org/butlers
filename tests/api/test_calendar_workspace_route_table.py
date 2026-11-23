@@ -48,6 +48,7 @@ KEPT = {
     (f"{_W}/proposals/{{proposal_id}}/accept", "post"),
     (f"{_W}/proposals/{{proposal_id}}/dismiss", "post"),
     (f"{_W}/audit", "get"),
+    (f"{_W}/day-sheet", "get"),
     ("/api/calendar/accounts", "get"),
     ("/api/calendar/sources", "post"),
     ("/api/calendar/sources/role", "post"),

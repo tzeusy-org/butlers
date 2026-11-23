@@ -31,6 +31,11 @@ returning UTC instants cannot move it a day. Every event title SHALL be defanged
 parse mode. The sheet SHALL carry a digest over its day, zone, freshness state, unreadable count and items,
 including each full title and conflict ref, that is equal for equal content and changes when a title or a conflict changes.
 
+`GET /api/calendar/workspace/day-sheet?date=&timezone=` SHALL return the sheet and its rendered
+text for an owner-local day, defaulting to today in the owner's zone. It SHALL read every calendar
+butler schema, treat a schema whose read failed as unreadable, and treat a read failure as a state
+of the sheet, never as an HTTP error or an empty list.
+
 ID: REQ-module-calendar-036
 Source: bu-5ii4gj.2 (run 26 move 2), slice S1
 Scope: v1-mandatory
@@ -64,3 +69,8 @@ Scope: v1-mandatory
 
 - **WHEN** the same occurrences are projected twice, in a different input order
 - **THEN** the digests are equal
+
+#### Scenario: A failed schema read is reported on the endpoint
+
+- **WHEN** one calendar schema's read fails while another's succeeds
+- **THEN** the response is 200 with `freshness.state` `unreadable` naming the failed schema, and its text never says "Nothing on your calendar"

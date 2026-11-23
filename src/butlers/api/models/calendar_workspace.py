@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date as LocalDate
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -910,3 +911,47 @@ class CalendarRespondResponse(BaseModel):
     projection_available: bool = False
     source_butler: str
     reason: str | None = None
+
+
+class DaySheetItem(BaseModel):
+    ref: str
+    start: datetime
+    end: datetime
+    all_day: bool
+    kind: Literal["attended", "tentative", "butler"]
+    title: str
+    label_class: Literal["owner_authored", "third_party"]
+    people_count: int
+    conflict_ref: str | None = None
+    door: str
+
+
+class DaySheetGap(BaseModel):
+    start: datetime
+    end: datetime
+
+
+class DaySheetFreshness(BaseModel):
+    state: Literal["current", "stale", "unreadable"]
+    as_of: datetime | None = None
+    sources_unreadable: list[str] = Field(default_factory=list)
+    sources_total: int = 0
+
+
+class DaySheetResponse(BaseModel):
+    """GET /api/calendar/workspace/day-sheet: the one projection of an owner-local day.
+
+    ``freshness.state`` is never inferred from an empty ``items`` list: ``unreadable`` and
+    ``stale`` are explicit, and ``text`` is the fixed-template rendering the nightly message uses.
+    """
+
+    date: LocalDate
+    zone: str
+    freshness: DaySheetFreshness
+    items: list[DaySheetItem] = Field(default_factory=list)
+    gaps: list[DaySheetGap] = Field(default_factory=list)
+    attended_minutes: int = 0
+    attended_count: int = 0
+    longest_gap: DaySheetGap | None = None
+    digest: str
+    text: str
