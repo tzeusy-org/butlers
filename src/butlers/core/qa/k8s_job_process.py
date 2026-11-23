@@ -190,12 +190,21 @@ class K8sJobProcess:
 
     # -- fleet (restart sweep and concurrency) ------------------------------------------------
 
-    async def list_attempt_jobs(self) -> list[AttemptJob]:
-        """Every investigator Job in the namespace; a read failure raises ``JobLaunchRefused``."""
+    async def list_attempt_jobs(self, release: str) -> list[AttemptJob]:
+        """This release's attempt Jobs; a read failure raises ``JobLaunchRefused``.
+
+        Selected by component, release instance and the ``pod`` containment label, so another
+        release's Jobs and a verifier's probe Jobs (containment ``probe``) are never listed.
+        """
         response = await self._request(
             "GET",
             self._jobs(),
-            params={"labelSelector": "app.kubernetes.io/component=qa-investigator"},
+            params={
+                "labelSelector": (
+                    "app.kubernetes.io/component=qa-investigator,"
+                    f"app.kubernetes.io/instance={release},butlers.io/qa-containment=pod"
+                )
+            },
         )
         if response.status_code != 200:
             raise _refusal_for(response)

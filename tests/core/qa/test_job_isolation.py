@@ -328,7 +328,8 @@ class _Fleet(_Runner):
         self.deleted: list[str] = []
         self.fail_delete = set(fail_delete)
 
-    async def list_attempt_jobs(self):
+    async def list_attempt_jobs(self, release):
+        self.releases = getattr(self, "releases", []) + [release]
         if self.jobs is None:
             raise RuntimeError("api down")
         return self.jobs
@@ -391,3 +392,77 @@ async def test_an_unreadable_fleet_reads_as_at_cap_not_empty(tmp_path) -> None:
     assert await active_job_count(_fleet_iso(tmp_path / "b", _Fleet(None))) is None
     live = _Fleet([_job("a", "1"), _job("b", "2", terminal=True), _job("c", "3")])
     assert await active_job_count(_fleet_iso(tmp_path, live)) == 2
+
+
+async def test_the_sweep_removes_a_pod_chmodded_000_tree(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    iso = _fleet_iso(tmp_path, _Fleet([]))
+    locked = iso.exchange_root / "attempts" / "dead" / "sub"
+    locked.mkdir(parents=True)
+    (locked / "f").write_text("x")
+    os.chmod(locked, 0o000)
+    os.chmod(locked.parent, 0o500)
+    report = await sweep_orphans(iso, live=set())
+    assert report.directories_removed == 1
+    assert not (iso.exchange_root / "attempts" / "dead").exists()
+
+
+async def test_the_sweep_lists_only_this_releases_jobs(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    fleet = _Fleet([])
+    await sweep_orphans(_fleet_iso(tmp_path, fleet), live=set())
+    assert fleet.releases == ["butlers"]
+
+
+async def test_jobs_count_toward_the_batch_concurrency_cap(tmp_path) -> None:
+    """Rows say 0 active, but two non-terminal Jobs exist: nothing is dispatched."""
+    from butlers.core.qa.dispatch import dispatch_novel_findings
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    fleet = _Fleet([_job("a", "1"), _job("b", "2")])
+    config = QaDispatchConfig(max_concurrent=2, job_isolation=_fleet_iso(tmp_path, fleet))
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
+    ):
+        results = await dispatch_novel_findings(
+            pool=MagicMock(),
+            novel_findings=[_make_triaged(), _make_triaged()],
+            patrol_id=uuid.uuid4(),
+            config=config,
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert [r.reason for r in results] == ["concurrency_cap", "concurrency_cap"]
+    dispatch.assert_not_called()
+
+
+async def test_an_unreadable_fleet_stops_the_batch(tmp_path) -> None:
+    from butlers.core.qa.dispatch import dispatch_novel_findings
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    config = QaDispatchConfig(max_concurrent=2, job_isolation=_fleet_iso(tmp_path, _Fleet(None)))
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
+    ):
+        results = await dispatch_novel_findings(
+            pool=MagicMock(),
+            novel_findings=[_make_triaged()],
+            patrol_id=uuid.uuid4(),
+            config=config,
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert [r.reason for r in results] == ["concurrency_cap"]
+    dispatch.assert_not_called()

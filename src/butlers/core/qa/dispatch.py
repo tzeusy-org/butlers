@@ -3200,6 +3200,9 @@ async def dispatch_qa_investigation(
             )
         logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
+        if config.job_isolation is not None:
+            # Owned from before the directory exists, so a sweep cannot race its creation.
+            LIVE_ATTEMPTS.add(str(attempt_id))
         try:
             if config.job_isolation is not None:
                 # Independent clone in the exchange: no shared .git with the daemon's repository.
@@ -3225,6 +3228,9 @@ async def dispatch_qa_investigation(
                     base_ref=_base_ref,
                 )
         except (WorktreeCreationError, RuntimeError, OSError) as wt_exc:
+            if config.job_isolation is not None:
+                await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+                LIVE_ATTEMPTS.discard(str(attempt_id))
             logger.warning(
                 "QA dispatch failed: worktree creation error (fingerprint=%s): %s",
                 fp[:12],

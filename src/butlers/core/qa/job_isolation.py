@@ -43,15 +43,22 @@ _ARTIFACT_CAP = 1 << 20
 
 
 class AttemptJobView(Protocol):
-    name: str
-    attempt_id: str | None
-    terminal: bool
+    """Read-only view of one Job; read-only so a frozen dataclass satisfies it."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def attempt_id(self) -> str | None: ...
+
+    @property
+    def terminal(self) -> bool: ...
 
 
 class JobFleet(JobRunner, Protocol):
     """A runner that can also list and delete the investigator Jobs it launched."""
 
-    async def list_attempt_jobs(self) -> Sequence[AttemptJobView]: ...
+    async def list_attempt_jobs(self, release: str) -> Sequence[AttemptJobView]: ...
 
     async def delete_job(self, name: str) -> bool: ...
 
@@ -244,11 +251,39 @@ def import_artifacts(
     return scratch
 
 
+def _reopen_directories(root: str | Path) -> None:
+    """Make every real directory under ``root`` owner-accessible; never follows a link."""
+    stack = [str(root)]
+    while stack:
+        current = stack.pop()
+        try:
+            if os.path.islink(current):
+                continue
+            os.chmod(current, os.stat(current).st_mode | 0o700)
+            with os.scandir(current) as entries:
+                stack.extend(entry.path for entry in entries if entry.is_dir(follow_symlinks=False))
+        except OSError:
+            continue
+
+
+def remove_tree(path: str | Path) -> None:
+    """Remove an untrusted tree without following links; tolerates pod-chmodded directories.
+
+    Directories are reopened only when the first removal fails, so no tree is left more open
+    than it already was while it waits for removal.
+    """
+    try:
+        shutil.rmtree(path)
+    except PermissionError:
+        _reopen_directories(path)
+        shutil.rmtree(path)
+
+
 def cleanup_attempt(iso: JobIsolation, attempt_id: uuid.UUID) -> None:
     """Remove the attempt's exchange directory and scratch; never follows a link, never raises."""
     for path in (iso.attempt_dir(attempt_id), iso.scratch_dir(attempt_id)):
         try:
-            shutil.rmtree(path)
+            remove_tree(path)
         except FileNotFoundError:
             pass
         except OSError:
@@ -262,7 +297,7 @@ async def active_job_count(iso: JobIsolation) -> int | None:
     Job cannot be followed by a full complement of new ones. ``None`` is treated as "at cap".
     """
     try:
-        jobs = await iso.runner.list_attempt_jobs()
+        jobs = await iso.runner.list_attempt_jobs(iso.release)
     except Exception:  # noqa: BLE001 - an unreadable fleet must not read as an empty one
         logger.warning("QA investigator fleet unreadable; treating the concurrency cap as reached")
         return None
@@ -279,7 +314,7 @@ async def sweep_orphans(iso: JobIsolation, *, live: set[str] | None = None) -> S
     owned = LIVE_ATTEMPTS if live is None else live
     deleted = undeleted = removed = 0
     try:
-        jobs = list(await iso.runner.list_attempt_jobs())
+        jobs = list(await iso.runner.list_attempt_jobs(iso.release))
     except Exception:  # noqa: BLE001
         logger.warning("QA orphan sweep: Jobs unreadable; skipping the Job half")
         jobs = []
@@ -302,7 +337,7 @@ async def sweep_orphans(iso: JobIsolation, *, live: set[str] | None = None) -> S
                 if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
                     os.unlink(entry.path)
                 else:
-                    shutil.rmtree(entry.path)
+                    remove_tree(entry.path)
                 removed += 1
             except OSError:
                 logger.warning("QA orphan sweep: could not remove an attempt directory")
