@@ -3,6 +3,7 @@
 database:
   host: postgres-dev-rw.postgres-dev.svc.cluster.local
   apiPoolMaxSize: 4
+  applyGrants: true
 
 externalSecrets:
   storeRef: bitwarden-secretsmanager-dev
