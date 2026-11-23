@@ -20,6 +20,14 @@ class CalendarAuthError(RuntimeError):
     """Base error raised by Google Calendar auth/request helpers."""
 
 
+class ConflictCheckUnavailable(CalendarAuthError):
+    """The owner's busy time could not be read, so a write cannot be checked for overlap.
+
+    A subclass of ``CalendarAuthError`` so every write path that already refuses on a failed
+    check refuses on this too, rather than reporting "no conflict" from a check that never ran.
+    """
+
+
 class CalendarCredentialError(CalendarAuthError):
     """Raised when Google credential JSON is missing or invalid."""
 

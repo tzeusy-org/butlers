@@ -23,7 +23,7 @@ from .constants import (
     CalendarConflictPolicy,
     logger,
 )
-from .errors import CalendarAuthError, _build_structured_error
+from .errors import CalendarAuthError, ConflictCheckUnavailable, _build_structured_error
 from .google_mapping import _coerce_zoneinfo
 from .invitation_guard import guard_provider_events, pool_of
 from .models import BusyWindow, CalendarEvent, CalendarEventCreate
@@ -285,7 +285,24 @@ class ConflictsMixin:
         if candidate.end_at <= candidate.start_at:
             raise ValueError("end_at must be after start_at")
 
-        conflicts = await provider.find_conflicts(calendar_id=calendar_id, candidate=candidate)
+        conflicts: list[CalendarEvent] = []
+        seen: set[tuple[datetime, datetime]] = set()
+        for busy_calendar_id in await self._owner_busy_calendar_ids(calendar_id):
+            try:
+                found = await provider.find_conflicts(
+                    calendar_id=busy_calendar_id, candidate=candidate
+                )
+            except CalendarAuthError:
+                raise
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise ConflictCheckUnavailable("conflict check unavailable") from exc
+            for event in found:
+                key = (event.start_at, event.end_at)
+                if key not in seen:
+                    seen.add(key)
+                    conflicts.append(event)
         if ignore_start_at is not None and ignore_end_at is not None:
             conflicts = [
                 conflict
@@ -373,6 +390,34 @@ class ConflictsMixin:
         if self._all_provider_calendar_ids:
             return list(self._all_provider_calendar_ids)
         return [self._resolve_calendar_id(None)]
+
+    async def _owner_busy_calendar_ids(self, calendar_id: str) -> list[str]:
+        """The calendars a write is overlap-checked against: the target plus all owner time.
+
+        A Butlers block lands on the Butlers calendar, but the owner's meetings live on the
+        primary calendar, so the check spans every source whose stored role is ``owner`` or
+        ``butler``; another person's shared calendar never counts. An unreadable role ledger
+        raises ``ConflictCheckUnavailable`` instead of quietly checking one calendar.
+        """
+        known: list[str] = list(getattr(self, "_all_provider_calendar_ids", ()))
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        ordered = [calendar_id]
+        if not known or pool is None:
+            return ordered
+        try:
+            rows = await pool.fetch(
+                "SELECT calendar_id FROM calendar_sources "
+                "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
+                f"AND time_role IN {owner_time_roles_sql()}",
+                getattr(self, "_require_provider")().name,  # noqa: B009
+                known,
+            )
+        except Exception as exc:
+            logger.warning("Failed to read calendar source roles for a write", exc_info=True)
+            raise ConflictCheckUnavailable("conflict check unavailable") from exc
+        owner_ids = {row["calendar_id"] for row in rows}
+        ordered.extend(cid for cid in known if cid in owner_ids and cid != calendar_id)
+        return ordered
 
     async def _default_free_busy_calendar_ids(self) -> list[str]:
         """The calendars a default availability query spans: owner-time sources only.

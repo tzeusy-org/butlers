@@ -202,8 +202,10 @@ async def _module(provider):
     return mod, mcp
 
 
-async def _move(provider, args=MOVE, *, lineage=True, ledger=None):
+async def _move(provider, args=MOVE, *, lineage=True, ledger=None, setup=None):
     mod, mcp = await _module(provider)
+    if setup is not None:
+        setup(mod)
     with (
         patch(
             "butlers.modules.calendar.event_tools.replan_undo_ledger",
