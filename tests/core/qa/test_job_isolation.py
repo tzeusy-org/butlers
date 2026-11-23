@@ -288,3 +288,35 @@ async def test_pr_review_followup_is_refused_when_isolation_is_configured(tmp_pa
     assert dispatched is False
     spawner.trigger.assert_not_awaited()
     anonymize.assert_not_called()
+
+
+async def test_containment_is_labelled_job_or_none_and_a_failed_write_is_harmless() -> None:
+    from butlers.core.qa.dispatch import _label_containment
+
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    attempt = uuid.uuid4()
+    await _label_containment(pool, attempt, "job")
+    assert pool.execute.await_args.args[1:] == (attempt, "job")
+    pool.execute = AsyncMock(side_effect=RuntimeError("db down"))
+    await _label_containment(pool, attempt, "none")
+
+
+async def test_retention_flags_a_daemon_run_export_and_clears_it_only_for_a_job() -> None:
+    from butlers.core.qa.publication import retention
+
+    seen = []
+
+    class _Pool:
+        async def fetchrow(self, sql, *args):
+            seen.append(args[-1])
+            return {"digest": "d", "pruned": False}
+
+    export = MagicMock()
+    export.digest = "d"
+    export.commits = ()
+    export.objects = ()
+    with patch.object(retention, "encode_objects", return_value=b""):
+        await retention.retain_export(_Pool(), uuid.uuid4(), export)
+        await retention.retain_export(_Pool(), uuid.uuid4(), export, sealed_before_isolation=False)
+    assert seen == [True, False]

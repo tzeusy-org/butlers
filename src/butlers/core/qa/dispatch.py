@@ -1186,6 +1186,18 @@ async def _qa_timeout_watchdog(
 # ---------------------------------------------------------------------------
 
 
+async def _label_containment(pool: asyncpg.Pool, attempt_id: uuid.UUID, containment: str) -> None:
+    """Record how the attempt is contained (``job`` or ``none``); a failed write never blocks it."""
+    try:
+        await pool.execute(
+            "UPDATE public.healing_attempts SET containment = $2 WHERE id = $1",
+            attempt_id,
+            containment,
+        )
+    except Exception:  # noqa: BLE001 - a label is bookkeeping, not a gate
+        logger.warning("QA containment label not recorded for attempt=%s", attempt_id)
+
+
 async def _run_investigation_session(
     pool: asyncpg.Pool,
     repo_root: Path,
@@ -1209,6 +1221,9 @@ async def _run_investigation_session(
     """
     import time as _time
 
+    await _label_containment(
+        pool, attempt_id, "job" if config.job_isolation is not None else "none"
+    )
     investigation_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
     _phase_start = _time.monotonic()
@@ -1532,6 +1547,7 @@ async def _run_investigation_session(
             branch_name=branch_name,
             base_sha=base_sha,
             identity=identity,
+            isolated=config.job_isolation is not None,
         )
         if refusal is None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
