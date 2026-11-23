@@ -1880,7 +1880,7 @@ SCHEMA ChroniclesRecentDay 202e8e90a41d
 SCHEMA ChroniclesStateClass e8ee7c2708c1
 SCHEMA ChroniclesStreaks 575063c293e4
 SCHEMA ChroniclesVoiceSource bcf3d2867e3b
-SCHEMA CircuitBreakerAttempt fa4804ada6f1
+SCHEMA CircuitBreakerAttempt 042ee59333b3
 SCHEMA CircuitBreakerResetRequest 332d48b02535
 SCHEMA CircuitBreakerResetResponse 0ee49796f67b
 SCHEMA Claim 965511cc2e61
@@ -2418,7 +2418,7 @@ SCHEMA QaActiveDismissal 3ff14391ba8c
 SCHEMA QaAllTimeStats 8289d813f2fd
 SCHEMA QaCaseDossier ed4f31dd2018
 SCHEMA QaCaseSummary 0ea7d983c5d7
-SCHEMA QaCircuitBreaker f1e912d97992
+SCHEMA QaCircuitBreaker 8bf3e6ef1ca1
 SCHEMA QaCredentialsStatus 456016a13c44
 SCHEMA QaDismissal 087ba4ff726a
 SCHEMA QaFindingRecord 95c578be2648
@@ -2429,8 +2429,8 @@ SCHEMA QaJournalEvent fa1859cb8e91
 SCHEMA QaKpiBlock 3d42bd9431cb
 SCHEMA QaLoopCondition 147cc33769bb
 SCHEMA QaMetaReviewFinding 1a712e44641b
-SCHEMA QaPatrolDetail 3ac47f939438
-SCHEMA QaPatrolSummary 18731d088730
+SCHEMA QaPatrolDetail d38d7a03b3e4
+SCHEMA QaPatrolSummary d8e159e02dc5
 SCHEMA QaPrSummary 560ca14d74a4
 SCHEMA QaRepoConfig db996ebbcef2
 SCHEMA QaRepoConfigUpdate 200637e918ed
@@ -2695,7 +2695,7 @@ SCHEMA butlers__api__models__memory__EntitySummary 9f5a7b4e964b
 SCHEMA butlers__api__models__search__SearchResponse e0fc9de0b1ce
 SCHEMA butlers__api__routers__dashboard_briefing__Briefing 53310f1bef58
 SCHEMA butlers__api__routers__healing__CircuitBreakerStatus b3d61e99e989
-SCHEMA butlers__api__routers__qa__CircuitBreakerStatus e146f074135d
+SCHEMA butlers__api__routers__qa__CircuitBreakerStatus 2ac9eea81799
 SCHEMA health_api_models__Briefing beb73165029a
 SCHEMA relationship_api_models_internal__EntityDetail 432c031e9e6c
 SCHEMA relationship_api_models_internal__EntityInfoEntry e42889ba8d9a

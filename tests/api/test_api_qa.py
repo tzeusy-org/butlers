@@ -1073,6 +1073,124 @@ class TestGetCircuitBreakerStatus:
         assert "manual_reset" not in cb_query
 
 
+class TestCircuitBreakerCause:
+    """The breaker names why it tripped and when it next probes (bu-ejow5p.3)."""
+
+    @staticmethod
+    def _rows(details: list[str | None], *, status: str = "failed") -> list[_MockRecord]:
+        from datetime import timedelta
+
+        return [
+            _r(
+                {
+                    "id": uuid.uuid4(),
+                    "status": status,
+                    "error_detail": detail,
+                    "closed_at": _NOW - timedelta(minutes=minutes),
+                }
+            )
+            for minutes, detail in enumerate(details)
+        ]
+
+    async def _get(self, rows):
+        return (
+            await _call(
+                _build_app(fetch_side_effect=lambda *_a: rows)[0],
+                "get",
+                "/api/qa/circuit-breaker",
+            )
+        ).json()["data"]
+
+    async def test_one_structural_cause_is_named_with_the_next_probe_time(self) -> None:
+        pub = "publication_unavailable: no publisher configured\nsecond line"
+        data = await self._get(self._rows([pub] * 5))
+        assert data["tripped"] is True
+        assert data["dominant_cause"] == "publisher_unconfigured"
+        assert data["cause_counts"] == {"publisher_unconfigured": 5}
+        assert data["next_probe_at"] == "2026-04-05T12:15:00Z"
+        first = data["recent_attempts"][0]
+        assert first["reason_class"] == "publisher_unconfigured"
+        assert first["reason_text"] == "publication_unavailable: no publisher configured"
+
+    async def test_mixed_causes_say_mixed_with_counts(self) -> None:
+        pub = "publication_unavailable: no publisher"
+        data = await self._get(self._rows([None] + [pub] * 4))
+        assert data["dominant_cause"] == "mixed"
+        assert data["cause_counts"] == {"execution_failure": 1, "publisher_unconfigured": 4}
+
+    async def test_unparseable_text_is_an_execution_failure_never_publication(self) -> None:
+        data = await self._get(self._rows(["???"] * 5))
+        assert data["dominant_cause"] == "execution_failure"
+        assert {a["reason_class"] for a in data["recent_attempts"]} == {"execution_failure"}
+
+    async def test_a_closed_breaker_names_no_cause_and_no_probe(self) -> None:
+        data = await self._get(self._rows([None] * 3))
+        assert data["tripped"] is False
+        assert data["dominant_cause"] is None
+        assert data["next_probe_at"] is None
+
+    async def test_reason_text_never_carries_a_credential(self) -> None:
+        secret = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc"
+        data = await self._get(self._rows([f"provider auth failed\n{secret}"] * 5))
+        assert {a["reason_text"] for a in data["recent_attempts"]} == {"provider auth failed"}
+        data = await self._get(self._rows([f"{secret} rejected"] * 5))
+        assert "eyJhbGci" not in data["recent_attempts"][0]["reason_text"]
+
+    async def test_attempt_closed_at_is_a_timestamp_and_opened_at_names_the_trip(self) -> None:
+        data = await self._get(self._rows([None] * 5))
+        assert data["recent_attempts"][0]["closed_at"] == "2026-04-05T12:00:00Z"
+        assert data["opened_at"] == "2026-04-05T12:00:00Z"
+
+    async def test_the_summary_breaker_carries_opened_at_with_the_cause(self) -> None:
+        from datetime import timedelta
+
+        rows = [
+            _r(
+                {
+                    "id": uuid.uuid4(),
+                    "status": "failed",
+                    "error_detail": None,
+                    "closed_at": _NOW - timedelta(minutes=i),
+                }
+            )
+            for i in range(5)
+        ]
+        app, _ = _build_summary_app(cb_rows=rows)
+        breaker = (await _call(app, "get", "/api/qa/summary")).json()["data"]["circuit_breaker"]
+        assert breaker["tripped"] is True
+        assert breaker["opened_at"] == "2026-04-05T12:00:00Z"
+        assert breaker["dominant_cause"] == "execution_failure"
+
+    async def test_failed_probes_push_the_next_probe_out(self) -> None:
+        data = await self._get(self._rows([None] * 7))  # trip plus two failed probes
+        assert data["next_probe_at"] == "2026-04-05T13:00:00Z"  # 60 minute backoff
+
+
+class TestPatrolHaltReason:
+    async def test_the_patrol_list_and_detail_carry_the_halt_reason(self) -> None:
+        patrol_id = uuid.uuid4()
+        row = _make_patrol_row(patrol_id=patrol_id, status="halted", halt_reason="circuit_breaker")
+        listed = (
+            await _call(
+                _build_app(fetch_rows=[row], fetchval_result=1)[0], "get", "/api/qa/patrols"
+            )
+        ).json()["data"][0]
+        assert listed["status"] == "halted" and listed["halt_reason"] == "circuit_breaker"
+        detail = (
+            await _call(
+                _build_app(fetchrow_result=row, fetch_rows=[])[0],
+                "get",
+                f"/api/qa/patrols/{patrol_id}",
+            )
+        ).json()["data"]
+        assert detail["halt_reason"] == "circuit_breaker"
+
+    async def test_halted_is_an_accepted_status_filter(self) -> None:
+        app, _ = _build_app(fetch_rows=[], fetchval_result=0)
+        response = await _call(app, "get", "/api/qa/patrols?status=halted")
+        assert response.status_code == 200
+
+
 class TestGetPatrol:
     async def test_patrol_detail_preserves_unknown_status_for_read_only_presentation(self) -> None:
         """A corrupt stored value reaches the fail-closed frontend instead of a 500."""
