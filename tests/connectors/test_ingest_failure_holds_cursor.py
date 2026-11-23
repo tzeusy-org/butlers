@@ -869,3 +869,23 @@ async def test_telegram_user_holds_its_checkpoint_when_the_park_is_not_written()
     assert connector._last_message_id == 5
     (row,) = connector._db_pool.written
     assert (row[_ID], row[_STATUS]) == ("5", "error")
+
+
+async def test_telegram_user_never_parks_a_message_without_its_journal_row() -> None:
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = _telegram_connector()  # a working park store
+    connector._submit_to_ingest = AsyncMock(side_effect=EvidenceNotCommitted("insert_failed"))  # type: ignore[method-assign]
+    await connector._process_message(_telegram_message(4))
+    for _ in range(connector._ingest_retry.max_attempts + 2):
+        await connector._retry_pending_messages()
+
+    assert connector._db_pool.written == []  # never parked
+    assert set(connector._retry_pending) == {"100:4"}  # still waiting
+    assert connector._last_message_id is None  # the checkpoint never moved
+    assert connector._ingest_retry.attempts("100:4") == 0  # the budget is not spent
+
+    connector._submit_to_ingest = AsyncMock()  # type: ignore[method-assign]
+    await connector._retry_pending_messages()
+    assert connector._retry_pending == {}
+    assert connector._last_message_id == 4

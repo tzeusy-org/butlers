@@ -119,6 +119,15 @@ class _FakeCursorPool:
         return _FakeAcquireContext(self.store, self.registered_identities)
 
 
+@pytest.fixture(autouse=True)
+def _journal_writes_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about device identity, not evidence (its own tests cover the journal)."""
+    from butlers.connectors import owntracks
+
+    monkeypatch.setattr(owntracks, "persist_location_point", AsyncMock(return_value=True))
+    monkeypatch.setattr(owntracks, "commit_envelope", AsyncMock(return_value=True))
+
+
 def _make_connector(
     *,
     cursor_pool: _FakeCursorPool | None = None,

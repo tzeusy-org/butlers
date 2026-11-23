@@ -199,3 +199,20 @@ async def test_real_submit_exception_log_withholds_the_exception_text(connector,
 
     _assert_nowhere(caplog, _ECHO)
     assert any(r.getMessage().startswith("Failed to submit") for r in caplog.records)
+
+
+async def test_a_batch_without_its_journal_row_is_never_parked_or_released(connector):
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector._batch_retry = IngestRetryBudget(1)  # spent at once for any other failure
+    connector._db_pool = pool = FilteredEventsPool()
+    await _failing_flush(
+        connector, sender_id=1001, text="hello", error=EvidenceNotCommitted("insert_failed")
+    )
+    for final in (False, True):
+        for held in list(connector._held_batches["1001"]):
+            await connector._flush_batch("1001", held.messages, held.chat_title, final, held)
+
+    assert pool.written == []  # never parked
+    assert connector._held_batches["1001"][0].messages  # still held
+    connector._save_checkpoint.assert_not_awaited()  # the checkpoint never moved

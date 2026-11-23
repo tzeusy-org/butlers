@@ -31,7 +31,7 @@ def _connector(call_tool: AsyncMock, db_pool: Any = None) -> OwnTracksConnector:
     connector = OwnTracksConnector(
         config=OwnTracksConnectorConfig(switchboard_mcp_url="http://test-switchboard/mcp"),
         webhook_token="test-token",
-        db_pool=db_pool,
+        db_pool=db_pool or _FakePool(),
     )
     connector._mcp_client = AsyncMock()
     connector._mcp_client.call_tool = call_tool
@@ -134,13 +134,37 @@ async def test_a_park_that_is_not_written_answers_503_and_parks_on_the_resend() 
         await _stop(connector)
 
 
-async def test_with_no_database_a_spent_point_is_never_acknowledged() -> None:
-    connector = _connector(AsyncMock(side_effect=_always_unreachable), db_pool=None)
-    try:
-        for _ in range(connector._ingest_retry.max_attempts + 1):
-            assert (await _post(connector, _POINT)).status_code == 503
-    finally:
-        await _stop(connector)
+async def test_it_refuses_to_start_without_a_database_pool() -> None:
+    """No pool means no evidence journal: it must not serve a webhook that can only answer 503."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = OwnTracksConnector(
+        config=OwnTracksConnectorConfig(switchboard_mcp_url="http://test-switchboard/mcp"),
+        webhook_token="test-token",
+        db_pool=None,
+    )
+    with pytest.raises(EvidenceNotCommitted) as refused:
+        await connector.start()
+    assert refused.value.reason == "no_pool"
+    assert connector._running is False
+
+
+async def test_the_runner_exits_when_the_pool_cannot_be_created(monkeypatch) -> None:
+    import asyncpg
+
+    async def unreachable(**_kwargs: Any) -> Any:
+        raise OSError("synthetic: database down")
+
+    monkeypatch.setattr(asyncpg, "create_pool", unreachable)
+    monkeypatch.setattr(owntracks, "configure_logging", lambda *a, **k: None)
+    monkeypatch.setattr(
+        owntracks.OwnTracksConnectorConfig,
+        "from_env",
+        classmethod(lambda cls: cls(switchboard_mcp_url="http://test-switchboard/mcp")),
+    )
+    with pytest.raises(SystemExit) as exited:
+        await owntracks.run_owntracks_connector()
+    assert exited.value.code == 1
 
 
 async def test_a_slow_replay_drain_does_not_hold_the_answer(monkeypatch) -> None:

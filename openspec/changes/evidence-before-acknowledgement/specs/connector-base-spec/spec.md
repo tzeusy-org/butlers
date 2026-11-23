@@ -20,7 +20,8 @@ Scope: v1-mandatory
 
 - **WHEN** the evidence write for an event fails
 - **THEN** the connector SHALL NOT submit the event, advance its checkpoint or cursor, or acknowledge it to the provider
-- **AND** the failure SHALL retry or hold through the connector's existing retry, hold or park path
+- **AND** the event SHALL be held and retried; it SHALL NOT be parked, counted as skipped, or charged against a retry budget, because the park path is for submit failures only
+- **AND** a connector with no database pool SHALL refuse to start rather than acknowledge without evidence
 
 #### Scenario: A failed submit keeps the evidence
 

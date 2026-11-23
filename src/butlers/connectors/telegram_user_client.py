@@ -67,7 +67,7 @@ from butlers.connectors.discretion import (
     DiscretionEvaluator,
     classify_ignore_kind,
 )
-from butlers.connectors.evidence_journal import commit_envelope
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -1237,6 +1237,12 @@ class TelegramUserClientConnector:
                 _raise_site(exc),
                 extra={"endpoint_identity": self._config.endpoint_identity},
             )
+            if isinstance(exc, EvidenceNotCommitted):
+                # Evidence before acknowledgement (bu-uhbhzq.4): no journal row, so the batch is
+                # never parked, released or counted against its retry budget; the checkpoint
+                # stays below it.
+                self._hold_batch(chat_id, held, batch_key, buffered_messages, chat_title)
+                return
             if not final and not self._batch_retry.failed(batch_key):
                 self._hold_batch(chat_id, held, batch_key, buffered_messages, chat_title)
                 return
@@ -1769,6 +1775,12 @@ class TelegramUserClientConnector:
                 # for a bounded retry, with the checkpoint held below it. Once its
                 # attempts are spent, park it as a replayable error row below.
                 retry_key = self._retry_key(message)
+                if isinstance(exc, EvidenceNotCommitted):
+                    # No journal row: never parked and never counted against the retry budget;
+                    # the message waits for another attempt with the checkpoint below it.
+                    self._retry_pending[retry_key] = message
+                    await self._flush_and_drain()
+                    return
                 if isinstance(getattr(message, "id", None), int) and not (
                     self._ingest_retry.failed(retry_key)
                 ):
