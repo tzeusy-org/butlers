@@ -75,6 +75,10 @@ spec:
             {{- end }}
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
+            {{- if .Values.qaInvestigator.enabled }}
+            # bu-ejow5p.11: the exchange the daemon stages attempts in and seals from.
+            - {name: qa-exchange, mountPath: /var/lib/butlers/qa-exchange}
+            {{- end }}
             {{- range list "claude" "codex" "opencode" "gemini" }}
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
@@ -104,6 +108,10 @@ spec:
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
+        {{- if .Values.qaInvestigator.enabled }}
+        - name: qa-exchange
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-qa-exchange}
+        {{- end }}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
         # Optional: without the Secret the importer skips intake and still reconciles.
         - name: mcp-proposals-reader

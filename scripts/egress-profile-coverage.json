@@ -6036,7 +6036,7 @@
       "sha256": "744448dcaa3b8babad381a43dc8d875394760759cc29fb528069105c9f2b0d76"
     },
     "deploy/helm/butlers/templates/butlers-up.yaml": {
-      "sha256": "8c09cd242bd9351925c496393eaddf9af93ca911cdb24e777b5e86a3781cd237"
+      "sha256": "f0cb116f037780b4c14fbd7e6aa22fdbcf9a659242200102eaf4a1540dd291b2"
     },
     "deploy/helm/butlers/templates/connector-podmonitor.yaml": {
       "sha256": "d910cfcf8a4ae5b79dc712e8f050fde764ef37f10d462dd63a2041d391d5c03a"

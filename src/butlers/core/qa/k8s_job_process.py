@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -101,6 +102,10 @@ class K8sJobProcess:
         )
         return cls(namespace=ns, client=client)
 
+    @property
+    def namespace(self) -> str:
+        return self._ns
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
@@ -183,6 +188,47 @@ class K8sJobProcess:
         self.undeleted.discard(name)
         return True
 
+    # -- fleet (restart sweep and concurrency) ------------------------------------------------
+
+    async def list_attempt_jobs(self, release: str) -> list[AttemptJob]:
+        """This release's attempt Jobs; a read failure raises ``JobLaunchRefused``.
+
+        Selected by component, release instance and the ``pod`` containment label, so another
+        release's Jobs and a verifier's probe Jobs (containment ``probe``) are never listed.
+        """
+        response = await self._request(
+            "GET",
+            self._jobs(),
+            params={
+                "labelSelector": (
+                    "app.kubernetes.io/component=qa-investigator,"
+                    f"app.kubernetes.io/instance={release},butlers.io/qa-containment=pod"
+                )
+            },
+        )
+        if response.status_code != 200:
+            raise _refusal_for(response)
+        jobs = []
+        for item in response.json().get("items", []):
+            meta = item.get("metadata", {})
+            conditions = item.get("status", {}).get("conditions", []) or []
+            terminal = any(
+                c.get("type") in ("Complete", "Failed") and c.get("status") == "True"
+                for c in conditions
+            )
+            jobs.append(
+                AttemptJob(
+                    name=str(meta.get("name", "")),
+                    attempt_id=(meta.get("labels") or {}).get("butlers.io/qa-attempt"),
+                    terminal=terminal,
+                )
+            )
+        return jobs
+
+    async def delete_job(self, name: str) -> bool:
+        """Delete one Job; ``False`` (recorded in ``undeleted``) if the API refused."""
+        return await self._delete(name)
+
     # -- public ------------------------------------------------------------------------------
 
     async def run(self, manifest: dict[str, Any], *, timeout_s: float) -> JobOutcome:
@@ -251,6 +297,15 @@ def _volume_shape(volume: dict[str, Any]) -> tuple[str, str, str]:
     kind = next((k for k in volume if k != "name"), "")
     claim = (volume.get(kind) or {}).get("claimName", "") if kind == "persistentVolumeClaim" else ""
     return (str(volume.get("name", "")), kind, str(claim))
+
+
+@dataclass(frozen=True)
+class AttemptJob:
+    """One investigator Job as the cluster reports it."""
+
+    name: str
+    attempt_id: str | None
+    terminal: bool
 
 
 def _fingerprint(job: dict[str, Any]) -> dict[str, Any] | None:

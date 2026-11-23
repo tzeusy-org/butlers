@@ -46,7 +46,9 @@ from butlers.core.qa.dispatch import (
     dispatch_novel_findings,
 )
 from butlers.core.qa.findings import get_dispatch_queued_findings
+from butlers.core.qa.job_isolation import JobIsolation, JobIsolationSettings, sweep_orphans
 from butlers.core.qa.journal import record_patrol_tick_events
+from butlers.core.qa.k8s_job_process import K8sJobProcess
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.patrol_provenance import (
     DEFAULT_ENABLED_SOURCES,
@@ -321,6 +323,8 @@ class QaConfig(BaseModel):
     patrol_interval_minutes: int = _DEFAULT_PATROL_INTERVAL
     log_lookback_minutes: int = _DEFAULT_LOG_LOOKBACK
     max_concurrent_investigations: int = _DEFAULT_MAX_CONCURRENT
+    job_isolation: JobIsolationSettings | None = None
+    """Per-attempt Job isolation (bu-ejow5p.11); ``None`` keeps in-daemon worktrees."""
     severity_threshold: int = _DEFAULT_SEVERITY_THRESHOLD
     enabled_sources: list[str] = list(DEFAULT_ENABLED_SOURCES)
     max_reactive_buffer: int = _DEFAULT_MAX_REACTIVE_BUFFER
@@ -421,6 +425,7 @@ class QaModule(Module):
     """
 
     def __init__(self) -> None:
+        self._isolation: JobIsolation | None = None
         self._config = QaConfig()
         self._butler_name: str = "qa"
         self._pool: Any = None
@@ -629,6 +634,38 @@ class QaModule(Module):
             await reap_stale_worktrees(self._repo_root, pool)
         except Exception:
             logger.warning("QaModule startup: reap_stale_worktrees failed", exc_info=True)
+
+        # Sweep Jobs and exchange directories orphaned by the previous run (before any attempt).
+        isolation = self._job_isolation()
+        if isolation is not None:
+            try:
+                report = await sweep_orphans(isolation)
+                logger.info(
+                    "QaModule startup: orphan sweep removed %d job(s), %d dir(s); %d undeleted",
+                    report.jobs_deleted,
+                    report.directories_removed,
+                    report.jobs_undeleted,
+                )
+            except Exception:
+                logger.warning("QaModule startup: orphan sweep failed", exc_info=True)
+
+    def _job_isolation(self) -> JobIsolation | None:
+        """The configured per-attempt isolation, built once; ``None`` when not configured."""
+        settings = self._config.job_isolation
+        if settings is None:
+            return None
+        if self._isolation is None:
+            runner = K8sJobProcess.in_cluster(namespace=settings.namespace)
+            self._isolation = JobIsolation(
+                namespace=runner.namespace,
+                release=settings.release,
+                image=settings.image,
+                exchange_claim=settings.exchange_claim,
+                exchange_root=settings.exchange_root,
+                runner=runner,
+                model_proxy_url=settings.model_proxy_url,
+            )
+        return self._isolation
 
     async def _recover_stale_patrols(self, pool: Any) -> None:
         """Mark any stale 'running' patrol rows as 'error' after daemon restart.
@@ -1325,6 +1362,7 @@ class QaModule(Module):
                 max_concurrent=self._config.max_concurrent_investigations,
                 dashboard_base_url=self._config.dashboard_base_url,
                 repo_whitelist=self._repo_whitelist,
+                job_isolation=self._job_isolation(),
             )
 
             # Prune completed watchdog tasks before dispatching
@@ -1888,6 +1926,7 @@ class QaModule(Module):
                 severity_threshold=self._config.severity_threshold,
                 max_concurrent=self._config.max_concurrent_investigations,
                 dashboard_base_url=self._config.dashboard_base_url,
+                job_isolation=self._job_isolation(),
             )
 
         try:

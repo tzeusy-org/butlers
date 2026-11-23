@@ -320,3 +320,261 @@ async def test_retention_flags_a_daemon_run_export_and_clears_it_only_for_a_job(
         await retention.retain_export(_Pool(), uuid.uuid4(), export)
         await retention.retain_export(_Pool(), uuid.uuid4(), export, sealed_before_isolation=False)
     assert seen == [True, False]
+
+
+class _Fleet(_Runner):
+    def __init__(self, jobs, *, fail_delete=()):
+        self.jobs = jobs
+        self.deleted: list[str] = []
+        self.fail_delete = set(fail_delete)
+
+    async def list_attempt_jobs(self, release):
+        self.releases = getattr(self, "releases", []) + [release]
+        if self.jobs is None:
+            raise RuntimeError("api down")
+        return self.jobs
+
+    async def delete_job(self, name):
+        if name in self.fail_delete:
+            return False
+        self.deleted.append(name)
+        return True
+
+
+def _job(name, attempt, terminal=False):
+    from butlers.core.qa.k8s_job_process import AttemptJob
+
+    return AttemptJob(name=name, attempt_id=attempt, terminal=terminal)
+
+
+def _fleet_iso(tmp_path, fleet) -> JobIsolation:
+    from dataclasses import replace
+
+    return replace(_iso(tmp_path), runner=fleet)
+
+
+async def test_the_sweep_removes_only_what_no_live_attempt_owns(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    fleet = _Fleet(
+        [_job("qa-live", "live"), _job("qa-dead", "dead"), _job("qa-stuck", "stuck")],
+        fail_delete={"qa-stuck"},
+    )
+    iso = _fleet_iso(tmp_path, fleet)
+    for kind in ("attempts", "scratch"):
+        for name in ("live", "dead"):
+            (iso.exchange_root / kind / name).mkdir(parents=True)
+    report = await sweep_orphans(iso, live={"live"})
+    assert fleet.deleted == ["qa-dead"]
+    assert (report.jobs_deleted, report.jobs_undeleted, report.directories_removed) == (1, 1, 2)
+    assert (iso.exchange_root / "attempts" / "live").is_dir()
+    assert not (iso.exchange_root / "attempts" / "dead").exists()
+
+
+async def test_the_sweep_unlinks_a_planted_symlink_without_following_it(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    iso = _fleet_iso(tmp_path, _Fleet([]))
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep").write_text("x")
+    (iso.exchange_root / "attempts").mkdir()
+    os.symlink(victim, iso.exchange_root / "attempts" / "evil")
+    await sweep_orphans(iso, live=set())
+    assert (victim / "keep").exists()
+    assert not (iso.exchange_root / "attempts" / "evil").is_symlink()
+
+
+async def test_an_unreadable_fleet_reads_as_at_cap_not_empty(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import active_job_count
+
+    (tmp_path / "b").mkdir()
+    assert await active_job_count(_fleet_iso(tmp_path / "b", _Fleet(None))) is None
+    live = _Fleet([_job("a", "1"), _job("b", "2", terminal=True), _job("c", "3")])
+    assert await active_job_count(_fleet_iso(tmp_path, live)) == 2
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can open a 000 directory: no fallback runs")
+async def test_the_sweep_removes_a_pod_chmodded_000_tree(tmp_path) -> None:
+    from butlers.core.qa import job_isolation
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    iso = _fleet_iso(tmp_path, _Fleet([]))
+    locked = iso.exchange_root / "attempts" / "dead" / "sub"
+    locked.mkdir(parents=True)
+    (locked / "f").write_text("x")
+    os.chmod(locked, 0o000)
+    os.chmod(locked.parent, 0o500)
+    path_opens = []
+    real_open = os.open
+
+    def spy(name, flags, *args, **kwargs):
+        if flags & os.O_PATH:
+            path_opens.append(name)
+        return real_open(name, flags, *args, **kwargs)
+
+    with patch.object(job_isolation.os, "open", spy):
+        report = await sweep_orphans(iso, live=set())
+    assert report.directories_removed == 1
+    assert not (iso.exchange_root / "attempts" / "dead").exists()
+    assert path_opens, "the O_PATH fallback never ran, so the 000 case was not exercised"
+
+
+def test_opening_a_symlink_as_a_directory_is_refused(tmp_path) -> None:
+    """Pins O_NOFOLLOW on the open itself, independent of the scanner."""
+    from butlers.core.qa.job_isolation import _open_directory
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    os.symlink(target, link)
+    with pytest.raises(OSError):
+        _open_directory(link, None)
+
+
+def test_the_scan_never_yields_a_symlink_as_a_directory_to_open(tmp_path) -> None:
+    """Pins follow_symlinks=False in the scan, independent of O_NOFOLLOW on the open."""
+    from butlers.core.qa import job_isolation
+
+    target = tmp_path / "target"
+    target.mkdir()
+    root = tmp_path / "root"
+    (root / "real").mkdir(parents=True)
+    os.symlink(target, root / "link")
+    opened = []
+    real = job_isolation._open_directory
+
+    def spy(name, dir_fd):
+        opened.append(str(name))
+        return real(name, dir_fd)
+
+    with patch.object(job_isolation, "_open_directory", spy):
+        job_isolation._reopen_directories(root)
+    assert "real" in opened and "link" not in opened
+
+
+async def test_the_sweep_lists_only_this_releases_jobs(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    fleet = _Fleet([])
+    await sweep_orphans(_fleet_iso(tmp_path, fleet), live=set())
+    assert fleet.releases == ["butlers"]
+
+
+async def test_jobs_count_toward_the_batch_concurrency_cap(tmp_path) -> None:
+    """Rows say 0 active, but two non-terminal Jobs exist: nothing is dispatched."""
+    from butlers.core.qa.dispatch import dispatch_novel_findings
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    fleet = _Fleet([_job("a", "1"), _job("b", "2")])
+    config = QaDispatchConfig(max_concurrent=2, job_isolation=_fleet_iso(tmp_path, fleet))
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
+    ):
+        results = await dispatch_novel_findings(
+            pool=MagicMock(),
+            novel_findings=[_make_triaged(), _make_triaged()],
+            patrol_id=uuid.uuid4(),
+            config=config,
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert [r.reason for r in results] == ["concurrency_cap", "concurrency_cap"]
+    dispatch.assert_not_called()
+
+
+async def test_an_unreadable_fleet_stops_the_batch(tmp_path) -> None:
+    from butlers.core.qa.dispatch import dispatch_novel_findings
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    config = QaDispatchConfig(max_concurrent=2, job_isolation=_fleet_iso(tmp_path, _Fleet(None)))
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation") as dispatch,
+    ):
+        results = await dispatch_novel_findings(
+            pool=MagicMock(),
+            novel_findings=[_make_triaged()],
+            patrol_id=uuid.uuid4(),
+            config=config,
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+        )
+    assert [r.reason for r in results] == ["concurrency_cap"]
+    dispatch.assert_not_called()
+
+
+async def test_a_failed_clone_cleans_the_attempt_directory_and_releases_ownership(tmp_path) -> None:
+    from butlers.core.qa.dispatch import dispatch_qa_investigation
+    from butlers.core.qa.job_isolation import LIVE_ATTEMPTS
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    iso = _iso(tmp_path)
+    attempt_id = uuid.uuid4()
+    attempt_dir = iso.attempt_dir(attempt_id)
+
+    async def failing_clone(*args, **kwargs):
+        attempt_dir.mkdir(parents=True)  # the half-built tree a failed clone leaves behind
+        (attempt_dir / "repo").mkdir()
+        raise OSError("clone failed")
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(("c" * 40).encode(), b""))
+    mock_proc.returncode = 0
+    p = "butlers.core.qa.dispatch."
+    with (
+        patch(
+            p + "create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)
+        ),
+        patch(p + "update_finding_attempt", new_callable=AsyncMock),
+        patch(p + "get_publication_hold", new_callable=AsyncMock, return_value=False),
+        patch(p + "get_recent_attempt", new_callable=AsyncMock, return_value=None),
+        patch(p + "count_active_attempts", new_callable=AsyncMock, return_value=0),
+        patch(p + "active_job_count", new_callable=AsyncMock, return_value=0),
+        patch(p + "_is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
+        patch(p + "resolve_model_with_effective_tier", new_callable=AsyncMock),
+        patch(p + "update_attempt_status", new_callable=AsyncMock),
+        patch(p + "_refresh_main_commit", new_callable=AsyncMock, return_value="c" * 40),
+        patch(p + "prepare_attempt_clone", side_effect=failing_clone),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_qa_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(job_isolation=iso),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+    assert result.reason == "worktree_creation_failed"
+    assert not attempt_dir.exists()
+    assert str(attempt_id) not in LIVE_ATTEMPTS
+
+
+async def test_reopening_never_chmods_through_a_symlink(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import remove_tree
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.chmod(victim, 0o500)
+    root = tmp_path / "attempt"
+    locked = root / "sub"
+    locked.mkdir(parents=True)
+    os.chmod(locked, 0o000)  # forces the reopen path
+    os.symlink(victim, root / "link")
+    try:
+        remove_tree(root)
+        victim_mode = victim.stat().st_mode & 0o777
+    finally:
+        os.chmod(victim, 0o700)
+    assert not root.exists()
+    assert victim_mode == 0o500

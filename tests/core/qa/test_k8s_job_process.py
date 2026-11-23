@@ -298,3 +298,43 @@ async def test_a_failing_delete_does_not_mask_the_outcome_and_is_recorded() -> N
     outcome = await runner.run(_manifest(), timeout_s=600)
     assert outcome.state == "succeeded"
     assert runner.undeleted == {f"qa-{_ATTEMPT}"}
+
+
+async def test_list_attempt_jobs_selects_by_release_and_parses_terminal_state() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["selector"] = request.url.params["labelSelector"]
+        items = [
+            {
+                "metadata": {"name": "qa-a", "labels": {"butlers.io/qa-attempt": "a"}},
+                "status": {"conditions": [{"type": "Complete", "status": "True"}]},
+            },
+            {
+                "metadata": {"name": "qa-b", "labels": {"butlers.io/qa-attempt": "b"}},
+                "status": {"conditions": [{"type": "Failed", "status": "False"}]},
+            },
+            {"metadata": {"name": "qa-c"}},
+        ]
+        return httpx.Response(200, json={"items": items})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://k8s")
+    jobs = await K8sJobProcess(namespace=_NS, client=client).list_attempt_jobs("rel-1")
+    assert [(j.name, j.attempt_id, j.terminal) for j in jobs] == [
+        ("qa-a", "a", True),
+        ("qa-b", "b", False),
+        ("qa-c", None, False),
+    ]
+    selector = seen["selector"].split(",")
+    assert "app.kubernetes.io/instance=rel-1" in selector
+    assert "butlers.io/qa-containment=pod" in selector
+    assert "app.kubernetes.io/component=qa-investigator" in selector
+
+
+async def test_an_unreadable_job_list_is_a_refusal_not_an_empty_list() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(403, text="no")),
+        base_url="http://k8s",
+    )
+    with pytest.raises(JobLaunchRefused):
+        await K8sJobProcess(namespace=_NS, client=client).list_attempt_jobs("r")

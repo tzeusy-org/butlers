@@ -103,7 +103,9 @@ from butlers.core.qa.findings import (
     update_finding_dispatch_queued,
 )
 from butlers.core.qa.job_isolation import (
+    LIVE_ATTEMPTS,
     JobIsolation,
+    active_job_count,
     cleanup_attempt,
     import_artifacts,
     prepare_attempt_clone,
@@ -1224,6 +1226,9 @@ async def _run_investigation_session(
     await _label_containment(
         pool, attempt_id, "job" if config.job_isolation is not None else "none"
     )
+
+    if config.job_isolation is not None:
+        LIVE_ATTEMPTS.add(str(attempt_id))
     investigation_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
     _phase_start = _time.monotonic()
@@ -1735,6 +1740,7 @@ async def _run_investigation_session(
     finally:
         if config.job_isolation is not None:
             await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+            LIVE_ATTEMPTS.discard(str(attempt_id))
         if metrics is not None:
             metrics.recovery_workflow_end(workflow="qa")
         if _HAS_OTEL and _inv_span is not None:
@@ -3194,6 +3200,9 @@ async def dispatch_qa_investigation(
             )
         logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
+        if config.job_isolation is not None:
+            # Owned from before the directory exists, so a sweep cannot race its creation.
+            LIVE_ATTEMPTS.add(str(attempt_id))
         try:
             if config.job_isolation is not None:
                 # Independent clone in the exchange: no shared .git with the daemon's repository.
@@ -3219,6 +3228,9 @@ async def dispatch_qa_investigation(
                     base_ref=_base_ref,
                 )
         except (WorktreeCreationError, RuntimeError, OSError) as wt_exc:
+            if config.job_isolation is not None:
+                await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+                LIVE_ATTEMPTS.discard(str(attempt_id))
             logger.warning(
                 "QA dispatch failed: worktree creation error (fingerprint=%s): %s",
                 fp[:12],
@@ -3376,6 +3388,13 @@ async def dispatch_novel_findings(
 
     for triaged in novel_findings:
         active_count = await count_active_attempts(pool, qa_only=True)
+        if config.job_isolation is not None:
+            # Jobs the cluster still runs count too: a restart may have orphaned one. An
+            # unreadable fleet reads as "at cap", never as empty.
+            job_count = await active_job_count(config.job_isolation)
+            active_count = (
+                config.max_concurrent if job_count is None else max(active_count, job_count)
+            )
         if active_count >= config.max_concurrent:
             results.append(
                 QaDispatchResult(

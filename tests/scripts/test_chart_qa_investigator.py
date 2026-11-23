@@ -468,3 +468,13 @@ def test_investigator_pods_are_denied_ingress_and_start_with_dns_only_egress(on)
     rules = egress["spec"]["egress"]
     assert len(rules) == 1
     assert rules[0]["to"][0]["podSelector"]["matchLabels"] == {"k8s-app": "kube-dns"}
+
+
+def test_the_daemon_mounts_the_exchange_only_when_enabled(on):
+    pod = _named(on, "Deployment", "butlers-up")["spec"]["template"]["spec"]
+    mounts = {m["name"]: m["mountPath"] for m in pod["containers"][0]["volumeMounts"]}
+    assert mounts["qa-exchange"] == "/var/lib/butlers/qa-exchange"
+    volume = next(v for v in pod["volumes"] if v["name"] == "qa-exchange")
+    assert volume["persistentVolumeClaim"]["claimName"] == "butlers-qa-exchange"
+    off = _named(_docs(), "Deployment", "butlers-up")["spec"]["template"]["spec"]
+    assert "qa-exchange" not in {v["name"] for v in off["volumes"]}
