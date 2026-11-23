@@ -140,8 +140,13 @@ def test_log_directory_structure_and_credential_redaction(tmp_path: Path):
     assert (tmp_path / "uvicorn").is_dir()
     assert (tmp_path / "connectors").is_dir()
 
-    file_handlers = [h for h in logging.getLogger().handlers if isinstance(h, logging.FileHandler)]
-    assert str(file_handlers[0].baseFilename).endswith("butlers/health.log")
+    # Select by path, not position: pytest's own capture handler is also a FileHandler.
+    file_handlers = [
+        h
+        for h in logging.getLogger().handlers
+        if isinstance(h, logging.FileHandler) and str(h.baseFilename).endswith("butlers/health.log")
+    ]
+    assert len(file_handlers) == 1
     assert isinstance(file_handlers[0].formatter.processors[-1], structlog.processors.JSONRenderer)
 
     uv_handlers = [
