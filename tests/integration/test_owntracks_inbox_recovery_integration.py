@@ -33,7 +33,7 @@ def _key(n: int) -> str:
 
 
 @pytest.fixture
-async def pool(db):
+async def seeded(db):
     pool = await db(
         "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
@@ -54,42 +54,42 @@ async def _inbox(pool, key: str, text: str, raw, *, channel: str = "owntracks") 
     )
 
 
-async def test_the_candidates_exclude_stored_forgotten_and_foreign_rows(pool) -> None:
+async def test_the_candidates_exclude_stored_forgotten_and_foreign_rows(seeded) -> None:
     full = {"_type": "location", "lat": 1.5, "lon": 103.5, "tst": _BASE + 1}
-    await _inbox(pool, _key(1), "ignored", full)  # full tier: recovered from raw
-    await _inbox(pool, _key(2), "Location update: 1.5N, 103.5E, acc 5m", None)  # from text
-    await _inbox(pool, _key(2), "Location update: 1.5N, 103.5E, acc 5m", None)  # resent: once
-    await _inbox(pool, _key(3), recovery.WITHHELD_TEXT, None)  # withheld: not recoverable
-    await _inbox(pool, _key(4), "Location update: 1.5N, 103.5E", None)  # already in points
-    await _inbox(pool, _key(5), "Location update: 1.5N, 103.5E", None)  # forgotten by retention
-    await _inbox(pool, _key(6), "Location update: 1.5N, 103.5E", None, channel="telegram")
-    await pool.execute(
+    await _inbox(seeded, _key(1), "ignored", full)  # full tier: recovered from raw
+    await _inbox(seeded, _key(2), "Location update: 1.5N, 103.5E, acc 5m", None)  # from text
+    await _inbox(seeded, _key(2), "Location update: 1.5N, 103.5E, acc 5m", None)  # resent: once
+    await _inbox(seeded, _key(3), recovery.WITHHELD_TEXT, None)  # withheld: not recoverable
+    await _inbox(seeded, _key(4), "Location update: 1.5N, 103.5E", None)  # already in points
+    await _inbox(seeded, _key(5), "Location update: 1.5N, 103.5E", None)  # forgotten by retention
+    await _inbox(seeded, _key(6), "Location update: 1.5N, 103.5E", None, channel="telegram")
+    await seeded.execute(
         "INSERT INTO connectors.owntracks_points (idempotency_key, ts, lat, lon, "
         "endpoint_identity) VALUES ($1, now(), 1.5, 103.5, 'owntracks:synthetic')",
         _key(4),
     )
-    await pool.execute(
+    await seeded.execute(
         "INSERT INTO switchboard.location_retention_forgotten_keys "
         "(logical_source_key, grant_id) VALUES ($1, gen_random_uuid())",
         _key(5),
     )
-    before = await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox")
+    before = await seeded.fetchval("SELECT count(*) FROM switchboard.message_inbox")
 
-    async with pool.acquire() as conn:
+    async with seeded.acquire() as conn:
         report = await recovery.collect(conn)
 
     assert report["mode"] == "dry-run"
     assert report["candidates"] == 3
     assert report["recoverable"] == {"from_raw": 1, "from_text": 1}
     assert report["not_recoverable"] == {"unrecoverable_withheld": 1}
-    assert await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox") == before
-    assert await pool.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 1
+    assert await seeded.fetchval("SELECT count(*) FROM switchboard.message_inbox") == before
+    assert await seeded.fetchval("SELECT count(*) FROM connectors.owntracks_points") == 1
 
 
-async def test_a_write_inside_the_read_transaction_is_refused(pool) -> None:
+async def test_a_write_inside_the_read_transaction_is_refused(seeded) -> None:
     import asyncpg
 
-    async with pool.acquire() as conn:
+    async with seeded.acquire() as conn:
         async with conn.transaction(readonly=True):
             with pytest.raises(asyncpg.exceptions.ReadOnlySQLTransactionError):
                 await conn.execute("DELETE FROM switchboard.message_inbox")

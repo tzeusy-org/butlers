@@ -143,6 +143,10 @@ def summarize(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+# The candidate query scans the unindexed inbox; allow it five minutes.
+_COMMAND_TIMEOUT_S = 300
+
+
 async def collect(conn: asyncpg.Connection) -> dict[str, Any]:
     """The report for the candidates *conn* can see. One read-only transaction."""
     async with conn.transaction(readonly=True):
@@ -159,7 +163,7 @@ async def collect(conn: asyncpg.Connection) -> dict[str, Any]:
 
 
 async def run(dsn: str) -> dict[str, Any]:
-    conn = await asyncpg.connect(dsn, command_timeout=60)
+    conn = await asyncpg.connect(dsn, command_timeout=_COMMAND_TIMEOUT_S)
     try:
         return await collect(conn)
     finally:

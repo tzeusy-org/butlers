@@ -156,3 +156,54 @@ def test_a_driver_failure_never_echoes_the_connection_string(monkeypatch, capsys
     assert recovery.main([], stdin=io.StringIO(secret)) == 1
     out = capsys.readouterr().out
     assert "hunter2" not in out and "operation_failed" in out
+
+
+class _RecordingConn:
+    """Records the order of transaction and fetch calls without a database."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple] = []
+
+    def transaction(self, **kwargs):
+        conn = self
+
+        class _Tx:
+            async def __aenter__(self):
+                conn.events.append(("begin", kwargs))
+
+            async def __aexit__(self, *exc):
+                conn.events.append(("end",))
+
+        return _Tx()
+
+    async def fetch(self, sql, *args):
+        self.events.append(("fetch", sql))
+        return []
+
+
+async def test_collect_reads_inside_a_readonly_transaction() -> None:
+    conn = _RecordingConn()
+    await recovery.collect(conn)
+
+    assert conn.events == [
+        ("begin", {"readonly": True}),
+        ("fetch", recovery.CANDIDATES_SQL),
+        ("end",),
+    ]
+
+
+async def test_the_connection_allows_five_minutes_for_the_unindexed_scan(monkeypatch) -> None:
+    seen: dict = {}
+
+    class _Conn(_RecordingConn):
+        async def close(self) -> None:
+            seen["closed"] = True
+
+    async def connect(dsn, **kwargs):
+        seen.update(kwargs)
+        return _Conn()
+
+    monkeypatch.setattr(recovery.asyncpg, "connect", connect)
+    await recovery.run("postgresql://synthetic")
+
+    assert seen["command_timeout"] == 300 and seen["closed"]
