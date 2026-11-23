@@ -3626,6 +3626,14 @@ _NO_VENDOR_DOOR = """
 """
 
 
+# An owner-confirmed household subject names its entity on a calendar source (core_368). Archiving a
+# placeholder that a source's role names would silently unassign the household role, and this role
+# cannot read other butlers' calendar_sources: the core_368 definer answers across every schema.
+_NO_CALENDAR_ROLE_SUBJECT = """
+    AND NOT public.calendar_role_subject_entity_pinned(e.id)
+"""
+
+
 async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) -> int:
     """Archive ``public.entities`` orphaned by rejected/expired enrichment proposals.
 
@@ -3686,6 +3694,10 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
         "SELECT to_regprocedure('public.vendor_door_entity_pinned(uuid)') IS NOT NULL"
     ):
         clean_orphan += _NO_VENDOR_DOOR
+    if await db_pool.fetchval(
+        "SELECT to_regprocedure('public.calendar_role_subject_entity_pinned(uuid)') IS NOT NULL"
+    ):
+        clean_orphan += _NO_CALENDAR_ROLE_SUBJECT
     candidates = await db_pool.fetch(
         f"SELECT e.id FROM public.entities e WHERE {clean_orphan} ORDER BY e.id"
     )

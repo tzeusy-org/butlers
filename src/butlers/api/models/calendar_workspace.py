@@ -543,6 +543,41 @@ class ConflictScanWindow(BaseModel):
     end: datetime
 
 
+class HouseholdEventRef(BaseModel):
+    """One other-person event: when, whose and nothing else (REQ-module-calendar-038).
+
+    Deliberately has no title, location, description or attendee field: another person's text
+    must not reach a response, a prompt or a context line.
+    """
+
+    role: Literal["household_member", "other_person", "team"]
+    subject_entity_id: UUID | None = None
+    subject_label: str | None = None
+    start_at: datetime
+    end_at: datetime
+    all_day: bool = False
+
+
+class HouseholdSubjectGroup(BaseModel):
+    """One subject's context events (``subject_entity_id`` null for an unattributed source)."""
+
+    subject_entity_id: UUID | None = None
+    subject_label: str | None = None
+    events: list[HouseholdEventRef] = Field(default_factory=list)
+
+
+class HouseholdTimeResponse(BaseModel):
+    """Response payload for GET /api/calendar/workspace/household-time.
+
+    Context only: nothing here counts toward owner load. ``available=False`` means the read
+    could not run, so an empty list is not "nobody has anything on".
+    """
+
+    window: ConflictScanWindow
+    subjects: list[HouseholdSubjectGroup] = Field(default_factory=list)
+    available: bool = True
+
+
 class ConflictScanResponse(BaseModel):
     """Response payload for GET /api/calendar/workspace/conflicts.
 
@@ -565,6 +600,8 @@ class ConflictScanResponse(BaseModel):
     #: and the owner is not invited. Non-zero means "not everything was checked", not "clear".
     unclassified_sources: int = 0
     unclassified_events: int = 0
+    #: Other people's events in the window: attributed, opaque, never counted as owner load.
+    household_context: list[HouseholdEventRef] = Field(default_factory=list)
 
 
 class CalendarInvitationEntry(BaseModel):
@@ -801,12 +838,15 @@ class CalendarSourceRoleRequest(BaseModel):
 
     source_key: str
     role: CalendarSourceRole | None
+    #: Whose calendar it is, for ``household_member``, ``other_person`` and ``team`` only.
+    subject_entity_id: UUID | None = None
 
 
 class CalendarSourceRoleResponse(BaseModel):
     source_key: str
     role: CalendarSourceRole
     role_basis: Literal["provider_inferred", "owner_confirmed"]
+    subject_entity_id: UUID | None = None
     updated_butlers: list[str] = Field(default_factory=list)
     #: Schemas whose write failed. Non-empty means the role is not yet the same everywhere.
     failed_butlers: list[str] = Field(default_factory=list)

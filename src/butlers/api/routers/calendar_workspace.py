@@ -74,6 +74,9 @@ from butlers.api.models.calendar_workspace import (
     DaySheetGap,
     DaySheetItem,
     DaySheetResponse,
+    HouseholdEventRef,
+    HouseholdSubjectGroup,
+    HouseholdTimeResponse,
     QuickAddDraft,
     QuickAddParseRequest,
     QuickAddParseResponse,
@@ -103,6 +106,7 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
+    query_household_time,
     shallow_asdict,
     update_calendar_proposal_status,
 )
@@ -110,6 +114,7 @@ from butlers.api.routers.audit import log_audit_entry
 from butlers.config import list_butlers
 from butlers.core.liveness import derive_liveness
 from butlers.core.temporal.day_sheet import render_day_sheet_text
+from butlers.core.temporal.household_context import SUBJECT_ROLES, HouseholdEvent
 from butlers.credential_store import CredentialStore
 from butlers.google_account_registry import list_google_accounts
 from butlers.modules.calendar import (
@@ -1660,6 +1665,60 @@ async def get_workspace_conflicts(
             issues_available=scan.available,
             unclassified_sources=scan.unclassified_sources,
             unclassified_events=scan.unclassified_events,
+            household_context=[_household_ref(event) for event in scan.household_context],
+        )
+    )
+
+
+def _household_ref(event: HouseholdEvent) -> HouseholdEventRef:
+    return HouseholdEventRef(
+        role=event.role,  # type: ignore[arg-type]
+        subject_entity_id=UUID(event.subject_entity_id) if event.subject_entity_id else None,
+        subject_label=event.subject_label,
+        start_at=event.starts_at,
+        end_at=event.ends_at,
+        all_day=event.all_day,
+    )
+
+
+@router.get("/household-time", response_model=ApiResponse[HouseholdTimeResponse])
+async def get_household_time(
+    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
+    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
+    butler_name: str | None = Query(None, description="Optional single butler-schema filter"),
+    *,
+    db: Db,
+) -> ApiResponse[HouseholdTimeResponse]:
+    """Other people's events in the window, grouped by whose calendar, for context only.
+
+    Opaque by construction: time window, role and subject, with no title, location or
+    attendee. Nothing here counts toward owner load, and an unclassified source contributes
+    nothing. Fails open: a failed read returns ``available=false``, never HTTP 500. The window
+    must satisfy ``end > start`` and ``end - start <= 90 days`` (HTTP 400 otherwise).
+    """
+    if end <= start:
+        raise HTTPException(status_code=400, detail="end must be after start")
+    if end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
+    window = ConflictScanWindow(start=start, end=end)
+    read = await query_household_time(
+        db, start=start, end=end, butlers=[butler_name] if butler_name else None
+    )
+    groups: dict[str | None, HouseholdSubjectGroup] = {}
+    for event in read.events:
+        group = groups.setdefault(
+            event.subject_entity_id,
+            HouseholdSubjectGroup(
+                subject_entity_id=UUID(event.subject_entity_id)
+                if event.subject_entity_id
+                else None,
+                subject_label=event.subject_label,
+            ),
+        )
+        group.events.append(_household_ref(event))
+    return ApiResponse[HouseholdTimeResponse](
+        data=HouseholdTimeResponse(
+            window=window, subjects=list(groups.values()), available=read.available
         )
     )
 
@@ -3678,6 +3737,18 @@ async def set_calendar_source_role(
     targets = sorted(names if isinstance(names, list) else db.butler_names)
     role = request.role or "unclassified"
     basis = "owner_confirmed" if request.role is not None else "provider_inferred"
+    subject = request.subject_entity_id
+    if subject is not None and role not in SUBJECT_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail="A subject only accompanies the household_member, other_person or team role.",
+        )
+    if subject is not None and targets:
+        known = await db.pool(targets[0]).fetchval(
+            "SELECT 1 FROM public.entities WHERE id = $1", subject
+        )
+        if not known:
+            raise HTTPException(status_code=404, detail="Requested subject entity was not found")
 
     updated: list[str] = []
     failed: list[str] = []
@@ -3686,7 +3757,8 @@ async def set_calendar_source_role(
     # requests (even on different API replicas) cannot leave schemas on different roles.
     update_sql = f"""
         UPDATE calendar_sources
-        SET time_role = $1, role_basis = '{basis}', updated_at = now()
+        SET time_role = $1, role_basis = '{basis}', role_subject_entity_id = $3,
+            updated_at = now()
         WHERE source_key = $2
         RETURNING id
         """
@@ -3697,7 +3769,7 @@ async def set_calendar_source_role(
                     try:
                         # The lock-holding connection serves its own schema's write.
                         runner = lock_conn if butler == targets[0] else db.pool(butler)
-                        rows = await runner.fetch(update_sql, role, request.source_key)
+                        rows = await runner.fetch(update_sql, role, request.source_key, subject)
                     except Exception:
                         logger.warning(
                             "set_calendar_source_role failed in %s", butler, exc_info=True
@@ -3728,6 +3800,7 @@ async def set_calendar_source_role(
             "source_key": request.source_key,
             "role": role,
             "basis": basis,
+            "subject_entity_id": str(subject) if subject else None,
             "updated": updated,
             "failed": failed,
         },
@@ -3737,6 +3810,7 @@ async def set_calendar_source_role(
             source_key=request.source_key,
             role=role,  # type: ignore[arg-type]
             role_basis=basis,  # type: ignore[arg-type]
+            subject_entity_id=subject,
             updated_butlers=updated,
             failed_butlers=failed,
         )
