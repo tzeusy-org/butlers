@@ -532,3 +532,51 @@ def test_every_verifier_inverse_control_is_refused_by_admission_and_the_restored
         mutated = iv.render_inverse(probe, control)
         failures = _cel_admit(on_docs, "job", mutated, _LAUNCHER)
         assert failures, f"{control.name} was admitted by the Job policy"
+
+
+# What the API server adds to every pod before validating admission runs (DefaultTolerationSeconds
+# is a mutating plugin). A policy tested only on the raw template denies every real pod: the k3d
+# run 45142032830 (bu-ejow5p.11) hit exactly that.
+_DEFAULT_TOLERATIONS = [
+    {
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300,
+    },
+    {
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300,
+    },
+]
+
+
+def _defaulted_pod() -> dict:
+    pod = _pod_of(_good_job())
+    pod["spec"] = {**pod["spec"], "tolerations": [dict(t) for t in _DEFAULT_TOLERATIONS]}
+    return pod
+
+
+def test_a_pod_the_api_server_has_defaulted_is_still_admitted(on):
+    assert _cel_admit(on, "pod", _defaulted_pod(), _CONTROLLER) == []
+
+
+def test_only_the_defaulted_tolerations_are_admitted_on_a_pod(on):
+    for extra in (
+        {"operator": "Exists"},
+        {"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoSchedule"},
+        {"key": "dedicated", "operator": "Equal", "value": "gpu", "effect": "NoExecute"},
+    ):
+        pod = _defaulted_pod()
+        pod["spec"]["tolerations"].append(extra)
+        failures = _cel_admit(on, "pod", pod, _CONTROLLER)
+        assert failures and any("no host namespace" in f for f in failures), extra
+
+
+def test_a_job_template_may_carry_no_toleration_at_all(on):
+    job = _good_job()
+    job["spec"]["template"]["spec"]["tolerations"] = [dict(_DEFAULT_TOLERATIONS[0])]
+    failures = _cel_admit(on, "job", job, _LAUNCHER)
+    assert failures and any("no host namespace" in f for f in failures)

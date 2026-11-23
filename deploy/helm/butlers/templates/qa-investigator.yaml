@@ -149,7 +149,16 @@ spec:
         !(has(variables.spec.hostIPC) && variables.spec.hostIPC) &&
         !(has(variables.spec.shareProcessNamespace) && variables.spec.shareProcessNamespace) &&
         !has(variables.spec.nodeName) && !has(variables.spec.nodeSelector) &&
-        !has(variables.spec.affinity) && !has(variables.spec.tolerations) &&
+        !has(variables.spec.affinity) &&
+        {{- if eq $kind "pod" }}
+        {{- /* The DefaultTolerationSeconds admission plugin (mutating, runs before this policy) adds these two to every pod; no other toleration is admitted. */}}
+        (!has(variables.spec.tolerations) || variables.spec.tolerations.all(t,
+          has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+          has(t.operator) && t.operator == 'Exists' &&
+          has(t.effect) && t.effect == 'NoExecute')) &&
+        {{- else }}
+        !has(variables.spec.tolerations) &&
+        {{- end }}
         !has(variables.spec.priorityClassName) && !has(variables.spec.hostAliases) &&
         !has(variables.spec.runtimeClassName) &&
         has(variables.spec.enableServiceLinks) && variables.spec.enableServiceLinks == false
