@@ -108,6 +108,13 @@ as an owner.
   butler or capability role first. The bunkers themselves, and the runtime-attention
   v2–v5 ladder, are deleted by a later slice. Deleting them needs an owner decision on
   whether the migrator may act as the purpose owner roles.
+- **The shared login must not keep install and rollback EXECUTE.** It still holds
+  `EXECUTE` on the `SECURITY DEFINER` functions `dashboard_attention` and
+  `dashboard_stepup` `install`/`finalize`/`deactivate_interface`, and `perception_admin`
+  `install`/`rollback_interface`. They have no caller check, and `deactivate_interface`
+  revokes every claim and binding. Revoke `EXECUTE` on them from the shared login before
+  activation (bu-dss7he.25). The rotation block does not do this, and a static test forbids
+  adding it there.
 
 1. Provision the `butlers_migrator` login and its two BWS keys (bu-dss7he.21). Leave
    `BUTLERS_RUNTIME_DB_USER`/`_PASSWORD` in place: they remain the runtime login, and
@@ -134,6 +141,17 @@ as an owner.
    pass their head check. Then run
    `butlers db check-grants --after-init-db-replay`. The replay re-widens grants, and
    `apply-grants` narrows them again when `database.applyGrants` is on.
+6. Verify that no caller is silently refused. After the rotation, `dashboard_attention`
+   `remember`, `evaluate` and the claim functions return `false` to a shared-login
+   caller that has not done `SET ROLE`. That is dropped work, not an error, so a green
+   deploy proves nothing. Check, with the shared login's own sessions in view, that
+   attention writes still land:
+   - compare the row counts of the `dashboard_attention` tables before the rotation and
+     after a normal period of traffic;
+   - look for runtime sessions that connect as the shared login and call these functions
+     without a prior `SET ROLE` (`pg_stat_activity`, or the statement log);
+   - fix any such caller to `SET ROLE` into its butler or capability role (bu-dss7he.24)
+     before relying on the switch.
 
 **Rollback:** suspend, then set the flag back to `false`. Then transfer the other way
 (`--from-login butlers_migrator --to-login <shared>`) and replay init-db with the shared
