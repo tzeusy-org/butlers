@@ -1,7 +1,7 @@
 """The perception binding validator accepts the M7 condition leaves (bu-4c7nvp.1.5 S2).
 
 Revision ID: core_363
-Revises: core_360
+Revises: core_362
 Create Date: 2026-11-23 00:00:00.000000
 
 RFC 0038 S4.M7 and REQ-owner-watches-001 add six leaves to the one closed predicate AST:
@@ -28,8 +28,8 @@ this revision must not roll back what core_322 installed, and one schema's downg
 change a definition the others still run. The older body comes back with the older bootstrap, and
 core_322's downgrade remains the history-preserving rollback of the whole interface.
 
-The number follows main at the time of writing (core_360 is the tip; core_361 and core_362 are
-claimed by open changes); renumber and re-point down_revision on rebase if they merge first.
+The number follows main's tip (core_362); re-point down_revision on rebase if another core
+migration lands first.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_363"
-down_revision = "core_360"
+down_revision = "core_362"
 branch_labels = None
 depends_on = None
 

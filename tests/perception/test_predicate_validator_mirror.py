@@ -214,3 +214,49 @@ def test_decimal_values_are_measured_and_bounded_exactly():
     for bad in (Decimal("9e-1000"), Decimal("NaN"), Decimal("Infinity"), Decimal("1e1000")):
         with pytest.raises(ast.PredicateError):
             ast.validate({**leaf, "value": bad})
+
+
+@pytest.mark.parametrize("literal", ["1e999999999", "-1e-999999999", "0e-999999999"])
+def test_a_huge_exponent_is_refused_before_it_is_expanded(literal):
+    import time
+
+    document = (
+        '{"tag":"read_check","capability":"finance.balance","field":"available",'
+        f'"op":"lt","value":{literal}}}'
+    )
+    started = time.monotonic()
+    for check in (lambda: ast.loads(document), lambda: ast.validate(_decimal_leaf(literal))):
+        with pytest.raises(ast.PredicateError):
+            check()
+    assert time.monotonic() - started < 1.0  # no gigabyte string was built
+
+
+def _decimal_leaf(literal):
+    from decimal import Decimal
+
+    return {
+        "tag": "read_check",
+        "capability": "finance.balance",
+        "field": "available",
+        "op": "lt",
+        "value": Decimal(literal),
+    }
+
+
+@pytest.mark.parametrize(
+    "literal",
+    ["0", "0.000", "-0.0", "1", "-1", "123456", "0.000001", "1e3", "1.5e-6", "99999999999999e1"],
+)
+def test_the_arithmetic_width_matches_the_printed_width(literal):
+    from decimal import Decimal
+
+    value = Decimal(literal)
+    printed = "0" if value.is_zero() and value.as_tuple().exponent >= 0 else format(value, "f")
+    if value.is_zero() and value.as_tuple().exponent < 0:
+        printed = "0." + "0" * -value.as_tuple().exponent
+    assert ast._pg_width(value) == len(printed)
+
+
+def test_a_zero_with_a_huge_positive_exponent_is_still_zero():
+    # jsonb prints it as ``0``: zero in any spelling is allowed, and judged without expansion.
+    assert ast.validate(_decimal_leaf("0e999999999"))["value"] == 0

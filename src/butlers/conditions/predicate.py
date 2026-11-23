@@ -136,9 +136,29 @@ def _decimal(value: int | float | Decimal) -> Decimal:
     return Decimal(value)
 
 
+def _pg_width(d: Decimal) -> int:
+    """Characters in jsonb's plain text for a finite decimal, from its digits and exponent alone.
+
+    Computed arithmetically so a value such as ``1e999999999`` is judged without ever being
+    expanded into a string.
+    """
+    sign, digits, exponent = d.as_tuple()
+    count = len(digits)
+    if d.is_zero():
+        return 1 if exponent >= 0 else 2 - exponent  # type: ignore[operator]
+    negative = 1 if sign else 0
+    if exponent >= 0:  # type: ignore[operator]
+        return negative + count + exponent  # type: ignore[operator]
+    if -exponent >= count:  # type: ignore[operator]
+        return negative + 2 - exponent  # type: ignore[operator]
+    return negative + count + 1
+
+
 def _pg_text(value: int | float | Decimal) -> str:
     """The text jsonb prints for this number: plain decimal, scale kept, no sign on zero."""
     d = _decimal(value)
+    if d.is_finite() and _pg_width(d) > MAX_NUMBER_TEXT:
+        raise PredicateError(f"numeric value exceeds {MAX_NUMBER_TEXT} characters")
     if d.is_zero():
         exponent = d.as_tuple().exponent
         return "0" if exponent >= 0 else "0." + "0" * -exponent  # type: ignore[operator]
@@ -147,7 +167,7 @@ def _pg_text(value: int | float | Decimal) -> str:
 
 def _number(value: int | float | Decimal) -> bool:
     d = _decimal(value)
-    if not d.is_finite() or len(_pg_text(value)) > MAX_NUMBER_TEXT:
+    if not d.is_finite() or _pg_width(d) > MAX_NUMBER_TEXT:
         return False
     magnitude = d.copy_abs()
     return d.is_zero() or READ_MIN <= magnitude <= Decimal(READ_MAX)
