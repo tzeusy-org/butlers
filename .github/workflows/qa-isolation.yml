@@ -62,7 +62,7 @@ jobs:
           # The probe is standard library only, so the image is python plus the probe module.
           mkdir -p ctx/butlers/core/qa /tmp/ctx-unused
           touch ctx/butlers/__init__.py ctx/butlers/core/__init__.py ctx/butlers/core/qa/__init__.py
-          cp src/butlers/core/qa/isolation_probe.py ctx/butlers/core/qa/
+          cp src/butlers/core/qa/isolation_probe.py src/butlers/core/qa/egress_gate.py ctx/butlers/core/qa/
           cat > ctx/Dockerfile <<'DOCKERFILE'
           FROM python:3.12-slim
           RUN mkdir /app /workspace && chmod 0777 /workspace && echo staged > /app/staged.txt
