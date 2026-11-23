@@ -14,7 +14,10 @@
 - [ ] 2.2 Day load, conflict radar, prep, meeting card, debrief and household context exclude
       quarantined invitations; an unstamped needsAction non-owner invite reads as `unknown`.
 
-## 3. Owner verbs (slice S3) and connector hold (slice S4)
+## 3. Owner verbs (slice S3)
 
 - [ ] 3.1 Vouch and Block verbs with an idempotent re-stamp.
+
+## 4. Connector hold (slice S4)
+
 - [ ] 4.1 Connector holds the sync token and submits nothing when policy evaluation raises.

@@ -30,6 +30,7 @@ Downgrade drops them only when no other schema-local chain is still at core_370 
 from __future__ import annotations
 
 from alembic import op
+from butlers.db_authority.roles import butler_roles
 
 revision = "core_370"
 down_revision = "core_369"
@@ -39,15 +40,7 @@ depends_on = None
 _LOCK = (
     "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_370:organizer-verdict-inputs', 0))"
 )
-_ROLES = (
-    "butler_general_rw",
-    "butler_health_rw",
-    "butler_lifestyle_rw",
-    "butler_finance_rw",
-    "butler_messenger_rw",
-    "butler_relationship_rw",
-    "butler_travel_rw",
-)
+_ROLES = butler_roles()
 _IDENTITY = "public.organizer_identity_class(text)"
 _RULES = "public.organizer_policy_rules()"
 

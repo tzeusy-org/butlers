@@ -270,24 +270,19 @@ def test_a_listed_role_loses_a_grant_option_it_holds(postgres_container) -> None
         engine.dispose()
 
 
-def test_every_calendar_hosting_butler_is_granted_execute() -> None:
-    """A butler that hosts the calendar module must be in the migration's role list."""
+def test_the_grantees_come_from_the_runtime_role_registry() -> None:
+    """The revision grants through ``butler_roles()``, so a new butler role is covered."""
     import importlib.util
-    import tomllib
     from pathlib import Path
 
-    root = Path(__file__).resolve().parents[2]
-    spec = importlib.util.spec_from_file_location(
-        "core_370_roles", root / "alembic/versions/core/core_370_organizer_verdict_inputs.py"
+    from butlers.db_authority.roles import butler_roles
+
+    path = Path(__file__).resolve().parents[2] / (
+        "alembic/versions/core/core_370_organizer_verdict_inputs.py"
     )
+    spec = importlib.util.spec_from_file_location("core_370_roles", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    hosting = {
-        path.parent.name
-        for path in (root / "roster").glob("*/butler.toml")
-        if "calendar" in tomllib.loads(path.read_text()).get("modules", {})
-    }
-    assert hosting, "no calendar-hosting butler found: the scan is broken"
-    missing = {f"butler_{name}_rw" for name in hosting} - set(module._ROLES)
-    assert not missing, f"calendar-hosting roles lack EXECUTE in core_370: {sorted(missing)}"
+    assert tuple(module._ROLES) == butler_roles()
+    assert "butler_general_rw" in module._ROLES
