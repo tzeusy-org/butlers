@@ -32,6 +32,9 @@ idempotent and only the last schema to leave core_364 drops it, and only while i
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from alembic import op
 from butlers.db_authority.roles import butler_roles
 
@@ -77,12 +80,20 @@ BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION 'owner watches are durable' USING ERRCODE = '42501';
     END IF;
-    IF ROW(NEW.id, NEW.predicate, NEW.predicate_digest, NEW.grant_digest, NEW.sources,
+    IF ROW(NEW.id, NEW.predicate, NEW.predicate_digest, NEW.sources,
            NEW.categories, NEW.created_at)
        IS DISTINCT FROM
-       ROW(OLD.id, OLD.predicate, OLD.predicate_digest, OLD.grant_digest, OLD.sources,
+       ROW(OLD.id, OLD.predicate, OLD.predicate_digest, OLD.sources,
            OLD.categories, OLD.created_at) THEN
         RAISE EXCEPTION 'an owner watch boundary is immutable' USING ERRCODE = '42501';
+    END IF;
+    -- The grant binding moves only on a resume (paused to active, next generation): the owner
+    -- approved a card that rebinds the watch to the live grant it will read.
+    IF NEW.grant_digest IS DISTINCT FROM OLD.grant_digest
+       AND NOT (OLD.state = 'paused' AND NEW.state = 'active'
+                AND NEW.generation = OLD.generation + 1) THEN
+        RAISE EXCEPTION 'an owner watch grant binding changes only on a resume'
+            USING ERRCODE = '42501';
     END IF;
     IF OLD.state IN ('expired', 'deleted') THEN
         RAISE EXCEPTION 'a closed owner watch is frozen' USING ERRCODE = '42501';
@@ -241,6 +252,14 @@ def _installation_count() -> int:
     return count
 
 
+# The guard body is pinned too, so a database installed with an older body is repaired (the
+# trigger functions are CREATE OR REPLACE) rather than skipped.
+_GUARD_SHA = hashlib.sha256(
+    re.search(r"owner_watch_guard\(\) RETURNS trigger.*?AS \$\$(.*?)\$\$", _TRIGGERS, re.S)
+    .group(1)  # type: ignore[union-attr]
+    .encode()
+).hexdigest()
+
 # Catalog-only: the table, its three triggers and functions, the index, the policy, the RLS flags
 # (enabled, not forced) and the exact ACL (the Switchboard role exactly SELECT+INSERT+UPDATE, no
 # other grantee) are all in place. A later schema's chain that finds them returns without DDL,
@@ -260,6 +279,11 @@ AND (
     WHERE n.nspname = 'public'
       AND p.proname IN ('owner_watch_guard', 'owner_watch_cap', 'owner_watch_no_truncate')
 ) = 3
+AND EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public' AND p.proname = 'owner_watch_guard'
+      AND encode(sha256(convert_to(p.prosrc, 'UTF8')), 'hex') = '{_GUARD_SHA}'
+)
 AND EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname = 'public' AND indexname = 'owner_watches_state_idx'

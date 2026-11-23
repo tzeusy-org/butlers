@@ -199,6 +199,26 @@ class TestTableGuards:
             async with self.owner.acquire() as connection:
                 await connection.execute(statement)
 
+    async def test_the_grant_binding_moves_only_on_a_resume(self):
+        rebind = "grant_digest = repeat('b', 64), version = version + 1"
+        await self.seed(state=WatchState.PAUSED)
+        for statement in (
+            f"UPDATE public.owner_watches SET {rebind}",  # still paused
+            f"UPDATE public.owner_watches SET {rebind}, state = 'active'",  # same generation
+        ):
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await self.owner.execute(statement)
+        await self.owner.execute(
+            f"UPDATE public.owner_watches SET {rebind}, state = 'active', generation = generation + 1"
+        )
+        assert (
+            await self.owner.fetchval("SELECT grant_digest FROM public.owner_watches") == "b" * 64
+        )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):  # an active watch cannot rebind
+            await self.owner.execute(
+                "UPDATE public.owner_watches SET grant_digest = repeat('c', 64), version = version + 1"
+            )
+
     async def test_version_must_advance_by_exactly_one(self):
         await self.seed()
         with pytest.raises(asyncpg.SerializationError):

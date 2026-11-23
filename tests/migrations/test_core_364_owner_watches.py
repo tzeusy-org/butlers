@@ -285,3 +285,15 @@ def test_an_extra_restrictive_policy_is_dropped_on_repair(postgres_container):
         "WHERE polrelid = 'public.owner_watches'::regclass",
     )
     assert policies == "owner_watches_switchboard", policies
+
+
+def test_an_older_guard_body_is_repaired_not_skipped(postgres_container):
+    url = _drifted_then_repaired(
+        postgres_container,
+        [
+            "CREATE OR REPLACE FUNCTION public.owner_watch_guard() RETURNS trigger"
+            " LANGUAGE plpgsql SET search_path = pg_catalog AS $$ BEGIN RETURN NEW; END $$",
+        ],
+    )
+    body = _scalar(url, "SELECT prosrc FROM pg_proc WHERE proname = 'owner_watch_guard'")
+    assert "changes only on a resume" in body  # the current body is back

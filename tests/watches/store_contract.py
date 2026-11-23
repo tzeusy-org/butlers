@@ -63,6 +63,18 @@ class WatchStoreContract:
         stored = await store.get("w1")
         assert stored is not None and stored.pause_reason is None
 
+    async def test_a_resume_can_rebind_the_grant_digest(self):
+        store = self.make_store()
+        await store.write(make_watch("w1"), expected_version=None, cap=50)
+        paused = make_watch("w1", state=WatchState.PAUSED, version=2, pause_reason="grant")
+        await store.write(paused, expected_version=1, cap=50)
+        resumed = make_watch(
+            "w1", version=3, generation=2, grant_digest=_hex("moved"), pause_reason=None
+        )
+        assert await store.write(resumed, expected_version=2, cap=50) == resumed
+        stored = await store.get("w1")
+        assert stored is not None and stored.grant_digest == _hex("moved")
+
     async def test_a_replayed_insert_returns_the_committed_watch_unchanged(self):
         store = self.make_store()
         first = make_watch("w1")
