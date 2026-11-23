@@ -111,6 +111,11 @@ spec:
         apiVersions: [v1]
         operations: [CREATE]
         resources: [pods]
+      # An ephemeral container is the way to add a container to a running pod.
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [pods/ephemeralcontainers]
       {{- end }}
   # Judged: everything the launcher creates, and anything claiming the investigator identity.
   matchConditions:
@@ -146,7 +151,8 @@ spec:
         !has(variables.spec.nodeName) && !has(variables.spec.nodeSelector) &&
         !has(variables.spec.affinity) && !has(variables.spec.tolerations) &&
         !has(variables.spec.priorityClassName) && !has(variables.spec.hostAliases) &&
-        !has(variables.spec.runtimeClassName)
+        !has(variables.spec.runtimeClassName) &&
+        has(variables.spec.enableServiceLinks) && variables.spec.enableServiceLinks == false
     - message: the pod has exactly one container, and no init or ephemeral container
       expression: >-
         variables.spec.containers.size() == 1 &&
@@ -162,6 +168,8 @@ spec:
         has(variables.spec.securityContext.runAsGroup) && variables.spec.securityContext.runAsGroup == {{ $uid }} &&
         has(variables.spec.securityContext.fsGroup) && variables.spec.securityContext.fsGroup == {{ $uid }} &&
         !has(variables.spec.securityContext.supplementalGroups) &&
+        (!has(variables.spec.securityContext.appArmorProfile) ||
+         variables.spec.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
         !has(variables.spec.securityContext.sysctls)
     - message: the container is the exact daemon image by digest, unprivileged, read-only and capability-free
       expression: >-
@@ -176,6 +184,10 @@ spec:
           !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
           (!has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
           !has(c.securityContext.procMount) &&
+          (!has(c.securityContext.appArmorProfile) || c.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+          has(c.resources) && has(c.resources.limits) &&
+          'memory' in c.resources.limits && 'cpu' in c.resources.limits &&
+          'ephemeral-storage' in c.resources.limits &&
           has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) &&
           c.securityContext.capabilities.drop == ['ALL'] &&
           !has(c.securityContext.capabilities.add) &&
@@ -191,7 +203,7 @@ spec:
       expression: >-
         has(variables.spec.volumes) &&
         variables.spec.volumes.all(v,
-          has(v.emptyDir) ||
+          (has(v.emptyDir) && has(v.emptyDir.sizeLimit) && !has(v.emptyDir.medium)) ||
           (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == '{{ $claim }}')) &&
         variables.spec.containers.all(c,
           !has(c.volumeMounts) || c.volumeMounts.all(m,
@@ -201,6 +213,8 @@ spec:
     - message: an investigator Job never retries, has a deadline, is named for its attempt, and its template carries the same labels
       expression: >-
         has(object.spec.backoffLimit) && object.spec.backoffLimit == 0 &&
+        has(object.spec.parallelism) && object.spec.parallelism == 1 &&
+        has(object.spec.completions) && object.spec.completions == 1 &&
         has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds > 0 &&
         object.spec.activeDeadlineSeconds <= 14400 &&
         object.metadata.name == 'qa-' + variables.labels['butlers.io/qa-attempt'] &&

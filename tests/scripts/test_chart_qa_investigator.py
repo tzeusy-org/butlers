@@ -350,6 +350,30 @@ _BAD = [
     ("retries", _mutate(("spec", "backoffLimit"), 3), "never retries"),
     ("no-deadline", _mutate(("spec", "activeDeadlineSeconds"), _DELETE), "never retries"),
     ("name-not-attempt", _mutate(("metadata", "name"), "qa-" + str(uuid.uuid4())), "never retries"),
+    ("parallelism-2", _mutate(("spec", "parallelism"), 2), "never retries"),
+    ("completions-2", _mutate(("spec", "completions"), 2), "never retries"),
+    (
+        "service-links-on",
+        _mutate((*_SPEC, "enableServiceLinks"), True),
+        "no host namespace",
+    ),
+    (
+        "pod-apparmor-unconfined",
+        _mutate((*_SPEC, "securityContext", "appArmorProfile"), {"type": "Unconfined"}),
+        "seccomp",
+    ),
+    (
+        "container-apparmor-unconfined",
+        _mutate((*_C0, "securityContext", "appArmorProfile"), {"type": "Unconfined"}),
+        "unprivileged",
+    ),
+    ("no-resource-limits", _mutate((*_C0, "resources"), _DELETE), "unprivileged"),
+    (
+        "memory-emptydir",
+        _mutate((*_SPEC, "volumes", 1, "emptyDir"), {"medium": "Memory", "sizeLimit": "1Gi"}),
+        "volumes",
+    ),
+    ("unbounded-emptydir", _mutate((*_SPEC, "volumes", 0, "emptyDir"), {}), "volumes"),
     (
         "label-component-wrong",
         _mutate((*_SPEC[:-1], "metadata", "labels", "app.kubernetes.io/component"), "butlers-up"),
@@ -478,3 +502,11 @@ def test_the_daemon_mounts_the_exchange_only_when_enabled(on):
     assert volume["persistentVolumeClaim"]["claimName"] == "butlers-qa-exchange"
     off = _named(_docs(), "Deployment", "butlers-up")["spec"]["template"]["spec"]
     assert "qa-exchange" not in {v["name"] for v in off["volumes"]}
+
+
+def test_the_pod_policy_also_judges_ephemeral_container_updates(on):
+    policy = _named(on, "ValidatingAdmissionPolicy", "butlers-qa-investigator-pod")
+    rules = policy["spec"]["matchConstraints"]["resourceRules"]
+    assert any(
+        "pods/ephemeralcontainers" in r["resources"] and "UPDATE" in r["operations"] for r in rules
+    )

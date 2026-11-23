@@ -44,6 +44,33 @@ unaffected.
 - A PR review follow-up runs the agent in the daemon and is refused while Job isolation is
   configured (`follow_up_isolation_unavailable`).
 
+### Verifying investigator isolation (bu-ejow5p.11)
+
+`scripts/verify_qa_isolation.py` proves the per-attempt Job isolation against a dev cluster; a
+mock or a chart render proves nothing about it. It is a human-run act, not CI, and refuses any
+namespace that is not `-dev`.
+
+1. `render --namespace <ns>-dev --image <repo@sha256:...>` prints the probe Job and the five
+   inverse controls without touching a cluster; review them first.
+2. `run` creates a synthetic canary Secret (random value, piped on stdin, never printed) and a
+   canary-publisher pod, then applies each Job as the launcher service account so the admission
+   policy is exercised. The probe is `python -I -m butlers.core.qa.isolation_probe`.
+3. Negative probes: uid is the pinned non-root user; no foreign process is visible; no
+   service-account directory; `/` and `/app` are read-only; the canary file and environment are
+   unreadable; TCP to the canary publisher and to any `--refused-tcp` target (give it `tracker=`,
+   the daemon ports 41100-41112 and Postgres) is refused. Positive controls: the workspace is
+   writable, each `--readable-path` is readable, each `--reachable-tcp` (the model route) connects.
+4. Inverse controls render the same template with exactly one hardening removed (token mounted,
+   run as root, writable root, no tracker-egress exclusion, hostPID). The named probe must go RED,
+   hostPID must be refused by the admission policy, and the restored template must PASS.
+5. The output is a content-blind receipt: check names, outcomes and digests only. Attach it to the
+   review. It is operational evidence for that cluster and revision, not provider-side least
+   privilege, and it does not close `bu-vc90le`.
+
+There is no credential-injecting model proxy yet: with no proxy URL the launcher refuses with
+`launch_refused:model_route_unavailable`, so the investigator cannot reach a model and nothing
+runs end to end. That decision is recorded with the owner question on `bu-ejow5p.11`.
+
 ## Publisher architecture
 
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls

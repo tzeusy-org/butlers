@@ -22,6 +22,7 @@ Nothing here talks to a cluster or reads a credential; the output is plain JSON-
 
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from collections.abc import Sequence
@@ -42,6 +43,13 @@ EXCHANGE_SUBPATH_PREFIX: Final[str] = "attempts/"
 EXCHANGE_SUBPATH_PATTERN: Final[str] = (
     r"^attempts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
+#: Limits every investigator pod carries (the admission policy requires cpu, memory and
+#: ephemeral-storage limits). Overridable per call; never absent.
+DEFAULT_RESOURCES: Final[dict[str, dict[str, str]]] = {
+    "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "256Mi"},
+    "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "2Gi"},
+}
+SCRATCH_SIZE_LIMIT: Final[str] = "1Gi"
 MIN_DEADLINE_S: Final[int] = 60
 MAX_DEADLINE_S: Final[int] = 4 * 60 * 60
 ATTEMPT_LABEL: Final[str] = "butlers.io/qa-attempt"
@@ -150,8 +158,7 @@ def build_investigator_job(
             },
         ],
     }
-    if resources is not None:
-        container["resources"] = resources
+    container["resources"] = copy.deepcopy(resources or DEFAULT_RESOURCES)
 
     return {
         "apiVersion": "batch/v1",
@@ -181,8 +188,8 @@ def build_investigator_job(
                     },
                     "containers": [container],
                     "volumes": [
-                        {"name": "home", "emptyDir": {}},
-                        {"name": "tmp", "emptyDir": {}},
+                        {"name": "home", "emptyDir": {"sizeLimit": SCRATCH_SIZE_LIMIT}},
+                        {"name": "tmp", "emptyDir": {"sizeLimit": SCRATCH_SIZE_LIMIT}},
                         {
                             "name": "exchange",
                             "persistentVolumeClaim": {"claimName": exchange_claim},
