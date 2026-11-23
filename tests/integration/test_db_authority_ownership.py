@@ -71,6 +71,16 @@ _DEFAULT_ACLS_SQL = text(
       AND a.grantee <> d.defaclrole
     """
 )
+_INSTALL_FUNCTIONS = (
+    "dashboard_attention.install_interface()",
+    "dashboard_attention.finalize_interface()",
+    "dashboard_attention.deactivate_interface()",
+    "dashboard_stepup.install_interface()",
+    "dashboard_stepup.finalize_interface()",
+    "dashboard_stepup.deactivate_interface()",
+    "perception_admin.install_interface()",
+    "perception_admin.rollback_interface()",
+)
 _PINS = (
     "restore_drill_executor_admin",
     "dnd_generation_admin",
@@ -202,9 +212,21 @@ def test_transfer_then_rotation_lets_the_migrator_replay_init_db_and_migrate(
         with engine.connect() as conn:
             pins = _pins(conn)
             default_acls_after = _default_acls(conn, migrator)
+            executable = {
+                (role, fn): conn.execute(
+                    text("SELECT has_function_privilege(:role, :fn, 'EXECUTE')"),
+                    {"role": role, "fn": fn},
+                ).scalar_one()
+                for role in (shared, migrator, "butler_switchboard_rw")
+                for fn in _INSTALL_FUNCTIONS
+            }
     finally:
         engine.dispose()
     assert pins and set(pins.values()) == {migrator}, pins
+    # bu-dss7he.25: the install/teardown functions have no caller check, so after the
+    # rotation only the migrator may execute them; the old shared login and runtime roles
+    # may not.
+    assert {k for k, v in executable.items() if v} == {(migrator, fn) for fn in _INSTALL_FUNCTIONS}
     # The replay must give the migrator at least the default privileges the shared login
     # held (core_001 plus init-db), or objects the migrator creates would strand runtimes.
     assert default_acls_before, "the shared login must hold default privileges"

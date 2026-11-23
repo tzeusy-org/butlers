@@ -1149,8 +1149,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_restore_drill_executor_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM restore_drill_executor_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'restore_drill_executor_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_restore_drill_executor_admin$;
 
 -- A public.audit_log trigger runs as the effective user of the INSERT. Keep
 -- that user intentionally unable to resolve or write the private authority
@@ -1792,8 +1806,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_dnd_generation_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM dnd_generation_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'dnd_generation_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_dnd_generation_admin$;
 
 -- Single source of truth for dnd_generation_private.mutate's body.
 --
@@ -4655,8 +4683,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_runtime_attention_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM runtime_attention_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'runtime_attention_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_runtime_attention_admin$;
 
 -- Single source of truth for the legacy debounce-marker planter's body.
 --
@@ -8513,8 +8555,22 @@ CREATE TABLE IF NOT EXISTS perception_admin.bootstrap_configuration (
 REVOKE ALL ON perception_admin.bootstrap_configuration FROM PUBLIC;
 INSERT INTO perception_admin.bootstrap_configuration
 VALUES(true,COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers'),current_user)
-ON CONFLICT(singleton) DO UPDATE SET migration_role=excluded.migration_role,
-    bootstrap_role=excluded.bootstrap_role;
+ON CONFLICT(singleton) DO UPDATE SET bootstrap_role=excluded.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_perception_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM perception_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'perception_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_perception_admin$;
 
 CREATE OR REPLACE FUNCTION perception_admin.install_interface() RETURNS void
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
@@ -9711,3 +9767,35 @@ BEGIN
         PERFORM perception_admin.finalize_interface();
     END IF;
 END $perception_grant_installer$;
+
+-- ── Retire the old shared login's install/teardown EXECUTE (bu-dss7he.25) ─────
+-- Opt-in with the migration-role rotation: PGOPTIONS="-c butlers.rotate_migration_role_from=<old
+-- shared login>". Unset, this block does nothing, so the shared-login-as-migrator setup
+-- keeps working. These SECURITY DEFINER functions have no caller check, and
+-- deactivate_interface revokes every claim and binding, so after the rotation only the
+-- new migration role may hold EXECUTE. Runs last, after every section has granted to the
+-- rotated pin, and runs as the superuser, so it can revoke grants whatever their grantor.
+DO $rotation_revoke_install$
+DECLARE
+    _old NAME := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '')::name;
+    _fn TEXT;
+BEGIN
+    IF _old IS NULL THEN
+        RETURN;
+    END IF;
+    FOREACH _fn IN ARRAY ARRAY[
+        'dashboard_attention.install_interface()',
+        'dashboard_attention.finalize_interface()',
+        'dashboard_attention.deactivate_interface()',
+        'dashboard_stepup.install_interface()',
+        'dashboard_stepup.finalize_interface()',
+        'dashboard_stepup.deactivate_interface()',
+        'perception_admin.install_interface()',
+        'perception_admin.rollback_interface()'
+    ] LOOP
+        IF to_regprocedure(_fn) IS NOT NULL THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', _fn, _old);
+        END IF;
+    END LOOP;
+END
+$rotation_revoke_install$;

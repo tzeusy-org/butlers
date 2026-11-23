@@ -108,13 +108,14 @@ as an owner.
   butler or capability role first. The bunkers themselves, and the runtime-attention
   v2–v5 ladder, are deleted by a later slice. Deleting them needs an owner decision on
   whether the migrator may act as the purpose owner roles.
-- **The shared login must not keep install and rollback EXECUTE.** It still holds
-  `EXECUTE` on the `SECURITY DEFINER` functions `dashboard_attention` and
-  `dashboard_stepup` `install`/`finalize`/`deactivate_interface`, and `perception_admin`
+- **The shared login must not keep install and rollback EXECUTE.** It held `EXECUTE` on
+  the `SECURITY DEFINER` functions `dashboard_attention` and `dashboard_stepup`
+  `install`/`finalize`/`deactivate_interface`, and `perception_admin`
   `install`/`rollback_interface`. They have no caller check, and `deactivate_interface`
-  revokes every claim and binding. Revoke `EXECUTE` on them from the shared login before
-  activation (bu-dss7he.25). The rotation block does not do this, and a static test forbids
-  adding it there.
+  revokes every claim and binding. The step 4 replay revokes that `EXECUTE` from the
+  shared login when `butlers.rotate_migration_role_from` is set (bu-dss7he.25), in a
+  separate last block, not in the rotation block. Without the setting nothing is revoked,
+  which keeps the shared login usable as the migrator until activation.
 
 1. Provision the `butlers_migrator` login and its two BWS keys (bu-dss7he.21). Leave
    `BUTLERS_RUNTIME_DB_USER`/`_PASSWORD` in place: they remain the runtime login, and
@@ -134,8 +135,10 @@ as an owner.
      all six or none.
    - The rest of the replay grants the migrator schema `CREATE`/`USAGE` and the default
      privileges.
+   - The last block of the replay revokes the shared login's `EXECUTE` on the eight
+     install and teardown functions above. The migrator keeps it.
    - Without the rotation setting, a replay naming a different login is refused
-     ("bootstrap configuration differs"), as before.
+     ("<schema> bootstrap configuration differs") for all six pins.
 5. Set `database.migratorLogin.enabled: true` in `values.dev.yaml` (a PR) and deploy
    with `suspend: false`. Confirm the `migrations` initContainer succeeds and the daemons
    pass their head check. Then run
