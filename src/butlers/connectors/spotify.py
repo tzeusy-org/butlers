@@ -44,6 +44,7 @@ Security requirements:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
@@ -1080,6 +1081,25 @@ def build_listening_digest_envelope(
     }
 
 
+def session_summary_raw(session: ListeningSession) -> dict[str, Any]:
+    """The ``payload.raw`` of a session-summary envelope; also stored as ``raw_payload``.
+
+    One definition feeds the envelope and the evidence row, so the row keeps exactly what the
+    inbox would hold (bu-uhbhzq.4).
+    """
+    return {
+        "session_start": session.started_at.isoformat(),
+        "session_end": (session.drain_started_at or datetime.now(UTC)).isoformat(),
+        "duration_seconds": int(session.duration_seconds),
+        "track_count": session.track_count,
+        "context_uri": session.context_uri,
+        "context_name": _resolve_context_label(
+            context_uri=session.context_uri, context_name=session.context_name
+        ),
+        "tracks": session.track_names,
+    }
+
+
 def build_session_summary_envelope(
     *,
     endpoint_identity: str,
@@ -1125,15 +1145,7 @@ def build_session_summary_envelope(
             "identity": spotify_user_id,
         },
         "payload": {
-            "raw": {
-                "session_start": session.started_at.isoformat(),
-                "session_end": (session.drain_started_at or datetime.now(UTC)).isoformat(),
-                "duration_seconds": duration_s,
-                "track_count": session.track_count,
-                "context_uri": session.context_uri,
-                "context_name": context_label,
-                "tracks": session.track_names,
-            },
+            "raw": session_summary_raw(session),
             "normalized_text": normalized_text,
         },
         "control": {
@@ -1240,9 +1252,11 @@ async def persist_session_summary(
             track_count,
             track_names,
             context_uri,
-            context_name
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            context_name,
+            raw_payload
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ($11::text)::jsonb)
         ON CONFLICT (idempotency_key) DO UPDATE SET
+            raw_payload      = EXCLUDED.raw_payload,
             ended_at         = EXCLUDED.ended_at,
             duration_seconds = EXCLUDED.duration_seconds,
             track_count      = EXCLUDED.track_count,
@@ -1264,6 +1278,8 @@ async def persist_session_summary(
         list(session.track_names),
         session.context_uri,
         session.context_name,
+        # Text cast to jsonb, so the write needs no jsonb codec on this pool.
+        json.dumps(session_summary_raw(session), default=str),
     )
     return result is not None
 

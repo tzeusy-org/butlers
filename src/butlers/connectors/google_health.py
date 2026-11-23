@@ -107,6 +107,7 @@ from prometheus_client import REGISTRY, Counter, Gauge
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     FilteredEventBuffer,
     ParkNotDurableError,
@@ -2413,6 +2414,11 @@ class GoogleHealthConnector:
         async with self._semaphore:
             start_t = time.perf_counter()
             try:
+                # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A
+                # failed write is a FAILED outcome (not consumed, nothing submitted); a failed
+                # submit keeps the row.
+                if self._shared_pool is not None:
+                    await commit_envelope(self._shared_pool, envelope)
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
                 status = "success"
@@ -2445,6 +2451,8 @@ class GoogleHealthConnector:
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
         """Submit directly to Switchboard — bypasses filter gate (replay path)."""
+        if self._shared_pool is not None:
+            await commit_envelope(self._shared_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     async def _flush_filtered_events(self) -> None:

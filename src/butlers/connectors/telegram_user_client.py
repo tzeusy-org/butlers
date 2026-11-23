@@ -67,6 +67,7 @@ from butlers.connectors.discretion import (
     DiscretionEvaluator,
     classify_ignore_kind,
 )
+from butlers.connectors.evidence_journal import commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -2414,6 +2415,10 @@ class TelegramUserClientConnector:
         Handles retries and treats accepted duplicates as success.
         """
         try:
+            # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
+            # write raises, so nothing is submitted; a failed submit below keeps the row.
+            if self._db_pool is not None:
+                await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response

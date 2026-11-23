@@ -77,6 +77,7 @@ from prometheus_client import Counter
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import commit_envelope
 from butlers.connectors.filtered_event_buffer import (
     REPLAY_UNAVAILABLE_KEY,
     FilteredEventBuffer,
@@ -1574,6 +1575,12 @@ class OwnTracksConnector:
                     "checkpoint_tst": checkpoint_tst,
                 },
             )
+
+        # Transitions and waypoints have no points table: they go to the generic evidence
+        # journal, before the submit (bu-uhbhzq.4). A failed write raises (503, nothing
+        # submitted); location points were committed to owntracks_points above.
+        if payload_type != "location" and self._db_pool is not None:
+            await commit_envelope(self._db_pool, envelope)
 
         # Submit to Switchboard
         retry_key = str(envelope["control"]["idempotency_key"])

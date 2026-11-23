@@ -59,6 +59,7 @@ from butlers.audio_authorship import (
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.blob_store import connector_blob_store
 from butlers.connectors.db_role import connector_setup_role
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.transcription import (
@@ -1217,8 +1218,9 @@ class TelegramBotConnector:
                     return
 
                 await self._submit_to_ingest(envelope)
-            except ConnectionError:
-                # Switchboard unavailable — propagate so the outer loop retries
+            except (ConnectionError, EvidenceNotCommitted):
+                # Switchboard unavailable, or the evidence row was not committed (nothing was
+                # submitted) — propagate so the outer loop retries
                 # with backoff. ``_poll_once`` has not advanced past this
                 # update, so the next getUpdates offset re-fetches it.
                 raise
@@ -2859,6 +2861,10 @@ class TelegramBotConnector:
         status = "error"
 
         try:
+            # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
+            # write raises, so nothing is submitted; a failed submit below keeps the row.
+            if self._db_pool is not None:
+                await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response
