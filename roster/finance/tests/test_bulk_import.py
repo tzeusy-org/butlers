@@ -6,6 +6,7 @@ reads) and report exact imported / skipped counts when duplicates are present.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import shutil
 import sys
@@ -135,6 +136,65 @@ async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finan
     retried = await import_transactions(finance_pool, blob, ref, **options)
     assert (retried["imported"], retried["skipped"], retried["errors"]) == (0, 2, 0)
     assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 2
+
+
+async def test_blob_csv_deduplicates_shared_scope_batches_and_concurrent_replays(finance_pool):
+    from butlers.tools.finance.data_import import import_transactions
+
+    statement = (
+        b"Date,Merchant,Amount\n2026-01-15,Books,-5\n2026-01-15,Books,-5\n"
+        b"2026-01-16,Overflow,-9999999999999\n2026-01-16,Music,-3\n"
+    )
+    blob = AsyncMock(scheme="s3", bucket="bucket")
+    blob.get.return_value = statement
+    ref = "s3://bucket/finance/statement.csv"
+    preview = await import_transactions(
+        finance_pool, blob, ref, origin_butler="finance", dry_run=True
+    )
+    assert [item["is_duplicate"] for item in preview["preview"]] == [False, True, False, False]
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 0
+
+    ready = asyncio.Barrier(2)
+
+    async def read_statement(*args):
+        await ready.wait()
+        return statement
+
+    blob.get.side_effect = read_statement
+    async with asyncio.timeout(10):
+        first, second = await asyncio.gather(
+            import_transactions(finance_pool, blob, ref, origin_butler="finance"),
+            import_transactions(finance_pool, blob, ref, origin_butler="finance"),
+        )
+    assert sorted((r["imported"], r["skipped"], r["errors"]) for r in (first, second)) == [
+        (0, 3, 1),
+        (2, 1, 1),
+    ]
+    for result in (first, second):
+        [error] = result["error_details"]
+        assert error["row_index"] == 2
+        assert "numeric field overflow" in error["reason"]
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 2
+
+    account_id = await finance_pool.fetchval(
+        "INSERT INTO accounts (institution, type, name, currency) "
+        "VALUES ('Bank', 'checking', 'Checking', 'USD') RETURNING id"
+    )
+    blob.get.side_effect = None
+    blob.get.return_value = b"Date,Merchant,Amount\n2026-01-15,Books,-5\n"
+    separate_account = await import_transactions(
+        finance_pool, blob, ref, origin_butler="finance", account_id=str(account_id)
+    )
+    assert (
+        separate_account["imported"],
+        separate_account["skipped"],
+        separate_account["errors"],
+    ) == (
+        1,
+        0,
+        0,
+    )
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 3
 
 
 async def test_rest_bulk_rows_list_and_counts_are_exact(finance_pool):

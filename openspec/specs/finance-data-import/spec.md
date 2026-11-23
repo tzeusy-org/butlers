@@ -94,6 +94,11 @@ The system SHALL prevent duplicate transactions during import by checking agains
 - **THEN** each transaction SHALL be checked against existing rows in `finance.transactions` using the tiered UNIQUE partial index strategy: Priority 1 `(account_id, external_id)` if an external ID is available, Priority 2 `(source_message_id, merchant, amount, posted_at)` if a source message ID is available, Priority 3 `(account_id, posted_at, amount, merchant)` as fallback for CSV imports without stable IDs
 - **AND** matching transactions SHALL be skipped and counted in the `skipped` total of the response
 
+#### Scenario: Duplicate CSV rows and simultaneous retries
+- **WHEN** a file repeats a transaction key or simultaneous CSV imports submit the same transaction key under the same account scope
+- **THEN** the daemon SHALL insert one matching transaction and count the other matching rows as skipped
+- **AND** the dry-run preview SHALL flag repeated keys within the preview without writing transactions
+
 #### Scenario: Import response with dedup summary
 - **WHEN** `import_transactions()` completes
 - **THEN** the response SHALL include: `total` (rows in CSV), `imported` (new transactions created), `skipped` (duplicates detected), `errors` (rows that failed validation), `error_details` (list of `{row, reason}`), `detected_format`, `date_range` (earliest and latest transaction dates), and `categories_used` (list of categories assigned)

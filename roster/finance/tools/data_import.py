@@ -782,7 +782,7 @@ async def _check_duplicate(
 
 
 async def _check_duplicates_batch(
-    pool: asyncpg.Pool,
+    conn: asyncpg.Connection,
     batch: list[dict[str, Any]],
     account_id: str | None,
 ) -> set[int]:
@@ -796,8 +796,8 @@ async def _check_duplicates_batch(
 
     Parameters
     ----------
-    pool:
-        asyncpg connection pool.
+    conn:
+        Acquired connection in the lock-holder transaction.
     batch:
         List of normalised transaction dicts.
     account_id:
@@ -818,7 +818,7 @@ async def _check_duplicates_batch(
     tuples = [(txn["posted_at"], txn["amount"], txn["merchant"]) for txn in batch]
 
     posted_dates, amounts, merchants = zip(*tuples, strict=True)
-    rows = await pool.fetch(
+    rows = await conn.fetch(
         """
         SELECT t.posted_at, t.amount, t.merchant
         FROM transactions AS t
@@ -854,30 +854,40 @@ async def _insert_batch(
     account_id: str | None,
     import_batch_id: str,
 ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Insert a batch of normalised transactions.
+    """Serialize CSV inserts for this account scope, including unlinked imports."""
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.fetchval(
+                """
+                SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(
+                    current_schema() || ':finance-csv-import:' || coalesce($1::uuid::text, ''), 0
+                ))
+                """,
+                account_id,
+            )
+            return await _write_csv_batch(conn, batch, account_id, import_batch_id)
+    except Exception as exc:
+        reason = _bounded_csv_text(f"db_error: {exc}")
+        return (
+            0,
+            0,
+            [{"row_index": txn.get("_row_index", -1), "reason": reason} for txn in batch],
+            [],
+        )
 
-    Performs a single batch deduplication query instead of N per-row checks,
-    reducing the database roundtrips from N+1 to 2 (one batch check query,
-    one insert transaction).
 
-    Returns (imported_count, skipped_count, error_details, imported_txns).
-    ``imported_txns`` is the list of transaction dicts that were inserted,
-    used by the caller to summarise the import (date range, categories) without
-    a second pass over the data.
-    """
-    imported = 0
+async def _write_csv_batch(
+    conn: asyncpg.Connection,
+    batch: list[dict[str, Any]],
+    account_id: str | None,
+    import_batch_id: str,
+) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Check the stored keys once and retain row errors using savepoints."""
+    dup_indices = await _check_duplicates_batch(conn, batch, account_id)
+    inserted_keys: set[tuple[datetime, Decimal, str]] = set()
     skipped = 0
     errors: list[dict[str, Any]] = []
     imported_txns: list[dict[str, Any]] = []
-
-    # Single batch deduplication check (replaces per-row _check_duplicate calls).
-    try:
-        dup_indices = await _check_duplicates_batch(pool, batch, account_id)
-    except Exception as exc:
-        # If batch check fails, fall back to inserting all rows and let
-        # the ON CONFLICT handle duplicates. Record errors for failed rows.
-        logger.warning(f"batch dedup check failed: {exc}, will rely on ON CONFLICT")
-        dup_indices = set()
 
     for idx, txn in enumerate(batch):
         merchant = txn["merchant"]
@@ -885,46 +895,47 @@ async def _insert_batch(
         posted_at = txn["posted_at"]
         row_idx = txn.get("_row_index", -1)
 
-        # Check if this row was identified as a duplicate in the batch query.
-        if idx in dup_indices:
+        key = (posted_at, amount, merchant)
+        if idx in dup_indices or key in inserted_keys:
             skipped += 1
             continue
 
         try:
-            insert_status = await pool.execute(
-                """
-                INSERT INTO transactions (
+            async with conn.transaction():
+                insert_status = await conn.execute(
+                    """
+                    INSERT INTO transactions (
+                        account_id,
+                        posted_at,
+                        merchant,
+                        description,
+                        amount,
+                        currency,
+                        direction,
+                        category,
+                        metadata
+                    ) VALUES (
+                        $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
+                    )
+                    ON CONFLICT DO NOTHING
+                    """,
                     account_id,
                     posted_at,
                     merchant,
-                    description,
+                    txn.get("description"),
                     amount,
-                    currency,
-                    direction,
-                    category,
-                    metadata
-                ) VALUES (
-                    $1::uuid, $2, $3, $4, $5, $6, $7, $8, $9
+                    txn["currency"],
+                    txn["direction"],
+                    txn["category"],
+                    {
+                        "import_batch_id": import_batch_id,
+                        "raw_merchant": txn.get("raw_merchant", ""),
+                    },
                 )
-                ON CONFLICT DO NOTHING
-                """,
-                account_id,
-                posted_at,
-                merchant,
-                txn.get("description"),
-                amount,
-                txn["currency"],
-                txn["direction"],
-                txn["category"],
-                {
-                    "import_batch_id": import_batch_id,
-                    "raw_merchant": txn.get("raw_merchant", ""),
-                },
-            )
             if insert_status == "INSERT 0 0":
                 skipped += 1
             else:
-                imported += 1
+                inserted_keys.add(key)
                 imported_txns.append(txn)
         except asyncpg.UniqueViolationError:
             skipped += 1
@@ -936,7 +947,7 @@ async def _insert_batch(
                 }
             )
 
-    return imported, skipped, errors, imported_txns
+    return len(imported_txns), skipped, errors, imported_txns
 
 
 def _summarize_import(
@@ -1351,18 +1362,17 @@ async def _check_duplicates_for_preview(
     Performs the same composite dedup check as ``_check_duplicate``.
     """
     result = []
+    seen_keys: set[tuple[datetime, Decimal, str]] = set()
     for txn in parsed[:10]:
-        is_dup = False
-        try:
-            is_dup = await _check_duplicate(
-                pool,
-                txn["merchant"],
-                txn["amount"],
-                txn["posted_at"],
-                account_id,
-            )
-        except Exception:
-            pass
+        posted_at, amount, merchant = txn["posted_at"], txn["amount"], txn["merchant"]
+        key = (posted_at, amount, merchant)
+        is_dup = key in seen_keys
+        if not is_dup:
+            try:
+                is_dup = await _check_duplicate(pool, merchant, amount, posted_at, account_id)
+            except Exception:
+                pass
+        seen_keys.add(key)
         entry = {
             "posted_at": txn["posted_at"].isoformat(),
             "merchant": _bounded_csv_text(txn["merchant"]),

@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -611,32 +613,29 @@ class TestDeduplication:
         # _check_duplicates_batch compares (posted_at, amount, merchant) tuples
         # using native Python types (datetime, Decimal, str) to avoid string
         # serialization mismatches with PostgreSQL's ::text cast.
-        pool = MagicMock()
-        pool.fetch = AsyncMock(
-            return_value=[
-                {
-                    "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
-                    "amount": Decimal("45.32"),
-                    "merchant": "Whole Foods Market",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
-                    "amount": Decimal("32.00"),
-                    "merchant": "Shell Oil",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
-                    "amount": Decimal("15.49"),
-                    "merchant": "Netflix.Com",
-                },
-                {
-                    "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
-                    "amount": Decimal("1200.00"),
-                    "merchant": "Direct Deposit",
-                },
-            ]
-        )
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
+        pool.fetch.return_value = [
+            {
+                "posted_at": datetime(2024, 1, 15, tzinfo=UTC),
+                "amount": Decimal("45.32"),
+                "merchant": "Whole Foods Market",
+            },
+            {
+                "posted_at": datetime(2024, 1, 16, tzinfo=UTC),
+                "amount": Decimal("32.00"),
+                "merchant": "Shell Oil",
+            },
+            {
+                "posted_at": datetime(2024, 1, 18, tzinfo=UTC),
+                "amount": Decimal("15.49"),
+                "merchant": "Netflix.Com",
+            },
+            {
+                "posted_at": datetime(2024, 1, 20, tzinfo=UTC),
+                "amount": Decimal("1200.00"),
+                "merchant": "Direct Deposit",
+            },
+        ]
 
         result = await import_transactions(
             pool=pool,
@@ -659,10 +658,7 @@ class TestDeduplication:
 
         blob_store = self._make_blob_store(CHASE_CSV)
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates found
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -854,10 +850,7 @@ class TestBatchProcessing:
 
         content = self._build_large_csv(1000)
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates in batch query
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -877,10 +870,7 @@ class TestBatchProcessing:
         assert _BATCH_SIZE == 500
         content = self._build_large_csv(501)
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1034,10 +1024,7 @@ class TestErrorHandling:
             "01/16/2024,BAD ROW,\n"
         )
         blob_store = self._make_blob_store(content)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1056,10 +1043,9 @@ class TestErrorHandling:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # First call succeeds, subsequent ones raise
-        pool.execute = AsyncMock(side_effect=Exception("DB unavailable"))
+        pool.execute.side_effect = Exception("DB unavailable")
 
         result = await import_transactions(
             pool=pool,
@@ -1076,10 +1062,7 @@ class TestErrorHandling:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1107,10 +1090,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1125,10 +1105,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(AMEX_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1143,10 +1120,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CAPITAL_ONE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1161,10 +1135,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1182,11 +1153,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)  # has a Category column
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         learn_spy = AsyncMock(return_value={"upserted": 3, "as_of": "2024-01-01"})
         with patch(
@@ -1215,11 +1182,7 @@ class TestReturnShape:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)  # 4 rows, distinct dates/categories
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.fetch = AsyncMock(return_value=[])  # no duplicates → all 4 imported
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1276,11 +1239,7 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1300,12 +1259,9 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # First fetchrow call is _lookup_account_currency, returns GBP.
-        pool.fetchrow = AsyncMock(return_value={"currency": "GBP"})
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool.fetchrow.return_value = {"currency": "GBP"}
 
         result = await import_transactions(
             pool=pool,
@@ -1326,11 +1282,7 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         result = await import_transactions(
             pool=pool,
@@ -1349,12 +1301,9 @@ class TestCurrencyInference:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = self._make_blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # Account found but currency field is empty.
-        pool.fetchrow = AsyncMock(return_value={"currency": ""})
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool.fetchrow.return_value = {"currency": ""}
 
         result = await import_transactions(
             pool=pool,
@@ -1455,17 +1404,12 @@ class TestCurrencyInference:
 
         blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=CHASE_CSV.encode("utf-8"))
-        pool = MagicMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # _lookup_account_currency returns AUD; _apply_merchant_mappings checks table.
-        pool.fetchrow = AsyncMock(
-            side_effect=[
-                {"currency": "AUD"},  # _lookup_account_currency
-                None,  # dedup check rows (fetchrow fallback)
-            ]
-        )
-        pool.fetchval = AsyncMock(return_value=False)  # merchant_mappings table absent
-        pool.fetch = AsyncMock(return_value=[])  # batch dedup
-        pool.execute = AsyncMock()
+        pool.fetchrow.side_effect = [
+            {"currency": "AUD"},  # _lookup_account_currency
+            None,  # dedup check rows (fetchrow fallback)
+        ]
 
         result = await import_transactions(
             pool=pool,
@@ -1508,10 +1452,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
@@ -1532,10 +1473,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
@@ -1557,10 +1495,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,
@@ -1588,10 +1523,7 @@ class TestProgressNotify:
         content = self._build_large_csv(2000)
         blob_store = self._make_blob_store(content)
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         # Should complete without error even though there's no notify_fn.
         result = await import_transactions(
@@ -1613,10 +1545,7 @@ class TestProgressNotify:
         blob_store = self._make_blob_store(content)
         notify_fn = AsyncMock()
 
-        pool = MagicMock()
-        pool.fetchval = AsyncMock(return_value=False)  # no MV / mappings table
-        pool.fetch = AsyncMock(return_value=[])
-        pool.execute = AsyncMock()
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         await import_transactions(
             pool=pool,

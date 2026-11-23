@@ -214,10 +214,10 @@ class TestImportTransactionsPipeline:
             return "INSERT 0 1"
 
         pool = fake_pool(fetchrow=None, fetchval=None, fetch=[], execute="INSERT 0 1")
-        pool.execute = AsyncMock(side_effect=fake_execute)
+        pool.execute.side_effect = fake_execute
         # No duplicate found
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
+        pool.fetchrow.return_value = None
+        pool.fetchval.return_value = False
 
         result = await import_transactions(
             pool,
@@ -242,7 +242,6 @@ class TestImportDeduplication:
 
         blob_store = _blob_store(CHASE_CSV)
         pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
-        pool.execute = AsyncMock()
 
         # Patch _check_duplicates_batch to report all rows as duplicates.
         async def all_duplicates(p, batch, account_id):
@@ -264,7 +263,6 @@ class TestImportDeduplication:
 
         blob_store = _blob_store(CHASE_CSV)
         pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
-        pool.execute = AsyncMock()
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -285,8 +283,7 @@ class TestMerchantMappingAutoApply:
 
         blob_store = _blob_store(UNCATEGORIZED_CSV)
         # Simulate: merchant_mappings table exists, lookup returns "dining"
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         call_count = [0]
 
@@ -301,8 +298,8 @@ class TestMerchantMappingAutoApply:
             row.__getitem__ = MagicMock(side_effect=lambda k: "dining" if k == "category" else None)
             return row
 
-        pool.fetchval = AsyncMock(side_effect=fake_fetchval)
-        pool.fetchrow = AsyncMock(side_effect=fake_fetchrow)
+        pool.fetchval.side_effect = fake_fetchval
+        pool.fetchrow.side_effect = fake_fetchrow
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -315,11 +312,8 @@ class TestMerchantMappingAutoApply:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(UNCATEGORIZED_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # _has_merchant_mappings_table → False
-        pool.fetchval = AsyncMock(return_value=False)
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -332,11 +326,9 @@ class TestMerchantMappingAutoApply:
 
         # Chase CSV has categories (food, travel, entertainment, income)
         blob_store = _blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
         # merchant_mappings table exists
-        pool.fetchval = AsyncMock(return_value=True)
+        pool.fetchval.return_value = True
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -349,9 +341,7 @@ class TestMerchantMappingAutoApply:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(UNCATEGORIZED_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         call_count = [0]
 
@@ -364,7 +354,7 @@ class TestMerchantMappingAutoApply:
             # Post-import trigger checks (pg_matviews, etc.) return False.
             return False
 
-        pool.fetchval = AsyncMock(side_effect=fetchval_first_raises)
+        pool.fetchval.side_effect = fetchval_first_raises
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -385,9 +375,7 @@ class TestPostImportTriggers:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         executed_sqls: list[str] = []
 
@@ -403,8 +391,8 @@ class TestPostImportTriggers:
                 return False  # no merchant_mappings table
             return None
 
-        pool.execute = AsyncMock(side_effect=track_execute)
-        pool.fetchval = AsyncMock(side_effect=fake_fetchval)
+        pool.execute.side_effect = track_execute
+        pool.fetchval.side_effect = fake_fetchval
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -419,9 +407,7 @@ class TestPostImportTriggers:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         async def fake_fetchval(sql, *args, **kwargs):
             sql_lower = sql.lower()
@@ -431,7 +417,7 @@ class TestPostImportTriggers:
                 return False
             return None
 
-        pool.fetchval = AsyncMock(side_effect=fake_fetchval)
+        pool.fetchval.side_effect = fake_fetchval
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
@@ -448,10 +434,7 @@ class TestPostImportTriggers:
         blob_store = _blob_store(content)
         from butlers.tools.finance.data_import import import_transactions
 
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)  # no MV, no mappings
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         baselines_called = [False]
 
@@ -475,10 +458,7 @@ class TestPostImportTriggers:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)  # 4 rows
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         with patch(
             "butlers.tools.finance.data_import._trigger_compute_baselines",
@@ -496,7 +476,6 @@ class TestPostImportTriggers:
 
         blob_store = _blob_store(CHASE_CSV)
         pool = fake_pool(fetchrow=None, fetchval=False, fetch=[], execute="INSERT 0 1")
-        pool.execute = AsyncMock()
 
         # Report all batch rows as duplicates so imported == 0.
         async def all_duplicates(p, batch, account_id):
@@ -536,10 +515,7 @@ class TestPostImportTriggers:
 
         # CHASE_CSV carries a Category column on every imported row.
         blob_store = _blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)  # no MV, no mappings table
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         # Spy on the real learning entry point (imported lazily inside the
         # trigger helper) to prove the import path reaches it.
@@ -565,11 +541,7 @@ class TestPostImportTriggers:
 
         # UNCATEGORIZED_CSV has no Category column.
         blob_store = _blob_store(UNCATEGORIZED_CSV)
-        pool = MagicMock()
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.fetch = AsyncMock(return_value=[])
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
 
         with patch(
             "butlers.tools.finance.data_import._trigger_learn_merchant_categories",
@@ -765,10 +737,8 @@ class TestErrorHandling:
         from butlers.tools.finance.data_import import import_transactions
 
         blob_store = _blob_store(CHASE_CSV)
-        pool = MagicMock()
-        pool.fetchrow = AsyncMock(return_value=None)
-        pool.fetchval = AsyncMock(return_value=False)
-        pool.execute = AsyncMock(side_effect=Exception("DB unavailable"))
+        pool = fake_pool(fetch=[], fetchrow=None, fetchval=False, execute="INSERT 0 1")
+        pool.execute.side_effect = Exception("DB unavailable")
 
         result = await import_transactions(
             pool, blob_store=blob_store, storage_ref=_STORAGE_REF, origin_butler="finance"
