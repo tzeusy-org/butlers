@@ -61,12 +61,14 @@ _URL = re.compile(
 _PASSCODE = re.compile(
     r"(?i)\b(pass\s?code|password|pin|access\s?code|dial[- ]in code)\b\s*[:=\-]?\s*#?\s*[\w#*-]+"
 )
+# "Meeting ID: 123 4567 8901": the id plus the passcode is a join credential.
+_MEETING_ID = re.compile(r"(?i)\bmeeting\s*id\b\s*[:=\-]?\s*#?\s*\d[\d -]{5,}\d")
 _REMOVED = "[removed]"
 
 
 def scrub_description(text: str) -> str:
-    """The description with links and passcodes replaced by a marker."""
-    return _PASSCODE.sub(_REMOVED, _URL.sub(_REMOVED, text))
+    """The text with meeting links, ids and passcodes replaced by a marker."""
+    return _MEETING_ID.sub(_REMOVED, _PASSCODE.sub(_REMOVED, _URL.sub(_REMOVED, text)))
 
 
 def _scrub_conference(conference: Any) -> dict[str, Any]:
@@ -97,8 +99,11 @@ def scrub_event(event: Mapping[str, Any]) -> dict[str, Any]:
     """The verbatim provider event minus join links, passcodes and link-bearing fields."""
     cleaned = copy.deepcopy(dict(event))
     cleaned.pop("hangoutLink", None)
-    if isinstance(cleaned.get("description"), str):
-        cleaned["description"] = scrub_description(cleaned["description"])
+    cleaned.pop("extendedProperties", None)  # app-private data, not owner evidence
+    # Join secrets win over verbatim: a location may carry the meeting URL. Plain place text stays.
+    for field in ("description", "location"):
+        if isinstance(cleaned.get(field), str):
+            cleaned[field] = scrub_description(cleaned[field])
     if "conferenceData" in cleaned:
         cleaned["conferenceData"] = _scrub_conference(cleaned["conferenceData"])
     if isinstance(cleaned.get("attachments"), list):
@@ -131,7 +136,6 @@ _STRUCTURE_KEYS = (
     "id",
     "recurringEventId",
     "originalStartTime",
-    "updated",
     "sequence",
     "status",
     "start",
@@ -142,8 +146,9 @@ _STRUCTURE_KEYS = (
 def _etag(event: Mapping[str, Any], *, blocked: bool = False) -> str:
     """The provider's etag; a content hash when it is absent, so the dedupe key is never empty.
 
-    A blocked event's hash covers only the structure the row keeps, never the excluded title or
-    attendees, so a private edit neither adds a row nor leaks through the key.
+    A blocked event's hash covers only identity, status and times, never the excluded title or
+    attendees and never ``updated`` (which moves on any private edit), so a private edit neither
+    adds a row nor leaks through the key.
     """
     etag = event.get("etag")
     if isinstance(etag, str) and etag:

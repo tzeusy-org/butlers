@@ -51,7 +51,8 @@ as the commit point: before it submits an event to Switchboard and before it sav
 A failed journal write SHALL submit nothing, hold the sync token, report degraded health and be
 retried on the next cycle, and SHALL log the failure class only. Replaying a page or re-running a
 full sync over unchanged etags SHALL add no rows. No journal row SHALL ever be updated or deleted.
-Titles, locations, times and attendees SHALL be kept verbatim; descriptions SHALL be scrubbed of
+Titles, times and attendees SHALL be kept verbatim, and locations too apart from join secrets;
+`extendedProperties` SHALL NOT be journaled; descriptions and locations SHALL be scrubbed of
 links and passcodes (including scheme-less meeting hosts) and conference data reduced to the
 solution name and key type, and attachment, source and gadget links dropped; an event blocked by
 source policy SHALL keep structure and times only, with no raw payload, and its fallback version key

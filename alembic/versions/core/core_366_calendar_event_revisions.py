@@ -90,11 +90,11 @@ def _installation_count() -> int:
     return count
 
 
-# Catalog-only: the table, both triggers, the guard, all three indexes and the expected ACL
-# (connector_writer exactly SELECT+INSERT, butler_chronicler_rw exactly SELECT, nobody else) are in
-# place. A later schema's chain that finds them returns without DDL, because CREATE OR REPLACE
-# TRIGGER and CREATE INDEX IF NOT EXISTS lock the table even as a no-op.
-_ALREADY_INSTALLED = f"""
+# Structure and ACL are checked apart. A fresh schema-local chain replays core_007, which re-grants
+# the connectors tables to every runtime role, so a later schema routinely finds the structure
+# intact but the ACL drifted: that case runs only the REVOKE-then-exact-GRANT, never a CREATE or
+# ALTER (CREATE OR REPLACE TRIGGER and CREATE INDEX IF NOT EXISTS lock the table even as no-ops).
+_STRUCTURE_INSTALLED = f"""
 SELECT to_regclass({_quote_literal(_TABLE)}) IS NOT NULL
 AND (
     SELECT count(*) FROM pg_trigger
@@ -112,6 +112,22 @@ AND (
           'ix_calendar_event_revisions_starts', 'ix_calendar_event_revisions_observed'
       )
 ) = 2
+AND EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = to_regclass({_quote_literal(_TABLE)})
+      AND conname = 'calendar_event_revisions_identity_key'
+)
+AND EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = to_regclass({_quote_literal(_TABLE)})
+      AND conname = 'calendar_event_revisions_blocked_has_no_raw'
+)
+"""
+
+# connector_writer exactly SELECT+INSERT, butler_chronicler_rw exactly SELECT, nobody else, and no
+# grant option (see the IS NOT TRUE note).
+_ACL_EXACT = f"""
+SELECT to_regclass({_quote_literal(_TABLE)}) IS NOT NULL
 AND NOT EXISTS (
     SELECT 1 FROM pg_class c
     CROSS JOIN LATERAL aclexplode(c.relacl) AS a
@@ -154,8 +170,15 @@ AND (
 
 def upgrade() -> None:
     op.execute(_LOCK)
-    if op.get_bind().exec_driver_sql(_ALREADY_INSTALLED).scalar():
+    bind = op.get_bind()
+    if not bind.exec_driver_sql(_STRUCTURE_INSTALLED).scalar():
+        _create_structure()
+    elif bind.exec_driver_sql(_ACL_EXACT).scalar():
         return
+    _apply_grants()
+
+
+def _create_structure() -> None:
     op.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -223,6 +246,9 @@ def upgrade() -> None:
         FOR EACH STATEMENT EXECUTE FUNCTION {_GUARD}()
         """
     )
+
+
+def _apply_grants() -> None:
     # Verbatim titles, locations and attendees: the writer and Chronicler only. The connectors
     # schema's default privileges grant every runtime role SELECT on a new table, so revoke them.
     op.execute(f"REVOKE ALL ON TABLE {_TABLE} FROM PUBLIC")

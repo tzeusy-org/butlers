@@ -39,7 +39,9 @@ consecutive revisions; it is not stored.
 
 - Append-only: triggers refuse UPDATE, DELETE and TRUNCATE; nothing is pruned until the
   per-source retention contract (bu-uhbhzq.7).
-- Titles, locations, times and attendees are kept verbatim. Descriptions are scrubbed of links and
+- Titles, times and attendees are kept verbatim, and so are locations, except that meeting URLs,
+  meeting ids and passcodes in a location are removed like those in a description.
+  `extendedProperties` (app-private data) are not journaled. Descriptions are scrubbed of links and
   passcodes (also bare Zoom, Teams, Meet and Webex hosts). Conference data keeps only the solution
   name and key type; `hangoutLink` and attachment, source and gadget links are removed. An event
   blocked by source policy keeps structure and times only (no raw payload). If policy cannot be

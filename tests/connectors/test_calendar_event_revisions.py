@@ -400,3 +400,32 @@ def test_bare_meeting_hosts_are_scrubbed_from_descriptions(link: str) -> None:
     scrubbed = revisions.scrub_description(f"Agenda. Join at {link} thanks")
     assert link.split("/")[0] not in scrubbed and "[removed]" in scrubbed
     assert scrubbed.startswith("Agenda. Join at ") and scrubbed.endswith(" thanks")
+
+
+def test_a_join_secret_in_the_location_is_scrubbed_but_a_place_stays() -> None:
+    joined = _row(
+        _event(location="Zoom https://zoom.us/j/123456789?pwd=secretpwd Meeting ID: 123 4567 8901")
+    )
+    text = json.dumps(json.loads(joined[-1])["location"])
+    for secret in ("zoom.us", "secretpwd", "4567"):
+        assert secret not in text
+    place = json.loads(_row(_event(location="Building 4, Level 3, Room 12"))[-1])["location"]
+    assert place == "Building 4, Level 3, Room 12"
+
+
+def test_a_blocked_digest_ignores_the_updated_stamp() -> None:
+    base = _event()
+    base.pop("etag")
+    first = _row({**base, "updated": "2026-11-23T01:00:00.000Z"}, policy_blocked=True)
+    edited = _row({**base, "updated": "2026-11-24T09:30:00.000Z"}, policy_blocked=True)
+    assert first[5] == edited[5]
+
+
+def test_extended_properties_are_not_journaled_but_the_html_link_is() -> None:
+    event = _event(
+        extendedProperties={"private": {"app": "secret-state"}},
+        htmlLink="https://calendar.example.test/event?eid=1",
+    )
+    raw = json.loads(_row(event)[-1])
+    assert "extendedProperties" not in raw and "secret-state" not in json.dumps(raw)
+    assert raw["htmlLink"] == "https://calendar.example.test/event?eid=1"
