@@ -184,9 +184,9 @@ async def reconcile_endpoint_rules(pool: Any) -> int:
     connector's ingest-time suppression of a Block cover a newly registered endpoint too. Only
     rules the verbs wrote (``calendar_vouch`` / ``calendar_block``) are copied, one per address and
     verb, keeping the source's ``created_at`` so precedence matches across endpoints. An endpoint
-    with any row for that (scope, verb, address), even a disabled or deleted one, gets nothing, so
-    the owner's removals stick. Deregistered and archived endpoints are skipped.
-    Returns rules written.
+    with a live, disabled, or since-the-source deleted row for that (scope, verb, address) gets
+    nothing, so the owner's removals stick; older verb history does not block.
+    Deregistered and archived endpoints are skipped. Returns rules written.
     ``pool`` is the Switchboard pool.
     """
     async with pool.acquire() as conn, conn.transaction():
@@ -217,9 +217,12 @@ async def reconcile_endpoint_rules(pool: Any) -> int:
                 ORDER BY created_by, lower(btrim(condition ->> 'address')), id
             ) src
             WHERE NOT EXISTS (
-                -- Any row, in any state: a copy the owner disabled or deleted stays that way.
+                -- A live or disabled copy, or one deleted at or after the source rule was written,
+                -- means the owner's removal of the current rule sticks. A copy a later verb
+                -- deleted before the source existed is stale history and does not block.
                 SELECT 1 FROM switchboard.ingestion_rules x
-                WHERE x.scope = ep.scope AND x.created_by = src.created_by
+                WHERE (x.deleted_at IS NULL OR x.deleted_at >= src.created_at)
+                  AND x.scope = ep.scope AND x.created_by = src.created_by
                   AND x.rule_type = 'sender_address'
                   AND lower(btrim(x.condition ->> 'address')) = src.address
             )

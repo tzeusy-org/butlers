@@ -302,3 +302,26 @@ async def test_reconcile_keeps_the_source_created_at(db):
         "WHERE created_by = 'calendar_block' AND deleted_at IS NULL"
     )
     assert len(stamps) == 1
+
+
+async def test_reconcile_gives_an_unarchived_endpoint_the_current_decision(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    b = _ENDPOINTS[1]
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, _STRANGER, "vouch")
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET archived_at = now() "
+        "WHERE connector_type = 'google_calendar' AND endpoint_identity = $1",
+        b,
+    )
+    await apply_decision(pool, _STRANGER, "block")
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET archived_at = NULL "
+        "WHERE connector_type = 'google_calendar' AND endpoint_identity = $1",
+        b,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1
+    assert await _scope_rules(pool, f"connector:google_calendar:{b}") == [
+        ("calendar_block", "block")
+    ]
