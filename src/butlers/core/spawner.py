@@ -1077,7 +1077,13 @@ class Spawner:
         ------
         RuntimeError
             If the spawner has been stopped and is no longer accepting triggers.
+        ValueError
+            If ``qa_job_launch`` is given with a non-executor ``trigger_source``.
         """
+        if qa_job_launch is not None and not is_executor_trigger(trigger_source):
+            # A caller that asked for per-attempt isolation must never get an in-daemon run.
+            raise ValueError("qa_job_launch is only valid for an executor trigger source")
+
         if route_lease_lost is not None and route_lease_lost.is_set():
             raise RouteInboxLeaseLost("route inbox processing lease was already lost")
 

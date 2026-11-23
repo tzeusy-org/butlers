@@ -90,10 +90,13 @@ async def test_a_qa_session_with_a_launch_runs_in_the_job_not_the_daemon(tmp_pat
     assert adapter.job_calls[0]["model"] == "test-model"
 
 
-async def test_a_non_executor_trigger_ignores_the_launch(tmp_path: Path) -> None:
+async def test_a_non_executor_trigger_with_a_launch_raises_instead_of_running_in_the_daemon(
+    tmp_path: Path,
+) -> None:
     adapter = JobAdapter()
-    result = await _trigger(tmp_path, adapter, "tick", _launch(tmp_path))
-    assert result.success and adapter.job_calls == [] and len(adapter.calls) == 1
+    with pytest.raises(ValueError, match="executor trigger"):
+        await _trigger(tmp_path, adapter, "tick", _launch(tmp_path))
+    assert adapter.job_calls == [] and adapter.calls == []
 
 
 async def test_an_adapter_without_job_support_refuses_and_never_runs_in_the_daemon(
