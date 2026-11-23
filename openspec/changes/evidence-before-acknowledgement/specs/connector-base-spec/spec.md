@@ -19,7 +19,10 @@ re-evaluation (the Replay Queue Drain Loop requirement): the policy gate applies
 delivery only, and evidence validation applies to both. Before a replay submits, the stored
 envelope SHALL be verified: it SHALL carry its original idempotency key, and evidence for it
 SHALL already exist or be rebuildable from the item's own dedicated table. A replay SHALL NOT
-create a broader copy of a row that a dedicated table already holds. Anything that fails the
+create a broader copy of a row that a dedicated table already holds. The one exception: OwnTracks
+transition and waypoint replay MAY commit the stored envelope to the generic journal
+idempotently before it submits, at the envelope's own tier, because a legacy row parked before
+evidence-first has no other evidence; every other replay writes none. Anything that fails the
 check is not replayable: it sends nothing and writes no evidence.
 
 ID: REQ-connector-base-spec-015
@@ -53,6 +56,12 @@ Scope: v1-mandatory
 - **WHEN** an owner replays a parked Spotify, Google Health or OwnTracks item
 - **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row or a journal row, found by idempotency key; a replay writes none)
 - **AND** a preview with no original idempotency key, or an OwnTracks location whose `owntracks_points` row is missing, SHALL be refused with nothing sent
+
+#### Scenario: A legacy OwnTracks transition or waypoint replay journals its stored envelope
+
+- **WHEN** an owner replays an OwnTracks transition or waypoint row parked before evidence-first, which has no journal row
+- **THEN** the connector MAY commit the stored envelope to `connectors.evidence_journal` idempotently, at the envelope's own tier, before it submits
+- **AND** the write SHALL be a no-op when the row exists and SHALL NOT widen the envelope; a location replay and every other connector's replay write nothing
 
 #### Scenario: Duplicates collapse and revisions append
 

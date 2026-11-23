@@ -1890,3 +1890,24 @@ async def test_gap_fill_track_plays_commit_in_one_transaction() -> None:
 
     assert await connector._persist_gap_fill_track_plays(rows) is False
     assert log == ["begin", "insert", "insert", "rollback"]
+
+
+async def test_the_oldest_held_age_gauge_tracks_a_stuck_item(monkeypatch) -> None:
+    from butlers.connectors import spotify as module
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    connector._get_currently_playing = AsyncMock(return_value=None)
+    await connector._deliver("stuck", {}, AsyncMock())
+
+    clock[0] += 90
+    await connector._execute_poll_cycle()  # retry fails again; the item keeps its first age
+
+    gauge = module.spotify_held_oldest_age_seconds.labels(endpoint_identity=_ENDPOINT)
+    assert gauge._value.get() == 90

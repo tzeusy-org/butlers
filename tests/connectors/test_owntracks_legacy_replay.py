@@ -10,7 +10,7 @@ from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 
 
 @pytest.mark.parametrize("kind", ["transition", "waypoints"])
-async def test_legacy_owntracks_parked_event_gets_journal_row_before_replay(kind):
+async def test_owntracks_transition_and_waypoint_replay_may_journal_the_stored_envelope(kind):
     connector = owntracks.OwnTracksConnector(
         owntracks.OwnTracksConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp"),
         webhook_token="synthetic-fixture",

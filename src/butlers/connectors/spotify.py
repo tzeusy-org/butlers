@@ -169,6 +169,12 @@ spotify_held_backpressure = Gauge(
     labelnames=["endpoint_identity"],
 )
 
+spotify_held_oldest_age_seconds = Gauge(
+    "connector_spotify_held_oldest_age_seconds",
+    "Age of the oldest held delivery; a growing value means a stuck item",
+    labelnames=["endpoint_identity"],
+)
+
 spotify_sessions_total = Counter(
     "connector_spotify_sessions_total",
     "Total number of listening sessions closed",
@@ -199,6 +205,7 @@ class _HeldDelivery:
     envelope: dict[str, Any]
     evidence: Callable[[], Awaitable[Any]]
     on_sent: Callable[[], None] | None
+    held_since: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -2308,6 +2315,10 @@ class SpotifyConnector:
         await self._retry_held_notifications(now)
         self._backpressure = len(self._held) >= _HELD_LIMIT
         if self._endpoint_identity:
+            spotify_held_oldest_age_seconds.labels(endpoint_identity=self._endpoint_identity).set(
+                time.monotonic()
+                - min((h.held_since for h in self._held.values()), default=time.monotonic())
+            )
             spotify_held_backpressure.labels(endpoint_identity=self._endpoint_identity).set(
                 1 if self._backpressure else 0
             )
@@ -2965,8 +2976,13 @@ class SpotifyConnector:
                 else "park not durable",
                 getattr(exc, "reason", type(exc).__name__),
             )
-            self._held.pop(key, None)
-            self._held[key] = _HeldDelivery(envelope, evidence, on_sent)
+            previous = self._held.pop(key, None)
+            self._held[key] = _HeldDelivery(
+                envelope,
+                evidence,
+                on_sent,
+                held_since=previous.held_since if previous else time.monotonic(),
+            )
             return "held"
         self._held.pop(key, None)
         if not admitted:
