@@ -27,7 +27,7 @@ def test_actual_canonical_json_roundtrips_without_changing_digest():
     assert restored == target
     assert restored.canonical == target.canonical
     assert restored.digest == target.digest
-    assert len(restored.tables) == 46
+    assert len(restored.tables) == 47
     assert manifest_transition(restored, target).rebuild is False
     assert manifest_transition(restored, target).narrowing is False
 
@@ -111,7 +111,7 @@ def test_rebuild_and_narrowing_are_distinct_with_table_addition_companion():
 def test_closed_read_fields_preserve_required_exclusions_and_exact_decimal_text():
     target = load_manifest()
     plans = {p.table.source: p for p in subscriber_plan(target)}
-    assert len(plans) == 46
+    assert len(plans) == 47
     entities = {f.name for f in plans["public.entities"].read_fields}
     assert "canonical_name" in entities
     assert not entities & {"deleted", "unidentified", "placeholder_name"}
