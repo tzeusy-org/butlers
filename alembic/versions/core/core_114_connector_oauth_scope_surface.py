@@ -49,8 +49,7 @@ from alembic import op
 def _table_exists(schema: str, table: str) -> str:
     """Return a PL/pgSQL boolean expression that is TRUE when the table exists."""
     return (
-        f"EXISTS (SELECT 1 FROM pg_tables "
-        f"WHERE schemaname = '{schema}' AND tablename = '{table}')"
+        f"EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = '{schema}' AND tablename = '{table}')"
     )
 
 

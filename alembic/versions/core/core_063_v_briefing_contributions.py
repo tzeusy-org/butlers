@@ -116,8 +116,7 @@ def upgrade() -> None:
         )
     else:
         union_terms = (
-            "SELECT NULL::text AS butler, NULL::text AS key, NULL::jsonb AS value "
-            "WHERE FALSE"
+            "SELECT NULL::text AS butler, NULL::text AS key, NULL::jsonb AS value WHERE FALSE"
         )
     op.execute(f"""
         CREATE OR REPLACE VIEW general.v_briefing_contributions AS

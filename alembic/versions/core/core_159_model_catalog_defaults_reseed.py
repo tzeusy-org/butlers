@@ -83,9 +83,7 @@ def _load_seed_entries() -> list[dict]:
         return []
     with open(defaults_path, "rb") as f:
         data = tomllib.load(f)
-    return [
-        m for m in data.get("models", []) if m.get("complexity_tier") in _CANONICAL_TIERS
-    ]
+    return [m for m in data.get("models", []) if m.get("complexity_tier") in _CANONICAL_TIERS]
 
 
 def upgrade() -> None:

@@ -78,14 +78,8 @@ def _grant_best_effort(table_fqn: str, privilege: str, role: str) -> None:
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE public.webhooks "
-        "ADD COLUMN IF NOT EXISTS last_delivery_at TIMESTAMPTZ"
-    )
-    op.execute(
-        "ALTER TABLE public.webhooks "
-        "ADD COLUMN IF NOT EXISTS last_delivery_ok BOOL"
-    )
+    op.execute("ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS last_delivery_at TIMESTAMPTZ")
+    op.execute("ALTER TABLE public.webhooks ADD COLUMN IF NOT EXISTS last_delivery_ok BOOL")
 
     # Grants: table-level privileges already cover new columns.
     for role in _ALL_RUNTIME_ROLES:
@@ -93,11 +87,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE IF EXISTS public.webhooks "
-        "DROP COLUMN IF EXISTS last_delivery_ok"
-    )
-    op.execute(
-        "ALTER TABLE IF EXISTS public.webhooks "
-        "DROP COLUMN IF EXISTS last_delivery_at"
-    )
+    op.execute("ALTER TABLE IF EXISTS public.webhooks DROP COLUMN IF EXISTS last_delivery_ok")
+    op.execute("ALTER TABLE IF EXISTS public.webhooks DROP COLUMN IF EXISTS last_delivery_at")

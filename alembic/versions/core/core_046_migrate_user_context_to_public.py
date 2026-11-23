@@ -77,10 +77,7 @@ def upgrade() -> None:
         # 2. Verify the shared schema is now empty (safety guard).
         # ---------------------------------------------------------------------
         remaining = conn.execute(
-            text(
-                "SELECT count(*) FROM information_schema.tables "
-                "WHERE table_schema = 'shared'"
-            )
+            text("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'shared'")
         ).scalar()
         if remaining:
             raise RuntimeError(

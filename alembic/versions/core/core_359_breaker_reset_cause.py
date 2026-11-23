@@ -55,7 +55,22 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Refusal rows are not resets; drop them so the downgraded filter-less readers stay correct.
-    op.execute("DELETE FROM public.breaker_resets WHERE outcome = 'refused'")
+    # The core chain runs once per butler schema over this one shared table, so an earlier
+    # schema's downgrade has already dropped the column: guard the delete on its existence.
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'breaker_resets'
+                  AND column_name = 'outcome'
+            ) THEN
+                DELETE FROM public.breaker_resets WHERE outcome = 'refused';
+            END IF;
+        END $$
+        """
+    )
     op.execute(
         "ALTER TABLE public.breaker_resets DROP CONSTRAINT IF EXISTS breaker_resets_outcome_check"
     )

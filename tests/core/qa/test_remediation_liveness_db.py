@@ -107,7 +107,10 @@ async def test_condition_resolves_only_after_a_measured_recovery(db_pool) -> Non
     await rl.reconcile_remediation_loop(pool)
     assert len(await _active(pool, rl.CAPABILITY_SOURCE)) == 1
 
-    await _attempt(pool, patrol_id, "pr_open", None)
+    # A recovery is a later *closed* launched attempt with a non-structural outcome: closed_at is
+    # database-stamped only on a terminal status (core_305), and ``pr_open`` is not terminal, so
+    # it is invisible to the latest-closed-attempt read until it merges.
+    await _attempt(pool, patrol_id, "pr_merged", None)
     await rl.reconcile_remediation_loop(pool)
     assert await _active(pool, rl.CAPABILITY_SOURCE) == []
 

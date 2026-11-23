@@ -476,17 +476,11 @@ def _grant_public_schema_read_privileges(role_name: str) -> None:
         role_name=role_name,
     )
     _execute_best_effort(
-        (
-            f"GRANT {_PUBLIC_TABLE_PRIVILEGES} "
-            f"ON ALL TABLES IN SCHEMA public TO {quoted_role}"
-        ),
+        (f"GRANT {_PUBLIC_TABLE_PRIVILEGES} ON ALL TABLES IN SCHEMA public TO {quoted_role}"),
         role_name=role_name,
     )
     _execute_best_effort(
-        (
-            f"GRANT {_PUBLIC_SEQUENCE_PRIVILEGES} "
-            f"ON ALL SEQUENCES IN SCHEMA public TO {quoted_role}"
-        ),
+        (f"GRANT {_PUBLIC_SEQUENCE_PRIVILEGES} ON ALL SEQUENCES IN SCHEMA public TO {quoted_role}"),
         role_name=role_name,
     )
 

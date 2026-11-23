@@ -126,9 +126,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for schema in _BUTLER_SCHEMAS:
-        op.execute(
-            f"DROP TABLE IF EXISTS {schema}.deferred_notifications"
-        )
-        op.execute(
-            f"DROP TABLE IF EXISTS {schema}.delivery_preferences"
-        )
+        op.execute(f"DROP TABLE IF EXISTS {schema}.deferred_notifications")
+        op.execute(f"DROP TABLE IF EXISTS {schema}.delivery_preferences")
