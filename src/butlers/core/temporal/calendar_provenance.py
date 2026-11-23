@@ -41,6 +41,47 @@ def is_explicit_butler_generated(metadata: Any) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
+#: Organizer verdicts (REQ-module-calendar-039) whose unanswered invitations are not quarantined.
+TRUSTED_ORGANIZER_VERDICTS = frozenset({"owner", "known_entity", "known_domain"})
+_ANSWERED = frozenset({"accepted", "declined", "tentative"})
+
+
+def is_quarantined_invitation(metadata: Any) -> bool:
+    """Whether this is an unanswered invitation from an organizer the owner has no reason to trust.
+
+    True when the owner is an invited ``self`` attendee who has not answered and the stamped
+    ``organizer_verdict`` is ``first_contact``, ``blocked`` or ``unknown`` or is missing (an
+    unstamped row is never admitted, REQ-module-calendar-041). The owner's own answer, an
+    organizer who is the owner, a butler-generated event and metadata that cannot be parsed are
+    never quarantined. The SQL twin is ``QUARANTINED_INVITATION_SQL``.
+    """
+    metadata_object = _metadata_object(metadata)
+    if metadata_object is None or is_explicit_butler_generated(metadata_object):
+        return False
+    attendees = metadata_object.get("attendees")
+    if not isinstance(attendees, list):
+        return False
+    organizer = metadata_object.get("organizer")
+    organizer_key = organizer.strip().casefold() if isinstance(organizer, str) else ""
+    unanswered_self = False
+    for attendee in attendees:
+        if not isinstance(attendee, Mapping) or attendee.get("self") is not True:
+            continue
+        if attendee.get("organizer") is True:
+            return False
+        email = attendee.get("email")
+        if organizer_key and isinstance(email, str) and email.strip().casefold() == organizer_key:
+            return False
+        raw = attendee.get("response_status", attendee.get("responseStatus"))
+        status = raw.strip().lower() if isinstance(raw, str) else ""
+        if status not in _ANSWERED:
+            unanswered_self = True
+    if not unanswered_self:
+        return False
+    verdict = metadata_object.get("organizer_verdict")
+    return not (isinstance(verdict, str) and verdict in TRUSTED_ORGANIZER_VERDICTS)
+
+
 def is_owner_attending(metadata: Any) -> bool:
     """Whether the owner still intends to attend, per their own RSVP.
 
@@ -48,7 +89,13 @@ def is_owner_attending(metadata: Any) -> bool:
     declining, a tentative answer, no answer, or unparseable metadata all keep it
     (fail toward showing provider truth). Projected metadata spells the field
     ``response_status`` while raw Google payloads use ``responseStatus``; both count.
+
+    The one other exclusion is a quarantined invitation (``is_quarantined_invitation``): the owner
+    has not answered it and its organizer is untrusted, so it holds no time. This is the single
+    gate the radar, day load, prep, meeting card, debrief, day sheet and context producers share.
     """
+    if is_quarantined_invitation(metadata):
+        return False
     metadata_object = _metadata_object(metadata)
     if metadata_object is None:
         return True

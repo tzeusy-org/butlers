@@ -92,6 +92,7 @@ from prometheus_client import Counter
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
+from butlers.core.temporal.invitation_quarantine import QUARANTINED_INVITATION_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +460,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                         WHERE i.ends_at <= $1
                           AND i.status != 'cancelled'
                           AND cs.lane != 'butler'
+                          AND NOT {QUARANTINED_INVITATION_SQL}
                         ORDER BY i.ends_at ASC
                         LIMIT $2
                         """,
@@ -483,6 +485,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                           AND i.ends_at > $2
                           AND i.status != 'cancelled'
                           AND cs.lane != 'butler'
+                          AND NOT {QUARANTINED_INVITATION_SQL}
                         ORDER BY i.ends_at ASC
                         LIMIT $3
                         """,

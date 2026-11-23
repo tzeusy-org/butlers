@@ -80,3 +80,23 @@ Scope: v1-mandatory
 
 - **WHEN** the owner has accepted an invitation whose organizer verdict is `blocked`
 - **THEN** the event counts toward load and conflicts as an accepted event
+
+#### Scenario: The quarantine section shows time and verdict only
+
+- **WHEN** the invitation list is read and a quarantined invitation exists
+- **THEN** its entry carries the entry id, start, end, timezone, verdict and lure badges, and no title, description, location, organizer or attendee
+
+#### Scenario: An unreadable verdict degrades the envelope
+
+- **WHEN** a needsAction invitation carries no verdict stamp
+- **THEN** it is listed as quarantined with verdict `unknown` and the response reports `issues_available = false`
+
+#### Scenario: No reader takes quarantined text into a prompt
+
+- **WHEN** the meeting card, prep, debrief, household context, context producer or Chronicler calendar adapter reads a quarantined invitation, including one on the owner's own calendar
+- **THEN** it contributes no time, no context and no text, and a contract test fails when a new `calendar_events` reader neither applies the quarantine nor is listed as exempt with a reason
+
+#### Scenario: Provider free/busy is not a reader of stored invitations
+
+- **WHEN** free slots are computed from the provider's free/busy answer
+- **THEN** that answer is outside this requirement; the quarantine applies to the stored event rows only

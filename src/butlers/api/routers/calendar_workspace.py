@@ -47,6 +47,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
+    CalendarQuarantinedInvitation,
     CalendarRespondRequest,
     CalendarRespondResponse,
     CalendarSourceRoleRequest,
@@ -1560,6 +1561,28 @@ async def get_workspace_invitations(
                 response_configured=owner in response_owners and row.get("writable") is True,
             )
         )
+    quarantined = []
+    for row in invitation_read.quarantined:
+        metadata = _normalize_json_object(row.get("event_metadata"))
+        verdict = metadata.get("organizer_verdict")
+        if verdict not in ("first_contact", "blocked"):
+            # An unreadable or missing verdict quarantines as ``unknown`` and degrades the
+            # envelope: the system cannot say the organizer is trustworthy or not.
+            verdict = "unknown"
+            degraded.add("calendar organizer verdict")
+        badges = metadata.get("lure_badges")
+        quarantined.append(
+            CalendarQuarantinedInvitation(
+                entry_id=row["instance_id"],
+                start_at=row["instance_starts_at"],
+                end_at=row["instance_ends_at"],
+                timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+                verdict=verdict,
+                lure_badges=[b for b in badges if isinstance(b, str)]
+                if isinstance(badges, list)
+                else [],
+            )
+        )
     has_more = len(invitation_read.rows) > limit
     next_cursor = None
     if has_more:
@@ -1570,6 +1593,7 @@ async def get_workspace_invitations(
     return ApiResponse(
         data=CalendarInvitationsResponse(
             entries=entries,
+            quarantined=quarantined,
             issues_available=not degraded,
             conflicts_available=conflicts_available,
             sources_degraded=sorted(degraded),
