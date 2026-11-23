@@ -11,12 +11,13 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   `condition`, `mode`, `read_check` and `bundle` (REQ-owner-watches-001), and `all`/`any` (at
   most 16 leaves in total, depth two, 8 KiB of compact JSON). An `expectation_kind` must be a
   registered `expect.*` perception kind, a UUID must be canonical lowercase and hyphenated, an `at`
-  instant must be RFC 3339 UTC (`Z` or `+00:00`, no leap second), and a `read_check` number must be
-  finite, at most 10^15 in magnitude, and zero or at least 10^-6. Effect statuses are distinct. The
-  size bound is one measure in both validators: compact canonical JSON with each float in plain
-  decimal form, which is what jsonb prints. A string with a NUL or a lone surrogate is refused,
-  and `predicate.loads(text)` also refuses a numeric literal over 40 characters. The validator
-  raises only its own error, whatever the document holds.
+  instant must be RFC 3339 UTC (`Z` or `+00:00`, no leap second), and a `read_check` number must be zero (any
+  spelling) or satisfy 10^-6 <= |v| <= 10^15 on its exact decimal value, and its jsonb text must be at
+  most 40 characters. Effect statuses are distinct. The size bound is one measure in both
+  validators: compact canonical JSON with each number as jsonb prints it (plain decimal, scale
+  kept, no sign on zero). A string with a NUL or a lone surrogate is refused, a cyclic document is
+  refused (not hung), and `predicate.loads(text)` reads numbers as `Decimal`, so a literal such as
+  `9e-1000` is seen as the non-zero value it is. The validator raises only its own error, whatever the document holds.
   It mirrors `perception_private.valid_predicate`, so the dark `perception_bind` store and
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the

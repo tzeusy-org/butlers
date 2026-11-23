@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -43,7 +42,7 @@ EXPECTATION_KINDS = frozenset(kind for kind in KINDS if kind.startswith("expect.
 #: values would make the database's expanded numeric text, and so its size bound, diverge.
 MAX_NUMBER_TEXT = 40  # a numeric literal's own text, as the database bounds it
 READ_MAX = 10**15
-READ_MIN = 1e-6
+READ_MIN = Decimal("1e-6")
 #: One canonical RFC 3339 UTC instant form for ``at`` (no compact offset, no leap second).
 INSTANT_PATTERN = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,6})?"
@@ -128,23 +127,45 @@ def _name(value: object, what: str, pattern: re.Pattern[str]) -> str:
     return value
 
 
-def _number(value: int | float) -> bool:
-    if type(value) is float and not math.isfinite(value):
+def _decimal(value: int | float | Decimal) -> Decimal:
+    """The exact decimal a JSON number denotes (a float by its shortest repr, as json writes it)."""
+    if type(value) is Decimal:
+        return value
+    if type(value) is float:
+        return Decimal(repr(value))
+    return Decimal(value)
+
+
+def _pg_text(value: int | float | Decimal) -> str:
+    """The text jsonb prints for this number: plain decimal, scale kept, no sign on zero."""
+    d = _decimal(value)
+    if d.is_zero():
+        exponent = d.as_tuple().exponent
+        return "0" if exponent >= 0 else "0." + "0" * -exponent  # type: ignore[operator]
+    return format(d, "f")
+
+
+def _number(value: int | float | Decimal) -> bool:
+    d = _decimal(value)
+    if not d.is_finite() or len(_pg_text(value)) > MAX_NUMBER_TEXT:
         return False
-    magnitude = abs(value)
-    return magnitude <= READ_MAX and (magnitude == 0 or magnitude >= READ_MIN)
+    magnitude = d.copy_abs()
+    return d.is_zero() or READ_MIN <= magnitude <= Decimal(READ_MAX)
+
+
+_NUMBERS = (int, float, Decimal)
 
 
 def _read_value(node: dict) -> None:
     value = node["value"]
     if node["op"] in ORDERED_OPS:
         # An ordered comparison reads a number; a bool is not one.
-        if type(value) not in (int, float) or not _number(value):
+        if type(value) not in _NUMBERS or not _number(value):
             raise PredicateError("read_check ordered comparisons need a bounded finite number")
     elif type(value) is str:
         if len(value.encode()) > MAX_NAME_BYTES:
             raise PredicateError("read_check.value string exceeds 128 bytes")
-    elif type(value) is not bool and (type(value) not in (int, float) or not _number(value)):
+    elif type(value) is not bool and (type(value) not in _NUMBERS or not _number(value)):
         raise PredicateError("read_check.value must be a bounded number, boolean or string")
 
 
@@ -244,13 +265,33 @@ def _validate(node: object, depth: int) -> int:
     return 1
 
 
+def _plain(value: object) -> int:
+    """json ``default`` hook: a Decimal enters the text as ``0``; ``_scan`` adds its real size."""
+    if type(value) is Decimal and value.is_finite():
+        return 0
+    raise TypeError(f"{type(value).__name__} is not canonical JSON")
+
+
+def _canonical_text(predicate: object) -> str:
+    """Compact canonical JSON; refuses a cycle or a non-finite number (raises ``ValueError``)."""
+    return json.dumps(
+        predicate,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_plain,
+    )
+
+
 def _scan(predicate: object) -> int:
-    """Walk every string and float once, without recursion.
+    """Walk every string and number once, without recursion (the text already proved no cycle).
 
     A NUL or a lone surrogate in a string or key is refused: jsonb cannot store either. The
-    return value is the extra bytes jsonb's text form adds to Python's compact canonical JSON,
-    because it prints a numeric in plain decimal form (``1.5e-06`` becomes ``0.0000015``). The
-    size bound is measured on that one form in both validators.
+    return value is the extra bytes jsonb's text form adds to the compact canonical JSON: it
+    prints a numeric in plain decimal form (``1.5e-06`` is ``0.0000015``), keeps a literal's
+    scale, and drops the sign of zero. The 8KiB bound is measured on that one form in both
+    validators.
     """
     extra, stack = 0, [predicate]
     while stack:
@@ -262,8 +303,10 @@ def _scan(predicate: object) -> int:
                 node.encode()
             except UnicodeEncodeError:
                 raise PredicateError("predicate strings must be valid Unicode") from None
-        elif type(node) is float and math.isfinite(node):
-            extra += len(format(Decimal(repr(node)), "f")) - len(repr(node))
+        elif type(node) is float:
+            extra += len(_pg_text(node)) - len(repr(node))
+        elif type(node) is Decimal:
+            extra += len(_pg_text(node)) - 1  # the text carried a placeholder 0
         elif type(node) is dict:
             stack.extend(node.keys())
             stack.extend(node.values())
@@ -272,12 +315,15 @@ def _scan(predicate: object) -> int:
     return extra
 
 
+def _final(value: object) -> object:
+    return 0.0 if value == 0 else float(value)  # type: ignore[arg-type]
+
+
 def validate(predicate: object) -> dict:
     """Return the canonical copy of a valid predicate or raise ``PredicateError``."""
     try:
-        extra = _scan(predicate)
-        text = canonical(predicate)
-        too_big = len(text.encode()) + extra > MAX_BYTES
+        text = _canonical_text(predicate)  # first: it refuses a cycle before anything walks it
+        too_big = len(text.encode()) + _scan(predicate) > MAX_BYTES
     except PredicateError:
         raise
     except (TypeError, ValueError, OverflowError, RecursionError, UnicodeError) as exc:
@@ -293,28 +339,49 @@ def validate(predicate: object) -> dict:
         raise PredicateError(f"predicate is malformed: {type(exc).__name__}") from None
     if leaf_count > MAX_LEAVES:
         raise PredicateError("predicate has more than 16 leaves")
-    return json.loads(text)
+    return json.loads(
+        json.dumps(predicate, sort_keys=True, separators=(",", ":"), default=_final)
+        if _has_decimal(predicate)
+        else text
+    )
 
 
-def _literal(text: str):
+def _has_decimal(node: object) -> bool:
+    stack = [node]
+    while stack:
+        item = stack.pop()
+        if type(item) is Decimal:
+            return True
+        if type(item) is dict:
+            stack.extend(item.values())
+        elif type(item) is list:
+            stack.extend(item)
+    return False
+
+
+def _literal(text: str) -> Decimal:
     if len(text) > MAX_NUMBER_TEXT:
         raise PredicateError(f"numeric literal exceeds {MAX_NUMBER_TEXT} characters")
-    return float(text)
+    return Decimal(text)
 
 
-def _integer(text: str):
+def _integer(text: str) -> int:
     if len(text) > MAX_NUMBER_TEXT:
         raise PredicateError(f"numeric literal exceeds {MAX_NUMBER_TEXT} characters")
     return int(text)
 
 
 def loads(text: str) -> dict:
-    """Parse and validate JSON text, seeing each number's source text as the database does."""
+    """Parse and validate JSON text, reading each number exactly as the database does.
+
+    A fractional or exponent literal is a ``Decimal``, never a float, so ``9e-1000`` is the
+    non-zero value it is and a zero in any spelling is zero.
+    """
     try:
         document = json.loads(text, parse_float=_literal, parse_int=_integer)
     except PredicateError:
         raise
-    except (ValueError, RecursionError) as exc:
+    except (ValueError, RecursionError, ArithmeticError) as exc:
         raise PredicateError(f"predicate is not JSON: {exc}") from None
     return validate(document)
 

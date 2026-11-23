@@ -1146,11 +1146,11 @@ def test_sql_and_python_predicate_validators_give_the_same_verdict(db):
     every ':' and ',' while Python measures compact bytes) and non-canonical UUID spellings.
     """
     from butlers.conditions import predicate as ast
-    from tests.perception.predicate_corpus import corpus
+    from tests.perception.predicate_corpus import Raw, corpus, text_of
 
     for name, document, valid in corpus():
         try:
-            ast.validate(document)
+            ast.loads(document) if isinstance(document, Raw) else ast.validate(document)
             python = True
         except ast.PredicateError:
             python = False
@@ -1158,7 +1158,7 @@ def test_sql_and_python_predicate_validators_give_the_same_verdict(db):
             with db.begin_nested():
                 sql = db.execute(
                     text("SELECT perception_private.valid_predicate(CAST(:p AS jsonb))"),
-                    {"p": json.dumps(document)},
+                    {"p": text_of(document)},
                 ).scalar_one()
         except DBAPIError:
             sql = False  # a refusing raise (e.g. a malformed instant) is a refusal

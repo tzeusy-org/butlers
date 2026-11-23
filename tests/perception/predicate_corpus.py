@@ -6,6 +6,20 @@ checked against both validators and cannot drift into agreeing on the wrong answ
 
 from __future__ import annotations
 
+import json
+
+
+class Raw(str):
+    """A document given as JSON text, so a number keeps its source spelling.
+
+    Python validates it with ``predicate.loads`` and the database receives the text unchanged.
+    """
+
+
+def text_of(document: object) -> str:
+    return str(document) if isinstance(document, Raw) else json.dumps(document)
+
+
 U1 = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 U2 = "22222222-2222-4222-8222-222222222222"
 
@@ -105,10 +119,45 @@ def corpus() -> list[tuple[str, object, bool]]:
     cases.append(("largest valid document", _all(*[_any(big_leaf)] * 16), True))
     cases.append(("largest valid flat document", _any(*[big_leaf] * 16), True))
     cases.extend(_peer_cases())
+    cases.extend(_numeric_cases())
     return cases
 
 
-def sized_document(target: int) -> dict:
+def _read_text(literal: str) -> Raw:
+    leaf = {**READ, "value": "@@"}
+    return Raw(json.dumps(leaf).replace('"@@"', literal))
+
+
+def _numeric_cases() -> list[tuple[str, object, bool]]:
+    """Exact-value number rules, written as source text because jsonb normalizes spelling."""
+    cases = []
+    for literal, valid in (
+        ("0", True),
+        ("-0", True),
+        ("0.0", True),
+        ("-0.0", True),
+        ("0e+100", True),
+        ("-0e0", True),
+        ("0.000000", True),
+        ("1e-6", True),
+        ("1E-6", True),
+        ("0.000001", True),
+        ("0.0000009", False),
+        ("1e15", True),
+        ("1000000000000000", True),
+        ("1000000000000001", False),
+        ("9e-1000", False),
+        ("1e1000", False),
+        ("0e-100", False),
+        ("1.23456789e-6", True),
+        ("-1e15", True),
+        ("-1e-7", False),
+    ):
+        cases.append((f"number literal {literal}", _read_text(literal), valid))
+    return cases
+
+
+def sized_document(target: int, number: float = 1.23456789e-6, extra: int = 2) -> dict:
     """A valid document measuring exactly ``target`` bytes on the shared size measure.
 
     The measure is compact canonical JSON with each float in plain decimal form (what jsonb
@@ -118,7 +167,7 @@ def sized_document(target: int) -> dict:
     from butlers.perception.model import canonical
 
     leaf = {**READ, "capability": "c" * 128, "field": "f" * 64}
-    numeric = {**leaf, "value": 1.23456789e-6}
+    numeric = {**leaf, "value": number}
     for controls in range(15 * 128):
         widths = [max(0, min(128, controls - 128 * index)) for index in range(15)]
         for trim in range(5):
@@ -131,7 +180,7 @@ def sized_document(target: int) -> dict:
                 for i, w in enumerate(widths)
             ]
             document = {"tag": "all", "children": [numeric, *leaves]}
-            if len(canonical(document).encode()) + 2 == target:
+            if len(canonical(document).encode()) + extra == target:
                 return document
     raise AssertionError(f"cannot build a {target}-byte document")
 
@@ -170,6 +219,9 @@ def _peer_cases() -> list[tuple[str, object, bool]]:
         ("name with NUL", {**READ, "capability": "a\0b"}, False),
         ("exactly 8192 bytes with a long-expansion number", sized_document(8192), True),
         ("exactly 8193 bytes with a long-expansion number", sized_document(8193), False),
+        ("exactly 8192 bytes with negative zero", sized_document(8192, -0.0, -1), True),
+        ("exactly 8193 bytes with negative zero", sized_document(8193, -0.0, -1), False),
+        ("exactly 8192 bytes with positive zero", sized_document(8192, 0.0, 0), True),
         ("negative", {**READ, "op": "ne", "value": -5}, True),
         ("fraction", {**READ, "op": "ge", "value": 99.5}, True),
     ]

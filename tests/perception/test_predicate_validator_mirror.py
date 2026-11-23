@@ -16,7 +16,7 @@ import pytest
 
 from butlers.conditions import predicate as ast
 from butlers.perception.model import MODES
-from tests.perception.predicate_corpus import corpus
+from tests.perception.predicate_corpus import Raw, corpus
 
 ROOT = Path(__file__).resolve().parents[2]
 INIT_DB = (ROOT / "scripts" / "init-db.sql").read_text()
@@ -111,7 +111,7 @@ def test_sql_uuid_rule_is_the_python_canonical_rule():
 )
 def test_python_validator_gives_the_corpus_verdict(name, document, valid):
     try:
-        ast.validate(document)
+        ast.loads(document) if isinstance(document, Raw) else ast.validate(document)
         accepted = True
     except ast.PredicateError:
         accepted = False
@@ -131,7 +131,7 @@ def _hostile_documents():
     values = [[], {}, None, 7, -1, 1.5, True, "", "x" * 300, 10**400, [[]], {"a": [1]}]
     for _, document, _ in corpus():
         if type(document) is not dict:
-            continue
+            continue  # raw JSON text and non-objects are covered by the corpus verdicts
         for key in document:
             if key == "children":
                 continue
@@ -163,3 +163,54 @@ def test_loads_refuses_a_numeric_literal_longer_than_forty_characters():
 def test_loads_raises_only_its_own_error(text):
     with pytest.raises(ast.PredicateError):
         ast.loads(text)
+
+
+def _run_with_timeout(call, seconds=5):
+    import threading
+
+    outcome = []
+
+    def target():
+        try:
+            call()
+            outcome.append("accepted")
+        except ast.PredicateError:
+            outcome.append("refused")
+        except BaseException as exc:  # noqa: BLE001
+            outcome.append(type(exc).__name__)
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    return outcome[0] if outcome else "hung"
+
+
+def test_a_cyclic_predicate_is_refused_not_hung():
+    cyclic: dict = {"tag": "all", "children": []}
+    cyclic["children"].append(cyclic)
+    assert _run_with_timeout(lambda: ast.validate(cyclic)) == "refused"
+    shared = {
+        "tag": "decision",
+        "subject_id": "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d",
+        "outcome": "approved",
+    }
+    assert (
+        _run_with_timeout(lambda: ast.validate({"tag": "any", "children": [shared, shared]}))
+        == "accepted"
+    )
+
+
+def test_decimal_values_are_measured_and_bounded_exactly():
+    from decimal import Decimal
+
+    leaf = {
+        "tag": "read_check",
+        "capability": "finance.balance",
+        "field": "available",
+        "op": "lt",
+    }
+    assert ast.validate({**leaf, "value": Decimal("0.000001")})["value"] == 1e-6
+    assert ast.validate({**leaf, "value": Decimal("-0.0")})["value"] == 0
+    for bad in (Decimal("9e-1000"), Decimal("NaN"), Decimal("Infinity"), Decimal("1e1000")):
+        with pytest.raises(ast.PredicateError):
+            ast.validate({**leaf, "value": bad})
