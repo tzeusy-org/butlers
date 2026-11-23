@@ -29,7 +29,9 @@ from unittest.mock import MagicMock
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import DBAPIError
 
+from alembic import command
 from butlers.core.tool_call_capture import (
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
@@ -39,8 +41,13 @@ from butlers.core.tool_call_capture import (
     set_current_runtime_trigger_source,
 )
 from butlers.db import register_jsonb_codec
-from butlers.migrations import run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.migrations import _build_alembic_config, run_migrations
+from butlers.modules.memory.catalog_recovery import RESTORE_LEGACY_RULE_CATALOG_SQL
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    create_migration_db,
+    migration_db_name,
+)
 
 # ---------------------------------------------------------------------------
 # Skip guard
@@ -2463,6 +2470,87 @@ def test_rules_table_has_retired_at_column(memory_migrated_db: str) -> None:
     """mem_012 adds a nullable retired_at column to rules."""
     cols = _get_column_names(memory_migrated_db, "rules")
     assert "retired_at" in cols
+
+
+def test_restore_only_mem_013_staled_active_rules_after_real_downgrade(postgres_container):
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "memory"],
+        schemas={"core": "general", "memory": "general"},
+        revisions={"memory": "mem_012"},
+    )
+    config = _build_alembic_config(db_url, target_schema="general")
+    engine = create_engine(db_url)
+    rows_sql = text("""
+        SELECT source_schema, summary, confidence, invalid_at, updated_at
+        FROM public.memory_catalog WHERE source_table = 'rules'
+        ORDER BY source_schema, summary
+    """)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO general.rules (content, confidence, retired_at, metadata)
+                VALUES ('active', .75, NULL, '{}'), ('retired', .75, now(), '{}'),
+                       ('forgotten', .75, NULL, '{"forgotten": true}'),
+                       ('independently invalid', .75, NULL, '{}')
+            """)
+            )
+            conn.execute(
+                text("""
+                INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, tenant_id, memory_type,
+                     summary, confidence, invalid_at, updated_at)
+                SELECT 'general', 'rules', id, tenant_id, 'rule', content,
+                       CASE WHEN content = 'independently invalid' THEN 0 ELSE .75 END,
+                       CASE WHEN content = 'independently invalid' THEN '2000-01-01Z'::timestamptz END,
+                       '2000-01-01Z'::timestamptz
+                FROM general.rules
+            """)
+            )
+
+        command.upgrade(config, "memory@mem_013")
+        with engine.begin() as conn:
+            staled = {row.summary: row for row in conn.execute(rows_sql)}
+            assert set(staled) == {"active", "retired", "forgotten", "independently invalid"}
+            assert all(
+                row.confidence == 0 and row.invalid_at is not None for row in staled.values()
+            )
+            conn.execute(
+                text("""
+                INSERT INTO public.memory_catalog
+                    (source_schema, source_table, source_id, tenant_id, memory_type,
+                     summary, confidence, invalid_at, updated_at)
+                SELECT 'other_schema', source_table, source_id, tenant_id, memory_type,
+                       summary, confidence, invalid_at, updated_at
+                FROM public.memory_catalog WHERE source_schema = 'general' AND summary = 'active'
+            """)
+            )
+        with pytest.raises(DBAPIError, match="requires Memory at mem_012"), engine.begin() as conn:
+            conn.execute(text("SET LOCAL search_path = general"))
+            conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
+
+        command.downgrade(config, "mem_012")
+        with engine.connect() as conn:
+            before = {(row.source_schema, row.summary): row for row in conn.execute(rows_sql)}
+
+        def restore_and_read():
+            with engine.begin() as conn:
+                conn.execute(text("SET LOCAL search_path = general"))
+                conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
+            with engine.connect() as conn:
+                return {(row.source_schema, row.summary): row for row in conn.execute(rows_sql)}
+
+        restored = restore_and_read()
+        active_key = ("general", "active")
+        assert (restored[active_key].confidence, restored[active_key].invalid_at) == (0.75, None)
+        assert {key: row for key, row in restored.items() if key != active_key} == {
+            key: row for key, row in before.items() if key != active_key
+        }
+        assert restore_and_read() == restored
+    finally:
+        engine.dispose()
 
 
 def test_mem_013_adds_content_authority_columns(memory_migrated_db: str) -> None:
