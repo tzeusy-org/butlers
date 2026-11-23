@@ -924,6 +924,7 @@ class CalendarConnectorRuntime:
         self._hold_sync_token = False
         # Set when a full sync's last page carried no nextSyncToken: capture is not working.
         self._missing_sync_token = False
+        self._resync_pending = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1113,11 +1114,12 @@ class CalendarConnectorRuntime:
             return
 
         # Try loading from cursor store
-        if self._cursor_pool is not None:
+        if self._cursor_pool is not None and not self._resync_pending:
             try:
                 stored_token = await load_cursor(
                     self._cursor_pool, _CONNECTOR_TYPE, self._config.endpoint_identity
                 )
+                self._resync_pending = stored_token == ""
                 if stored_token:
                     self._sync_token = stored_token
                     logger.info(
@@ -1132,6 +1134,10 @@ class CalendarConnectorRuntime:
                     exc,
                 )
 
+        if self._resync_pending:
+            await self._perform_full_sync(ingest_events=True)
+            return
+
         # No stored token — perform initial full sync to establish baseline
         logger.info(
             "Calendar: no syncToken found, performing initial full sync: email=%s",
@@ -1141,6 +1147,7 @@ class CalendarConnectorRuntime:
 
     async def _clear_sync_token(self) -> None:
         """Blank the stored cursor so an expired token is not loaded again after a restart."""
+        self._resync_pending = True
         await self._save_sync_token("")
 
     async def _save_sync_token(self, token: str) -> None:
@@ -1158,9 +1165,10 @@ class CalendarConnectorRuntime:
                 token,
                 parent_endpoint_identity=NO_PARENT,
             )
-            self._last_checkpoint_save = time.time()
-            self._metrics.record_checkpoint_save("success")
-            logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
+            if token:
+                self._last_checkpoint_save = time.time()
+                self._metrics.record_checkpoint_save("success")
+                logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
         except Exception as exc:
             self._metrics.record_checkpoint_save("error")
             logger.warning(
@@ -1370,6 +1378,7 @@ class CalendarConnectorRuntime:
             )
             return
         self._missing_sync_token = False
+        self._resync_pending = False
         self._sync_token = next_sync_token
         await self._save_sync_token(next_sync_token)
 

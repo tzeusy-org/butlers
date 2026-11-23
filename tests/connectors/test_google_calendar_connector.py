@@ -1017,3 +1017,74 @@ async def test_a_later_full_sync_with_a_token_clears_degraded_health(
         await runtime._ensure_sync_token()
     assert runtime._sync_token == "token-1"
     assert runtime._get_health_state()[0] != "degraded"
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_cleared_expired_cursor_keeps_recovery_ingest_mode(account_config, restart):
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    durable_token = "expired"
+
+    async def save(pool, connector_type, identity, token, **kwargs):
+        nonlocal durable_token
+        durable_token = token
+
+    async def load(*args, **kwargs):
+        return durable_token
+
+    async def first_api(path, params):
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    event = {"id": "observed-on-retry", "status": "confirmed"}
+
+    async def next_api(path, params):
+        assert "syncToken" not in params
+        return {"items": [event], "nextSyncToken": "replacement"}
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", load),
+    ):
+        with patch.object(runtime, "_gcal_api_get", first_api):
+            await runtime._run_one_poll_cycle()
+        assert durable_token == "" and runtime._sync_token is None
+        if restart:
+            runtime = _synced_runtime(account_config, [])
+        with (
+            patch.object(runtime, "_gcal_api_get", next_api),
+            patch.object(runtime, "_process_event", AsyncMock(return_value=True)) as process,
+        ):
+            await runtime._ensure_sync_token()
+        process.assert_awaited_once_with(event)
+        assert durable_token == "replacement"
+
+
+async def test_clearing_expired_cursor_does_not_report_successful_checkpoint(
+    account_config, caplog
+):
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    before = runtime._last_checkpoint_save
+
+    async def api(path, params):
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    with (
+        patch.object(runtime, "_gcal_api_get", api),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        caplog.at_level("DEBUG", logger="butlers.connectors.google_calendar"),
+    ):
+        await runtime._run_one_poll_cycle()
+    assert save.await_args.args[3] == ""
+    assert "saved syncToken" not in caplog.text, "cursor clearing was logged as a saved sync token"
+    assert runtime._last_checkpoint_save == before
