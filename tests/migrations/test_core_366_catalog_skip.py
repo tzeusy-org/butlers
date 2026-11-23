@@ -112,6 +112,8 @@ def test_the_catalog_check_reads_every_installed_object_and_takes_no_table_lock(
         "ix_calendar_event_revisions_starts",
         "ix_calendar_event_revisions_observed",
         "aclexplode",
+        "tgenabled = 'O'",
+        "%baseline%",
     ):
         assert fragment in sql
     # Catalog-only: it never names the table in a FROM clause that would lock it.

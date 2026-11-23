@@ -8,7 +8,8 @@ before it submits anything or saves its sync token; a failed write raises
 :class:`EvidenceNotCommitted`, so the token stays where it was and the next cycle journals the same
 delta again.
 
-Privacy (owner decision 2026-11-22): titles, locations, times and attendees are kept verbatim;
+Privacy (owner decision 2026-11-22): titles, times and attendees are kept verbatim, and so are
+locations apart from join secrets (meeting links, ids, passcodes);
 descriptions are scrubbed of links and passcodes, conference data is reduced to the solution name
 and key type, and attachment, source and gadget links are dropped. A policy-blocked event keeps
 structure and times only (``raw`` is NULL). Policy evaluation that cannot be resolved raises, so the
@@ -57,9 +58,12 @@ _URL = re.compile(
     # Scheme-less meeting hosts, with or without a subdomain or a path.
     rf"|\b(?:[\w-]+\.)*(?:{_MEETING_HOSTS})(?:/\S*)?"
 )
-# "passcode: 123456", "Password - abc", "PIN 1234 #", "meeting id" is not a secret, so not matched.
+# A credential keyword counts only when a value follows it: after ':', '=', '#' or '-', or as a
+# bare number ("passcode: 123456", "Password - abc", "PIN 1234 #", "PIN 1234"). "Pin Oak Room" is a
+# place, not a secret, so a word after the keyword does not match.
 _PASSCODE = re.compile(
-    r"(?i)\b(pass\s?code|password|pin|access\s?code|dial[- ]in code)\b\s*[:=\-]?\s*#?\s*[\w#*-]+"
+    r"(?i)\b(?:pass\s?code|password|pin|access\s?code|dial[- ]in code)\b"
+    r"(?:\s*[:=#-]\s*[\w#*-]+|\s+\d[\w#*-]*)"
 )
 # "Meeting ID: 123 4567 8901": the id plus the passcode is a join credential.
 _MEETING_ID = re.compile(r"(?i)\bmeeting\s*id\b\s*[:=\-]?\s*#?\s*\d[\d -]{5,}\d")

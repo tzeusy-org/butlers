@@ -100,6 +100,7 @@ AND (
     SELECT count(*) FROM pg_trigger
     WHERE tgrelid = to_regclass({_quote_literal(_TABLE)}) AND NOT tgisinternal
       AND tgname IN ('calendar_event_revisions_append_only', 'calendar_event_revisions_no_truncate')
+      AND tgenabled = 'O'
 ) = 2
 AND EXISTS (
     SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -121,6 +122,11 @@ AND EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conrelid = to_regclass({_quote_literal(_TABLE)})
       AND conname = 'calendar_event_revisions_blocked_has_no_raw'
+)
+AND EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = to_regclass({_quote_literal(_TABLE)}) AND contype = 'c'
+      AND pg_get_constraintdef(oid) LIKE '%baseline%' AND pg_get_constraintdef(oid) LIKE '%resync%'
 )
 """
 

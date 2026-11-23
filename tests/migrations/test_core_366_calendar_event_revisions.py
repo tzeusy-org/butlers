@@ -220,10 +220,17 @@ def test_a_second_schema_is_catalog_only_and_a_downgrade_keeps_the_shared_table(
     holder = engine.connect()
     try:
         assert _acl(engine) == _EXACT
-        # A held ROW EXCLUSIVE lock blocks any DDL (even a no-op CREATE OR REPLACE TRIGGER or
-        # REVOKE), so a short lock timeout turns "ran DDL" into a failure of the second upgrade.
+        # The peer's scenario: an open INSERT transaction on the journal (ROW EXCLUSIVE) blocks
+        # any DDL, even a no-op CREATE OR REPLACE TRIGGER, CREATE INDEX or REVOKE-then-GRANT on
+        # the table. The fresh second schema replays core_001/core_007's blanket grants, so its
+        # ACL has drifted: it must still succeed, through the ACL-only branch.
         holder.execute(text("BEGIN"))
-        holder.execute(text(f"LOCK TABLE {_TABLE} IN ROW EXCLUSIVE MODE"))
+        holder.execute(
+            text(
+                f"INSERT INTO {_TABLE} (endpoint_identity, calendar_id, event_id, etag, "
+                "observation) VALUES ('held', 'primary', 'held-1', 'h1', 'baseline')"
+            )
+        )
         db_name = engine.url.database
         with engine.connect() as admin:
             admin.execute(text(f"ALTER DATABASE \"{db_name}\" SET lock_timeout = '1s'"))

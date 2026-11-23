@@ -429,3 +429,23 @@ def test_extended_properties_are_not_journaled_but_the_html_link_is() -> None:
     raw = json.loads(_row(event)[-1])
     assert "extendedProperties" not in raw and "secret-state" not in json.dumps(raw)
     assert raw["htmlLink"] == "https://calendar.example.test/event?eid=1"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Pin Oak Room, level 2",
+        "Password Reset workshop",
+        "Passcode review session",
+    ],
+)
+def test_a_credential_word_without_a_value_is_ordinary_text(text: str) -> None:
+    assert revisions.scrub_description(text) == text
+
+
+@pytest.mark.parametrize(
+    "text", ["passcode: 4455", "Password - abc", "PIN 1234 #", "PIN 1234", "pin=77#"]
+)
+def test_a_credential_word_with_a_value_is_scrubbed(text: str) -> None:
+    out = revisions.scrub_description(text)
+    assert "[removed]" in out
