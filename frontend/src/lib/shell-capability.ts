@@ -130,8 +130,8 @@ const page = (loader: () => Promise<{ default: ComponentType }>) => loader;
 
 type ShellCapabilityInput = Omit<ShellCapability, "contextPolicy">;
 
-const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
-  ...(D19_PREVIEW_ENABLED ? [
+const _D19_SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] =
+  D19_PREVIEW_ENABLED ? [
     { path: "/d19", label: "One assistant preview", keywords: ["goals", "regions"], family: "overview", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/OverviewPage")) },
     { path: "/d19/goals", label: "Goals preview", keywords: ["goals"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/GoalsPage")), queryWarmup: staticWarmup("/d19/goals", ["goals", "list", {}], () => getGoals()) },
     { path: "/d19/goals/:goalId", label: "Goal preview", keywords: ["goal"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/GoalPage")), queryWarmup: dynamic("/d19/goals/:goalId", (id) => ({ queryKey: ["goals", "detail", id], queryFn: () => getGoal(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
@@ -139,7 +139,10 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
     { path: "/d19/regions/:region", label: "Region preview", keywords: ["region", "operator"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/RegionsPage").then((m) => ({ default: m.RegionPage }))) },
     { path: "/d19/approvals", label: "Approvals preview", keywords: ["lineage"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
     { path: "/d19/approvals/:id", label: "Approval lineage preview", keywords: ["lineage"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
-  ] satisfies ShellCapabilityInput[] : []),
+  ] : [];
+
+// These routes share the language-neutral citation manifest.
+const _PUBLIC_SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
   { path: "/", label: "Overview", keywords: ["home", "dashboard"], family: "overview", placement: { section: "Main", order: 0, icon: "overview", end: true }, chord: "o", discoverability: "global", loader: page(() => import("@/pages/DashboardPage.tsx")) },
   // Full-page chat posture (bu-0ynlk.11) — no sidebar placement: the docked
   // rail / floating widget is the persistent entry point, this is the
@@ -227,7 +230,10 @@ const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
 /** One typed source for all shell projections. `contextPolicy` is derived
  * from `page-context-registry.ts` so the two never drift independently —
  * every entry above must have a matching registry descriptor. */
-export const SHELL_CAPABILITIES: readonly ShellCapability[] = _SHELL_CAPABILITIES_INPUT.map(
+export const SHELL_CAPABILITIES: readonly ShellCapability[] = [
+  ..._D19_SHELL_CAPABILITIES_INPUT,
+  ..._PUBLIC_SHELL_CAPABILITIES_INPUT,
+].map(
   (capability) => ({
     ...capability,
     contextPolicy: PAGE_CONTEXT_REGISTRY[capability.path]?.policy ?? "snapshot",
