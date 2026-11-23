@@ -517,7 +517,7 @@ database. Set `memory_schema` to the affected schema. This example uses
 
 ```bash
 restore_sql=$(uv run --no-sync python -c 'from butlers.modules.memory.catalog_recovery import RESTORE_LEGACY_RULE_CATALOG_SQL; print(RESTORE_LEGACY_RULE_CATALOG_SQL)') &&
-  printf '%s\n' 'SET LOCAL search_path TO :"memory_schema";' \
+  printf '%s\n' 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED;' 'SET LOCAL search_path TO :"memory_schema";' \
     "SET LOCAL lock_timeout = '5s';" "$restore_sql" |
   psql -X --single-transaction --set=ON_ERROR_STOP=1 --set=memory_schema=general --file=-
 ```

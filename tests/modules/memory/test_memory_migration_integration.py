@@ -2534,6 +2534,13 @@ def test_restore_only_mem_013_staled_active_rules_after_real_downgrade(postgres_
         command.downgrade(config, "mem_012")
         with engine.connect() as conn:
             before = {(row.source_schema, row.summary): row for row in conn.execute(rows_sql)}
+        stale_snapshot_engine = engine.execution_options(isolation_level="REPEATABLE READ")
+        with (
+            pytest.raises(DBAPIError, match="requires READ COMMITTED"),
+            stale_snapshot_engine.begin() as conn,
+        ):
+            conn.execute(text("SET LOCAL search_path = general"))
+            conn.execute(text(RESTORE_LEGACY_RULE_CATALOG_SQL))
 
         def restore_and_read():
             with engine.begin() as conn:

@@ -6,6 +6,10 @@ DECLARE
     owning_schema text := current_schema();
     restored bigint;
 BEGIN
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'Legacy rule catalog re-sync requires READ COMMITTED';
+    END IF;
+
     -- A narrow search path binds the three unqualified tables to the same owner.
     IF to_regclass(format('%I.rules', owning_schema)) IS DISTINCT FROM to_regclass('rules')
        OR to_regclass(format('%I.memory_events', owning_schema))
