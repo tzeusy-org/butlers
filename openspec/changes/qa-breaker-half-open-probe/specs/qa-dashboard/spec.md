@@ -42,7 +42,7 @@ Scope: v1-mandatory
 
 ### Requirement: QA Surfaces Name The Breaker Cause And Halting Gate
 
-The `/qa` verdict opener SHALL name the open breaker's cause and next probe time when the API supplies them, and SHALL link a halted last patrol with the gate that halted it. A patrol's status label SHALL carry the gate for a `halted` status wherever patrol status is shown. The breaker reset dialog SHALL show the dominant cause, each counted attempt's reason text and a forecast of what a reset will do; the forecast SHALL be withheld when the cause is `mixed` or unknown, because a prediction over unlike failures is a guess.
+The `/qa` verdict opener SHALL name the open breaker's cause and next probe time when the API supplies them, and SHALL link a halted last patrol with the gate that halted it. A patrol's status label SHALL carry the gate for a `halted` status wherever patrol status is shown. The dashboard briefing's QA attention item and the Overview attention row SHALL name the same cause when it is known. The breaker reset dialog SHALL show the dominant cause, each counted attempt's reason text and a forecast of what a reset will do; the forecast SHALL be withheld when the cause is `mixed` or unknown, because a prediction over unlike failures is a guess.
 
 ID: REQ-qa-dashboard-903
 Source: bu-ejow5p.3 (run 25 move 3), slice S3b; owner decision on bu-ejow5p.3 adopting the bead design
@@ -62,3 +62,8 @@ Scope: v1-mandatory
 
 - **WHEN** the reset dialog opens while `dominant_cause` is `mixed`
 - **THEN** it states that no forecast is available and makes no claim about a reset's outcome
+
+#### Scenario: The briefing and the Overview name the same cause
+
+- **WHEN** the breaker is open with a known single cause
+- **THEN** the briefing's QA attention description and the Overview attention row title both name that cause in the same words

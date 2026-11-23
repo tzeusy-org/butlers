@@ -82,3 +82,20 @@ def derive_breaker_state(
         last_failure_at=newest,
         next_probe_at=None if newest is None else newest + probe_backoff(streak - threshold),
     )
+
+
+#: Plain-words causes for human-facing text. ``frontend/src/lib/qa-breaker-cause.ts`` carries the
+#: same words for the /qa page; change them together.
+CAUSE_LABELS: dict[str, str] = {
+    "publisher_unconfigured": "no publisher configured",
+    "proposal_retention_unavailable": "proposal retention unavailable",
+    "execution_failure": "investigation failures",
+    "mixed": "mixed causes",
+}
+
+
+def cause_label(cause: str | None) -> str | None:
+    """Plain-words cause; an unknown code reads as its own text, never silently dropped."""
+    if not cause:
+        return None
+    return CAUSE_LABELS.get(cause, cause.replace("_", " "))
