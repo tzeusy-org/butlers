@@ -44,6 +44,9 @@ class DayOccurrence:
     starts_at: datetime
     ends_at: datetime
     all_day: bool = False
+    #: The event's own IANA zone. An all-day event's dates are read in it, because a database
+    #: returns instants in UTC, so a UTC+8 all-day stored at local midnight is the previous date.
+    timezone: str | None = None
     status: str = "confirmed"
     event_type: str = "default"
     time_role: str = "unclassified"
@@ -94,6 +97,8 @@ class Freshness:
     sources_total: int
     #: The oldest last good read among the unreadable sources, when one is known.
     unreadable_since: datetime | None = None
+    #: When the projection was made, so a rendered time can say its date when it is not today.
+    checked_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +124,27 @@ def _utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("day sheet datetimes must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _event_date(value: datetime, timezone: str | None) -> date:
+    """The calendar date of an all-day boundary: in the event's zone when named, else as written."""
+    if timezone:
+        try:
+            return value.astimezone(ZoneInfo(timezone)).date()
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            pass
+    return value.date()
+
+
+def _clean_name(name: str) -> str:
+    return defang_delivery_text(" ".join(str(name).split())[:_TITLE_LIMIT])
+
+
+def _stamp(value: datetime, tz: ZoneInfo, checked_at: datetime | None) -> str:
+    local = value.astimezone(tz)
+    if checked_at is not None and local.date() != checked_at.astimezone(tz).date():
+        return f"{local:%d %b %H:%M}"
+    return f"{local:%H:%M}"
 
 
 def _self_response(metadata: Any) -> str | None:
@@ -188,6 +214,7 @@ def _freshness(sources: Sequence[SourceRead], now: datetime) -> Freshness:
         sources_unreadable=unreadable,
         sources_total=len(sources),
         unreadable_since=min(since_values) if since_values else None,
+        checked_at=_utc(now),
     )
 
 
@@ -214,8 +241,10 @@ def build_day_sheet(
         if occurrence.all_day:
             # An all-day event is a date range, not an instant: it is on this day when the date
             # is in range, in whatever zone the provider wrote it, so no zone double-lists it.
-            first = occurrence.starts_at.date()
-            last = max(occurrence.ends_at.date(), first + timedelta(days=1))
+            first = _event_date(occurrence.starts_at, occurrence.timezone)
+            last = max(
+                _event_date(occurrence.ends_at, occurrence.timezone), first + timedelta(days=1)
+            )
             if not first <= local_date < last:
                 continue
             start, end = day_start, day_end
@@ -285,6 +314,8 @@ def build_day_sheet(
             [
                 local_date.isoformat(),
                 zone,
+                # A recovered read must not dedup against the unreadable one that preceded it.
+                [freshness.state, len(freshness.sources_unreadable), freshness.sources_total],
                 [
                     [
                         i.ref,
@@ -327,7 +358,9 @@ def render_day_sheet_text(sheet: DaySheet) -> str:
     state = sheet.freshness
     lines: list[str] = []
     if state.state == "stale" and state.as_of is not None:
-        lines.append(f"As of {state.as_of.astimezone(tz):%H:%M} (the calendar may be out of date)")
+        lines.append(
+            f"As of {_stamp(state.as_of, tz, state.checked_at)} (the calendar may be out of date)"
+        )
     lines.append(f"Your day: {sheet.date:%a %d %b}")
 
     unreadable = len(state.sources_unreadable)
@@ -336,11 +369,11 @@ def render_day_sheet_text(sheet: DaySheet) -> str:
         return "\n".join(lines)
     if unreadable:
         since = (
-            f" since {state.unreadable_since.astimezone(tz):%H:%M}"
+            f" since {_stamp(state.unreadable_since, tz, state.checked_at)}"
             if state.unreadable_since is not None
             else ""
         )
-        names = ", ".join(state.sources_unreadable)
+        names = ", ".join(_clean_name(n) for n in state.sources_unreadable)
         lines.append(
             f"Calendar unreadable{since} ({unreadable} of {state.sources_total} sources: {names})."
         )

@@ -293,3 +293,37 @@ def test_all_day_items_are_not_meetings() -> None:
 def test_butler_titles_are_defanged_too() -> None:
     result = sheet([occ("hold", at(9), at(10), time_role="butler", title="Call a@b.example")])
     assert "a[@]b[.]example" in render_day_sheet_text(result)
+
+
+def test_a_recovered_empty_day_does_not_dedup_against_the_unreadable_one() -> None:
+    unreadable = sheet([], sources(unreadable=("travel",)))
+    recovered = sheet([], sources())
+    stale = sheet([], sources(age=timedelta(hours=3)))
+
+    assert len({unreadable.digest, recovered.digest, stale.digest}) == 3
+
+
+def test_an_all_day_event_is_dated_in_its_own_zone_even_when_stored_in_utc() -> None:
+    # Singapore all-day for 24 Nov, as a database returns it: UTC instants on the 23rd.
+    start = datetime(2026, 11, 23, 16, 0, tzinfo=UTC)
+    end = datetime(2026, 11, 24, 16, 0, tzinfo=UTC)
+    holiday = occ("trip", start, end, all_day=True, timezone="Asia/Singapore")
+
+    assert [i.ref for i in sheet([holiday]).items] == ["trip"]
+    assert (
+        build_day_sheet(
+            [holiday], sources(), zone=ZONE, local_date=DAY - timedelta(days=1), now=NOW
+        ).items
+        == []
+    )
+
+
+def test_unreadable_source_names_are_cleaned_and_a_distant_since_shows_its_date() -> None:
+    srcs = [
+        SourceRead("general", True, as_of=NOW, stale_after=timedelta(minutes=30)),
+        SourceRead("a@b.example", False, as_of=NOW - timedelta(days=2)),
+    ]
+    text = render_day_sheet_text(sheet([], srcs))
+
+    assert "a[@]b[.]example" in text
+    assert "since 21 Nov 23:00" in text  # 15:00 UTC two days earlier

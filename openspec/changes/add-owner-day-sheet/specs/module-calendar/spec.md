@@ -22,11 +22,12 @@ and `current` otherwise, and it SHALL name the unreadable sources. The text SHAL
 calendar" only when the state is `current` and the sheet has no items. When any source is unreadable the sheet SHALL list no items and compute no free window or load, and
 the text SHALL say "Calendar unreadable since HH:MM (N of M sources)", where HH:MM is the oldest last
 good read among the unreadable sources and is omitted when none is known. A stale sheet's text SHALL be
-prefixed with its as-of time, and a sheet whose state is not `current` SHALL carry no free gaps and no
-longest free window. An all-day event SHALL be matched to the owner's local date by its own date
-range, not by an instant. Every event title SHALL be defanged in the text, which is plain text for a message sent without a
-parse mode. The sheet SHALL carry a digest over its day, zone and items, including each full title and
-conflict ref, that is equal for equal content and changes when a title or a conflict changes.
+prefixed with its as-of time, a time not on the day of the read SHALL show its date, and a sheet whose state is not `current` SHALL carry no free gaps and no
+longest free window. An all-day event SHALL be matched to the owner's local date by its own date range read in the
+event's own timezone (the date as written when none is given), never by an instant, so a database
+returning UTC instants cannot move it a day. Every event title SHALL be defanged in the text, which is plain text for a message sent without a
+parse mode. The sheet SHALL carry a digest over its day, zone, freshness state, unreadable count and items,
+including each full title and conflict ref, that is equal for equal content and changes when a title or a conflict changes.
 
 ID: REQ-module-calendar-036
 Source: bu-5ii4gj.2 (run 26 move 2), slice S1
