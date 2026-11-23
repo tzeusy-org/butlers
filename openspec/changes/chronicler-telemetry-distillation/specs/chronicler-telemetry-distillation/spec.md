@@ -258,6 +258,23 @@ Scope: v1-mandatory
 - **AND** a failed call SHALL consume that day's call opportunity; neither
   prose repair nor a tool loop SHALL cause a second model call
 
+#### Scenario: Narration skips only uncaptured lanes
+
+Owner decision `run24-partial-narration` = A (bead bu-uhbhzq.2 notes).
+
+- **WHEN** a local day has uncaptured lanes in its frozen source availability
+  (dark, retired or configured-absent for every source feeding the lane)
+- **THEN** the pass SHALL still narrate the day's captured lanes, and a
+  `feeder_dark` flag alone SHALL NOT skip the day
+- **AND** it SHALL skip only for no rollup rows (`no_rollup_data`), every
+  rolled-up lane uncaptured (`all_lanes_dark`) or an unreadable or missing
+  snapshot (`availability_unknown`)
+- **AND** the model input SHALL list `uncaptured_lanes` with lane, state
+  (`dark` or `not_captured`) and since-date, and SHALL be instructed never to
+  describe activity or its absence in them
+- **AND** a summary or label pairing a negation with a keyword of an
+  uncaptured lane SHALL be rejected as `llm_output_invalid` and written nowhere
+
 #### Scenario: Disabling the labeling pass preserves correctness
 
 - **WHEN** the owner disables the LLM labeling pass

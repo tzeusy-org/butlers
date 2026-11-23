@@ -2707,6 +2707,15 @@ def test_real_narration_discards_delayed_result_after_source_edit(postgres_conta
                 day,
                 control["timezone"],
             )
+            # Narration reads the day's frozen source availability (a never-snapshotted day
+            # is skipped before any model call), so freeze this day with its lane available.
+            await pool.execute(
+                "INSERT INTO chronicler.day_source_availability "
+                "(local_date, timezone, source_name, state) "
+                "VALUES ($1, $2, 'steam.play_history', 'available')",
+                day,
+                control["timezone"],
+            )
             # Establish the fixture's baseline as ready; the test mutation below is real-triggered.
             await pool.execute(
                 "UPDATE chronicler.daily_repair_control SET replay_ack=replay_epoch WHERE singleton"

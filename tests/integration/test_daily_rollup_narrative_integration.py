@@ -28,6 +28,7 @@ from butlers.chronicler.flags import (
     FLAG_SLEEP_MISSING,
     SOURCE_CRON_MINUTES,
     evaluate_and_write_daily_flags,
+    freeze_day_availability,
 )
 from butlers.chronicler.models import Episode, Layer
 from butlers.chronicler.narration import narrate_daily_rollup
@@ -268,6 +269,13 @@ async def test_narrate_daily_rollup_end_to_end_against_real_rows(
     )
     await evaluate_and_write_daily_flags(
         chronicler_pool, local_date=d, timezone="Asia/Singapore", now=now
+    )
+    # Narration needs the day's frozen availability; a never-snapshotted day is skipped.
+    assert (
+        await freeze_day_availability(
+            chronicler_pool, local_date=d, timezone="Asia/Singapore", now=now
+        )
+        == "frozen"
     )
 
     class _StubDispatcher:

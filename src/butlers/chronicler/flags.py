@@ -540,6 +540,97 @@ async def load_day_availability(
     return {row["source_name"]: row["state"] for row in rows}
 
 
+async def load_day_retired_since(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    *,
+    local_date: date,
+    timezone: str,
+) -> dict[str, date]:
+    """``{source_name: retired_at}`` frozen for a local day (retired sources only)."""
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (source_name) source_name, retired_at "
+        "FROM chronicler.day_source_availability WHERE local_date = $1 AND timezone = $2 "
+        "ORDER BY source_name, revision DESC",
+        local_date,
+        timezone,
+    )
+    return {r["source_name"]: r["retired_at"] for r in rows if r["retired_at"] is not None}
+
+
+def uncaptured_lanes(
+    availability: Mapping[str, str],
+    *,
+    retired_since: Mapping[str, date] | None = None,
+) -> list[dict[str, Any]]:
+    """Lanes whose every observed source was unavailable on the frozen day.
+
+    Each entry is ``{"lane", "state", "since"}``: ``state`` is ``dark`` when any contributing
+    source was a feeder outage, else ``not_captured`` (retired or configured-absent); ``since``
+    is the latest retirement date among the lane's retired sources, or ``None``. A lane with no
+    observed source is not judged. Pure deterministic function.
+    """
+    since_by_source = retired_since or {}
+    result: list[dict[str, Any]] = []
+    for lane in sorted(LANES):
+        observed = [s for s in sources_for_lane(lane) if s in availability]
+        if not observed or any(availability[s] == AVAILABLE for s in observed):
+            continue
+        dates = [since_by_source[s] for s in observed if s in since_by_source]
+        result.append(
+            {
+                "lane": lane,
+                "state": DARK if any(availability[s] == DARK for s in observed) else "not_captured",
+                "since": max(dates).isoformat() if dates else None,
+            }
+        )
+    return result
+
+
+async def load_uncaptured_with_streaks(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    *,
+    local_date: date,
+    timezone: str,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Uncaptured lanes for a frozen day plus each lane's streak in calendar days.
+
+    ``([], {})`` when the day was never snapshotted. One query reads every frozen day up to
+    ``local_date``; a lane's streak runs back through the snapshotted days on which it stayed
+    uncaptured, to the first snapshotted day on which it was captured. A day with no snapshot
+    neither counts nor resets the run, and the streak is the calendar span from the run's first
+    day through ``local_date`` (1 on the first day). There is no cutoff.
+    """
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (local_date, source_name) local_date, source_name, state, retired_at "
+        "FROM chronicler.day_source_availability WHERE timezone = $2 AND local_date <= $1 "
+        "ORDER BY local_date DESC, source_name, revision DESC",
+        local_date,
+        timezone,
+    )
+    days: dict[date, dict[str, str]] = {}
+    for row in rows:
+        days.setdefault(row["local_date"], {})[row["source_name"]] = row["state"]
+    if local_date not in days:
+        return [], {}
+    retired = {
+        r["source_name"]: r["retired_at"]
+        for r in rows
+        if r["local_date"] == local_date and r["retired_at"] is not None
+    }
+    today = uncaptured_lanes(days[local_date], retired_since=retired)
+    start: dict[str, date] = {entry["lane"]: local_date for entry in today}
+    open_lanes = set(start)
+    for day in sorted((d for d in days if d < local_date), reverse=True):
+        if not open_lanes:
+            break
+        still = {e["lane"] for e in uncaptured_lanes(days[day])}
+        for lane in open_lanes - still:
+            open_lanes.discard(lane)
+        for lane in open_lanes:
+            start[lane] = day
+    return today, {lane: (local_date - first).days + 1 for lane, first in start.items()}
+
+
 async def correct_retired_feeder_dark(
     conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
 ) -> dict[str, int]:
@@ -791,6 +882,9 @@ __all__ = [
     "correct_retired_feeder_dark",
     "freeze_day_availability",
     "load_day_availability",
+    "load_uncaptured_with_streaks",
+    "load_day_retired_since",
+    "uncaptured_lanes",
     "observe_source_availability",
     "partition_availability",
     "compute_routine_breaks",

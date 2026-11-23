@@ -620,6 +620,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             assemble_day_close_bundle,
             partition_day_close_rows,
         )
+        from butlers.chronicler.flags import load_uncaptured_with_streaks
         from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
@@ -694,6 +695,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             rollup_threshold=rollup_threshold,
             max_total_chars=max_total_chars,
         )
+        # Frozen per-day source availability (bu-uhbhzq.2): uncaptured lanes become unknowns,
+        # and their streaks decide what the delivered recap may mention. An unreadable
+        # snapshot adds no lines and never claims an all-clear.
+        try:
+            async with pool.acquire() as availability_conn:
+                uncaptured, uncaptured_streaks = await load_uncaptured_with_streaks(
+                    availability_conn, local_date=day, timezone=timezone
+                )
+        except Exception:
+            uncaptured, uncaptured_streaks = [], {}
+
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
             episodes=[*reconciled_episodes, *sensitive_episodes],
@@ -701,6 +713,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             timezone=timezone,
             config=cfg,
             dropped_intents=dropped_intents_payload,
+            uncaptured=uncaptured,
+            uncaptured_streaks=uncaptured_streaks,
         )
 
         return {
