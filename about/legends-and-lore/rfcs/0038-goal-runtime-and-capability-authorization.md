@@ -2381,6 +2381,37 @@ owner-fast baseline measurement and declared gateway enforcement. Representation
 may land dark before its producer/reader activation; existing .17 context,
 ASR and selection/approval contracts stay in force until their named successor.
 
+#### S4.M7. Owner watches and advanced rules extend the same AST
+
+M7 bu-4c7nvp.1.5 adds exactly these leaves to the S4 tagged AST, adopted with the
+RFC 0019 notify-only narrowing and specified in the `owner-watches` capability:
+`expectation` (registered `expect.*` kind, subject UUID, deviation state),
+`routine_deviation` (confirmed routine UUID reaching `missed`), `condition`
+(owner condition-ledger source and fingerprint reaching `opened` or `resolved`),
+`mode` (registered mode ID reaching `entered` or `exited`), `read_check`
+(registered owner-granted read capability, declared output schema and typed
+comparison; untrusted or off-schema output evaluates unknown and never authors a
+watch or rule) and `bundle` (a registered correlation bundle ID). Depth,
+16-leaf and 8KiB bounds, grants, three-valued unknown propagation and the
+fire/outbox contract are unchanged, and the Python and database validators
+accept the same documents. No second language, observation registry or
+correlator exists.
+
+A watch is an S4 instance created, updated or deleted only by an owner-origin
+administer action on an exact card binding predicate digest, source/category
+boundary, grant digest, delivery mode, expiry and version; it notifies only the
+owner through the RFC 0011 broker. At most 50 are active, each expires after 90
+days unless renewed (renewal card seven days prior), delivery defaults to
+digest, and `never`/disable pauses without deleting observations. Finance
+`alert_config` migrates by an explicit type-by-type mapping with one output per
+event. Guards and `wake_when` coalesce replay and never make stale events
+realtime; only tighten-only modes (`asleep`, in-flight `travel`,
+`house_unattended`) enter automatically, and loosening uses the existing
+step-up. The first correlation is delay x commitment on typed rows with no model
+run; a repeated judgment may be offered as a rule after three useful verdicts
+and no `never` in 60 days, and only the owner's approval of that exact card
+creates it. Consumers land dark and roll back without losing receipts.
+
 M7 separately owns typed boundary enforcement and its held semantic decision,
 decision-set UX/approval, streaming/Stop, live capability selection, advanced
 conditions/watches, procedure distillation and healing. Current per-event
