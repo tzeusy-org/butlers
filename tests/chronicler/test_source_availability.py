@@ -149,7 +149,7 @@ def writes(monkeypatch: pytest.MonkeyPatch) -> _Writes:
     return recorded
 
 
-def _all(state: str, **overrides: str) -> dict[str, str]:
+def _availability_by_state(state: str, **overrides: str) -> dict[str, str]:
     return {name: overrides.get(name, state) for name in flags.SOURCE_CRON_MINUTES}
 
 
@@ -159,7 +159,7 @@ async def test_a_retired_source_raises_no_feeder_dark_and_is_listed(writes: _Wri
         local_date=date(2026, 11, 19),
         timezone="UTC",
         now=_NOW,
-        availability=_all(AVAILABLE, **{"health.meals": RETIRED}),
+        availability=_availability_by_state(AVAILABLE, **{"health.meals": RETIRED}),
     )
     assert result["flags"][FLAG_FEEDER_DARK] is False
     assert result["retired_sources"] == ["health.meals"]
@@ -177,7 +177,7 @@ async def test_the_frozen_record_wins_over_current_state(writes: _Writes, monkey
         local_date=date(2026, 11, 12),
         timezone="UTC",
         now=_NOW,
-        availability=_all(AVAILABLE, **{"steam.play_history": DARK}),
+        availability=_availability_by_state(AVAILABLE, **{"steam.play_history": DARK}),
     )
 
     assert result["flags"][FLAG_FEEDER_DARK] is True
@@ -191,7 +191,7 @@ async def test_a_source_dark_only_now_does_not_touch_a_past_day(writes: _Writes)
         local_date=date(2026, 11, 12),
         timezone="UTC",
         now=_NOW,
-        availability=_all(AVAILABLE),
+        availability=_availability_by_state(AVAILABLE),
     )
     assert result["flags"][FLAG_FEEDER_DARK] is False
 
@@ -382,16 +382,10 @@ async def test_the_correction_with_nothing_to_correct_changes_nothing(monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def _all(state: str, **overrides: str) -> dict[str, str]:
-    base = {name: state for name in flags.SOURCE_CRON_MINUTES}
-    base.update(overrides)
-    return base
-
-
 def test_uncaptured_lanes_requires_every_observed_source_unavailable() -> None:
     from butlers.chronicler.flags import uncaptured_lanes
 
-    availability = _all(AVAILABLE, **{"health.meals": RETIRED})
+    availability = _availability_by_state(AVAILABLE, **{"health.meals": RETIRED})
     result = uncaptured_lanes(availability, retired_since={"health.meals": date(2026, 8, 13)})
     assert result == [{"lane": "eat", "state": "not_captured", "since": "2026-08-13"}]
 
@@ -399,9 +393,9 @@ def test_uncaptured_lanes_requires_every_observed_source_unavailable() -> None:
 def test_uncaptured_lanes_marks_dark_over_retired() -> None:
     from butlers.chronicler.flags import uncaptured_lanes
 
-    availability = _all(AVAILABLE, **{"health.meals": DARK})
+    availability = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
     assert uncaptured_lanes(availability)[0]["state"] == "dark"
-    assert uncaptured_lanes(_all(AVAILABLE)) == []
+    assert uncaptured_lanes(_availability_by_state(AVAILABLE)) == []
 
 
 class _AvailabilityConn:
@@ -420,12 +414,12 @@ async def test_streak_counts_consecutive_uncaptured_days_and_stops_at_a_gap() ->
     from butlers.chronicler.flags import load_uncaptured_with_streaks
 
     today = date(2026, 11, 20)
-    dark = _all(AVAILABLE, **{"health.meals": DARK})
+    dark = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
     days = {
         today: dark,
         today - timedelta(days=1): dark,
         today - timedelta(days=2): dark,
-        today - timedelta(days=3): _all(AVAILABLE),
+        today - timedelta(days=3): _availability_by_state(AVAILABLE),
         today - timedelta(days=4): dark,
     }
     lanes, streaks = await load_uncaptured_with_streaks(
@@ -447,7 +441,7 @@ async def test_a_retired_lane_stops_at_its_second_day_without_walking_back() -> 
     from butlers.chronicler.flags import load_uncaptured_with_streaks
 
     today = date(2026, 11, 20)
-    retired = _all(AVAILABLE, **{"health.meals": RETIRED})
+    retired = _availability_by_state(AVAILABLE, **{"health.meals": RETIRED})
     days = {today - timedelta(days=n): retired for n in range(0, 50)}
     conn = _AvailabilityConn(days)
     reads: list[date] = []
@@ -471,7 +465,7 @@ async def test_a_dark_lane_longer_than_the_lookback_reads_as_unknown_phase(monke
 
     monkeypatch.setattr(flags_module, "MAX_STREAK_LOOKBACK_DAYS", 5)
     today = date(2026, 11, 20)
-    dark = _all(AVAILABLE, **{"health.meals": DARK})
+    dark = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
     days = {today - timedelta(days=n): dark for n in range(0, 30)}
     _lanes, streaks = await flags_module.load_uncaptured_with_streaks(
         _AvailabilityConn(days), local_date=today, timezone="Asia/Singapore"
