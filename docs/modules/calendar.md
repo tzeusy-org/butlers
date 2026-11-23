@@ -80,7 +80,7 @@ Every create/update operation runs through the conflict engine before writing:
 - **`fail`**: Rejects the operation with an error listing conflicting events.
 - **`allow_overlap`**: Proceeds with the write. When the approvals module is co-loaded, an overlap approval may be enqueued for high-impact operations.
 
-The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-043):
+The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-046):
 the target calendar plus every source whose stored role is `owner` or `butler`, never another
 person's shared calendar. A Butlers block placed over a primary-calendar meeting therefore reports
 the conflict. If free/busy or the source role ledger cannot be read, the write is refused with

@@ -11,7 +11,7 @@ whose message is "conflict check unavailable"; a replan move SHALL be declined w
 `conflict_check_unavailable`. A write SHALL NOT report `clear` or an empty conflict list from a
 check that did not read the owner's calendars.
 
-ID: REQ-module-calendar-043
+ID: REQ-module-calendar-046
 Source: bu-5ii4gj.4 (run 26 move 4), slice A
 Scope: v1-mandatory
 
