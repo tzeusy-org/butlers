@@ -13,6 +13,7 @@ from butlers.conditions.memory import InMemoryConditionStore
 from butlers.watches import (
     CapExceeded,
     OwnerApproval,
+    WatchConflict,
     WatchRefused,
     WatchService,
     WatchState,
@@ -28,12 +29,17 @@ PREDICATE = {"tag": "routine_deviation", "routine_id": ROUTINE}
 BLIND_SOURCES = frozenset({SOURCE})
 
 
+DEFAULT_SOURCES = frozenset({SOURCE, "condition:finance:bill-overdue"})
+GRANT = {"sources": DEFAULT_SOURCES, "subjects": frozenset({ROUTINE})}
+
+
+@pytest.fixture(autouse=True)
+def _reset_grant():
+    GRANT.update(sources=DEFAULT_SOURCES, subjects=frozenset({ROUTINE}))
+
+
 def grant_for(watch_id: str) -> Grant:
-    return Grant(
-        goal_id=watch_id,
-        sources=frozenset({SOURCE, "condition:finance:bill-overdue"}),
-        subjects=frozenset({ROUTINE}),
-    )
+    return Grant(goal_id=watch_id, sources=GRANT["sources"], subjects=GRANT["subjects"])
 
 
 @pytest.fixture
@@ -56,7 +62,7 @@ def snap(now=NOW, **kw):
 
 
 def approve(card):
-    return OwnerApproval(card_digest=card.digest)
+    return OwnerApproval(card_digest=card.digest, origin="owner")
 
 
 async def create(service, *, now=NOW, predicate=None, **spec):
@@ -126,16 +132,65 @@ class TestAuthoring:
         for bad in (
             OwnerApproval(card_digest=card.digest, origin="model"),
             OwnerApproval(card_digest=card.digest, origin="world"),
-            OwnerApproval(card_digest=other.digest),
+            OwnerApproval(card_digest=other.digest, origin="owner"),
         ):
             with pytest.raises(WatchRefused):
                 await service.approve(card, bad, snap())
         assert not store.watches
 
-    async def test_an_expired_card_refuses(self, service):
+    async def test_expiry_is_ninety_days_from_approval_not_from_the_proposal(self, service):
         card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+        approved_at = NOW + timedelta(days=3)
+        watch = await service.approve(card, approve(card), snap(approved_at))
+        assert watch.expires_at == approved_at + LIFETIME
+
+    async def test_the_card_binds_the_lifetime_not_a_proposal_time_expiry(self, service):
+        early = service.propose_create({"predicate": PREDICATE}, now=NOW, watch_id="w")
+        late = service.propose_create(
+            {"predicate": PREDICATE}, now=NOW + timedelta(days=1), watch_id="w"
+        )
+        assert early.digest == late.digest and early.body["lifetime_days"] == 90
+
+    async def test_origin_is_required_on_an_approval(self):
+        with pytest.raises(TypeError):
+            OwnerApproval(card_digest="x")  # type: ignore[call-arg]
+
+    @pytest.mark.parametrize(
+        "mutate",
+        [
+            {"sources": DEFAULT_SOURCES | {"perception:owner.mode"}},
+            {"sources": frozenset({SOURCE})},
+            {"subjects": frozenset({ROUTINE, "someone-else"})},
+        ],
+        ids=["source added", "source removed", "subject widened"],
+    )
+    async def test_a_grant_changed_since_the_card_refuses_create(self, service, store, mutate):
+        card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+        GRANT.update(mutate)
         with pytest.raises(WatchRefused):
-            await service.approve(card, approve(card), snap(card.expires_at))
+            await service.approve(card, approve(card), snap())
+        assert not store.watches
+
+    async def test_a_grant_changed_since_the_card_refuses_renew_and_resume(
+        self, service, conditions
+    ):
+        _, watch = await create(service)
+        later = watch.expires_at - timedelta(days=7)
+        renew = await service.propose_renew(watch.id, now=later)
+        await service.pause(watch.id, origin="owner", now=NOW)
+        resume = await service.propose_update(watch.id, resume=True)
+        GRANT.update(sources=DEFAULT_SOURCES | {"perception:owner.mode"})
+        registered = len(conditions.instances)
+        for card in (renew, resume):
+            with pytest.raises(WatchRefused):
+                await service.approve(card, approve(card), snap(later))
+        assert len(conditions.instances) == registered
+
+    async def test_the_grant_is_rechecked_at_the_register_seam(self, service):
+        _, watch = await create(service)
+        GRANT.update(sources=frozenset({SOURCE}))
+        with pytest.raises(WatchRefused):
+            await service._register(watch, snap())
 
     async def test_a_replayed_approval_creates_one_watch_and_one_instance(
         self, service, store, conditions
@@ -225,6 +280,22 @@ class TestExpiryAndRenewal:
         assert conditions.instances[renewed.instance_id].state is State.OPEN
         assert await service.renewal_due(later) == []
 
+    async def test_a_lost_renewal_cas_cancels_the_new_generation(self, store, conditions):
+        class Racing(InMemoryWatchStore):
+            async def write(self, watch, *, expected_version, cap):
+                if watch.generation == 2 and expected_version is not None:
+                    raise WatchConflict(watch.id)
+                return await super().write(watch, expected_version=expected_version, cap=cap)
+
+        service = WatchService(Racing(), ConditionEvaluator(conditions), grant_for)
+        _, watch = await create(service)
+        later = watch.expires_at - timedelta(days=7)
+        card = await service.propose_renew(watch.id, now=later)
+        with pytest.raises(WatchConflict):
+            await service.approve(card, approve(card), snap(later))
+        assert conditions.instances[f"{watch.id}:2"].state is State.CANCELLED
+        assert conditions.instances[watch.instance_id].state is State.OPEN  # the old one stays
+
     async def test_an_unrenewed_watch_expires_and_keeps_its_record(
         self, service, store, conditions
     ):
@@ -283,6 +354,21 @@ class TestNeverAndDelete:
         deleted = await service.approve(card, approve(card), snap())
         assert deleted.state is WatchState.DELETED and watch.id in store.watches
         assert conditions.instances[watch.instance_id].state is State.CANCELLED
+
+    async def test_delete_cancels_the_instance_before_it_records_deleted(self, conditions):
+        seen = []
+
+        class Watching(InMemoryWatchStore):
+            async def write(self, watch, *, expected_version, cap):
+                if watch.state is WatchState.DELETED:
+                    seen.append(conditions.instances[watch.instance_id].state)
+                return await super().write(watch, expected_version=expected_version, cap=cap)
+
+        service = WatchService(Watching(), ConditionEvaluator(conditions), grant_for)
+        _, watch = await create(service)
+        card = await service.propose_delete(watch.id)
+        await service.approve(card, approve(card), snap())
+        assert seen == [State.CANCELLED]
 
     async def test_a_stale_card_refuses(self, service):
         _, watch = await create(service)
