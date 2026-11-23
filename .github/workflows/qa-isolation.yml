@@ -126,3 +126,7 @@ jobs:
         run: |
           kubectl -n "${NAMESPACE}" get all,networkpolicy -o wide || true
           kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding || true
+          # The verifier deletes its Jobs and pods on exit; their events and the PVC outlive them.
+          kubectl -n "${NAMESPACE}" get pvc,jobs -o wide || true
+          kubectl get storageclass || true
+          kubectl -n "${NAMESPACE}" get events --sort-by=.lastTimestamp | tail -40 || true
