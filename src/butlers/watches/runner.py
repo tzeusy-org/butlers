@@ -50,6 +50,7 @@ class TickReport:
     expired: int = 0
     repaired: int = 0
     failed: int = 0
+    swept: int = 0
 
 
 def notice_for(watch: Watch, intent: FireIntent) -> WatchNotice:
@@ -85,6 +86,9 @@ class WatchRunner:
                 except (ConditionsUnavailable, ConnectionError):
                     report.failed += 1  # retained: the next tick starts from the same state
                     logger.warning("owner_watch_unavailable watch=%s", watch.id)
+        report.swept = (
+            await self.service.sweep_closed()
+        )  # after the loop: a close it raced is swept
         return report
 
     async def _advance(self, watch: Watch, now: datetime, report: TickReport) -> None:
