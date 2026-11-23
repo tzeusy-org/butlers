@@ -5930,6 +5930,48 @@
       "workloads": [
         "qa-investigator"
       ]
+    },
+    "src/butlers/core/qa/k8s_job_process.py::<module>::url::1710ce7a0d4dfc0db490b6b6747644ffbb86e00748dd9562d4bee835e077b083": {
+      "class": "site",
+      "observed": {
+        "path": "src/butlers/core/qa/k8s_job_process.py",
+        "scope": "<module>",
+        "kind": "url",
+        "sha256": "1710ce7a0d4dfc0db490b6b6747644ffbb86e00748dd9562d4bee835e077b083",
+        "authorities": [
+          "kubernetes.default.svc:443"
+        ],
+        "config": null,
+        "count": 1
+      },
+      "reason": "The QA launcher (bu-ejow5p.11) creates and observes per-attempt investigator Jobs through the in-cluster API server with the daemon's own projected token. The API server is not a chart peer, so the deployment locates it as the kube-apiserver site; the investigator pods themselves reach nothing.",
+      "resolver": null,
+      "sites": [
+        "kube-apiserver"
+      ],
+      "workloads": [
+        "butlers-up"
+      ]
+    },
+    "src/butlers/core/qa/k8s_job_process.py::K8sJobProcess.in_cluster::factory::8e5fbf40bb7e170420f2a04d3b4d6d18e2a8f8193657adb77630bd90551e4a4a": {
+      "class": "site",
+      "observed": {
+        "path": "src/butlers/core/qa/k8s_job_process.py",
+        "scope": "K8sJobProcess.in_cluster",
+        "kind": "factory",
+        "sha256": "8e5fbf40bb7e170420f2a04d3b4d6d18e2a8f8193657adb77630bd90551e4a4a",
+        "authorities": [],
+        "config": null,
+        "count": 1
+      },
+      "reason": "The QA launcher (bu-ejow5p.11) creates and observes per-attempt investigator Jobs through the in-cluster API server with the daemon's own projected token. The API server is not a chart peer, so the deployment locates it as the kube-apiserver site; the investigator pods themselves reach nothing.",
+      "resolver": null,
+      "sites": [
+        "kube-apiserver"
+      ],
+      "workloads": [
+        "butlers-up"
+      ]
     }
   },
   "local_resolvers": {
@@ -5941,7 +5983,7 @@
       "path": "src/butlers/core/runtimes/claude_code.py",
       "reason": "Supported Python invocation/configuration is bound; opaque native auth/tools remain required and unproven, no destination is granted.",
       "resolution": "no-new-route; native-auth-tools-unproven",
-      "sha256": "b63972b767e6536f79ea08211c7d9d6a6f3e605f2b7df172e298fb0c467ad34f",
+      "sha256": "3b72ba5440b46f196bafba5e15f2bccab8287bde39c0608cf56712c30bce2272",
       "symbol": "ClaudeCodeAdapter.invoke",
       "workloads": [
         "butlers-up",

@@ -26,14 +26,21 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
+import stat
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, TextIO, override
 
 from butlers.core.child_env import without_owner_auth
-from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.base import (
+    JobLaunchRefused,
+    QaJobLaunch,
+    RuntimeAdapter,
+    register_adapter,
+)
 from butlers.core.runtimes.served_identity import (
     TerminalResultError,
     append_stream,
@@ -323,6 +330,99 @@ def _extract_claude_session_id(stdout: str) -> str | None:
         if isinstance(session_id, str) and session_id:
             return session_id
     return None
+
+
+_JOB_IN_DIR = ".in"
+_JOB_OUT_DIR = ".out"
+_JOB_OUTPUT_CAP = 16 * 1024 * 1024
+
+
+def _stage_job_inputs(
+    staging_dir: Path, in_dir: Path, out_dir: Path, uid: int, files: dict[str, str]
+) -> None:
+    """Create ``.in`` (read-only to the pod) and ``.out`` (pod-writable) and write the inputs.
+
+    Refuses, before writing anything, if either already exists as anything but a real directory
+    (a link or file there would redirect the daemon's writes or the pod's outputs).
+    """
+    for directory in (in_dir, out_dir):
+        try:
+            info = os.lstat(directory)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISDIR(info.st_mode):
+            raise JobLaunchRefused("invalid")
+    for directory in (in_dir, out_dir):
+        directory.mkdir(mode=0o755, exist_ok=True)
+    for name, text in files.items():
+        fd = os.open(in_dir / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    if os.geteuid() == 0:
+        os.chown(out_dir, uid, uid)
+    else:
+        out_dir.chmod(0o777)
+
+
+def _job_command(
+    binary: str, mount: str, *, model: str | None, runtime_args: list[str]
+) -> list[str]:
+    """``sh -c`` wrapper: reads staged files, writes outputs to files; nothing sensitive in argv."""
+    parts = [
+        "exec",
+        shlex.quote(binary),
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--bare",
+        "--no-session-persistence",
+        "--permission-mode",
+        "bypassPermissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        shlex.quote(f"{mount}/{_JOB_IN_DIR}/mcp.json"),
+        "--system-prompt",
+        f'"$(cat {shlex.quote(f"{mount}/{_JOB_IN_DIR}/system.txt")})"',
+    ]
+    if model:
+        parts += ["--model", shlex.quote(model)]
+    parts += [shlex.quote(arg) for arg in runtime_args]
+    # The prompt goes on stdin from the staged file, never argv (no MAX_ARG_STRLEN limit).
+    parts += [
+        f"<{shlex.quote(f'{mount}/{_JOB_IN_DIR}/prompt.txt')}",
+        f">{shlex.quote(f'{mount}/{_JOB_OUT_DIR}/stdout.jsonl')}",
+        f"2>{shlex.quote(f'{mount}/{_JOB_OUT_DIR}/stderr.txt')}",
+    ]
+    return ["/bin/sh", "-c", " ".join(parts)]
+
+
+def _read_job_output(staging_dir: Path, name: str) -> str:
+    """Read one pod-written output file as untrusted data: no links, no FIFOs, bounded, lossy.
+
+    Each path component is opened relative to the previous directory with ``O_NOFOLLOW``, so a
+    pod that replaced ``.out`` or the file with a link reads as missing. The file is opened
+    ``O_NONBLOCK`` so a planted FIFO cannot hang the daemon, then must be a regular file with a
+    single link (a hard link to a daemon file would otherwise read as the pod's own output).
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    fds: list[int] = []
+    try:
+        root = os.open(staging_dir, flags | os.O_DIRECTORY)
+        fds.append(root)
+        out = os.open(_JOB_OUT_DIR, flags | os.O_DIRECTORY, dir_fd=root)
+        fds.append(out)
+        fd = os.open(name, flags | os.O_NONBLOCK, dir_fd=out)
+    except OSError:
+        return ""
+    finally:
+        for descriptor in fds:
+            os.close(descriptor)
+    with os.fdopen(fd, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            return ""
+        return handle.read(_JOB_OUTPUT_CAP).decode("utf-8", errors="replace")
 
 
 class ClaudeCodeAdapter(RuntimeAdapter):
@@ -625,59 +725,14 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     except OSError:
                         pass
 
-            returncode = proc.returncode or 0
-            served = append_stream(
-                self,
-                "claude",
-                stdout,
-                configured=model,
-                completion="error" if returncode else "success",
+            return self._finish_invocation(
+                stdout=stdout,
+                stderr=stderr,
+                returncode=proc.returncode or 0,
+                pid=proc.pid,
+                cmd_for_log=cmd_for_log,
+                model=model,
             )
-
-            # Capture process info for session diagnostics
-            self._last_process_info = {
-                "pid": proc.pid,
-                "exit_code": returncode,
-                "command": cmd_for_log,
-                "stderr": stderr,
-                "runtime_type": "claude",
-            }
-
-            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
-            if terminal_error and (terminal_text := _claude_terminal_error_text(stdout)):
-                self._last_process_info["terminal_error_text"] = terminal_text
-            if returncode != 0:
-                error_detail = (
-                    stderr.strip()
-                    or self._last_process_info.get("terminal_error_text")
-                    or stdout.strip()
-                    or f"exit code {returncode}"
-                )
-                logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
-                self._last_process_info["error_detail"] = error_detail
-                message = f"Claude CLI exited with code {returncode}: {error_detail}"
-                if not terminal_error:
-                    # No result envelope: nothing proves work started, so this is
-                    # pre-tool-call. The spawner layers in daemon-side capture.
-                    self._last_process_info["is_pre_tool_call"] = True
-                    raise RuntimeError(message)
-                # CLI 2.1.316+ exits 1 on a failed terminal result such as
-                # error_max_turns; keep its usage and tool evidence.
-                _, tool_calls, usage = _parse_claude_output(stdout, stderr, 0)
-                self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
-                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
-                    stdout, tool_calls
-                )
-                raise TerminalResultError(served, usage, tool_calls, message)
-
-            result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
-            self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
-            if terminal_error:
-                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
-                    stdout, tool_calls
-                )
-                raise TerminalResultError(served, usage, tool_calls)
-            return result_text, tool_calls, usage
 
         except TimeoutError:
             logger.error("Claude CLI timed out after %ds", effective_timeout)
@@ -724,6 +779,146 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                     stderr_log_file.close()
                 except OSError:
                     pass
+
+    async def invoke_in_job(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict[str, Any],
+        launch: QaJobLaunch,
+        model: str | None = None,
+        runtime_args: list[str] | None = None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Run the Claude CLI in a per-attempt, credential-free Job (bu-ejow5p.11).
+
+        Inputs are staged as files in the attempt's exchange directory, so no prompt text enters
+        the Job manifest; the container command only reads them. The CLI writes stdout and stderr
+        to files there, and those are read back (untrusted, bounded, no symlinks) only after the
+        runner reports the pod terminal. No API key is staged: the model path is the proxy URL on
+        the manifest, and with none configured the launch is refused before any effect.
+        """
+        if not launch.model_proxy_url:
+            raise JobLaunchRefused("model_route_unavailable")
+        in_dir = launch.staging_dir / _JOB_IN_DIR
+        out_dir = launch.staging_dir / _JOB_OUT_DIR
+        await asyncio.to_thread(
+            _stage_job_inputs,
+            launch.staging_dir,
+            in_dir,
+            out_dir,
+            launch.workspace_uid,
+            {"prompt.txt": prompt, "system.txt": system_prompt},
+        )
+        await asyncio.to_thread(self.build_config_file, mcp_servers=mcp_servers, tmp_dir=in_dir)
+        mount = launch.workspace_mount.rstrip("/")
+        command = _job_command(
+            self.binary_name,
+            mount,
+            model=model.strip() if isinstance(model, str) and model.strip() else None,
+            runtime_args=runtime_args or [],
+        )
+        manifest = launch.build_manifest(command)
+        cmd_for_log = f"{self.binary_name} -p --output-format stream-json (job {launch.attempt_id})"
+        try:
+            outcome = await launch.runner.run(manifest, timeout_s=launch.deadline_s)
+        finally:
+            # mcp.json can carry a per-invocation token and the exchange volume is retained:
+            # the staged inputs do not outlive the run, whatever its outcome.
+            await asyncio.to_thread(shutil.rmtree, in_dir, True)
+        if not outcome.pod_terminal:
+            # The pod may still write the exchange: read nothing from it.
+            self._last_process_info = {
+                "pid": None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(pod not terminal - outputs not read)",
+                "runtime_type": "claude",
+                "is_pre_tool_call": True,
+            }
+            raise RuntimeError("Claude job pod did not reach a terminal phase")
+        stdout = await asyncio.to_thread(_read_job_output, launch.staging_dir, "stdout.jsonl")
+        stderr = await asyncio.to_thread(_read_job_output, launch.staging_dir, "stderr.txt")
+        if outcome.state == "deadline_exceeded":
+            self._last_process_info = {
+                "pid": None,
+                "exit_code": -1,
+                "command": cmd_for_log,
+                "stderr": "(deadline exceeded - job terminated)",
+                "runtime_type": "claude",
+                "is_pre_tool_call": True,
+            }
+            raise TimeoutError(f"Claude job exceeded its {launch.deadline_s}s deadline")
+        returncode = outcome.exit_code if outcome.exit_code is not None else 1
+        if outcome.state == "failed" and returncode == 0:
+            returncode = 1
+        return self._finish_invocation(
+            stdout=stdout,
+            stderr=stderr,
+            returncode=returncode,
+            pid=None,
+            cmd_for_log=cmd_for_log,
+            model=model,
+        )
+
+    def _finish_invocation(
+        self,
+        *,
+        stdout: str,
+        stderr: str,
+        returncode: int,
+        pid: int | None,
+        cmd_for_log: str,
+        model: str | None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Turn a finished CLI run (subprocess or Job) into the adapter's return value."""
+        served = append_stream(
+            self,
+            "claude",
+            stdout,
+            configured=model,
+            completion="error" if returncode else "success",
+        )
+
+        # Capture process info for session diagnostics
+        self._last_process_info = {
+            "pid": pid,
+            "exit_code": returncode,
+            "command": cmd_for_log,
+            "stderr": stderr,
+            "runtime_type": "claude",
+        }
+
+        terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
+        if terminal_error and (terminal_text := _claude_terminal_error_text(stdout)):
+            self._last_process_info["terminal_error_text"] = terminal_text
+        if returncode != 0:
+            error_detail = (
+                stderr.strip()
+                or self._last_process_info.get("terminal_error_text")
+                or stdout.strip()
+                or f"exit code {returncode}"
+            )
+            logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
+            self._last_process_info["error_detail"] = error_detail
+            message = f"Claude CLI exited with code {returncode}: {error_detail}"
+            if not terminal_error:
+                # No result envelope: nothing proves work started, so this is
+                # pre-tool-call. The spawner layers in daemon-side capture.
+                self._last_process_info["is_pre_tool_call"] = True
+                raise RuntimeError(message)
+            # CLI 2.1.316+ exits 1 on a failed terminal result such as
+            # error_max_turns; keep its usage and tool evidence.
+            _, tool_calls, usage = _parse_claude_output(stdout, stderr, 0)
+            self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+            self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(stdout, tool_calls)
+            raise TerminalResultError(served, usage, tool_calls, message)
+
+        result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
+        self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+        if terminal_error:
+            self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(stdout, tool_calls)
+            raise TerminalResultError(served, usage, tool_calls)
+        return result_text, tool_calls, usage
 
     def build_config_file(
         self,
