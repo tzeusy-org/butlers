@@ -3,7 +3,7 @@
 
 import { useEffect } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   MemoryRouter,
@@ -77,6 +77,8 @@ function stubFetch(
   known: boolean,
   gate?: Promise<void>,
   lookup?: (id: string) => Promise<typeof entry>,
+  gridEntries: Array<typeof entry> = [],
+  searchEntries: Array<typeof entry> = [],
 ) {
   const fetch = vi.fn(async (input: string) => {
     const url = new URL(input, "http://localhost");
@@ -92,6 +94,8 @@ function stubFetch(
         );
       }
       data = lookup ? await lookup(url.pathname.split("/").at(-1) ?? "") : entry;
+    } else if (url.pathname.endsWith("/search")) {
+      data = { entries: searchEntries, available: true };
     } else if (url.pathname.endsWith("/invitations")) {
       data = {
         entries: [],
@@ -132,7 +136,7 @@ function stubFetch(
       };
     } else {
       data = {
-        entries: [],
+        entries: gridEntries,
         source_freshness: [],
         lanes: [],
         entries_source_available: true,
@@ -313,4 +317,120 @@ it("keeps the newer entry when an earlier calendar door resolves last", async ()
   });
   expect(panel()?.textContent).toContain(newer.title);
   expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-06");
+});
+
+const clicked = {
+  ...entry,
+  entry_id: "clicked-meeting",
+  title: "Selected calendar block",
+  start_at: "2026-07-01T09:00:00Z",
+  end_at: "2026-07-01T10:00:00Z",
+};
+
+function renderPending(lookupGate: Promise<void>, searchEntries: Array<typeof entry> = []) {
+  stubFetch(
+    true,
+    undefined,
+    async (id) => {
+      if (id === entry.entry_id) {
+        await lookupGate;
+        return entry;
+      }
+      return clicked;
+    },
+    [clicked],
+    searchEntries,
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter
+        initialEntries={["/calendar?view=user&range=week&anchor=2026-07-01&entry=entry-1"]}
+      >
+        <CalendarWorkspacePage />
+        <Probe />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  const panel = () => view.container.querySelector('[data-testid="entry-detail-panel"]');
+  const settle = async () => {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+  };
+  const waitPending = () =>
+    waitFor(() =>
+      expect(qc.getQueryState(["calendar-workspace-entry", entry.entry_id])?.fetchStatus).toBe(
+        "fetching",
+      ),
+    );
+  const clickBlock = async () => {
+    const block = await waitFor(() => {
+      const button = view.container.querySelector('[data-calendar-entry-id="clicked-meeting"]');
+      expect(button).not.toBeNull();
+      return button!;
+    });
+    fireEvent.click(block);
+  };
+  return { panel, settle, waitPending, clickBlock };
+}
+
+function gate() {
+  let release = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+it("keeps a grid selection when an earlier day sheet lookup finishes", async () => {
+  const g = gate();
+  const { panel, settle, waitPending, clickBlock } = renderPending(g.promise);
+  await waitPending();
+  await clickBlock();
+  await waitFor(() => expect(panel()?.textContent).toContain(clicked.title));
+  g.release();
+  await settle();
+  expect(panel()?.textContent).toContain(clicked.title);
+  expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-01");
+});
+
+it("keeps the panel closed and the anchor put when a pending lookup finishes after close", async () => {
+  const g = gate();
+  const { panel, settle, waitPending, clickBlock } = renderPending(g.promise);
+  await waitPending();
+  await clickBlock();
+  await waitFor(() => expect(panel()).not.toBeNull());
+  fireEvent.click(screen.getByLabelText("Close detail panel"));
+  await waitFor(() => expect(panel()).toBeNull());
+  g.release();
+  await settle();
+  expect(panel()).toBeNull();
+  expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-01");
+});
+
+it("keeps a search jump when an earlier day sheet lookup finishes", async () => {
+  // jsdom has no CSS.escape; the flash effect after a jump needs it.
+  vi.stubGlobal("CSS", { escape: (value: string) => value });
+  const g = gate();
+  const jumped = {
+    ...clicked,
+    entry_id: "jump-target",
+    title: "Searched meeting",
+    start_at: "2026-07-08T09:00:00Z",
+    end_at: "2026-07-08T10:00:00Z",
+  };
+  const { panel, settle, waitPending } = renderPending(g.promise, [jumped]);
+  await waitPending();
+  fireEvent.click(screen.getByLabelText("Search events"));
+  const input = await screen.findByLabelText("Search calendar events");
+  fireEvent.change(input, { target: { value: "searched" } });
+  fireEvent.click(await screen.findByText(jumped.title));
+  await waitFor(() =>
+    expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-08"),
+  );
+  g.release();
+  await settle();
+  expect(panel()).toBeNull();
+  expect(screen.getByTestId("location").textContent).toContain("anchor=2026-07-08");
 });

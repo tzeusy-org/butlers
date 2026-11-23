@@ -101,6 +101,9 @@ export function useEntrySelection({
   // Jump from a search match: navigate the grid to the match's day, then flash it.
   const handleSearchJump = useCallback(
     (entry: UnifiedCalendarEntry) => {
+      // A deliberate jump is newer than any lookup still in flight.
+      latestRequestRef.current += 1;
+      setInvitationDetailLoading(false);
       setSearchOpen(false);
       updateQuery({
         view: entry.view === "butler" ? "butler" : "user",
@@ -117,6 +120,8 @@ export function useEntrySelection({
   // ids), so the link is to the day they live on, not a detail panel.
   const handleBriefingSelect = useCallback(
     (entry: UnifiedCalendarEntry) => {
+      latestRequestRef.current += 1;
+      setInvitationDetailLoading(false);
       updateQuery({ range: "day", anchor: new Date(entry.start_at) });
     },
     [updateQuery],
