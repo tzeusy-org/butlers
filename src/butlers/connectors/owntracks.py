@@ -1518,6 +1518,8 @@ class OwnTracksConnector:
         if payload_type == "location":
             try:
                 fields = location_point_fields(body)
+                if self._db_pool is None:
+                    raise EvidenceNotCommitted("no_pool")
                 await persist_location_point(
                     self._db_pool,
                     endpoint_identity=device.endpoint_identity,

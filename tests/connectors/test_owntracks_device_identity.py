@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.connectors.owntracks import OwnTracksConnector, OwnTracksConnectorConfig
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 pytestmark = pytest.mark.unit
 
@@ -136,8 +137,7 @@ def _make_connector(
 ) -> OwnTracksConnector:
     """Build an OwnTracksConnector with a mocked MCP client (no real network I/O).
 
-    ``db_pool=None`` keeps IngestionPolicyEvaluator fail-open (no DB fetch
-    attempted) so tests don't need to stub `.fetch()`. ``cursor_pool`` is a
+    The fake ``db_pool`` returns no policy rows, so IngestionPolicyEvaluator stays fail-open. ``cursor_pool`` is a
     ``_FakeCursorPool`` when the test needs real checkpoint persistence.
     """
     config = OwnTracksConnectorConfig(
@@ -147,7 +147,7 @@ def _make_connector(
     connector = OwnTracksConnector(
         config=config,
         webhook_token="test-token",
-        db_pool=None,
+        db_pool=FilteredEventsPool(),  # empty policy rows keep the evaluator fail-open
         cursor_pool=cursor_pool,
     )
     connector._mcp_client = AsyncMock()
