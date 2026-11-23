@@ -85,7 +85,7 @@ async def apply_decision(pool: Any, address: str, verb: Verb) -> DecisionResult:
         )
         identities = await conn.fetch(
             "SELECT DISTINCT endpoint_identity FROM switchboard.connector_registry"
-            " WHERE connector_type = $1",
+            " WHERE connector_type = $1 AND deleted_at IS NULL AND archived_at IS NULL",
             CONNECTOR_TYPE,
         )
         scopes = sorted(
@@ -183,7 +183,10 @@ async def reconcile_endpoint_rules(pool: Any) -> int:
     The verdict already reads every calendar scope, so trust never needed this; it makes the
     connector's ingest-time suppression of a Block cover a newly registered endpoint too. Only
     rules the verbs wrote (``calendar_vouch`` / ``calendar_block``) are copied, one per address and
-    verb. Idempotent: an endpoint that already has the rule gets nothing. Returns rules written.
+    verb, keeping the source's ``created_at`` so precedence matches across endpoints. An endpoint
+    with any row for that (scope, verb, address), even a disabled or deleted one, gets nothing, so
+    the owner's removals stick. Deregistered and archived endpoints are skipped.
+    Returns rules written.
     ``pool`` is the Switchboard pool.
     """
     async with pool.acquire() as conn, conn.transaction():
@@ -191,17 +194,19 @@ async def reconcile_endpoint_rules(pool: Any) -> int:
         written = await conn.fetch(
             """
             INSERT INTO switchboard.ingestion_rules
-                (scope, rule_type, condition, action, priority, enabled, name, created_by)
+                (scope, rule_type, condition, action, priority, enabled, name, created_by,
+                 created_at)
             SELECT ep.scope, 'sender_address', src.condition, src.action, src.priority, TRUE,
-                   src.name, src.created_by
+                   src.name, src.created_by, src.created_at
             FROM (
                 SELECT DISTINCT $1 || endpoint_identity AS scope
                 FROM switchboard.connector_registry
                 WHERE connector_type = $2 AND endpoint_identity <> ''
+                  AND deleted_at IS NULL AND archived_at IS NULL
             ) ep
             CROSS JOIN (
                 SELECT DISTINCT ON (created_by, lower(btrim(condition ->> 'address')))
-                       created_by, condition, action, priority, name,
+                       created_by, condition, action, priority, name, created_at,
                        lower(btrim(condition ->> 'address')) AS address
                 FROM switchboard.ingestion_rules
                 WHERE deleted_at IS NULL AND enabled = TRUE
@@ -212,9 +217,9 @@ async def reconcile_endpoint_rules(pool: Any) -> int:
                 ORDER BY created_by, lower(btrim(condition ->> 'address')), id
             ) src
             WHERE NOT EXISTS (
+                -- Any row, in any state: a copy the owner disabled or deleted stays that way.
                 SELECT 1 FROM switchboard.ingestion_rules x
-                WHERE x.deleted_at IS NULL AND x.enabled = TRUE
-                  AND x.scope = ep.scope AND x.created_by = src.created_by
+                WHERE x.scope = ep.scope AND x.created_by = src.created_by
                   AND x.rule_type = 'sender_address'
                   AND lower(btrim(x.condition ->> 'address')) = src.address
             )

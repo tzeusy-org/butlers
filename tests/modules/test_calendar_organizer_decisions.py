@@ -242,3 +242,63 @@ async def test_reconcile_skips_removed_decisions_and_other_connectors(db):
     assert await _scope_rules(pool, f"connector:google_calendar:{_NEW_ENDPOINT}") == [
         ("calendar_vouch", "pass_through")
     ]
+
+
+async def test_reconcile_never_brings_back_a_copy_the_owner_disabled_or_deleted(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    disabled, deleted = (f"connector:google_calendar:{e}" for e in _ENDPOINTS)
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET enabled = FALSE WHERE scope = $1", disabled
+    )
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET deleted_at = now() WHERE scope = $1", deleted
+    )
+    assert await reconcile_endpoint_rules(pool) == 0
+    assert await reconcile_endpoint_rules(pool) == 0
+    live = await pool.fetchval(
+        "SELECT count(*) FROM switchboard.ingestion_rules "
+        "WHERE scope = ANY($1::text[]) AND deleted_at IS NULL AND enabled",
+        [disabled, deleted],
+    )
+    assert live == 0
+
+
+async def test_reconcile_and_verbs_skip_deregistered_and_archived_endpoints(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry "
+        "(connector_type, endpoint_identity, archived_at) VALUES ('google_calendar', 'g:old', now())"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry "
+        "(connector_type, endpoint_identity, deleted_at) VALUES ('google_calendar', 'g:gone', now())"
+    )
+    result = await apply_decision(pool, _STRANGER, "block")
+    assert result.endpoints == len(_ENDPOINTS)
+    assert await reconcile_endpoint_rules(pool) == 0
+    for dead in ("g:old", "g:gone"):
+        assert await _scope_rules(pool, f"connector:google_calendar:{dead}") == []
+
+
+async def test_reconcile_keeps_the_source_created_at(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET created_at = '2026-01-01T00:00:00Z' "
+        "WHERE created_by = 'calendar_block'"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1
+    stamps = await pool.fetch(
+        "SELECT DISTINCT created_at FROM switchboard.ingestion_rules "
+        "WHERE created_by = 'calendar_block' AND deleted_at IS NULL"
+    )
+    assert len(stamps) == 1
