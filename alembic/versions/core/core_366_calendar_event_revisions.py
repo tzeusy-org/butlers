@@ -126,7 +126,8 @@ AND EXISTS (
 AND EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conrelid = to_regclass({_quote_literal(_TABLE)}) AND contype = 'c'
-      AND pg_get_constraintdef(oid) LIKE '%baseline%' AND pg_get_constraintdef(oid) LIKE '%resync%'
+      AND strpos(pg_get_constraintdef(oid), 'baseline') > 0
+      AND strpos(pg_get_constraintdef(oid), 'resync') > 0
 )
 """
 
