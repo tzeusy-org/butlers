@@ -9,7 +9,7 @@ from butlers.conditions import ConditionEvaluator, State
 from butlers.conditions.memory import InMemoryConditionStore
 from butlers.watches import WatchConflict, WatchRefused, WatchService, WatchState
 from butlers.watches.memory import InMemoryWatchStore
-from tests.watches.test_watches import NOW, approve, create, grant_for, snap
+from tests.watches.test_watches import NOW, PREDICATE, approve, create, grant_for, snap
 
 pytestmark = pytest.mark.asyncio
 
@@ -187,3 +187,64 @@ async def test_a_replayed_approval_repairs_a_missing_condition_and_a_live_one_af
     assert conditions.instances[watch.instance_id].state is State.OPEN
     await service.approve(delete, approve(delete), snap())
     assert conditions.instances[watch.instance_id].state is State.CANCELLED
+
+
+async def test_replaying_a_create_whose_registration_failed_never_revives_the_watch(monkeypatch):
+    conditions = InMemoryConditionStore()
+    evaluator = ConditionEvaluator(conditions)
+    service = WatchService(InMemoryWatchStore(), evaluator, grant_for)
+    card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+    register = evaluator.register
+
+    async def outage(**_kwargs):
+        raise OSError("synthetic condition store outage")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(evaluator, "register", outage)
+        with pytest.raises(OSError):
+            await service.approve(card, approve(card), snap())
+    stored = await service.store.get(card.watch_id)
+    assert stored is not None and stored.state is WatchState.DELETED
+    assert evaluator.register == register
+
+    replayed = await service.approve(card, approve(card), snap())
+    assert replayed.state is WatchState.DELETED
+    assert not conditions.instances  # no live instance was created for a closed watch
+
+
+async def test_a_replayed_renewal_cancels_the_previous_generation_a_crash_left_open():
+    conditions = InMemoryConditionStore()
+    service = WatchService(InMemoryWatchStore(), ConditionEvaluator(conditions), grant_for)
+    _, watch = await create(service)
+    later = watch.expires_at - timedelta(days=7)
+    card = await service.propose_renew(watch.id, now=later)
+
+    class Crash(RuntimeError):
+        pass
+
+    original = service._cancel
+
+    async def crash_on_old_generation(target, now):
+        if target.generation == 1:
+            raise Crash  # the process died after committing N+1, before stopping N
+        await original(target, now)
+
+    service._cancel = crash_on_old_generation  # type: ignore[method-assign]
+    with pytest.raises(Crash):
+        await service.approve(card, approve(card), snap(later))
+    current = await service.store.get(watch.id)
+    assert current is not None and current.generation == 2
+    assert conditions.instances[watch.instance_id].state is State.OPEN  # the leak
+    service._cancel = original  # type: ignore[method-assign]
+
+    await service.approve(card, approve(card), snap(later))
+    assert conditions.instances[watch.instance_id].state is State.CANCELLED
+    assert conditions.instances[current.instance_id].state is State.OPEN
+
+
+async def test_idle_transition_locks_are_evicted():
+    store = InMemoryWatchStore()
+    service = WatchService(store, ConditionEvaluator(InMemoryConditionStore()), grant_for)
+    _, watch = await create(service)
+    await service.pause(watch.id, origin="owner", now=NOW)
+    assert store._transition_locks == {}

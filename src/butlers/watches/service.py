@@ -2,7 +2,8 @@
 
 Every change that defines or widens a watch is an exact card the owner approves: the card digest
 binds the predicate, source and category boundary, grant digest, delivery mode, expiry and
-version. Only a model proposes a card; mail, source text and read-check output are evidence and
+version. An instance fires once; the runner (S3c) re-arms the next generation. Only a model
+proposes a card; mail, source text and read-check output are evidence and
 produce none, and a proposal never installs a watch. A watch notifies the owner only (it has no
 recipient field), at most ``MAX_ACTIVE`` are active, each lives 90 days from approval unless the
 owner approves a renewal card in the last seven, and ``pause`` stops one without deleting
@@ -209,9 +210,14 @@ class WatchService:
 
     async def _create(self, card: WatchCard, snapshot: Snapshot) -> Watch:
         existing = await self.store.get(card.watch_id)
-        if existing is not None and existing.approval_digest != card.digest:
-            raise WatchRefused("the watch id is already in use")
-        watch = existing or Watch(
+        if existing is not None:
+            if existing.approval_digest != card.digest:
+                raise WatchRefused("the watch id is already in use")
+            # A replay never re-inserts or re-registers: it only makes the condition match the
+            # committed state, so a watch closed by a failed registration stays closed.
+            await self._reconcile(existing, snapshot)
+            return existing
+        watch = Watch(
             id=card.watch_id,
             version=1,
             generation=1,
@@ -228,6 +234,9 @@ class WatchService:
         )
         # Reserve the slot first: a refused cap registers no instance.
         stored = await self.store.write(watch, expected_version=None, cap=self.cap)
+        if stored != watch:
+            await self._reconcile(stored, snapshot)  # lost an insert race to the same approval
+            return stored
         try:
             await self._register(stored, snapshot)
         except Exception:
@@ -269,6 +278,10 @@ class WatchService:
         if watch.state is WatchState.ACTIVE:
             if not await self._has_instance(watch):
                 await self._register(watch, snapshot)
+            if (
+                watch.generation > 1
+            ):  # a renewal that crashed before stopping the generation it replaced
+                await self._cancel(replace(watch, generation=watch.generation - 1), snapshot.now)
         else:
             await self._cancel(watch, snapshot.now)
 

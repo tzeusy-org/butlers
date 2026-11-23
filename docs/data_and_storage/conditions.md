@@ -145,7 +145,8 @@ disable) cancels the instance without deleting the watch, its receipts or anythi
 Every transition of one watch is serialized by a per-watch lock held across the read, the
 condition side effects and the CAS write, in an undoable order: a new generation registers
 before ACTIVE commits (and is cancelled if the write loses), and a pause or delete commits before
-it cancels. A replayed approval repairs an interrupted transition, so ACTIVE implies a live
+it cancels. A replayed approval repairs an interrupted transition (it never re-inserts or re-registers a
+create, and an active watch's replay also stops the generation a crashed renewal left open), so ACTIVE implies a live
 condition and PAUSED or DELETED implies none. A create, renew or resume approval is refused unless the live grant still has the digest and
 sources on the card. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
 The store here is in-memory (`InMemoryWatchStore`); the Postgres store, the approval-card and
