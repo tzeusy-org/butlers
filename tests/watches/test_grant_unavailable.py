@@ -11,7 +11,7 @@ import pytest
 
 from butlers.conditions import ConditionEvaluator, Grant, Snapshot, State
 from butlers.conditions.memory import InMemoryConditionStore
-from butlers.watches import WatchService, WatchState
+from butlers.watches import WatchRefused, WatchService, WatchState
 from butlers.watches.memory import InMemoryWatchStore
 from butlers.watches.model import GrantUnavailable
 from butlers.watches.runner import WatchRunner
@@ -97,3 +97,101 @@ async def test_losing_a_source_the_watch_reads_is_a_changed_grant(service, live)
     live.sources -= {SOURCE}
     assert service.grant_is_current(watch) is False
     assert watch.sources == (SOURCE,)  # the card binds only the predicate's own read set
+
+
+class Rebinding(Live):
+    def __init__(self):
+        super().__init__()
+        self.subjects = {None}
+
+    def __call__(self, watch_id: str) -> Grant:
+        grant = super().__call__(watch_id)
+        return Grant(
+            goal_id=grant.goal_id, sources=grant.sources, subjects=frozenset(self.subjects)
+        )
+
+
+@pytest.fixture
+def moving():
+    return Rebinding()
+
+
+@pytest.fixture
+def moving_service(moving, conditions):
+    return WatchService(InMemoryWatchStore(), ConditionEvaluator(conditions), moving)
+
+
+def _approval(card):
+    from butlers.watches import OwnerApproval
+
+    return OwnerApproval(card_digest=card.digest, origin="owner")
+
+
+async def test_a_resume_rebinds_to_the_live_grant_and_the_card_shows_it(
+    moving_service, moving, conditions
+):
+    service = moving_service
+    watch = await make_watch(service)
+    conditions.instances.clear()  # a crash left an ACTIVE watch with no condition
+    moving.subjects = {None, "someone-new"}  # the live grant moved
+    assert await service.repair(watch, Snapshot(now=NOW))  # no condition and a moved grant
+    paused = await service.store.get(watch.id)
+    assert paused is not None
+    assert paused.state is WatchState.PAUSED and paused.pause_reason == "grant"
+    assert (await service.view(watch.id)).reason == "grant_changed"  # true until a resume card
+
+    card = await service.propose_update(watch.id, resume=True)
+    live = service._narrow(moving(watch.id), watch.predicate)
+    assert card.grant_digest == live.digest != watch.grant_digest  # the card shows the live grant
+    assert card.sources == tuple(sorted(live.sources)) == watch.sources
+    resumed = await service.approve(card, _approval(card), Snapshot(now=NOW))
+    assert resumed.state is WatchState.ACTIVE and resumed.generation == watch.generation + 1
+    assert resumed.grant_digest == live.digest and service.grant_is_current(resumed)
+    assert (await service.view(watch.id)).reason is None
+    stored = await service.store.get(watch.id)
+    assert stored == resumed and stored.pause_reason is None
+
+
+async def test_a_resume_is_refused_when_a_source_the_watch_reads_is_no_longer_granted(
+    moving_service, moving
+):
+    service = moving_service
+    watch = await make_watch(service)
+    await service.pause(watch.id, origin="owner", now=NOW)
+    moving.sources -= {SOURCE}
+    with pytest.raises(WatchRefused, match="no longer granted"):
+        await service.propose_update(watch.id, resume=True)
+    stored = await service.store.get(watch.id)
+    assert stored is not None and stored.state is WatchState.PAUSED
+
+
+async def test_a_resume_card_goes_stale_if_the_grant_moves_again_before_approval(
+    moving_service, moving
+):
+    service = moving_service
+    watch = await make_watch(service)
+    await service.pause(watch.id, origin="owner", now=NOW)
+    moving.subjects = {None, "first"}
+    card = await service.propose_update(watch.id, resume=True)
+    moving.subjects = {None, "second"}  # moved after the owner saw the card
+    with pytest.raises(WatchRefused, match="grant changed"):
+        await service.approve(card, _approval(card), Snapshot(now=NOW))
+    stored = await service.store.get(watch.id)
+    assert stored is not None and stored.state is WatchState.PAUSED
+    source_gone = await service.propose_update(watch.id, resume=True)
+    moving.sources -= {SOURCE}
+    with pytest.raises(WatchRefused):
+        await service.approve(source_gone, _approval(source_gone), Snapshot(now=NOW))
+
+
+async def test_only_a_resume_rebinds_an_update_that_changes_the_digest_is_refused(
+    moving_service, moving
+):
+    from dataclasses import replace
+
+    service = moving_service
+    watch = await make_watch(service)
+    card = await service.propose_update(watch.id, delivery="right_away")  # a plain update, active
+    forged = replace(card, grant_digest="f" * 64)
+    with pytest.raises(WatchRefused, match="boundary"):
+        await service.approve(forged, _approval(forged), Snapshot(now=NOW))

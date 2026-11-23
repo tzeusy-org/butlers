@@ -150,7 +150,7 @@ it cancels. A replayed approval repairs an interrupted transition (it never re-i
 create, and an active watch's replay also stops the generation a crashed renewal left open), so ACTIVE implies a live
 condition and PAUSED or DELETED implies none. A create, renew or resume approval is refused unless the watch's own read set (the sources its predicate
 names, narrowed from the live grant) still has the digest and sources on the card, so a registry that gains a
-source the watch never reads does not invalidate it. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
+source the watch never reads does not invalidate it. A resume, an update or a delete needs a card; a resume card of a watch whose grant changed binds the current narrowed grant (digest and sources) and shows it, and is refused when a source the watch reads is no longer granted (only a resume moves the stored grant digest); a replayed approval returns the committed watch.
 Two stores implement `WatchStore`: `InMemoryWatchStore` and `PostgresWatchStore` over
 `public.owner_watches` (core_364). The table is Switchboard-only behind row-level security (the
 core_323 posture), never deleted or truncated, with an immutable boundary, a version that rises

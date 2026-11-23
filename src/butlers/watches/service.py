@@ -149,9 +149,20 @@ class WatchService:
         watch = await self._open(watch_id)
         if delivery is not None and delivery not in DELIVERY_MODES:
             raise WatchRefused("delivery must be digest or right_away")
-        return self._card(
+        card = self._card(
             watch, Action.UPDATE, delivery or watch.delivery, watch.expires_at, resume
         )
+        if resume and watch.state is WatchState.PAUSED:
+            # A resume rebinds to the live grant: the card shows the digest and sources the watch
+            # will actually read, so the owner's approval covers exactly that. It is refused when
+            # a source the predicate names is no longer granted.
+            live = self._narrow(self.grant_for(watch.id), watch.predicate)
+            if not set(watch.sources) <= live.sources:
+                raise WatchRefused(
+                    "a source this watch reads is no longer granted; it cannot resume"
+                )
+            card = replace(card, grant_digest=live.digest, sources=tuple(sorted(live.sources)))
+        return card
 
     async def propose_renew(self, watch_id: str, *, now: datetime) -> WatchCard:
         watch = await self._open(watch_id)
@@ -212,12 +223,15 @@ class WatchService:
             raise WatchRefused("the watch is closed")
         if card.target_version != current.version + 1:
             raise WatchRefused("the card is stale: the watch changed")
-        if (card.predicate, card.grant_digest, card.sources, card.categories) != (
-            current.predicate,
-            current.grant_digest,
-            current.sources,
-            current.categories,
-        ):
+        resuming = card.resume and current.state is WatchState.PAUSED
+        # A resume may rebind the grant digest (to the live grant, checked below); nothing else
+        # about the boundary ever moves.
+        if (
+            card.predicate,
+            card.sources,
+            card.categories,
+            current.grant_digest if resuming else card.grant_digest,
+        ) != (current.predicate, current.sources, current.categories, current.grant_digest):
             raise WatchRefused("a card cannot change a watch's boundary; create a new watch")
         if card.action is Action.DELETE:
             return await self._delete(current, card, now)
@@ -370,7 +384,8 @@ class WatchService:
 
         An ACTIVE watch that has no condition and whose grant has since changed cannot be
         registered, and must never stay ACTIVE without one: it is paused instead, and the view
-        shows ``grant_changed`` until the owner approves a card on the current grant.
+        shows ``grant_changed`` until the owner approves a resume card, which rebinds the
+        watch to the current grant it will read.
         """
         if watch.state is WatchState.ACTIVE:
             if not await self._has_instance(watch):
@@ -457,6 +472,7 @@ class WatchService:
         if card.resume and current.state is WatchState.PAUSED:
             changed = replace(
                 changed,
+                grant_digest=card.grant_digest,  # rebound to the live grant the card showed
                 state=WatchState.ACTIVE,
                 generation=current.generation + 1,
                 pause_reason=None,
