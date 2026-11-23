@@ -56,7 +56,10 @@ def _run(monkeypatch, **state) -> tuple[object, list[str]]:
     fake = _Op(**state)
     monkeypatch.setattr(module, "op", fake)
     module.upgrade()
-    return module, fake.executed
+    # The reap's pin function is replaced every run (idempotent, no table lock); the tests below
+    # are about the table DDL.
+    pin = {module._PINNED_DDL, *module._PINNED_GRANTS}
+    return module, [statement for statement in fake.executed if statement not in pin]
 
 
 def test_the_lock_is_the_first_statement_and_covers_the_catalog_read(monkeypatch) -> None:
@@ -89,3 +92,14 @@ def test_a_present_column_missing_a_constraint_adds_only_that_constraint(monkeyp
     _, executed = _run(monkeypatch, column=("uuid", "YES"), constraints=(module._FK,))
     [alter] = [s for s in executed if "ALTER TABLE" in s]
     assert "ADD COLUMN" not in alter and module._CHECK in alter and module._FK not in alter
+
+
+def test_every_run_replaces_the_pin_function_for_the_enrichment_reap(monkeypatch) -> None:
+    module = _load()
+    fake = _Op(table=False)
+    monkeypatch.setattr(module, "op", fake)
+    module.upgrade()
+    assert fake.executed[0] == module._LOCK
+    assert module._PINNED_DDL in fake.executed
+    assert "SECURITY DEFINER" in module._PINNED_DDL and "FROM PUBLIC" in module._PINNED_GRANTS[0]
+    assert "TO butler_relationship_rw" in module._PINNED_GRANTS[1]

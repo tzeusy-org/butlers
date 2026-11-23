@@ -54,6 +54,9 @@ _CHECKED: set[tuple[str, str]] = {
     # read the table; ``public.vendor_door_entity_pinned`` answers for both columns.
     ("vendor_doors", "owner_entity_id"),
     ("vendor_doors", "vendor_entity_id"),
+    # A household role's subject (core_365) must stay assigned. ``calendar_sources`` is one table
+    # per butler schema, so ``public.calendar_role_subject_entity_pinned`` answers across them.
+    ("calendar_sources", "role_subject_entity_id"),
 }
 _EXCUSED: set[tuple[str, str]] = {
     # Derived from facts or ledgers: they follow a fact the reap already read, or record history.
@@ -470,6 +473,34 @@ async def test_the_reap_leaves_a_placeholder_a_vendor_door_names(rel_pool, colum
     assert await reap(rel_pool) >= 0
 
     assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_reap_leaves_a_placeholder_a_calendar_role_names(rel_pool) -> None:
+    """Archiving it would silently unassign the household role an owner confirmed."""
+    placeholder = await _placeholder(rel_pool)
+    await rel_pool.execute(
+        "INSERT INTO public.calendar_sources "
+        "(source_key, source_kind, time_role, role_basis, role_subject_entity_id) "
+        "VALUES ($1, 'provider_event', 'household_member', 'owner_confirmed', $2)",
+        f"household-{uuid.uuid4()}",
+        placeholder,
+    )
+
+    assert await reap(rel_pool) >= 0
+
+    assert await _deleted_at(rel_pool, placeholder) is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_relationship_role_can_ask_which_calendar_roles_pin_an_entity(rel_pool) -> None:
+    row = await rel_pool.fetchrow(
+        "SELECT has_function_privilege('butler_relationship_rw', "
+        "'public.calendar_role_subject_entity_pinned(uuid)', 'EXECUTE') AS can_ask, "
+        "has_function_privilege('public', "
+        "'public.calendar_role_subject_entity_pinned(uuid)', 'EXECUTE') AS public_can"
+    )
+    assert (row["can_ask"], row["public_can"]) == (True, False)
 
 
 @pytest.mark.asyncio(loop_scope="session")
