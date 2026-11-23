@@ -118,6 +118,11 @@ def _observation(
             if overlap
             else "Spotify playback was recorded; attentive listening is not established."
         )
+    elif source == "calendar.revisions" and kind == "plan_changed":
+        category, text = (
+            "plan_change",
+            "A planned calendar event changed; attendance and what happened instead are unknown.",
+        )
     elif str(row.get("layer")) == "intent":
         category, text = (
             "intent",
@@ -184,6 +189,7 @@ def _representative(items: list[dict[str, Any]], limit: int) -> list[dict[str, A
             "communication_received",
             "playback",
             "intent",
+            "plan_change",
             "activity",
         ):
             if index < len(groups[kind]) and len(result) < max(0, limit):
