@@ -12,5 +12,6 @@
 
 - [x] 2.1 `POST /api/calendar/sources/role` and the source list's role fields (S2 backend).
 - [x] 2.1b Role picker in the source settings UI (S2 frontend).
-- [ ] 2.2 `role_subject_entity_id` and `household_time` read (S3).
+- [ ] 2.2 `role_subject_entity_id` and the `household_time` read, with context lines in the card, prep, debrief, radar and free slots (S3).
+- [ ] 2.2a Household read opacity: no title, location or attendee field for any non-owner role.
 - [ ] 2.3 Role on the connector mirror (S4).

@@ -116,3 +116,48 @@ Scope: v1-mandatory
 
 - **WHEN** the owner clears a confirmed role
 - **THEN** the role is `unclassified` with basis `provider_inferred`
+
+### Requirement: Household Context Read
+
+A source MAY carry `role_subject_entity_id`, a reference to `public.entities`, naming whose
+calendar it is. The owner SHALL set it through `POST /api/calendar/sources/role` together with a
+`household_member`, `other_person` or `team` role, with basis `owner_confirmed`; it SHALL be null
+for every other role, and discovery SHALL NOT set or overwrite it.
+
+A typed read `household_time` SHALL return the confirmed events on `household_member`,
+`other_person` and `team` sources that do not assert the owner's time, grouped by subject. Each
+event SHALL carry only its time window, whether it is all-day, its source role and its subject's
+display name: no title, location, description or attendee field SHALL leave the read, for any
+non-owner role. An event the owner attends (a non-declined `self` attendee) SHALL be owner time
+and SHALL NOT appear in the read, so an event is never both. Events on `unclassified`,
+`subscription`, `holidays`, `birthdays` and `butler` sources SHALL appear nowhere in it:
+unclassified counts as nothing.
+
+The meeting card, calendar prep, meeting debrief, the conflict scan and free-slot search SHALL
+show these events as context lines attributed to their subject, and SHALL NOT count them toward
+owner load, conflicts, day load or busy time, nor treat them as a meeting to prep or debrief.
+`GET /api/calendar/household-time` SHALL serve the read for a window.
+
+ID: REQ-module-calendar-038
+Source: bu-5ii4gj.1 (run 26 move 1), slice S3
+Scope: v1-mandatory
+
+#### Scenario: A partner's event is attributed context, not load
+
+- **WHEN** a `household_member` source with a confirmed subject holds a timed event overlapping the owner's meeting and the owner is not an attendee
+- **THEN** the household read returns it under that subject with its time window and no title, and the owner's conflict scan, day load, free slots and context signal are unchanged
+
+#### Scenario: Another person's titles never leave the read
+
+- **WHEN** any non-owner source's event has a title, location, description and attendees
+- **THEN** none of those fields appears in the read, the context lines, the API response or the briefing inputs
+
+#### Scenario: An unclassified source counts as nothing
+
+- **WHEN** an `unclassified` source holds events
+- **THEN** the household read, the context lines and every owner-time reader show nothing for it, and the existing unclassified-calendars coverage line still counts it
+
+#### Scenario: An event the owner attends is owner time
+
+- **WHEN** an event on a `household_member` source has a `self` attendee who has not declined
+- **THEN** it counts as owner time and is absent from the household read
