@@ -147,6 +147,12 @@ holidays and birthdays sit beside the owner's own. Each `calendar_sources` row t
   prep, working location and the default free-slot search.
 - An `owner_confirmed` role is never overwritten by discovery.
 
+## Connector sync
+
+The Google Calendar connector captures events separately from this module's own sync. Its sync
+filters, sync-token cursor and degraded-health reasons are in
+[Google Calendar connector](../connectors/google-calendar.md).
+
 ## Rate Limiting
 
 Ordinary Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).

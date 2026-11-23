@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter
 
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
@@ -94,6 +95,20 @@ if TYPE_CHECKING:
     import asyncpg
 
 logger = logging.getLogger(__name__)
+
+#: Filters every events.list sync request sends. Google issues a ``nextSyncToken`` only to a
+#: request without ``orderBy``, and a sync-token request must repeat the initial request's
+#: filters, so the full and the incremental pass share this one set (bu-uhbhzq.1).
+_SYNC_FILTER_PARAMS: dict[str, str] = {"singleEvents": "true", "showDeleted": "true"}
+
+_NO_SYNC_TOKEN_REASON = "Google Calendar full sync returned no sync token"
+_CURSOR_LOAD_FAILED_REASON = "Google Calendar cursor could not be loaded"
+
+calendar_resync_full_ingest_total = Counter(
+    "connector_calendar_resync_full_ingest_total",
+    "Full syncs that ingest events (410 recovery or a pending resync)",
+    labelnames=["endpoint_identity"],
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -915,6 +930,11 @@ class CalendarConnectorRuntime:
         # parked as a replayable error row (bu-dhloi1.149).
         self._ingest_retry = IngestRetryBudget()
         self._hold_sync_token = False
+        # Set when a full sync's last page carried no nextSyncToken: capture is not working.
+        self._missing_sync_token = False
+        self._resync_pending = False
+        # Set when the stored cursor could not be read; the cycle is skipped until it can.
+        self._cursor_load_failed = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1012,6 +1032,11 @@ class CalendarConnectorRuntime:
                 # instead of killing the account loop permanently.
                 if self._sync_token is None:
                     await self._ensure_sync_token()
+                    if self._sync_token is None:
+                        # No token to poll with (a full sync yields none, or one failed to
+                        # hold): wait a poll interval, never repeat the full sync back to back.
+                        await asyncio.sleep(self._config.poll_interval_s)
+                        continue
                 await self._run_one_poll_cycle()
             except asyncio.CancelledError:
                 raise
@@ -1098,25 +1123,36 @@ class CalendarConnectorRuntime:
         if self._sync_token is not None:
             return
 
-        # Try loading from cursor store
-        if self._cursor_pool is not None:
+        # Try loading from cursor store. The baseline below runs only when the store positively
+        # answered "no row": on a load error the cycle is skipped (health degrades, the next poll
+        # retries), because a baseline token saved now would overwrite a "" recovery marker or
+        # drop the events after a stored token.
+        if self._cursor_pool is not None and not self._resync_pending:
             try:
                 stored_token = await load_cursor(
                     self._cursor_pool, _CONNECTOR_TYPE, self._config.endpoint_identity
                 )
-                if stored_token:
-                    self._sync_token = stored_token
-                    logger.info(
-                        "Calendar: loaded syncToken from cursor store: email=%s",
-                        self._config.email,
-                    )
-                    return
             except Exception as exc:
+                self._cursor_load_failed = True
                 logger.warning(
                     "Calendar: failed to load cursor from store for email=%s: %s",
                     self._config.email,
                     exc,
                 )
+                return
+            self._cursor_load_failed = False
+            self._resync_pending = stored_token == ""
+            if stored_token:
+                self._sync_token = stored_token
+                logger.info(
+                    "Calendar: loaded syncToken from cursor store: email=%s",
+                    self._config.email,
+                )
+                return
+
+        if self._resync_pending:
+            await self._perform_full_sync(ingest_events=True)
+            return
 
         # No stored token — perform initial full sync to establish baseline
         logger.info(
@@ -1124,6 +1160,11 @@ class CalendarConnectorRuntime:
             self._config.email,
         )
         await self._perform_full_sync(ingest_events=False)
+
+    async def _clear_sync_token(self) -> None:
+        """Blank the stored cursor so an expired token is not loaded again after a restart."""
+        self._resync_pending = True
+        await self._save_sync_token("")
 
     async def _save_sync_token(self, token: str) -> None:
         """Persist syncToken to cursor store."""
@@ -1140,9 +1181,10 @@ class CalendarConnectorRuntime:
                 token,
                 parent_endpoint_identity=NO_PARENT,
             )
-            self._last_checkpoint_save = time.time()
-            self._metrics.record_checkpoint_save("success")
-            logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
+            if token:
+                self._last_checkpoint_save = time.time()
+                self._metrics.record_checkpoint_save("success")
+                logger.debug("Calendar: saved syncToken for email=%s", self._config.email)
         except Exception as exc:
             self._metrics.record_checkpoint_save("error")
             logger.warning(
@@ -1271,16 +1313,17 @@ class CalendarConnectorRuntime:
         establish the baseline syncToken. On syncToken expiry (ingest_events=True),
         events are ingested during the full sync.
         """
+        if ingest_events:
+            calendar_resync_full_ingest_total.labels(
+                endpoint_identity=self._config.endpoint_identity
+            ).inc()
         logger.info(
             "Calendar: starting full sync (ingest_events=%s) for email=%s",
             ingest_events,
             self._config.email,
         )
 
-        params: dict[str, Any] = {
-            "singleEvents": "true",
-            "orderBy": "startTime",
-        }
+        params: dict[str, Any] = dict(_SYNC_FILTER_PARAMS)
 
         page_token: str | None = None
         all_events: list[dict[str, Any]] = []
@@ -1303,6 +1346,10 @@ class CalendarConnectorRuntime:
             if not page_token:
                 break
 
+        # Health follows the final page, set before any event is processed: a retry hold below
+        # must not leave a missing token looking healthy (REQ-connector-google-calendar-011).
+        self._missing_sync_token = not next_sync_token
+
         # Populate upcoming events cache for "starting soon" detection
         self._upcoming_events.clear()
         now = datetime.now(UTC)
@@ -1310,6 +1357,8 @@ class CalendarConnectorRuntime:
         for event in all_events:
             event_id = event.get("id", "")
             start_dt = _parse_event_start(event)
+            if event.get("status") == "cancelled":
+                continue  # showDeleted returns cancelled instances; they are not upcoming
             if start_dt and now <= start_dt <= window_end:
                 self._upcoming_events[event_id] = (event, start_dt)
 
@@ -1318,6 +1367,10 @@ class CalendarConnectorRuntime:
             for event in all_events:
                 if not self._running or self._hold_sync_token:
                     break
+                if event.get("status") == "cancelled":
+                    # A full sync lists the calendar as it stands; cancellations are processed
+                    # only from incremental sync (REQ-connector-google-calendar-010).
+                    continue
                 await self._process_event(event)
 
         if self._hold_sync_token:
@@ -1328,9 +1381,28 @@ class CalendarConnectorRuntime:
                 self._config.email,
             )
             return
-        if next_sync_token:
-            self._sync_token = next_sync_token
-            await self._save_sync_token(next_sync_token)
+        if not next_sync_token:
+            # Failure never impersonates health: no token means no incremental capture.
+            self._missing_sync_token = True
+            if ingest_events:
+                # After a 410 the expired token must not be reused: drop it from memory and
+                # blank the stored cursor (a recovery marker). The loop degrades and waits a poll
+                # interval between attempts; while Google keeps returning no token each attempt
+                # ingests the whole calendar again, which is counted by
+                # connector_calendar_resync_full_ingest_total and deduped downstream.
+                self._sync_token = None
+                await self._clear_sync_token()
+            logger.error(
+                "Calendar: full sync for email=%s returned no nextSyncToken (%d events); "
+                "no cursor saved, capture is not incremental",
+                self._config.email,
+                len(all_events),
+            )
+            return
+        self._missing_sync_token = False
+        self._resync_pending = False
+        self._sync_token = next_sync_token
+        await self._save_sync_token(next_sync_token)
 
         logger.info(
             "Calendar: full sync complete for email=%s: %d events, syncToken saved",
@@ -1344,10 +1416,7 @@ class CalendarConnectorRuntime:
         Returns (events, next_sync_token).
         Raises _SyncTokenExpiredError on 410 Gone.
         """
-        params: dict[str, Any] = {
-            "syncToken": sync_token,
-            "showDeleted": "true",
-        }
+        params: dict[str, Any] = {"syncToken": sync_token, **_SYNC_FILTER_PARAMS}
 
         all_events: list[dict[str, Any]] = []
         next_sync_token: str | None = None
@@ -1714,6 +1783,10 @@ class CalendarConnectorRuntime:
         """Return (state, error_message) tuple for heartbeat."""
         if self._source_api_ok is None:
             return "degraded", "Starting up, API not yet checked"
+        if self._source_api_ok and self._cursor_load_failed:
+            return "degraded", _CURSOR_LOAD_FAILED_REASON
+        if self._source_api_ok and self._missing_sync_token:
+            return "degraded", _NO_SYNC_TOKEN_REASON
         if self._source_api_ok:
             return "healthy", None
         if self._auth_error:
