@@ -10,6 +10,7 @@
 
 ## 2. Deferred
 
-- [ ] 2.1 Owner role picker and `owner_confirmed` write (S2).
+- [x] 2.1 `POST /api/calendar/sources/role` and the source list's role fields (S2 backend).
+- [x] 2.1b Role picker in the source settings UI (S2 frontend).
 - [ ] 2.2 `role_subject_entity_id` and `household_time` read (S3).
 - [ ] 2.3 Role on the connector mirror (S4).

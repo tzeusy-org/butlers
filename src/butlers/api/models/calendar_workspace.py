@@ -143,6 +143,9 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: get a cursor, so their null ``last_synced_at`` is normal, not "never
     #: synced". Mirrors the sync deadman's provider-only rule (bu-ak7fij).
     sync_applicable: bool = True
+    #: Whose time this calendar's events are, and whether that was inferred or the owner's word.
+    time_role: str = "unclassified"
+    role_basis: Literal["provider_inferred", "owner_confirmed"] = "provider_inferred"
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
@@ -774,6 +777,38 @@ class CalendarSourceToggleRequest(BaseModel):
         if self.source_key is not None and self.source_id is not None:
             raise ValueError("Specify at most one of source_key or source_id")
         return self
+
+
+CalendarSourceRole = Literal[
+    "owner",
+    "household_member",
+    "other_person",
+    "team",
+    "subscription",
+    "holidays",
+    "birthdays",
+    "butler",
+    "unclassified",
+]
+
+
+class CalendarSourceRoleRequest(BaseModel):
+    """Request payload for POST /api/calendar/sources/role.
+
+    ``role`` is a member of the closed role set, or ``null`` to clear the owner's confirmation.
+    """
+
+    source_key: str
+    role: CalendarSourceRole | None
+
+
+class CalendarSourceRoleResponse(BaseModel):
+    source_key: str
+    role: CalendarSourceRole
+    role_basis: Literal["provider_inferred", "owner_confirmed"]
+    updated_butlers: list[str] = Field(default_factory=list)
+    #: Schemas whose write failed. Non-empty means the role is not yet the same everywhere.
+    failed_butlers: list[str] = Field(default_factory=list)
 
 
 class CalendarSourceToggleResponse(BaseModel):

@@ -1453,6 +1453,10 @@ export interface CalendarWorkspaceSourceFreshness {
    * cursor, so their null `last_synced_at` is normal, not "never synced".
    */
   sync_applicable: boolean;
+  /** Whose time this calendar's events are; `unclassified` until inferred or the owner says. */
+  time_role?: CalendarSourceRole;
+  /** `owner_confirmed` once the owner set it; discovery never overwrites that. */
+  role_basis?: "provider_inferred" | "owner_confirmed";
 }
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */
@@ -1814,6 +1818,34 @@ export interface CalendarAccountsResponse {
   accounts: CalendarAccountEntry[];
   /** `false` when the connector health surface could not be reached. */
   health_available: boolean;
+}
+
+/** The closed set of calendar source roles (REQ-module-calendar-034). */
+export type CalendarSourceRole =
+  | "owner"
+  | "household_member"
+  | "other_person"
+  | "team"
+  | "subscription"
+  | "holidays"
+  | "birthdays"
+  | "butler"
+  | "unclassified";
+
+/** Request payload for POST /api/calendar/sources/role; `role: null` clears the confirmation. */
+export interface CalendarSourceRoleRequest {
+  source_key: string;
+  role: CalendarSourceRole | null;
+}
+
+/** Response payload for POST /api/calendar/sources/role. */
+export interface CalendarSourceRoleResponse {
+  source_key: string;
+  role: CalendarSourceRole;
+  role_basis: "provider_inferred" | "owner_confirmed";
+  updated_butlers: string[];
+  /** Schemas whose write failed: non-empty means the role is not the same everywhere yet. */
+  failed_butlers: string[];
 }
 
 /** Request payload for POST /api/calendar/sources. */

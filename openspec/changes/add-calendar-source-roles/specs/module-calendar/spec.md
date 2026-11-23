@@ -79,3 +79,40 @@ Scope: v1-mandatory
 
 - **WHEN** `calendar_find_free_slots` is called without `calendar_ids`
 - **THEN** the free/busy lookup spans the `owner` and `butler` sources only
+
+### Requirement: Owner Role Assignment
+
+The owner SHALL be able to set the role of a calendar source, which SHALL be stored with
+`role_basis` `owner_confirmed`. `POST /api/calendar/sources/role` SHALL take a `source_key` and a
+`role` from the closed role set, or a null role to clear the confirmation, and SHALL apply it to
+the matching source in every calendar butler schema, because the same provider calendar is a source
+in each. Concurrent writes for one `source_key` SHALL be serialized across the whole fan-out by a
+cluster-wide advisory lock, so two owner decisions cannot leave schemas on different roles, and an
+unavailable lock SHALL fail with 503 before any write. The write SHALL fail with 404 when no schema has the source and SHALL be audited. Clearing
+SHALL set the role to `unclassified` with basis `provider_inferred` so the next discovery can infer
+it again. The source list SHALL carry each source's `time_role` and `role_basis` so the owner can
+see what is assumed. Nothing SHALL assign a role to a non-primary calendar on its own, including from
+its access role.
+
+ID: REQ-module-calendar-037
+Source: bu-5ii4gj.1 (run 26 move 1), slice S2
+Scope: v1-mandatory
+
+#### Scenario: The owner classifies a shared calendar
+
+- **WHEN** the owner sets a partner's shared calendar to `household_member`
+- **THEN** every schema's source for it has that role with basis `owner_confirmed`, and later discovery does not change it
+
+#### Scenario: Concurrent owner writes
+- **WHEN** two writes for the same source with different roles overlap
+- **THEN** every schema ends on the same role
+
+#### Scenario: An unknown role is refused
+
+- **WHEN** the request names a role outside the closed set
+- **THEN** it is rejected with 422 and nothing is written
+
+#### Scenario: Clearing returns the source to inference
+
+- **WHEN** the owner clears a confirmed role
+- **THEN** the role is `unclassified` with basis `provider_inferred`
