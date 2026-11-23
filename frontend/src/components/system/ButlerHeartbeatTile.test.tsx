@@ -573,9 +573,13 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
       expect(calls.every((entry) => entry.url === "/api/system/butlers/heartbeat" && entry.method === "GET")).toBe(true);
       vi.mocked(useButlerStatusBoard).mockReturnValue({rows: [], needsYou: [], aggregates: makeAggregates({isError: true})});
       view.rerender(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
-      visibleRows = indexVisibleRows();
       expect(screen.getByText("Board activity unavailable.").textContent).toContain("unavailable");
-      expect(rowFor("schema-only").querySelectorAll("dd")[0]?.textContent).toBe("healthy");
+      const schemaLinks = view.container.querySelectorAll('[aria-label="View schema-only"]');
+      expect(schemaLinks).toHaveLength(1);
+      const schemaItem = schemaLinks[0].closest("li");
+      expect(schemaItem).not.toBeNull();
+      const schemaLink = within(schemaItem!).getByRole("link", {name: "View schema-only"});
+      expect(schemaLink.querySelectorAll("dd")[0]?.textContent).toBe("healthy");
     } finally { cleanup(); client.clear(); vi.useRealTimers(); }
   });
 });
