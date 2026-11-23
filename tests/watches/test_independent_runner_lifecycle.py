@@ -72,3 +72,15 @@ async def test_stale_rearm_cannot_leave_a_live_generation_after_pause():
     assert next_instance is None or next_instance.state is State.CANCELLED, (
         f"a stale runner left generation 2 {next_instance.state if next_instance else None}"
     )
+
+
+async def test_an_active_watch_with_no_condition_and_a_moved_grant_is_paused_not_aborting_the_tick():
+    service, conditions, recorder, runner = build()
+    watch = await make_watch(service)
+    conditions.instances.clear()  # a crash left an ACTIVE watch with no condition
+    service.grant_for = lambda watch_id: Grant(goal_id=watch_id, sources=frozenset({"other"}))
+    report = await runner.tick(NOW)
+    assert report.repaired == 1
+    stored = await service.store.get(watch.id)
+    assert stored is not None and stored.state is WatchState.PAUSED
+    assert not conditions.instances

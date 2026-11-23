@@ -489,6 +489,9 @@ class WatchService:
         """``repair`` for a caller that already holds this watch's transition lock."""
         if await self._has_instance(current):
             return False
+        if not self.grant_is_current(current):
+            await self._pause_for_grant(current, snapshot.now)  # never ACTIVE without one
+            return True
         await self._register(current, snapshot)
         return True
 

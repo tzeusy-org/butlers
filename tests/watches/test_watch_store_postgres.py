@@ -269,6 +269,31 @@ class TestInsightDeliveryOnPostgres:
             f"owner_watch:{watch_id}:g2": "pending",  # claimed for sending: left alone
         }
 
+    async def test_withdraw_matches_the_exact_watch_id_even_for_free_text_ids(self, broker_pool):
+        from types import SimpleNamespace
+
+        from butlers.watches.delivery import InsightDelivery
+        from butlers.watches.runner import WatchNotice
+
+        deliver = InsightDelivery(broker_pool)
+        ids = ["a", "a:g1", "x_y", "xzy", "100%"]
+        for watch_id in ids:
+            await deliver(
+                WatchNotice(watch_id, 1, "digest", f"owner_watch:{watch_id}:g1", datetime.now(UTC))
+            )
+
+        async def pending() -> set[str]:
+            rows = await broker_pool.fetch(
+                "SELECT metadata->>'watch_id' AS id FROM insight_candidates "
+                "WHERE status = 'pending'"
+            )
+            return {r["id"] for r in rows}
+
+        assert await pending() == set(ids)
+        for closing in ("a", "x_y", "100%"):
+            await deliver.withdraw(SimpleNamespace(id=closing))
+        assert await pending() == {"a:g1", "xzy"}  # a neighbour is never matched by a wildcard
+
 
 class TestTableGuards:
     @pytest.fixture(autouse=True)

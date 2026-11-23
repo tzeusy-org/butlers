@@ -80,10 +80,10 @@ class InsightDelivery:
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('withdrawn_at', $2::text,
                                                  'withdrawn_reason', 'owner_watch_closed')
-            WHERE origin_butler = $3 AND category = $4 AND dedup_key LIKE $1
+            WHERE origin_butler = $3 AND category = $4 AND metadata->>'watch_id' = $1
               AND status = 'pending' AND claim_id IS NULL
             """,
-            f"owner_watch:{watch.id}:g%",
+            watch.id,
             self._now().isoformat(),
             ORIGIN,
             CATEGORY,
