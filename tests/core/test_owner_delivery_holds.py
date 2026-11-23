@@ -306,3 +306,57 @@ async def test_the_owner_law_receipt_is_attached_without_holding_the_card() -> N
     assert hold is None
     assert len(conn.recorded) == 1 and '"owner_law"' in conn.recorded[0][1]
     assert receipt["stage"] == "owner_law"
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        "track_bill",
+        "predict_bills",
+        "reconcile_bills",
+        "record_transaction",
+        "split_transaction",
+        "bulk_record_transactions",
+        "import_transactions",
+        "track_subscription",
+    ],
+)
+def test_no_finance_tool_is_ever_mode_held(tool: str) -> None:
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+    from butlers.modules.approvals.owner_delivery_bridge import action_effect_class
+
+    if tool not in TOOL_PRESENTATION_BY_NAME:
+        pytest.skip(f"{tool} is not in the inventory")
+    assert TOOL_PRESENTATION_BY_NAME[tool].module_name == "finance"
+    assert action_effect_class({"tool_name": tool}) is None
+
+
+def test_a_non_finance_record_tool_keeps_its_effect_class() -> None:
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+    from butlers.modules.approvals.owner_delivery_bridge import (
+        NEVER_MODE_HELD_MODULES,
+        action_effect_class,
+    )
+
+    name = next(
+        n
+        for n, d in TOOL_PRESENTATION_BY_NAME.items()
+        if d.effect_class == "record" and d.module_name not in NEVER_MODE_HELD_MODULES
+    )
+    assert action_effect_class({"tool_name": name}) == "record"
+    assert action_effect_class({"tool_name": "no_such_tool"}) is None
+
+
+async def test_a_clean_posture_clears_a_stale_unreadable_receipt() -> None:
+    subject = _subject()
+    stale = _Conn(modes=["sick"], role_error=True)
+    await holds.consume(
+        stale, subject, action_id=uuid.uuid4(), effect_class="record", defers_push=True
+    )
+    assert '"unreadable": true' in stale.recorded[0][1]
+    clean = _Conn(modes=[])
+    await holds.consume(
+        clean, subject, action_id=uuid.uuid4(), effect_class="record", defers_push=True
+    )
+    cleared = [s for s in clean.sql if "SET holding_reason = NULL" in s]
+    assert cleared and clean.recorded[-1] == (subject.id, holds.MODE_STAGE)

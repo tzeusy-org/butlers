@@ -242,11 +242,15 @@ async def consume(
         return None
     verdict = await mode_hold(conn, subject, effect_class)
     receipt = verdict.receipt() if verdict is not None else await owner_law_receipt(conn, action_id)
-    if receipt is not None:
-        try:
+    try:
+        if receipt is not None:
             await od.record_holding_reason(conn, subject.id, receipt)
-        except od.OwnerDeliveryRefused:
-            pass
+        else:
+            # The posture reads clean (or this subject is never mode-held): a stale mode
+            # receipt, such as an old unreadable one, no longer applies.
+            await od.clear_holding_reason(conn, subject.id, MODE_STAGE)
+    except od.OwnerDeliveryRefused:
+        pass
     return verdict if verdict is not None and verdict.defers and defers_push else None
 
 

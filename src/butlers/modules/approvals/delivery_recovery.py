@@ -30,6 +30,7 @@ from butlers.modules.approvals.owner_delivery_bridge import (
     prepare_telegram_presentation,
 )
 from butlers.modules.approvals.previews import args_digest
+from butlers.perception import flags
 
 _LEASE_SECONDS = 30
 _BACKOFF_BASE_SECONDS = 15
@@ -545,6 +546,8 @@ class ApprovalDeliveryRepository:
         A digest has no subject and mints no token. Members are the cohort's eligible,
         unexpired, pending actions, taken under the action-first lock.
         """
+        if not flags.OWNER_DELIVERY_MODE_HOLDS_LIVE:
+            return None  # dark: no rollout read, no member query, no lock
         digest_held = False
         async with self._pool.acquire() as connection:
             async with connection.transaction():

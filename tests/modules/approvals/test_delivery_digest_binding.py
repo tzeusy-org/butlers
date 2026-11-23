@@ -104,3 +104,21 @@ async def test_the_rendered_card_carries_the_park_records_lineage() -> None:
         "read",
         False,
     )
+
+
+async def test_a_digest_does_no_hold_work_while_mode_holds_are_dark(monkeypatch) -> None:
+    from butlers.modules.approvals.delivery_recovery import ApprovalDeliveryRepository
+    from butlers.perception import flags
+
+    class _Untouchable:
+        def acquire(self):
+            raise AssertionError("dark digest must not touch the pool")
+
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_MODE_HOLDS_LIVE", False)
+    repository = ApprovalDeliveryRepository(_Untouchable())
+    assert (
+        await repository.prepare_owner_delivery(
+            _claim(uuid.uuid4(), 1, "digest"), owner_recipient="owner"
+        )
+        is None
+    )
