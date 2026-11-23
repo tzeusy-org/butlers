@@ -45,11 +45,11 @@ import asyncpg
 
 from butlers.api.db import DatabaseManager
 from butlers.core.temporal.calendar_provenance import (
-    counts_toward_owner_load,
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_status_event,
 )
+from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     DetectedIssue,
@@ -391,6 +391,7 @@ WORKSPACE_COLUMNS: str = (
     " s.display_name,"
     " s.writable,"
     " s.metadata AS source_metadata,"
+    " s.time_role AS source_time_role,"
     " c.cursor_name,"
     " c.last_synced_at,"
     " c.last_success_at,"
@@ -520,6 +521,8 @@ class CalendarWorkspaceRow:
     db_butler: str = ""
     #: The provider event type (core_341), verbatim; ``default`` when unknown.
     event_type: str = "default"
+    #: The source's role (core_359): whose time its events are. Absent reads as ``unclassified``.
+    source_time_role: str = "unclassified"
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -722,6 +725,7 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         full_sync_required=bool(row["full_sync_required"] or False),
         db_butler=db_butler,
         event_type=row.get("event_type") or "default",
+        source_time_role=row.get("source_time_role") or "unclassified",
     )
 
 
@@ -1525,7 +1529,9 @@ async def query_calendar_conflicts(
             ends_at=row["instance_ends_at"],
             timezone=row.get("instance_timezone") or row.get("event_timezone"),
         )
-        and counts_toward_owner_load(row.get("event_metadata"))
+        # Only the owner's own time is analysed (REQ-calendar-conflict-overcommitment-radar-002):
+        # another person's calendar stays on the grid as context but adds no conflict or load.
+        and counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
     ]
 
     issues = detect_conflict_issues(

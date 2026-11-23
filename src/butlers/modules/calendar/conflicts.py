@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -356,13 +357,43 @@ class ConflictsMixin:
         """Resolve which calendars an availability query should span.
 
         An explicit list is validated through ``_resolve_calendar_id`` (rejecting
-        unknown ids). With no list, the query spans every connected calendar,
-        falling back to the default-target calendar before discovery completes.
+        unknown ids). With no list this is the unfiltered set of connected calendars;
+        ``_find_free_slots`` uses ``_default_free_busy_calendar_ids`` instead, which
+        keeps only the owner's.
         """
         if calendar_ids:
             return [self._resolve_calendar_id(calendar_id) for calendar_id in calendar_ids]
         if self._all_provider_calendar_ids:
             return list(self._all_provider_calendar_ids)
+        return [self._resolve_calendar_id(None)]
+
+    async def _default_free_busy_calendar_ids(self) -> list[str]:
+        """The calendars a default availability query spans: owner-time sources only.
+
+        Another person's calendar must not remove the owner's free slot, so the default
+        spans only the sources whose stored role is ``owner`` or ``butler`` (the Butlers
+        calendar holds the butler's own holds). The role is read each call, so an owner
+        reclassification applies without a resync. When the ledger is unreadable or names
+        none of the discovered calendars, the default-target calendar is used instead.
+        """
+        known = list(self._all_provider_calendar_ids)
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if known and pool is not None:
+            try:
+                rows = await pool.fetch(
+                    "SELECT calendar_id FROM calendar_sources "
+                    "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
+                    f"AND time_role IN {owner_time_roles_sql()}",
+                    self._require_provider().name,
+                    known,
+                )
+            except Exception:
+                logger.warning("Failed to read calendar source roles", exc_info=True)
+                rows = []
+            owner_ids = {row["calendar_id"] for row in rows}
+            ordered = [calendar_id for calendar_id in known if calendar_id in owner_ids]
+            if ordered:
+                return ordered
         return [self._resolve_calendar_id(None)]
 
     async def _find_free_slots(
@@ -394,7 +425,11 @@ class ConflictsMixin:
 
         part_of_day, avoid_weekdays = _parse_slot_constraints(constraints)
         provider = self._require_provider()
-        resolved_ids = self._resolve_free_busy_calendar_ids(calendar_ids)
+        resolved_ids = (
+            self._resolve_free_busy_calendar_ids(calendar_ids)
+            if calendar_ids
+            else await self._default_free_busy_calendar_ids()
+        )
 
         try:
             busy = await provider.get_free_busy(

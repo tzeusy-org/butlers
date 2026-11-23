@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from butlers.calendar_action_result import reconstruct_action_result as reconstruct_action_result
 from butlers.core.permissions import CALENDAR_WRITE_PERMISSION
+from butlers.core.temporal.calendar_source_roles import classify_calendar_source
 from butlers.core.tool_catalog import RecipientParameters
 from butlers.core.tool_presentation_inventory import ALL_CATEGORIES
 from butlers.modules.base import Module, ToolMeta, group_enabled, tool_registrar
@@ -624,6 +625,19 @@ class CalendarModule(
             }
             if account_email:
                 metadata["account_email"] = account_email
+            # The role comes from calendarList facts only (REQ-module-calendar-034); the facts
+            # are kept so the migration's backfill and a later reclassification can see them.
+            primary = cal.get("primary") is True
+            access_role = cal.get("accessRole")
+            time_role, _basis = classify_calendar_source(
+                calendar_id=cal_id,
+                primary=primary,
+                access_role=access_role if isinstance(access_role, str) else None,
+                is_butlers_calendar=is_butlers_cal,
+            )
+            metadata["primary"] = primary
+            if isinstance(access_role, str):
+                metadata["access_role"] = access_role
             try:
                 await self._ensure_calendar_source(
                     source_key=source_key,
@@ -635,6 +649,7 @@ class CalendarModule(
                     display_name=display_name,
                     writable=writable,
                     metadata=metadata,
+                    time_role=time_role,
                 )
             except Exception as exc:
                 logger.debug("Failed to register calendar source '%s': %s", source_key, exc)

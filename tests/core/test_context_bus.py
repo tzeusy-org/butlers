@@ -450,6 +450,7 @@ async def test_calendar_row_attestation_is_local_exact_expiring_and_bounded(monk
         "timezone": "UTC",
         "all_day": False,
         "metadata": {},
+        "time_role": "owner",
     }
     stored = {}
     pool = MagicMock()

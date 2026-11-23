@@ -113,8 +113,8 @@ async def _person(pool, name: str, email: str, *, posture: str = "active", owner
 async def _source(pool) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO calendar_sources (source_key, source_kind)
-        VALUES ($1, 'provider_event') RETURNING id
+        INSERT INTO calendar_sources (source_key, source_kind, time_role)
+        VALUES ($1, 'provider_event', 'owner') RETURNING id
         """,
         f"test-{uuid.uuid4().hex[:8]}",
     )
@@ -468,6 +468,35 @@ class TestSelection:
         assert "new.person@example.test" in message
         assert "Maya" not in message and "Memorial only" not in message
         assert proposer.calls[0]["category"] == DEBRIEF_CATEGORY
+
+    async def test_a_meeting_on_another_persons_calendar_is_not_asked_about(
+        self, debrief_pool
+    ) -> None:
+        """bu-5ii4gj.1: an ended partner-calendar event with attendees and no self gets no row."""
+        owner_src = await _source(debrief_pool)
+        partner_src = await debrief_pool.fetchval(
+            "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+            "VALUES ($1, 'provider_event', 'unclassified') RETURNING id",
+            f"test-{uuid.uuid4().hex[:8]}",
+        )
+        await _person(debrief_pool, "Owner Person", "owner@example.test", owner=True)
+        await _person(debrief_pool, "Sam Rivera", "sam@example.test")
+
+        await _event(
+            debrief_pool,
+            partner_src,
+            "Partner offsite",
+            attendees=_attendees("sam@example.test", with_self=False),
+        )
+        # Invited to the same kind of event on that calendar: the owner's own time.
+        await _event(
+            debrief_pool, partner_src, "Joint review", attendees=_attendees("sam@example.test")
+        )
+        await _event(debrief_pool, owner_src, "With Sam", attendees=_attendees("sam@example.test"))
+
+        await run_meeting_debrief(debrief_pool, insight_proposer=_Proposer())
+
+        assert await _titles(debrief_pool) == {"Joint review", "With Sam"}
 
     async def test_recurring_series_is_debriefed_per_occurrence(self, debrief_pool) -> None:
         src = await _source(debrief_pool)

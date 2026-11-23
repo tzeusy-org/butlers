@@ -118,6 +118,24 @@ as `NULL`.
 
 Projection status is tracked as `fresh`, `stale`, or `failed`.
 
+## Source roles
+
+Calendar discovery registers every calendar the account can see, so a partner's shared calendar,
+holidays and birthdays sit beside the owner's own. Each `calendar_sources` row therefore carries a
+`time_role` (`owner`, `household_member`, `other_person`, `team`, `subscription`, `holidays`,
+`birthdays`, `butler`, `unclassified`) and a `role_basis` (`provider_inferred` or
+`owner_confirmed`).
+
+- Roles come from provider facts only: the primary flag, the holiday and birthday calendar id
+  shapes, and the resolved Butlers calendar. Never a title. A writable non-primary calendar is
+  `unclassified`.
+- `unclassified` fails safe: its events are the owner's time only when the owner is a non-declined
+  attendee.
+- One predicate, `counts_as_owner_time` in `butlers.core.temporal.calendar_source_roles`, decides
+  owner time for the context producers, the conflict radar, meeting debrief and card, calendar
+  prep, working location and the default free-slot search.
+- An `owner_confirmed` role is never overwritten by discovery.
+
 ## Rate Limiting
 
 Ordinary Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).

@@ -50,6 +50,7 @@ def _message_context_reads(
     threads: list[dict[str, Any]] | BaseException,
 ) -> FakePool:
     """The job's reads in order: upcoming linked events, attendee names, inbox threads."""
+    events = [{"time_role": "owner", "metadata": {}, **event} for event in events]
     return source_reads(events, names, threads)
 
 

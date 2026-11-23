@@ -95,8 +95,8 @@ async def _event(
     all_day: bool = False,
 ) -> uuid.UUID:
     source_id = await pool.fetchval(
-        "INSERT INTO calendar_sources (source_key, source_kind) VALUES ($1, 'provider_event') "
-        "RETURNING id",
+        "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+        "VALUES ($1, 'provider_event', 'owner') RETURNING id",
         f"test-{uuid.uuid4().hex[:8]}",
     )
     return await pool.fetchval(

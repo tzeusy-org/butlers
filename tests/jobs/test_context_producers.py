@@ -334,8 +334,10 @@ def _active_calendar_row(
     all_day: bool = False,
     metadata: object = None,
     event_type: str | None = None,
+    time_role: str = "owner",
 ) -> dict[str, object]:
     row: dict[str, object] = {
+        "time_role": time_role,
         "title": title,
         "starts_at": starts_at,
         "ends_at": ends_at,
@@ -552,7 +554,7 @@ async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
         await run_calendar_context_producer(pool)
     sql = " ".join(pool.fetch.await_args.args[0].split())
     assert "event_type" in sql
-    assert "all_day = false OR event_type = 'outOfOffice'" in sql
+    assert "ce.all_day = false OR ce.event_type = 'outOfOffice'" in sql
 
 
 async def test_calendar_context_producer_skips_explicit_butler_generated_event_but_keeps_human_event():
@@ -1038,8 +1040,8 @@ class TestContextProducersIntegration:
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
             source_id = await pool.fetchval(
-                "INSERT INTO calendar_sources (source_key, source_kind) "
-                "VALUES ('test-src', 'provider') RETURNING id"
+                "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                "VALUES ('test-src', 'provider', 'owner') RETURNING id"
             )
             # An event happening right now.
             await pool.execute(
@@ -1149,13 +1151,53 @@ class TestContextProducersIntegration:
         finally:
             await pool.close()
 
+    async def test_calendar_producer_ignores_another_persons_calendar(self, core_db_url):
+        """bu-5ii4gj.1: a partner's and a holiday calendar's events are not the owner's time."""
+        pool = await _pool(core_db_url)
+        try:
+            await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
+            sources = {
+                role: await pool.fetchval(
+                    "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                    "VALUES ($1, 'provider', $2) RETURNING id",
+                    f"src-{role}",
+                    role,
+                )
+                for role in ("owner", "unclassified", "holidays")
+            }
+
+            async def event(role: str, ref: str, metadata: dict | None = None) -> None:
+                await pool.execute(
+                    """
+                    INSERT INTO calendar_events
+                        (source_id, source_butler, origin_ref, title, timezone,
+                         starts_at, ends_at, status, metadata)
+                    VALUES ($1, 'general', $2, 'Appointment', 'UTC',
+                            now() - interval '5 minutes', now() + interval '25 minutes',
+                            'confirmed', $3::jsonb)
+                    """,
+                    sources[role],
+                    ref,
+                    metadata or {},
+                )
+
+            await event("unclassified", "partner")
+            await event("holidays", "holiday", {"attendees": [{"self": True}]})
+            assert (await run_calendar_context_producer(pool))["signal"] is None
+
+            # The same partner event, with the owner invited, is the owner's time.
+            await event("unclassified", "invited", {"attendees": [{"self": True}]})
+            assert (await run_calendar_context_producer(pool))["signal"] == "meeting"
+        finally:
+            await pool.close()
+
     async def test_calendar_producer_classifies_focus_block(self, core_db_url):
         pool = await _pool(core_db_url)
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
             source_id = await pool.fetchval(
-                "INSERT INTO calendar_sources (source_key, source_kind) "
-                "VALUES ('test-src2', 'provider') RETURNING id"
+                "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                "VALUES ('test-src2', 'provider', 'owner') RETURNING id"
             )
             await pool.execute(
                 """
@@ -1556,3 +1598,98 @@ class TestContextProducersIntegration:
             assert await get_suppressing_context_signal(pool) is None
         finally:
             await pool.close()
+
+
+# -- source roles: whose time is this (bu-5ii4gj.1, REQ-context-bus-018) --------------------------
+
+_SELF_ATTENDEE = {"attendees": [{"self": True, "response_status": "accepted"}]}
+
+
+async def test_another_persons_meeting_sets_no_meeting_context():
+    result, set_context, clear_context = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Partner dentist",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="unclassified",
+            ),
+            _active_calendar_row(
+                title="Family planning",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="household_member",
+            ),
+        ]
+    )
+    assert result["signal"] is None
+    set_context.assert_not_awaited()
+    assert {c.args[2] for c in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_an_invited_event_on_another_calendar_still_sets_meeting_context():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Joint review",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="other_person",
+                metadata=_SELF_ATTENDEE,
+            )
+        ]
+    )
+    assert result["signal"] == "meeting"
+    set_context.assert_awaited_once()
+
+
+async def test_holiday_and_birthday_sources_never_set_context():
+    result, _, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="National day",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role=role,
+                metadata=_SELF_ATTENDEE,
+            )
+            for role in ("holidays", "birthdays")
+        ]
+    )
+    assert result["signal"] is None
+
+
+async def test_a_colleagues_out_of_office_does_not_suppress_the_owners_focus():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Away",
+                starts_at=_NOW - timedelta(hours=1),
+                ends_at=_NOW + timedelta(hours=8),
+                event_type="outOfOffice",
+                time_role="unclassified",
+            ),
+            _active_calendar_row(
+                title="Deep work",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                event_type="focusTime",
+            ),
+        ]
+    )
+    assert result["signal"] == "focused"
+    assert "out_of_office" not in result
+    set_context.assert_awaited_once()
+
+
+async def test_the_calendar_query_joins_the_source_role():
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        await run_calendar_context_producer(pool)
+    sql = pool.fetch.await_args.args[0]
+    assert "JOIN calendar_sources cs ON cs.id = ce.source_id" in sql
+    assert "cs.time_role" in sql

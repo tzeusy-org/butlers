@@ -145,6 +145,7 @@ def test_pair_identity_is_order_free_and_independent_of_surviving_copy() -> None
 
 def _row(entry_id: str, origin_ref: str, start: datetime, updated_at: datetime) -> dict:
     return {
+        "source_time_role": "owner",
         "instance_id": entry_id,
         "origin_instance_ref": f"{origin_ref}:{start.isoformat()}",
         "instance_timezone": "UTC",
