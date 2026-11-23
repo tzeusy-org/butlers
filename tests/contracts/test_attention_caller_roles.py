@@ -1,16 +1,18 @@
 """Callers of the role-checked ``dashboard_attention`` functions (bu-dss7he.24).
 
-``dashboard_attention.remember`` and ``final_claim`` return false, and ``evaluate`` is
-only executable, for a caller whose ``current_setting('role')`` (else ``session_user``) is
-the butler role or the configured migration role. After the migration role is rotated
-off the shared runtime login (docs/data_and_storage/migrator-login.md), a shared-login
-caller that has not done ``SET ROLE`` is refused silently: dropped work, not an error.
+``dashboard_attention.remember``, ``final_claim`` and ``consume`` refuse a caller whose
+``current_setting('role')`` (else ``session_user``) is not the butler role or the configured
+migration role; ``evaluate`` is only executable by those. After the migration role is rotated
+off the shared runtime login (docs/data_and_storage/migrator-login.md), a shared-login caller
+that has not done ``SET ROLE`` is refused silently: dropped work, not an error.
 
 The audit found every caller runs on a butler daemon pool, and ``Database`` does
 ``SET ROLE butler_<schema>_rw`` on every acquire of a schema-bound pool. The dashboard
-API (a role-less pool) reaches these only through MCP tools on the butler daemons. This
-static scan pins that: a new call site, or any call from the dashboard API tree, fails
-here until its role is reviewed and the allowlist below is updated.
+API (a role-less pool) reaches these only through MCP tools on the butler daemons.
+
+This is a tripwire, not a proof: the regex misses quoted identifiers and dynamically built
+SQL. A new call site, or any call from the dashboard API tree, fails here until its role is
+reviewed and the allowlist below is updated.
 """
 
 from __future__ import annotations
@@ -20,12 +22,13 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-_CHECKED = re.compile(r"dashboard_attention\s*\.\s*(remember|evaluate|final_claim)\s*\(")
+_CHECKED = re.compile(r"dashboard_attention\s*\.\s*(remember|evaluate|final_claim|consume)\s*\(")
 
 # Call sites run on a schema-bound butler ``Database`` pool (SET ROLE on every acquire).
 _ALLOWED = {
     "src/butlers/core/attention_urgency.py",
     "src/butlers/core/break_through.py",
+    "src/butlers/core/owner_creation.py",
     "src/butlers/core/scheduler/dispatch.py",
     "src/butlers/core/scheduler/update.py",
 }
