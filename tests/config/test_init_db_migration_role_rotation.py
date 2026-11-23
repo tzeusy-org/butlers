@@ -66,3 +66,48 @@ def test_the_rotation_runs_after_the_preflight_and_before_any_section() -> None:
     preflight_end = _SOURCE.index(_preflight()) + len(_preflight())
     rotation_start = _SOURCE.index("DO $migration_role_rotation$")
     assert preflight_end < rotation_start < _SOURCE.index("CREATE EXTENSION")
+
+
+_INSTALL_FUNCTIONS = {
+    "dashboard_attention.install_interface()",
+    "dashboard_attention.finalize_interface()",
+    "dashboard_attention.deactivate_interface()",
+    "dashboard_stepup.install_interface()",
+    "dashboard_stepup.finalize_interface()",
+    "dashboard_stepup.deactivate_interface()",
+    "perception_admin.install_interface()",
+    "perception_admin.rollback_interface()",
+}
+
+
+def test_the_old_login_loses_install_execute_only_under_the_rotation_setting() -> None:
+    block = _block("DO $rotation_revoke_install$", "$rotation_revoke_install$;")
+    body = block[block.index("BEGIN") :]
+    assert re.match(r"BEGIN\s+IF _old IS NULL THEN\s+RETURN;", body)
+    assert "butlers.rotate_migration_role_from" in block
+    assert set(re.findall(r"'([a-z_]+\.[a-z_]+\(\))'", block)) == _INSTALL_FUNCTIONS
+    assert block.count("REVOKE ALL ON FUNCTION") == 1
+    assert "FROM %I', _fn, _old" in block
+    # Runs after every section has granted to the rotated pin, so it is the last statement.
+    assert _SOURCE.rstrip().endswith("$rotation_revoke_install$;")
+    assert _SOURCE.index("DO $rotation_revoke_install$") > _SOURCE.index(
+        "$perception_grant_installer$;"
+    )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        "restore_drill_executor_admin",
+        "dnd_generation_admin",
+        "runtime_attention_admin",
+        "perception_admin",
+    ],
+)
+def test_a_pin_is_refused_not_silently_re_pointed_on_replay(schema: str) -> None:
+    block = _block(f"DO $pin_{schema}$", f"$pin_{schema}$;")
+    assert f"'{schema} bootstrap configuration differs'" in block
+    assert "migration_role <> COALESCE(" in block
+    insert = _SOURCE.index(f"INSERT INTO {schema}.bootstrap_configuration")
+    upsert = _SOURCE[insert : _SOURCE.index(f"DO $pin_{schema}$", insert)]
+    assert not re.search(r"migration_role\s*=\s*excluded", upsert, re.IGNORECASE)
