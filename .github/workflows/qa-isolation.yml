@@ -75,9 +75,9 @@ jobs:
           echo "IMAGE=k3d-qa-registry.localhost:5111/qa-probe@${digest}" >> "${GITHUB_ENV}"
       - name: Render and apply the investigator machinery
         run: |
-          docker run --rm -v "${PWD}/deploy/helm/butlers:/chart:ro" alpine/helm:3.17.3 \
-            template butlers /chart --namespace "${NAMESPACE}" \
-            -f /chart/values.yaml -f /chart/values.dev.yaml \
+          docker run --rm -v "${PWD}:/repo:ro" alpine/helm:3.17.3 \
+            template butlers /repo/deploy/helm/butlers --namespace "${NAMESPACE}" \
+            -f /repo/deploy/helm/butlers/values.yaml -f /repo/deploy/helm/butlers/values.dev.yaml \
             --set qaInvestigator.enabled=true \
             --set "qaInvestigator.imageDigest=${DIGEST}" \
             --set image.repository=k3d-qa-registry.localhost:5111/qa-probe \
