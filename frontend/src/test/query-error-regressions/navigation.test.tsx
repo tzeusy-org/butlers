@@ -72,6 +72,13 @@ it("keeps preview relation failure distinct from empty and retries the same rela
   await waitFor(() => expect(api.getEntityNeighbours).toHaveBeenCalledTimes(count + 1));
   await waitFor(() => expect(within(preview).getByText("No relations.")).not.toBeNull());
   expect(api.getEntityNeighbours).toHaveBeenLastCalledWith("entity-alice", { rank: "weight", per_predicate: 5 });
+  vi.mocked(api.getEntityNeighbours).mockRejectedValue(new Error("empty relation refetch failed"));
+  await act(() => client.refetchQueries({ queryKey: ["entity-neighbours", "entity-alice"] }));
+  const emptyRefetch = await within(preview).findByRole("alert");
+  expect(emptyRefetch.textContent).toMatch(/relations.*unavailable/i);
+  expect(emptyRefetch.textContent).not.toMatch(/stale/i);
+  expect(within(preview).queryByText("No relations.")).toBeNull();
+
   vi.mocked(api.getEntityNeighbours).mockResolvedValue({ neighbours: { knows: [{ entity_id: "bob", canonical_name: "Bob", entity_type: "person", weight: 2 }] } } as unknown as Awaited<ReturnType<typeof api.getEntityNeighbours>>);
   await act(() => client.refetchQueries({ queryKey: ["entity-neighbours", "entity-alice"] }));
   await waitFor(() => expect(within(preview).getByText("Bob")).not.toBeNull());
@@ -99,6 +106,13 @@ it("separates generic search transport errors, successful empty and partial payl
   await act(async () => finish(searchEmpty as Awaited<ReturnType<typeof api.searchAll>>));
   await screen.findByText(/No results for/);
   expect(api.searchRelationshipEntities).toHaveBeenCalledTimes(entityReads);
+  vi.mocked(api.searchAll).mockRejectedValue(new Error("empty search refetch failed"));
+  await act(() => client.refetchQueries({ queryKey: ["search"] }));
+  const emptyRefetch = await screen.findByTestId("entity-finder-generic-error");
+  expect(emptyRefetch.textContent).toMatch(/sessions.*state.*unavailable/i);
+  expect(emptyRefetch.textContent).not.toMatch(/stale/i);
+  expect(screen.queryByText(/No results for/)).toBeNull();
+
   vi.mocked(api.searchAll).mockResolvedValue({ ...searchEmpty, data: { ...searchEmpty.data, sessions: [{ id: "session-1", title: "Cached session", url: "/sessions/session-1" }] }, meta: { sources_degraded: ["health"] } } as unknown as Awaited<ReturnType<typeof api.searchAll>>);
   await act(() => client.refetchQueries({ queryKey: ["search"] }));
   await screen.findByText("Cached session");
@@ -118,8 +132,20 @@ it("registers a real discovery retry and labels cached actions stale without los
   await openFinder("");
   const retry = await screen.findByRole("option", { name: /butler.*unavailable.*retry/i });
   expect(screen.queryByRole("option", { name: /Run general/ })).toBeNull();
-  vi.mocked(api.getButlers).mockResolvedValue({ data: [general], meta: {} } as Awaited<ReturnType<typeof api.getButlers>>);
+  vi.mocked(api.getButlers).mockResolvedValue({ data: [], meta: {} } as Awaited<ReturnType<typeof api.getButlers>>);
   fireEvent.click(retry);
+  await waitFor(() => expect(client.getQueryState(["butlers"])?.status).toBe("success"));
+  await openFinder("");
+  vi.mocked(api.getButlers).mockRejectedValue(new Error("empty discovery refetch failed"));
+  await act(() => client.refetchQueries({ queryKey: ["butlers"] }));
+  const emptyActions = within(await screen.findByTestId("entity-finder-actions-group"));
+  const emptyRetry = await emptyActions.findByRole("option", { name: /retry discovery/i });
+  expect(emptyRetry.textContent).toMatch(/butler actions unavailable/i);
+  expect(emptyRetry.textContent).not.toMatch(/stale/i);
+  expect(screen.queryByRole("option", { name: /Run general/ })).toBeNull();
+
+  vi.mocked(api.getButlers).mockResolvedValue({ data: [general], meta: {} } as Awaited<ReturnType<typeof api.getButlers>>);
+  fireEvent.click(emptyRetry);
   await waitFor(() => expect(client.getQueryState(["butlers"])?.status).toBe("success"));
   await openFinder("");
   await screen.findByRole("option", { name: /Run general/ });
@@ -159,6 +185,14 @@ it("never turns a spend transport failure into all-clear and preserves health an
   await act(() => client.refetchQueries({ queryKey: ["cost-summary"] }));
   await screen.findByLabelText(/Spend coverage incomplete: unpriced-model/);
   expect(screen.queryByLabelText(/\$12\.00 today/)).toBeNull();
+  vi.mocked(api.getCostSummary).mockRejectedValue(new Error("unpriced spend refetch failed"));
+  await act(() => client.refetchQueries({ queryKey: ["cost-summary"] }));
+  const unpricedRefetch = await screen.findByRole("alert");
+  expect(unpricedRefetch.textContent).toMatch(/spend.*unavailable/i);
+  expect(unpricedRefetch.textContent).not.toMatch(/stale/i);
+  await screen.findByLabelText(/Spend coverage incomplete: unpriced-model/);
+  expect(screen.queryByLabelText(/\$12\.00 today/)).toBeNull();
+
   vi.mocked(api.getCostSummary).mockResolvedValue({ data: { total_cost_usd: 0, source_error: true, unpriced_models: [] } } as unknown as Awaited<ReturnType<typeof api.getCostSummary>>);
   vi.mocked(api.getButlers).mockResolvedValue({ data: [{ ...general, status: "degraded" }], meta: {} } as Awaited<ReturnType<typeof api.getButlers>>);
   await act(async () => { await client.refetchQueries({ queryKey: ["cost-summary"] }); await client.refetchQueries({ queryKey: ["butlers"] }); });

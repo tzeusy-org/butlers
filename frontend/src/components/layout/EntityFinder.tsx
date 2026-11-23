@@ -276,7 +276,7 @@ function PreviewPane({ active }: PreviewPaneProps) {
         {debouncedId === active.entity_id && neighboursError && (
           <SourceDegradedNote
             label="Relations"
-            detail={neighboursData ? "unavailable; showing stale relations" : "unavailable"}
+            detail={topRelations.length ? "unavailable; showing stale relations" : "unavailable"}
             onRetry={() => void refetchNeighbours()}
           />
         )}
@@ -504,6 +504,7 @@ export default function EntityFinder() {
     () => genericSearchData?.data?.state ?? [],
     [genericSearchData],
   );
+  const hasSessionOrStateMatches = sessionMatches.length > 0 || stateMatches.length > 0;
   // Degraded-source honesty (bu-tpudw.4): GET /api/search fans sessions/state
   // out across every butler DB; when one (or the whole fan-out) fails the
   // backend names the source in meta.sources_degraded instead of silently
@@ -738,7 +739,7 @@ export default function EntityFinder() {
               <SourceDegradedNote
                 testId="entity-finder-generic-error"
                 label="Sessions & state"
-                detail={genericSearchData ? "unavailable; showing stale results" : "unavailable"}
+                detail={hasSessionOrStateMatches ? "unavailable; showing stale results" : "unavailable"}
                 onRetry={() => void refetchGenericSearch()}
                 className="mb-1"
               />

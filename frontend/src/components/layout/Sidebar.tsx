@@ -574,7 +574,7 @@ function SidebarFooter({
   const spendWarning = spendError ? (
     <SourceDegradedNote
       label="Spend"
-      detail={costResponse ? "unavailable; showing stale spend" : "unavailable"}
+      detail={cost != null ? "unavailable; showing stale spend" : "unavailable"}
       onRetry={() => void refetchSpend()}
       className={expanded ? 'min-w-0 shrink-0' : 'border-0 p-0 [&>span]:sr-only'}
     />

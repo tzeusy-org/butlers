@@ -31,12 +31,13 @@ const DEFAULT_COMPLEXITY = "workhorse";
 export function GlobalActionsRegistrar() {
   const { data: butlersResponse, isError, refetch } = useButlers();
   const navigate = useNavigate();
+  const hasCachedActions = Boolean(butlersResponse?.data?.length);
 
   const commands = useMemo<PaletteCommand[]>(() => {
     const butlers = butlersResponse?.data ?? [];
     const discovery: PaletteCommand[] = isError ? [{
       id: "retry:butler-discovery",
-      label: butlersResponse
+      label: hasCachedActions
         ? "Butler discovery failed; cached actions are stale. Retry discovery"
         : "Butler actions unavailable. Retry discovery",
       keywords: ["retry", "butler", "discovery"],
@@ -60,13 +61,13 @@ export function GlobalActionsRegistrar() {
         }
       },
     }))];
-  }, [butlersResponse, isError, navigate, refetch]);
+  }, [butlersResponse, hasCachedActions, isError, navigate, refetch]);
 
   useRegisterCommands(commands);
 
   return isError ? (
     <span role="alert" className="sr-only">
-      {butlersResponse ? "Butler discovery failed; cached actions are stale." : "Butler actions unavailable."}
+      {hasCachedActions ? "Butler discovery failed; cached actions are stale." : "Butler actions unavailable."}
       {" Open the command menu to retry discovery."}
     </span>
   ) : null;
