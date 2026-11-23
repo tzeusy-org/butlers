@@ -216,8 +216,12 @@ class ConditionEvaluator:
         expires_at: datetime,
         generation: int = 1,
         cursors: dict[str, int] | None = None,
+        seed: bool = True,
     ) -> Outcome:
         """Validate, evaluate current state (no lost wake), persist, fire if already true.
+
+        ``seed=False`` starts every leaf unknown instead of reading the snapshot, so the instance
+        fires only on an event past its floor (an edge), never on state that is already true.
 
         ``label`` is the S1 label snapshot of the registering wait envelope. It is stored with
         the instance and is part of its immutable boundary. A fire intent and its receipt carry
@@ -244,7 +248,11 @@ class ConditionEvaluator:
             starts_at=snapshot.now,
             expires_at=expires_at,
             generation=generation,
-            leaves=initial_leaves(canonical, snapshot),
+            leaves=(
+                initial_leaves(canonical, snapshot)
+                if seed
+                else {leaf.path: Tri.UNKNOWN for leaf in ast.leaves(canonical)}
+            ),
             cursors=dict(cursors or {}),
             floor=dict(cursors or {}),
             label=label,

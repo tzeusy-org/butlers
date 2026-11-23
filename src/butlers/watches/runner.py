@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from butlers.conditions import ConditionsUnavailable, FireIntent, Snapshot, State
-from butlers.watches.model import Watch, WatchConflict, WatchState
+from butlers.watches.model import Watch, WatchState
 from butlers.watches.service import WatchService
 
 logger = logging.getLogger(__name__)
@@ -88,26 +88,36 @@ class WatchRunner:
         return report
 
     async def _advance(self, watch: Watch, now: datetime, report: TickReport) -> None:
-        instance = await self.service.instance(watch)
         snapshot = self.snapshot_for(now)
-        if instance is None:
-            if await self.service.repair(watch, snapshot):
-                report.repaired += 1
-            return
-        if instance.state is not State.FIRED:
-            return
-        intent = await self.service.evaluator.consume_fire(watch.instance_id, self.consumer)
-        if intent is None:
-            return  # another consumer holds this fire
-        try:
-            await self.deliver(notice_for(watch, intent))
-        except Exception:
-            report.failed += 1
-            logger.warning("owner_watch_delivery_failed watch=%s", watch.id, exc_info=True)
-            return
-        report.delivered += 1
-        try:
-            if await self.service.rearm(watch, instance.cursors, snapshot) is not None:
-                report.rearmed += 1
-        except WatchConflict:
-            pass  # a racing runner already armed the next generation
+        notified: Watch | None = None
+        # One transition at a time per watch: the row, the grant and the claim are judged under
+        # the same lock as a pause, so a notice is never sent for a watch the owner just closed.
+        async with self.service.store.serialized(watch.id):
+            current = await self.service.store.get(watch.id)
+            if current is None or current.state is not WatchState.ACTIVE:
+                return
+            instance = await self.service.instance(current)
+            if instance is None:
+                if await self.service.repair_locked(current, snapshot):
+                    report.repaired += 1
+                return
+            if instance.state is not State.FIRED:
+                return
+            if not self.service.grant_is_current(current):
+                report.failed += 1  # the grant changed: tell nobody until the owner re-approves
+                logger.warning("owner_watch_grant_changed watch=%s", current.id)
+                return
+            intent = await self.service.evaluator.consume_fire(current.instance_id, self.consumer)
+            if intent is None:
+                return  # another consumer holds this fire
+            try:
+                await self.deliver(notice_for(current, intent))
+            except Exception:
+                report.failed += 1
+                logger.warning("owner_watch_delivery_failed watch=%s", current.id, exc_info=True)
+                return
+            report.delivered += 1
+            notified = current
+            cursors = instance.cursors
+        if notified is not None and await self.service.rearm(notified, cursors, snapshot):
+            report.rearmed += 1
