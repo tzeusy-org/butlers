@@ -218,7 +218,11 @@ class SyncMixin:
         display_name = await provider.get_calendar_summary(calendar_id) or calendar_id
         # Butler-specific calendars (from credential store) are owned by this
         # butler; the shared project calendar (auto-discovered) is not.
-        is_butler_cal = self._calendar_is_butler_specific
+        # The flag is module-wide (the Butlers calendar id came from the credential store), and
+        # the poller syncs every calendar: only the resolved Butlers calendar is butler-specific.
+        is_butler_cal = (
+            self._calendar_is_butler_specific and calendar_id == self._resolved_calendar_id
+        )
         try:
             source_id = await self._ensure_calendar_source(
                 source_key=source_key,

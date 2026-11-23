@@ -6361,6 +6361,10 @@ class TestSyncRegistersTheSourceRole:
             ("primary", False, "owner"),
             ("butlers@group.calendar.google.com", True, "butler"),
             ("shared@example.test", False, None),
+            # The flag is module-wide: with it set, a partner's and a holiday calendar synced by
+            # the same poller are not the Butlers calendar.
+            ("partner@example.test", True, None),
+            ("en.sg#holiday@group.v.calendar.google.com", True, "holidays"),
         ],
     )
     async def test_sync_passes_the_inferred_role(self, calendar_id, butler_specific, expected):
@@ -6369,6 +6373,7 @@ class TestSyncRegistersTheSourceRole:
         mod._config = CalendarConfig(provider="google")
         mod._sync_states[calendar_id] = CalendarSyncState()
         mod._calendar_is_butler_specific = butler_specific
+        mod._resolved_calendar_id = "butlers@group.calendar.google.com"
         provider = MagicMock()
         provider.name = "google"
         provider.get_calendar_summary = AsyncMock(return_value="Cal")
@@ -6386,4 +6391,8 @@ class TestSyncRegistersTheSourceRole:
 
         await mod._sync_calendar(calendar_id)
 
-        assert mod._ensure_calendar_source.await_args.kwargs["time_role"] == expected
+        kwargs = mod._ensure_calendar_source.await_args.kwargs
+        assert kwargs["time_role"] == expected
+        assert kwargs["metadata"]["butler_specific"] is (
+            calendar_id == "butlers@group.calendar.google.com"
+        )

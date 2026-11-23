@@ -93,7 +93,8 @@ _ROLES = "SELECT source_key, time_role, role_basis FROM calendar_sources ORDER B
 _EXPECTED = {
     "provider:google:owner@example.test": "owner",
     "provider:google:partner@example.test": "unclassified",
-    "provider:google:butlers-cal": "butler",
+    # Not trusted from metadata.butler_specific: discovery re-classifies it from the resolved id.
+    "provider:google:butlers-cal": "unclassified",
     "provider:google:holidays": "holidays",
     "provider:google:birthdays": "birthdays",
     "internal:scheduler:general": "butler",

@@ -15,11 +15,13 @@ owner's own time. This adds two columns to the schema's own ``calendar_sources``
   ``owner_confirmed``. Rediscovery never overwrites an owner-confirmed role.
 
 Existing rows are classified from the discovery facts already stored on them, never from a name:
-a butler-lane source, or one whose metadata says ``butler_specific``, is ``butler``; the source
+a butler-lane source is ``butler`` (``metadata.butler_specific`` is not trusted: sync used to merge
+a module-wide flag into every calendar's metadata); the source
 whose calendar id is the stored ``account_email`` is the account's primary calendar, ``owner``;
 the holiday and contacts-birthday calendar ids are ``holidays`` and ``birthdays``; everything
 else, including a writable non-primary calendar, is ``unclassified``. The next discovery
-re-classifies provider-inferred rows from the full calendarList facts.
+re-classifies provider-inferred rows from the full calendarList facts, which is when the Butlers
+calendar itself becomes ``butler``.
 
 The columns are plain TEXT, so the public JSON projections (core_320, finance_020, health_007),
 which are declared over JSONB columns, are unaffected. The core chain runs once per butler
@@ -121,7 +123,6 @@ def upgrade() -> None:
             """
             UPDATE calendar_sources SET time_role = CASE
                 WHEN lane = 'butler' THEN 'butler'
-                WHEN metadata->>'butler_specific' = 'true' THEN 'butler'
                 WHEN calendar_id IS NOT NULL
                      AND calendar_id = metadata->>'account_email' THEN 'owner'
                 WHEN calendar_id LIKE '%#holiday@group.v.calendar.google.com' THEN 'holidays'
