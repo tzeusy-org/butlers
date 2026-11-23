@@ -26,6 +26,8 @@
  * hoc judgment) is the single place that decision is made.
  */
 
+import { D19_PREVIEW_ENABLED } from "./d19";
+
 export type ContextPolicy = "snapshot" | "ref-only" | "none";
 
 export interface PageContextDescriptor {
@@ -38,6 +40,10 @@ const SNAPSHOT = (summary: string): PageContextDescriptor => ({ policy: "snapsho
 
 /** One descriptor per `SHELL_CAPABILITIES` path (see shell-capability.ts). */
 export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
+  ...(D19_PREVIEW_ENABLED ? Object.fromEntries([
+    "/d19", "/d19/goals", "/d19/goals/:goalId", "/d19/regions", "/d19/regions/:region",
+    "/d19/approvals", "/d19/approvals/:id",
+  ].map((path) => [path, { policy: "none" as const, summary: "D19 preview" }])) : {}),
   "/": SNAPSHOT("Overview"),
   // Chat surfaces attach only the route, never conversation content itself
   // (bu-0ynlk.11) — the ContextChip must not recursively snapshot the very

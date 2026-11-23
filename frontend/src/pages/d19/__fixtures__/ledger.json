@@ -1,0 +1,207 @@
+{
+  "goal": {
+    "id": "10000000-0000-4000-8000-000000000001",
+    "origin": "owner",
+    "state": "awaiting_approval",
+    "exposed": true,
+    "admitted_exposed": false,
+    "chain_depth": 0,
+    "caused_by_goal": null,
+    "caused_by_effect": null,
+    "regions": [
+      "health"
+    ],
+    "outcome": null,
+    "created_at": "2026-11-23T08:00:00Z",
+    "updated_at": "2026-11-23T08:00:00Z",
+    "exposure_causes": [
+      "third_party_read"
+    ],
+    "invocations": [
+      {
+        "id": "20000000-0000-4000-8000-000000000001",
+        "parent_invocation_id": null,
+        "role": "lead",
+        "depth": 0,
+        "status": "running",
+        "exposed": true,
+        "exposure_cause": "third_party_read",
+        "used_turns": 2,
+        "max_turns": 12,
+        "used_tokens": 120,
+        "max_tokens": 5000,
+        "end_reason": null,
+        "started_at": "2026-11-23T08:00:00Z",
+        "ended_at": null
+      }
+    ],
+    "effects": [
+      {
+        "id": "30000000-0000-4000-8000-000000000001",
+        "invocation_id": "20000000-0000-4000-8000-000000000001",
+        "capability": "health__measurement_read",
+        "region": "health",
+        "status": "unknown",
+        "approval_ref": "40000000-0000-4000-8000-000000000001",
+        "receipt_ref": null,
+        "delivery_ref": null,
+        "recipient_entity": null,
+        "recipient_channel": "telegram",
+        "created_at": "2026-11-23T08:00:00Z",
+        "updated_at": "2026-11-23T08:00:00Z"
+      }
+    ],
+    "approvals": [
+      {
+        "effect_id": "30000000-0000-4000-8000-000000000001",
+        "approval_ref": "40000000-0000-4000-8000-000000000001",
+        "effect_status": "unknown",
+        "capability": "health__measurement_read",
+        "caused_by_goal": null,
+        "caused_by_effect": null,
+        "caused_goals": []
+      }
+    ],
+    "budget": {
+      "max_invocations": 4,
+      "reserved_invocations": 0,
+      "used_invocations": 1,
+      "max_children": 2,
+      "active_children": 0,
+      "max_calls": 10,
+      "reserved_calls": 0,
+      "used_calls": 2,
+      "max_tokens": 10000,
+      "reserved_tokens": 0,
+      "used_tokens": 120,
+      "max_spend": "2.00",
+      "reserved_spend": "0.00",
+      "used_spend": "0.04",
+      "deadline": "2026-11-24T00:00:00Z"
+    },
+    "goal_outcome": null
+  },
+  "page": {
+    "items": [
+      {
+        "id": "10000000-0000-4000-8000-000000000001",
+        "origin": "owner",
+        "state": "awaiting_approval",
+        "exposed": true,
+        "admitted_exposed": false,
+        "chain_depth": 0,
+        "caused_by_goal": null,
+        "caused_by_effect": null,
+        "regions": [
+          "health"
+        ],
+        "outcome": null,
+        "created_at": "2026-11-23T08:00:00Z",
+        "updated_at": "2026-11-23T08:00:00Z"
+      }
+    ],
+    "next_cursor": null,
+    "limit": 25,
+    "sources_degraded": []
+  },
+  "regions": {
+    "regions": [
+      {
+        "region": "health",
+        "recent_goals": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "state": "awaiting_approval",
+            "origin": "owner",
+            "created_at": "2026-11-23T08:00:00Z"
+          }
+        ],
+        "obligations_due": [
+          {
+            "name": "Daily check-in",
+            "source": "toml",
+            "cron": "0 9 * * *",
+            "next_run_at": "2026-11-24T09:00:00Z"
+          }
+        ]
+      }
+    ],
+    "sources_degraded": []
+  },
+  "butler": {
+    "name": "health",
+    "type": "butler",
+    "description": "Health records and the obligations that keep them current.",
+    "status": "online",
+    "port": 0,
+    "sessions_24h": 0,
+    "modules": [
+      {
+        "name": "health",
+        "enabled": true
+      }
+    ],
+    "schedules": [],
+    "skills": [
+      "health-records"
+    ]
+  },
+  "approval": {
+    "id": "40000000-0000-4000-8000-000000000001",
+    "title": "Review a prepared call",
+    "butler": "health",
+    "created_at": "2026-11-23T08:00:00Z",
+    "status": "cancelled",
+    "proposed_action": {
+      "tool_name": "email_send_message"
+    },
+    "call_preview": {
+      "title": "Email exact call",
+      "facts": [
+        {
+          "label": "To",
+          "value": "recipient@example.test"
+        },
+        {
+          "label": "Body",
+          "value": "Synthetic check-in only."
+        }
+      ],
+      "displayed_call": {
+        "tool_name": "email_send_message",
+        "args_digest": "synthetic-call-digest"
+      }
+    },
+    "goal": {
+      "goal_id": "10000000-0000-4000-8000-000000000001",
+      "invocation_id": "20000000-0000-4000-8000-000000000001",
+      "depth": 0,
+      "exposed": true,
+      "origin": "owner",
+      "exposure_cause": "third_party_read",
+      "rule_possible": false,
+      "facts": [
+        {
+          "label": "Goal",
+          "value": "10000000-0000-4000-8000-000000000001"
+        },
+        {
+          "label": "Invocation",
+          "value": "20000000-0000-4000-8000-000000000001"
+        },
+        {
+          "label": "Depth",
+          "value": "0"
+        },
+        {
+          "label": "Origin",
+          "value": "owner"
+        },
+        {
+          "label": "Exposure",
+          "value": "third_party_read"
+        }
+      ]
+    }
+  }
+}

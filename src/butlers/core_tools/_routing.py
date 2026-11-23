@@ -51,6 +51,7 @@ from butlers.core.custody_egress import CustodyEgressRefused
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.notify_attachments import AttachmentError, redact_attachment_content
+from butlers.core.owner_voice import notification_text, one_voice_enabled
 from butlers.core.permissions import PermissionDenied, PermissionUnavailable
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
@@ -463,17 +464,35 @@ async def _build_routed_delivery_command(
             return None
         raise ValueError(f"Unsupported notify channel: {channel}")
 
-    notify_prefix = f"[{origin}]"
+    # Formatting is opt-in and owner-only. Public/caller-supplied identity is
+    # never enough; preserve the normal exact-call approval materialization.
+    owner_voice = False
+    if one_voice_enabled():
+        target = recipient
+        if intent == "reply" and notify_context is not None:
+            if channel == "email":
+                target = notify_context.source_sender_identity
+            elif channel == "whatsapp":
+                target = notify_context.source_thread_identity
+            elif channel == "telegram":
+                thread = _parse_telegram_thread_identity(notify_context.source_thread_identity)
+                target = thread[0] if thread is not None else recipient
+        pool = daemon.db.pool if daemon.db is not None else None
+        if pool is not None and target:
+            owner_voice = (
+                await resolve_owner_channel_via_definer(
+                    pool, ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES[channel], target
+                )
+                is not None
+            )
     rendering_kwargs = {"render_links_inert": True} if render_links_inert else {}
     if channel == "email":
         email_module = modules_by_name.get("email")
         if email_module is None:
             raise RuntimeError("Messenger email adapter is unavailable.")
         raw_subject = subject or "Notification"
-        normalized_subject = (
-            raw_subject
-            if notify_prefix.lower() in raw_subject.lower()
-            else f"{notify_prefix} {raw_subject}"
+        normalized_subject = notification_text(
+            raw_subject, origin, owner_voice=owner_voice, subject=True
         )
         if intent == "send":
             if not recipient:
@@ -527,11 +546,7 @@ async def _build_routed_delivery_command(
             ),
         )
 
-    rendered_text = (
-        message_text
-        if message_text.lstrip().startswith(notify_prefix)
-        else f"{notify_prefix} {message_text}"
-    )
+    rendered_text = notification_text(message_text, origin, owner_voice=owner_voice)
     if channel == "telegram":
         telegram_module = modules_by_name.get("telegram")
         if telegram_module is None:
@@ -1944,9 +1959,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     preflight_reason = "transport_unavailable"
                 elif channel == "telegram" and (telegram_module := modules_by_name.get("telegram")):
                     rendered = notify_request.delivery.message
-                    prefix = f"[{notify_request.origin_butler}]"
-                    if not rendered.lstrip().startswith(prefix):
-                        rendered = f"{prefix} {rendered}"
+                    rendered = notification_text(
+                        rendered, notify_request.origin_butler, owner_voice=one_voice_enabled()
+                    )
 
                     async def _telegram_provider_call() -> Any:
                         return await telegram_module._send_message(
@@ -1965,11 +1980,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     provider_call = _telegram_provider_call
                 elif channel == "email" and (email_module := modules_by_name.get("email")):
                     raw_subject = notify_request.delivery.subject or "Approval requested"
-                    prefix = f"[{notify_request.origin_butler}]"
-                    subject = (
-                        raw_subject
-                        if prefix.lower() in raw_subject.lower()
-                        else f"{prefix} {raw_subject}"
+                    subject = notification_text(
+                        raw_subject,
+                        notify_request.origin_butler,
+                        owner_voice=one_voice_enabled(),
+                        subject=True,
                     )
 
                     async def _email_provider_call() -> Any:
@@ -1989,9 +2004,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     send_tool = getattr(whatsapp_module, "_send_message", None)
                     if callable(send_tool):
                         rendered = notify_request.delivery.message
-                        prefix = f"[{notify_request.origin_butler}]"
-                        if not rendered.lstrip().startswith(prefix):
-                            rendered = f"{prefix} {rendered}"
+                        rendered = notification_text(
+                            rendered, notify_request.origin_butler, owner_voice=one_voice_enabled()
+                        )
 
                         async def _whatsapp_provider_call() -> Any:
                             return await send_tool(recipient=recipient, text=rendered)
@@ -2047,7 +2062,6 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         notify_request_id = (
             str(notify_context.request_id) if notify_context is not None else route_request_id
         )
-        notify_prefix = f"[{origin}]"
         modules_by_name = {module.name: module for module in daemon._modules}
         decision_dossier = notify_request.decision_dossier or {}
         dossier_kwargs = {
@@ -2145,10 +2159,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 if telegram_module is None:
                     raise RuntimeError("Messenger telegram adapter is unavailable.")
 
-                rendered_text = (
-                    message_text
-                    if message_text.lstrip().startswith(notify_prefix)
-                    else f"{notify_prefix} {message_text}"
+                rendered_text = notification_text(
+                    message_text, origin, owner_voice=one_voice_enabled()
                 )
                 if intent in {"send", "reply"}:
                     if delivery_command is None:
@@ -2205,10 +2217,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 raw_subject = notify_request.delivery.subject or {
                     "approval_request": "Approval requested",
                 }.get(intent, "Notification")
-                normalized_subject = (
-                    raw_subject
-                    if notify_prefix.lower() in raw_subject.lower()
-                    else f"{notify_prefix} {raw_subject}"
+                normalized_subject = notification_text(
+                    raw_subject, origin, owner_voice=one_voice_enabled(), subject=True
                 )
                 if intent in {"send", "reply"}:
                     if delivery_command is None:
@@ -2237,10 +2247,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 whatsapp_module = modules_by_name.get("whatsapp")
                 if whatsapp_module is None:
                     raise RuntimeError("Messenger whatsapp adapter is unavailable.")
-                rendered_text = (
-                    message_text
-                    if message_text.lstrip().startswith(notify_prefix)
-                    else f"{notify_prefix} {message_text}"
+                rendered_text = notification_text(
+                    message_text, origin, owner_voice=one_voice_enabled()
                 )
                 if intent in {"send", "reply"}:
                     if delivery_command is None:

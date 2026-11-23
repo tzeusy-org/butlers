@@ -16,6 +16,8 @@ import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { fetchSpendForecast } from "@/lib/spend-forecast";
 import type { NavIconName } from "@/components/layout/NavIcon";
 import { PAGE_CONTEXT_REGISTRY, type ContextPolicy } from "@/lib/page-context-registry";
+import { D19_PREVIEW_ENABLED } from "@/lib/d19";
+import { getGoal, getGoals } from "@/api/goals";
 
 export type ShellDiscoverability = "global" | "contextual" | "context-only";
 export type ShellFamily =
@@ -129,6 +131,15 @@ const page = (loader: () => Promise<{ default: ComponentType }>) => loader;
 type ShellCapabilityInput = Omit<ShellCapability, "contextPolicy">;
 
 const _SHELL_CAPABILITIES_INPUT: readonly ShellCapabilityInput[] = [
+  ...(D19_PREVIEW_ENABLED ? [
+    { path: "/d19", label: "One assistant preview", keywords: ["goals", "regions"], family: "overview", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/OverviewPage")) },
+    { path: "/d19/goals", label: "Goals preview", keywords: ["goals"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/GoalsPage")), queryWarmup: staticWarmup("/d19/goals", ["goals", "list", {}], () => getGoals()) },
+    { path: "/d19/goals/:goalId", label: "Goal preview", keywords: ["goal"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/GoalPage")), queryWarmup: dynamic("/d19/goals/:goalId", (id) => ({ queryKey: ["goals", "detail", id], queryFn: () => getGoal(id), staleTime: DEFAULT_QUERY_STALE_TIME_MS })) },
+    { path: "/d19/regions", label: "Regions preview", keywords: ["regions"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/RegionsPage")), queryWarmup: staticWarmup("/d19/regions", ["butlers"], () => api.getButlers()) },
+    { path: "/d19/regions/:region", label: "Region preview", keywords: ["region", "operator"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/RegionsPage").then((m) => ({ default: m.RegionPage }))) },
+    { path: "/d19/approvals", label: "Approvals preview", keywords: ["lineage"], family: "operations", placement: null, discoverability: "global", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
+    { path: "/d19/approvals/:id", label: "Approval lineage preview", keywords: ["lineage"], family: "detail", placement: null, dynamic: "context-only", discoverability: "context-only", loader: page(() => import("@/pages/d19/ApprovalsPage")) },
+  ] satisfies ShellCapabilityInput[] : []),
   { path: "/", label: "Overview", keywords: ["home", "dashboard"], family: "overview", placement: { section: "Main", order: 0, icon: "overview", end: true }, chord: "o", discoverability: "global", loader: page(() => import("@/pages/DashboardPage.tsx")) },
   // Full-page chat posture (bu-0ynlk.11) — no sidebar placement: the docked
   // rail / floating widget is the persistent entry point, this is the
