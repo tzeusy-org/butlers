@@ -109,3 +109,17 @@ async def test_a_stale_sync_is_reported_not_hidden(app):
 async def test_an_invalid_timezone_is_refused(app):
     app, _ = _build_app(app, workspace_rows={})
     assert (await get_sheet(app, timezone="Not/AZone")).status_code == 400
+
+
+async def test_an_all_day_row_from_utc_is_dated_in_its_own_zone(app):
+    """asyncpg returns timestamptz in UTC: a Singapore all-day for 24 Nov is 16:00 UTC on the 23rd."""
+    start = datetime(2026, 11, 23, 16, 0, tzinfo=UTC)
+    trip = row("trip", start, all_day=True, timezone="Asia/Singapore")
+    trip["instance_ends_at"] = start + timedelta(days=1)
+    app, _ = _build_app(app, workspace_rows={"general": [trip]})
+
+    on_day = (await get_sheet(app, date="2026-11-24", timezone="Asia/Singapore")).json()["data"]
+    day_before = (await get_sheet(app, date="2026-11-23", timezone="Asia/Singapore")).json()["data"]
+
+    assert [i["ref"] for i in on_day["items"]] == ["trip"]
+    assert day_before["items"] == []
