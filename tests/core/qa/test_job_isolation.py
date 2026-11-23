@@ -466,3 +466,50 @@ async def test_an_unreadable_fleet_stops_the_batch(tmp_path) -> None:
         )
     assert [r.reason for r in results] == ["concurrency_cap"]
     dispatch.assert_not_called()
+
+
+async def test_a_failed_clone_cleans_the_attempt_directory_and_releases_ownership(tmp_path) -> None:
+    from butlers.core.qa.dispatch import dispatch_qa_investigation
+    from butlers.core.qa.job_isolation import LIVE_ATTEMPTS
+    from tests.core.qa.test_dispatch import _make_triaged
+
+    iso = _iso(tmp_path)
+    attempt_id = uuid.uuid4()
+    attempt_dir = iso.attempt_dir(attempt_id)
+
+    async def failing_clone(*args, **kwargs):
+        attempt_dir.mkdir(parents=True)  # the half-built tree a failed clone leaves behind
+        (attempt_dir / "repo").mkdir()
+        raise OSError("clone failed")
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(("c" * 40).encode(), b""))
+    mock_proc.returncode = 0
+    p = "butlers.core.qa.dispatch."
+    with (
+        patch(
+            p + "create_or_join_attempt", new_callable=AsyncMock, return_value=(attempt_id, True)
+        ),
+        patch(p + "update_finding_attempt", new_callable=AsyncMock),
+        patch(p + "get_publication_hold", new_callable=AsyncMock, return_value=False),
+        patch(p + "get_recent_attempt", new_callable=AsyncMock, return_value=None),
+        patch(p + "count_active_attempts", new_callable=AsyncMock, return_value=0),
+        patch(p + "active_job_count", new_callable=AsyncMock, return_value=0),
+        patch(p + "_is_circuit_breaker_tripped", new_callable=AsyncMock, return_value=False),
+        patch(p + "resolve_model_with_effective_tier", new_callable=AsyncMock),
+        patch(p + "update_attempt_status", new_callable=AsyncMock),
+        patch(p + "_refresh_main_commit", new_callable=AsyncMock, return_value="c" * 40),
+        patch(p + "prepare_attempt_clone", side_effect=failing_clone),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_qa_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(job_isolation=iso),
+            repo_root=tmp_path,
+            spawner=MagicMock(),
+            gh_token=None,
+        )
+    assert result.reason == "worktree_creation_failed"
+    assert not attempt_dir.exists()
+    assert str(attempt_id) not in LIVE_ATTEMPTS
