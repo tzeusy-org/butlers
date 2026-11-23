@@ -43,7 +43,9 @@ RETURNING id
 class EvidenceNotCommitted(RuntimeError):
     """The evidence row could not be written; the caller must acknowledge nothing.
 
-    The message is a fixed label and the cause is chained, so no content reaches a log.
+    The message is a fixed label (a reason code or the original exception's class name) and the
+    cause is deliberately NOT chained (``raise ... from None``): the original text can echo message
+    content, so none of it may reach a log.
     """
 
     def __init__(self, reason: str) -> None:

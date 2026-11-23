@@ -85,10 +85,56 @@ def _installation_count() -> int:
     return count
 
 
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_361:evidence-journal', 0))"
+
+# Catalog-only: the table, both triggers, the guard function, both indexes and the expected ACL
+# (connector_writer exactly SELECT+INSERT, no other grantee) are all in place. A later schema's
+# chain that finds them returns without DDL, because CREATE OR REPLACE TRIGGER and CREATE INDEX IF
+# NOT EXISTS lock the table even as a no-op. ``to_regclass`` takes no relation lock.
+_ALREADY_INSTALLED = f"""
+SELECT to_regclass({_quote_literal(_TABLE)}) IS NOT NULL
+AND (
+    SELECT count(*) FROM pg_trigger
+    WHERE tgrelid = to_regclass({_quote_literal(_TABLE)}) AND NOT tgisinternal
+      AND tgname IN ('evidence_journal_append_only', 'evidence_journal_no_truncate')
+) = 2
+AND EXISTS (
+    SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'connectors' AND p.proname = 'evidence_journal_append_only'
+)
+AND (
+    SELECT count(*) FROM pg_indexes
+    WHERE schemaname = 'connectors'
+      AND indexname IN (
+          'ix_evidence_journal_source_observed', 'ix_evidence_journal_idempotency_key'
+      )
+) = 2
+AND NOT EXISTS (
+    SELECT 1 FROM pg_class c
+    CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+    LEFT JOIN pg_roles r ON r.oid = a.grantee
+    WHERE c.oid = to_regclass({_quote_literal(_TABLE)}) AND a.grantee <> c.relowner
+      AND (r.rolname IS DISTINCT FROM {_quote_literal(_CONNECTOR_ROLE)}
+           OR a.privilege_type NOT IN ('SELECT', 'INSERT'))
+)
+AND (
+    NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)})
+    OR (
+        SELECT count(*) FROM pg_class c
+        CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+        JOIN pg_roles r ON r.oid = a.grantee
+        WHERE c.oid = to_regclass({_quote_literal(_TABLE)})
+          AND r.rolname = {_quote_literal(_CONNECTOR_ROLE)}
+          AND a.privilege_type IN ('SELECT', 'INSERT')
+    ) = 2
+)
+"""
+
+
 def upgrade() -> None:
-    op.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_361:evidence-journal', 0))"
-    )
+    op.execute(_LOCK)
+    if op.get_bind().exec_driver_sql(_ALREADY_INSTALLED).scalar():
+        return
     op.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -189,9 +235,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_361:evidence-journal', 0))"
-    )
+    op.execute(_LOCK)
     if _installation_count() > 1:
         # Another schema-local chain still depends on the shared journal.
         return
