@@ -141,17 +141,24 @@ as an owner.
    pass their head check. Then run
    `butlers db check-grants --after-init-db-replay`. The replay re-widens grants, and
    `apply-grants` narrows them again when `database.applyGrants` is on.
-6. Verify that no caller is silently refused. After the rotation, `dashboard_attention`
-   `remember`, `evaluate` and the claim functions return `false` to a shared-login
-   caller that has not done `SET ROLE`. That is dropped work, not an error, so a green
-   deploy proves nothing. Check, with the shared login's own sessions in view, that
-   attention writes still land:
-   - compare the row counts of the `dashboard_attention` tables before the rotation and
-     after a normal period of traffic;
-   - look for runtime sessions that connect as the shared login and call these functions
-     without a prior `SET ROLE` (`pg_stat_activity`, or the statement log);
-   - fix any such caller to `SET ROLE` into its butler or capability role (bu-dss7he.24)
-     before relying on the switch.
+6. Verify that no caller is refused. The shared login keeps its `butler_*_rw` memberships
+   with `INHERIT`, so it still reaches the attention functions, but after the rotation the
+   caller check refuses it unless it has done `SET ROLE` into its butler role. Without
+   `SET ROLE`:
+   - `dashboard_attention.remember` and `final_claim` return `false`. That is silent,
+     dropped work, so a green deploy proves nothing.
+   - `dashboard_attention.consume` returns `{"state":"refused"}`, and `owner_creation`
+     raises "Owner creation refused". That is loud.
+   - `evaluate`, `candidate_origin` and `decay_*` have no caller check and keep working.
+
+   Probe it deterministically, connected as the shared login with no `SET ROLE`:
+   `SELECT dashboard_attention.final_claim('general', gen_random_uuid(), NULL);`.
+   It returns `true` before the rotation and `false` after. A random id matches no row, so
+   the probe has no other effect. Then:
+   - look for runtime sessions that connect as the shared login and call `remember` or
+     `final_claim` without a prior `SET ROLE` (`pg_stat_activity`, or the statement log);
+   - fix any such caller to `SET ROLE` into its butler role (bu-dss7he.24 found none in
+     the code) before relying on the switch.
 
 **Rollback:** suspend, then set the flag back to `false`. Then transfer the other way
 (`--from-login butlers_migrator --to-login <shared>`) and replay init-db with the shared
