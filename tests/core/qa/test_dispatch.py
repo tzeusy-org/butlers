@@ -1844,3 +1844,202 @@ async def test_gate_10_resolves_the_exact_executor_rung_under_the_launch_intent(
     intent = kwargs["intent"]
     assert intent.required_features == frozenset({ModelFeature.WORKSPACE_AGENT})
     assert intent.consequence is Consequence.REVERSIBLE
+
+
+@pytest.mark.asyncio
+async def test_open_breaker_holds_the_whole_batch_without_a_claim_per_finding():
+    """One breaker read, one stamp, one event; no claim, delete or per-finding write."""
+    findings = [_make_triaged() for _ in range(3)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as tripped,
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
+        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock) as claim,
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    assert tripped.await_count == 1
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings]
+    assert hold.await_args.args[2] == "circuit_breaker"
+    event.assert_awaited_once()
+    claim.assert_not_called()
+    run.assert_not_called()
+    assert [r.reason for r in results] == ["circuit_breaker"] * 3
+    assert not any(r.accepted for r in results)
+
+
+@pytest.mark.asyncio
+async def test_cap_queues_every_leftover_including_the_first_one_over():
+    """The finding that first meets the cap is queued like the ones after it."""
+    findings = [_make_triaged() for _ in range(4)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            side_effect=[1, 2, 2, 2],
+        ),
+        patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation",
+            new_callable=AsyncMock,
+            return_value=QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched"),
+        ),
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+    ):
+        await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(max_concurrent=2),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings[1:]]
+    assert hold.await_args.args[2] == "concurrency_cap"
+
+
+@pytest.mark.asyncio
+async def test_breaker_tripping_mid_patrol_holds_every_remaining_finding():
+    """Dispatch k trips the breaker: findings k+1..n are all queued behind one event."""
+    findings = [_make_triaged() for _ in range(5)]
+    reads = iter([False, False, True])  # open for findings 0 and 1, tripped before finding 2
+
+    async def _tripped(*_args, **_kwargs):
+        return next(reads)
+
+    with (
+        patch("butlers.core.qa.dispatch._is_circuit_breaker_tripped", side_effect=_tripped),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation",
+            new_callable=AsyncMock,
+            return_value=QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched"),
+        ) as run,
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(max_concurrent=10),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    assert run.await_count == 2
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings[2:]]
+    assert hold.await_args.args[2] == "circuit_breaker"
+    event.assert_awaited_once()
+    assert [r.reason for r in results] == ["dispatched"] * 2 + ["circuit_breaker"] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hold_is_counted_and_not_reported_as_held():
+    findings = [_make_triaged() for _ in range(2)]
+    metrics = MagicMock()
+    with (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.hold_findings_for_retry",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ),
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            metrics=metrics,
+        )
+
+    assert [r.reason for r in results] == ["hold_failed"] * 2
+    event.assert_not_called()
+    decisions = [c.kwargs["decision"] for c in metrics.record_recovery_dispatch_decision.mock_calls]
+    assert decisions == ["hold_failed"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cap_hold_is_not_reported_as_capped():
+    findings = [_make_triaged() for _ in range(3)]
+    metrics = MagicMock()
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            return_value=5,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.hold_findings_for_retry",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ),
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(max_concurrent=2, circuit_breaker_threshold=0),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+            metrics=metrics,
+        )
+
+    assert [r.reason for r in results] == ["hold_failed"] * 3
+    assert metrics.record_recovery_dispatch_decision.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
+    """A database error on the breaker read counts as tripped: nothing launches, nothing raises."""
+    findings = [_make_triaged() for _ in range(3)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ),
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    run.assert_not_called()
+    hold.assert_awaited_once()
+    assert hold.await_args.args[2] == "circuit_breaker"
+    assert [r.reason for r in results] == ["circuit_breaker"] * 3

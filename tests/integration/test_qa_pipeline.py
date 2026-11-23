@@ -898,43 +898,47 @@ class TestConcurrencyModel:
     """Integration: QA investigations use semaphores without deadlocking callers."""
 
     async def test_dispatch_novel_findings_respects_concurrency_cap(self):
-        """When concurrency cap is reached, dispatch_novel_findings stops dispatching."""
+        """Once the active count reaches the cap, the rest are held durably, not launched."""
         pool = _qa_pool()
-        patrol_id = uuid.uuid4()
         config = _make_dispatch_config(max_concurrent=2)
-
-        # 4 findings, but concurrency cap of 2 → first hit stops the rest
         findings = [_make_triaged(_make_qa_finding(severity=1)) for _ in range(4)]
-        call_count = 0
 
-        async def dispatch_side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return QaDispatchResult(
-                    accepted=False,
-                    fingerprint=findings[0].finding.fingerprint,
-                    reason="concurrency_cap",
-                )
+        async def launch(*args, **kwargs):
             return QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched")
 
-        with patch(
-            "butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=dispatch_side_effect
+        with (
+            patch(
+                "butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=launch
+            ) as launched,
+            # The first launch sees room; by the second finding the fleet is at cap.
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                side_effect=[0, 2],
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock
+            ) as hold,
         ):
             results = await dispatch_novel_findings(
                 pool=pool,
                 novel_findings=findings,
-                patrol_id=patrol_id,
+                patrol_id=uuid.uuid4(),
                 config=config,
                 repo_root=Path("/tmp/repo"),
                 spawner=MagicMock(),
             )
 
-        # dispatch_qa_investigation called only once
-        assert call_count == 1
-        # All results returned; remaining synthesized as concurrency_cap
-        assert len(results) == 4
-        assert all(r.reason == "concurrency_cap" for r in results)
+        assert launched.call_count == 1
+        assert [r.reason for r in results] == ["dispatched"] + ["concurrency_cap"] * 3
+        hold.assert_awaited_once()
+        assert hold.await_args.args[1] == [f.finding_id for f in findings[1:]]
+        assert hold.await_args.args[2] == "concurrency_cap"
 
     async def test_report_error_returns_immediately_non_blocking(self):
         """report_error via ButlerReportsSource is non-blocking (queues and returns)."""

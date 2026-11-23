@@ -202,6 +202,29 @@ async def update_finding_dispatch_queued(
     )
 
 
+async def hold_findings_for_retry(
+    pool: asyncpg.Pool,
+    finding_ids: list[uuid.UUID],
+    dedup_reason: str,
+) -> None:
+    """Stamp the authoritative gate reason and queue many findings in one statement.
+
+    A halting gate (open breaker, full concurrency cap) rejects a whole batch at once; one
+    ``UPDATE`` keeps the cost per patrol constant and leaves every finding for a later patrol.
+    """
+    if not finding_ids:
+        return
+    await pool.execute(
+        """
+        UPDATE public.qa_findings
+        SET dedup_reason = $1, dispatch_queued = TRUE
+        WHERE id = ANY($2::uuid[])
+        """,
+        dedup_reason,
+        finding_ids,
+    )
+
+
 async def get_dispatch_queued_findings(
     pool: asyncpg.Pool,
     limit: int = 50,
