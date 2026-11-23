@@ -25,7 +25,7 @@ Scope: v1-reserved
 
 ### Requirement: A read check is typed, trusted and never an author
 
-A `read_check` leaf SHALL name a registered owner-granted read capability, a declared output schema and a typed comparison over declared fields. Its source SHALL be a trusted typed boundary (the quarantined boundaries of bu-4c7nvp.1.2); output from an untrusted source, model text, mail or any value outside the declared schema SHALL evaluate unknown, never true. A read check result SHALL NOT create, edit, widen or renew a watch or rule. A measure that is undeclared or unmeasurable SHALL refuse registration or show the watch as blind; it SHALL NOT read as healthy.
+A `read_check` leaf SHALL name one registered owner-granted read capability (one leaf per capability, with any dimension carried in the capability name, because leaves latch across events), a declared output schema and a typed comparison over declared fields. Its source SHALL be a trusted typed boundary (the quarantined boundaries of bu-4c7nvp.1.2); output from an untrusted source, model text, mail or any value outside the declared schema SHALL evaluate unknown, never true. A read check result SHALL NOT create, edit, widen or renew a watch or rule. A measure that is undeclared or unmeasurable SHALL refuse registration or show the watch as blind; it SHALL NOT read as healthy.
 
 ID: REQ-owner-watches-002
 Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md S4 (M7 extension); bu-4c7nvp.1.2; bu-4c7nvp.1.5
@@ -48,7 +48,7 @@ Scope: v1-reserved
 
 ### Requirement: A watch is owner-authored, exact-card approved and notify-only
 
-A watch SHALL be an evaluator instance created, updated or deleted only by an owner-origin administer action approved on an exact card that binds the predicate digest, source and category boundary, grant digest, delivery mode, expiry and version. A model, routine, subscription or source text MAY propose a bounded watch for the owner to review and SHALL NOT install one. A watch SHALL notify only the owner through the RFC 0011 broker. It SHALL NOT have a non-owner recipient, URL, free-text template, external mutation, spend, arbitrary scheduled action or calendar auto-response. An existing rule or subscription SHALL NOT acquire watch authority by being renamed. Every read, wake and delivery SHALL retain current grants, labels, availability-only and private-custody restrictions, quotas, deduplication and Stop.
+A watch SHALL be an evaluator instance created, updated or deleted only by an owner-origin administer action approved on an exact card that binds the predicate digest, source and category boundary, grant digest, delivery mode, expiry and version. Only a model MAY propose a bounded watch for the owner to review, and a proposal SHALL NOT install one. Mail, source text, read-check output, routines and subscriptions are evidence only and SHALL NOT propose or install a watch (routine-anchored proposals remain with bu-xxfkhk). A watch SHALL notify only the owner through the RFC 0011 broker. It SHALL NOT have a non-owner recipient, URL, free-text template, external mutation, spend, arbitrary scheduled action or calendar auto-response. An existing rule or subscription SHALL NOT acquire watch authority by being renamed. Every read, wake and delivery SHALL retain current grants, labels, availability-only and private-custody restrictions, quotas, deduplication and Stop.
 
 ID: REQ-owner-watches-003
 Source: about/legends-and-lore/rfcs/0019-proactive-egress-and-automation-parked.md (notify-only narrowing); bu-nt2eda Q1; bu-4c7nvp.1.5
@@ -67,8 +67,13 @@ Scope: v1-reserved
 
 #### Scenario: A model proposes a watch
 
-- **WHEN** a session proposes a watch
+- **WHEN** a model session proposes a watch
 - **THEN** the proposal is a reviewable card only and no instance exists until the owner approves it
+
+#### Scenario: Non-model text asks for a watch
+
+- **WHEN** a mail body, source text or read-check output asks for a watch
+- **THEN** it is evidence only and produces no proposal card
 
 ### Requirement: Watches have finite limits and delivery defaults
 
@@ -100,7 +105,7 @@ Scope: v1-reserved
 
 ### Requirement: Finance alert configuration migrates to watches without duplicate alerting
 
-Finance `alert_config` facts SHALL migrate to watches through an explicit type-by-type mapping covering `large_transaction`, `budget_exceeded`, `new_merchant` and `price_change`. Each type SHALL map to exactly one watch shape or SHALL be shown blind or refused when no evaluator seam measures it today. During and after migration a qualifying event SHALL produce one owner output: the legacy alert path and the watch SHALL NOT both notify. A migrated watch SHALL carry the same threshold, currency and enabled state as its source fact, and migration SHALL NOT enable a disabled alert.
+Finance `alert_config` facts SHALL migrate to watches through an explicit type-by-type mapping covering `large_transaction`, `budget_exceeded`, `new_merchant` and `price_change`. Each type SHALL map to a watch shape, be covered by its existing single-output path, or be shown blind. `large_transaction` becomes a watch and its response flag SHALL be suppressed while the watch exists; `price_change`, `budget_exceeded` and `new_merchant` are covered by their existing single-output paths and create no watch. A type no evaluator measures today SHALL be shown blind or refused. During and after migration a qualifying event SHALL produce one owner output: the legacy alert path and the watch SHALL NOT both notify. A migrated watch SHALL carry the same threshold, currency and enabled state as its source fact, and migration SHALL NOT enable a disabled alert.
 
 ID: REQ-owner-watches-005
 Source: bu-4c7nvp.1.5; roster/finance/tools/alerts.py
@@ -123,7 +128,7 @@ Scope: v1-reserved
 
 ### Requirement: Guards and modes coalesce replay and only tighten automatically
 
-Obligation `wake_when` conditions and situation guards SHALL coalesce replay into finite bundles and SHALL NOT turn a stale event into a realtime one. Safety and medication exemptions SHALL follow the adopted mode policy. Automatic mode entry SHALL be limited to the tighten-only modes of the closed registry (`asleep`, in-flight `travel`, `house_unattended`) and SHALL record a receipt; any change that loosens a hold SHALL use the existing step-up boundary and SHALL NOT occur automatically. Observed-sleep fusion SHALL use only existing phone, Home Assistant and wearable inputs and SHALL report unknown when they are missing; it SHALL NOT add a connector or source.
+Obligation `wake_when` conditions and situation guards SHALL coalesce replay into finite bundles and SHALL NOT turn a stale event into a realtime one. The adopted sick exemptions (safety, medication, bills due within 48 hours, and replies to people) SHALL apply. "In flight" is a travel-derived posture flag, not the `travel` mode. Automatic entry SHALL be limited to the tighten-only `asleep` and `house_unattended` modes and the in-flight posture, SHALL record a receipt, and SHALL NOT arm the absence plan, which needs declared or owner-confirmed travel; any change that loosens a hold SHALL use the existing step-up boundary and SHALL NOT occur automatically. Observed-sleep fusion SHALL use only existing phone, Home Assistant and wearable inputs and SHALL report unknown when they are missing; it SHALL NOT add a connector or source.
 
 ID: REQ-owner-watches-006
 Source: bu-u33sb7 Q4 and Q5; RFC 0038 S3 mode registry; bu-4c7nvp.1.5
