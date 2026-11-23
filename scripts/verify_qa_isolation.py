@@ -176,6 +176,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         failures = iv.baseline_verdict(None if baseline_refused else baseline)
 
         verdicts = []
+        restored_failed: list[Any] = []
         for control in iv.INVERSE_CONTROLS:
             removed_manifest = iv.render_inverse(_probe_job(args, host), control)
             created.append(("job", removed_manifest["metadata"]["name"]))
@@ -185,6 +186,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             restored, _ = _run_one(args, restored_manifest)
             verdicts.append(
                 iv.judge_control(control, removed, restored, removed_refused=removed_refused)
+            )
+            # Content-blind detail for a restored probe that did not pass: names and categories.
+            restored_failed.append(
+                [row for row in (restored or {}).get("checks", []) if row.get("outcome") != "pass"]
+                if restored is not None
+                else "no_receipt"
             )
     finally:
         for kind, name in created:
@@ -203,8 +210,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "red_when_removed": v.red_when_removed,
                 "green_when_restored": v.green_when_restored,
                 "caught_by": v.caught_by,
+                "restored_failed_checks": detail,
             }
-            for v in verdicts
+            for v, detail in zip(verdicts, restored_failed, strict=True)
         ],
     }
 
