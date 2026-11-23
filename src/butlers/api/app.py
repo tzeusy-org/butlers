@@ -91,6 +91,10 @@ from butlers.jobs.calendar_sync_deadman import (
     run_calendar_sync_deadman_loop,
 )
 from butlers.jobs.capability_health import run_capability_health_loop, writer_dsn
+from butlers.jobs.day_sheet_push import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+)
+from butlers.jobs.day_sheet_push import run_day_sheet_push_loop
 from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
@@ -215,6 +219,7 @@ async def lifespan(app: FastAPI):
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
     calendar_overcommitment_task: asyncio.Task | None = None
+    day_sheet_push_task: asyncio.Task | None = None
     backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
@@ -546,6 +551,30 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
 
+        # Day sheet push (bu-5ii4gj.2 S3): tomorrow's day sheet to the owner, from the same
+        # projection the dashboard serves. Dark: each tick is a no-op unless
+        # DAY_SHEET_PUSH_ENABLED is set. See butlers.jobs.day_sheet_push.
+        try:
+
+            async def _switchboard_client():
+                return await get_mcp_manager().get_client("switchboard")
+
+            day_sheet_push_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "day_sheet_push",
+                    lambda: run_day_sheet_push_loop(
+                        get_db_manager(),
+                        client_provider=_switchboard_client,
+                        interval_s=DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+                    ),
+                    health=job_health.recorder(
+                        "day_sheet_push", "periodic", DEFAULT_DAY_SHEET_PUSH_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start day-sheet push loop", exc_info=True)
+
         # Backup facts snapshot (bu-deqpzd): this process alone mounts the dump
         # volume, so it publishes the content-free facts the QA patrol needs
         # into public.state. Always on: an unset BUTLERS_BACKUP_DIR is itself
@@ -656,6 +685,10 @@ async def lifespan(app: FastAPI):
         calendar_overcommitment_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_overcommitment_task
+    if day_sheet_push_task is not None:
+        day_sheet_push_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await day_sheet_push_task
     if backup_facts_task is not None:
         backup_facts_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

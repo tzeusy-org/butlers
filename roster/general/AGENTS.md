@@ -58,6 +58,6 @@ the `interactive-response` skill (`.agents/skills/interactive-response/SKILL.md`
 
 - **data-organizer**: Collection naming conventions, item schema templates, JSONB query patterns, data hygiene workflows
 - **memory-taxonomy**: General domain memory classification covering subject/predicate taxonomy, permanence levels, tagging strategy, example facts, and question-answering flow
-- **eod-tomorrow-prep** (scheduled daily at 23:00 SGT): review tomorrow's calendar and fold in today's cross-butler specialist highlights (briefing/combined/<date>) into a multi-domain summary, send via notify(intent="send")
+- **eod-tomorrow-prep** (scheduled daily at 23:00 owner-local): leave the calendar to the dashboard-api `day_sheet_push` loop (22:30, dark behind DAY_SHEET_PUSH_ENABLED; enumerates events itself only when no applicable `day_sheet/pushed/latest` marker exists) and fold in today's cross-butler specialist highlights (briefing/combined/<date>) into a multi-domain summary, send via notify(intent="send")
 
 # Notes to self

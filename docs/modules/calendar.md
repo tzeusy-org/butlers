@@ -80,6 +80,17 @@ Every create/update operation runs through the conflict engine before writing:
 - **`fail`**: Rejects the operation with an error listing conflicting events.
 - **`allow_overlap`**: Proceeds with the write. When the approvals module is co-loaded, an overlap approval may be enqueued for high-impact operations.
 
+### Day sheet push
+
+The dashboard-api process also runs a supervised `day_sheet_push` loop
+(`src/butlers/jobs/day_sheet_push.py`, REQ-butler-general-010), dark unless
+`DAY_SHEET_PUSH_ENABLED` is set. Between 22:30 and 23:30 owner-local it sends the owner-local
+tomorrow's `render_day_sheet_text` to Telegram through `owner_notify`, from the same
+`query_calendar_day_sheet` fan-out as `GET /api/calendar/workspace/day-sheet`, so the message and
+the dashboard share one projection and one digest. A delivered ledger row for the digest ends the
+day; a failed or suppressed send retries. It records `day_sheet/pushed/<date>` and
+`day_sheet/pushed/latest` in the general butler's state, which the `eod-tomorrow-prep` prompt reads.
+
 ### Overcommitment owner conditions
 
 The dashboard-api process runs a supervised `calendar_overcommitment` loop
