@@ -34,7 +34,7 @@ import logging
 import re
 import uuid
 from datetime import UTC, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
@@ -487,6 +487,16 @@ def _parse_row(
             direction = "credit" if raw_decimal >= 0 else "debit"
             amount = abs(raw_decimal)
 
+    # Match PostgreSQL NUMERIC(14, 2) before preview, deduplication and insertion.
+    if not amount.is_finite():
+        raise ValueError("Amount must be finite")
+    try:
+        stored_amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise ValueError("Amount exceeds the supported precision") from exc
+    if stored_amount != amount:
+        amount = stored_amount
+
     # --- Optional fields ---
     category_col = columns.get(_COL_CATEGORY)
     raw_category = (_resolve_col(row, category_col) or "").strip() if category_col else ""
@@ -856,7 +866,7 @@ async def _insert_batch(
 ) -> tuple[int, int, list[dict[str, Any]], list[dict[str, Any]]]:
     """Serialize CSV inserts for this account scope, including unlinked imports."""
     try:
-        async with pool.acquire() as conn, conn.transaction():
+        async with pool.acquire() as conn, conn.transaction(isolation="read_committed"):
             await conn.fetchval(
                 """
                 SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(

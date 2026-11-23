@@ -94,7 +94,7 @@ async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finan
 
     blob = AsyncMock(scheme="s3", bucket="bucket")
     blob.get.return_value = (
-        b"Date;Payee;Amount\n17/01/2026;Bookshop;12.34\n18/01/2026;Refund;-2.00\n"
+        b"Date;Payee;Amount\n17/01/2026;Bookshop;12.345\n18/01/2026;Refund;-2.00\n"
     )
     options = {
         "origin_butler": "finance",
@@ -117,6 +117,7 @@ async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finan
     ]
     assert preview["merchant_mappings_applied"] == 1
     assert preview["preview"][0]["category"] == "shopping"
+    assert preview["preview"][0]["amount"] == "12.35"
     assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 0
     assert await finance_pool.fetchval("SELECT count(*) FROM spending_summaries") == 0
 
@@ -125,12 +126,12 @@ async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finan
     assert inserted["mv_refreshed"] is True
     assert await finance_pool.fetchval(
         "SELECT total_amount FROM spending_summaries WHERE category = 'shopping'"
-    ) == Decimal("12.34")
+    ) == Decimal("12.35")
     rows = await finance_pool.fetch(
         "SELECT posted_at, merchant, amount, direction FROM transactions ORDER BY posted_at"
     )
     assert [tuple(row) for row in rows] == [
-        (datetime(2026, 1, 17, tzinfo=UTC), "Bookshop", Decimal("12.34"), "debit"),
+        (datetime(2026, 1, 17, tzinfo=UTC), "Bookshop", Decimal("12.35"), "debit"),
         (datetime(2026, 1, 18, tzinfo=UTC), "Refund", Decimal("2.00"), "credit"),
     ]
     retried = await import_transactions(finance_pool, blob, ref, **options)

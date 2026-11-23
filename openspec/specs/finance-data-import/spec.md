@@ -98,6 +98,7 @@ The system SHALL prevent duplicate transactions during import by checking agains
 - **WHEN** a file repeats a transaction key or simultaneous CSV imports submit the same transaction key under the same account scope
 - **THEN** the daemon SHALL insert one matching transaction and count the other matching rows as skipped
 - **AND** the dry-run preview SHALL flag repeated keys within the preview without writing transactions
+- **AND** preview, duplicate matching, and insert SHALL use the same ledger-rounded amount
 
 #### Scenario: Import response with dedup summary
 - **WHEN** `import_transactions()` completes
