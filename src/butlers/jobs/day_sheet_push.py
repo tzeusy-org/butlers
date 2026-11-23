@@ -10,8 +10,10 @@ sent as such, never as a clear day (REQ-module-calendar-036).
 Dark by default: nothing is read or sent unless ``DAY_SHEET_PUSH_ENABLED`` is truthy.
 
 Timing: a tick inside ``[22:30, 23:30)`` owner-local pushes the owner-local *tomorrow*. A day is
-pushed at most once successfully: a ``delivered`` marker (or a delivered ledger row for the same
-digest) ends it. A failed send retries with the shared backoff; a send suppressed by quiet hours
+pushed at most once successfully: a ``delivered`` marker (or any delivered ledger row for the
+date) ends it, so a changed sheet never resends. A per-date claim (one atomic statement in the
+general state store) lets exactly one replica or overlapping tick deliver; a failed or suppressed
+send releases it. A failed send retries with the shared backoff; a send suppressed by quiet hours
 or context is retried on a later tick without a ledger row per attempt.
 
 Delivery goes through :mod:`butlers.jobs.owner_notify` with the general butler's pool and a
@@ -39,7 +41,7 @@ from butlers.api.owner_time_bounds import owner_zoneinfo
 from butlers.api.read_models.calendar_day_sheet import query_calendar_day_sheet
 from butlers.core.attention_ledger import failed_attempts
 from butlers.core.job_health import record_tick
-from butlers.core.state import state_set
+from butlers.core.state import state_delete, state_get, state_set
 from butlers.core.temporal.day_sheet import render_day_sheet_text
 from butlers.core.tool_call_capture import (
     reset_current_switchboard_client,
@@ -54,6 +56,8 @@ JOB_NAME = "day_sheet_push"
 ORIGIN_BUTLER = "general"
 ENABLED_ENV = "DAY_SHEET_PUSH_ENABLED"
 MARKER_PREFIX = "day_sheet/pushed/"
+CLAIM_PREFIX = "day_sheet/claim/"
+CLAIM_TTL = timedelta(minutes=10)
 LATEST_MARKER = f"{MARKER_PREFIX}latest"
 PUSH_WINDOW = (time(22, 30), time(23, 30))
 DEFAULT_CHECK_INTERVAL_S = 300
@@ -75,18 +79,61 @@ def tomorrow_if_due(now: datetime, zone: Any) -> Any:
     return local.date() + timedelta(days=1)
 
 
-async def _delivered_row_exists(pool: asyncpg.Pool, dedup_key: str, since: datetime) -> bool:
+async def _date_delivered(pool: asyncpg.Pool, day: Any, since: datetime) -> bool:
+    """Whether anything for ``day`` was already delivered: the marker or any ledger row.
+
+    One delivery ends the date, so a sheet that changes afterwards (or a freshness flip) never
+    sends again.
+    """
     try:
+        marker = await state_get(pool, f"{MARKER_PREFIX}{day.isoformat()}")
+        if isinstance(marker, dict) and marker.get("outcome") == owner_notify.DELIVERED:
+            return True
         row = await pool.fetchval(
             "SELECT 1 FROM public.attention_ledger "
-            "WHERE dedup_key = $1 AND outcome = 'delivered' AND occurred_at >= $2 LIMIT 1",
-            dedup_key,
+            "WHERE dedup_key LIKE $1 AND outcome = 'delivered' AND occurred_at >= $2 LIMIT 1",
+            f"{JOB_NAME}:{day.isoformat()}:%",
             since,
         )
     except Exception:
-        logger.warning("day sheet push: ledger read failed", exc_info=True)
+        logger.warning("day sheet push: delivered check failed", exc_info=True)
         return False
     return row is not None
+
+
+async def _claim(pool: asyncpg.Pool, day: Any, now: datetime) -> bool:
+    """Take the per-date delivery claim; exactly one concurrent caller wins.
+
+    One statement on one connection (no second acquire from the pool): the insert wins when no
+    claim exists, or when the existing claim is older than ``CLAIM_TTL`` (a crashed holder). The
+    claim lives in the general state store, so it serialises replicas as well as overlapping ticks.
+    """
+    try:
+        key = await pool.fetchval(
+            """
+            INSERT INTO state (key, value, updated_at, version)
+            VALUES ($1, $2, now(), 1)
+            ON CONFLICT (key) DO UPDATE
+                SET value = EXCLUDED.value, updated_at = now(), version = state.version + 1
+                WHERE state.updated_at < now() - make_interval(secs => $3)
+            RETURNING key
+            """,
+            f"{CLAIM_PREFIX}{day.isoformat()}",
+            {"claimed_at": now.isoformat()},
+            CLAIM_TTL.total_seconds(),
+        )
+    except Exception:
+        logger.warning("day sheet push: could not take the delivery claim", exc_info=True)
+        return False
+    return key is not None
+
+
+async def _release(pool: asyncpg.Pool, day: Any) -> None:
+    """Free the claim so a later tick can retry (a failed or suppressed send)."""
+    try:
+        await state_delete(pool, f"{CLAIM_PREFIX}{day.isoformat()}")
+    except Exception:
+        logger.warning("day sheet push: could not release the claim; it expires", exc_info=True)
 
 
 async def _write_markers(pool: asyncpg.Pool, day: Any, marker: dict[str, Any]) -> None:
@@ -116,49 +163,57 @@ async def run_day_sheet_push(
     if tomorrow is None:
         return {"outcome": "skipped", "reason": "outside_window"}
 
-    sheet = await query_calendar_day_sheet(db, local_date=tomorrow, zone=zone, now=now)
-    dedup_key = f"{JOB_NAME}:{tomorrow.isoformat()}:{sheet.digest}"
-    if await _delivered_row_exists(pool, dedup_key, now - _DEDUP_WINDOW):
-        return {"outcome": "skipped", "reason": "already_sent", "digest": sheet.digest}
+    if await _date_delivered(pool, tomorrow, now - _DEDUP_WINDOW):
+        return {"outcome": "skipped", "reason": "already_sent"}
+    if not await _claim(pool, tomorrow, now):
+        return {"outcome": "skipped", "reason": "claim_held"}
 
-    failures, since_last = await failed_attempts(pool, dedup_key=dedup_key)
-    if since_last is not None and since_last < retry_backoff(failures):
-        return {"outcome": "skipped", "reason": "retry_backoff"}
-    reason = await owner_notify.check_owner_notify_suppression(pool, log_context=JOB_NAME)
-    if reason is not None:
-        return {"outcome": "skipped", "reason": reason}
-
-    client = None
-    if client_provider is not None:
-        try:
-            client = await client_provider()
-        except Exception:
-            logger.warning("day sheet push: Switchboard client unavailable", exc_info=True)
-    token = set_current_switchboard_client(client)
+    outcome = None
     try:
-        outcome = await owner_notify.send_owner_telegram(
-            pool,
-            origin_butler=ORIGIN_BUTLER,
-            message=f"Tomorrow Prep\n{render_day_sheet_text(sheet)}",
-            log_context=JOB_NAME,
-            dedup_key=dedup_key,
-        )
-    finally:
-        reset_current_switchboard_client(token)
+        sheet = await query_calendar_day_sheet(db, local_date=tomorrow, zone=zone, now=now)
+        dedup_key = f"{JOB_NAME}:{tomorrow.isoformat()}:{sheet.digest}"
+        failures, since_last = await failed_attempts(pool, dedup_key=dedup_key)
+        if since_last is not None and since_last < retry_backoff(failures):
+            return {"outcome": "skipped", "reason": "retry_backoff"}
+        reason = await owner_notify.check_owner_notify_suppression(pool, log_context=JOB_NAME)
+        if reason is not None:
+            return {"outcome": "skipped", "reason": reason}
 
-    await _write_markers(
-        pool,
-        tomorrow,
-        {
-            "date": tomorrow.isoformat(),
-            "zone": zone.key,
-            "outcome": outcome,
-            "digest": sheet.digest,
-            "freshness": sheet.freshness.state,
-            "recorded_at": now.isoformat(),
-        },
-    )
-    return {"outcome": outcome, "digest": sheet.digest, "freshness": sheet.freshness.state}
+        client = None
+        if client_provider is not None:
+            try:
+                client = await client_provider()
+            except Exception:
+                logger.warning("day sheet push: Switchboard client unavailable", exc_info=True)
+        token = set_current_switchboard_client(client)
+        try:
+            outcome = await owner_notify.send_owner_telegram(
+                pool,
+                origin_butler=ORIGIN_BUTLER,
+                message=f"Tomorrow Prep\n{render_day_sheet_text(sheet)}",
+                log_context=JOB_NAME,
+                dedup_key=dedup_key,
+            )
+        finally:
+            reset_current_switchboard_client(token)
+
+        await _write_markers(
+            pool,
+            tomorrow,
+            {
+                "date": tomorrow.isoformat(),
+                "zone": zone.key,
+                "outcome": outcome,
+                "digest": sheet.digest,
+                "freshness": sheet.freshness.state,
+                "recorded_at": now.isoformat(),
+            },
+        )
+        return {"outcome": outcome, "digest": sheet.digest, "freshness": sheet.freshness.state}
+    finally:
+        # Only a delivery keeps the claim; any other path frees it for a later tick's retry.
+        if outcome != owner_notify.DELIVERED:
+            await _release(pool, tomorrow)
 
 
 async def run_day_sheet_push_loop(

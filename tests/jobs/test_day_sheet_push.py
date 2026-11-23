@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import tomllib
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,8 @@ def wired(monkeypatch):
         read=AsyncMock(return_value=_sheet()),
         send=AsyncMock(return_value="delivered"),
         delivered=AsyncMock(return_value=False),
+        claim=AsyncMock(return_value=True),
+        release=AsyncMock(),
         failures=AsyncMock(return_value=(0, None)),
         suppressed=AsyncMock(return_value=None),
         state=AsyncMock(),
@@ -55,7 +58,9 @@ def wired(monkeypatch):
     monkeypatch.setattr(job, "query_calendar_day_sheet", w.read)
     monkeypatch.setattr(job.owner_notify, "send_owner_telegram", w.send)
     monkeypatch.setattr(job.owner_notify, "check_owner_notify_suppression", w.suppressed)
-    monkeypatch.setattr(job, "_delivered_row_exists", w.delivered)
+    monkeypatch.setattr(job, "_date_delivered", w.delivered)
+    monkeypatch.setattr(job, "_claim", w.claim)
+    monkeypatch.setattr(job, "_release", w.release)
     monkeypatch.setattr(job, "failed_attempts", w.failures)
     monkeypatch.setattr(job, "state_set", w.state)
     return w
@@ -107,11 +112,12 @@ async def test_the_marker_date_follows_the_owner_clock_not_sgt(wired):
     del late
 
 
-async def test_a_delivered_row_for_the_same_digest_ends_the_day(wired):
+async def test_a_delivery_for_the_date_ends_it(wired):
     wired.delivered.return_value = True
     result = await job.run_day_sheet_push(wired.db, now=SGT_NOW)
     assert result["reason"] == "already_sent"
     wired.send.assert_not_called()
+    wired.read.assert_not_called()
 
 
 async def test_only_a_delivered_row_counts_so_a_failed_send_retries(wired):
@@ -177,3 +183,111 @@ def test_the_prompt_reads_the_latest_marker_and_no_schedule_remains_on_the_butle
     assert "day_sheet/pushed/latest" in prompt
     assert "SGT" not in prompt and "UTC+8" not in prompt
     assert "No events scheduled" in prompt and "never say" in prompt
+
+
+class _StatePool:
+    """An in-memory general state store plus ledger, emulating the claim statement atomically."""
+
+    def __init__(self):
+        self.values: dict[str, object] = {}
+        self.claimed_at: dict[str, datetime] = {}
+        self.ledger_delivered: list[str] = []
+        self.clock = datetime(2026, 11, 23, 14, 40, tzinfo=UTC)
+
+    async def fetchval(self, sql, *args):
+        if "WHERE state.updated_at" in sql:  # the claim
+            key, _value, ttl = args
+            held = self.claimed_at.get(key)
+            if held is not None and (self.clock - held).total_seconds() < ttl:
+                return None
+            self.claimed_at[key] = self.clock
+            return key
+        if "INSERT INTO state" in sql:  # state_set
+            self.values[args[0]] = args[1]
+            return 1
+        if "SELECT value FROM state" in sql:
+            return self.values.get(args[0])
+        if "attention_ledger" in sql:
+            prefix = args[0].rstrip("%")
+            return 1 if any(k.startswith(prefix) for k in self.ledger_delivered) else None
+        raise AssertionError(sql)
+
+    async def execute(self, sql, *args):
+        assert "DELETE FROM state" in sql
+        self.claimed_at.pop(args[0], None)
+        self.values.pop(args[0], None)
+
+
+@pytest.fixture
+def replicas(monkeypatch):
+    monkeypatch.setenv(job.ENABLED_ENV, "1")
+    pool = _StatePool()
+    db = MagicMock(spec=DatabaseManager)
+    db.pool = MagicMock(return_value=pool)
+    digests = iter(f"digest-{n}" for n in range(100))
+    sends: list[str] = []
+
+    async def read(*_a, **_k):
+        await asyncio.sleep(0)  # let the other tick run while this one is mid-flight
+        return _sheet(next(digests))
+
+    async def send(_pool, **kw):
+        await asyncio.sleep(0)
+        sends.append(kw["dedup_key"])
+        return "delivered"
+
+    monkeypatch.setattr(job, "owner_zoneinfo", AsyncMock(return_value=ZoneInfo("Asia/Singapore")))
+    monkeypatch.setattr(job, "query_calendar_day_sheet", read)
+    monkeypatch.setattr(job, "failed_attempts", AsyncMock(return_value=(0, None)))
+    monkeypatch.setattr(
+        job.owner_notify, "check_owner_notify_suppression", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(job.owner_notify, "send_owner_telegram", send)
+    return SimpleNamespace(db=db, pool=pool, sends=sends)
+
+
+async def test_two_overlapping_ticks_deliver_one_sheet(replicas):
+    results = await asyncio.gather(
+        job.run_day_sheet_push(replicas.db, now=SGT_NOW),
+        job.run_day_sheet_push(replicas.db, now=SGT_NOW),
+    )
+    assert len(replicas.sends) == 1
+    assert sorted(r["outcome"] for r in results) == ["delivered", "skipped"]
+    assert {r.get("reason") for r in results if r["outcome"] == "skipped"} == {"claim_held"}
+
+
+async def test_a_changed_sheet_after_delivery_is_not_sent_again(replicas):
+    await job.run_day_sheet_push(replicas.db, now=SGT_NOW)
+    later = SGT_NOW + timedelta(minutes=5)
+    replicas.pool.clock = later
+    result = await job.run_day_sheet_push(replicas.db, now=later)  # a new digest on the next read
+    assert result["reason"] == "already_sent"
+    assert len(replicas.sends) == 1
+
+
+async def test_a_ledger_row_alone_also_ends_the_date(replicas):
+    replicas.pool.ledger_delivered.append("day_sheet_push:2026-11-24:whatever")
+    result = await job.run_day_sheet_push(replicas.db, now=SGT_NOW)
+    assert result["reason"] == "already_sent" and replicas.sends == []
+
+
+async def test_a_failed_send_releases_the_claim_so_a_later_tick_retries(replicas, monkeypatch):
+    outcomes = iter(["failed", "delivered"])
+    sends = []
+
+    async def send(_pool, **kw):
+        sends.append(kw["dedup_key"])
+        return next(outcomes)
+
+    monkeypatch.setattr(job.owner_notify, "send_owner_telegram", send)
+    first = await job.run_day_sheet_push(replicas.db, now=SGT_NOW)
+    second = await job.run_day_sheet_push(replicas.db, now=SGT_NOW + timedelta(minutes=5))
+    assert (first["outcome"], second["outcome"]) == ("failed", "delivered")
+    assert len(sends) == 2
+
+
+async def test_a_crashed_holders_claim_expires(replicas):
+    replicas.pool.claimed_at["day_sheet/claim/2026-11-24"] = SGT_NOW - timedelta(minutes=11)
+    replicas.pool.clock = SGT_NOW
+    result = await job.run_day_sheet_push(replicas.db, now=SGT_NOW)
+    assert result["outcome"] == "delivered"
