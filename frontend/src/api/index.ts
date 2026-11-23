@@ -49,6 +49,7 @@ export {
   getCalendarResponseReceipt,
   searchCalendarWorkspace,
   toggleCalendarSource,
+  setCalendarSourceRole,
   mutateCalendarWorkspaceButlerEvent,
   previewCalendarWorkspaceButlerEvent,
   mutateCalendarWorkspaceUserEvent,

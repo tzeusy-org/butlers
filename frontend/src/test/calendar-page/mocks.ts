@@ -74,6 +74,7 @@ export function calendarWorkspaceHookMock() {
     })),
     usePreviewCalendarWorkspaceButlerEvent: vi.fn(),
     useSetPrimaryCalendar: vi.fn(),
+    useSetCalendarSourceRole: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
     useCalendarAccounts: vi.fn(() => ({
       ...idleQuery,
       data: { data: { accounts: [], health_available: true } },

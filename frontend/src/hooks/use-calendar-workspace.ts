@@ -48,6 +48,7 @@ import {
 
 export {
   useCalendarAccounts,
+  useSetCalendarSourceRole,
   useSetPrimaryCalendar,
   useToggleCalendarSource,
 } from "@/hooks/use-calendar-sources";

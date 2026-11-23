@@ -27,6 +27,7 @@ import { Tip } from "@/components/ui/tip";
 import { Voice } from "@/components/ui/Voice";
 import { cn } from "@/lib/utils";
 import { KindTag, PillButton } from "@/pages/calendar/atoms";
+import { SourceRoleSelect } from "@/pages/calendar/SourceRoleSelect";
 import { formatOptionalTimestamp, formatStaleness } from "@/pages/calendar/freshness";
 import type { CalendarSync } from "@/pages/calendar/use-calendar-sync";
 import type { SourceControls } from "@/pages/calendar/use-source-controls";
@@ -234,6 +235,9 @@ export function SourcesDialog({
                     }
                     meta={
                       <div className="flex items-center gap-1.5">
+                        {source.lane === "user" && source.sync_applicable ? (
+                          <SourceRoleSelect source={source} />
+                        ) : null}
                         <Tip
                           content={
                             isHidden

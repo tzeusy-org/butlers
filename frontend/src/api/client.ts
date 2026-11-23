@@ -58,6 +58,8 @@ import type {
   CalendarResponseRequest,
   CalendarResponseReceipt,
   CalendarPrepResponse,
+  CalendarSourceRoleRequest,
+  CalendarSourceRoleResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
   CalendarProposalActionResponse,
@@ -1713,6 +1715,16 @@ export function toggleCalendarSource(
   body: CalendarSourceToggleRequest,
 ): Promise<ApiResponse<CalendarSourceToggleResponse>> {
   return apiFetch<ApiResponse<CalendarSourceToggleResponse>>("/calendar/sources", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Set (or clear) whose time a calendar source's events are. */
+export function setCalendarSourceRole(
+  body: CalendarSourceRoleRequest,
+): Promise<ApiResponse<CalendarSourceRoleResponse>> {
+  return apiFetch<ApiResponse<CalendarSourceRoleResponse>>("/calendar/sources/role", {
     method: "POST",
     body: JSON.stringify(body),
   });
