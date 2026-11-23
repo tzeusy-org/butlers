@@ -1,0 +1,785 @@
+{
+  "no-change-prose-reads": [
+    {
+      "path": "tests/config/test_restore_drill_executor_compose.py",
+      "line": 42,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape ef3d0cb3f9efa4b6)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_approval_delivery_recovery_plan_contract.py",
+      "line": 24,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape c6a68f53f84414cd)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_codex_auth_generation_plan_contract.py",
+      "line": 17,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 7d80325276209929)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_email_correspondence_aggregate_schedule.py",
+      "line": 60,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 49f650b606a15e54)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_email_correspondence_aggregate_schedule.py",
+      "line": 61,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 671024cc7a012518)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_email_correspondence_aggregate_schedule.py",
+      "line": 89,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape d65a211c7f32d1fc)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_finance_recurrence_producer_mapping.py",
+      "line": 31,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 8494285c478b63eb)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_provenance_spine_openspec_governance.py",
+      "line": 21,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 3637e4cde8274986)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_relationship_stale_contact_producer_mapping.py",
+      "line": 27,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape e7a3aa301502453d)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 131,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape c53a1d902abc9daf)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 243,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 09a53284bd66691a)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 248,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 09a53284bd66691a)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 253,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 09a53284bd66691a)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 271,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape e835eeacb46ac0b0)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 274,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 453fa54146e12a35)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 282,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 05d831af64e29eb9)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_requirement_citations.py",
+      "line": 373,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 54ea7bbf090155f3)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_service_plane_inventory.py",
+      "line": 31,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape a34f5637dea0b067)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_spotify_oauth_authority_spec.py",
+      "line": 21,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 9758f97bb43d351f)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/contracts/test_spotify_oauth_authority_spec.py",
+      "line": 34,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 82b4aac7c646c8a0)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/core/test_runtime_probe_control_propagation_boundary.py",
+      "line": 31,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape f9c8ab965e5781a9)",
+      "reason": "S2 preserves existing change-path sites"
+    },
+    {
+      "path": "tests/scripts/test_check_requirement_trace_lines.py",
+      "line": 46,
+      "rule": "no-change-prose-reads",
+      "detail": "change-prose path (shape 53ec35a849eaa9e9)",
+      "reason": "S2 preserves existing change-path sites"
+    }
+  ],
+  "ast-tests-use-source-guard": [
+    {
+      "path": "roster/finance/tests/test_jobs.py",
+      "line": 3338,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 43412766fb1539ae)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "roster/finance/tests/test_tool_wrapper_drift.py",
+      "line": 108,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape dea17172d33469dd)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "roster/relationship/tests/test_care_duties.py",
+      "line": 174,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2f1236a8869bb94c)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "roster/relationship/tests/test_finder_no_llm_transitive.py",
+      "line": 219,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2ac70e54f4e2ff42)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "roster/relationship/tests/test_merge_review_no_llm.py",
+      "line": 152,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 3c9c649ece8f6e9d)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "roster/relationship/tests/test_public_mcp_proposal_import_unit.py",
+      "line": 47,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape de2834dcd078a994)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/api/test_audit_failure_category_producers.py",
+      "line": 90,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 8497e601eff3d5a1)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/api/test_audit_log.py",
+      "line": 88,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d8676d6031d9383c)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/api/test_model_settings_signed_probe_cutover.py",
+      "line": 367,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d7378aa80a618e1a)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/api/test_secrets_v2_spec_anchors.py",
+      "line": 62,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d34834aba1336285)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_activitywatch_adapter.py",
+      "line": 107,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_aggregations.py",
+      "line": 399,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_comms_adapter.py",
+      "line": 110,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_google_health_adapter.py",
+      "line": 151,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_history_repair.py",
+      "line": 32,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d00b2863a358f223)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_home_assistant_adapter.py",
+      "line": 162,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_home_assistant_sensor_activity_adapter.py",
+      "line": 187,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_meals_adapter.py",
+      "line": 113,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_owner_episode_atomicity_guard.py",
+      "line": 27,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 219d1be53cf8c15f)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_owner_outbound_adapter.py",
+      "line": 79,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_owntracks_adapter.py",
+      "line": 133,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_owntracks_place_cluster_adapter.py",
+      "line": 89,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_owntracks_ssid_adapter.py",
+      "line": 680,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_participant_entity_ids_api.py",
+      "line": 203,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 1d6e3994102445b0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_reconciliation.py",
+      "line": 444,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_spotify_adapter.py",
+      "line": 124,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/chronicler/test_steam_adapter.py",
+      "line": 116,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/cli/test_runtime_cli_sandbox_completeness.py",
+      "line": 36,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape c172ea06e0985b70)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/config/test_bounded_revision_downgrade_guard.py",
+      "line": 127,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 8e85ed800b8adc53)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/config/test_init_db_dnd_generation_guard_boundary.py",
+      "line": 57,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape fcd2fd577afac9b1)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/config/test_init_db_restore_drill_role_boundary.py",
+      "line": 850,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 7145d1927d1ab404)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/config/test_literal_role_list_ratchet.py",
+      "line": 155,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 8bf0f1ba4bca2679)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/config/test_runtime_probe_control_production_mount.py",
+      "line": 238,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 73937de6e0698369)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/connectors/test_channel_kind.py",
+      "line": 98,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape f44bc7b31f0bbac9)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/connectors/test_ingest_sites_write_evidence_first.py",
+      "line": 23,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2c0de768c9704f33)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/connectors/test_spotify_single_submit_path.py",
+      "line": 16,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 3a7408182965c9e5)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_chronicler_no_cross_schema.py",
+      "line": 128,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d7378aa80a618e1a)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_chronicler_no_llm.py",
+      "line": 83,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2b2c25c4e9b7832c)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_client_openapi_contract.py",
+      "line": 223,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 30f6a61a2465593b)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_connector_catalog.py",
+      "line": 94,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 4ab6eb469a399a07)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_d6_writers_stamp_taint.py",
+      "line": 43,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape a2e88dfc1b8732c3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_dashboard_tool_call_inventory.py",
+      "line": 37,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 30913edf2fcec35b)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_entity_facts_mutator_inventory.py",
+      "line": 114,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5f2928ca0d62d25)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_module_boundary.py",
+      "line": 257,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape f1b044a1611fd1a2)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_public_mcp_import_ban.py",
+      "line": 124,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape f7ecc39ed6e5f006)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_relationship_facts_scope.py",
+      "line": 72,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 035314ab87088bbe)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_relationship_pending_actions_choke_point.py",
+      "line": 87,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape cb79234f94a5ea6e)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_route_trace_context_tools.py",
+      "line": 23,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 12fa069bff8782a9)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_schema_reach.py",
+      "line": 130,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e7466166e62e6994)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_service_plane_gate_wiring.py",
+      "line": 20,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 70c62f3e2ba07fd3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_service_plane_inventory.py",
+      "line": 56,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 417fadd40daef81d)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_spotify_oauth_authority_spec.py",
+      "line": 90,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 1ec268501bf63052)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_stamp_complete_tools.py",
+      "line": 246,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 5a93a2b2eb4ed73f)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_stamped_store_writers.py",
+      "line": 243,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2c32e3294635f057)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_user_context_census.py",
+      "line": 92,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape ce45df4baf1353d2)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/qa/test_anonymization_boundary.py",
+      "line": 32,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e74d67cce2025ef7)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/qa/test_publisher_wiring.py",
+      "line": 14,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 26b7ce7d4820be65)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_asyncio_marker_hygiene.py",
+      "line": 20,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 78aed703e09f50c7)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_attachment_view.py",
+      "line": 241,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 4d5882b861eff456)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_core_sessions.py",
+      "line": 852,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 3d74bbb27164aa7f)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_dispatch_intent.py",
+      "line": 538,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_fleet_condition_retirement.py",
+      "line": 106,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape aafb5ee3419fe942)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_runtime_probe_control_propagation_boundary.py",
+      "line": 79,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/core/test_service_plane_relay_endpoint.py",
+      "line": 835,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 734c3b26d91ca589)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/daemon/test_control_stage.py",
+      "line": 192,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 14ea596a133cfb86)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/daemon/test_non_messenger_approval_command_contracts.py",
+      "line": 585,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 8bf69a0c92fcde00)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/integration/test_ambient_projections_store.py",
+      "line": 184,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape f2334d8b409f726d)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/jobs/test_commitment_escalation.py",
+      "line": 32,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 766623401eabdeae)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/jobs/test_home_departure_fixes.py",
+      "line": 252,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 0ee7be49ce5b1c71)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/jobs/test_model_verify.py",
+      "line": 212,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/knowledge_read/test_projection_drift_contract.py",
+      "line": 134,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 51c8837d4edbdf9e)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/knowledge_read/test_proposable.py",
+      "line": 46,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 2a9986d479b7dbb6)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/knowledge_read/test_read_core.py",
+      "line": 167,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/migrations/test_dashboard_job_health_migration.py",
+      "line": 57,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape b7d271145766e970)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/migrations/test_secrets_be2_migration.py",
+      "line": 85,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 51c8837d4edbdf9e)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/modules/memory/test_storage_provenance.py",
+      "line": 445,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 4d5882b861eff456)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/modules/memory/test_write_embedding_offloop.py",
+      "line": 145,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 39964b95bb706d7e)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/relationship/test_relationship_lookup.py",
+      "line": 493,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape fc9867d339fc93e4)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/scripts/test_conftest_teardown_patch.py",
+      "line": 83,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape ba949b78eb02a7de)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/scripts/test_dockerfile_base_runtime_tools.py",
+      "line": 207,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape f96fd0e1b5e24163)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/scripts/test_fact_source_capture_before_control.py",
+      "line": 905,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape deac2d05c674f532)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/scripts/test_produce_codex_artifacts.py",
+      "line": 23,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 944ccc2047cbfbc7)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/scripts/test_session_host_ci.py",
+      "line": 561,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 943aa5bec3c36ace)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/session_host/test_codex_auth.py",
+      "line": 576,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 6f9e233183dfc26f)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/testing/test_quarantine.py",
+      "line": 165,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 7c9ac8461e86d2af)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    }
+  ],
+  "no-private-walkers": [
+    {
+      "path": "tests/api/test_secrets_v2_spec_anchors.py",
+      "line": 62,
+      "rule": "no-private-walkers",
+      "detail": "private walker _StripDocstrings (shape 79780ca2ee026a6b)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_schema_reach.py",
+      "line": 1675,
+      "rule": "no-private-walkers",
+      "detail": "private walker Visitor (shape 78958db032d820e8)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_user_context_census.py",
+      "line": 111,
+      "rule": "no-private-walkers",
+      "detail": "private walker _Scanner (shape 356d40ce07175a83)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/daemon/test_non_messenger_approval_command_contracts.py",
+      "line": 588,
+      "rule": "no-private-walkers",
+      "detail": "private walker Visitor (shape a1ba99c88c9db850)",
+      "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    }
+  ]
+}

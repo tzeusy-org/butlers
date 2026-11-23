@@ -1,0 +1,69 @@
+{
+  "acceptance": "OPEN: reconstruction is not the missing historical prototype",
+  "adopted": {
+    "full": {
+      "cases": 500,
+      "lines": 8283
+    },
+    "in_scope": {
+      "cases": 326,
+      "lines": 5899
+    }
+  },
+  "buckets": {
+    "IN": {
+      "cases": 572,
+      "lines": 9371
+    },
+    "OUT CI (bu-29wkwj.3/.8)": {
+      "cases": 15,
+      "lines": 405
+    },
+    "OUT deployment (bu-dss7he.6/.14, bu-viat6h.4)": {
+      "cases": 104,
+      "lines": 1723
+    },
+    "OUT migrations (bu-dss7he.11)": {
+      "cases": 84,
+      "lines": 671
+    }
+  },
+  "difference_from_adopted": {
+    "full": {
+      "cases": 275,
+      "lines": 3887
+    },
+    "in_scope": {
+      "cases": 246,
+      "lines": 3472
+    }
+  },
+  "full": {
+    "cases": 775,
+    "lines": 12170
+  },
+  "in_scope": {
+    "cases": 572,
+    "lines": 9371
+  },
+  "kinds": {
+    "AST/source": {
+      "cases": 203,
+      "lines": 3363
+    },
+    "config": {
+      "cases": 259,
+      "lines": 4384
+    },
+    "doc": {
+      "cases": 123,
+      "lines": 2107
+    },
+    "source-text": {
+      "cases": 190,
+      "lines": 2316
+    }
+  },
+  "method": "section-7-reconstruction-v1",
+  "unit": "static test definitions (not collected parameter cases)"
+}

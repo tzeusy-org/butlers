@@ -33,6 +33,8 @@ The full ladder, scope table, removal rule, gate-verdict rules and CI topology l
   governed by CI duration targets (see testing doctrine, Five-Minute Routine-Lane Target).
   `make check-guards` runs the hosted `guards` steps
   locally before you push, except hosted-only `knip`, `build`, and node `--test` tooling checks.
+- A new structural invariant is one rule in `tests/architecture/source_rules.py` or one data row,
+  never a new test file with its own walker; use `butlers.testing.source_guard` for source analysis.
 
 <!-- bv-agent-instructions-v1 -->
 
