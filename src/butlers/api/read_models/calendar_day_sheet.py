@@ -131,9 +131,9 @@ async def query_calendar_day_sheet(
             )
             for row in deduped
         ]
+        return sheet(units, occurrences)
     except Exception:
         logger.warning(
             "day sheet rows unreadable; reporting every source unreadable", exc_info=True
         )
         return sheet([SourceRead(name=name, readable=False) for name in butlers])
-    return sheet(units, occurrences)

@@ -153,3 +153,14 @@ async def test_the_instance_timezone_wins_over_the_event_timezone(app):
     data = (await get_sheet(app, date="2026-11-24", timezone="Asia/Singapore")).json()["data"]
 
     assert [i["ref"] for i in data["items"]] == ["trip"]
+
+
+async def test_a_none_end_makes_the_day_unreadable_not_a_500(app):
+    broken = row("broken", DAY)
+    broken["instance_ends_at"] = None
+    app, _ = _build_app(app, workspace_rows={"general": [broken]})
+
+    response = await get_sheet(app)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["freshness"]["state"] == "unreadable"
