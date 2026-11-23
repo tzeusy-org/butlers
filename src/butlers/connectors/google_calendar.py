@@ -1139,6 +1139,10 @@ class CalendarConnectorRuntime:
         )
         await self._perform_full_sync(ingest_events=False)
 
+    async def _clear_sync_token(self) -> None:
+        """Blank the stored cursor so an expired token is not loaded again after a restart."""
+        await self._save_sync_token("")
+
     async def _save_sync_token(self, token: str) -> None:
         """Persist syncToken to cursor store."""
         if self._cursor_pool is None:
@@ -1314,6 +1318,10 @@ class CalendarConnectorRuntime:
             if not page_token:
                 break
 
+        # Health follows the final page, set before any event is processed: a retry hold below
+        # must not leave a missing token looking healthy (REQ-connector-google-calendar-011).
+        self._missing_sync_token = not next_sync_token
+
         # Populate upcoming events cache for "starting soon" detection
         self._upcoming_events.clear()
         now = datetime.now(UTC)
@@ -1331,6 +1339,10 @@ class CalendarConnectorRuntime:
             for event in all_events:
                 if not self._running or self._hold_sync_token:
                     break
+                if event.get("status") == "cancelled":
+                    # A full sync lists the calendar as it stands; cancellations are processed
+                    # only from incremental sync (REQ-connector-google-calendar-010).
+                    continue
                 await self._process_event(event)
 
         if self._hold_sync_token:
@@ -1344,6 +1356,12 @@ class CalendarConnectorRuntime:
         if not next_sync_token:
             # Failure never impersonates health: no token means no incremental capture.
             self._missing_sync_token = True
+            if ingest_events:
+                # After a 410 the expired token must not be reused: drop it from memory and
+                # the stored cursor so the loop degrades and waits instead of re-ingesting
+                # the whole calendar every poll.
+                self._sync_token = None
+                await self._clear_sync_token()
             logger.error(
                 "Calendar: full sync for email=%s returned no nextSyncToken (%d events); "
                 "no cursor saved, capture is not incremental",

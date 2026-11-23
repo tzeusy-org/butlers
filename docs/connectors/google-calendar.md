@@ -11,7 +11,9 @@ submits event changes to Switchboard as `ingest.v1` envelopes.
 
 - The first run does a full sync to establish a baseline and a `nextSyncToken`, saved through the
   cursor store (`switchboard.connector_registry.checkpoint_cursor`). Later polls send that token
-  and fetch only what changed. A 410 from Google discards the token and runs a full sync again.
+  and fetch only what changed. A 410 from Google runs a full sync again; if that returns no token, the expired token is cleared
+  from memory and the stored cursor. A full sync skips `cancelled` events; cancellations are
+  processed only from incremental sync.
 - Every sync request sends the same filters, `singleEvents=true` and `showDeleted=true`, and never
   `orderBy`. Google issues a sync token only to a request without `orderBy`, and a sync-token
   request must repeat the initial request's filters.

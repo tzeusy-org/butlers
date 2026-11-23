@@ -853,8 +853,8 @@ async def test_the_full_sync_persists_a_token_and_the_next_cycle_is_incremental(
     full, incremental = calls[0], calls[1]
     assert "orderBy" not in full
     assert incremental["syncToken"] == "token-1"
-    for key in ("singleEvents", "showDeleted"):
-        assert incremental[key] == full[key] == "true"
+    assert {k: v for k, v in incremental.items() if k != "syncToken"} == full
+    assert full == {"singleEvents": "true", "showDeleted": "true"}
 
 
 async def test_a_full_sync_without_a_token_is_degraded_and_never_logs_saved(
@@ -910,3 +910,110 @@ async def test_a_missing_token_waits_a_poll_interval_instead_of_repeating_the_fu
 
     assert len(calls) == 1, "the full sync ran more than once before the first wait"
     assert sleeps == [account_config.poll_interval_s]
+
+
+async def test_missing_full_sync_token_remains_degraded_during_ingest_retry(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    captured = []
+
+    async def fake_calendar_api(path, params):
+        captured.append(dict(params))
+        runtime._record_source_api_success()
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": [{"id": "event-with-retry", "status": "confirmed"}]}
+
+    with (
+        patch.object(runtime, "_gcal_api_get", side_effect=fake_calendar_api),
+        patch.object(
+            runtime, "_submit_to_ingest_api", AsyncMock(side_effect=RuntimeError("retryable"))
+        ) as submit,
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+    ):
+        await runtime._run_one_poll_cycle()
+
+    assert [params.get("syncToken") for params in captured] == ["expired", None]
+    submit.assert_awaited_once()
+    save.assert_not_called()
+    assert runtime._hold_sync_token is True
+    assert runtime._sync_token == "expired"
+    assert runtime._get_health_state() == (
+        "degraded",
+        "Google Calendar full sync returned no sync token",
+    )
+
+
+async def test_a_410_followed_by_no_token_clears_the_token_and_waits(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    calls: list[dict[str, Any]] = []
+    saved: list[str] = []
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        runtime._record_source_api_success()
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    async def save(pool: Any, connector_type: str, identity: str, token: str, **_: Any) -> None:
+        saved.append(token)
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._run_one_poll_cycle()
+        assert runtime._sync_token is None and saved == [""]
+        assert runtime._get_health_state()[0] == "degraded"
+
+
+async def test_a_full_sync_skips_cancelled_events_but_incremental_keeps_them(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    pages = [{"id": "gone", "status": "cancelled"}, {"id": "live", "status": "confirmed"}]
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": pages, "nextSyncToken": "fresh"}
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with patch.object(runtime, "_process_event", AsyncMock()) as process:
+        await runtime._run_one_poll_cycle()
+    assert [c.args[0]["id"] for c in process.await_args_list] == ["live"]
+
+
+async def test_a_later_full_sync_with_a_token_clears_degraded_health(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = _synced_runtime(account_config, [])
+    runtime._record_source_api_success()
+    runtime._missing_sync_token = True
+    assert runtime._get_health_state()[0] == "degraded"
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor"),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._ensure_sync_token()
+    assert runtime._sync_token == "token-1"
+    assert runtime._get_health_state()[0] != "degraded"

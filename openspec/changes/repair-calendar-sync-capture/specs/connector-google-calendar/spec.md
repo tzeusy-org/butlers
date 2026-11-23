@@ -7,6 +7,10 @@ poll, SHALL send the same filter parameters (`singleEvents=true`, `showDeleted=t
 send `orderBy`, because Google issues a `nextSyncToken` only to a request without `orderBy` and
 requires a sync-token request to repeat the initial request's filters.
 
+A full sync, initial or after a 410, SHALL skip events whose `status` is `cancelled`: it lists the
+calendar as it stands, and cancellations are processed only from incremental sync. Detecting
+deletions across a 410 gap is left to the revision journal diff (a later slice).
+
 ID: REQ-connector-google-calendar-010
 Source: bu-uhbhzq.1 (run 24 move 1), slice S1
 Scope: v1-mandatory
@@ -21,7 +25,9 @@ Scope: v1-mandatory
 When the last page of a full sync carries no `nextSyncToken`, the connector SHALL save no cursor,
 SHALL NOT log that a sync token was saved, SHALL report degraded health with a reason naming the
 missing token, and SHALL wait one poll interval before trying again rather than repeating the full
-sync back to back. A later full sync that yields a token SHALL clear the degraded state.
+sync back to back. This holds when a retry keeps the old cursor after a failed ingest, and after a
+410 the expired token SHALL be cleared in memory and in the stored cursor when the resync yields no
+token. A later full sync that yields a token SHALL clear the degraded state.
 
 ID: REQ-connector-google-calendar-011
 Source: bu-uhbhzq.1 (run 24 move 1), slice S1
