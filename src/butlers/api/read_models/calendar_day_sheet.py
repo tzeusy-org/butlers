@@ -91,7 +91,9 @@ async def query_calendar_day_sheet(
             if r.db_butler == name and r.lane == "user" and not _sync_disabled(r.source_metadata)
         ]
         if name in failed:
-            units.append(SourceRead(name=name, readable=False))
+            # The last good read, when known, is what "unreadable since" reports.
+            known = [r.last_success_at for r in provider if r.last_success_at is not None]
+            units.append(SourceRead(name=name, readable=False, as_of=min(known) if known else None))
         elif provider:
             successes = [r.last_success_at for r in provider]
             as_of = None if any(s is None for s in successes) else min(successes)
@@ -114,6 +116,7 @@ async def query_calendar_day_sheet(
             starts_at=row["instance_starts_at"],
             ends_at=row["instance_ends_at"],
             all_day=bool(row.get("all_day")),
+            timezone=row.get("event_timezone") or row.get("instance_timezone"),
             status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
             event_type=row.get("event_type") or "default",
             time_role=row.get("source_time_role") or "unclassified",

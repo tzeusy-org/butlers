@@ -71,7 +71,9 @@ async def test_an_unreadable_schema_is_never_a_clear_day(app):
 
     assert data["freshness"]["state"] == "unreadable"
     assert data["freshness"]["sources_unreadable"] == ["relationship"]
-    assert "unreadable" in data["text"]
+    assert "Calendar unreadable" in data["text"] and "1 of 2 sources" in data["text"]
+    # Nothing is listed or counted from a partly unreadable read.
+    assert data["items"] == [] and data["gaps"] == [] and data["attended_count"] == 0
     assert "Nothing on your calendar" not in data["text"]
 
 
