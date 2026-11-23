@@ -15,6 +15,11 @@ from butlers.modules.calendar.organizer_trust import (
     stamp_provider_metadata,
     sweep_organizer_verdicts,
 )
+from butlers.modules.calendar.participants import (
+    backfill_participants,
+    sync_event_participants,
+    sync_manual_participants,
+)
 
 from .constants import (
     _INVALID_PROBE_CALENDAR_IDS,
@@ -441,6 +446,10 @@ class ProjectionMixin:
                 await sweep_organizer_verdicts(pool)
             except Exception as exc:  # a sweep failure never fails the sync
                 logger.warning("Organizer verdict sweep failed: %s", type(exc).__name__)
+            try:
+                await backfill_participants(pool)
+            except Exception as exc:  # likewise: a participant backfill failure never fails a sync
+                logger.warning("Participant backfill failed: %s", type(exc).__name__)
 
     async def _record_projection_action(
         self,
@@ -646,6 +655,7 @@ class ProjectionMixin:
                         """,
                         [(event_id, eid) for eid in entity_ids],
                     )
+        await sync_manual_participants(pool, event_id, entity_ids, clear=clear_entity_ids)
 
     async def _fetch_event_entity_ids(
         self,
@@ -984,6 +994,10 @@ class ProjectionMixin:
                 event_type=event.event_type,
                 working_location=event.working_location,
             )
+            # One participant record per occurrence; a failure here never undoes the write above.
+            participant_pool = getattr(getattr(self, "_db", None), "pool", None)
+            if participant_pool is not None:
+                await sync_event_participants(participant_pool, event_db_id)
             # Sync cycles preserve links on empty entity sets. A workspace update
             # must opt in with the explicit clear signal before a zero-length set
             # can delete the existing links.

@@ -3047,9 +3047,10 @@ class TestEntityAssociationHelpers:
             clear_entity_ids=True,
         )
 
-        mock_conn.execute.assert_awaited_once()
-        delete_sql = mock_conn.execute.call_args[0][0]
-        assert "DELETE FROM calendar_event_entities" in delete_sql
+        # The link delete, then the manual participant mirror's delete (no rows to insert).
+        statements = [call.args[0] for call in mock_conn.execute.await_args_list]
+        assert "DELETE FROM calendar_event_entities" in statements[0]
+        assert "calendar_event_participants" in statements[1] and len(statements) == 2
         mock_conn.executemany.assert_not_awaited()
 
     async def test_fetch_event_entity_ids_no_pool_returns_empty(self):
@@ -3078,9 +3079,10 @@ class TestEntityAssociationHelpers:
 
         await mod._upsert_event_entities(event_id=event_id, entity_ids=[entity_id])
 
-        mock_conn.execute.assert_awaited_once()
-        delete_sql = mock_conn.execute.call_args[0][0]
-        assert "DELETE FROM calendar_event_entities" in delete_sql
+        statements = [call.args[0] for call in mock_conn.execute.await_args_list]
+        assert "DELETE FROM calendar_event_entities" in statements[0]
+        # Then the manual participant mirror: delete its rows, insert this entity's.
+        assert [("calendar_event_participants" in sql) for sql in statements[1:]] == [True, True]
         mock_conn.executemany.assert_awaited_once()
         insert_sql = mock_conn.executemany.call_args[0][0]
         assert "INSERT INTO calendar_event_entities" in insert_sql
