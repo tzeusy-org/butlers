@@ -71,6 +71,10 @@ def _receipt(namespace: str, job: str) -> dict[str, Any] | None:
             return json.loads(line)
         except ValueError:
             continue
+    # No receipt: the container never reached the probe (the egress gate refused, the image
+    # lacks a module). The probe's own output is content-blind; keep its last lines for the log.
+    tail = " | ".join(line.strip()[:200] for line in log.strip().splitlines()[-2:]) or "no output"
+    sys.stderr.write(f"probe job without a receipt: {tail}\n")
     return None
 
 

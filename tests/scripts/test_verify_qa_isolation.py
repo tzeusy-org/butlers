@@ -153,3 +153,12 @@ def test_a_failed_policies_apply_records_the_servers_first_line(
     assert code == 1 and out["policies_valid"] is False
     assert out["policies_error"].endswith("type check failed")
     assert "second" not in out["policies_error"]
+
+
+def test_a_job_without_a_receipt_logs_the_tail_of_its_output(monkeypatch, capsys) -> None:
+    module = _load()
+    monkeypatch.setattr(
+        module, "_kubectl", lambda *a, **k: "starting\negress_gate:policy_not_enforced\n"
+    )
+    assert module._receipt("butlers-dev", "qa-x") is None
+    assert "egress_gate:policy_not_enforced" in capsys.readouterr().err
