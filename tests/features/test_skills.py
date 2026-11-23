@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from fastmcp import Client, FastMCP
 
+from butlers.config import ButlerConfig, RuntimeSeedConfig
 from butlers.core.skills import (
     SkillIdentityError,
     append_agents_md,
@@ -17,6 +22,7 @@ from butlers.core.skills import (
     resolve_skill_identity,
     write_agents_md,
 )
+from butlers.daemon import ButlerDaemon
 
 pytestmark = pytest.mark.unit
 
@@ -317,6 +323,57 @@ def test_skill_identity_missing_or_unreadable_source_is_explicit(
     (divergent / "SKILL.md").write_text("# Forked\n", encoding="utf-8")
     with pytest.raises(SkillIdentityError, match="forks canonical identity"):
         resolve_skill_identity(tmp_path, "present")
+
+
+async def test_skill_read_returns_only_local_and_shared_canonical_roster_sources(
+    tmp_path: Path,
+) -> None:
+    config_dir = tmp_path / "finance"
+    skills = config_dir / ".agents" / "skills"
+    skills.mkdir(parents=True)
+    shared = tmp_path / "shared" / "skills" / "notifications"
+    shared.mkdir(parents=True)
+    other = tmp_path / "other" / ".agents" / "skills" / "internal"
+    other.mkdir(parents=True)
+    local = skills / "import"
+    local.mkdir()
+    local_bytes = b"# Local guidance\r\n"
+    shared_bytes = b"# Shared guidance\n"
+    (local / "SKILL.md").write_bytes(local_bytes)
+    (shared / "SKILL.md").write_bytes(shared_bytes)
+    unavailable = skills / "unavailable"
+    unavailable.mkdir()
+    (unavailable / "SKILL.md").write_bytes(bytes([255]))
+    (other / "SKILL.md").write_text("# Other butler", encoding="utf-8")
+    (skills / "notifications").symlink_to(shared, target_is_directory=True)
+    (skills / "internal").symlink_to(other, target_is_directory=True)
+
+    daemon = ButlerDaemon(config_dir)
+    daemon.config = ButlerConfig(
+        name="finance", port=18998, runtime_seed=RuntimeSeedConfig(core_groups=("infra",))
+    )
+    daemon.db = MagicMock(pool=None)
+    daemon.mcp = FastMCP("skill-read-test")
+    daemon._register_core_tools()
+
+    async with Client(daemon.mcp) as client:
+        assert "skill_read" in {tool.name for tool in await client.list_tools()}
+
+        async def read(name: str) -> dict:
+            result = await client.call_tool("skill_read", {"name": name})
+            return json.loads(result.content[0].text)
+
+        for name, data in (("import", local_bytes), ("notifications", shared_bytes)):
+            assert await read(name) == {
+                "name": name,
+                "content": data.decode(),
+                "content_digest": hashlib.sha256(data).hexdigest(),
+            }
+        for name in ("missing", "internal"):
+            assert await read(name) == {"error": "skill_not_found"}
+        assert await read("unavailable") == {"error": "skill_unavailable"}
+        for name in ("Import", "import\n"):
+            assert await read(name) == {"error": "invalid_skill_name"}
 
 
 # ---------------------------------------------------------------------------

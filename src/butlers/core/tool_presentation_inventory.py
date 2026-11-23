@@ -88,6 +88,24 @@ TOOL_PRESENTATION_INVENTORY = (
     *_declare(
         "core",
         "infra",
+        "skill_read",
+        presentable=False,
+        effect_class="read",
+        output_trust="trusted",
+        output_sensitivity="ordinary",
+        resource_params=("name",),
+        selection_bound={"name": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=("roster_skills",),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=(),
+    ),
+    *_declare(
+        "core",
+        "infra",
         "metric_baseline_get",
         presentable=False,
         effect_class="read",
@@ -11002,6 +11020,7 @@ NARROWED_CATEGORIES = MappingProxyType(
         "module.states": "module names and enable/health states",
         "list_butlers": "registry rows: name, endpoint, modules, liveness and eligibility",
         "pending_action_count": "pending-action totals by status",
+        "skill_read": "git-tracked roster instructions, with no owner data lookup",
     }
 )
 
