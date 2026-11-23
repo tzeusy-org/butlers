@@ -403,3 +403,48 @@ class TestSupersededCards:
         proposer = _Proposer()
         result = await _run(pool, proposer, Boom())
         assert result["proposed"] == 1 and result["withdrawn"] == 0
+
+
+class TestHouseholdContext:
+    """Other people's overlapping events are context lines; they never become a card (038)."""
+
+    @staticmethod
+    def _partner(**extra: Any) -> dict[str, Any]:
+        return {
+            "event_id": uuid4(),
+            "title": "Synthetic private appointment",
+            "location": "12 Synthetic Road",
+            "starts_at": START,
+            "ends_at": START + timedelta(hours=1),
+            "metadata": {"attendees": [{"email": "guest@example.test"}]},
+            "time_role": "household_member",
+            "source_id": uuid4(),
+            "subject_entity_id": uuid4(),
+            "subject_label": "Alex",
+            **extra,
+        }
+
+    async def test_an_overlapping_household_event_is_one_time_only_line(self) -> None:
+        mine = {**_event(attendees=[ME, SAM_ATT]), "ends_at": START + timedelta(hours=1)}
+        proposer = _Proposer()
+        result = await _run(_Pool([mine, self._partner()], [_person()], None), proposer)
+        assert (result["considered"], result["proposed"]) == (1, 1)
+        message = proposer.calls[0]["message"]
+        assert "Also on Alex's calendar:" in message
+        for leaked in ("Synthetic private appointment", "Synthetic Road", "guest@example.test"):
+            assert leaked not in message
+
+    async def test_a_household_event_alone_is_never_carded(self) -> None:
+        proposer = _Proposer()
+        result = await _run(_Pool([self._partner()], [], None), proposer)
+        assert result["considered"] == 0 and proposer.calls == []
+
+    async def test_unclassified_and_non_overlapping_events_add_no_line(self) -> None:
+        mine = {**_event(attendees=[ME, SAM_ATT]), "ends_at": START + timedelta(hours=1)}
+        later = self._partner(
+            starts_at=START + timedelta(hours=3), ends_at=START + timedelta(hours=4)
+        )
+        unknown = self._partner(time_role="unclassified")
+        proposer = _Proposer()
+        await _run(_Pool([mine, later, unknown], [_person()], None), proposer)
+        assert "Also on" not in proposer.calls[0]["message"]

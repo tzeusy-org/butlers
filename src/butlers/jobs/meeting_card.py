@@ -59,6 +59,10 @@ from butlers.core.delivery_rendering import defang_delivery_text
 from butlers.core.state import state_get
 from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
 from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
+from butlers.core.temporal.household_context import (
+    context_lines,
+    household_events,
+)
 from butlers.jobs.briefing import SGT
 from butlers.jobs.calendar_prep import prep_key
 from butlers.jobs.meeting_debrief import (
@@ -118,7 +122,11 @@ _STILL_SCHEDULED_SQL = """
 
 _OCCURRENCE_SQL = """
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
-           ce.starts_at AS starts_at, ce.metadata AS metadata, cs.time_role AS time_role
+           ce.starts_at AS starts_at, ce.metadata AS metadata, cs.time_role AS time_role,
+           ce.ends_at AS ends_at, cs.id AS source_id,
+           cs.role_subject_entity_id AS subject_entity_id,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id) AS subject_label
     FROM calendar_events ce
     JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NULL
@@ -128,7 +136,10 @@ _OCCURRENCE_SQL = """
       AND ce.starts_at > $1
       AND ce.starts_at <= $2
     UNION ALL
-    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata, cs.time_role
+    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata, cs.time_role,
+           ci.ends_at, cs.id, cs.role_subject_entity_id,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id)
     FROM calendar_event_instances ci
     JOIN calendar_events ce ON ce.id = ci.event_id
     JOIN calendar_sources cs ON cs.id = ce.source_id
@@ -219,8 +230,12 @@ def render_card(
     envelope: Any,
     now: datetime,
     link: str | None,
+    household: Sequence[str] = (),
 ) -> str:
     """The card text. *attendees* are the people to name (``entity_id`` may be ``None``).
+
+    *household* are ready context lines about other people's overlapping events (time and whose
+    calendar only); they are never counted as the owner's time (REQ-module-calendar-038).
 
     Pure: the same inputs always give the same text, and nothing here reads a database.
     """
@@ -256,6 +271,7 @@ def render_card(
             lines.extend(line for line in (owed, waiting) if line)
     if len(attendees) > len(shown):
         lines.append(f"+{len(attendees) - len(shown)} more")
+    lines.extend(household)
     if not prep_by_entity or not any(
         str(p.get("entity_id")) in prep_by_entity for p in shown if p.get("entity_id")
     ):
@@ -345,6 +361,19 @@ async def run_meeting_card(
             staged.append((row, others))
             emails.update(a["email"] for a in others)
     people = await _resolve_people(pool, emails)
+    # Other people's events in the same window: context beside a card, never owner time.
+    context = household_events(
+        {
+            "time_role": r.get("time_role"),
+            "metadata": _decode_metadata(r["metadata"]),
+            "starts_at": r["starts_at"],
+            "ends_at": r.get("ends_at") or r["starts_at"],
+            "source_id": r.get("source_id"),
+            "subject_entity_id": r.get("subject_entity_id"),
+            "subject_label": inert_text(r.get("subject_label"), _MAX_NAME) or None,
+        }
+        for r in rows
+    )
 
     # Anyone who resolves to the owner is the owner for eligibility: a meeting whose only other
     # address is the owner's own is a solo block and gets no card. A non-active person is still
@@ -390,6 +419,15 @@ async def run_meeting_card(
             envelope=envelope,
             now=now,
             link=link,
+            household=context_lines(
+                [
+                    e
+                    for e in context
+                    if e.overlaps(row["starts_at"], row.get("ends_at") or row["starts_at"])
+                ],
+                timezone="Asia/Singapore",
+                limit=2,
+            ),
         )
         try:
             result = await insight_proposer(
