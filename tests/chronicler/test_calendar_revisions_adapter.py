@@ -1,7 +1,7 @@
 """Plan-change projection over the calendar revision journal (bu-uhbhzq.1 slice 3).
 
 Unit tests run the adapter's Python logic over canned journal rows; the DB test at the bottom
-runs its real SQL (prior-version lookup, baseline exclusion, keyset paging) on core_366.
+runs its real SQL (prior-version lookup, baseline exclusion, keyset paging) on core_369.
 Synthetic data only.
 """
 
@@ -219,7 +219,7 @@ def test_the_local_day_boundary_is_the_owner_timezone() -> None:
 
 
 # --------------------------------------------------------------------------------------------
-# Real SQL on core_366 (Docker).
+# Real SQL on core_369 (Docker).
 # --------------------------------------------------------------------------------------------
 
 _db = pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")

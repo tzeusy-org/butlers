@@ -1,6 +1,6 @@
 """Plan-change projection over the Google Calendar revision journal (bu-uhbhzq.1 slice 3).
 
-``connectors.calendar_event_revisions`` (core_366) holds one row per provider event version. A
+``connectors.calendar_event_revisions`` (core_369) holds one row per provider event version. A
 ``change`` or ``resync`` revision of an instance that starts on or before the owner's local day it
 was observed is a changed plan: this adapter emits one ``plan_changed`` point event for it, on the
 **intent** layer, carrying the prior and new start, end and status.
@@ -175,7 +175,7 @@ class CalendarRevisionsAdapter(ProjectionAdapter):
 
         latest = since
         for row in rows:
-            observed_at: datetime = row["observed_at"]  # NOT NULL in core_366
+            observed_at: datetime = row["observed_at"]  # NOT NULL in core_369
             if latest is None or observed_at > latest:
                 latest = observed_at
             if not (starts_by_observed_day(row, zone) and _changed(row)):
