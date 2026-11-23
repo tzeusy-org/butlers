@@ -303,7 +303,9 @@ class WatchService:
         return watch
 
     async def _pause_for_grant(self, watch: Watch, now: datetime) -> Watch:
-        paused = replace(watch, state=WatchState.PAUSED, version=watch.version + 1)
+        paused = replace(
+            watch, state=WatchState.PAUSED, version=watch.version + 1, pause_reason="grant"
+        )
         try:
             written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
         except WatchConflict:
@@ -363,7 +365,12 @@ class WatchService:
             approval_digest=card.digest,
         )
         if card.resume and current.state is WatchState.PAUSED:
-            changed = replace(changed, state=WatchState.ACTIVE, generation=current.generation + 1)
+            changed = replace(
+                changed,
+                state=WatchState.ACTIVE,
+                generation=current.generation + 1,
+                pause_reason=None,
+            )
             return await self._commit_with_registration(changed, current.version, snapshot)
         return await self.store.write(changed, expected_version=current.version, cap=self.cap)
 
@@ -382,7 +389,9 @@ class WatchService:
                 return watch
             if watch.state is not WatchState.ACTIVE:
                 raise WatchRefused("the watch is closed")
-            paused = replace(watch, state=WatchState.PAUSED, version=watch.version + 1)
+            paused = replace(
+                watch, state=WatchState.PAUSED, version=watch.version + 1, pause_reason="owner"
+            )
             written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
             await self._cancel(watch, now)
             return written
@@ -423,7 +432,9 @@ class WatchService:
         )
         reason = (
             "grant_changed"
-            if watch.state is WatchState.PAUSED and not self.grant_is_current(watch)
+            if watch.state is WatchState.PAUSED
+            and watch.pause_reason != "owner"
+            and not self.grant_is_current(watch)
             else None
         )
         return WatchView(watch, blind, reason)

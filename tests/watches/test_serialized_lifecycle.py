@@ -274,3 +274,22 @@ async def test_a_replay_after_the_grant_changed_pauses_the_watch_never_active_wi
         assert (await service.view(watch.id)).reason == "grant_changed"
     finally:
         GRANT.update(before)
+
+
+async def test_an_owner_pause_never_reads_as_grant_changed_even_after_the_grant_moves():
+    from tests.watches.test_watches import GRANT
+
+    service = WatchService(
+        InMemoryWatchStore(), ConditionEvaluator(InMemoryConditionStore()), grant_for
+    )
+    card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+    watch = await service.approve(card, approve(card), snap())
+    await service.pause(watch.id, origin="owner", now=NOW)
+    before = dict(GRANT)
+    GRANT.update(sources=frozenset({"perception:other"}))  # the grant moves after the owner paused
+    try:
+        view = await service.view(watch.id)
+    finally:
+        GRANT.update(before)
+    assert view.watch.state is WatchState.PAUSED
+    assert view.reason is None

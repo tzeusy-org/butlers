@@ -65,6 +65,7 @@ class Watch:
     created_at: datetime
     expires_at: datetime
     approval_digest: str  # the exact card the owner approved for this version
+    pause_reason: str | None = None  # "owner" or "grant" while PAUSED, else None
 
     @property
     def instance_id(self) -> str:
