@@ -320,3 +320,74 @@ async def test_retention_flags_a_daemon_run_export_and_clears_it_only_for_a_job(
         await retention.retain_export(_Pool(), uuid.uuid4(), export)
         await retention.retain_export(_Pool(), uuid.uuid4(), export, sealed_before_isolation=False)
     assert seen == [True, False]
+
+
+class _Fleet(_Runner):
+    def __init__(self, jobs, *, fail_delete=()):
+        self.jobs = jobs
+        self.deleted: list[str] = []
+        self.fail_delete = set(fail_delete)
+
+    async def list_attempt_jobs(self):
+        if self.jobs is None:
+            raise RuntimeError("api down")
+        return self.jobs
+
+    async def delete_job(self, name):
+        if name in self.fail_delete:
+            return False
+        self.deleted.append(name)
+        return True
+
+
+def _job(name, attempt, terminal=False):
+    from butlers.core.qa.k8s_job_process import AttemptJob
+
+    return AttemptJob(name=name, attempt_id=attempt, terminal=terminal)
+
+
+def _fleet_iso(tmp_path, fleet) -> JobIsolation:
+    from dataclasses import replace
+
+    return replace(_iso(tmp_path), runner=fleet)
+
+
+async def test_the_sweep_removes_only_what_no_live_attempt_owns(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    fleet = _Fleet(
+        [_job("qa-live", "live"), _job("qa-dead", "dead"), _job("qa-stuck", "stuck")],
+        fail_delete={"qa-stuck"},
+    )
+    iso = _fleet_iso(tmp_path, fleet)
+    for kind in ("attempts", "scratch"):
+        for name in ("live", "dead"):
+            (iso.exchange_root / kind / name).mkdir(parents=True)
+    report = await sweep_orphans(iso, live={"live"})
+    assert fleet.deleted == ["qa-dead"]
+    assert (report.jobs_deleted, report.jobs_undeleted, report.directories_removed) == (1, 1, 2)
+    assert (iso.exchange_root / "attempts" / "live").is_dir()
+    assert not (iso.exchange_root / "attempts" / "dead").exists()
+
+
+async def test_the_sweep_unlinks_a_planted_symlink_without_following_it(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import sweep_orphans
+
+    iso = _fleet_iso(tmp_path, _Fleet([]))
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep").write_text("x")
+    (iso.exchange_root / "attempts").mkdir()
+    os.symlink(victim, iso.exchange_root / "attempts" / "evil")
+    await sweep_orphans(iso, live=set())
+    assert (victim / "keep").exists()
+    assert not (iso.exchange_root / "attempts" / "evil").is_symlink()
+
+
+async def test_an_unreadable_fleet_reads_as_at_cap_not_empty(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import active_job_count
+
+    (tmp_path / "b").mkdir()
+    assert await active_job_count(_fleet_iso(tmp_path / "b", _Fleet(None))) is None
+    live = _Fleet([_job("a", "1"), _job("b", "2", terminal=True), _job("c", "3")])
+    assert await active_job_count(_fleet_iso(tmp_path, live)) == 2
