@@ -41,11 +41,12 @@ The root `conftest.py` (at the repository root) provides fixtures visible to all
 
 A shared Postgres testcontainer for all DB-backed tests in the pytest session. Uses the `pgvector/pgvector:pg17` image. The container is started once and reused across all tests; isolation is achieved at the database level (each test gets a fresh DB).
 
-Each pytest worker retires any remaining migration-helper databases before its
-Postgres fixture shuts down. The same finalizer runs for fixtures that reuse a
-live test server, including after a test failure. It uses the worker's successful
-creation records and checks the PostgreSQL cluster and database identities
-before dropping a database. Other databases on the same server are left alone.
+When a fixture reuses a live test server, each pytest worker retires its remaining
+migration-helper databases before fixture teardown, including after a test
+failure. The finalizer uses the worker's successful creation records and checks
+the PostgreSQL cluster and database identities before dropping a database.
+Other databases on the same server are left alone. The default fixture owns
+its server and disposes of it as a unit through container teardown.
 
 `_configure_postgres_container` gives it a 1 GB `/dev/shm`, because Docker's 64 MB default runs out once one container has served a large share of the suite. When the pytest process runs under libfaketime (`FAKETIME` set and `libfaketime` in `LD_PRELOAD`), the container gets the same library and offset, so SQL `now()` matches Python's shifted clock.
 
@@ -55,12 +56,14 @@ The ordinary backup/privileged restore client retains its 120 s budget and reque
 
 ```python
 @pytest.fixture(scope="session")
-def postgres_container() -> Iterator[PostgresContainer]:
+def postgres_container(request: pytest.FixtureRequest) -> Iterator[PostgresContainer]:
     container = _configure_postgres_container(
         PostgresContainer("pgvector/pgvector:pg17"), os.environ
     )
     try:
-        yield container.start()
+        started = container.start()
+        request.node.stash[_FIXTURE_OWNED_POSTGRES] = started
+        yield started
     finally:
         container.stop(delete_volume=_delete_session_data_volume(os.environ))
 ```

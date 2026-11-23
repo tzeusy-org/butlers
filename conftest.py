@@ -593,16 +593,21 @@ def pytest_make_collect_report(
     return report
 
 
+_FIXTURE_OWNED_POSTGRES = pytest.StashKey[object]()
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_fixture_setup(
     fixturedef: pytest.FixtureDef[object], request: pytest.FixtureRequest
 ) -> Generator[None, object, object]:
     result = yield
-    if fixturedef.argname == "postgres_container":
+    if fixturedef.argname == "postgres_container" and result is not request.node.stash.get(
+        _FIXTURE_OWNED_POSTGRES, None
+    ):
         from butlers.testing.migration import drop_test_databases
 
-        # Register after fixture setup so this runs before its own teardown.
-        # This also covers fixtures that reuse a live test server.
+        # A reused server survives fixture teardown. Retire this worker's
+        # databases while its fixture connection is still available.
         request.addfinalizer(lambda: drop_test_databases(result))
     return result
 
@@ -686,7 +691,7 @@ def _unique_test_db_name() -> str:
 
 
 @pytest.fixture(scope="session")
-def postgres_container() -> Iterator[PostgresContainer]:
+def postgres_container(request: pytest.FixtureRequest) -> Iterator[PostgresContainer]:
     """Shared Postgres testcontainer for all DB-backed tests in this pytest session.
 
     Isolation contract:
@@ -703,6 +708,8 @@ def postgres_container() -> Iterator[PostgresContainer]:
     # except that the volume decision is explicit rather than always-delete.
     try:
         started = container.start()
+        # Stopping the fixture-owned server disposes of all of its databases.
+        request.node.stash[_FIXTURE_OWNED_POSTGRES] = started
         from butlers.testing.storage import observe
 
         with observe(started):
