@@ -1,14 +1,25 @@
+import shutil
+
 import pytest
 
 from butlers.jobs.context_producers import run_calendar_context_producer
 from tests.jobs.test_context_producers import _pool
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio,
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+]
+
+
+@pytest.fixture
+def calendar_url(fresh_db):
+    return fresh_db("core")
 
 
 @pytest.mark.parametrize("kind", ["all_day", "recurring"])
-async def test_live_household_time_is_counted_without_asserting_owner_signal(core_db_url, kind):
-    pool = await _pool(core_db_url)
+async def test_live_household_time_is_counted_without_asserting_owner_signal(calendar_url, kind):
+    pool = await _pool(calendar_url)
     try:
         await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
         source = await pool.fetchval(

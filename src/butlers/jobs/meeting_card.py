@@ -165,7 +165,13 @@ async def _household_context(pool: asyncpg.Pool, meetings: Sequence[Any]) -> lis
     start = min(row["starts_at"] for row in meetings)
     end = max(_ends_at(row) for row in meetings)
     try:
-        return events_from_overlap_rows(await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end))
+        rows = await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end)
+        # The subject name is entity data an owner or import can set: make it inert like every
+        # other name on the card before it reaches a message.
+        return events_from_overlap_rows(
+            {**row, "subject_label": inert_text(row.get("subject_label"), _MAX_NAME) or None}
+            for row in rows
+        )
     except Exception:
         logger.warning("meeting_card: household context read failed", exc_info=True)
         return []

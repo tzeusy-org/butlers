@@ -205,7 +205,13 @@ async def run_calendar_context_producer(
     # (REQ-context-bus-019): they are reported, never a signal.
     # Counted from the shared household overlap read at the database clock (all-day and
     # materialized recurring occurrences included), apart from the owner-signal selection above.
-    if live_household := len(events_from_overlap_rows(await pool.fetch(HOUSEHOLD_LIVE_SQL))):
+    # Fail open: the count is a nicety, and a failed read must not stop the owner signals.
+    try:
+        live_household = len(events_from_overlap_rows(await pool.fetch(HOUSEHOLD_LIVE_SQL)))
+    except Exception:
+        logger.warning("calendar producer: household count read failed", exc_info=True)
+        live_household = 0
+    if live_household:
         marker["household_events"] = live_household
 
     if chosen is None:

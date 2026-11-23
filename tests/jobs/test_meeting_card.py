@@ -452,6 +452,19 @@ class TestHouseholdContext:
         await _run(pool, proposer)
         assert "Also on Alex's calendar:" in proposer.calls[0]["message"]
 
+    async def test_a_hostile_subject_name_is_made_inert(self) -> None:
+        hostile = "[Alex](https://evil.test/x)\x07\x1b[31m <b>bold</b> " + "n" * 80
+        pool = _Pool([self._mine()], [_person()], None)
+        pool.household = [self._partner(subject_label=hostile)]
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        line = next(
+            ln for ln in proposer.calls[0]["message"].splitlines() if ln.startswith("Also on")
+        )
+        assert "evil.test" not in line and "](" not in line and "<b>" not in line
+        assert "\x07" not in line and "\x1b" not in line
+        assert len(line) < 120
+
     async def test_a_household_event_alone_is_never_carded(self) -> None:
         pool = _Pool([], [], None)
         pool.household = [self._partner()]

@@ -591,6 +591,21 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert pool.fetch.await_count == 2  # the owner read, then the household count
 
 
+async def test_a_failed_household_count_read_keeps_the_owner_signal():
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    owner = _active_calendar_row(
+        title="Standup", starts_at=now - timedelta(minutes=5), ends_at=now + timedelta(minutes=20)
+    )
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[owner], RuntimeError("household read failed")])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        result = await run_calendar_context_producer(pool)
+    assert result["signal"] == "meeting" and "household_events" not in result
+
+
 async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
     singapore = ZoneInfo("Asia/Singapore")
     starts_at = datetime(2026, 7, 1, 0, 0, tzinfo=singapore)

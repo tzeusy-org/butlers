@@ -1,3 +1,4 @@
+import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -9,6 +10,11 @@ from sqlalchemy.engine import make_url
 from butlers.db import register_jsonb_codec
 from butlers.jobs import meeting_card
 from tests.migrations.test_core_365_calendar_source_subject import _run
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+]
 
 
 @pytest.fixture
