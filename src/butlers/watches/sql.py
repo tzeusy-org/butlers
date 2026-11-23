@@ -199,7 +199,8 @@ class PostgresWatchStore:
         else:
             await connection.execute(
                 "UPDATE public.owner_watches SET version = $2, generation = $3, delivery = $4, "
-                "state = $5, expires_at = $6, approval_digest = $7, pause_reason = $8 WHERE id = $1",
+                "state = $5, expires_at = $6, approval_digest = $7, pause_reason = $8 "
+                "WHERE id = $1",
                 watch.id,
                 watch.version,
                 watch.generation,
