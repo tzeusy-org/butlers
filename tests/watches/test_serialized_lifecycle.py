@@ -248,3 +248,29 @@ async def test_idle_transition_locks_are_evicted():
     _, watch = await create(service)
     await service.pause(watch.id, origin="owner", now=NOW)
     assert store._transition_locks == {}
+
+
+async def test_a_replay_after_the_grant_changed_pauses_the_watch_never_active_without_a_condition():
+    from tests.watches.test_watches import GRANT
+
+    conditions = InMemoryConditionStore()
+    service = WatchService(InMemoryWatchStore(), ConditionEvaluator(conditions), grant_for)
+    card = service.propose_create({"predicate": PREDICATE}, now=NOW)
+    watch = await service.approve(card, approve(card), snap())
+    conditions.instances.clear()  # a crash left an ACTIVE watch with no condition
+    before = dict(GRANT)
+    GRANT.update(sources=frozenset({"perception:other"}))  # the live grant moved
+    try:
+        replayed = await service.approve(card, approve(card), snap())
+    finally:
+        GRANT.update(before)
+
+    assert replayed.state is WatchState.PAUSED
+    stored = await service.store.get(watch.id)
+    assert stored is not None and stored.state is WatchState.PAUSED
+    assert not conditions.instances  # never ACTIVE without an instance
+    GRANT.update(sources=frozenset({"perception:other"}))
+    try:
+        assert (await service.view(watch.id)).reason == "grant_changed"
+    finally:
+        GRANT.update(before)

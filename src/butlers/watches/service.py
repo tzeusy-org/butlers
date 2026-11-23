@@ -34,6 +34,7 @@ from butlers.watches.model import (
     OwnerApproval,
     Watch,
     WatchCard,
+    WatchConflict,
     WatchRefused,
     WatchState,
 )
@@ -57,6 +58,7 @@ class WatchStore(Protocol):
 class WatchView:
     watch: Watch
     blind: bool  # an input is unmeasurable: shown blind, never healthy
+    reason: str | None = None  # "grant_changed": paused because the live grant moved
 
 
 def _label(categories: tuple[str, ...]) -> Label:
@@ -181,14 +183,13 @@ class WatchService:
     async def _approve(self, card: WatchCard, snapshot: Snapshot) -> Watch:
         now = snapshot.now
         if card.action is Action.CREATE:
-            self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
             return await self._create(card, snapshot)
         current = await self.store.get(card.watch_id)
         if current is None:
             raise WatchRefused("unknown watch")
         if current.approval_digest == card.digest:
-            await self._reconcile(current, snapshot)  # a replay repairs an interrupted transition
-            return current
+            # A replay repairs an interrupted transition.
+            return await self._reconcile(current, snapshot)
         if current.state in (WatchState.EXPIRED, WatchState.DELETED):
             raise WatchRefused("the watch is closed")
         if card.target_version != current.version + 1:
@@ -215,8 +216,8 @@ class WatchService:
                 raise WatchRefused("the watch id is already in use")
             # A replay never re-inserts or re-registers: it only makes the condition match the
             # committed state, so a watch closed by a failed registration stays closed.
-            await self._reconcile(existing, snapshot)
-            return existing
+            return await self._reconcile(existing, snapshot)
+        self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
         watch = Watch(
             id=card.watch_id,
             version=1,
@@ -235,8 +236,8 @@ class WatchService:
         # Reserve the slot first: a refused cap registers no instance.
         stored = await self.store.write(watch, expected_version=None, cap=self.cap)
         if stored != watch:
-            await self._reconcile(stored, snapshot)  # lost an insert race to the same approval
-            return stored
+            # Lost an insert race to the same approval.
+            return await self._reconcile(stored, snapshot)
         try:
             await self._register(stored, snapshot)
         except Exception:
@@ -244,6 +245,14 @@ class WatchService:
             await self.store.write(closed, expected_version=stored.version, cap=self.cap)
             raise
         return stored
+
+    def grant_is_current(self, watch: Watch) -> bool:
+        """True while the live grant is the one the owner approved for this watch."""
+        try:
+            self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
+        except WatchRefused:
+            return False
+        return True
 
     def _grant_is_current(self, watch_id: str, grant_digest: str, sources: tuple[str, ...]) -> None:
         """Refuse unless the live grant is the one the owner approved (digest and sources)."""
@@ -273,17 +282,33 @@ class WatchService:
         async with self.evaluator.store.transaction() as tx:
             return await tx.get_instance(watch.instance_id) is not None
 
-    async def _reconcile(self, watch: Watch, snapshot: Snapshot) -> None:
-        """Make the condition match the committed state: ACTIVE has a live one, others none."""
+    async def _reconcile(self, watch: Watch, snapshot: Snapshot) -> Watch:
+        """Make the condition match the committed state: ACTIVE has a live one, others none.
+
+        An ACTIVE watch that has no condition and whose grant has since changed cannot be
+        registered, and must never stay ACTIVE without one: it is paused instead, and the view
+        shows ``grant_changed`` until the owner approves a card on the current grant.
+        """
         if watch.state is WatchState.ACTIVE:
             if not await self._has_instance(watch):
+                if not self.grant_is_current(watch):
+                    return await self._pause_for_grant(watch, snapshot.now)
                 await self._register(watch, snapshot)
             if (
                 watch.generation > 1
             ):  # a renewal that crashed before stopping the generation it replaced
                 await self._cancel(replace(watch, generation=watch.generation - 1), snapshot.now)
-        else:
-            await self._cancel(watch, snapshot.now)
+            return watch
+        await self._cancel(watch, snapshot.now)
+        return watch
+
+    async def _pause_for_grant(self, watch: Watch, now: datetime) -> Watch:
+        paused = replace(watch, state=WatchState.PAUSED, version=watch.version + 1)
+        try:
+            written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
+        except WatchConflict:
+            return await self.store.get(watch.id) or watch  # changed meanwhile: that row stands
+        return written
 
     async def _commit_with_registration(
         self, watch: Watch, expected_version: int, snapshot: Snapshot
@@ -396,7 +421,12 @@ class WatchService:
         blind = (
             instance is not None and instance.state is State.OPEN and instance.result is Tri.UNKNOWN
         )
-        return WatchView(watch, blind)
+        reason = (
+            "grant_changed"
+            if watch.state is WatchState.PAUSED and not self.grant_is_current(watch)
+            else None
+        )
+        return WatchView(watch, blind, reason)
 
     async def _open(self, watch_id: str) -> Watch:
         watch = await self.store.get(watch_id)

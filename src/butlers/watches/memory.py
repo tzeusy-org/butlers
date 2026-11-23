@@ -5,27 +5,35 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from butlers.watches.model import CapExceeded, Watch, WatchConflict, WatchState
+
+
+@dataclass
+class _Entry:
+    """A transition lock and how many holders and waiters still use it."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
 
 
 class InMemoryWatchStore:
     def __init__(self) -> None:
         self.watches: dict[str, Watch] = {}
         self._lock = asyncio.Lock()
-        self._transition_locks: dict[str, list] = {}  # id -> [lock, holders and waiters]
+        self._transition_locks: dict[str, _Entry] = {}
 
     @asynccontextmanager
     async def serialized(self, watch_id: str) -> AsyncIterator[None]:
-        entry = self._transition_locks.setdefault(watch_id, [asyncio.Lock(), 0])
-        entry[1] += 1
+        entry = self._transition_locks.setdefault(watch_id, _Entry())
+        entry.users += 1
         try:
-            async with entry[0]:
+            async with entry.lock:
                 yield
         finally:
-            entry[1] -= 1
-            if entry[1] == 0:
+            entry.users -= 1
+            if entry.users == 0:
                 self._transition_locks.pop(watch_id, None)  # evict idle locks
 
     async def get(self, watch_id: str) -> Watch | None:
