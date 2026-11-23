@@ -138,9 +138,10 @@ def test_the_downgrade_drops_an_empty_journal(fresh_db) -> None:
         engine.dispose()
 
 
-async def test_the_connector_writer_inserts_and_reads_and_no_one_rewrites(
+async def test_only_the_connector_writer_holds_privileges_on_the_journal(
     db_pool: asyncpg.Pool,
 ) -> None:
+    """Two ways: the catalog ACL, and effective privileges for every role in the cluster."""
     grants = await db_pool.fetch(
         "SELECT grantee, privilege_type FROM information_schema.role_table_grants "
         "WHERE table_schema = 'connectors' AND table_name = 'evidence_journal' "
@@ -149,12 +150,27 @@ async def test_the_connector_writer_inserts_and_reads_and_no_one_rewrites(
     by_role: dict[str, set[str]] = {}
     for grant in grants:
         by_role.setdefault(grant["grantee"], set()).add(grant["privilege_type"])
-    # The writer inserts and reads; it cannot rewrite or erase (the blanket connectors-schema
-    # default privileges would otherwise give it UPDATE and DELETE).
-    assert by_role["connector_writer"] == {"SELECT", "INSERT"}
-    # Every other grantee reads through the same default privileges: SELECT and nothing more.
-    others = {role: privs for role, privs in by_role.items() if role != "connector_writer"}
-    assert all(privs == {"SELECT"} for privs in others.values()), others
+    assert by_role == {"connector_writer": {"SELECT", "INSERT"}}
+
+    privileges = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+    roles = await db_pool.fetch(
+        "SELECT rolname FROM pg_roles WHERE rolname <> current_user AND NOT rolsuper "
+        "AND rolname !~ '^pg_'"
+    )
+    effective = {
+        role["rolname"]: {
+            p
+            for p in privileges
+            if await db_pool.fetchval(
+                "SELECT has_table_privilege($1, 'connectors.evidence_journal', $2)",
+                role["rolname"],
+                p,
+            )
+        }
+        for role in roles
+    }
+    assert effective["connector_writer"] == {"SELECT", "INSERT"}
+    assert {r: p for r, p in effective.items() if r != "connector_writer" and p} == {}
 
 
 def _journal_exists(url: str) -> bool:
@@ -254,5 +270,14 @@ def test_the_connector_writer_cannot_rewrite_the_journal_even_after_a_bootstrap_
                 ).scalar_one()
             }
         assert held == {"SELECT", "INSERT"}
+        with engine.connect() as conn:
+            readers = conn.execute(
+                text(
+                    "SELECT rolname FROM pg_roles WHERE rolname <> 'connector_writer' "
+                    "AND rolname <> current_user AND NOT rolsuper AND rolname !~ '^pg_' "
+                    "AND has_table_privilege(rolname, 'connectors.evidence_journal', 'SELECT')"
+                )
+            ).scalars()
+            assert list(readers) == []  # the replayed fleet grant did not reopen it
     finally:
         engine.dispose()

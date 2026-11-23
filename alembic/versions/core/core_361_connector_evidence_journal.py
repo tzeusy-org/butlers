@@ -20,10 +20,11 @@ Shape:
   - ``raw`` holds exactly what the envelope's ``message_inbox.raw_payload`` would hold at its
     ingestion tier, after the bearer scrub; it never holds more.
 
-Grants: INSERT and SELECT to ``connector_writer`` only; UPDATE, DELETE and TRUNCATE are revoked
-explicitly because the connectors schema carries blanket default privileges (scripts/init-db.sql
-re-asserts the revoke after its blanket grant). A Chronicler read grant comes with its first
-consumer (bu-uhbhzq.11/.12). The identity column needs no sequence grant.
+Grants: ``connector_writer`` holds SELECT and INSERT and nothing else; no other role holds any
+privilege. The journal holds full message content, and the connectors schema's default privileges
+would otherwise give every runtime role SELECT (and the writer UPDATE and DELETE), so both are
+revoked here and scripts/init-db.sql re-asserts the revokes after its blanket grants. A reader
+grant comes only with an owner-approved consumer. The identity column needs no sequence grant.
 
 The relation is shared across schema-local core chains, so the migration is replay-safe: an
 advisory lock serialises installs, triggers are dropped before they are created, and the downgrade
@@ -145,6 +146,29 @@ def upgrade() -> None:
         CREATE OR REPLACE TRIGGER evidence_journal_no_truncate
         BEFORE TRUNCATE ON {_TABLE}
         FOR EACH STATEMENT EXECUTE FUNCTION {_GUARD}()
+        """
+    )
+    # The journal holds full message content: connector_writer only. The connectors-schema default
+    # privileges grant every runtime role SELECT on a new table, so revoke them here.
+    op.execute(f"REVOKE ALL ON TABLE {_TABLE} FROM PUBLIC")
+    op.execute(
+        f"""
+        DO $$
+        DECLARE _role TEXT;
+        BEGIN
+            FOR _role IN
+                SELECT r.rolname
+                FROM pg_class c
+                CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+                JOIN pg_roles r ON r.oid = a.grantee
+                WHERE c.oid = {_quote_literal(_TABLE)}::regclass
+                  AND a.grantee <> c.relowner
+                  AND r.rolname <> {_quote_literal(_CONNECTOR_ROLE)}
+            LOOP
+                EXECUTE format('REVOKE ALL ON TABLE {_TABLE} FROM %I', _role);
+            END LOOP;
+        END;
+        $$
         """
     )
     op.execute(
