@@ -347,26 +347,31 @@ async def test_persist_location_point_withholds_code_in_free_text_only() -> None
     }
 
 
-async def test_persist_location_point_skips_write_when_detector_fails(caplog) -> None:
+async def test_persist_location_point_raises_when_detector_fails(caplog) -> None:
+    """A scrub failure is not a duplicate: nothing is written and the caller must not acknowledge."""
     from unittest.mock import patch
+
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
 
     pool = AsyncMock()
     with patch("butlers.ingestion_bearer_scrub.scrub_json", side_effect=RuntimeError("482913")):
-        inserted = await persist_location_point(
-            pool,
-            endpoint_identity=_ENDPOINT,
-            tst=_LOCATION_PAYLOAD["tst"],
-            lat=_LOCATION_PAYLOAD["lat"],
-            lon=_LOCATION_PAYLOAD["lon"],
-            accuracy=_LOCATION_PAYLOAD["acc"],
-            trigger="p",
-            raw_payload={**_LOCATION_PAYLOAD, "desc": "code is 482913"},
-        )
+        with pytest.raises(EvidenceNotCommitted) as raised:
+            await persist_location_point(
+                pool,
+                endpoint_identity=_ENDPOINT,
+                tst=_LOCATION_PAYLOAD["tst"],
+                lat=_LOCATION_PAYLOAD["lat"],
+                lon=_LOCATION_PAYLOAD["lon"],
+                accuracy=_LOCATION_PAYLOAD["acc"],
+                trigger="p",
+                raw_payload={**_LOCATION_PAYLOAD, "desc": "code is 482913"},
+            )
 
-    assert inserted is False
+    assert raised.value.reason == "scrub_failed"
+    assert raised.value.__cause__ is None and raised.value.__suppress_context__
     pool.fetchval.assert_not_awaited()
     assert "bearer scrub failed" in caplog.text
-    assert "482913" not in caplog.text
+    assert "482913" not in caplog.text + str(raised.value)
 
 
 def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:

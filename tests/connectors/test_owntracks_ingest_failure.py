@@ -487,3 +487,30 @@ async def test_a_location_point_does_not_use_the_generic_journal(monkeypatch) ->
         assert (await _post(connector, _POINT)).status_code == 200
     finally:
         await _stop(connector)
+
+
+async def test_evidence_scrub_failure_keeps_location_unacknowledged(monkeypatch, caplog) -> None:
+    """A scrub failure is not a duplicate: 503, no ingest, no checkpoint; a retry writes once."""
+
+    def scrub_unavailable(*_args, **_kwargs):
+        raise RuntimeError("test-private-scrub-details")
+
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    pool = _FailingPool(error=None)
+    connector = _connector(call_tool, pool)
+    saved = AsyncMock()
+    connector._save_checkpoint = saved
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(owntracks, "scrub_evidence_json", scrub_unavailable)
+            response = await _post(connector, _POINT)
+
+        assert response.status_code == 503
+        assert (len(pool.args_seen), len(_ingests(call_tool)), saved.await_count) == (0, 0, 0)
+        assert "test-private-scrub-details" not in caplog.text
+
+        response = await _post(connector, _POINT)  # the scrub recovered
+        assert response.status_code == 200
+        assert len(pool.args_seen) == len(_ingests(call_tool)) == 1
+    finally:
+        await _stop(connector)

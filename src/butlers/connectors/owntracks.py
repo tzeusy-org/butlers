@@ -921,7 +921,7 @@ async def persist_location_point(
     acknowledges (bu-uhbhzq.4). NUL characters are stripped from text first.
     A point the server refuses as data (SQLSTATE class 22) raises
     ``LocationPointRejected``; any other error, including a client-side encode error,
-    propagates, so the webhook answers 503. A scrub failure is logged and skipped.
+    propagates, so the webhook answers 503. A scrub failure raises ``EvidenceNotCommitted`` (503).
 
     Args:
         pool: asyncpg connection pool (connector_writer role).
@@ -946,8 +946,11 @@ async def persist_location_point(
     try:
         raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
     except Exception:
-        logger.warning("owntracks: bearer scrub failed; evidence write skipped")
-        return False
+        # Not a duplicate: nothing was written, so the point must not be acknowledged. Content
+        # blind, with no chained cause (the original text can echo the payload): the webhook
+        # answers 503, nothing is submitted or checkpointed, and the phone resends.
+        logger.warning("owntracks: bearer scrub failed; evidence not committed")
+        raise EvidenceNotCommitted("scrub_failed") from None
 
     try:
         result = await pool.fetchval(
