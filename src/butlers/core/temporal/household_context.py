@@ -161,3 +161,59 @@ def context_lines(
 ) -> list[str]:
     """Context lines for events in time order, capped so a busy household cannot flood a card."""
     return [context_line(e, timezone=timezone) for e in list(events)[:limit]]
+
+
+def _overlap_sql(start: str, end: str) -> str:
+    """Household-only occurrences overlapping ``[start, end)``: events and materialized instances.
+
+    One selector for every surface (free slots, meeting card, context producer), so the effective
+    occurrence is the same everywhere: the instance's times and its metadata laid over the series',
+    all-day included, cancelled excluded.
+    """
+    return f"""
+    SELECT cs.time_role AS time_role, ce.metadata AS metadata, ce.starts_at AS starts_at,
+           ce.ends_at AS ends_at, ce.all_day AS all_day, cs.id AS source_id,
+           cs.role_subject_entity_id AS subject_entity_id, ce.event_type AS event_type,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id) AS subject_label
+    FROM calendar_events ce
+    JOIN calendar_sources cs ON cs.id = ce.source_id
+    WHERE ce.recurrence_rule IS NULL AND ce.status <> 'cancelled'
+      AND cs.time_role IN ('household_member', 'other_person', 'team')
+      AND ce.starts_at < {end} AND ce.ends_at > {start}
+    UNION ALL
+    SELECT cs.time_role, ce.metadata || ci.metadata, ci.starts_at, ci.ends_at, ce.all_day,
+           cs.id, cs.role_subject_entity_id, ce.event_type,
+           (SELECT en.canonical_name FROM public.entities en
+             WHERE en.id = cs.role_subject_entity_id)
+    FROM calendar_event_instances ci
+    JOIN calendar_events ce ON ce.id = ci.event_id
+    JOIN calendar_sources cs ON cs.id = ce.source_id
+    WHERE ce.recurrence_rule IS NOT NULL AND ce.status <> 'cancelled' AND ci.status <> 'cancelled'
+      AND cs.time_role IN ('household_member', 'other_person', 'team')
+      AND ci.starts_at < {end} AND ci.ends_at > {start}
+"""
+
+
+#: Overlap with a window given as ``$1`` (start) and ``$2`` (end).
+HOUSEHOLD_OVERLAP_SQL = _overlap_sql("$1", "$2")
+#: Occurrences live right now, at the database clock (no parameters).
+HOUSEHOLD_LIVE_SQL = _overlap_sql("now()", "now()")
+
+
+def events_from_overlap_rows(rows: Iterable[Mapping[str, Any]]) -> list[HouseholdEvent]:
+    """Context events for rows of :data:`HOUSEHOLD_OVERLAP_SQL` or :data:`HOUSEHOLD_LIVE_SQL`."""
+    return household_events(
+        {
+            "time_role": row["time_role"],
+            "metadata": row["metadata"],
+            "starts_at": row["starts_at"],
+            "ends_at": row["ends_at"],
+            "all_day": row.get("all_day"),
+            "source_id": row.get("source_id", ""),
+            "subject_entity_id": row.get("subject_entity_id"),
+            "subject_label": row.get("subject_label"),
+            "event_type": row.get("event_type"),
+        }
+        for row in rows
+    )

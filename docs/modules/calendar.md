@@ -167,7 +167,9 @@ time, but they are readable as attributed context.
   attendee leaves the read, for any non-owner role (`HouseholdEvent` has no such field).
 - Never load: they add no conflict, day load or busy time, and `unclassified`, `subscription`,
   `holidays`, `birthdays` and `butler` sources appear nowhere in the read. The calendar context
-  producer reports their count as `household_events` and sets no signal.
+  producer reports their count as `household_events` and sets no signal. Every surface (free slots,
+  meeting card, producer) selects them by overlap with its window through one shared read, so an
+  already-running event, an all-day event and a recurring occurrence are all found.
 
 ## Rate Limiting
 

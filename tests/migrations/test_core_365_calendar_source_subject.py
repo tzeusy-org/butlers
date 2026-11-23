@@ -119,7 +119,7 @@ def test_two_schemas_each_get_the_column_its_foreign_key_and_its_check(
 
 def test_downgrade_keeps_the_column_and_a_reupgrade_changes_nothing(postgres_container) -> None:
     db_url, config = _upgraded(postgres_container)
-    command.downgrade(config, "core_361")
+    command.downgrade(config, "core_362")
     assert _run(
         db_url,
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
@@ -131,7 +131,7 @@ def test_downgrade_keeps_the_column_and_a_reupgrade_changes_nothing(postgres_con
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_361")
+    command.upgrade(config, "core_362")
     _run(db_url, "ALTER TABLE calendar_sources ADD COLUMN role_subject_entity_id TEXT")
     with pytest.raises(Exception, match="unexpected shape"):
         command.upgrade(config, "core_365")

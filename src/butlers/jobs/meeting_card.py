@@ -60,8 +60,9 @@ from butlers.core.state import state_get
 from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
 from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
 from butlers.core.temporal.household_context import (
+    HOUSEHOLD_OVERLAP_SQL,
     context_lines,
-    household_events,
+    events_from_overlap_rows,
 )
 from butlers.jobs.briefing import SGT
 from butlers.jobs.calendar_prep import prep_key
@@ -122,11 +123,8 @@ _STILL_SCHEDULED_SQL = """
 
 _OCCURRENCE_SQL = """
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
-           ce.starts_at AS starts_at, ce.metadata AS metadata, cs.time_role AS time_role,
-           ce.ends_at AS ends_at, cs.id AS source_id,
-           cs.role_subject_entity_id AS subject_entity_id,
-           (SELECT en.canonical_name FROM public.entities en
-             WHERE en.id = cs.role_subject_entity_id) AS subject_label
+           ce.starts_at AS starts_at, ce.ends_at AS ends_at, ce.metadata AS metadata,
+           cs.time_role AS time_role
     FROM calendar_events ce
     JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NULL
@@ -136,10 +134,8 @@ _OCCURRENCE_SQL = """
       AND ce.starts_at > $1
       AND ce.starts_at <= $2
     UNION ALL
-    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata, cs.time_role,
-           ci.ends_at, cs.id, cs.role_subject_entity_id,
-           (SELECT en.canonical_name FROM public.entities en
-             WHERE en.id = cs.role_subject_entity_id)
+    SELECT ce.id, ce.title, ce.location, ci.starts_at, ci.ends_at, ce.metadata || ci.metadata,
+           cs.time_role
     FROM calendar_event_instances ci
     JOIN calendar_events ce ON ce.id = ci.event_id
     JOIN calendar_sources cs ON cs.id = ce.source_id
@@ -152,6 +148,27 @@ _OCCURRENCE_SQL = """
       AND ci.starts_at <= $2
     ORDER BY starts_at
 """
+
+
+def _ends_at(row: Any) -> datetime:
+    return row.get("ends_at") or row["starts_at"]
+
+
+async def _household_context(pool: asyncpg.Pool, meetings: Sequence[Any]) -> list[Any]:
+    """Other people's events overlapping any carded meeting, whenever they started.
+
+    Selected by overlap with the meetings' own span, not by the lead-time window, so an event that
+    is already running is found. Fail-open: context is a nicety, never a reason to skip a card.
+    """
+    if not meetings:
+        return []
+    start = min(row["starts_at"] for row in meetings)
+    end = max(_ends_at(row) for row in meetings)
+    try:
+        return events_from_overlap_rows(await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end))
+    except Exception:
+        logger.warning("meeting_card: household context read failed", exc_info=True)
+        return []
 
 
 def clean_text(value: Any, limit: int) -> str:
@@ -361,20 +378,6 @@ async def run_meeting_card(
             staged.append((row, others))
             emails.update(a["email"] for a in others)
     people = await _resolve_people(pool, emails)
-    # Other people's events in the same window: context beside a card, never owner time.
-    context = household_events(
-        {
-            "time_role": r.get("time_role"),
-            "metadata": _decode_metadata(r["metadata"]),
-            "starts_at": r["starts_at"],
-            "ends_at": r.get("ends_at") or r["starts_at"],
-            "source_id": r.get("source_id"),
-            "subject_entity_id": r.get("subject_entity_id"),
-            "subject_label": inert_text(r.get("subject_label"), _MAX_NAME) or None,
-        }
-        for r in rows
-    )
-
     # Anyone who resolves to the owner is the owner for eligibility: a meeting whose only other
     # address is the owner's own is a solo block and gets no card. A non-active person is still
     # a real attendee (the meeting is carded) but is never named.
@@ -406,6 +409,7 @@ async def run_meeting_card(
         "withdrawn": withdrawn,
     }
     link = dashboard_link("/calendar")
+    context = await _household_context(pool, [row for row, _named in carded])
     for row, named in carded:
         try:
             envelope = await state_get(pool, prep_key(str(row["event_id"])))

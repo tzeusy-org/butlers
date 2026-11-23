@@ -6,7 +6,10 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
-from butlers.core.temporal.household_context import household_events
+from butlers.core.temporal.household_context import (
+    HOUSEHOLD_OVERLAP_SQL,
+    events_from_overlap_rows,
+)
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -24,31 +27,6 @@ from .errors import CalendarAuthError, _build_structured_error
 from .google_mapping import _coerce_zoneinfo
 from .models import BusyWindow, CalendarEvent, CalendarEventCreate
 from .provider import CalendarProvider
-
-_HOUSEHOLD_CONTEXT_SQL = """
-    SELECT cs.time_role AS time_role, ce.metadata AS metadata, ce.starts_at AS starts_at,
-           ce.ends_at AS ends_at, ce.all_day AS all_day, cs.id AS source_id,
-           cs.role_subject_entity_id AS subject_entity_id, ce.event_type AS event_type,
-           (SELECT en.canonical_name FROM public.entities en
-             WHERE en.id = cs.role_subject_entity_id) AS subject_label
-    FROM calendar_events ce
-    JOIN calendar_sources cs ON cs.id = ce.source_id
-    WHERE ce.recurrence_rule IS NULL AND ce.status <> 'cancelled'
-      AND cs.time_role IN ('household_member', 'other_person', 'team')
-      AND ce.starts_at < $2 AND ce.ends_at > $1
-    UNION ALL
-    SELECT cs.time_role, ce.metadata || ci.metadata, ci.starts_at, ci.ends_at, ce.all_day,
-           cs.id, cs.role_subject_entity_id, ce.event_type,
-           (SELECT en.canonical_name FROM public.entities en
-             WHERE en.id = cs.role_subject_entity_id)
-    FROM calendar_event_instances ci
-    JOIN calendar_events ce ON ce.id = ci.event_id
-    JOIN calendar_sources cs ON cs.id = ce.source_id
-    WHERE ce.recurrence_rule IS NOT NULL AND ce.status <> 'cancelled' AND ci.status <> 'cancelled'
-      AND cs.time_role IN ('household_member', 'other_person', 'team')
-      AND ci.starts_at < $2 AND ci.ends_at > $1
-"""
-
 
 _SLOT_WEEKDAY_CODES: tuple[str, ...] = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 
@@ -507,24 +485,11 @@ class ConflictsMixin:
         if pool is None:
             return []
         try:
-            rows = await pool.fetch(_HOUSEHOLD_CONTEXT_SQL, start, end)
+            rows = await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end)
         except Exception:
             logger.warning("Failed to read household context", exc_info=True)
             return []
-        events = household_events(
-            {
-                "time_role": row["time_role"],
-                "metadata": row["metadata"],
-                "starts_at": row["starts_at"],
-                "ends_at": row["ends_at"],
-                "all_day": row["all_day"],
-                "source_id": row["source_id"],
-                "subject_entity_id": row["subject_entity_id"],
-                "subject_label": row["subject_label"],
-                "event_type": row["event_type"],
-            }
-            for row in rows
-        )
+        events = events_from_overlap_rows(rows)
         return [
             {
                 "role": e.role,

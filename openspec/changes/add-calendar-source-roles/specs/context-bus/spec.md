@@ -26,7 +26,8 @@ Scope: v1-mandatory
 
 The calendar context producer SHALL report how many household context events are live
 (`household_events`, present only when it is above zero) in its result and SHALL NOT assert, clear or extend any context signal
-because of them.
+because of them. The count SHALL come from a household-only overlap read at the database clock, so
+active all-day events and recurring occurrences that began on an earlier day are counted.
 
 ID: REQ-context-bus-019
 Source: bu-5ii4gj.1 (run 26 move 1), slice S3

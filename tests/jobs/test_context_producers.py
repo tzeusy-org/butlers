@@ -552,7 +552,7 @@ async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
         patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
     ):
         await run_calendar_context_producer(pool)
-    sql = " ".join(pool.fetch.await_args.args[0].split())
+    sql = " ".join(pool.fetch.await_args_list[0].args[0].split())
     assert "event_type" in sql
     assert "ce.all_day = false OR ce.event_type = 'outOfOffice'" in sql
 
@@ -588,7 +588,7 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert result["signal"] == "meeting"
     assert result["value"] == "busy"
     assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
-    pool.fetch.assert_awaited_once()
+    assert pool.fetch.await_count == 2  # the owner read, then the household count
 
 
 async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
