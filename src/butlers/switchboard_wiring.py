@@ -212,9 +212,11 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         for every unsent result so identity injection can log the failed attempt
         while retaining its durable no-repeat claim.
         """
-        from butlers.core.attention_ledger import record_attention_event
+        from butlers.core.attention_ledger import Outcome, record_attention_event
 
-        async def record(outcome: str, reason: str | None = None, ref: str | None = None) -> None:
+        async def record(
+            outcome: Outcome, reason: str | None = None, ref: str | None = None
+        ) -> None:
             await record_attention_event(
                 pool,
                 origin_butler="switchboard",

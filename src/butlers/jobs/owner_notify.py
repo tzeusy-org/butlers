@@ -133,7 +133,8 @@ async def deliver_notification(
         if is_error and not terminal:
             # Preserve FastMCP's public MCP-error content and keep it out of logs.
             content = getattr(response, "content", None)
-            error = str(content[0].text) if content else "Unknown error"
+            text = getattr(content[0], "text", None) if content else None
+            error = text if isinstance(text, str) and text else "Unknown error"
             return DeliveryResult(
                 FAILED, {"status": "failed", "error": error}, "delivery_error", mcp_error=True
             )

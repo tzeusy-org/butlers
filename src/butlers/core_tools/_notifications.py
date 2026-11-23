@@ -1917,7 +1917,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         )
                 else:
                     reason = (
-                        attempt.reason
+                        (attempt.reason or "delivery_error")
                         if attempt.outcome != "failed"
                         else f"delivery_error:{attempt.error}"
                     )

@@ -353,6 +353,20 @@ async def test_unconfirmed_delivery_never_records_success(boundary, data):
     assert _only_ledger_row(boundary)["outcome"] == "failed"
 
 
+async def test_mcp_error_with_non_text_content_remains_one_failed_attempt(boundary, caplog):
+    from mcp.types import ImageContent
+
+    image = ImageContent(type="image", data="AA==", mimeType="image/png")
+    boundary["client"].call_tool.return_value = MagicMock(is_error=True, content=[image], data=None)
+
+    assert await _send() == owner_notify.FAILED
+
+    boundary["client"].call_tool.assert_awaited_once()
+    assert _only_ledger_row(boundary)["outcome"] == "failed"
+    assert _only_ledger_row(boundary)["reason"] == "delivery_error"
+    assert "AA==" not in caplog.text
+
+
 async def test_exception_logs_never_include_sensitive_payload(boundary, caplog):
     sentinel = "sentinel-private-message-recipient"
     boundary["client"].call_tool.side_effect = RuntimeError(sentinel)

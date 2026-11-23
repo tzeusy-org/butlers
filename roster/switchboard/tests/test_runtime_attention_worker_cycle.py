@@ -13,6 +13,7 @@ outcome.
 
 from __future__ import annotations
 
+import importlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -185,8 +186,7 @@ async def test_messenger_transport_requires_an_acknowledged_delivery(
 ):
     from unittest.mock import AsyncMock
 
-    from butlers.tools.switchboard.runtime_attention import worker
-
+    worker = importlib.import_module("butlers.tools.switchboard.runtime_attention.worker")
     deliver = AsyncMock(return_value=payload)
     monkeypatch.setattr(worker, "deliver", deliver)
     send = worker.build_messenger_transport(

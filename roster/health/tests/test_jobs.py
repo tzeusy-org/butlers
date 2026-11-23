@@ -1996,11 +1996,15 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
     assert first.get(outcome) == 1
     assert first["sent"] == first["retry"] == second["sent"] == second["retry"] == 0
     send.assert_awaited_once()
-    assert send.await_args.args[0] == "deliver"
-    assert send.await_args.args[1]["notify_request"]["delivery"]["recipient"] == "owner"
+    sent = send.await_args
+    assert sent is not None
+    assert sent.args[0] == "deliver"
+    assert sent.args[1]["notify_request"]["delivery"]["recipient"] == "owner"
     ledger.assert_awaited_once()
-    assert ledger.await_args.kwargs["outcome"] == "failed"
-    assert ledger.await_args.kwargs["reason"] == f"telegram_{outcome}"
+    recorded = ledger.await_args
+    assert recorded is not None
+    assert recorded.kwargs["outcome"] == "failed"
+    assert recorded.kwargs["reason"] == f"telegram_{outcome}"
     async with pool.acquire() as independent:
         row = await independent.fetchrow(
             "SELECT delivered_at,digest FROM visit_briefs WHERE event_id=$1", event_id
