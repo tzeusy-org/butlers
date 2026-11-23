@@ -149,6 +149,8 @@ async def stamp_for(
         "organizer_verdict": result.verdict,
         "lure_badges": list(result.lure_badges),
         "verdict_version": VERDICT_VERSION,
+        # A transient read failure stamps ``unknown`` and asks the sweep to evaluate it again.
+        "lookup_failed": bool(key) and result.verdict == "unknown",
     }
 
 
@@ -208,9 +210,16 @@ async def sweep_organizer_verdicts(pool: asyncpg.Pool, *, limit: int = SWEEP_BAT
         SELECT e.id, e.metadata, e.event_type
         FROM calendar_events e
         WHERE e.metadata ->> 'source_type' = 'provider_event'
-          AND (e.metadata ->> 'verdict_version' IS NULL
-               OR (e.metadata ->> 'verdict_version')::integer < $1)
-        ORDER BY e.id
+          AND (
+              -- no stamp, a stale or non-integer version, or a lookup that failed last time
+              CASE WHEN jsonb_typeof(e.metadata -> 'verdict_version') = 'number'
+                        AND e.metadata ->> 'verdict_version' ~ '^[0-9]{1,9}$'
+                   THEN (e.metadata ->> 'verdict_version')::integer < $1
+                   ELSE true END
+              OR e.metadata ->> 'lookup_failed' = 'true'
+          )
+        -- unstamped and stale rows first, so a persistent outage cannot starve them
+        ORDER BY (COALESCE(e.metadata ->> 'lookup_failed', 'false') = 'true'), e.id
         LIMIT $2
         """,
         VERDICT_VERSION,

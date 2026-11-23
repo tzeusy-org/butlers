@@ -162,8 +162,10 @@ location or any other free text, so third-party text can never raise an invitati
   from core_370: `public.organizer_identity_class(email)` (one exact address in, a class out, no
   names or ids) and `public.organizer_policy_rules()` (the enabled global and Google Calendar
   connector rules, evaluated with the connector's own first-match engine).
-- **Failure never admits.** An unreadable lookup stamps `unknown`, which quarantines like
-  `first_contact`; only the owner's own address needs no lookup.
+- **Failure never admits.** An unreadable lookup stamps `unknown` with `lookup_failed: true`, which
+  quarantines like `first_contact`; the sweep re-selects those rows (still bounded, after unstamped
+  and stale ones) so they are evaluated again once the store reads. Only the owner's own address
+  needs no lookup. The policy definer returns only the matchable rule types and columns.
 - **Stamping.** The projection stamps each provider event as it writes it. A bounded sweep
   (`SWEEP_BATCH` events per sync pass) stamps rows with no stamp or an older `verdict_version`, so
   events projected before the verdict existed are covered without a backfill migration.

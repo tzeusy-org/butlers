@@ -15,10 +15,14 @@ reads and nothing more:
   ambiguous address never count as known. A read failure propagates.
 * ``organizer_policy_rules()`` returns the enabled global and Google Calendar connector ingestion
   rules in the shape the evaluator loads them, so the verdict applies the same first-match engine
-  as the connector instead of a second SQL copy that could drift. A read failure propagates.
+  as the connector instead of a second SQL copy that could drift. It returns only the columns the
+  evaluator reads (no rule name or timestamp) and only the rule types a calendar envelope can
+  match: ``sender_address``, ``sender_domain``, ``source_channel``, ``substring`` and
+  ``source_endpoint``. A chat, channel, mic, header, label or MIME rule is never returned. A read
+  failure propagates.
 
-Both pin ``search_path = pg_catalog, pg_temp``, are revoked from PUBLIC and granted only to the
-calendar-hosting runtime roles that exist. The core chain runs once per butler schema: every run
+Both pin ``search_path = pg_catalog, pg_temp`` and converge their ACL exactly: every grantee
+except the owner and the calendar-hosting runtime roles that exist (PUBLIC included) is revoked. The core chain runs once per butler schema: every run
 takes one advisory lock and replaces the functions, which is idempotent and takes no table lock.
 Downgrade drops them only when no other schema-local chain is still at core_370 or later.
 """
@@ -100,23 +104,48 @@ _RULES_DDL = """
 CREATE OR REPLACE FUNCTION public.organizer_policy_rules()
 RETURNS TABLE (
     scope text, id text, rule_type text, condition jsonb, action text, priority integer,
-    name text, created_at text, created_by text, promoted_from_suggestion_id text
+    created_by text, promoted_from_suggestion_id text
 )
 LANGUAGE plpgsql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
     RETURN QUERY
-    SELECT r.scope, r.id::text, r.rule_type, r.condition, r.action, r.priority, r.name,
-           r.created_at::text, r.created_by, r.promoted_from_suggestion_id::text
+    SELECT r.scope, r.id::text, r.rule_type, r.condition, r.action, r.priority,
+           r.created_by, r.promoted_from_suggestion_id::text
     FROM switchboard.ingestion_rules r
     WHERE r.enabled = TRUE AND r.deleted_at IS NULL
       AND (r.scope = 'global' OR starts_with(r.scope, 'connector:google_calendar:'))
+      AND r.rule_type IN (
+          'sender_address', 'sender_domain', 'source_channel', 'substring', 'source_endpoint'
+      )
     ORDER BY r.scope, r.priority ASC, r.created_at ASC, r.id ASC;
 END $$
 """
 
 
 def _grants(signature: str) -> list[str]:
-    statements = [f"REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM PUBLIC"]
+    """Converge the ACL: revoke every grantee but the owner, then grant the existing roles."""
+    roles = ", ".join(f"'{role}'" for role in _ROLES)
+    statements = [
+        f"REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM PUBLIC",
+        f"""
+        DO $$
+        DECLARE
+            _grantee name;
+        BEGIN
+            FOR _grantee IN
+                SELECT r.rolname
+                FROM pg_proc p
+                CROSS JOIN LATERAL aclexplode(p.proacl) a
+                JOIN pg_roles r ON r.oid = a.grantee
+                WHERE p.oid = to_regprocedure('{signature}')
+                  AND a.grantee <> p.proowner
+                  AND r.rolname NOT IN ({roles})
+            LOOP
+                EXECUTE format('REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM %I', _grantee);
+            END LOOP;
+        END $$
+        """,
+    ]
     for role in _ROLES:
         statements.append(
             f"""

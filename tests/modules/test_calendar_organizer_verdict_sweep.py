@@ -183,3 +183,55 @@ async def test_projection_stamps_a_provider_event_as_it_writes_it(db) -> None:
     verdicts = await _verdicts(pool)
     assert verdicts["e-spam"] == "blocked"
     assert verdicts["e-sam"] == "known_entity"
+
+
+def _migration():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / (
+        "alembic/versions/core/core_370_organizer_verdict_inputs.py"
+    )
+    spec = importlib.util.spec_from_file_location("core_370_ddl", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_a_transient_lookup_failure_is_retried_until_it_reads(db) -> None:
+    pool = await _pool(db)
+    await _seed(pool)
+    migration = _migration()
+    await pool.execute("DROP FUNCTION public.organizer_identity_class(text)")
+    assert await sweep_organizer_verdicts(pool) == 4
+    flags = await pool.fetch(
+        "SELECT origin_ref, metadata ->> 'lookup_failed' AS failed FROM calendar_events"
+    )
+    assert {r["origin_ref"]: r["failed"] for r in flags} == {
+        "known": "true",
+        "stranger": "true",
+        "blocked": "true",
+        "mine": "false",  # the owner's own address needs no lookup, so nothing to retry
+    }
+    # The store comes back: only the failed rows are re-selected and now read correctly.
+    await pool.execute(migration._IDENTITY_DDL)
+    assert await sweep_organizer_verdicts(pool) == 3
+    assert (await _verdicts(pool))["known"] == "known_entity"
+    assert (await _verdicts(pool))["blocked"] == "blocked"
+    assert await sweep_organizer_verdicts(pool) == 0
+
+
+async def test_a_non_integer_verdict_version_is_stale_not_a_crash(db) -> None:
+    pool = await _pool(db)
+    await _seed(pool)
+    await sweep_organizer_verdicts(pool)
+    for ref, bad in (("known", '"abc"'), ("stranger", "1.5"), ("blocked", "null")):
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = jsonb_set(metadata, '{verdict_version}', "
+            "$2::jsonb) WHERE origin_ref = $1",
+            ref,
+            bad,
+        )
+    assert await sweep_organizer_verdicts(pool) == 3
+    assert await sweep_organizer_verdicts(pool) == 0

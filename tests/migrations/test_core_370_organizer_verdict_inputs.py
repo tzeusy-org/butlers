@@ -94,34 +94,61 @@ async def test_identity_class_counts_only_live_identified_exact_matches(url: str
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_policy_rules_return_only_enabled_global_and_calendar_connector_rules(
+async def test_policy_rules_return_only_matchable_enabled_global_and_calendar_connector_rules(
     url: str,
 ) -> None:
     pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
     try:
-        for scope, enabled, deleted in (
-            ("global", True, False),
-            ("connector:google_calendar:me@example.com", True, False),
-            ("connector:gmail:me@example.com", True, False),
-            ("global", False, False),
-            ("global", True, True),
+        for scope, rule_type, enabled, deleted in (
+            ("global", "sender_address", True, False),
+            ("connector:google_calendar:me@example.com", "sender_domain", True, False),
+            ("connector:gmail:me@example.com", "sender_address", True, False),
+            ("global", "sender_address", False, False),
+            ("global", "sender_address", True, True),
+            ("global", "chat_id", True, False),
+            ("global", "header_condition", True, False),
+            ("global", "mime_type", True, False),
+            ("global", "label_match", True, False),
+            ("connector:google_calendar:me@example.com", "mic_id", True, False),
         ):
             await pool.execute(
                 "INSERT INTO switchboard.ingestion_rules (scope, rule_type, condition, action, "
-                "priority, enabled, deleted_at, name) VALUES ($1, 'sender_address', "
-                "'{\"address\": \"x@y.test\"}', 'block', 10, $2, "
-                "CASE WHEN $3 THEN now() END, 'verdict-test')",
+                "priority, enabled, deleted_at, name) VALUES ($1, $2, "
+                "'{\"marker\": \"verdict-test\"}', 'block', 10, $3, "
+                "CASE WHEN $4 THEN now() END, 'verdict-test')",
                 scope,
+                rule_type,
                 enabled,
                 deleted,
             )
         rows = await pool.fetch(
-            "SELECT scope FROM public.organizer_policy_rules() WHERE name = 'verdict-test'"
+            "SELECT * FROM public.organizer_policy_rules() "
+            "WHERE condition ->> 'marker' = 'verdict-test'"
         )
-        assert sorted(r["scope"] for r in rows) == [
-            "connector:google_calendar:me@example.com",
-            "global",
+        assert sorted((r["scope"], r["rule_type"]) for r in rows) == [
+            ("connector:google_calendar:me@example.com", "sender_domain"),
+            ("global", "sender_address"),
         ]
+        every = await pool.fetch("SELECT rule_type FROM public.organizer_policy_rules()")
+        assert {r["rule_type"] for r in every} <= {
+            "sender_address",
+            "sender_domain",
+            "source_channel",
+            "substring",
+            "source_endpoint",
+        }
+        columns = set(rows[0].keys())
+        assert columns == {
+            "scope",
+            "id",
+            "rule_type",
+            "condition",
+            "action",
+            "priority",
+            "created_by",
+            "promoted_from_suggestion_id",
+        }
+        assert not columns & {"name", "created_at", "description"}
     finally:
         await pool.close()
 
@@ -168,3 +195,65 @@ def test_a_second_schema_is_idempotent_and_only_the_last_downgrade_drops(
         assert not exists()
     finally:
         engine.dispose()
+
+
+def test_a_later_run_converges_a_stray_grantee_away(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    command.upgrade(first, "core_370")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+
+        def grantees(signature: str) -> set[str]:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT r.rolname FROM pg_proc p, aclexplode(p.proacl) a "
+                        "JOIN pg_roles r ON r.oid = a.grantee WHERE p.oid = to_regprocedure(:s) "
+                        "AND a.grantee <> p.proowner"
+                    ),
+                    {"s": signature},
+                )
+                return {row[0] for row in rows}
+
+        with engine.connect() as conn:
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION {_IDENTITY} TO pg_monitor"))
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION {_RULES} TO PUBLIC"))
+        assert "pg_monitor" in grantees(_IDENTITY)
+        second = _build_alembic_config(db_url, chains=["core"], target_schema="travel")
+        command.upgrade(second, "core_370")
+        assert "pg_monitor" not in grantees(_IDENTITY)
+        with engine.connect() as conn:
+            public = conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_proc p, aclexplode(p.proacl) a "
+                    "WHERE p.oid = to_regprocedure(:s) AND a.grantee = 0"
+                ),
+                {"s": _RULES},
+            ).scalar()
+        assert public == 0
+    finally:
+        engine.dispose()
+
+
+def test_every_calendar_hosting_butler_is_granted_execute() -> None:
+    """A butler that hosts the calendar module must be in the migration's role list."""
+    import importlib.util
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "core_370_roles", root / "alembic/versions/core/core_370_organizer_verdict_inputs.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    hosting = {
+        path.parent.name
+        for path in (root / "roster").glob("*/butler.toml")
+        if "calendar" in tomllib.loads(path.read_text()).get("modules", {})
+    }
+    assert hosting, "no calendar-hosting butler found: the scan is broken"
+    missing = {f"butler_{name}_rw" for name in hosting} - set(module._ROLES)
+    assert not missing, f"calendar-hosting roles lack EXECUTE in core_370: {sorted(missing)}"
