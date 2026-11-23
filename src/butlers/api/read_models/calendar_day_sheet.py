@@ -107,27 +107,33 @@ async def query_calendar_day_sheet(
                 SourceRead(name=name, readable=True, as_of=as_of, stale_after=_STALE_AFTER)
             )
 
-    # One instance belongs to one lane; collapse any repeat so a view overlap cannot double a row.
-    workspace = list({(r["instance_id"], r["db_butler"]): r for r in workspace}.values())
-    workspace.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
-    rules, _rules_read = await _read_dedup_rules(db)
-    keep_separate, _pins_read = await _read_keep_separate_keys(db)
-    deduped, _clusters = _dedup_workspace_rows(
-        workspace, strategy=rules.match_strategy, keep_separate=keep_separate
-    )
-    occurrences = [
-        DayOccurrence(
-            ref=str(row["instance_id"]),
-            title=row.get("title") or "Untitled",
-            starts_at=row["instance_starts_at"],
-            ends_at=row["instance_ends_at"],
-            all_day=bool(row.get("all_day")),
-            timezone=row.get("event_timezone") or row.get("instance_timezone"),
-            status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
-            event_type=row.get("event_type") or "default",
-            time_role=row.get("source_time_role") or "unclassified",
-            metadata=row.get("event_metadata"),
+    try:
+        # One instance belongs to one lane; collapse repeats so a view overlap cannot double a row.
+        workspace = list({(r["instance_id"], r["db_butler"]): r for r in workspace}.values())
+        workspace.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+        rules, _rules_read = await _read_dedup_rules(db)
+        keep_separate, _pins_read = await _read_keep_separate_keys(db)
+        deduped, _clusters = _dedup_workspace_rows(
+            workspace, strategy=rules.match_strategy, keep_separate=keep_separate
         )
-        for row in deduped
-    ]
+        occurrences = [
+            DayOccurrence(
+                ref=str(row["instance_id"]),
+                title=row.get("title") or "Untitled",
+                starts_at=row["instance_starts_at"],
+                ends_at=row["instance_ends_at"],
+                all_day=bool(row.get("all_day")),
+                timezone=row.get("instance_timezone") or row.get("event_timezone"),
+                status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
+                event_type=row.get("event_type") or "default",
+                time_role=row.get("source_time_role") or "unclassified",
+                metadata=row.get("event_metadata"),
+            )
+            for row in deduped
+        ]
+    except Exception:
+        logger.warning(
+            "day sheet rows unreadable; reporting every source unreadable", exc_info=True
+        )
+        return sheet([SourceRead(name=name, readable=False) for name in butlers])
     return sheet(units, occurrences)

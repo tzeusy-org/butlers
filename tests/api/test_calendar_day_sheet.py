@@ -123,3 +123,33 @@ async def test_an_all_day_row_from_utc_is_dated_in_its_own_zone(app):
 
     assert [i["ref"] for i in on_day["items"]] == ["trip"]
     assert day_before["items"] == []
+
+
+@pytest.mark.parametrize("bad", ["0001-01-01", "9999-12-31"])
+async def test_an_out_of_range_date_is_refused_not_a_500(app, bad):
+    app, _ = _build_app(app, workspace_rows={})
+    assert (await get_sheet(app, date=bad)).status_code == 400
+
+
+async def test_a_malformed_row_makes_the_day_unreadable_not_a_500(app):
+    broken = row("broken", DAY)
+    del broken["instance_ends_at"]
+    app, _ = _build_app(app, workspace_rows={"general": [broken]})
+
+    response = await get_sheet(app)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["freshness"]["state"] == "unreadable"
+
+
+async def test_the_instance_timezone_wins_over_the_event_timezone(app):
+    start = datetime(2026, 11, 23, 16, 0, tzinfo=UTC)
+    trip = row("trip", start, all_day=True, timezone="Asia/Singapore")
+    trip["instance_timezone"] = "Asia/Singapore"
+    trip["event_timezone"] = "America/New_York"
+    trip["instance_ends_at"] = start + timedelta(days=1)
+    app, _ = _build_app(app, workspace_rows={"general": [trip]})
+
+    data = (await get_sheet(app, date="2026-11-24", timezone="Asia/Singapore")).json()["data"]
+
+    assert [i["ref"] for i in data["items"]] == ["trip"]

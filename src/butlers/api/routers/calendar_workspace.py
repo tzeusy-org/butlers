@@ -1659,6 +1659,10 @@ async def get_workspace_conflicts(
     )
 
 
+_DAY_SHEET_MIN_YEAR = 1900
+_DAY_SHEET_MAX_YEAR = 2200
+
+
 @router.get("/day-sheet", response_model=ApiResponse[DaySheetResponse])
 async def get_day_sheet(
     date: date_type | None = Query(
@@ -1683,6 +1687,11 @@ async def get_day_sheet(
     else:
         zone = await owner_zoneinfo(_calendar_accounts_shared_pool(db))
     local_date = date or datetime.now(zone).date()
+    if not _DAY_SHEET_MIN_YEAR <= local_date.year <= _DAY_SHEET_MAX_YEAR:
+        raise HTTPException(
+            status_code=400,
+            detail=f"date must be within {_DAY_SHEET_MIN_YEAR}-{_DAY_SHEET_MAX_YEAR}",
+        )
 
     sheet = await query_calendar_day_sheet(db, local_date=local_date, zone=zone)
     return ApiResponse[DaySheetResponse](
