@@ -51,17 +51,21 @@ Scope: v1-mandatory
 ### Requirement: QA Investigation Agent Prompt
 The QA investigation agent SHALL receive a prompt that includes the error context from the discovery source, not from a live session. No raw logs or user data are included.
 
+ID: REQ-qa-investigation-dispatch-005
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Scope: v1-mandatory
+
 #### Scenario: Agent prompt composition
 - **WHEN** the investigation agent is spawned
-- **THEN** its prompt includes: error fingerprint, exception type, sanitized event summary, call site (module path), source butler name, occurrence count and time range, discovery source type, and instructions to: read relevant source code, identify root cause, implement a fix, run targeted tests, commit with a descriptive message
+- **THEN** its prompt includes: error fingerprint, exception type, sanitized event summary, call site (module path), source butler name, occurrence count and time range, discovery source type, and instructions to identify the applicable manifesto, RFC and capability requirements, reproduce the failure, implement a bounded correction, follow the exact-node/file/planner test ladder, and commit with an honest verification receipt
 - **AND** the prompt explicitly instructs the agent to NOT include any user data, PII, or sensitive content in commits or PR descriptions
 - **AND** the prompt explicitly instructs the agent to ignore unrelated repository workflow instructions and to not run `bd`, push branches manually, or open PRs itself
 
-#### Scenario: Agent uses the exact workhorse rung
-- **WHEN** the investigation agent is spawned
+#### Scenario: Agent uses specialty model tier
+- **WHEN** the investigation agent is spawned (heading kept for OpenSpec lineage; the exact `workhorse` rung supersedes the `specialty` tier, bu-ejow5p.5)
 - **THEN** its dispatch intent requires a workspace-capable runtime (`workspace_agent`) at `reversible` consequence and resolves the exact `workhorse` rung with no tier fallthrough to `cheap`, `specialty` or `local`
 - **AND** a runtime that cannot run shell and filesystem tools in the worktree (the direct API adapter) is excluded as unfit, never ranked
-- **AND** if no entry at the rung fits, the investigation is skipped with dispatch decision `no_model`, which is not counted toward the circuit breaker, and no cheaper model is substituted
+- **AND** if no entry at the rung fits, the launch is refused with dispatch reason `no_model`, which is not counted toward the circuit breaker, and no cheaper model is substituted
 - **AND** admission resolves under the same butler identity, rung and intent as the launch, so it cannot admit a model the launch would refuse
 - **AND** a provider authentication failure inside the executor sandbox is recorded as `executor_env_unfit` and does not count toward the catalog-entry circuit breaker
 
@@ -69,3 +73,9 @@ The QA investigation agent SHALL receive a prompt that includes the error contex
 - **WHEN** the finding originated from a `butler_reports` source (via `report_error`) with a non-empty `context` field
 - **THEN** the agent's diagnostic reasoning is included in the investigation prompt (after anonymization)
 - **AND** this gives the investigation agent a head start on diagnosis
+
+#### Scenario: Diagnosis needs a behavior or authority change
+- **WHEN** the proposed remedy changes a governing contract, extends manifesto scope, or requires an unapproved permission
+- **THEN** the investigator emits a bound `design_required` outcome with the evidence and proposed contract delta
+- **AND** the trusted coordinator retains that proposal for owner review without implementing or publishing the new behavior
+- **AND** narrow corrections already defined by the governing spec remain eligible for autonomous implementation and targeted verification

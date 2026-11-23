@@ -506,9 +506,9 @@ QA_INTENT = derive_dispatch_intent("qa", Complexity.WORKHORSE)
 async def test_qa_executor_resolves_the_workhorse_cli_entry_not_the_api_entry(
     dispatch_pool: asyncpg.Pool,
 ) -> None:
-    """bu-ejow5p.5: an api-runtime haiku at specialty never wins; the receipt says why."""
+    """bu-ejow5p.5: a higher-priority api entry cannot win the executor rung; the receipt says why."""
     api_id = await _insert_entry(
-        dispatch_pool, alias="qa-api", runtime_type="api", complexity_tier="specialty", priority=30
+        dispatch_pool, alias="qa-api", runtime_type="api", complexity_tier="workhorse", priority=30
     )
     sonnet_id = await _insert_entry(
         dispatch_pool,
@@ -518,6 +518,12 @@ async def test_qa_executor_resolves_the_workhorse_cli_entry_not_the_api_entry(
         priority=10,
     )
 
+    # Control: without the intent the legacy resolver picks the api entry.
+    legacy = await resolve_model_with_effective_tier(
+        dispatch_pool, BUTLER, Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert legacy is not None and legacy[3] == api_id
+
     resolution = await resolve_dispatch(
         dispatch_pool, BUTLER, QA_INTENT, allow_tier_fallthrough=False
     )
@@ -525,12 +531,8 @@ async def test_qa_executor_resolves_the_workhorse_cli_entry_not_the_api_entry(
     assert resolution.selection is not None
     assert resolution.selection[3] == sonnet_id
     assert resolution.effective_tier == "workhorse"
-    # Falling through would have reached the api entry; it is excluded, not outranked.
-    fallthrough = await resolve_dispatch(
-        dispatch_pool, BUTLER, QA_INTENT, allow_tier_fallthrough=True
-    )
-    assert _outcome(fallthrough, api_id) is CandidateOutcome.EXCLUDED_HARD_FIT
-    assert FitCode.CAPABILITY_UNSUPPORTED in _codes(fallthrough, api_id)
+    assert _outcome(resolution, api_id) is CandidateOutcome.EXCLUDED_HARD_FIT
+    assert FitCode.CAPABILITY_UNSUPPORTED in _codes(resolution, api_id)
 
 
 async def test_qa_executor_exact_rung_has_no_silent_downgrade(
