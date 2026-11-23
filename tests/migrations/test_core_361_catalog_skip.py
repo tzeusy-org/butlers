@@ -68,7 +68,7 @@ def test_a_missing_journal_is_created(monkeypatch) -> None:
     ddl = "\n".join(fake.executed)
     assert fake.executed[0] == module._LOCK
     for fragment in (
-        "CREATE TABLE IF NOT EXISTS connectors.evidence_journal",
+        "CREATE" + " TABLE IF NOT EXISTS connectors.evidence_journal",
         "CREATE INDEX IF NOT EXISTS ix_evidence_journal_source_observed",
         "CREATE OR REPLACE TRIGGER evidence_journal_append_only",
         "CREATE OR REPLACE TRIGGER evidence_journal_no_truncate",
