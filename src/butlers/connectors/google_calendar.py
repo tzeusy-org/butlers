@@ -936,6 +936,9 @@ class CalendarConnectorRuntime:
         # parked as a replayable error row (bu-dhloi1.149).
         self._ingest_retry = IngestRetryBudget()
         self._hold_sync_token = False
+        # Set while an ingestion-policy evaluation is failing; cleared by the
+        # next event whose evaluation succeeds (bu-5ii4gj.19).
+        self._policy_error: str | None = None
         # Set when a full sync's last page carried no nextSyncToken: capture is not working.
         self._missing_sync_token = False
         self._resync_pending = False
@@ -1099,6 +1102,10 @@ class CalendarConnectorRuntime:
             ingested = await self._process_event(event)
             if ingested:
                 ingested_count += 1
+
+        # A cycle that evaluated every event without a hold clears a policy error.
+        if not self._hold_sync_token:
+            self._policy_error = None
 
         # Advance checkpoint only after processing, and never past an event
         # whose ingest failed and is waiting for a retry.
@@ -1445,6 +1452,8 @@ class CalendarConnectorRuntime:
                     # only from incremental sync (REQ-connector-google-calendar-010).
                     continue
                 await self._process_event(event)
+            if not self._hold_sync_token:
+                self._policy_error = None
 
         if self._hold_sync_token:
             # The old token stays, so the next cycle repeats this full sync.
@@ -1518,6 +1527,21 @@ class CalendarConnectorRuntime:
     # Event processing and ingestion
     # ------------------------------------------------------------------
 
+    def _hold_on_policy_error(self, event_id: str, exc: Exception) -> bool:
+        """Fail closed: an event whose policy cannot be evaluated is not submitted.
+
+        The sync token is held so the next cycle reads the event again, and
+        health reports degraded until an evaluation succeeds.
+        """
+        self._hold_sync_token = True
+        self._policy_error = f"Ingestion policy evaluation failed: {type(exc).__name__}"
+        logger.warning(
+            "Calendar: policy evaluation failed for event %s; keeping the syncToken: %s",
+            event_id,
+            exc,
+        )
+        return False
+
     async def _process_event(self, event: dict[str, Any]) -> bool:
         """Process a single calendar event: classify, evaluate policy, ingest.
 
@@ -1566,8 +1590,7 @@ class CalendarConnectorRuntime:
         try:
             decision = self._ingestion_policy.evaluate(policy_envelope)
         except Exception as exc:
-            logger.warning("Calendar: policy evaluation failed for event %s: %s", event_id, exc)
-            decision = None
+            return self._hold_on_policy_error(event_id, exc)
 
         if decision is not None and not decision.allowed:
             self._filtered_event_buffer.record(
@@ -1601,10 +1624,7 @@ class CalendarConnectorRuntime:
         try:
             global_decision = self._global_ingestion_policy.evaluate(policy_envelope)
         except Exception as exc:
-            logger.warning(
-                "Calendar: global policy evaluation failed for event %s: %s", event_id, exc
-            )
-            global_decision = None
+            return self._hold_on_policy_error(event_id, exc)
 
         if global_decision is not None and global_decision.action == "skip":
             self._filtered_event_buffer.record(
@@ -1841,6 +1861,8 @@ class CalendarConnectorRuntime:
 
     def _get_health_state(self) -> tuple[str, str | None]:
         """Return (state, error_message) tuple for heartbeat."""
+        if self._policy_error is not None:
+            return "degraded", self._policy_error
         if self._source_api_ok is None:
             return "degraded", "Starting up, API not yet checked"
         if self._source_api_ok and self._cursor_load_failed:
@@ -1962,11 +1984,13 @@ class CalendarAccountLoop:
             connectivity = "disconnected"
 
         terminal_error = self._error
-        error_msg = terminal_error or runtime._source_api_error_message
+        error_msg = terminal_error or runtime._source_api_error_message or runtime._policy_error
         if not self.is_running and terminal_error:
             account_status: Literal["healthy", "degraded", "error"] = "error"
         elif runtime._source_api_ok is False:
             account_status = "error" if runtime._auth_error else "degraded"
+        elif runtime._policy_error is not None:
+            account_status = "degraded"
         else:
             account_status = "healthy"
 
