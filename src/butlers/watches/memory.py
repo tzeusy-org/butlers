@@ -14,13 +14,19 @@ class InMemoryWatchStore:
     def __init__(self) -> None:
         self.watches: dict[str, Watch] = {}
         self._lock = asyncio.Lock()
-        self._transition_locks: dict[str, asyncio.Lock] = {}
+        self._transition_locks: dict[str, list] = {}  # id -> [lock, holders and waiters]
 
     @asynccontextmanager
     async def serialized(self, watch_id: str) -> AsyncIterator[None]:
-        lock = self._transition_locks.setdefault(watch_id, asyncio.Lock())
-        async with lock:
-            yield
+        entry = self._transition_locks.setdefault(watch_id, [asyncio.Lock(), 0])
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                yield
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0:
+                self._transition_locks.pop(watch_id, None)  # evict idle locks
 
     async def get(self, watch_id: str) -> Watch | None:
         return self.watches.get(watch_id)
