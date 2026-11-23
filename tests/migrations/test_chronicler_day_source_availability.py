@@ -294,6 +294,11 @@ def test_the_downgrade_refuses_while_snapshots_exist(postgres_container) -> None
     engine = create_engine(url)
     try:
         with engine.connect() as conn:
-            assert conn.execute(text("SELECT count(*) FROM day_source_availability")).scalar() > 0
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM chronicler.day_source_availability")
+                ).scalar()
+                > 0
+            )
     finally:
         engine.dispose()
