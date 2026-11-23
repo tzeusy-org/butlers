@@ -38,6 +38,15 @@ READ_OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})
 ORDERED_OPS = frozenset({"lt", "le", "gt", "ge"})
 #: The registered ``expect.*`` perception kinds an ``expectation`` leaf may name.
 EXPECTATION_KINDS = frozenset(kind for kind in KINDS if kind.startswith("expect."))
+#: A read_check number is a finite double within this magnitude (0 or at least ``READ_MIN``): wider
+#: values would make the database's expanded numeric text, and so its size bound, diverge.
+READ_MAX = 10**15
+READ_MIN = 1e-6
+#: One canonical RFC 3339 UTC instant form for ``at`` (no compact offset, no leap second).
+INSTANT_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,6})?"
+    r"(Z|\+00:00)"
+)
 MAX_NAME_BYTES = 128
 MAX_FIELD_BYTES = 64
 #: A registered name (condition source, read capability, field, bundle): bounded lowercase ASCII.
@@ -101,6 +110,11 @@ def _uuid(value: object, what: str) -> str:
     return value
 
 
+def _member(value: object, allowed: frozenset[str]) -> bool:
+    """Membership that is false, never a TypeError, for an unhashable or non-string value."""
+    return type(value) is str and value in allowed
+
+
 def _closed(node: dict, names: set[str]) -> None:
     if set(node) != names:
         raise PredicateError(f"{node.get('tag')} requires exactly fields {sorted(names)}")
@@ -112,19 +126,24 @@ def _name(value: object, what: str, pattern: re.Pattern[str]) -> str:
     return value
 
 
+def _number(value: int | float) -> bool:
+    if type(value) is float and not math.isfinite(value):
+        return False
+    magnitude = abs(value)
+    return magnitude <= READ_MAX and (magnitude == 0 or magnitude >= READ_MIN)
+
+
 def _read_value(node: dict) -> None:
     value = node["value"]
     if node["op"] in ORDERED_OPS:
         # An ordered comparison reads a number; a bool is not one.
-        if type(value) not in (int, float) or not math.isfinite(value):
-            raise PredicateError("read_check ordered comparisons need a finite number")
+        if type(value) not in (int, float) or not _number(value):
+            raise PredicateError("read_check ordered comparisons need a bounded finite number")
     elif type(value) is str:
         if len(value.encode()) > MAX_NAME_BYTES:
             raise PredicateError("read_check.value string exceeds 128 bytes")
-    elif type(value) not in (int, float, bool) or (
-        type(value) is not bool and not math.isfinite(value)
-    ):
-        raise PredicateError("read_check.value must be a finite number, boolean or string")
+    elif type(value) is not bool and (type(value) not in (int, float) or not _number(value)):
+        raise PredicateError("read_check.value must be a bounded number, boolean or string")
 
 
 def _validate_m7(tag: str, node: dict) -> None:
@@ -135,7 +154,7 @@ def _validate_m7(tag: str, node: dict) -> None:
         ):
             raise PredicateError("expectation_kind must be a registered expect.* kind")
         _uuid(node["subject"], "expectation.subject")
-        if node["deviation"] not in DEVIATIONS:
+        if not _member(node["deviation"], DEVIATIONS):
             raise PredicateError("unknown expectation deviation")
     elif tag == "routine_deviation":
         _closed(node, {"tag", "routine_id"})
@@ -143,19 +162,19 @@ def _validate_m7(tag: str, node: dict) -> None:
     elif tag == "condition":
         _closed(node, {"tag", "source", "state"})
         _name(node["source"], "condition.source", NAME_PATTERN)
-        if node["state"] not in CONDITION_STATES:
+        if not _member(node["state"], CONDITION_STATES):
             raise PredicateError("unknown condition state")
     elif tag == "mode":
         _closed(node, {"tag", "mode", "change"})
-        if node["mode"] not in MODES:
+        if not _member(node["mode"], MODES):
             raise PredicateError("unknown mode")
-        if node["change"] not in MODE_CHANGES:
+        if not _member(node["change"], MODE_CHANGES):
             raise PredicateError("unknown mode change")
     elif tag == "read_check":
         _closed(node, {"tag", "capability", "field", "op", "value"})
         _name(node["capability"], "read_check.capability", NAME_PATTERN)
         _name(node["field"], "read_check.field", FIELD_PATTERN)
-        if node["op"] not in READ_OPS:
+        if not _member(node["op"], READ_OPS):
             raise PredicateError("unknown read_check comparison")
         _read_value(node)
     else:
@@ -179,7 +198,7 @@ def _validate(node: object, depth: int) -> int:
     if tag == "decision":
         _closed(node, {"tag", "subject_id", "outcome"})
         _uuid(node["subject_id"], "decision.subject_id")
-        if node["outcome"] not in DECISION_OUTCOMES:
+        if not _member(node["outcome"], DECISION_OUTCOMES):
             raise PredicateError("unknown decision outcome")
     elif tag == "owner_input":
         _closed(node, {"tag", "goal_id", "binding_ref"})
@@ -193,24 +212,26 @@ def _validate(node: object, depth: int) -> int:
             type(statuses) is not list
             or not 1 <= len(statuses) <= 4
             or len(set(map(str, statuses))) != len(statuses)
-            or any(s not in EFFECT_STATUSES for s in statuses)
+            or any(not _member(s, EFFECT_STATUSES) for s in statuses)
         ):
             raise PredicateError("effect_settled.status_set must be 1..4 known statuses")
     elif tag == "at":
         _closed(node, {"tag", "instant", "zone"})
+        if type(node["instant"]) is not str or not INSTANT_PATTERN.fullmatch(node["instant"]):
+            raise PredicateError("at.instant must be an RFC 3339 UTC instant (Z or +00:00)")
         try:
             instant(node["instant"])
         except ValueError as exc:
             raise PredicateError(str(exc)) from None
         try:
             ZoneInfo(node["zone"])
-        except (ZoneInfoNotFoundError, TypeError, ValueError):
+        except (ZoneInfoNotFoundError, TypeError, ValueError, OSError):
             raise PredicateError("at.zone must be an IANA zone") from None
     elif tag == "transition":
         _closed(node, {"tag", "kind", "subject", "from", "to"})
-        if node["kind"] not in KINDS:
+        if not _member(node["kind"], KINDS):
             raise PredicateError("unknown transition kind")
-        if node["from"] not in STATES or node["to"] not in STATES:
+        if not _member(node["from"], STATES) or not _member(node["to"], STATES):
             raise PredicateError("unknown transition state")
         if node["subject"] is not None:
             _uuid(node["subject"], "transition.subject")
@@ -225,11 +246,18 @@ def validate(predicate: object) -> dict:
     """Return the canonical copy of a valid predicate or raise ``PredicateError``."""
     try:
         text = canonical(predicate)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise PredicateError(f"predicate is not canonical JSON: {exc}") from None
     if len(text.encode()) > MAX_BYTES:
         raise PredicateError("predicate exceeds 8KiB canonical JSON")
-    if _validate(predicate, 0) > MAX_LEAVES:
+    try:
+        leaf_count = _validate(predicate, 0)
+    except PredicateError:
+        raise
+    except (TypeError, ValueError, KeyError, OverflowError, RecursionError, OSError) as exc:
+        # A validator raises its own error and nothing else, whatever the document holds.
+        raise PredicateError(f"predicate is malformed: {type(exc).__name__}") from None
+    if leaf_count > MAX_LEAVES:
         raise PredicateError("predicate has more than 16 leaves")
     return json.loads(text)
 

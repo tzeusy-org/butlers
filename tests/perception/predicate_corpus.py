@@ -104,4 +104,69 @@ def corpus() -> list[tuple[str, object, bool]]:
     big_leaf = {**READ, "capability": "c" * 128, "field": "f" * 64, "op": "eq", "value": "v" * 128}
     cases.append(("largest valid document", _all(*[_any(big_leaf)] * 16), True))
     cases.append(("largest valid flat document", _any(*[big_leaf] * 16), True))
+    cases.extend(_peer_cases())
+    return cases
+
+
+def _peer_cases() -> list[tuple[str, object, bool]]:
+    """Differences found against a native PostgreSQL 18 run, plus their neighbours."""
+    effect = {"tag": "effect_settled", "effect_id": U1}
+    at = {"tag": "at", "zone": "UTC"}
+    wide = {**READ, "capability": "c" * 128, "field": "f" * 64}
+    cases: list[tuple[str, object, bool]] = [
+        ("effect statuses distinct", {**effect, "status_set": ["failed", "succeeded"]}, True),
+        ("effect statuses duplicated", {**effect, "status_set": ["failed", "failed"]}, False),
+        ("effect status unhashable", {**effect, "status_set": [[]]}, False),
+        ("effect status unknown", {**effect, "status_set": ["exploded"]}, False),
+        ("read op array", {**READ, "op": []}, False),
+        ("read op object", {**READ, "op": {}}, False),
+        ("read op number", {**READ, "op": 1}, False),
+        ("decision outcome array", {**DECISION, "outcome": []}, False),
+        ("transition kind object", {**TRANSITION, "kind": {}}, False),
+        ("transition state array", {**TRANSITION, "to": []}, False),
+        ("expectation deviation array", {**EXPECTATION, "deviation": []}, False),
+        ("mode array", {"tag": "mode", "mode": [], "change": "entered"}, False),
+        ("condition state array", {"tag": "condition", "source": "s", "state": []}, False),
+        ("wide number x16", _all(*[{**wide, "value": 1e300}] * 16), False),
+        ("wide number single", {**READ, "value": 1e300}, False),
+        ("huge integer", {**READ, "value": 10**400}, False),
+        ("huge negative integer", {**READ, "value": -(10**400)}, False),
+        ("largest magnitude", {**READ, "value": 10**15}, True),
+        ("past largest magnitude", {**READ, "value": 10**15 + 1}, False),
+        ("smallest non-zero", {**READ, "value": 1e-6}, True),
+        ("below smallest non-zero", {**READ, "value": 1e-7}, False),
+        ("tiny number x16", _all(*[{**wide, "value": 1e-300}] * 16), False),
+        ("zero", {**READ, "value": 0}, True),
+        ("negative", {**READ, "op": "ne", "value": -5}, True),
+        ("fraction", {**READ, "op": "ge", "value": 99.5}, True),
+    ]
+    for label, instant, valid in (
+        ("Z", "2026-11-23T09:34:00Z", True),
+        ("+00:00", "2026-11-23T09:34:00+00:00", True),
+        ("fraction", "2026-11-23T09:34:00.123456Z", True),
+        ("compact offset", "2026-11-23T09:34:00+0000", False),
+        ("hour offset", "2026-11-23T09:34:00+00", False),
+        ("other offset", "2026-11-23T17:34:00+08:00", False),
+        ("seven digit fraction", "2026-11-23T09:34:00.1234567Z", False),
+        ("lowercase z", "2026-11-23T09:34:00z", False),
+        ("space separator", "2026-11-23 09:34:00Z", False),
+        ("leap second", "2026-11-23T23:59:60Z", False),
+        ("hour 24", "2026-11-23T24:00:00Z", False),
+        ("month 13", "2026-13-23T09:34:00Z", False),
+        ("february 30", "2026-02-30T09:34:00Z", False),
+        ("date only", "2026-11-23Z", False),
+        ("word form", "Nov 23 2026 09:34 Z", False),
+    ):
+        cases.append((f"at instant {label}", {**at, "instant": instant}, valid))
+    cases.append(("at instant not a string", {**at, "instant": 5}, False))
+    cases.append(
+        (
+            "at zone Singapore",
+            {**at, "instant": "2026-11-23T09:34:00Z", "zone": "Asia/Singapore"},
+            True,
+        )
+    )
+    cases.append(
+        ("at zone unknown", {**at, "instant": "2026-11-23T09:34:00Z", "zone": "Mars/Base"}, False)
+    )
     return cases

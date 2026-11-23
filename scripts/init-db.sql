@@ -9284,6 +9284,7 @@ BEGIN
     CREATE OR REPLACE FUNCTION perception_private.valid_predicate(p jsonb,depth integer DEFAULT 0)
     RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
     DECLARE fields text[]; child jsonb; leaf_count integer;
+        instant_re CONSTANT text:='^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]{1,6})?(Z|\+00:00)$';
         uuid_re CONSTANT text:='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
     BEGIN
         IF depth>2 OR jsonb_typeof(p) IS DISTINCT FROM 'object'
@@ -9313,7 +9314,12 @@ BEGIN
             RETURN true;
         WHEN 'at' THEN
             fields:=ARRAY['tag','instant','zone'];
-            PERFORM perception_private.instant(p->'instant');
+            IF jsonb_typeof(p->'instant') IS DISTINCT FROM 'string'
+                OR NOT COALESCE((p->>'instant') ~ instant_re,false) THEN RETURN false; END IF;
+            BEGIN
+                PERFORM perception_private.instant(p->'instant');
+            EXCEPTION WHEN OTHERS THEN RETURN false;
+            END;
             IF jsonb_typeof(p->'zone') IS DISTINCT FROM 'string'
                 OR NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p->>'zone') THEN RETURN false; END IF;
         WHEN 'transition' THEN
@@ -9347,6 +9353,8 @@ BEGIN
                 OR jsonb_typeof(p->'status_set') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
             IF NOT COALESCE(p->>'effect_id' ~ uuid_re,false) THEN RETURN false; END IF;
             IF jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
+                OR (SELECT count(DISTINCT value) FROM jsonb_array_elements(p->'status_set') entries(value))
+                    <>jsonb_array_length(p->'status_set')
                 OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
                     WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
                         OR NOT COALESCE((value#>>'{}') IN ('succeeded','failed','cancelled','unknown'),false)) THEN RETURN false; END IF;
@@ -9387,6 +9395,13 @@ BEGIN
             ELSIF jsonb_typeof(p->'value')='string' THEN
                 IF octet_length(p->>'value')>128 THEN RETURN false; END IF;
             ELSIF NOT COALESCE(jsonb_typeof(p->'value') IN ('number','boolean'),false) THEN RETURN false;
+            END IF;
+            -- A number is bounded exactly as Python bounds it (magnitude, smallest non-zero,
+            -- length of its own text), so jsonb's expanded numeric text cannot move the size bound.
+            IF jsonb_typeof(p->'value')='number' AND (octet_length(p->>'value')>40
+                OR abs((p->>'value')::numeric)>1000000000000000
+                OR ((p->>'value')::numeric<>0 AND abs((p->>'value')::numeric)<0.000001)) THEN
+                RETURN false;
             END IF;
         WHEN 'bundle' THEN
             fields:=ARRAY['tag','bundle_id'];

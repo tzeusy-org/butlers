@@ -15,7 +15,9 @@ fails here, loudly.
 
 The body also counts leaves across the whole tree, measures the 8KiB bound as compact JSON, accepts
 only canonical lowercase hyphenated UUIDs, and requires ``expectation_kind`` to be a registered
-``expect.*`` kind, so it accepts exactly what the Python validator accepts.
+``expect.*`` kind, so it accepts exactly what the Python validator accepts. It also bounds read
+numbers, takes one canonical RFC 3339 UTC instant form, refuses duplicate effect statuses, and never
+raises on a malformed instant. Verified against PostgreSQL 18 over the shared corpus.
 
 Nothing else changes: no table, grant, role or registry row, and no source is registered for a
 new leaf, so a binding naming one still refuses at ``perception_bind``'s source boundary until a
@@ -39,7 +41,7 @@ down_revision = "core_360"
 branch_labels = None
 depends_on = None
 
-_VALID_PREDICATE_SHA = "303bd722b1c161f1e97b81f8021b0bc4243d038a67303bf657ef90b0127bc26f"
+_VALID_PREDICATE_SHA = "fab7397d81042108d5fef9073dbb6d16dbca14deb88c0d314ecdfb2cdb70cb0a"
 _APPLIED_SQL = f"""
 SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                WHERE n.nspname = 'perception_private' AND p.proname = 'valid_predicate'
