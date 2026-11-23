@@ -513,3 +513,23 @@ async def test_a_failed_clone_cleans_the_attempt_directory_and_releases_ownershi
     assert result.reason == "worktree_creation_failed"
     assert not attempt_dir.exists()
     assert str(attempt_id) not in LIVE_ATTEMPTS
+
+
+async def test_reopening_never_chmods_through_a_symlink(tmp_path) -> None:
+    from butlers.core.qa.job_isolation import remove_tree
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    os.chmod(victim, 0o500)
+    root = tmp_path / "attempt"
+    locked = root / "sub"
+    locked.mkdir(parents=True)
+    os.chmod(locked, 0o000)  # forces the reopen path
+    os.symlink(victim, root / "link")
+    try:
+        remove_tree(root)
+        victim_mode = victim.stat().st_mode & 0o777
+    finally:
+        os.chmod(victim, 0o700)
+    assert not root.exists()
+    assert victim_mode == 0o500

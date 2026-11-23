@@ -251,19 +251,51 @@ def import_artifacts(
     return scratch
 
 
+def _open_directory(name: str | Path, dir_fd: int | None) -> int:
+    """Open a real directory without following a link, even one the pod chmodded to 000.
+
+    ``O_RDONLY`` first; a 000 directory refuses that, so fall back to ``O_PATH``, which needs no
+    permission on the directory itself. The fd names the inode, so what is chmodded next cannot
+    be swapped for a link by a pod that is still running.
+    """
+    flags = os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    try:
+        return os.open(name, os.O_RDONLY | flags, dir_fd=dir_fd)
+    except PermissionError:
+        return os.open(name, os.O_PATH | flags, dir_fd=dir_fd)
+
+
 def _reopen_directories(root: str | Path) -> None:
-    """Make every real directory under ``root`` owner-accessible; never follows a link."""
-    stack = [str(root)]
+    """Make every real directory under ``root`` owner-accessible, by fd; never follows a link."""
+    try:
+        fd = _open_directory(root, None)
+    except OSError:
+        return
+    stack = [fd]
     while stack:
         current = stack.pop()
+        readable = -1
         try:
-            if os.path.islink(current):
-                continue
-            os.chmod(current, os.stat(current).st_mode | 0o700)
-            with os.scandir(current) as entries:
-                stack.extend(entry.path for entry in entries if entry.is_dir(follow_symlinks=False))
+            mode = os.fstat(current).st_mode | 0o700
+            try:
+                os.fchmod(current, mode)
+            except OSError:
+                os.chmod(f"/proc/self/fd/{current}", mode)  # an O_PATH fd cannot be fchmodded
+            # Re-open "." of the same inode for reading (an O_PATH fd cannot be scanned).
+            readable = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=current)
+            with os.scandir(readable) as entries:
+                names = [entry.name for entry in entries if entry.is_dir(follow_symlinks=False)]
+            for name in names:
+                try:
+                    stack.append(_open_directory(name, readable))
+                except OSError:
+                    continue
         except OSError:
             continue
+        finally:
+            if readable >= 0:
+                os.close(readable)
+            os.close(current)
 
 
 def remove_tree(path: str | Path) -> None:
