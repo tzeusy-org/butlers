@@ -43,10 +43,20 @@ _CANARY_PORT = 9
 _DEV_CONTEXT = re.compile(r"(^|[-_.@/])(dev|k3d)([-_.@/]|$)")
 
 
-def _first_line(text: str | None, limit: int = 300) -> str:
-    """The server's first stderr line, capped: why a call failed, never manifest content."""
-    lines = (text or "").strip().splitlines()
-    return lines[0][:limit] if lines else "no output"
+def _first_line(text: str | None, limit: int = 400) -> str:
+    """The server's own words, capped: why a call failed, never manifest content.
+
+    kubectl prints ``error when retrieving current configuration of:`` and then the manifest
+    and the real reason on later lines, so keep the first lines up to the dumped object.
+    """
+    kept: list[str] = []
+    for line in (text or "").strip().splitlines():
+        if line.startswith(("Name:", "Namespace:", "Object:", "{", "&{")):
+            break
+        kept.append(line.strip())
+        if len(kept) == 3:
+            break
+    return " | ".join(kept)[:limit] or "no output"
 
 
 def _kubectl(args: list[str], *, stdin: str | None = None, check: bool = True) -> str:

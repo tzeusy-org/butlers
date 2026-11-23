@@ -100,7 +100,8 @@ jobs:
             --show-only templates/qa-investigator.yaml \
             --show-only templates/networkpolicy.yaml \
             --show-only templates/egress-profiles.yaml > rendered.yaml
-          kubectl apply -f rendered.yaml
+          # helm template sets no metadata.namespace: without -n the Role and PVC land in default.
+          kubectl apply -n "${NAMESPACE}" -f rendered.yaml
       - name: Verify isolation
         # bash -eo pipefail: a verifier exit is never masked by the tee that records the receipt.
         shell: bash
