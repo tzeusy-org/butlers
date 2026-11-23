@@ -22,6 +22,7 @@ import pytest
 
 from butlers.chronicler.adapters.activitywatch import ActivityWatchWindowAdapter
 from butlers.chronicler.adapters.base import cursor_key, key_for_watermark, keyset_page
+from butlers.chronicler.adapters.calendar_revisions import CalendarRevisionsAdapter
 from butlers.chronicler.adapters.comms import _COMMS_CHANNELS, CommsSocialAdapter
 from butlers.chronicler.adapters.home_assistant_sensor_activity import (
     _CONNECTOR_TYPE,
@@ -142,6 +143,31 @@ _SPECS = [
         _comms,
         # Every filter the query applies must be load-bearing.
         noise=lambda i, ts: {**_comms(i, ts), "status": "failed"},
+    ),
+    _Spec(
+        "calendar_revisions",
+        lambda: CalendarRevisionsAdapter(batch_limit=_BATCH),
+        "_fetch",
+        "connectors.calendar_event_revisions",
+        "observed_at",
+        lambda i, ts: {
+            "id": UUID(_uuid(i)),
+            "endpoint_identity": "e",
+            "calendar_id": "primary",
+            "event_id": f"event-{i}",
+            "etag": f"etag-{i}",
+            "observation": "change",
+            "observed_at": ts,
+        },
+        noise=lambda i, ts: {
+            "id": UUID(_uuid(i)),
+            "endpoint_identity": "e",
+            "calendar_id": "primary",
+            "event_id": f"event-{i}",
+            "etag": f"etag-{i}",
+            "observation": "baseline",  # baselines are never read
+            "observed_at": ts,
+        },
     ),
     _Spec(
         "owner_outbound",

@@ -843,6 +843,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "relationship.entity_facts",
     ): "sanctioned:RFC-0014: declared read-only source-adapter surface (calendar/session slots enumerate configured schemas)",
     (
+        "src/butlers/chronicler/adapters/calendar_revisions.py",
+        "chronicler.daily_repair_control",
+    ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control read for the owner timezone; schema and relation are constants, not caller-selected",
+    (
         "src/butlers/chronicler/adapters/situation.py",
         "chronicler.daily_repair_control",
     ): "sanctioned:Chronicler_030: fixed-schema migration-owned replay control for daily repair; schema and relation are constants, not caller-selected",
