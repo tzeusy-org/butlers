@@ -6030,7 +6030,7 @@
       "sha256": "1f1d1883011f76f59a4175544361ce6af8874399081857c36929196f712459f3"
     },
     "deploy/helm/butlers/templates/qa-investigator.yaml": {
-      "sha256": "2915350464e1e1f9008550fac10fffa5d99ce3f34c1c4bcbb58409f6337aa79f"
+      "sha256": "b310fea472ea91efd43e759d1cd89d84a271684a20a3609d9f61ea15b5acb2a4"
     },
     "deploy/helm/butlers/templates/service-plane-accounts.yaml": {
       "sha256": "0d0e63bb8391a8d2ef826855c90517e143e56f9845dae849b0b4383ba4ca7aaf"

@@ -51,6 +51,7 @@ ALLOWED_ENV_NAMES: Final[frozenset[str]] = frozenset(
     {"HOME", "TMPDIR", "PATH", "ANTHROPIC_BASE_URL", "GIT_TERMINAL_PROMPT", "LANG"}
 )
 _JOB_NAME_PREFIX: Final[str] = "qa-"
+_IMAGE_DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 _SAFE_ENV_VALUE = re.compile(r"^[ -~]{0,2048}$")
 
 
@@ -92,8 +93,8 @@ def build_investigator_job(
 
     ``command`` is the container command: the agent CLI in production, the pinned probe in the
     isolation verifier. Everything else is fixed by this template. ``image`` must be the exact
-    image the daemon runs (the admission policy compares it verbatim); ``model_proxy_url`` is the
-    credential-injecting proxy the investigator reaches, never a key.
+    image the daemon runs, by digest (the admission policy compares it verbatim);
+    ``model_proxy_url`` is the credential-injecting proxy the investigator reaches, never a key.
     """
     if not command:
         raise InvestigatorJobError("a container command is required")
@@ -101,8 +102,8 @@ def build_investigator_job(
         raise InvestigatorJobError(
             f"deadline_s must be between {MIN_DEADLINE_S} and {MAX_DEADLINE_S} seconds"
         )
-    if "@" not in image and ":" not in image.rsplit("/", 1)[-1]:
-        raise InvestigatorJobError("image must carry a tag or digest")
+    if not _IMAGE_DIGEST.search(image):
+        raise InvestigatorJobError("image must be pinned by a sha256 digest")
 
     name = job_name(attempt_id)
     labels = {

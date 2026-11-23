@@ -194,6 +194,10 @@ qaInvestigator:
   exchangeSize: 2Gi
   # Fixed non-root UID/GID of the investigator process; the admission policy pins it.
   uid: 10001
+  # sha256:<64 hex> digest of the daemon image (image.repository). Required when enabled: the
+  # admission policy admits the investigator image by digest only. The dev deploy script
+  # resolves it from the registry; it is never a tag.
+  imageDigest: ""
   # Admission policy action: Deny enforces; Audit only logs (for a first look on a cluster).
   admissionAction: Deny
 

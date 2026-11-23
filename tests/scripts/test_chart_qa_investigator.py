@@ -13,6 +13,8 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import celpy
+import celpy.celtypes
 import pytest
 import yaml
 
@@ -28,6 +30,8 @@ _TLS_VALUES = Path(__file__).resolve().parents[1] / "fixtures" / "egress-gateway
 _NS = "butlers-dev"
 _ON = (
     "qaInvestigator.enabled=true",
+    f"qaInvestigator.imageDigest=sha256:{'a' * 64}",
+    "image.repository=registry.invalid/butlers-app",
     "egressProfiles.enabled=true",
     "servicePlaneAuth.enabled=true",
     "butlersControl.enabled=true",
@@ -144,48 +148,283 @@ def test_policy_judges_only_the_investigator_identity_and_fails_closed(on, kind)
     assert "== 'qa-investigator'" in condition and "app.kubernetes.io/component" in condition
 
 
-@pytest.mark.parametrize("kind", ["job", "pod"])
-def test_policy_pins_each_isolation_invariant(on, kind):
-    text = " ".join(v["expression"] for v in _validations(on, kind)["validations"])
-    for needle in (
-        "automountServiceAccountToken == false",
-        "hostNetwork",
-        "hostPID",
-        "hostIPC",
-        "containers.size() == 1",
-        "initContainers",
-        "ephemeralContainers",
-        "seccompProfile.type == 'RuntimeDefault'",
-        f"runAsUser == {ij.INVESTIGATOR_UID}",
-        "allowPrivilegeEscalation == false",
-        "readOnlyRootFilesystem == true",
-        "capabilities.drop == ['ALL']",
-        "privileged",
-        "envFrom",
-        "valueFrom",
-        "has(v.emptyDir)",
-        "persistentVolumeClaim.claimName == 'butlers-qa-exchange'",
-        "m.subPath.matches(",
-        "c.image ==",
-    ):
-        assert needle in text, needle
+_IMAGE = "registry.invalid/butlers-app@sha256:" + "a" * 64
+_ATTEMPT = uuid.UUID("12345678-1234-5678-1234-567812345678")
+_LAUNCHER = f"system:serviceaccount:{_NS}:butlers-up"
+_CONTROLLER = "system:serviceaccount:kube-system:job-controller"
 
 
-def test_policy_subpath_regex_and_name_match_the_builder(on):
-    text = " ".join(v["expression"] for v in _validations(on, "pod")["validations"])
-    assert ij.EXCHANGE_SUBPATH_PATTERN in text.replace("\\", "")
-    job_text = " ".join(v["expression"] for v in _validations(on, "job")["validations"])
-    sample = ij.job_name(uuid.uuid4())
-    assert "'^qa-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'" in job_text
-    assert len(sample) <= 63
-    assert "backoffLimit == 0" in job_text and "activeDeadlineSeconds <= 14400" in job_text
-    assert ij.MAX_DEADLINE_S == 14400
+def _cel_admit(on: list[dict], kind: str, obj: dict, username: str) -> list[str] | None:
+    """Evaluate the rendered policy with a real CEL engine: None if not judged, else the
+    messages of every validation that does not pass (an evaluation error counts as a deny,
+    as it does under failurePolicy Fail)."""
+    spec = _named(on, "ValidatingAdmissionPolicy", f"butlers-qa-investigator-{kind}")["spec"]
+    env = celpy.Environment()
+    activation = {
+        "object": celpy.json_to_cel(obj),
+        "request": celpy.json_to_cel({"userInfo": {"username": username}}),
+    }
+
+    def run(expression: str, extra: dict | None = None):
+        ast = env.compile(" ".join(expression.split()))
+        return env.program(ast).evaluate({**activation, **(extra or {})})
+
+    for condition in spec["matchConditions"]:
+        if not bool(run(condition["expression"])):
+            continue
+        break
+    else:
+        return None
+    variables: dict = {}
+    for variable in spec["variables"]:
+        variables[variable["name"]] = run(
+            variable["expression"], {"variables": celpy.json_to_cel(variables)}
+        )
+    failures = []
+    for validation in spec["validations"]:
+        try:
+            ok = bool(run(validation["expression"], {"variables": _cel_map(variables)}))
+        except Exception:  # noqa: BLE001 - evaluation errors deny under failurePolicy Fail
+            ok = False
+        if not ok:
+            failures.append(validation["message"])
+    return failures
 
 
-def test_policy_image_is_the_exact_daemon_image(on):
-    text = " ".join(v["expression"] for v in _validations(on, "pod")["validations"])
-    daemon = _named(on, "Deployment", "butlers-up")["spec"]["template"]["spec"]["containers"][0]
-    assert f"c.image == '{daemon['image']}'" in text
+def _cel_map(variables: dict):
+    return celpy.celtypes.MapType({celpy.celtypes.StringType(k): v for k, v in variables.items()})
+
+
+def _good_job(**over) -> dict:
+    return ij.build_investigator_job(
+        attempt_id=_ATTEMPT,
+        release="butlers",
+        namespace=_NS,
+        image=_IMAGE,
+        exchange_claim="butlers-qa-exchange",
+        command=["/bin/true"],
+        deadline_s=600,
+        model_proxy_url="http://proxy.invalid:3110",
+        **over,
+    )
+
+
+def _pod_of(job: dict) -> dict:
+    template = job["spec"]["template"]
+    return {
+        "metadata": {"name": "qa-pod", "labels": dict(template["metadata"]["labels"])},
+        "spec": template["spec"],
+    }
+
+
+def test_the_real_builder_output_passes_both_policies_for_launcher_and_controller(on):
+    job = _good_job()
+    assert _cel_admit(on, "job", job, _LAUNCHER) == []
+    assert _cel_admit(on, "pod", _pod_of(job), _CONTROLLER) == []
+
+
+def _mutate(path: tuple, value, *, pod: bool = False):
+    def apply(job: dict) -> dict:
+        target = _pod_of(job) if pod else job
+        node = target
+        for key in path[:-1]:
+            node = node[key]
+        if value is _DELETE:
+            node.pop(path[-1], None)
+        else:
+            node[path[-1]] = value
+        return target
+
+    return apply
+
+
+_DELETE = object()
+_SPEC = ("spec", "template", "spec")
+_C0 = (*_SPEC, "containers", 0)
+# (case id, mutation of the good Job, the validation message fragment that must fail)
+_BAD = [
+    (
+        "other-service-account",
+        _mutate((*_SPEC, "serviceAccountName"), "butlers-control"),
+        "own ServiceAccount",
+    ),
+    ("token-mounted", _mutate((*_SPEC, "automountServiceAccountToken"), True), "no token mounted"),
+    ("host-network", _mutate((*_SPEC, "hostNetwork"), True), "no host namespace"),
+    ("node-name", _mutate((*_SPEC, "nodeName"), "node-1"), "no host namespace"),
+    (
+        "tolerations",
+        _mutate((*_SPEC, "tolerations"), [{"operator": "Exists"}]),
+        "no host namespace",
+    ),
+    (
+        "init-container",
+        _mutate((*_SPEC, "initContainers"), [{"name": "i", "image": _IMAGE}]),
+        "exactly one container",
+    ),
+    (
+        "pod-seccomp-unconfined",
+        _mutate((*_SPEC, "securityContext", "seccompProfile"), {"type": "Unconfined"}),
+        "seccomp",
+    ),
+    ("pod-run-as-root", _mutate((*_SPEC, "securityContext", "runAsUser"), 0), "seccomp"),
+    ("fs-group", _mutate((*_SPEC, "securityContext", "fsGroup"), 0), "seccomp"),
+    (
+        "supplemental-groups",
+        _mutate((*_SPEC, "securityContext", "supplementalGroups"), [0]),
+        "seccomp",
+    ),
+    ("privileged", _mutate((*_C0, "securityContext", "privileged"), True), "unprivileged"),
+    (
+        "privilege-escalation",
+        _mutate((*_C0, "securityContext", "allowPrivilegeEscalation"), True),
+        "unprivileged",
+    ),
+    (
+        "added-capability",
+        _mutate((*_C0, "securityContext", "capabilities", "add"), ["NET_ADMIN"]),
+        "unprivileged",
+    ),
+    (
+        "container-seccomp-unconfined",
+        _mutate((*_C0, "securityContext", "seccompProfile"), {"type": "Unconfined"}),
+        "unprivileged",
+    ),
+    (
+        "writable-root",
+        _mutate((*_C0, "securityContext", "readOnlyRootFilesystem"), False),
+        "unprivileged",
+    ),
+    (
+        "host-port",
+        _mutate((*_C0, "ports"), [{"containerPort": 80, "hostPort": 80}]),
+        "unprivileged",
+    ),
+    (
+        "tag-not-digest",
+        _mutate((*_C0, "image"), "registry.invalid/butlers-app:abc"),
+        "unprivileged",
+    ),
+    ("other-image", _mutate((*_C0, "image"), "evil.invalid/x@sha256:" + "b" * 64), "unprivileged"),
+    (
+        "env-value-from",
+        _mutate(
+            (*_C0, "env"),
+            [{"name": "HOME", "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}}}],
+        ),
+        "environment",
+    ),
+    (
+        "env-unlisted-name",
+        _mutate((*_C0, "env"), [{"name": "AWS_SECRET_ACCESS_KEY", "value": "x"}]),
+        "environment",
+    ),
+    ("env-from", _mutate((*_C0, "envFrom"), [{"secretRef": {"name": "s"}}]), "environment"),
+    (
+        "secret-volume",
+        _mutate((*_SPEC, "volumes"), [{"name": "s", "secret": {"secretName": "s"}}]),
+        "volumes",
+    ),
+    (
+        "host-path-volume",
+        _mutate((*_SPEC, "volumes"), [{"name": "h", "hostPath": {"path": "/"}}]),
+        "volumes",
+    ),
+    (
+        "other-claim",
+        _mutate(
+            (*_SPEC, "volumes"),
+            [{"name": "exchange", "persistentVolumeClaim": {"claimName": "butlers-logs"}}],
+        ),
+        "volumes",
+    ),
+    (
+        "whole-exchange-mounted",
+        _mutate((*_C0, "volumeMounts", 2, "subPath"), "attempts"),
+        "volumes",
+    ),
+    (
+        "other-attempt-subpath",
+        _mutate((*_C0, "volumeMounts", 2, "subPath"), "attempts/" + str(uuid.uuid4())),
+        "volumes",
+    ),
+    ("retries", _mutate(("spec", "backoffLimit"), 3), "never retries"),
+    ("no-deadline", _mutate(("spec", "activeDeadlineSeconds"), _DELETE), "never retries"),
+    ("name-not-attempt", _mutate(("metadata", "name"), "qa-" + str(uuid.uuid4())), "never retries"),
+    (
+        "label-component-wrong",
+        _mutate((*_SPEC[:-1], "metadata", "labels", "app.kubernetes.io/component"), "butlers-up"),
+        "identity labels",
+    ),
+]
+
+
+@pytest.mark.parametrize(("case", "mutate", "fragment"), _BAD, ids=[b[0] for b in _BAD])
+def test_launcher_created_job_that_deviates_is_denied_on_the_named_invariant(
+    on, case, mutate, fragment
+):
+    failures = _cel_admit(on, "job", mutate(_good_job()), _LAUNCHER)
+    assert failures is not None and any(fragment in f for f in failures), (case, failures)
+    # A mutation breaks its own invariant, not everything: errors must not mask the signal.
+    assert len(failures) <= 2, (case, failures)
+
+
+def test_blocker_a_launcher_cannot_create_any_other_workload_shape(on):
+    """The requester, not the object's claims, decides: a Job that claims no investigator
+    identity at all is still judged (and denied) when butlers-up creates it."""
+    foreign = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {"name": "innocent", "labels": {"app": "x"}},
+        "spec": {
+            "template": {
+                "metadata": {"labels": {"app": "x"}},
+                "spec": {
+                    "serviceAccountName": "butlers-control",
+                    "hostNetwork": True,
+                    "containers": [{"name": "c", "image": "evil.invalid/x:1"}],
+                    "volumes": [{"name": "h", "hostPath": {"path": "/"}}],
+                },
+            }
+        },
+    }
+    failures = _cel_admit(on, "job", foreign, _LAUNCHER)
+    assert failures and len(failures) >= 5
+    # The same object from anyone else is none of this policy's business.
+    assert _cel_admit(on, "job", foreign, "system:serviceaccount:other:ci") is None
+
+
+def test_blocker_b_a_pod_claiming_the_investigator_account_must_carry_the_component_label(on):
+    pod = _pod_of(_good_job())
+    del pod["metadata"]["labels"]["app.kubernetes.io/component"]
+    failures = _cel_admit(on, "pod", pod, _CONTROLLER)
+    assert failures and any("identity labels" in f for f in failures)
+    # Claiming the label without the account is denied too.
+    pod = _pod_of(_good_job())
+    pod["spec"]["serviceAccountName"] = "default"
+    failures = _cel_admit(on, "pod", pod, _CONTROLLER)
+    assert failures and any("own ServiceAccount" in f for f in failures)
+
+
+def test_a_pod_of_another_workload_is_not_judged(on):
+    pod = {"metadata": {"labels": {"app.kubernetes.io/component": "butlers-up"}}, "spec": {}}
+    assert _cel_admit(on, "pod", pod, _CONTROLLER) is None
+
+
+@pytest.mark.parametrize("name", sorted(ij.ALLOWED_ENV_NAMES))
+def test_every_builder_env_name_is_admitted_by_the_policy(on, name):
+    job = _good_job()
+    job["spec"]["template"]["spec"]["containers"][0]["env"] = [{"name": name, "value": "x"}]
+    assert _cel_admit(on, "job", job, _LAUNCHER) == []
+
+
+def test_policy_names_the_requester_and_the_digest(on):
+    spec = _named(on, "ValidatingAdmissionPolicy", "butlers-qa-investigator-job")["spec"]
+    assert _LAUNCHER in spec["matchConditions"][0]["expression"]
+
+
+def test_a_non_digest_image_value_refuses_to_render():
+    result = _render(*_ON, "qaInvestigator.imageDigest=latest")
+    assert result.returncode != 0 and "imageDigest" in result.stderr
 
 
 def test_bindings_are_namespace_scoped_and_deny_by_default(on):

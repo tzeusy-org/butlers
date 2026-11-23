@@ -11,6 +11,7 @@ from butlers.core.qa import investigator_job as ij
 
 pytestmark = pytest.mark.unit
 
+IMAGE = "registry.invalid/butlers-app@sha256:" + "a" * 64
 _ATTEMPT = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
 
@@ -19,7 +20,7 @@ def _job(**over):
         attempt_id=_ATTEMPT,
         release="butlers",
         namespace="butlers-dev",
-        image="registry.invalid/butlers-app:abc123",
+        image=IMAGE,
         exchange_claim="butlers-qa-exchange",
         command=["/bin/true"],
         deadline_s=600,
@@ -116,7 +117,7 @@ def test_empty_command_and_untagged_image_are_refused():
     with pytest.raises(ij.InvestigatorJobError):
         _job(command=[])
     with pytest.raises(ij.InvestigatorJobError):
-        _job(image="registry.invalid/butlers-app")
+        _job(image="registry.invalid/butlers-app:abc123")
 
 
 def test_non_printable_proxy_url_is_refused():
