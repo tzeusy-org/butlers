@@ -502,11 +502,18 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
     const client = new QueryClient({defaultOptions: {queries: {retry: false, gcTime: 0}}});
     try {
       const view = renderDom(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
-      await waitFor(() => expect(screen.getByRole("link", {name: "View service-0"}).querySelectorAll("dd")[0]?.textContent).toBe("healthy"));
-      const indexVisibleRows = () => {
+      const firstServiceRow = () => view.container.querySelector('[aria-label="View service-0"]');
+      // The probe timestamp only exists in the HTTP response. Wait for it before
+      // enumerating accessible names so readiness is independent of the verdict.
+      await waitFor(() => {
+        const probe = firstServiceRow()?.querySelector('time[datetime="2080-01-01T00:01:00Z"]');
+        expect(probe).toBeTruthy();
+      }, {container: view.container});
+
+      const indexVisibleRows = (scope = view.container) => {
         const links = new Map<string, HTMLElement[]>();
         const names = new Map<Element, string>();
-        const visible = screen.getAllByRole("link", {name: (name, element) => {
+        const visible = within(scope).getAllByRole("link", {name: (name, element) => {
           if (element) names.set(element, name);
           return true;
         }});
@@ -522,24 +529,27 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
         expect(matches, `one visible row for ${name}`).toHaveLength(1);
         const item = matches[0].closest("li");
         expect(item, `list item for ${name}`).not.toBeNull();
-        return within(item!).getByRole("link", {name: `View ${name}`});
+        return matches[0];
       };
       const rowsBeforeDuplicate = visibleRows;
       const duplicate = document.createElement("a");
       duplicate.href = "/butlers/service-1";
       duplicate.setAttribute("aria-label", "View   service-1");
       duplicate.hidden = true;
-      document.body.append(duplicate);
+      const duplicateItem = document.createElement("li");
+      duplicateItem.append(duplicate);
+      const duplicateFixture = document.createElement("ul");
+      duplicateFixture.append(rowFor("service-1").closest("li")!.cloneNode(true), duplicateItem);
+      document.body.append(duplicateFixture);
       try {
-        visibleRows = indexVisibleRows();
+        visibleRows = indexVisibleRows(duplicateFixture);
         expect(() => rowFor("service-1")).not.toThrow();
         duplicate.hidden = false;
-        visibleRows = indexVisibleRows();
+        visibleRows = indexVisibleRows(duplicateFixture);
         expect(() => rowFor("service-1")).toThrow();
       } finally {
-        duplicate.remove();
+        duplicateFixture.remove();
         expect(duplicate.isConnected).toBe(false);
-        // Only the external duplicate changed; the original rows stayed mounted.
         visibleRows = rowsBeforeDuplicate;
       }
       for (const entry of facts) {
@@ -557,9 +567,9 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
       await waitFor(() => {
         expect(calls).toHaveLength(2);
-        const row = screen.getByRole("link", { name: "View service-0" });
-        expect(row.querySelector("[aria-label='Service eligibility: paused']")?.textContent).toBe("paused");
-      });
+        const eligibility = firstServiceRow()?.querySelector("[aria-label='Service eligibility: paused']");
+        expect(eligibility?.textContent).toBe("paused");
+      }, {container: view.container});
       expect(calls.every((entry) => entry.url === "/api/system/butlers/heartbeat" && entry.method === "GET")).toBe(true);
       vi.mocked(useButlerStatusBoard).mockReturnValue({rows: [], needsYou: [], aggregates: makeAggregates({isError: true})});
       view.rerender(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
