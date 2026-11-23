@@ -138,6 +138,51 @@ def test_the_downgrade_drops_an_empty_journal(fresh_db) -> None:
         engine.dispose()
 
 
+_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+
+# Roles whose only path to the journal is membership in connector_writer. Migration fixtures
+# create disposable logins with that membership (INHERIT TRUE) in the shared cluster, so they
+# inherit exactly connector_writer's privileges and must not count as extra readers.
+_MEMBERS_OF_WRITER = (
+    "SELECT m.member::regrole::text FROM pg_auth_members m "
+    "WHERE m.roleid = 'connector_writer'::regrole"
+)
+
+
+async def _journal_privileges_by_principal(db_pool: asyncpg.Pool) -> dict[str, set[str]]:
+    """Effective journal privileges per production principal, members of the writer excluded.
+
+    Also asserts the exclusion: every excluded role holds no direct grant (the catalog ACL
+    check is exact) and is a recorded member of connector_writer.
+    """
+    members = {r[0] for r in await db_pool.fetch(_MEMBERS_OF_WRITER)}
+    roles = await db_pool.fetch(
+        "SELECT rolname FROM pg_roles WHERE rolname <> current_user AND NOT rolsuper "
+        "AND rolname !~ '^pg_'"
+    )
+    effective: dict[str, set[str]] = {}
+    for role in roles:
+        name = role["rolname"]
+        if name in members:
+            continue
+        effective[name] = {
+            p
+            for p in _PRIVILEGES
+            if await db_pool.fetchval(
+                "SELECT has_table_privilege($1, 'connectors.evidence_journal', $2)", name, p
+            )
+        }
+    for member in members:
+        direct = await db_pool.fetchval(
+            "SELECT count(*) FROM information_schema.role_table_grants "
+            "WHERE table_schema = 'connectors' AND table_name = 'evidence_journal' "
+            "AND grantee = $1",
+            member,
+        )
+        assert direct == 0, member  # a member reaches the journal through the writer only
+    return effective
+
+
 async def test_only_the_connector_writer_holds_privileges_on_the_journal(
     db_pool: asyncpg.Pool,
 ) -> None:
@@ -152,23 +197,7 @@ async def test_only_the_connector_writer_holds_privileges_on_the_journal(
         by_role.setdefault(grant["grantee"], set()).add(grant["privilege_type"])
     assert by_role == {"connector_writer": {"SELECT", "INSERT"}}
 
-    privileges = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
-    roles = await db_pool.fetch(
-        "SELECT rolname FROM pg_roles WHERE rolname <> current_user AND NOT rolsuper "
-        "AND rolname !~ '^pg_'"
-    )
-    effective = {
-        role["rolname"]: {
-            p
-            for p in privileges
-            if await db_pool.fetchval(
-                "SELECT has_table_privilege($1, 'connectors.evidence_journal', $2)",
-                role["rolname"],
-                p,
-            )
-        }
-        for role in roles
-    }
+    effective = await _journal_privileges_by_principal(db_pool)
     assert effective["connector_writer"] == {"SELECT", "INSERT"}
     assert {r: p for r, p in effective.items() if r != "connector_writer" and p} == {}
 
@@ -275,6 +304,7 @@ def test_the_connector_writer_cannot_rewrite_the_journal_even_after_a_bootstrap_
                 text(
                     "SELECT rolname FROM pg_roles WHERE rolname <> 'connector_writer' "
                     "AND rolname <> current_user AND NOT rolsuper AND rolname !~ '^pg_' "
+                    "AND NOT pg_has_role(rolname, 'connector_writer', 'MEMBER') "
                     "AND has_table_privilege(rolname, 'connectors.evidence_journal', 'SELECT')"
                 )
             ).scalars()
