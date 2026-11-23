@@ -10,7 +10,10 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   `effect_settled`, `at`, `transition`, the M7 leaves `expectation`, `routine_deviation`,
   `condition`, `mode`, `read_check` and `bundle` (REQ-owner-watches-001), and `all`/`any` (at
   most 16 leaves in total, depth two, 8 KiB of compact JSON). An `expectation_kind` must be a
-  registered `expect.*` perception kind, and a UUID must be canonical lowercase and hyphenated.
+  registered `expect.*` perception kind, a UUID must be canonical lowercase and hyphenated, an `at`
+  instant must be RFC 3339 UTC (`Z` or `+00:00`, no leap second), and a `read_check` number must be
+  finite, at most 10^15 in magnitude, and zero or at least 10^-6. Effect statuses are distinct. The
+  validator raises only its own error, whatever the document holds.
   It mirrors `perception_private.valid_predicate`, so the dark `perception_bind` store and
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the

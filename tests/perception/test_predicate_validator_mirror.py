@@ -121,3 +121,28 @@ def test_python_validator_gives_the_corpus_verdict(name, document, valid):
 def test_the_largest_valid_document_is_under_the_size_bound_in_compact_bytes():
     [(_, document, _)] = [c for c in corpus() if c[0] == "largest valid document"]
     assert len(ast.canonical(document).encode()) < ast.MAX_BYTES
+
+
+def test_sql_instant_rule_is_the_python_canonical_rule():
+    assert f"instant_re CONSTANT text:='^{ast.INSTANT_PATTERN.pattern}$'" in _body()
+
+
+def _hostile_documents():
+    values = [[], {}, None, 7, -1, 1.5, True, "", "x" * 300, 10**400, [[]], {"a": [1]}]
+    for _, document, _ in corpus():
+        if type(document) is not dict:
+            continue
+        for key in document:
+            if key == "children":
+                continue
+            for value in values:
+                yield {**document, key: value}
+
+
+def test_the_python_validator_raises_only_its_own_error_whatever_the_document_holds():
+    """A hostile value (unhashable, huge, mistyped) refuses cleanly; it never raises a TypeError."""
+    for document in _hostile_documents():
+        try:
+            ast.validate(document)
+        except ast.PredicateError:
+            pass
