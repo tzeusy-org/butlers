@@ -334,6 +334,25 @@ transaction; entering or extending does not. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
 
+`sw_087` adds the derived `switchboard.goal_region_reads` table for the dashboard's
+bounded region summary. Its primary key deduplicates `(region, goal_id)` and
+`ix_goal_region_reads_recent` orders each region by the goal's creation timestamp
+and UUID descending. Region identity remains `split_part(effects.capability, '__', 1)`;
+the source effect's timestamp does not affect goal recency. Existing history is
+backfilled once under an effects write lock; a synchronous insert trigger handles
+future effects in their own transaction, including effects on old goals and
+concurrent duplicate participation. This relies on the ledger's existing immutable
+goal creation timestamps, immutable effect membership and durable effect history
+(`sw_047`, `sw_057`). No new update/delete maintenance path is needed.
+
+The projection uses ordinary ownership and non-FORCE RLS like the ledger, with
+SELECT/INSERT policies restricted to the exact Switchboard runtime. It contains
+no capability authority or payload. Downgrade drops only this reconstructible
+table, index, trigger and function; source goals/effects are retained and a later
+upgrade rebuilds the projection. Migration does not activate the goal runtime or
+dashboard pages. The one-time backfill locks out effect writes while it scans
+existing history; inspect its duration before any separately authorized rollout.
+
 ### Steam status evidence
 
 `connectors.steam_status_history` (core_314) is append-only observed Steam

@@ -93,6 +93,15 @@ D19 pages and the M6 switch.
 - `GET /api/goals/regions` returns recent goals and schedules coming due per region, naming failed
   sources in `sources_degraded` (`goal_ledger`, `obligations:<butler>`).
 
+The regions read uses `sw_087`'s `switchboard.goal_region_reads`, a synchronous,
+content-free projection of distinct `(capability prefix, goal ID)` pairs. A recursive
+index seek enumerates region keys and a lateral indexed limit reads each region's
+newest goals (`created_at DESC, id DESC`), including sparse or unregistered regions.
+Only the capped rows join current goal status/origin; no effect history is scanned
+or ranked during the request. Obligations retain their existing per-source reads.
+See [schema topology](../data_and_storage/schema-topology.md#dark-switchboard-goal-ledger)
+for backfill and rollback behavior.
+
 The projection is content-free (D17): no grant snapshots, arguments, results or prompt text.
 Owner Stop is not served yet. `GoalRuntime.stop` has no service-listener door, and the signed
 D19 change leaves the literal Stop route to the Hold/Stop-all owner.

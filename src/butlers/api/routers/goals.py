@@ -84,6 +84,29 @@ _SUMMARY_SELECT = f"""
     LEFT JOIN switchboard.goal_outcomes o ON o.goal_id = g.id
 """
 
+# Skip directly to the next region key, then read only that region's newest
+# distinct goals. DISTINCT(region) would still walk the entire projection, and
+# probing effects from newest goals would scan unrelated history for sparse regions.
+_REGION_SUMMARIES_SELECT = """
+    WITH RECURSIVE region_keys(region) AS (
+        (SELECT region FROM switchboard.goal_region_reads ORDER BY region LIMIT 1)
+        UNION ALL
+        SELECT next_region.region FROM region_keys previous
+        CROSS JOIN LATERAL (
+            SELECT region FROM switchboard.goal_region_reads
+            WHERE region > previous.region ORDER BY region LIMIT 1
+        ) next_region
+    )
+    SELECT r.region, g.id, g.status, g.origin, recent.created_at
+    FROM region_keys r
+    CROSS JOIN LATERAL (
+        SELECT goal_id, created_at FROM switchboard.goal_region_reads
+        WHERE region = r.region ORDER BY created_at DESC, goal_id DESC LIMIT $1
+    ) recent
+    JOIN switchboard.goals g ON g.id = recent.goal_id
+    ORDER BY r.region, recent.created_at DESC, g.id DESC
+"""
+
 
 def _is_missing_table(exc: Exception) -> bool:
     return exc.__class__.__name__ == "UndefinedTableError"
@@ -222,16 +245,7 @@ async def region_summaries(
     else:
         try:
             rows = await pool.fetch(
-                f"""
-                SELECT region, id, status, origin, created_at FROM (
-                    SELECT ge.region, g.id, g.status, g.origin, g.created_at,
-                           row_number() OVER (PARTITION BY ge.region
-                                              ORDER BY g.created_at DESC, g.id DESC) AS rn
-                    FROM (SELECT DISTINCT e.goal_id, {_REGION_SQL} AS region
-                          FROM switchboard.effects e) ge
-                    JOIN switchboard.goals g ON g.id = ge.goal_id
-                ) ranked WHERE rn <= $1 ORDER BY region, created_at DESC, id DESC
-                """,
+                _REGION_SUMMARIES_SELECT,
                 goals_per_region,
             )
             for row in rows:
