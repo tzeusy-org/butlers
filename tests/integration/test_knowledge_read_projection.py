@@ -1171,9 +1171,16 @@ async def test_search_reads_episodes_through_their_gin_indexes(projected, primar
         )
         assert compared >= 3 and differing == 0
 
-        sql = _search_sql(_sources(context))
+        # Plan only the time-domain sources: the assertion is about the two Chronicler episode
+        # indexes, and planning every enabled source in a cold backend on a loaded CI runner can
+        # exceed the reader's production 2s statement_timeout (bu-opskk2: a QueryCanceledError
+        # at this EXPLAIN in merge_group). The two ordinary search() calls below still run every
+        # source under the unchanged production timeout. EXPLAIN is not executed and is not a
+        # production path, so its own budget is raised for this transaction only.
+        sql = _search_sql(_sources(context, ("time",)))
         async with reader.transaction(readonly=True):
             await reader.execute("SET LOCAL enable_seqscan = off")
+            await reader.execute("SET LOCAL statement_timeout = '30s'")
             plan = json.loads(await reader.fetchval("EXPLAIN (FORMAT JSON) " + sql, "Zorvatel"))
         names = {c.index for c in SEARCH_COLUMNS["chronicler.episodes_public"]}
         assert {("Bitmap Index Scan", name) for name in names} <= _index_scans(plan)
