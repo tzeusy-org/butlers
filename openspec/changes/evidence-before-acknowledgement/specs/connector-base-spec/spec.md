@@ -51,11 +51,13 @@ Scope: v1-mandatory
 - **AND** an event the source shows only while polling is paused is a source limit, not an event the connector consumed and skipped
 - **AND** once a digest is delivered its batch is fixed: its track-play rows SHALL be written in one transaction, a failed write SHALL retry only that transaction on the next poll (no resend), and the cursor SHALL advance when it commits; tracks that arrive meanwhile SHALL go into a later digest that excludes the delivered batch
 - **AND** that pending batch is held in memory, so a connector restart between delivery and the row commit can send the batch's digest once more (Switchboard deduplicates by idempotency key where the batch is rebuilt unchanged)
+- **AND** a policy-denied gap-fill digest SHALL write no track-play rows and no evidence, and the recently-played cursor SHALL still advance past its tracks; only the content-minimized filtered preview remains
+- **AND** a pending row write that keeps failing SHALL be logged at error with the failure class only, and its age SHALL be reported by `connector_spotify_held_oldest_age_seconds`
 
 #### Scenario: A replay verifies evidence and never re-runs policy
 
 - **WHEN** an owner replays a parked Spotify, Google Health or OwnTracks item
-- **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row or a journal row, found by idempotency key; a replay writes none)
+- **THEN** the connector SHALL NOT re-evaluate policy, and SHALL submit only after confirming the item's committed evidence (a dedicated row or a journal row, found by idempotency key; a replay writes none, except the OwnTracks transition/waypoint scenario below)
 - **AND** a preview with no original idempotency key, or an OwnTracks location whose `owntracks_points` row is missing, SHALL be refused with nothing sent
 
 #### Scenario: A legacy OwnTracks transition or waypoint replay journals its stored envelope

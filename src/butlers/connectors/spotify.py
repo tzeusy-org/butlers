@@ -206,6 +206,7 @@ class _PendingGapPersist:
 
     rows: list[dict[str, Any]]
     cursor_ms: int
+    first_failed: float = field(default_factory=time.monotonic)
 
 
 @dataclass
@@ -2325,9 +2326,14 @@ class SpotifyConnector:
         await self._retry_pending_gap_persist()
         self._backpressure = len(self._held) >= _HELD_LIMIT
         if self._endpoint_identity:
+            # One clock read, so an empty queue reports exactly 0. A pending gap-fill row write
+            # counts: a poison batch that fails every poll shows up as a growing age.
+            clock = time.monotonic()
+            since = [h.held_since for h in self._held.values()]
+            if self._pending_gap_persist is not None:
+                since.append(self._pending_gap_persist.first_failed)
             spotify_held_oldest_age_seconds.labels(endpoint_identity=self._endpoint_identity).set(
-                time.monotonic()
-                - min((h.held_since for h in self._held.values()), default=time.monotonic())
+                clock - min(since) if since else 0
             )
             spotify_held_backpressure.labels(endpoint_identity=self._endpoint_identity).set(
                 1 if self._backpressure else 0
@@ -2729,12 +2735,17 @@ class SpotifyConnector:
                 },
             }
             # The cursor owns this retry: a held digest raises and the cursor stays put.
-            await self._deliver(
+            outcome = await self._deliver(
                 f"gap:{external_event_id}",
                 envelope,
                 lambda: self._write_envelope_evidence(envelope),
                 retain=False,
             )
+            if outcome == "blocked":
+                # Policy denied the digest: no content is written (only the content-minimized
+                # filtered preview exists), but the cursor still moves past these tracks so
+                # they are not re-evaluated every poll.
+                steps = [(ms, None) for ms, _row in steps]
 
         # All of the digest's track-play rows go in together or not at all. On a failure the
         # cursor holds, and the next poll rebuilds the same digest (same idempotency key), which
@@ -2887,12 +2898,17 @@ class SpotifyConnector:
                         conn,
                         endpoint_identity=self._endpoint_identity,
                         spotify_user_id=self._spotify_user_id,
-                        **row,
+                        track_uri=row["track_uri"].replace("\x00", ""),
+                        # Postgres text rejects NUL, which would make the batch a poison pill.
+                        track_name=row["track_name"].replace("\x00", ""),
+                        duration_ms=row["duration_ms"],
+                        played_at_ms=row["played_at_ms"],
                     )
             return True
         except Exception as exc:
-            logger.debug(
-                "SpotifyConnector: gap-fill track-play persist failed (non-fatal): %s", exc
+            logger.error(
+                "SpotifyConnector: gap-fill track-play persist failed (failure_class=%s)",
+                type(exc).__name__,
             )
             return False
 
