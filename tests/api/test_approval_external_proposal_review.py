@@ -223,11 +223,17 @@ async def _detail(client, world) -> dict[str, Any]:
 
 
 # REQ-dashboard-approvals-904, "The owner sees who and what before approving".
-async def test_detail_returns_typed_review_and_no_raw_tool_args(http, world) -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_detail_returns_typed_review_and_no_raw_tool_args(http, world, legacy) -> None:
+    if not legacy:
+        from butlers.modules.approvals.external_proposals import external_proposal_evidence
+
+        world.action["evidence"] = list(external_proposal_evidence("synthetic-client", _URL))
     detail = await _detail(http, world)
     review = detail["external_proposal_review"]
     assert review["proposal_id"] == str(world.proposal_id)
     assert review["client_label"] == "synthetic-client"
+    assert review["evidence_url"] == _URL
     assert review["predicate"] == "works-at"
     assert review["subject"] == {
         "id": str(world.subject),

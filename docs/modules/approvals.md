@@ -200,8 +200,9 @@ which also records the fact's third-party provenance. The entry point
 - runs inside the caller's transaction when given a connection;
 - stores only template `why`/`agent_summary` text and digest-only evidence. The
   evidence items are typed `text` references whose `ref` is
-  `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and
-  `external_mcp:url_sha256=<hex>`. The full URL and the note stay in
+  `external_mcp:client=<label>` and, if a URL was supplied,
+  `external_mcp:url_sha256=<SHA-256 of the full URL's UTF-8 bytes>`. No URL
+  text, including the host, enters a new action. The full URL and the note stay in
   `relationship.external_fact_proposals`. The typed `{type, ref, note}` shape is
   required because the dashboard dossier model and the Relationship evidence
   ledger accept nothing else;
@@ -209,6 +210,18 @@ which also records the fact's third-party provenance. The entry point
   or other server-recorded provenance, and arguments without their own
   `approval_action_id`;
 - expires unanswered after 14 days (expiry is denial).
+
+The stored label remains the existing CIMD host or DCR digest derived from `cid`.
+The public server checks the signed gateway assertion against configured client
+domains or registered ids; the importer reads an untrusted inbox and only checks
+label syntax. Model-callable `list_pending_actions` and `show_pending_action`
+therefore project the label to `external_mcp:client_sha256=<hex>` (SHA-256 of the
+stored label's UTF-8 bytes), preserving only known digest refs with fixed notes. They
+omit legacy `external_mcp:url_host=` refs too, without rewriting existing rows.
+The owner dashboard still reads the stable label and quarantined full URL through
+its existing typed review; no migration, registration or approval-policy change
+is required. Restarting the Relationship process with this code applies the view
+redaction to existing actions; no live inspection or cleanup is implied.
 
 The action then appears on the approvals list like any other. Approval,
 rejection, edit, expiry and execution use the existing transitions and the

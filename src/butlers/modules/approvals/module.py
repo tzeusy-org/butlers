@@ -72,6 +72,7 @@ from butlers.modules.approvals.executor import (
 from butlers.modules.approvals.external_proposals import (
     EXTERNAL_PROPOSAL_REVIEW_ONLY,
     EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    external_proposal_model_evidence,
     is_external_proposal_action,
     is_external_proposal_key,
 )
@@ -122,6 +123,15 @@ def validate_transition(current: ActionStatus, target: ActionStatus) -> None:
         raise InvalidTransitionError(
             f"Cannot transition from '{current.value}' to '{target.value}'"
         )
+
+
+def _model_action_dict(row: Any) -> dict[str, Any]:
+    """Serialise an approval for model list/show without outside evidence text."""
+    action = PendingAction.from_row(row)
+    result = action.to_dict()
+    if is_external_proposal_key(action.deduplication_key):
+        result["evidence"] = external_proposal_model_evidence(action.evidence)
+    return result
 
 
 class ApprovalsConfig(ToolGroupMixin, BaseModel):
@@ -654,7 +664,7 @@ class ApprovalsModule(Module):
             )
             rows = await self._db.fetch(query, effective_limit)
 
-        return [PendingAction.from_row(row).to_dict() for row in rows]
+        return [_model_action_dict(row) for row in rows]
 
     async def _show_pending_action(self, action_id: str) -> dict:
         """Show full details for a single pending action."""
@@ -672,7 +682,7 @@ class ApprovalsModule(Module):
         if row is None:
             return {"error": f"Action not found: {action_id}"}
 
-        return PendingAction.from_row(row).to_dict()
+        return _model_action_dict(row)
 
     async def _dispatch_approved_action_by_id(self, action_id: str) -> dict:
         """Execute an already-approved action via the original (un-gated) tool.

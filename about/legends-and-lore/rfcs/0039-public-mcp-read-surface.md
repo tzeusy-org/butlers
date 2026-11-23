@@ -1894,17 +1894,28 @@ state lives on the primary, in `relationship.external_fact_proposals`
    and `agent_summary` templates, `expires_at = now + 14 days` and
    digest-only evidence as typed `{type: "text", ref, note}` items, the
    shape both the dashboard dossier and the Relationship evidence ledger
-   accept: `ref = "external_mcp:client=<cid label>"`,
-   `"external_mcp:url_host=<scheme://host of evidence_url>"` and
-   `"external_mcp:url_sha256=<SHA-256 of the full URL>"`. No path, query or
-   userinfo of the URL is stored. The full evidence URL and the note stay only
-   in `relationship.external_fact_proposals`, and the dashboard card renders
+   accept: `ref = "external_mcp:client=<cid label>"` and, only when a URL is
+   supplied, `"external_mcp:url_sha256=<SHA-256 of the full URL>"`. No part
+   of the URL, including its scheme or host, is stored in the action. The full
+   evidence URL and the note stay only in `relationship.external_fact_proposals`, and the dashboard card renders
    them from there. [Observed] The Relationship butler loads the approvals
    module (`roster/relationship/butler.toml:168`), whose
    `list_pending_actions` and `show_pending_action` are LLM-callable
    (`src/butlers/modules/approvals/module.py:386-395`); keeping outside text
-   out of `pending_actions` keeps it out of model context. In the same
-   transaction it writes
+   out of `pending_actions` keeps it out of model context. The stable client
+   label remains stored for owner attribution: `capability_host.assertion.client_label`
+   derives a CIMD hostname or a `dcr:` digest from `cid`. The public server
+   verifies the gateway signature and checks `cid` against operator-configured
+   client domains or registered client ids (D7). The importer, however, reads
+   `cid` from the untrusted inbox and checks only label syntax; a bounded,
+   syntactically valid label is still outside text, not instruction authority.
+   The model-callable list/show views therefore replace the client ref with
+   `external_mcp:client_sha256=<SHA-256 of the stored label's UTF-8 bytes>`
+   and fixed explanatory text. Those views retain only known digest refs and
+   fixed notes, omitting legacy `external_mcp:url_host=` evidence on existing
+   actions. This read-boundary projection requires no row rewrite or migration;
+   stored attribution and the owner's typed dashboard review stay intact.
+   In the same transaction it writes
    `relationship.fact_approval_context` with a park-time frozen report:
    `content_authority = 'third_party'` and `src = 'external_mcp:<proposal_id>'`,
    set server-side through `FactWriteContext`, never from arguments. Three
@@ -1989,8 +2000,10 @@ These hold by construction, not by convention. Each one has a test.
    `route_inbox`, `goal_inbox`, schedules, `ingestion_events` or captures; it
    can connect only to another database (D3), and its one writable table is read only by a
    deterministic job. Its contents reach no model context: `pending_actions`
-   holds only the client label and a digest of the evidence URL (D13 step
-   3). [Observed: grep] No LISTEN/NOTIFY wake path exists.
+   holds only the stable owner-facing client label and a digest of the evidence
+   URL (D13 step 3). Model-callable list/show views expose only digests of
+   that label and the full URL, with fixed notes, and omit legacy URL-host refs.
+   [Observed: grep] No LISTEN/NOTIFY wake path exists.
 4. **No sampling or elicitation.** A test asserts the declared server
    capabilities are exactly `tools`.
 5. **Deterministic importer and apply.** The importer is a `dispatch_mode =
