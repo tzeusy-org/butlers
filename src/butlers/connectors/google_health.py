@@ -130,6 +130,7 @@ from butlers.connectors.google_health_client import (
 )
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import IngestRejected, submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -2432,34 +2433,21 @@ class GoogleHealthConnector:
                 )
                 return SubmissionOutcome.FAILED
             try:
-                result = await self._mcp_client.call_tool("ingest", envelope)
+                result = await submit_ingest(self._mcp_client, envelope)
                 latency = time.perf_counter() - start_t
-                status = "success"
-                outcome = SubmissionOutcome.HANDLED
-                if isinstance(result, dict):
-                    resp_status = result.get("status", "")
-                    if resp_status == "duplicate":
-                        status = "duplicate"
-                    elif resp_status not in ("accepted", "queued", "duplicate"):
-                        outcome = SubmissionOutcome.REJECTED
-                        logger.warning(
-                            "GoogleHealthConnector: unexpected ingest response: %s", result
-                        )
-                        record_error(f"ingest rejected: {result.get('error') or resp_status}")
+                status = "duplicate" if result.duplicate else "success"
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_source_api_ok = True
-                return outcome
+                return SubmissionOutcome.HANDLED
             except Exception as exc:  # noqa: BLE001
                 latency = time.perf_counter() - start_t
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
                 record_error(str(exc))
-                # Never a rejection: CachedMCPClient raises ConnectionError for dropped
-                # sessions and TransientToolError (a ConnectionError) for the ingest tool's
-                # transient persistence reply; a RuntimeError is an unexpected tool error.
-                # Only the explicit ``status: error`` reply (envelope validation) is a
-                # durable refusal.
+                # Only a deterministic Switchboard refusal can count toward quarantine.
+                if isinstance(exc, IngestRejected) and exc.is_refusal:
+                    return SubmissionOutcome.REJECTED
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
@@ -2469,7 +2457,7 @@ class GoogleHealthConnector:
         original idempotency key has no such row and is refused (bu-uhbhzq.4).
         """
         await require_committed(self._shared_pool, envelope)
-        await self._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     async def _flush_filtered_events(self) -> None:
         if self._shared_pool is None or self._filtered_event_buffer is None:

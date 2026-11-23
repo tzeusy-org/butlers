@@ -1,6 +1,6 @@
 """Spotify has one path to Switchboard: it writes evidence for the envelope, then submits.
 
-A new notification kind that calls the raw ingest tool, or `_submit_envelope` without an
+A new notification kind that bypasses `_submit_envelope`, or calls it without an
 evidence writer, fails here before it can acknowledge anything it did not record (bu-uhbhzq.4).
 """
 
@@ -31,8 +31,8 @@ def test_the_ingest_tool_is_called_from_exactly_one_method() -> None:
         owner.get(id(node))
         for node in ast.walk(_TREE)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "call_tool"
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "submit_ingest"
     ]
     assert calls == ["_submit_envelope"]
 
@@ -60,9 +60,7 @@ def test_evidence_is_written_before_the_ingest_call_in_the_choke_point() -> None
     for node in ast.walk(fn):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             lines.setdefault(node.func.id, node.lineno)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            lines.setdefault(node.func.attr, node.lineno)
-    assert lines["evidence"] < lines["call_tool"]
+    assert lines["evidence"] < lines["submit_ingest"]
 
 
 def test_submit_deliveries_go_through_the_delivery_wrapper() -> None:

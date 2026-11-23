@@ -20,6 +20,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -150,13 +151,25 @@ def test_session_container_always_stops_with_the_volume_decision(
         monkeypatch.setenv("RUNNER_ENVIRONMENT", "github-hosted")
     else:
         monkeypatch.delenv("RUNNER_ENVIRONMENT", raising=False)
-    fixture = root_conftest.postgres_container.__wrapped__()
+    finalizers = []
+    request = SimpleNamespace(
+        node=SimpleNamespace(stash=pytest.Stash()), addfinalizer=finalizers.append
+    )
+    fixture = root_conftest.postgres_container.__wrapped__(request)
     if fail_start:
         with pytest.raises(RuntimeError, match="synthetic start failure"):
             next(fixture)
     else:
         assert next(fixture) is container
         assert container.stops == []
+        hook = root_conftest.pytest_fixture_setup(
+            SimpleNamespace(argname="postgres_container"), request
+        )
+        next(hook)
+        with pytest.raises(StopIteration) as result:
+            hook.send(container)
+        assert result.value.value is container
+        assert finalizers == []
         with pytest.raises(StopIteration):
             next(fixture)
     assert container.stops == [not hosted]

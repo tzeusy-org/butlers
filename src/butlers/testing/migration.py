@@ -48,6 +48,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import sys
@@ -60,6 +61,7 @@ from urllib.parse import quote, urlparse
 
 import asyncpg
 from sqlalchemy import Connection, create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from butlers.testing.storage import database_event as _storage_database
 from butlers.testing.storage import note as _storage_note
@@ -70,6 +72,7 @@ _MODULE_REGISTRATION_LOCK = threading.RLock()
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 _TEMPLATES_ENV = "BUTLERS_TEST_DB_TEMPLATES"
 _TEST_SQL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,33 @@ class _Template:
 _TEMPLATES: dict[str, _Template] = {}
 _TEMPLATE_LOCKS: dict[str, threading.Lock] = {}
 _TEMPLATE_LOCKS_GUARD = threading.Lock()
+
+
+@dataclass(frozen=True, repr=False)
+class _CreatedDatabase:
+    server: object
+    admin_url: str
+    cluster: str
+    oid: int
+
+
+_CREATED_DATABASES: dict[tuple[int, int, str], _CreatedDatabase] = {}
+_CREATED_DATABASES_LOCK = threading.Lock()
+_DATABASE_IDENTITY = text(
+    "SELECT system_identifier::text, oid, datistemplate "
+    "FROM pg_catalog.pg_control_system(), pg_catalog.pg_database WHERE datname = :name"
+)
+
+
+def _record_created_database(
+    server: object, admin_url: str, conn: Connection, db_name: str
+) -> None:
+    # Record only after CREATE succeeded on this very connection, before any
+    # bootstrap or migrations that can fail.
+    row = conn.execute(_DATABASE_IDENTITY, {"name": db_name}).one()
+    key = (os.getpid(), id(server), db_name)
+    with _CREATED_DATABASES_LOCK:
+        _CREATED_DATABASES[key] = _CreatedDatabase(server, admin_url, row[0], row[1])
 
 
 def migration_db_name() -> str:
@@ -124,6 +154,7 @@ def create_migration_db(postgres_container: object, db_name: str) -> str:
             safe_db_name = db_name.replace('"', '""')
             safe_migration_user = migration_user.replace('"', '""')
             conn.execute(text(f'CREATE DATABASE "{safe_db_name}" OWNER "{safe_migration_user}"'))
+            _record_created_database(postgres_container, admin_url, conn, db_name)
             _storage_database("created", postgres_container, db_name, "F")
     finally:
         engine.dispose()
@@ -641,6 +672,7 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
                     f'OWNER "{owner.replace(chr(34), chr(34) * 2)}"'
                 )
             )
+            _record_created_database(postgres_container, admin_url, conn, db_name)
             _storage_database("created", postgres_container, db_name, "C")
             expected = _database_acl(conn, template.name)
             if expected:
@@ -672,18 +704,76 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
 
 
 def drop_test_db(postgres_container: object, db_name: str) -> None:
-    """Drop the clone *db_name*, ending any connection still open on it.
+    """Drop a recorded database early, ending any connection still open on it.
 
     Kit fixtures drop their clones at teardown: a shard runs thousands of tests on
     one container, and clones kept to session end fill its disk (bu-rvgzmf.7).
     """
+    _drop_created_databases(postgres_container, db_name=db_name)
+
+
+def drop_test_databases(postgres_container: object) -> None:
+    """Retire remaining databases created by this worker for this fixture."""
+    _drop_created_databases(postgres_container)
+
+
+def _drop_created_databases(postgres_container: object, *, db_name: str | None = None) -> None:
+    scope = (os.getpid(), id(postgres_container))
+    with _CREATED_DATABASES_LOCK:
+        records = [
+            (key, record)
+            for key, record in _CREATED_DATABASES.items()
+            if key[:2] == scope
+            and record.server is postgres_container
+            and (db_name is None or key[2] == db_name)
+        ]
+    if not records:
+        if db_name is not None:
+            _LOGGER.warning("Skipping cleanup for unrecorded test database %s", db_name)
+        return
     admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+    if any(record.admin_url != admin_url for _, record in records):
+        _LOGGER.warning("Skipping test database cleanup after fixture connection changed")
+        return
+
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    failed = []
     try:
         with engine.connect() as conn:
-            conn.execute(text(f"DROP DATABASE IF EXISTS {_quote_ident(db_name)} WITH (FORCE)"))
+            # Templates are created before their clones. Retire the most recent
+            # databases first so a template stays available until its clones go.
+            for key, record in reversed(records):
+                name = key[2]
+                try:
+                    with _CREATED_DATABASES_LOCK:
+                        if _CREATED_DATABASES.get(key) is not record:
+                            continue
+                        current = conn.execute(_DATABASE_IDENTITY, {"name": name}).one_or_none()
+                        if current is not None:
+                            if (current[0], current[1]) == (record.cluster, record.oid):
+                                _drop_database(conn, name, is_template=current[2])
+                            else:
+                                _LOGGER.warning(
+                                    "Skipping cleanup for replaced test database %s", name
+                                )
+                        del _CREATED_DATABASES[key]
+                except SQLAlchemyError:
+                    failed.append(name)
     finally:
         engine.dispose()
+    if failed:
+        raise RuntimeError(f"Could not retire test databases: {', '.join(failed)}")
+
+
+def _drop_database(conn: Connection, db_name: str, *, is_template: bool) -> None:
+    name = _quote_ident(db_name)
+    if is_template:
+        conn.execute(text(f"ALTER DATABASE {name} IS_TEMPLATE false"))
+    conn.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+    with _TEMPLATE_LOCKS_GUARD:
+        for key, template in list(_TEMPLATES.items()):
+            if template.name == db_name:
+                del _TEMPLATES[key]
 
 
 def _upgrade_chain_to_revision(

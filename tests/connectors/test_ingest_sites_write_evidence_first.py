@@ -31,7 +31,9 @@ def _ingest_sites(module) -> list[tuple[str, int, list[int]]]:
                 continue
             target = node.func
             name = target.attr if isinstance(target, ast.Attribute) else getattr(target, "id", "")
-            if name == "call_tool" and node.args and getattr(node.args[0], "value", "") == "ingest":
+            if name == "submit_ingest" or (
+                name == "call_tool" and node.args and getattr(node.args[0], "value", "") == "ingest"
+            ):
                 ingest.append(node.lineno)
             if name in _EVIDENCE_CALLS:
                 evidence.append(node.lineno)
@@ -40,10 +42,19 @@ def _ingest_sites(module) -> list[tuple[str, int, list[int]]]:
     return found
 
 
-@pytest.mark.parametrize("module", [owntracks, google_health], ids=["owntracks", "google_health"])
-def test_each_ingest_site_commits_evidence_before_it_submits(module) -> None:
+@pytest.mark.parametrize(
+    ("module", "expected_sites"),
+    [
+        (owntracks, {"_process_webhook_event", "_submit_envelope"}),
+        (google_health, {"_submit_envelope", "_submit_to_ingest_direct"}),
+    ],
+    ids=["owntracks", "google_health"],
+)
+def test_each_ingest_site_commits_evidence_before_it_submits(
+    module, expected_sites: set[str]
+) -> None:
     sites = _ingest_sites(module)
-    assert sites
+    assert expected_sites <= {name for name, _, _ in sites}
     for name, first_ingest, evidence in sites:
         assert evidence and min(evidence) < first_ingest, name
 
