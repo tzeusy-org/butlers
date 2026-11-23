@@ -1965,7 +1965,18 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
         "core", "health", schemas={"core": "health", "health": "health"}, schema="health"
     )
     now = _utcnow()
-    send = AsyncMock(return_value=outcome)
+    flag = "partial_delivery" if outcome == brief.PARTIAL else "telegram_effect_uncertain"
+    send = AsyncMock(
+        return_value=MagicMock(
+            is_error=False,
+            data={"status": "failed", flag: True, "retryable": False},
+        )
+    )
+    ledger = AsyncMock()
+    monkeypatch.setattr(brief, "get_current_switchboard_client", lambda: MagicMock(call_tool=send))
+    monkeypatch.setattr(brief, "check_owner_notify_suppression", AsyncMock(return_value=None))
+    monkeypatch.setattr(brief, "resolve_owner_telegram_recipient", AsyncMock(return_value="owner"))
+    monkeypatch.setattr(brief, "record_attention_event", ledger)
     # Real full migrations/appointment admission/terminal SQL. Clinical content
     # synthesis is outside this controlled delivery test and never sent externally.
     monkeypatch.setattr(
@@ -1980,14 +1991,19 @@ async def test_migrated_visit_brief_terminal_digest_survives_independent_readbac
         source_butler="health",
         booked=True,
     )
-    first = await brief.run_visit_brief(pool, notify_fn=send, now=now)
-    second = await brief.run_visit_brief(pool, notify_fn=send, now=now)
-    assert first["sent"] == second["sent"] == second["retry"] == 0
+    first = await brief.run_visit_brief(pool, now=now)
+    second = await brief.run_visit_brief(pool, now=now)
+    assert first.get(outcome) == 1
+    assert first["sent"] == first["retry"] == second["sent"] == second["retry"] == 0
     send.assert_awaited_once()
+    assert send.await_args.args[0] == "deliver"
+    assert send.await_args.args[1]["notify_request"]["delivery"]["recipient"] == "owner"
+    ledger.assert_awaited_once()
+    assert ledger.await_args.kwargs["outcome"] == "failed"
+    assert ledger.await_args.kwargs["reason"] == f"telegram_{outcome}"
     async with pool.acquire() as independent:
         row = await independent.fetchrow(
             "SELECT delivered_at,digest FROM visit_briefs WHERE event_id=$1", event_id
         )
     assert row["delivered_at"] is None and row["digest"]["source"] == []
-    flag = "partial_delivery" if outcome == brief.PARTIAL else "telegram_effect_uncertain"
     assert row["digest"][flag] is True and row["digest"]["retryable"] is False

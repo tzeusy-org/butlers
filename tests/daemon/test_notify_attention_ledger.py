@@ -711,8 +711,13 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         result, booted = await self._run_proxied(booted_daemon, tmp_path, monkeypatch, client)
 
         # Return shape unchanged for callers.
-        assert result["status"] == "error"
-        assert result["error"] == "messenger rejected"
+        assert result == {
+            "status": "error",
+            "error": "messenger rejected",
+            "error_class": "delivery_error",
+            "retryable": False,
+            "notification_id": "notif-fail-1",
+        }
 
         row = await _ledger_row_of(booted, "failed")
         assert row is not None, "expected a failed attention-ledger row"
@@ -726,8 +731,7 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         client = _client_returning(_make_result(is_error=True, content_text="mcp boom"))
         result, booted = await self._run_proxied(booted_daemon, tmp_path, monkeypatch, client)
 
-        assert result["status"] == "error"
-        assert result["error"] == "mcp boom"
+        assert result == {"status": "error", "error": "mcp boom"}
 
         row = await _ledger_row_of(booted, "failed")
         assert row is not None
@@ -775,6 +779,47 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         assert row is not None
         assert row["reason"] == "unexpected_error:ValueError"
 
+    async def test_exception_logs_exclude_private_text(
+        self,
+        booted_daemon,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        sentinel = "sentinel-notify-private-payload"
+        client = _client_raising(ValueError(sentinel))
+        result, booted = await self._run_proxied(booted_daemon, tmp_path, monkeypatch, client)
+        assert result["status"] == "error"
+        assert set(result) == {"status", "error", "retryable"}
+        assert result["retryable"] is False
+        assert "Switchboard call failed: ValueError" in result["error"]
+        assert (await _ledger_row_of(booted, "failed"))["reason"] == "unexpected_error:ValueError"
+        assert sentinel not in caplog.text
+        assert sentinel not in str(result)
+        client.call_tool.assert_awaited_once()
+
+    async def test_preferences_error_does_not_log_private_text(
+        self,
+        booted_daemon,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        sentinel = "sentinel-notify-private-payload"
+        healthy_client = _make_mock_client()
+        with patch(
+            "butlers.core.temporal.delivery_db.get_delivery_preferences",
+            new=AsyncMock(side_effect=ValueError(sentinel)),
+        ) as read:
+            delivered, _ = await self._run_proxied(
+                booted_daemon, tmp_path, monkeypatch, healthy_client
+            )
+        read.assert_awaited_once()
+        assert delivered["status"] == "ok"
+        assert "ValueError" in caplog.text
+        assert sentinel not in caplog.text
+        healthy_client.call_tool.assert_awaited_once()
+
     async def test_switchboard_self_delivery_failed_records_failed_ledger_row(
         self, booted_daemon, tmp_path: Path
     ) -> None:
@@ -800,8 +845,7 @@ class TestNotifyFailurePathsRecordFailedLedgerRow:
         ):
             result = await notify_fn(channel="telegram", message="Report")
 
-        assert result["status"] == "error"
-        assert result["error"] == "no route"
+        assert result == {"status": "error", "error": "no route"}
 
         row = await _ledger_row_of(booted, "failed")
         assert row is not None
