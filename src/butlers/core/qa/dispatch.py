@@ -70,6 +70,7 @@ from butlers.core.healing.anonymizer import anonymize, validate_anonymized
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
     QA_BREAKER_WHERE_SQL,
     UNFIXABLE_SENTINEL_FILENAME,
 )
@@ -362,7 +363,7 @@ class QaDispatchConfig:
     severity_threshold: int = 2
     cooldown_minutes: int = 60
     max_concurrent: int = 2
-    circuit_breaker_threshold: int = 5
+    circuit_breaker_threshold: int = QA_BREAKER_THRESHOLD
     timeout_minutes: int = 30
     pr_labels: list[str] = field(default_factory=lambda: list(DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None

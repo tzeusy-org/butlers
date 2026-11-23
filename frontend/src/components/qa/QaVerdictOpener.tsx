@@ -55,9 +55,27 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
         text: "last patrol failed",
         href: summary.last_patrol ? `/qa/patrols/${summary.last_patrol.id}` : undefined,
       });
-    } else if (summary.staffer_status === "unknown") {
-      clauses.push({ key: "no-patrol-history", text: "no patrol history yet" });
+    } else if (summary.staffer_status === "unknown" && !summary.last_patrol) {
+      // With an unreadable condition ledger, "unknown" is the ledger's doing and the patrol
+      // history may be fine: the ledger clause below says so instead of this one.
+      if (summary.loop_conditions_known !== false) {
+        clauses.push({ key: "no-patrol-history", text: "no patrol history yet" });
+      }
     }
+  }
+
+  if (summary.loop_conditions_known === false) {
+    clauses.push({
+      key: "loop-ledger-unreadable",
+      text: "can't read the QA condition ledger right now",
+    });
+  }
+  for (const [index, condition] of (summary.loop_conditions ?? []).entries()) {
+    clauses.push({
+      // One source (capability) can carry several causes; the cause keeps keys unique.
+      key: `loop-${condition.source}-${condition.cause ?? index}`,
+      text: condition.summary ?? `remediation loop degraded (${condition.cause ?? condition.source})`,
+    });
   }
 
   const overdueClause = buildOverduePatrolClause(summary);
