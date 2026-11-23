@@ -29,7 +29,9 @@ sync back to back. This holds when a retry keeps the old cursor after a failed i
 410 the expired token SHALL be cleared in memory and in the stored cursor when the resync yields no
 token. The blanked cursor SHALL be a durable recovery marker, distinct from an absent cursor, so the
 next full sync (in the same process or after a restart) ingests its events instead of treating them
-as an initial baseline. A later full sync that yields a token SHALL clear the degraded state.
+as an initial baseline. A cursor that cannot be read SHALL skip the cycle and degrade health rather than run a baseline.
+Blanking the cursor refreshes the checkpoint timestamp (the cursor store has no touch-free write).
+A later full sync that yields a token SHALL clear the degraded state.
 
 ID: REQ-connector-google-calendar-011
 Source: bu-uhbhzq.1 (run 24 move 1), slice S1

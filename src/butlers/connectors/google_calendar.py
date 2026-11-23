@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
+from prometheus_client import Counter
 
 from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
@@ -101,6 +102,13 @@ logger = logging.getLogger(__name__)
 _SYNC_FILTER_PARAMS: dict[str, str] = {"singleEvents": "true", "showDeleted": "true"}
 
 _NO_SYNC_TOKEN_REASON = "Google Calendar full sync returned no sync token"
+_CURSOR_LOAD_FAILED_REASON = "Google Calendar cursor could not be loaded"
+
+calendar_resync_full_ingest_total = Counter(
+    "connector_calendar_resync_full_ingest_total",
+    "Full syncs that ingest events (410 recovery or a pending resync)",
+    labelnames=["endpoint_identity"],
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -925,6 +933,8 @@ class CalendarConnectorRuntime:
         # Set when a full sync's last page carried no nextSyncToken: capture is not working.
         self._missing_sync_token = False
         self._resync_pending = False
+        # Set when the stored cursor could not be read; the cycle is skipped until it can.
+        self._cursor_load_failed = False
 
     def _record_source_api_success(self) -> None:
         """Clear source-API health failures after a successful Google call."""
@@ -1113,26 +1123,32 @@ class CalendarConnectorRuntime:
         if self._sync_token is not None:
             return
 
-        # Try loading from cursor store
+        # Try loading from cursor store. The baseline below runs only when the store positively
+        # answered "no row": on a load error the cycle is skipped (health degrades, the next poll
+        # retries), because a baseline token saved now would overwrite a "" recovery marker or
+        # drop the events after a stored token.
         if self._cursor_pool is not None and not self._resync_pending:
             try:
                 stored_token = await load_cursor(
                     self._cursor_pool, _CONNECTOR_TYPE, self._config.endpoint_identity
                 )
-                self._resync_pending = stored_token == ""
-                if stored_token:
-                    self._sync_token = stored_token
-                    logger.info(
-                        "Calendar: loaded syncToken from cursor store: email=%s",
-                        self._config.email,
-                    )
-                    return
             except Exception as exc:
+                self._cursor_load_failed = True
                 logger.warning(
                     "Calendar: failed to load cursor from store for email=%s: %s",
                     self._config.email,
                     exc,
                 )
+                return
+            self._cursor_load_failed = False
+            self._resync_pending = stored_token == ""
+            if stored_token:
+                self._sync_token = stored_token
+                logger.info(
+                    "Calendar: loaded syncToken from cursor store: email=%s",
+                    self._config.email,
+                )
+                return
 
         if self._resync_pending:
             await self._perform_full_sync(ingest_events=True)
@@ -1297,6 +1313,10 @@ class CalendarConnectorRuntime:
         establish the baseline syncToken. On syncToken expiry (ingest_events=True),
         events are ingested during the full sync.
         """
+        if ingest_events:
+            calendar_resync_full_ingest_total.labels(
+                endpoint_identity=self._config.endpoint_identity
+            ).inc()
         logger.info(
             "Calendar: starting full sync (ingest_events=%s) for email=%s",
             ingest_events,
@@ -1366,8 +1386,10 @@ class CalendarConnectorRuntime:
             self._missing_sync_token = True
             if ingest_events:
                 # After a 410 the expired token must not be reused: drop it from memory and
-                # the stored cursor so the loop degrades and waits instead of re-ingesting
-                # the whole calendar every poll.
+                # blank the stored cursor (a recovery marker). The loop degrades and waits a poll
+                # interval between attempts; while Google keeps returning no token each attempt
+                # ingests the whole calendar again, which is counted by
+                # connector_calendar_resync_full_ingest_total and deduped downstream.
                 self._sync_token = None
                 await self._clear_sync_token()
             logger.error(
@@ -1761,6 +1783,8 @@ class CalendarConnectorRuntime:
         """Return (state, error_message) tuple for heartbeat."""
         if self._source_api_ok is None:
             return "degraded", "Starting up, API not yet checked"
+        if self._source_api_ok and self._cursor_load_failed:
+            return "degraded", _CURSOR_LOAD_FAILED_REASON
         if self._source_api_ok and self._missing_sync_token:
             return "degraded", _NO_SYNC_TOKEN_REASON
         if self._source_api_ok:

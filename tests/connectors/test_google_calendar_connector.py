@@ -1088,3 +1088,60 @@ async def test_clearing_expired_cursor_does_not_report_successful_checkpoint(
     assert save.await_args.args[3] == ""
     assert "saved syncToken" not in caplog.text, "cursor clearing was logged as a saved sync token"
     assert runtime._last_checkpoint_save == before
+
+
+async def test_a_cursor_load_error_skips_the_baseline_and_degrades(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = _synced_runtime(account_config, [])
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    runtime._record_source_api_success()
+    api_calls: list[dict[str, Any]] = []
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        api_calls.append(dict(params))
+        return {"items": [], "nextSyncToken": "baseline"}
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with (
+        patch(
+            "butlers.connectors.google_calendar.load_cursor",
+            side_effect=RuntimeError("store down"),
+        ),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+    ):
+        await runtime._ensure_sync_token()
+
+    assert api_calls == [] and runtime._sync_token is None
+    save.assert_not_called()  # a baseline token must not overwrite a "" marker
+    assert runtime._get_health_state() == ("degraded", "Google Calendar cursor could not be loaded")
+
+    # The next successful read clears the degradation and resumes normally.
+    with (
+        patch("butlers.connectors.google_calendar.load_cursor", return_value="stored"),
+        patch("butlers.connectors.google_calendar.save_cursor"),
+    ):
+        await runtime._ensure_sync_token()
+    assert runtime._sync_token == "stored" and runtime._get_health_state()[0] == "healthy"
+
+
+async def test_a_hold_during_a_pending_resync_keeps_the_marker_and_ingest_mode(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._resync_pending = True
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    with (
+        patch.object(
+            runtime, "_submit_to_ingest_api", AsyncMock(side_effect=RuntimeError("retryable"))
+        ),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=""),
+    ):
+        await runtime._ensure_sync_token()
+
+    assert runtime._hold_sync_token is True
+    save.assert_not_called()  # the "" marker stays; no token overwrote it
+    assert runtime._resync_pending is True and runtime._sync_token is None
