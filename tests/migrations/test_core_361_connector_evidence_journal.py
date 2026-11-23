@@ -69,7 +69,7 @@ async def test_commit_dedupes_and_appends_a_new_revision(db_pool: asyncpg.Pool) 
     )
     assert row["ingestion_tier"] == "full"
     assert row["idempotency_key"] == "gmail:acct:synthetic:m-1"
-    assert "subject" in row["raw"]
+    assert row["raw"]["payload"]["raw"] == {"subject": "hi"}
 
 
 async def test_the_journal_is_append_only(db_pool: asyncpg.Pool) -> None:
@@ -138,16 +138,23 @@ def test_the_downgrade_drops_an_empty_journal(fresh_db) -> None:
         engine.dispose()
 
 
-async def test_only_the_connector_writer_can_insert_and_read(db_pool: asyncpg.Pool) -> None:
+async def test_the_connector_writer_inserts_and_reads_and_no_one_rewrites(
+    db_pool: asyncpg.Pool,
+) -> None:
     grants = await db_pool.fetch(
         "SELECT grantee, privilege_type FROM information_schema.role_table_grants "
         "WHERE table_schema = 'connectors' AND table_name = 'evidence_journal' "
         "AND grantee <> current_user"
     )
-    assert {(g["grantee"], g["privilege_type"]) for g in grants} <= {
-        ("connector_writer", "SELECT"),
-        ("connector_writer", "INSERT"),
-    }
+    by_role: dict[str, set[str]] = {}
+    for grant in grants:
+        by_role.setdefault(grant["grantee"], set()).add(grant["privilege_type"])
+    # The writer inserts and reads; it cannot rewrite or erase (the blanket connectors-schema
+    # default privileges would otherwise give it UPDATE and DELETE).
+    assert by_role["connector_writer"] == {"SELECT", "INSERT"}
+    # Every other grantee reads through the same default privileges: SELECT and nothing more.
+    others = {role: privs for role, privs in by_role.items() if role != "connector_writer"}
+    assert all(privs == {"SELECT"} for privs in others.values()), others
 
 
 def _journal_exists(url: str) -> bool:
