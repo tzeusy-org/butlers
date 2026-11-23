@@ -1,4 +1,9 @@
-"""The first-switch predicate language (RFC 0038 S4): a closed, bounded tagged AST.
+"""The predicate language (RFC 0038 S4, S4.M7): a closed, bounded tagged AST.
+
+The first-switch leaves are ``decision``, ``owner_input``, ``effect_settled``, ``at`` and
+``transition``. M7 (bu-4c7nvp.1.5, REQ-owner-watches-001) adds ``expectation``,
+``routine_deviation``, ``condition``, ``mode``, ``read_check`` and ``bundle`` to the same AST;
+depth, leaf and size bounds and three-valued evaluation are unchanged.
 
 Validation mirrors ``perception_private.valid_predicate`` in ``scripts/init-db.sql`` so a
 predicate accepted here is accepted by the dark ``perception_bind`` store and vice versa.
@@ -10,12 +15,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.perception.model import KINDS, STATES, canonical, instant
+from butlers.perception.model import KINDS, MODES, STATES, canonical, instant
 
 MAX_CHILDREN = 16
 MAX_LEAVES = 16
@@ -24,11 +31,27 @@ MAX_BYTES = 8192
 
 DECISION_OUTCOMES = frozenset({"approved", "rejected", "expired", "cancelled"})
 EFFECT_STATUSES = frozenset({"succeeded", "failed", "cancelled", "unknown"})
+DEVIATIONS = frozenset({"pending", "within", "missed"})
+CONDITION_STATES = frozenset({"opened", "resolved"})
+MODE_CHANGES = frozenset({"entered", "exited"})
+READ_OPS = frozenset({"eq", "ne", "lt", "le", "gt", "ge"})
+ORDERED_OPS = frozenset({"lt", "le", "gt", "ge"})
+MAX_NAME_BYTES = 128
+MAX_FIELD_BYTES = 64
+#: A registered name (condition source, read capability, field, bundle): bounded lowercase ASCII.
+NAME_PATTERN = re.compile(r"[a-z0-9_.:-]{1,128}")
+FIELD_PATTERN = re.compile(r"[a-z0-9_.-]{1,64}")
 
 SOURCE_DECISION = "goal.decision"
 SOURCE_INBOX = "goal.inbox"
 SOURCE_EFFECT = "goal.effect"
 SOURCE_CLOCK = "clock"
+SOURCE_EXPECT = "perception:expect.window"
+SOURCE_MODE = "perception:owner.mode"
+#: M7 leaves. Each is an occurrence of a typed row, so a stale or late one is never a wake.
+M7_TAGS = frozenset(
+    {"expectation", "routine_deviation", "condition", "mode", "read_check", "bundle"}
+)
 
 
 class PredicateError(ValueError):
@@ -51,6 +74,16 @@ class Leaf:
             return SOURCE_EFFECT
         if self.tag == "at":
             return SOURCE_CLOCK
+        if self.tag in ("expectation", "routine_deviation"):
+            return SOURCE_EXPECT
+        if self.tag == "mode":
+            return SOURCE_MODE
+        if self.tag == "condition":
+            return f"condition:{self.body['source']}"
+        if self.tag == "read_check":
+            return f"read_check:{self.body['capability']}"
+        if self.tag == "bundle":
+            return f"bundle:{self.body['bundle_id']}"
         return f"perception:{self.body['kind']}"
 
 
@@ -69,6 +102,60 @@ def _uuid(value: object, what: str) -> str:
 def _closed(node: dict, names: set[str]) -> None:
     if set(node) != names:
         raise PredicateError(f"{node.get('tag')} requires exactly fields {sorted(names)}")
+
+
+def _name(value: object, what: str, pattern: re.Pattern[str]) -> str:
+    if type(value) is not str or not pattern.fullmatch(value):
+        raise PredicateError(f"{what} must be a bounded lowercase name")
+    return value
+
+
+def _read_value(node: dict) -> None:
+    value = node["value"]
+    if node["op"] in ORDERED_OPS:
+        # An ordered comparison reads a number; a bool is not one.
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise PredicateError("read_check ordered comparisons need a finite number")
+    elif type(value) is str:
+        if len(value.encode()) > MAX_NAME_BYTES:
+            raise PredicateError("read_check.value string exceeds 128 bytes")
+    elif type(value) not in (int, float, bool) or (
+        type(value) is not bool and not math.isfinite(value)
+    ):
+        raise PredicateError("read_check.value must be a finite number, boolean or string")
+
+
+def _validate_m7(tag: str, node: dict) -> None:
+    if tag == "expectation":
+        _closed(node, {"tag", "expectation_kind", "subject", "deviation"})
+        _name(node["expectation_kind"], "expectation.expectation_kind", NAME_PATTERN)
+        _uuid(node["subject"], "expectation.subject")
+        if node["deviation"] not in DEVIATIONS:
+            raise PredicateError("unknown expectation deviation")
+    elif tag == "routine_deviation":
+        _closed(node, {"tag", "routine_id"})
+        _uuid(node["routine_id"], "routine_deviation.routine_id")
+    elif tag == "condition":
+        _closed(node, {"tag", "source", "state"})
+        _name(node["source"], "condition.source", NAME_PATTERN)
+        if node["state"] not in CONDITION_STATES:
+            raise PredicateError("unknown condition state")
+    elif tag == "mode":
+        _closed(node, {"tag", "mode", "change"})
+        if node["mode"] not in MODES:
+            raise PredicateError("unknown mode")
+        if node["change"] not in MODE_CHANGES:
+            raise PredicateError("unknown mode change")
+    elif tag == "read_check":
+        _closed(node, {"tag", "capability", "field", "op", "value"})
+        _name(node["capability"], "read_check.capability", NAME_PATTERN)
+        _name(node["field"], "read_check.field", FIELD_PATTERN)
+        if node["op"] not in READ_OPS:
+            raise PredicateError("unknown read_check comparison")
+        _read_value(node)
+    else:
+        _closed(node, {"tag", "bundle_id"})
+        _name(node["bundle_id"], "bundle.bundle_id", NAME_PATTERN)
 
 
 def _validate(node: object, depth: int) -> int:
@@ -122,6 +209,8 @@ def _validate(node: object, depth: int) -> int:
             raise PredicateError("unknown transition state")
         if node["subject"] is not None:
             _uuid(node["subject"], "transition.subject")
+    elif tag in M7_TAGS:
+        _validate_m7(tag, node)
     else:
         raise PredicateError(f"unknown predicate tag {tag!r}")
     return 1

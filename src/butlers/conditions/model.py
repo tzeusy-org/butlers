@@ -61,7 +61,7 @@ class ConditionEvent:
     source: str
     position: int
     at: datetime
-    tag: str  # decision | owner_input | effect_settled | transition
+    tag: str  # decision | owner_input | effect_settled | transition | an M7 leaf tag
     data: Mapping[str, object]
     measurable: bool = True
     late: bool = False

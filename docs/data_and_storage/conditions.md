@@ -7,7 +7,9 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
 ## Contract
 
 - `predicate.validate` accepts only the closed AST: `decision`, `owner_input`,
-  `effect_settled`, `at`, `transition`, and `all`/`any` (at most 16 leaves, depth two, 8 KiB).
+  `effect_settled`, `at`, `transition`, the M7 leaves `expectation`, `routine_deviation`,
+  `condition`, `mode`, `read_check` and `bundle` (REQ-owner-watches-001), and `all`/`any` (at
+  most 16 leaves, depth two, 8 KiB).
   It mirrors `perception_private.valid_predicate`, so the dark `perception_bind` store and
   this evaluator accept the same predicates. There are no text expressions or model calls.
 - `register` refuses before any write when a leaf names an identity or source outside the
@@ -18,11 +20,15 @@ consumes `ConditionEvaluator.consume_fire`; it never evaluates predicates itself
   nothing is ever downgraded or re-floored. A different boundary still refuses.
 - `evaluate` takes trusted `ConditionEvent`s and an explicit `now`. Leaves latch, so
   replay, duplicates and reordering are idempotent. Results are three-valued; an
-  unmeasurable source is `unknown`, never `false`. Transition leaves ignore events that are
+  unmeasurable source is `unknown`, never `false`. Transition leaves and the M7 leaves (each an
+  occurrence of a typed row, never snapshot-witnessed) ignore events that are
   late, retracted, retraction records, or older than 10 minutes. A transition event stamped more
   than 60 seconds ahead of `now` is ignored, not refused, and does not move the cursor: a
   batch of trusted events cannot be rejected whole, and a redelivery counts once the clock
-  reaches it. An `at` leaf crossed by a
+  reaches it. A `read_check` leaf compares one declared field of a trusted typed read against a
+  literal (`eq`/`ne` on a number, boolean or string, `lt`/`le`/`gt`/`ge` on a number); a value of
+  another type, a non-finite number or an unmeasurable read is `unknown`, never `true`, and a read
+  result never authors a watch or rule. An `at` leaf crossed by a
   clock jump fires once (`fired:clock_late`) if the instance has not expired.
 - Events at or below the instance's immutable per-source replay floor (the cursors given at
   registration, part of its boundary) are ignored: a rearm that passes the prior generation's

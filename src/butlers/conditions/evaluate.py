@@ -6,13 +6,15 @@ Leaf values latch: once ``true`` a leaf stays ``true``; replay and reordering ar
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from butlers.conditions.model import ConditionEvent, Instance, Snapshot, State, Tri
-from butlers.conditions.predicate import SOURCE_CLOCK, Leaf, leaves
+from butlers.conditions.predicate import M7_TAGS, SOURCE_CLOCK, Leaf, leaves
 from butlers.core.goal_labels import Label
 from butlers.perception.model import instant
 
@@ -49,20 +51,84 @@ def initial_leaf(leaf: Leaf, snap: Snapshot) -> Tri:
         return Tri.TRUE if snap.effects.get(body["effect_id"]) in body["status_set"] else Tri.FALSE
     if leaf.tag == "at":
         return Tri.TRUE if snap.now >= instant(body["instant"]) else Tri.FALSE
-    return Tri.FALSE  # transition is an edge; a snapshot cannot witness one
+    return Tri.FALSE  # transition and the M7 leaves are occurrences; a snapshot cannot witness one
 
 
 def initial_leaves(predicate: dict, snap: Snapshot) -> dict[str, Tri]:
     return {leaf.path: initial_leaf(leaf, snap) for leaf in leaves(predicate)}
 
 
+EDGE_TAGS = frozenset({"transition"}) | M7_TAGS
+
+
+def _compare(op: str, read: object, want: object) -> bool | None:
+    """One typed comparison; None when the read value is not of the declared type."""
+    if type(want) is bool or type(read) is bool:
+        if type(want) is not type(read) or op not in ("eq", "ne"):
+            return None
+        return (read == want) is (op == "eq")
+    if type(want) is str:
+        if type(read) is not str or op not in ("eq", "ne"):
+            return None
+        return (read == want) is (op == "eq")
+    if type(read) not in (int, float) or (type(read) is float and not math.isfinite(read)):
+        return None
+    left, right = cast(float, read), cast(float, want)  # numeric: validated at registration
+    return {
+        "eq": left == right,
+        "ne": left != right,
+        "lt": left < right,
+        "le": left <= right,
+        "gt": left > right,
+        "ge": left >= right,
+    }[op]
+
+
+def _m7_leaf(leaf: Leaf, cur: Tri, ev: ConditionEvent) -> Tri:
+    """An M7 occurrence: a typed row naming the leaf's subject reached the leaf's state.
+
+    Off-schema or unmeasurable evidence is unknown and never true; a different row is ignored.
+    """
+    body, data = leaf.body, ev.data
+    tag = leaf.tag
+    if tag == "expectation":
+        keys = ("expectation_kind", "subject")
+        hit, state = "deviation", body["deviation"]
+    elif tag == "routine_deviation":
+        keys, hit, state = ("routine_id",), "deviation", "missed"
+    elif tag == "condition":
+        keys, hit, state = ("source",), "state", body["state"]
+    elif tag == "mode":
+        keys, hit, state = ("mode",), "change", body["change"]
+    elif tag == "read_check":
+        keys, hit, state = ("capability", "field"), None, None
+    else:  # bundle
+        keys, hit, state = ("bundle_id",), None, None
+    if any(data.get(key) != body[key] for key in keys):
+        return cur
+    if not ev.measurable:
+        return Tri.UNKNOWN
+    if tag == "read_check":
+        verdict = _compare(body["op"], data.get("value"), body["value"])
+        if verdict is None:
+            return Tri.UNKNOWN
+        return Tri.TRUE if verdict else (Tri.FALSE if cur is Tri.UNKNOWN else cur)
+    if hit is None or data.get(hit) == state:
+        return Tri.TRUE
+    return Tri.FALSE if cur is Tri.UNKNOWN else cur
+
+
 def _event_leaf(leaf: Leaf, cur: Tri, ev: ConditionEvent, now: datetime) -> Tri:
     body, data = leaf.body, ev.data
     if cur is Tri.TRUE or ev.tag != leaf.tag or ev.source != leaf.source:
         return cur
+    if leaf.tag in EDGE_TAGS and (
+        ev.late or ev.retracted or ev.record or now - ev.at > REALTIME_HORIZON
+    ):
+        return cur  # historical evidence is recorded elsewhere, never a wake
+    if leaf.tag in M7_TAGS:
+        return _m7_leaf(leaf, cur, ev)
     if leaf.tag == "transition":
-        if ev.late or ev.retracted or ev.record or now - ev.at > REALTIME_HORIZON:
-            return cur  # historical evidence is recorded elsewhere, never a wake
         if data.get("kind") != body["kind"] or data.get("subject") != body["subject"]:
             return cur
         if not ev.measurable:
@@ -207,4 +273,4 @@ def _eligible(inst: Instance, ev: ConditionEvent, now: datetime) -> bool:
     if floor is not None and ev.position <= floor:
         return False  # replay of an interval an earlier generation/run already consumed
     # A transition not yet true is neither evidence nor consumed, so a redelivery counts.
-    return not (ev.tag == "transition" and ev.at - now > FUTURE_EVENT_SKEW)
+    return not (ev.tag in EDGE_TAGS and ev.at - now > FUTURE_EVENT_SKEW)
