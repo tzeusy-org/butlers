@@ -1280,7 +1280,9 @@ def _household_from_workspace_rows(
         (
             {
                 "time_role": row.get("source_time_role"),
-                "metadata": row.get("event_metadata"),
+                # One effective-occurrence rule: an exception's own metadata (its attendees) wins
+                # over the series', as the free-slot search and the card do in SQL.
+                "metadata": _effective_metadata(row),
                 "starts_at": row["instance_starts_at"],
                 "ends_at": row["instance_ends_at"],
                 "all_day": row.get("all_day"),
@@ -1290,10 +1292,26 @@ def _household_from_workspace_rows(
                 "event_type": row.get("event_type"),
             }
             for row in rows
+            if "cancelled" not in (row.get("event_status"), row.get("instance_status"))
         ),
         start=start,
         end=end,
     )
+
+
+def _effective_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The occurrence's metadata: the series' with the instance's keys laid over it."""
+    merged: dict[str, Any] = {}
+    for key in ("event_metadata", "instance_metadata"):
+        value = row.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        if isinstance(value, dict):
+            merged.update(value)
+    return merged
 
 
 @dataclass

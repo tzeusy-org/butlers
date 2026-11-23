@@ -27,6 +27,11 @@ down_revision = "core_361"
 branch_labels = None
 depends_on = None
 
+# The foreign key takes SHARE ROW EXCLUSIVE on the shared public.entities in every schema's run, so
+# the whole upgrade (catalog read and DDL) is serialized across schemas (core_243, core_318).
+_LOCK = (
+    "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_365:calendar-source-subject', 0))"
+)
 _FK = "calendar_sources_role_subject_entity_fk"
 _CHECK = "calendar_sources_role_subject_role_check"
 _SUBJECT_ROLES = "'household_member', 'other_person', 'team'"
@@ -63,6 +68,7 @@ def _constraints() -> set[str]:
 
 
 def upgrade() -> None:
+    op.execute(_LOCK)
     if (
         not op.get_bind()
         .execute(text("SELECT to_regclass('calendar_sources') IS NOT NULL"))

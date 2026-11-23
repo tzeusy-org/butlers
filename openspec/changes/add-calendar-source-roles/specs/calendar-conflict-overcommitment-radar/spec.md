@@ -13,7 +13,7 @@ Scope: v1-mandatory
 
 #### Scenario: A partner's calendar adds no conflict or load
 
-- **WHEN** a confirmed event on a `household_member` source, with no `self` attendee, overlaps an owner-calendar event
+- **WHEN** a non-cancelled event on a `household_member` source, with no `self` attendee, overlaps an owner-calendar event
 - **THEN** no overlap or back-to-back issue is reported
 - **AND** its hours do not contribute to an overloaded-day issue
 

@@ -34,6 +34,16 @@ def _run(db_url: str, statement: str, params: dict | None = None) -> list[tuple]
         engine.dispose()
 
 
+def _run_in(db_url: str, schema: str, statement: str) -> list[tuple]:
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(f'SET LOCAL search_path TO "{schema}", public'))
+            return [tuple(r) for r in connection.execute(text(statement)).fetchall()]
+    finally:
+        engine.dispose()
+
+
 def _upgraded(postgres_container) -> tuple[str, object]:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
@@ -79,29 +89,43 @@ def test_the_subject_is_refused_for_a_role_that_has_no_subject(postgres_containe
         )
 
 
-def test_a_rerun_is_a_noop_and_downgrade_keeps_the_column(postgres_container) -> None:
+def test_two_schemas_each_get_the_column_its_foreign_key_and_its_check(
+    postgres_container,
+) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    for schema in ("general", "travel"):
+        command.upgrade(
+            _build_alembic_config(db_url, chains=["core"], target_schema=schema), "core_365"
+        )
+    for schema in ("general", "travel"):
+        found = _run_in(
+            db_url,
+            schema,
+            "SELECT conname FROM pg_constraint WHERE conrelid = to_regclass('calendar_sources') "
+            "AND conname IN ('calendar_sources_role_subject_entity_fk', "
+            "'calendar_sources_role_subject_role_check') ORDER BY conname",
+        )
+        assert [row[0] for row in found] == [
+            "calendar_sources_role_subject_entity_fk",
+            "calendar_sources_role_subject_role_check",
+        ], schema
+        assert _run_in(
+            db_url,
+            schema,
+            "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+            "AND table_name = 'calendar_sources' AND column_name = 'role_subject_entity_id'",
+        ), schema
+
+
+def test_downgrade_keeps_the_column_and_a_reupgrade_changes_nothing(postgres_container) -> None:
     db_url, config = _upgraded(postgres_container)
-    state = _run(
-        db_url,
-        "SELECT c.relfilenode::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-        "WHERE n.nspname = current_schema() AND c.relname = 'calendar_sources'",
-    )
     command.downgrade(config, "core_361")
     assert _run(
         db_url,
         "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
         "AND table_name = 'calendar_sources' AND column_name = 'role_subject_entity_id'",
     )
-    command.upgrade(config, "core_365")
-    assert (
-        _run(
-            db_url,
-            "SELECT c.relfilenode::text FROM pg_class c JOIN pg_namespace n "
-            "ON n.oid = c.relnamespace WHERE n.nspname = current_schema() "
-            "AND c.relname = 'calendar_sources'",
-        )
-        == state
-    )
+    command.upgrade(config, "core_365")  # the DDL no-op itself is pinned by the catalog-skip tests
 
 
 def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -> None:

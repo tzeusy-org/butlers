@@ -124,7 +124,7 @@ calendar it is. The owner SHALL set it through `POST /api/calendar/sources/role`
 `household_member`, `other_person` or `team` role, with basis `owner_confirmed`; it SHALL be null
 for every other role, and discovery SHALL NOT set or overwrite it.
 
-A typed read `household_time` SHALL return the confirmed events on `household_member`,
+A typed read `household_time` SHALL return the non-cancelled events (tentative included, since that time is still occupied) on `household_member`,
 `other_person` and `team` sources that do not assert the owner's time, grouped by subject. Each
 event SHALL carry only its time window, whether it is all-day, its source role and its subject's
 display name: no title, location, description or attendee field SHALL leave the read, for any

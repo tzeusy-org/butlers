@@ -160,28 +160,31 @@ async def run_calendar_context_producer(
     rows = await pool.fetch(
         """
         SELECT ce.title, ce.starts_at, ce.ends_at, ce.timezone, ce.all_day, ce.metadata,
-               ce.event_type, cs.time_role
+               ce.event_type, cs.time_role, ce.status
         FROM calendar_events ce
         JOIN calendar_sources cs ON cs.id = ce.source_id
-        WHERE ce.status = 'confirmed'
+        WHERE ce.status <> 'cancelled'
           AND (ce.all_day = false OR ce.event_type = 'outOfOffice')
           AND ce.starts_at <= now()
           AND ce.ends_at > now()
         ORDER BY ce.starts_at DESC
         """
     )
+    # Tentative events are still occupied time for household context, but the owner's own
+    # signals keep to confirmed events as before.
+    owner_rows = [r for r in rows if r.get("status", "confirmed") == "confirmed"]
     # Only an event on a source whose role asserts the owner's time counts (REQ-context-bus-018):
     # another person's meeting or out of office is not the owner's state.
     out_of_office = any(
         candidate.get("event_type") == OUT_OF_OFFICE
         and not is_explicit_butler_generated(candidate["metadata"])
         and asserts_owner_time(candidate.get("time_role"), candidate["metadata"])
-        for candidate in rows
+        for candidate in owner_rows
     )
     # (row, signal) for every attended meeting/focus candidate, latest start first.
     candidates = [
         (candidate, _calendar_candidate_signal(candidate))
-        for candidate in rows
+        for candidate in owner_rows
         if not is_status_event(candidate.get("event_type"))
         and is_calendar_analysis_candidate(
             metadata=candidate["metadata"],

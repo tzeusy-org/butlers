@@ -1725,3 +1725,39 @@ async def test_a_household_event_sets_no_signal_but_is_reported():
 async def test_no_household_key_when_there_is_none():
     result, _, _ = await _run_calendar([])
     assert "household_events" not in result
+
+
+async def test_a_tentative_household_event_counts_as_context_but_never_as_owner_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative partner event",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    time_role="household_member",
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["household_events"] == 1 and result["signal"] is None
+    set_context.assert_not_awaited()
+
+
+async def test_a_tentative_owner_event_still_sets_no_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative owner meeting",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    metadata=_SELF_ATTENDEE,
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["signal"] is None
+    set_context.assert_not_awaited()
