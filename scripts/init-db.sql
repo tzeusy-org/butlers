@@ -57,6 +57,10 @@ DECLARE
     _amendment_target_oid OID;
     _amendment_target_safe BOOLEAN;
     _bootstrap_oid OID;
+    _rotate_from TEXT;
+    _rotate_oid OID;
+    _rotate_owned BIGINT;
+    _rotate_default_acls BIGINT;
 BEGIN
     -- Clear even a previous failed invocation's session snapshots before checks.
     PERFORM set_config('butlers.bootstrap_amendment_oid', '', false);
@@ -76,6 +80,44 @@ BEGIN
         false
     ) THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap requires a cluster superuser';
+    END IF;
+
+    -- MIGRATION_ROLE_ROTATION_READ_ONLY_PREFLIGHT (bu-dss7he.6 S5): opt-in through
+    -- butlers.rotate_migration_role_from. The old login must own nothing here, which is
+    -- the state `butlers db transfer-ownership` leaves. That is the same owned set it
+    -- checks: everything except default privileges, which REASSIGN OWNED leaves behind and
+    -- this replay re-creates for the connecting user. The pins move further down.
+    _rotate_from := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '');
+    IF _rotate_from IS NOT NULL THEN
+        IF _rotate_from = _migration_user::text THEN
+            RAISE EXCEPTION 'migration-role rotation needs a connecting user other than %',
+                _rotate_from;
+        END IF;
+        SELECT oid INTO _rotate_oid FROM pg_roles WHERE rolname::text = _rotate_from;
+        IF _rotate_oid IS NULL THEN
+            RAISE EXCEPTION 'migration-role rotation: role % does not exist', _rotate_from;
+        END IF;
+        SELECT count(*) FILTER (WHERE d.classid <> 'pg_catalog.pg_default_acl'::regclass),
+               count(*) FILTER (WHERE d.classid = 'pg_catalog.pg_default_acl'::regclass)
+          INTO _rotate_owned, _rotate_default_acls
+          FROM pg_shdepend AS d
+         WHERE d.refclassid = 'pg_catalog.pg_authid'::regclass
+           AND d.refobjid = _rotate_oid
+           AND d.deptype = 'o'
+           AND d.dbid = (SELECT oid FROM pg_database WHERE datname = current_database());
+        IF _rotate_owned > 0 OR EXISTS (
+            SELECT FROM pg_database
+            WHERE datname = current_database() AND datdba = _rotate_oid
+        ) THEN
+            RAISE EXCEPTION
+                'migration-role rotation refused: % still owns % object(s) here; run butlers db transfer-ownership first',
+                _rotate_from, _rotate_owned;
+        END IF;
+        IF _rotate_default_acls > 0 THEN
+            RAISE NOTICE
+                'migration-role rotation: % keeps % default-privilege entries; they govern only objects it creates',
+                _rotate_from, _rotate_default_acls;
+        END IF;
     END IF;
 
     _amendment_oid := to_regclass('public.insight_amendments');
@@ -133,6 +175,48 @@ BEGIN
                        COALESCE(_amendment_target_oid::text, ''), false);
 END;
 $$;
+
+-- ── Migration-role rotation (bu-dss7he.6 S5) ────────────────────────────────
+-- Opt-in, superuser only: PGOPTIONS="-c butlers.connecting_user=<migrator>
+--   -c butlers.rotate_migration_role_from=<old shared login>". Unset, this block does
+-- nothing. Set, the preflight above has already refused unless the old login owns
+-- nothing here. This block then re-points the six bootstrap_configuration pins from the
+-- old login to the connecting user, all six or none (one DO block). See
+-- docs/data_and_storage/migrator-login.md. DND fencing objects and purpose owners are
+-- not touched.
+DO $migration_role_rotation$
+DECLARE
+    _old NAME := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '')::name;
+    _new NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    _pin REGCLASS;
+    _current NAME;
+BEGIN
+    IF _old IS NULL THEN
+        RETURN;
+    END IF;
+    FOREACH _pin IN ARRAY ARRAY[
+        to_regclass('restore_drill_executor_admin.bootstrap_configuration'),
+        to_regclass('dnd_generation_admin.bootstrap_configuration'),
+        to_regclass('runtime_attention_admin.bootstrap_configuration'),
+        to_regclass('dashboard_attention.bootstrap_configuration'),
+        to_regclass('dashboard_stepup.bootstrap_configuration'),
+        to_regclass('perception_admin.bootstrap_configuration')
+    ] LOOP
+        CONTINUE WHEN _pin IS NULL;
+        EXECUTE format('SELECT migration_role FROM %s WHERE singleton', _pin) INTO _current;
+        IF _current IS NULL OR _current = _new THEN
+            CONTINUE;
+        END IF;
+        IF _current <> _old THEN
+            RAISE EXCEPTION 'migration-role rotation refused: % pins %, not %',
+                _pin, _current, _old;
+        END IF;
+        EXECUTE format('UPDATE %s SET migration_role = $1 WHERE singleton', _pin) USING _new;
+    END LOOP;
+END
+$migration_role_rotation$;
 
 -- ── Extensions ────────────────────────────────────────────────────────────────
 
