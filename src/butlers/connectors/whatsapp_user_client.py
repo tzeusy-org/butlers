@@ -2320,15 +2320,14 @@ class WhatsAppUserClientConnector:
         # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A
         # failed write raises, so nothing is submitted and the batch keeps its hold/retry
         # path with the checkpoint unmoved; a failed submit below keeps the row.
-        if self._db_pool is not None:
-            try:
-                await commit_envelope(self._db_pool, envelope)
-            except EvidenceNotCommitted as exc:
-                logger.error(
-                    "Evidence journal write failed; not submitting",
-                    extra={"failure_class": exc.reason},
-                )
-                raise
+        try:
+            await commit_envelope(self._db_pool, envelope)
+        except EvidenceNotCommitted as exc:
+            logger.error(
+                "Evidence journal write failed; not submitting",
+                extra={"failure_class": exc.reason},
+            )
+            raise
         try:
             result = await self._mcp_client.call_tool("ingest", envelope)
             if isinstance(result, dict) and result.get("status") == "error":

@@ -143,10 +143,13 @@ async def test_a_new_provider_revision_appends_a_second_row() -> None:
 
 
 @pytest.mark.parametrize(("build", "channel", "method"), _ADOPTERS)
-async def test_with_no_database_the_submit_still_runs(build, channel, method) -> None:
+async def test_with_no_database_nothing_is_submitted(build, channel, method) -> None:
+    """Fail closed: no journal pool means no evidence, so no submit and no acknowledgement."""
     call_tool = AsyncMock(return_value={"status": "accepted"})
-    await getattr(build(None, call_tool), method)(_envelope(channel))
-    call_tool.assert_awaited_once()
+    with pytest.raises(journal.EvidenceNotCommitted) as raised:
+        await getattr(build(None, call_tool), method)(_envelope(channel))
+    assert raised.value.reason == "no_pool"
+    call_tool.assert_not_awaited()
 
 
 async def test_the_stored_raw_is_the_inbox_equivalent_at_each_tier() -> None:

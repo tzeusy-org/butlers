@@ -11,6 +11,7 @@ import importlib.util
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import asyncpg
 import pytest
@@ -20,6 +21,12 @@ from sqlalchemy.exc import DBAPIError
 from alembic import command
 from butlers.connectors import evidence_journal as journal
 from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import (
+    create_migration_db,
+    init_db_sql_for_dbapi,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -141,3 +148,104 @@ async def test_only_the_connector_writer_can_insert_and_read(db_pool: asyncpg.Po
         ("connector_writer", "SELECT"),
         ("connector_writer", "INSERT"),
     }
+
+
+def _journal_exists(url: str) -> bool:
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            return (
+                conn.execute(text("SELECT to_regclass('connectors.evidence_journal')")).scalar()
+                is not None
+            )
+    finally:
+        engine.dispose()
+
+
+def test_two_schema_chains_share_the_journal_and_only_the_last_downgrade_drops_it(
+    postgres_container,
+) -> None:
+    """core_361 runs once per schema-local core chain; the shared table outlives all but the last."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    below = _below_core_361().removeprefix("core@")
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+    command.upgrade(first, "core_361")
+    command.upgrade(second, "core_361")  # replays over the table, triggers and grants
+    assert _journal_exists(db_url)
+
+    command.downgrade(first, below)
+    assert _journal_exists(db_url), "another schema still depends on the journal"
+
+    command.downgrade(second, below)
+    assert not _journal_exists(db_url)
+
+
+def test_the_last_schema_refuses_its_downgrade_while_rows_exist(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    below = _below_core_361().removeprefix("core@")
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    second = _build_alembic_config(db_url, chains=["core"], target_schema="health")
+    command.upgrade(first, "core_361")
+    command.upgrade(second, "core_361")
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO connectors.evidence_journal (source, endpoint_identity, "
+                    "provider_id, observed_at, capture_schema_version, ingestion_tier, raw) "
+                    "VALUES ('gmail', 'e', 'p', now(), 1, 'full', '{}'::jsonb)"
+                )
+            )
+    finally:
+        engine.dispose()
+    command.downgrade(first, below)  # not the last schema: no refusal, nothing dropped
+    assert _journal_exists(db_url)
+    with pytest.raises(DBAPIError, match="downgrade refused"):
+        command.downgrade(second, below)
+    assert _journal_exists(db_url)
+
+
+def _rerun_init_db(bootstrap_url: str, migration_url: str) -> None:
+    """Replay the checked-in bootstrap, whose blanket connector grants predate the journal."""
+    engine = create_engine(bootstrap_url, isolation_level="AUTOCOMMIT")
+    raw = engine.raw_connection()
+    try:
+        raw.autocommit = True
+        with raw.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('butlers.connecting_user', %s, false)",
+                (unquote(urlparse(migration_url).username or ""),),
+            )
+            cursor.execute(init_db_sql_for_dbapi())
+    finally:
+        raw.close()
+        engine.dispose()
+
+
+def test_the_connector_writer_cannot_rewrite_the_journal_even_after_a_bootstrap_replay(
+    postgres_container,
+) -> None:
+    db_name = migration_db_name()
+    db_url = create_migration_db(postgres_container, db_name)
+    config = _build_alembic_config(db_url, chains=["core"])
+    command.upgrade(config, "core_361")
+    _rerun_init_db(migration_bootstrap_db_url(postgres_container, db_name), db_url)
+    engine = create_engine(db_url)
+    try:
+        with engine.connect() as conn:
+            held = {
+                privilege
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE")
+                if conn.execute(
+                    text(
+                        "SELECT has_table_privilege('connector_writer', "
+                        "'connectors.evidence_journal', :p)"
+                    ),
+                    {"p": privilege},
+                ).scalar_one()
+            }
+        assert held == {"SELECT", "INSERT"}
+    finally:
+        engine.dispose()

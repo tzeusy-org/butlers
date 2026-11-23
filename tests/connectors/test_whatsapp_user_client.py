@@ -50,6 +50,14 @@ def connector() -> WhatsAppUserClientConnector:
     return WhatsAppUserClientConnector(config, cursor_pool=MagicMock())
 
 
+@pytest.fixture
+def journal_commits(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """The evidence-journal write (its own tests cover it) so a submit test reaches the ingest."""
+    commit = AsyncMock(return_value=True)
+    monkeypatch.setattr("butlers.connectors.whatsapp_user_client.commit_envelope", commit)
+    return commit
+
+
 def test_single_event_envelope_contract(connector: WhatsAppUserClientConnector) -> None:
     """Single event carries ingest.v1 schema, whatsapp source, mapped event/sender fields,
     and the 'whatsapp:<endpoint>:<msg_id>' idempotency key."""
@@ -570,6 +578,7 @@ async def test_backfill_failure_log_uses_failure_class_only(
 
 
 async def test_submit_to_ingest_success_log_is_content_blind(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -594,6 +603,7 @@ async def test_submit_to_ingest_success_log_is_content_blind(
 
 
 async def test_submit_to_ingest_error_result_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -611,6 +621,7 @@ async def test_submit_to_ingest_error_result_raises_content_blind_failure(
 
 
 async def test_submit_to_ingest_exception_raises_content_blind_failure(
+    journal_commits: AsyncMock,
     connector: WhatsAppUserClientConnector,
     caplog: pytest.LogCaptureFixture,
 ) -> None:

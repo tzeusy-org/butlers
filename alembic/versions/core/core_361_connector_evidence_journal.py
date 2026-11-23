@@ -20,10 +20,15 @@ Shape:
   - ``raw`` holds exactly what the envelope's ``message_inbox.raw_payload`` would hold at its
     ingestion tier, after the bearer scrub; it never holds more.
 
-Grants: INSERT and SELECT to ``connector_writer`` only. A Chronicler read grant comes with its
-first consumer (bu-uhbhzq.11/.12). The identity column needs no sequence grant.
+Grants: INSERT and SELECT to ``connector_writer`` only; UPDATE, DELETE and TRUNCATE are revoked
+explicitly because the connectors schema carries blanket default privileges (scripts/init-db.sql
+re-asserts the revoke after its blanket grant). A Chronicler read grant comes with its first
+consumer (bu-uhbhzq.11/.12). The identity column needs no sequence grant.
 
-The downgrade refuses while the table has rows.
+The relation is shared across schema-local core chains, so the migration is replay-safe: an
+advisory lock serialises installs, triggers are dropped before they are created, and the downgrade
+drops the shared table only when no other schema-local chain is still at core_361 or later
+(core_246 pattern). It refuses while the table has rows.
 """
 
 from __future__ import annotations
@@ -48,7 +53,41 @@ def _quote_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _installation_count() -> int:
+    """Count schema-local core chains still at core_361 or later (includes this one)."""
+    bind = op.get_bind()
+    schemas = bind.exec_driver_sql(
+        """
+        SELECT namespace.nspname
+        FROM pg_class version_table
+        JOIN pg_namespace namespace ON namespace.oid = version_table.relnamespace
+        WHERE version_table.relname = 'alembic_version'
+          AND version_table.relkind IN ('r', 'p')
+          AND left(namespace.nspname, 3) <> 'pg_'
+          AND namespace.nspname <> 'information_schema'
+        """
+    ).scalars()
+    quote = bind.dialect.identifier_preparer.quote
+    count = 0
+    for schema in schemas:
+        installed = bind.exec_driver_sql(
+            f"""
+            SELECT EXISTS (
+                SELECT 1 FROM {quote(schema)}.alembic_version
+                WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
+                    THEN substring(version_num FROM 6)::integer >= 361
+                    ELSE false END
+            )
+            """
+        ).scalar()
+        count += int(bool(installed))
+    return count
+
+
 def upgrade() -> None:
+    op.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_361:evidence-journal', 0))"
+    )
     op.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {_TABLE} (
@@ -96,14 +135,14 @@ def upgrade() -> None:
     )
     op.execute(
         f"""
-        CREATE TRIGGER evidence_journal_append_only
+        CREATE OR REPLACE TRIGGER evidence_journal_append_only
         BEFORE UPDATE OR DELETE ON {_TABLE}
         FOR EACH ROW EXECUTE FUNCTION {_GUARD}()
         """
     )
     op.execute(
         f"""
-        CREATE TRIGGER evidence_journal_no_truncate
+        CREATE OR REPLACE TRIGGER evidence_journal_no_truncate
         BEFORE TRUNCATE ON {_TABLE}
         FOR EACH STATEMENT EXECUTE FUNCTION {_GUARD}()
         """
@@ -115,6 +154,8 @@ def upgrade() -> None:
             IF EXISTS (
                 SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)}
             ) THEN
+                REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {_TABLE}
+                    FROM {_quote_ident(_CONNECTOR_ROLE)};
                 GRANT SELECT, INSERT ON TABLE {_TABLE} TO {_quote_ident(_CONNECTOR_ROLE)};
             END IF;
         END;
@@ -124,6 +165,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_361:evidence-journal', 0))"
+    )
+    if _installation_count() > 1:
+        # Another schema-local chain still depends on the shared journal.
+        return
     op.execute(
         f"""
         DO $$

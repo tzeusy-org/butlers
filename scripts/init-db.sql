@@ -817,6 +817,15 @@ BEGIN
         _connector_role
     );
 
+    -- connectors.evidence_journal is append-only evidence (core_361). The blanket
+    -- connector DML grants above must not leave the writer able to rewrite it.
+    IF to_regclass('connectors.evidence_journal') IS NOT NULL THEN
+        EXECUTE format(
+            'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE connectors.evidence_journal FROM %I',
+            _connector_role
+        );
+    END IF;
+
     -- Cost claims are append/lifecycle evidence. Generic public-table bootstrap
     -- grants must not make their current assertion, resolution, or audit rows
     -- deletable. Forced RLS remains the authority fence; these revokes keep the

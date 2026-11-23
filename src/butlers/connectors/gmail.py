@@ -3695,8 +3695,7 @@ class GmailConnectorRuntime:
             # Evidence before acknowledgement (bu-uhbhzq.4): the journal row is the commit
             # point. A failed write raises, so nothing is submitted and the cursor holds; a
             # failed submit below keeps the row. Duplicates and replays collapse on its key.
-            if self._db_pool is not None:
-                await commit_envelope(self._db_pool, envelope)
+            await commit_envelope(self._db_pool, envelope)
             result = await self._mcp_client.call_tool("ingest", envelope)
 
             # Check for tool-level error response
