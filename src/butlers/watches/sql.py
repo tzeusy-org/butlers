@@ -63,12 +63,15 @@ def _values(watch: Watch) -> tuple[Any, ...]:
 
 
 class PostgresWatchStore:
-    def __init__(self, pool: asyncpg.Pool, *, lock_pool: asyncpg.Pool | None = None) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, lock_pool: asyncpg.Pool) -> None:
         # ``lock_pool`` is a small pool of its own for the per-watch session locks. A transition
         # holds one of its connections while it uses ``pool`` and the evaluator's pool, so it must
-        # not share either (a shared pool of one deadlocks: the #6015 lesson).
+        # not share either (a shared pool of one deadlocks: the #6015 lesson). It is required, and
+        # the store refuses its own pool; keeping it apart from the evaluator's is the caller's job.
+        if lock_pool is pool:
+            raise ValueError("lock_pool must be a pool of its own, not the store's pool")
         self._pool = pool
-        self._lock_pool = lock_pool or pool
+        self._lock_pool = lock_pool
         self._local: dict[str, asyncio.Lock] = {}
 
     @asynccontextmanager

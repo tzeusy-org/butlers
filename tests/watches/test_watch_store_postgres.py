@@ -59,22 +59,47 @@ async def pools(watches_url, postgres_container):
             yield owner, runtime
 
 
+@pytest.fixture
+async def lock_pool(watches_url):
+    async with asyncpg.create_pool(
+        watches_url, setup=_as_switchboard, min_size=1, max_size=4
+    ) as locks:
+        yield locks
+
+
 class TestPostgresWatchStoreContract(WatchStoreContract):
+    @pytest.fixture(autouse=True)
+    def _bind(self, pools, lock_pool):
+        self.owner, self.runtime = pools
+        self.locks = lock_pool
+
+    def make_store(self):
+        return PostgresWatchStore(self.runtime, lock_pool=self.locks)
+
+
+class TestLockPoolIsRequired:
     @pytest.fixture(autouse=True)
     def _bind(self, pools):
         self.owner, self.runtime = pools
 
-    def make_store(self):
-        return PostgresWatchStore(self.runtime)
+    async def test_it_cannot_be_omitted(self):
+        with pytest.raises(TypeError):
+            PostgresWatchStore(self.runtime)  # type: ignore[call-arg]
+
+    async def test_it_cannot_be_the_store_pool(self):
+        with pytest.raises(ValueError, match="pool of its own"):
+            PostgresWatchStore(self.runtime, lock_pool=self.runtime)
 
 
 class TestCrossProcessSerialization:
     @pytest.fixture(autouse=True)
-    def _bind(self, pools):
+    def _bind(self, pools, lock_pool):
         self.owner, self.runtime = pools
+        self.locks = lock_pool
 
     async def test_two_store_instances_exclude_each_other_through_the_advisory_lock(self):
-        first, second = PostgresWatchStore(self.runtime), PostgresWatchStore(self.runtime)
+        first = PostgresWatchStore(self.runtime, lock_pool=self.locks)
+        second = PostgresWatchStore(self.runtime, lock_pool=self.locks)
         inside, overlap = 0, 0
 
         async def hold(store):
@@ -147,11 +172,12 @@ class TestNoPoolDeadlock:
 
 class TestTableGuards:
     @pytest.fixture(autouse=True)
-    def _bind(self, pools):
+    def _bind(self, pools, lock_pool):
         self.owner, self.runtime = pools
+        self.locks = lock_pool
 
     async def seed(self, watch_id="w1", **changes):
-        store = PostgresWatchStore(self.runtime)
+        store = PostgresWatchStore(self.runtime, lock_pool=self.locks)
         return await store.write(make_watch(watch_id, **changes), expected_version=None, cap=50)
 
     @pytest.mark.parametrize(
