@@ -80,7 +80,7 @@ export function SourceRoleSelect({ source }: SourceRoleSelectProps) {
             ? "Clear (go back to the assumed role)"
             : role === "unclassified"
               ? "Whose? Not set (counts only if invited)"
-              : `${ROLE_LABELS[role]} (assumed)`}
+              : `${ROLE_LABELS[role] ?? role} (assumed)`}
         </option>
         {CHOICES.map((choice) => (
           <option key={choice} value={choice}>

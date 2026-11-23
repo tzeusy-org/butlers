@@ -59,6 +59,14 @@ describe("SourceRoleSelect", () => {
     expect(host.textContent).not.toContain("counts only if invited");
   });
 
+  it("shows a role this build does not know by its raw name, never undefined", () => {
+    const host = render(
+      source({ time_role: "guest" as never, role_basis: "provider_inferred" }),
+    );
+    expect(host.textContent).toContain("guest (assumed)");
+    expect(host.textContent).not.toContain("undefined");
+  });
+
   it("shows a confirmed role as selected", () => {
     const host = render(source({ time_role: "household_member", role_basis: "owner_confirmed" }));
     expect(host.querySelector("select")!.value).toBe("household_member");
