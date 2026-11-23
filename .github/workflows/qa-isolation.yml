@@ -75,20 +75,31 @@ jobs:
           echo "IMAGE=k3d-qa-registry.localhost:5111/qa-probe@${digest}" >> "${GITHUB_ENV}"
       - name: Render and apply the investigator machinery
         run: |
+          # The same flag set tests/scripts/test_chart_qa_investigator.py renders with: an
+          # investigator needs egress profiles (default-deny plus its DNS-only policy), which
+          # in turn need every required site and the gateway credential fixture.
           docker run --rm -v "${PWD}:/repo:ro" alpine/helm:3.17.3 \
             template butlers /repo/deploy/helm/butlers --namespace "${NAMESPACE}" \
             -f /repo/deploy/helm/butlers/values.yaml -f /repo/deploy/helm/butlers/values.dev.yaml \
+            -f /repo/tests/fixtures/egress-gateway-values.yaml \
             --set qaInvestigator.enabled=true \
             --set "qaInvestigator.imageDigest=${DIGEST}" \
             --set image.repository=k3d-qa-registry.localhost:5111/qa-probe \
             --set image.tag=ci --set frontendImage.tag=ci \
-            --set egressProfiles.enabled=false --set egressPolicy.enabled=true \
+            --set egressProfiles.enabled=true \
+            --set servicePlaneAuth.enabled=true --set butlersControl.enabled=true \
+            --set egressProfiles.sites.database.namespace=postgres-dev \
+            --set egressProfiles.sites.otlp.cidr=198.51.100.9/32 \
+            --set egressProfiles.sites.home-assistant.cidr=198.51.100.10/32 \
+            --set egressProfiles.sites.offsite-backup.cidr=198.51.100.11/32 \
+            --set egressProfiles.sites.kube-apiserver.cidr=198.51.100.12/32 \
             --set trackerEgress.enabled=true --set 'trackerEgress.deniedCidrs={192.0.2.1/32}' \
+            --set egressPolicy.enabled=false \
             --set connectors.telegram-user.enabled=false \
             --set database.host=postgres.invalid \
             --show-only templates/qa-investigator.yaml \
             --show-only templates/networkpolicy.yaml \
-            --show-only templates/tracker-egress.yaml > rendered.yaml
+            --show-only templates/egress-profiles.yaml > rendered.yaml
           kubectl apply -f rendered.yaml
       - name: Verify isolation
         run: |
