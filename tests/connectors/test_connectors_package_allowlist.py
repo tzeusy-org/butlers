@@ -21,6 +21,7 @@ CONNECTOR_FILES = {
     "db_role.py": "K",
     "discretion.py": "K",
     "email_spans.py": "K",
+    "evidence_journal.py": "K",
     "filtered_event_buffer.py": "K",
     "gmail.py": "E",
     "gmail_policy.py": "H:gmail",
