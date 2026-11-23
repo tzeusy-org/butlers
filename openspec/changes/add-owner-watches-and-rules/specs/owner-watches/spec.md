@@ -105,7 +105,7 @@ Scope: v1-reserved
 
 ### Requirement: Finance alert configuration migrates to watches without duplicate alerting
 
-Finance `alert_config` facts SHALL migrate to watches through an explicit type-by-type mapping covering `large_transaction`, `budget_exceeded`, `new_merchant` and `price_change`. Each type SHALL map to a watch shape, be covered by its existing single-output path, or be shown blind. `large_transaction` becomes a watch and its response flag SHALL be suppressed while the watch exists; `price_change`, `budget_exceeded` and `new_merchant` are covered by their existing single-output paths and create no watch. A type no evaluator measures today SHALL be shown blind or refused. During and after migration a qualifying event SHALL produce one owner output: the legacy alert path and the watch SHALL NOT both notify. A migrated watch SHALL carry the same threshold, currency and enabled state as its source fact, and migration SHALL NOT enable a disabled alert.
+Finance `alert_config` facts SHALL migrate to watches through an explicit type-by-type mapping covering `large_transaction`, `budget_exceeded`, `new_merchant` and `price_change`. Each type SHALL map to a watch shape, be covered by an existing single-output path, or be shown blind. `large_transaction` becomes a watch, and its response flag SHALL be suppressed while the watch is active or paused and restored when the watch is deleted or expires. For `price_change`, `budget_exceeded` and `new_merchant` the stored `alert_config` fact does not govern the existing path, before or after migration (price changes are detected unconditionally, budget insights come from `budget_status` thresholds and new merchants from `anomaly_scan`), and no watch is created. Those three configs SHALL be shown to the owner as superseded or blind and SHALL NOT be shown as active alert settings. During and after migration a qualifying event SHALL produce one owner output: the legacy alert path and the watch SHALL NOT both notify. A migrated `large_transaction` watch SHALL carry the same threshold, currency and enabled state as its source fact, and migration SHALL NOT enable a disabled alert.
 
 ID: REQ-owner-watches-005
 Source: bu-4c7nvp.1.5; roster/finance/tools/alerts.py
@@ -131,7 +131,7 @@ Scope: v1-reserved
 Obligation `wake_when` conditions and situation guards SHALL coalesce replay into finite bundles and SHALL NOT turn a stale event into a realtime one. The adopted sick exemptions (safety, medication, bills due within 48 hours, and replies to people) SHALL apply. "In flight" is a travel-derived posture flag, not the `travel` mode. Automatic entry SHALL be limited to the tighten-only `asleep` and `house_unattended` modes and the in-flight posture, SHALL record a receipt, and SHALL NOT arm the absence plan, which needs declared or owner-confirmed travel; any change that loosens a hold SHALL use the existing step-up boundary and SHALL NOT occur automatically. Observed-sleep fusion SHALL use only existing phone, Home Assistant and wearable inputs and SHALL report unknown when they are missing; it SHALL NOT add a connector or source.
 
 ID: REQ-owner-watches-006
-Source: bu-u33sb7 Q4 and Q5; RFC 0038 S3 mode registry; bu-4c7nvp.1.5
+Source: bu-u33sb7 Q4, Q5, Q6 and Q8; RFC 0038 S3 mode registry; bu-4c7nvp.1.5
 Scope: v1-reserved
 
 #### Scenario: A stale event arrives during a held mode
