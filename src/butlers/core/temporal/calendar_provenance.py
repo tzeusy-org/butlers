@@ -42,7 +42,7 @@ def is_explicit_butler_generated(metadata: Any) -> bool:
 
 
 #: Organizer verdicts (REQ-module-calendar-039) whose unanswered invitations are not quarantined.
-TRUSTED_ORGANIZER_VERDICTS = frozenset({"owner", "known_entity", "known_domain"})
+TRUSTED_ORGANIZER_VERDICTS = frozenset({"owner", "known_entity", "known_domain", "vouched"})
 _ANSWERED = frozenset({"accepted", "declined", "tentative"})
 
 

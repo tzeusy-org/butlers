@@ -36,6 +36,11 @@ def _verdict(**override):
         ({"identity_class": "known_domain"}, "known_domain"),
         ({}, "first_contact"),
         ({"policy_blocked": True, "identity_class": "known_entity"}, "blocked"),
+        ({"owner_vouched": True}, "vouched"),
+        ({"owner_vouched": True, "identity_class": "known_entity"}, "known_entity"),
+        ({"owner_vouched": True, "policy_blocked": True}, "blocked"),  # a block always wins
+        ({"owner_vouched": True, "policy_blocked": None}, "unknown"),  # never on a failed read
+        ({"owner_vouched": True, "organizer_email": "ME@example.com"}, "owner"),
         ({"organizer_email": None}, "unknown"),
         ({"organizer_email": ""}, "unknown"),
     ],
@@ -86,5 +91,12 @@ def test_lure_badges_are_closed_and_derived_from_verified_fields() -> None:
 
 def test_no_free_text_can_reach_the_verdict() -> None:
     parameters = set(inspect.signature(organizer_verdict).parameters)
-    assert parameters == set(_BASE)
+    assert parameters == set(_BASE) | {"owner_vouched"}  # a bool the owner set, not text
     assert not parameters & {"title", "summary", "description", "location", "text", "body"}
+
+
+def test_a_vouch_is_a_trusted_verdict_that_does_not_quarantine() -> None:
+    from butlers.core.temporal.calendar_provenance import TRUSTED_ORGANIZER_VERDICTS
+
+    assert "vouched" in TRUSTED_ORGANIZER_VERDICTS
+    assert "vouched" not in QUARANTINE_VERDICTS

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Final
 
-TRUSTED_ORGANIZER_VERDICTS_SQL: Final = "('owner', 'known_entity', 'known_domain')"
+TRUSTED_ORGANIZER_VERDICTS_SQL: Final = "('owner', 'known_entity', 'known_domain', 'vouched')"
 
 
 def quarantined_invitation_sql(alias: str = "e") -> str:

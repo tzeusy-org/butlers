@@ -33,14 +33,26 @@ logger = logging.getLogger(__name__)
 
 _CONNECTOR_SCOPE_PREFIX = "connector:google_calendar:"
 _CHANNEL = "calendar"
+#: ``created_by`` of the rules the owner's Vouch and Block verbs write.
+VOUCH_CREATED_BY = "calendar_vouch"
+BLOCK_CREATED_BY = "calendar_block"
 _IDENTITY_CLASSES = frozenset({"known_entity", "known_domain", "none"})
 
 
 class PolicyView:
     """The connector and global ingestion rules, evaluated as the connector evaluates them."""
 
-    def __init__(self, evaluators: Mapping[str, IngestionPolicyEvaluator]) -> None:
+    def __init__(
+        self,
+        evaluators: Mapping[str, IngestionPolicyEvaluator],
+        vouched: frozenset[str] = frozenset(),
+    ) -> None:
         self._evaluators = dict(evaluators)
+        self._vouched = vouched
+
+    def vouches(self, email: str) -> bool:
+        """Whether the owner vouched for this address (a Vouch rule in any calendar scope)."""
+        return email.strip().casefold() in self._vouched
 
     def blocks(self, email: str, *, known_contact: bool) -> bool:
         envelope = IngestionEnvelope(
@@ -75,6 +87,7 @@ async def load_policy_view(pool: asyncpg.Pool) -> PolicyView | None:
         )
         return None
     by_scope: dict[str, list[dict[str, Any]]] = {"global": []}
+    vouched: set[str] = set()
     for row in rows:
         rule = dict(row)
         condition = rule.get("condition")
@@ -89,7 +102,18 @@ async def load_policy_view(pool: asyncpg.Pool) -> PolicyView | None:
         scope = str(rule.pop("scope"))
         if scope == "global" or scope.startswith(_CONNECTOR_SCOPE_PREFIX):
             by_scope.setdefault(scope, []).append(rule)
-    return PolicyView({scope: _evaluator(scope, rules) for scope, rules in by_scope.items()})
+        if (
+            scope.startswith(_CONNECTOR_SCOPE_PREFIX)
+            and rule.get("created_by") == VOUCH_CREATED_BY
+            and rule.get("action") == "pass_through"
+            and rule.get("rule_type") == "sender_address"
+            and isinstance(condition.get("address"), str)
+        ):
+            vouched.add(condition["address"].strip().casefold())
+    return PolicyView(
+        {scope: _evaluator(scope, rules) for scope, rules in by_scope.items()},
+        frozenset(vouched),
+    )
 
 
 async def identity_class(pool: asyncpg.Pool | None, email: str) -> IdentityClass | None:
@@ -140,6 +164,7 @@ async def stamp_for(
         own_email=own_email,
         identity_class=cls,
         policy_blocked=blocked,
+        owner_vouched=bool(policy is not None and key and policy.vouches(key)),
         attendee_count=attendee_count,
         guests_hidden=False,
         event_type=event_type,

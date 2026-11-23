@@ -3,13 +3,13 @@
 ### Requirement: Organizer Verdict
 
 The calendar SHALL compute one verdict per organizer with a pure function `organizer_verdict`
-whose result is one of `owner`, `known_entity`, `known_domain`, `first_contact`, `blocked` or
-`unknown`, together with lure badges from the closed set `hidden_guest_list_large`,
+whose result is one of `owner`, `known_entity`, `known_domain`, `vouched`, `first_contact`,
+`blocked` or `unknown`, together with lure badges from the closed set `hidden_guest_list_large`,
 `organizer_domain_mismatch_conference`, `external_link_present`, `from_gmail` and `mass_invite`.
 Inputs SHALL be server-verified provider fields (organizer email, the owner's own email, attendee
-count, guests-hidden flag, event type, conference domain) and two owner-owned lookups passed in as
-values: the identity class of the organizer address and whether connector or global ingestion
-policy blocks it. The function SHALL NOT accept or read an event title, description, location or
+count, guests-hidden flag, event type, conference domain) and the owner-owned lookups passed in as
+values: the identity class of the organizer address, whether connector or global ingestion
+policy blocks it, and whether the owner vouched for it. The function SHALL NOT accept or read an event title, description, location or
 any other free text. Precedence SHALL be `owner`, then `blocked`, then `known_entity`, then
 `known_domain`, then `first_contact`. When either lookup could not be read the verdict SHALL be
 `unknown`, never a `known_*` value and never `owner` unless the organizer address equals the
@@ -64,7 +64,7 @@ An invitation whose response status is `needsAction` and whose organizer verdict
 hold no time, SHALL NOT count toward day load or conflicts, SHALL NOT trigger prep, the meeting
 card or the debrief, and its title and description SHALL NOT reach a prompt. An event the owner
 has accepted, declined or marked tentative SHALL be unaffected regardless of verdict. A
-`known_entity`, `known_domain` or `owner` organizer SHALL NOT be quarantined. Readers SHALL
+`known_entity`, `known_domain`, `vouched` or `owner` organizer SHALL NOT be quarantined. Readers SHALL
 exclude quarantined invitations before reading their text.
 
 ID: REQ-module-calendar-041
@@ -105,3 +105,42 @@ Scope: v1-mandatory
 
 - **WHEN** free slots are computed from the provider's free/busy answer
 - **THEN** that answer is outside this requirement; the quarantine applies to the stored event rows only
+
+### Requirement: Organizer Vouch and Block
+
+The owner SHALL be able to Vouch for or Block the organizer of a stored invitation through an
+owner-only dashboard route that takes only the entry id and the verb. The organizer address SHALL
+be read from the stored event, never from the request, and the route SHALL refuse an entry whose
+organizer is missing or is the owner. A verb SHALL write ordinary ingestion rules scoped to the
+calendar connector only and never to `global`, one per registered calendar endpoint, in one
+transaction: Block writes `block` and Vouch writes `pass_through`, so a calendar Block never blocks
+the same sender's email or messages. A verb SHALL be idempotent, and a Vouch SHALL remove the Block
+rules the verb wrote and a Block the Vouch rules it wrote, leaving rules the owner wrote any other
+way. A Vouch SHALL yield the `vouched` verdict only for an organizer that is otherwise
+`first_contact`, and SHALL NOT override a block: a global or a connector block that still matches
+wins. After the rules change the organizer's stored events SHALL be re-stamped at once, and
+`verdict_version` SHALL advance so earlier stamps are re-stamped by the sweep.
+
+ID: REQ-module-calendar-042
+Source: bu-5ii4gj.6 (run 26 move 6), slice S3
+Scope: v1-mandatory
+
+#### Scenario: A vouch lifts a first contact out of quarantine
+
+- **WHEN** the owner vouches for the organizer of a quarantined invitation
+- **THEN** one `pass_through` rule exists per calendar endpoint, the organizer's events are re-stamped `vouched`, and the invitation is no longer quarantined
+
+#### Scenario: A calendar block does not touch the sender's other channels
+
+- **WHEN** the owner blocks a calendar organizer who also writes to the owner by email
+- **THEN** only `connector:google_calendar:*` rules are written and no global or email rule changes
+
+#### Scenario: A vouch does not override a block
+
+- **WHEN** a global rule blocks the organizer and the owner vouches for the same address
+- **THEN** the stored events stay `blocked`
+
+#### Scenario: The organizer comes from the stored row
+
+- **WHEN** the request body carries an organizer address
+- **THEN** the route refuses it and no rule is written

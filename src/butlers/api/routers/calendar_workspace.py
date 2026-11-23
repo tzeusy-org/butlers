@@ -41,6 +41,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarInvitationEntry,
     CalendarInvitationsResponse,
     CalendarLinkedPerson,
+    CalendarOrganizerDecisionRequest,
+    CalendarOrganizerDecisionResponse,
     CalendarPrepAttendee,
     CalendarPrepCommitment,
     CalendarPrepNote,
@@ -2640,6 +2642,100 @@ async def _respond_through_approval(
         source_butler=butler_name,
         reason=receipt.get("reason") or result.get("reason"),
         projection_available=receipt.get("projection_available") is True,
+    )
+
+
+@router.post("/organizer-decision", response_model=ApiResponse[CalendarOrganizerDecisionResponse])
+async def decide_organizer(
+    body: CalendarOrganizerDecisionRequest,
+    http_request: Request,
+    *,
+    db: Db,
+) -> ApiResponse[CalendarOrganizerDecisionResponse]:
+    """Owner-only Vouch or Block of a stored invitation's organizer (REQ-module-calendar-042).
+
+    The organizer address comes from the stored event. The verb writes calendar-scoped ingestion
+    rules (never a global one), then re-stamps that organizer's stored events at once.
+    """
+    from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
+    from butlers.modules.calendar.organizer_decisions import (
+        NoCalendarEndpoint,
+        apply_decision,
+        normalize_address,
+        restamp_organizer,
+    )
+
+    try:
+        authenticated_principal()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="owner_principal_required") from exc
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="organizer_decision_census_unavailable")
+    found, failed = await db.fan_out_with_status(
+        "SELECT lower(btrim(COALESCE(e.metadata ->> 'organizer', ''))) AS organizer,"
+        " lower(btrim(COALESCE(own.email, ''))) AS own_email"
+        " FROM calendar_event_instances i JOIN calendar_events e ON e.id = i.event_id"
+        " LEFT JOIN LATERAL ("
+        "   SELECT att ->> 'email' AS email"
+        "   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(e.metadata -> 'attendees') = 'array'"
+        "        THEN e.metadata -> 'attendees' ELSE '[]'::jsonb END) AS att"
+        "   WHERE att ->> 'self' = 'true' LIMIT 1) AS own ON TRUE"
+        " WHERE i.id = $1",
+        (body.entry_id,),
+        butler_names=targets,
+    )
+    rows = [row for result in found.values() for row in result]
+    if failed:
+        raise HTTPException(status_code=503, detail="organizer_decision_lookup_degraded")
+    if len(rows) != 1:
+        raise HTTPException(status_code=404 if not rows else 409, detail="entry_not_found")
+    organizer = normalize_address(rows[0]["organizer"])
+    if not organizer or "@" not in organizer:
+        raise HTTPException(status_code=409, detail="entry_has_no_organizer")
+    if organizer == normalize_address(rows[0]["own_email"]):
+        raise HTTPException(status_code=409, detail="organizer_is_the_owner")
+
+    try:
+        switchboard = db.pool("switchboard")
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail="switchboard_unavailable") from exc
+    try:
+        decision = await apply_decision(switchboard, organizer, body.verb)
+    except NoCalendarEndpoint as exc:
+        raise HTTPException(status_code=409, detail="no_calendar_endpoint") from exc
+
+    restamped = 0
+    degraded = False
+    for name in targets:
+        try:
+            restamped += await restamp_organizer(db.pool(name), organizer)
+        except Exception:
+            logger.warning("organizer decision: re-stamp failed for %s", name, exc_info=True)
+            degraded = True  # the sweep restamps these rows on its next pass
+    await emit_dashboard_audit(
+        db,
+        butler="switchboard",
+        operation="calendar_organizer_decision",
+        method="POST",
+        path="/api/calendar/workspace/organizer-decision",
+        body={
+            "verb": body.verb,
+            "rules_written": decision.rules_written,
+            "rules_removed": decision.rules_removed,
+        },
+        response_status=200,
+        request=http_request,
+    )
+    return ApiResponse(
+        data=CalendarOrganizerDecisionResponse(
+            verb=decision.verb,
+            endpoints=decision.endpoints,
+            rules_written=decision.rules_written,
+            rules_removed=decision.rules_removed,
+            events_restamped=restamped,
+            restamp_degraded=degraded,
+        )
     )
 
 
