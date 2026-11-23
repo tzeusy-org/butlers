@@ -83,6 +83,8 @@ class K8sJobProcess:
         self._client = client
         self._poll = poll_interval_s
         self._sleep = sleep
+        #: Jobs whose delete failed; the restart sweep (PR-D) collects what is left.
+        self.undeleted: set[str] = set()
 
     @classmethod
     def in_cluster(cls, *, namespace: str | None = None) -> K8sJobProcess:
@@ -128,12 +130,7 @@ class K8sJobProcess:
         if existing.status_code != 200:
             raise _refusal_for(existing)
         body = existing.json()
-        if (
-            body.get("spec", {}).get("template", {}).get("spec")
-            != manifest["spec"]["template"]["spec"]
-            or body.get("metadata", {}).get("labels", {}).get("butlers.io/qa-attempt")
-            != (manifest["metadata"]["labels"]["butlers.io/qa-attempt"])
-        ):
+        if _fingerprint(body) != _fingerprint(manifest):
             raise JobLaunchRefused("conflict")
         logger.info("QA investigator job adopted after a retried create")
 
@@ -163,11 +160,28 @@ class K8sJobProcess:
             raise _refusal_for(response)
         return list(response.json().get("items", []))
 
-    async def _delete(self, name: str) -> None:
+    async def _delete(self, name: str) -> bool:
+        """Best-effort Job delete that never raises; False means it may have leaked."""
         try:
-            await self._client.delete(self._jobs(name), params={"propagationPolicy": "Background"})
-        except httpx.HTTPError:
-            logger.warning("QA investigator job delete failed; the restart sweep will collect it")
+            response = await self._client.delete(
+                self._jobs(name), params={"propagationPolicy": "Background"}
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not mask the attempt's outcome
+            logger.warning(
+                "QA investigator job delete failed (category=%s); the restart sweep collects it",
+                type(exc).__name__,
+            )
+            self.undeleted.add(name)
+            return False
+        if response.status_code not in (200, 202, 404):
+            logger.warning(
+                "QA investigator job delete refused (status=%d); the restart sweep collects it",
+                response.status_code,
+            )
+            self.undeleted.add(name)
+            return False
+        self.undeleted.discard(name)
+        return True
 
     # -- public ------------------------------------------------------------------------------
 
@@ -177,9 +191,6 @@ class K8sJobProcess:
         await self._create_or_adopt(manifest)
         try:
             return await self._await_outcome(name, timeout_s)
-        except asyncio.CancelledError:
-            await asyncio.shield(self._delete(name))
-            raise
         finally:
             await asyncio.shield(self._delete(name))
 
@@ -222,14 +233,45 @@ class K8sJobProcess:
         give_up = loop.time() + POD_TERMINAL_WAIT_S
         while True:
             pods = await self._pods(name)
+            # "Unknown" means the node is unreachable: the pod may still be writing.
             live = [
-                p for p in pods if p.get("status", {}).get("phase") in (None, "Pending", "Running")
+                p
+                for p in pods
+                if p.get("status", {}).get("phase") in (None, "Pending", "Running", "Unknown")
             ]
             if not live:
                 return _exit_code(pods), True
             if loop.time() >= give_up:
                 return None, False
             await self._sleep(self._poll)
+
+
+def _fingerprint(job: dict[str, Any]) -> dict[str, Any] | None:
+    """The fields the investigator template sets, normalised for comparing a stored Job.
+
+    The API server fills in defaults (DNS policy, scheduler, grace period, ...) on a stored Job,
+    so whole-spec equality would refuse a genuine adoption. Only what the builder chooses is
+    compared; the admission policy already pins the shape of anything that exists.
+    """
+    try:
+        spec = job["spec"]
+        pod = spec["template"]["spec"]
+        container = pod["containers"][0]
+        return {
+            "attempt": job["metadata"]["labels"]["butlers.io/qa-attempt"],
+            "service_account": pod["serviceAccountName"],
+            "image": container["image"],
+            "command": container["command"],
+            "working_dir": container.get("workingDir"),
+            "env": sorted((e["name"], e.get("value")) for e in container.get("env", [])),
+            "mounts": sorted(
+                (m["name"], m["mountPath"], m.get("subPath")) for m in container["volumeMounts"]
+            ),
+            "deadline": spec.get("activeDeadlineSeconds"),
+            "backoff": spec.get("backoffLimit"),
+        }
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _exit_code(pods: list[dict[str, Any]]) -> int | None:

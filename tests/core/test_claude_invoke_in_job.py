@@ -3,6 +3,7 @@ reads outputs only after a terminal pod, and refuses before any effect when it c
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,9 @@ class FakeRunner:
 
     async def run(self, manifest: dict[str, Any], *, timeout_s: float) -> JobOutcome:
         self.manifests.append(manifest)
+        self.staged = {
+            f.name: f.read_text() for f in (self.staging / ".in").iterdir() if f.is_file()
+        }
         (self.staging / ".out" / "stdout.jsonl").write_text(self.stdout)
         (self.staging / ".out" / "stderr.txt").write_text(self.stderr)
         return self.outcome
@@ -69,9 +73,9 @@ async def test_success_stages_inputs_and_returns_the_parsed_result(tmp_path: Pat
         _SECRET_PROMPT, _SECRET_SYSTEM, {}, _launch(tmp_path, runner), model="claude-x"
     )
     assert text == "investigated" and usage and usage["output_tokens"] == 4
-    assert (tmp_path / ".in" / "prompt.txt").read_text() == _SECRET_PROMPT
-    assert (tmp_path / ".in" / "system.txt").read_text() == _SECRET_SYSTEM
-    assert json.loads((tmp_path / ".in" / "mcp.json").read_text()) == {"mcpServers": {}}
+    assert runner.staged["prompt.txt"] == _SECRET_PROMPT
+    assert runner.staged["system.txt"] == _SECRET_SYSTEM
+    assert json.loads(runner.staged["mcp.json"]) == {"mcpServers": {}}
 
 
 async def test_no_prompt_text_or_credential_enters_the_manifest(tmp_path: Path) -> None:
@@ -159,3 +163,73 @@ async def test_every_other_adapter_refuses_before_any_effect(runtime_type, tmp_p
     with pytest.raises(JobLaunchRefused) as raised:
         await adapter.invoke_in_job("p", "s", {}, _launch(tmp_path, runner))
     assert raised.value.category == "runtime_unsupported" and runner.manifests == []
+
+
+async def test_a_planted_fifo_cannot_hang_the_read(tmp_path: Path) -> None:
+    class Fifo(FakeRunner):
+        async def run(self, manifest, *, timeout_s):
+            self.manifests.append(manifest)
+            os.mkfifo(self.staging / ".out" / "stdout.jsonl")
+            (self.staging / ".out" / "stderr.txt").write_text("")
+            return self.outcome
+
+    adapter = _adapter()
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        await asyncio.wait_for(
+            adapter.invoke_in_job(
+                "p", "s", {}, _launch(tmp_path, Fifo(tmp_path, JobOutcome("failed", 1)))
+            ),
+            timeout=10,
+        )
+
+
+async def test_a_hard_link_to_a_daemon_file_reads_as_missing(tmp_path: Path) -> None:
+    daemon_file = tmp_path.parent / "daemon-hardlink-target.txt"
+    daemon_file.write_text("DAEMON-ONLY")
+
+    class Linking(FakeRunner):
+        async def run(self, manifest, *, timeout_s):
+            self.manifests.append(manifest)
+            os.link(daemon_file, self.staging / ".out" / "stdout.jsonl")
+            (self.staging / ".out" / "stderr.txt").write_text("")
+            return self.outcome
+
+    adapter = _adapter()
+    with pytest.raises(RuntimeError) as raised:
+        await adapter.invoke_in_job(
+            "p", "s", {}, _launch(tmp_path, Linking(tmp_path, JobOutcome("failed", 1)))
+        )
+    assert "DAEMON-ONLY" not in str(raised.value)
+    assert "DAEMON-ONLY" not in json.dumps(adapter.last_process_info)
+
+
+async def test_staged_inputs_are_removed_after_the_run_even_on_failure(tmp_path: Path) -> None:
+    runner = FakeRunner(tmp_path, JobOutcome("failed", 1))
+    with pytest.raises(RuntimeError):
+        await _adapter().invoke_in_job("p", "s", {}, _launch(tmp_path, runner))
+    assert not (tmp_path / ".in").exists()
+    assert (tmp_path / ".out").is_dir()
+
+
+@pytest.mark.parametrize("name", [".in", ".out"])
+async def test_preexisting_non_directory_or_link_is_refused_before_writing(
+    tmp_path: Path, name: str
+) -> None:
+    target = tmp_path.parent / "elsewhere"
+    target.mkdir(exist_ok=True)
+    (tmp_path / name).symlink_to(target)
+    runner = FakeRunner(tmp_path, JobOutcome("succeeded", 0))
+    with pytest.raises(JobLaunchRefused) as raised:
+        await _adapter().invoke_in_job("p", "s", {}, _launch(tmp_path, runner))
+    assert raised.value.category == "invalid"
+    assert runner.manifests == [] and list(target.iterdir()) == []
+
+
+async def test_the_prompt_goes_on_stdin_not_argv(tmp_path: Path) -> None:
+    runner = FakeRunner(tmp_path, JobOutcome("succeeded", 0), stdout=_RESULT + "\n")
+    await _adapter().invoke_in_job("x" * 500_000, "s", {}, _launch(tmp_path, runner))
+    script = runner.manifests[0]["spec"]["template"]["spec"]["containers"][0]["command"][2]
+    assert (
+        "</workspace/.in/prompt.txt" in script and "$(cat /workspace/.in/prompt.txt" not in script
+    )
+    assert len(script) < 2000

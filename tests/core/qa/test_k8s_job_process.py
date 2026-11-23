@@ -225,3 +225,55 @@ async def test_cancellation_deletes_the_job() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert api.deleted and api.deleted[0] == f"qa-{_ATTEMPT}"
+
+
+async def test_adoption_tolerates_server_side_defaults_on_the_stored_job() -> None:
+    api = FakeApi()
+    stored = _manifest()
+    stored["spec"]["template"]["spec"].update(
+        dnsPolicy="ClusterFirst",
+        schedulerName="default-scheduler",
+        terminationGracePeriodSeconds=30,
+    )
+    stored["spec"]["template"]["spec"]["containers"][0]["terminationMessagePath"] = "/dev/x"
+    api.jobs[f"qa-{_ATTEMPT}"] = stored
+    api.create_status = 409
+    api.job_conditions = [[{"type": "Complete", "status": "True"}]]
+    api.pod_phases = [[_pod("Succeeded", 0)]]
+    assert (await _runner(api).run(_manifest(), timeout_s=600)).state == "succeeded"
+
+
+async def test_pod_phase_unknown_is_unsettled() -> None:
+    import butlers.core.qa.k8s_job_process as module
+
+    api = FakeApi()
+    api.job_conditions = [[{"type": "Failed", "status": "True", "reason": "DeadlineExceeded"}]]
+    api.pod_phases = [[_pod("Unknown")]]
+    original = module.POD_TERMINAL_WAIT_S
+    module.POD_TERMINAL_WAIT_S = 0.0
+    try:
+        outcome = await _runner(api).run(_manifest(), timeout_s=600)
+    finally:
+        module.POD_TERMINAL_WAIT_S = original
+    assert outcome.pod_terminal is False
+
+
+async def test_a_failing_delete_does_not_mask_the_outcome_and_is_recorded() -> None:
+    api = FakeApi()
+    api.job_conditions = [[{"type": "Complete", "status": "True"}]]
+    api.pod_phases = [[_pod("Succeeded", 0)]]
+    base = api.handler
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            raise httpx.ConnectError("gone")
+        return base(request)
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://k8s")
+    runner = K8sJobProcess(namespace=_NS, client=client, poll_interval_s=0, sleep=no_sleep)
+    outcome = await runner.run(_manifest(), timeout_s=600)
+    assert outcome.state == "succeeded"
+    assert runner.undeleted == {f"qa-{_ATTEMPT}"}
