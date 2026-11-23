@@ -89,3 +89,56 @@ async def test_a_recurrence_after_the_fix_is_a_regression_carrying_the_link() ->
     assert finding.structured_evidence["tracker_ref"] == "bu-2cgabc"
     regressed.assert_awaited_once()
     assert regressed.await_args.args[1] == link["id"]
+
+
+# --- QA's own pull requests keep their link in step (S2) ------------------------------------
+
+from butlers.core.qa.known_issue_links import (  # noqa: E402
+    is_valid_tracker_ref,
+    sync_qa_pr_link,
+)
+
+PR = "https://github.com/o/r/pull/12"
+
+
+@pytest.mark.parametrize(
+    ("kind", "ref", "ok"),
+    [
+        ("bead", "bu-2cgabc", True),
+        ("bead", "bu-ejow5p.9", True),
+        ("bead", "bu-ejow5p.9.1.2", True),
+        ("bead", "BU-1", False),
+        ("bead", "see the ticket", False),
+        ("github_pr", PR, True),
+        ("github_pr", "http://github.com/o/r/pull/12", False),
+        ("github_pr", "https://github.com/o/r/pull/12/files", False),
+        ("github_issue", "https://github.com/o/r/issues/3", True),
+        ("github_issue", PR, False),
+        ("email", "x", False),
+    ],
+)
+def test_tracker_refs_must_match_their_kind(kind: str, ref: str, ok: bool) -> None:
+    assert is_valid_tracker_ref(kind, ref) is ok
+
+
+async def test_an_open_qa_pr_is_linked_and_a_merged_one_holds_the_fingerprint() -> None:
+    pool = MagicMock(execute=AsyncMock())
+    await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url=PR, pr_state="open")
+    open_sql = pool.execute.await_args.args[0]
+    assert "INSERT INTO public.qa_known_issue_links" in open_sql and "'qa_auto'" in open_sql
+    assert "WHERE public.qa_known_issue_links.state = 'tracked'" in open_sql  # never reopens
+
+    pool.execute.reset_mock()
+    await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url=PR, pr_state="merged")
+    assert "state = 'fix_merged'" in pool.execute.await_args.args[0]
+
+    pool.execute.reset_mock()
+    await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url=PR, pr_state="closed")
+    closed_sql = pool.execute.await_args.args[0]
+    assert "state = 'closed'" in closed_sql and "linked_by = 'qa_auto'" in closed_sql
+
+
+async def test_a_malformed_pr_url_gets_no_link() -> None:
+    pool = MagicMock(execute=AsyncMock())
+    await sync_qa_pr_link(pool, fingerprint="f" * 64, pr_url="not a url", pr_state="open")
+    pool.execute.assert_not_awaited()

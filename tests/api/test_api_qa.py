@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -1913,7 +1913,12 @@ class TestKnownIssueLinks:
         [
             {"tracker_kind": "email", "tracker_ref": "x"},
             {"tracker_kind": "bead", "tracker_ref": "   "},
+            {"tracker_kind": "bead", "tracker_ref": "see the other ticket"},
+            {"tracker_kind": "bead", "tracker_ref": "bu-" + "a" * 400},
             {"tracker_kind": "github_pr", "tracker_ref": "not a pr url"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://github.com/o/r/issues/7"},
+            {"tracker_kind": "github_pr", "tracker_ref": "https://evil.example/o/r/pull/7"},
+            {"tracker_kind": "github_issue", "tracker_ref": "https://github.com/o/r/pull/7"},
         ],
     )
     async def test_invalid_links_are_422(self, body: dict[str, Any]) -> None:
@@ -1941,6 +1946,23 @@ class TestKnownIssueLinks:
                     fetchrow_result=self._link_row(tracker_kind="github_pr"),
                 )
             assert response.status_code == 201
+
+    async def test_expiry_must_be_future_and_within_ninety_days(self) -> None:
+        now = datetime.now(UTC)
+        for value, status in (
+            (now - timedelta(minutes=1), 422),
+            (now + timedelta(days=91), 422),
+            (now + timedelta(days=90) - timedelta(minutes=1), 201),
+        ):
+            response, _ = await self._post(
+                {
+                    "tracker_kind": "bead",
+                    "tracker_ref": "bu-2cgabc",
+                    "expires_at": value.isoformat(),
+                },
+                fetchrow_result=self._link_row(),
+            )
+            assert response.status_code == status, value
 
     async def test_closing_a_link_reports_whether_one_was_open(self) -> None:
         app, _ = _build_app(fetchval_result=uuid.uuid4())

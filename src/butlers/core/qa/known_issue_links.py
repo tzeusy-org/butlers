@@ -10,8 +10,9 @@ Schema reference (public.qa_known_issue_links): see migration core_372.
 
 from __future__ import annotations
 
+import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import asyncpg
@@ -29,6 +30,26 @@ LINK_STATES: Final[tuple[str, ...]] = (
 SUPPRESSING_STATES: Final[frozenset[str]] = frozenset({"tracked", "fix_merged"})
 #: A link with no explicit expiry lapses after this long, so it can never suppress forever.
 DEFAULT_LINK_TTL: Final[timedelta] = timedelta(days=14)
+#: The longest an owner may ask a link to last.
+MAX_LINK_TTL: Final[timedelta] = timedelta(days=90)
+
+#: A tracker ref must match its kind exactly; free text is not a ref.
+_REF_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
+    "bead": re.compile(r"^[a-z][a-z0-9]{1,15}-[a-z0-9]{2,12}(\.[0-9]{1,4}){0,3}$"),
+    "github_pr": re.compile(
+        r"^https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/pull/[0-9]{1,9}$"
+    ),
+    "github_issue": re.compile(
+        r"^https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}/issues/[0-9]{1,9}$"
+    ),
+}
+
+
+def is_valid_tracker_ref(tracker_kind: str, tracker_ref: str) -> bool:
+    """Whether ``tracker_ref`` is a well-formed ref of ``tracker_kind`` (length-bounded)."""
+    pattern = _REF_PATTERNS.get(tracker_kind)
+    return bool(pattern and len(tracker_ref) <= 300 and pattern.fullmatch(tracker_ref))
+
 
 _COLUMNS = (
     "id, fingerprint, tracker_kind, tracker_ref, linked_by, linked_at, fix_ref, state, expires_at"
@@ -128,3 +149,56 @@ async def list_links(pool: asyncpg.Pool, fingerprint: str) -> list[LinkRow]:
         fingerprint,
     )
     return [dict(r) for r in rows]
+
+
+async def sync_qa_pr_link(
+    pool: asyncpg.Pool, *, fingerprint: str, pr_url: str, pr_state: str
+) -> None:
+    """Keep the link for QA's own pull request in step with the PR's observed state.
+
+    ``open`` creates the link (``qa_auto``) if none exists, and keeps an open, unexpired
+    link alive while the PR stays open; it never reopens a link the owner closed. ``merged``
+    moves the link to ``fix_merged`` and extends it, so a recurrence before the fix deploys is
+    held back instead of re-investigated. ``closed`` (without merge) closes a QA-made link.
+    A ref that is not a well-formed PR URL gets no link.
+    """
+    if not is_valid_tracker_ref("github_pr", pr_url):
+        return
+    fresh = datetime.now(UTC) + DEFAULT_LINK_TTL
+    if pr_state == "open":
+        await pool.execute(
+            """
+            INSERT INTO public.qa_known_issue_links
+                (fingerprint, tracker_kind, tracker_ref, linked_by, expires_at)
+            VALUES ($1, 'github_pr', $2, 'qa_auto', $3)
+            ON CONFLICT (fingerprint, tracker_ref) DO UPDATE
+                SET expires_at = GREATEST(public.qa_known_issue_links.expires_at, $3)
+              WHERE public.qa_known_issue_links.state = 'tracked'
+            """,
+            fingerprint,
+            pr_url,
+            fresh,
+        )
+    elif pr_state == "merged":
+        await pool.execute(
+            """
+            UPDATE public.qa_known_issue_links
+               SET state = 'fix_merged', fix_ref = $2,
+                   expires_at = GREATEST(expires_at, $3)
+             WHERE fingerprint = $1 AND tracker_ref = $2 AND state = 'tracked'
+            """,
+            fingerprint,
+            pr_url,
+            fresh,
+        )
+    elif pr_state == "closed":
+        await pool.execute(
+            """
+            UPDATE public.qa_known_issue_links
+               SET state = 'closed'
+             WHERE fingerprint = $1 AND tracker_ref = $2 AND linked_by = 'qa_auto'
+               AND state <> 'closed'
+            """,
+            fingerprint,
+            pr_url,
+        )

@@ -85,8 +85,11 @@ from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
 from butlers.core.qa.known_issue_links import (
     DEFAULT_LINK_TTL,
+    MAX_LINK_TTL,
     TRACKER_KINDS,
     close_link,
+    get_gating_link,
+    is_valid_tracker_ref,
     upsert_link,
 )
 from butlers.core.qa.models import QaFinding
@@ -579,6 +582,9 @@ class QaCaseDossier(BaseModel):
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
+    # "Tracked as <ref>, N occurrences since": the live link and the recurrences it held back.
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_occurrences_since_link: int = 0
     investigation_notes: InvestigationNotes | None = None
     pr: QaPrSummary | None = None
     journal: list[QaJournalEvent] = Field(default_factory=list)
@@ -2468,6 +2474,24 @@ async def get_case(
         if dismissal_row is not None:
             dismissal = _row_to_active_dismissal(dismissal_row)
 
+    known_issue_link: QaKnownIssueLink | None = None
+    tracked_since_link = 0
+    if finding_fingerprint:
+        link_row = await get_gating_link(pool, finding_fingerprint)
+        if link_row is not None:
+            known_issue_link = QaKnownIssueLink(**link_row)
+            tracked_since_link = int(
+                await pool.fetchval(
+                    """
+                    SELECT count(*) FROM public.qa_findings
+                    WHERE fingerprint = $1 AND dedup_reason = 'tracked' AND created_at > $2
+                    """,
+                    finding_fingerprint,
+                    known_issue_link.linked_at,
+                )
+                or 0
+            )
+
     journal_rows = await pool.fetch(
         """
         SELECT id, ts, step, text, detail, data
@@ -2508,6 +2532,8 @@ async def get_case(
         proposal_diff_snapshot=proposal_diff_snapshot,
         fingerprint=row.get("finding_fingerprint"),
         dismissal=dismissal,
+        known_issue_link=known_issue_link,
+        tracked_occurrences_since_link=tracked_since_link,
         investigation_notes=investigation_notes,
         pr=pr_summary,
         journal=[_row_to_journal_event(journal_row) for journal_row in journal_rows],
@@ -2891,13 +2917,22 @@ async def link_known_issue(
             status_code=422, detail=f"tracker_kind must be one of {', '.join(TRACKER_KINDS)}"
         )
     tracker_ref = body.tracker_ref.strip()
-    if not tracker_ref or len(tracker_ref) > 300:
-        raise HTTPException(status_code=422, detail="tracker_ref must be 1 to 300 characters")
+    if not is_valid_tracker_ref(body.tracker_kind, tracker_ref):
+        raise HTTPException(
+            status_code=422,
+            detail=f"tracker_ref is not a well-formed {body.tracker_kind} reference",
+        )
+    now = datetime.now(UTC)
+    if body.expires_at is not None and not (now < body.expires_at <= now + MAX_LINK_TTL):
+        raise HTTPException(
+            status_code=422,
+            detail=f"expires_at must be in the future and within {MAX_LINK_TTL.days} days",
+        )
 
     pool = _shared_pool(db)
     if body.tracker_kind == "github_pr":
         parsed = parse_pr_url(tracker_ref)
-        if parsed is None:
+        if parsed is None:  # unreachable once the pattern held; keeps the type narrow
             raise HTTPException(status_code=422, detail="tracker_ref must be a GitHub PR URL")
         owner, repo, number = parsed
         meta = await get_pr_client().fetch(
@@ -2910,7 +2945,7 @@ async def link_known_issue(
                 status_code=422, detail=f"That pull request is already {meta.state}"
             )
 
-    expires_at = body.expires_at or (datetime.now(UTC) + DEFAULT_LINK_TTL)
+    expires_at = body.expires_at or (now + DEFAULT_LINK_TTL)
     row, created = await upsert_link(
         pool,
         fingerprint=fingerprint,
