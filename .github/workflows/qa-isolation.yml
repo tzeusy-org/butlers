@@ -59,14 +59,19 @@ jobs:
           kubectl -n "${NAMESPACE}" create serviceaccount butlers-up
       - name: Build the probe image and resolve its digest
         run: |
-          # The probe is standard library only, so the image is python plus the probe module.
+          # Mirror the daemon image: butlers lives only in the sealed /app/.venv, and the system
+          # interpreter (first on the Job's PATH) has no butlers, so the gate and the probe must
+          # be invoked by the venv interpreter's absolute path exactly as in production.
           mkdir -p ctx/butlers/core/qa /tmp/ctx-unused
           touch ctx/butlers/__init__.py ctx/butlers/core/__init__.py ctx/butlers/core/qa/__init__.py
           cp src/butlers/core/qa/isolation_probe.py src/butlers/core/qa/egress_gate.py ctx/butlers/core/qa/
           cat > ctx/Dockerfile <<'DOCKERFILE'
           FROM python:3.12-slim
-          RUN mkdir /app /workspace && chmod 0777 /workspace && echo staged > /app/staged.txt
-          COPY butlers /usr/local/lib/python3.12/site-packages/butlers
+          RUN python -m venv /app/.venv && mkdir /workspace && chmod 0777 /workspace \
+              && echo staged > /app/staged.txt
+          COPY butlers /app/.venv/lib/python3.12/site-packages/butlers
+          RUN /app/.venv/bin/python -I -c "import butlers.core.qa.egress_gate" \
+              && ! python -I -c "import butlers"
           DOCKERFILE
           docker build -t localhost:5111/qa-probe:ci ctx
           docker push localhost:5111/qa-probe:ci
