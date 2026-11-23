@@ -10,6 +10,7 @@
 - [Telegram Bot](telegram-bot.md) — Telegram bot connector
 - [Telegram User Client](telegram-user-client.md) — Telegram MTProto user client
 - [Gmail](gmail.md) — Gmail IMAP/API connector
+- [Google Calendar](google-calendar.md) — sync token, filters and what degraded health means
 - [Gmail Ingestion Policy](gmail-ingestion-policy.md) — email ingestion filtering rules
 - [Heartbeat](heartbeat.md) — connector health monitoring
 - [Live Listener](live-listener.md) — audio live listener connector
