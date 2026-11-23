@@ -7,7 +7,13 @@ the accepted webhook payload in `connectors.owntracks_points` without deleting,
 renaming, normalizing, or synthesizing optional fields. The evidence row is committed
 before the Switchboard submit, the checkpoint and the webhook acknowledgement: a
 failed evidence write raises, the webhook answers 503 and the phone keeps the
-point, with nothing submitted. A failed submit keeps the row. The only exception to payload
+point, with nothing submitted. A failed submit keeps the row. A point that is still
+invalid after NUL characters are stripped from its text (a non-numeric or out-of-range
+`tst`, `lat`, `lon` or `acc`) or that the database refuses as data (class 22) is
+acknowledged and not ingested, counted and logged by reason category only, because a resend
+would fail identically and OwnTracks resends in order. Transient, schema and privilege
+errors (connection, serialization, deadlock, missing table or column, insufficient
+privilege) propagate and answer 503. The only exception to payload
 fidelity is bearer material in free-text string fields, which the connector-base
 placeholder replaces before the write; a detector failure skips the evidence
 write. This evidence store is distinct
@@ -39,3 +45,14 @@ Scope: v1-mandatory
 - **THEN** its `connectors.owntracks_points` row exists before the Switchboard submit is called
 - **AND** a failed evidence write submits nothing, leaves the checkpoint unchanged and answers 503
 - **AND** a failed submit leaves the evidence row in place
+
+#### Scenario: A point that can never be stored does not stall later points
+
+- **WHEN** a location payload has a malformed `tst`, an out-of-range coordinate, or a database data error
+- **THEN** the webhook answers 200 without ingesting it and records a rejected-point count with a reason category only
+- **AND** a NUL character in a text field is stripped and the point is stored
+
+#### Scenario: Transient and operator-fixable errors keep the point on the phone
+
+- **WHEN** the evidence write fails on a connection, serialization, deadlock, missing-table or privilege error
+- **THEN** the webhook answers 503 and nothing is submitted
