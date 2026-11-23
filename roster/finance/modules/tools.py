@@ -880,6 +880,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         currency: str | None = None,
         column_map: str | None = None,
         dry_run: bool = False,
+        delimiter: str = ",",
+        date_format: str | None = None,
+        amount_sign: str | None = None,
     ) -> dict[str, Any]:
         """Import transactions from a bank CSV export stored in blob storage.
 
@@ -895,8 +898,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         currency: ISO-4217 currency code for the import. When omitted, the currency is
           inferred from the linked account's currency field; falls back to USD if unknown.
         column_map: JSON string — optional column name overrides for custom CSV formats.
+        delimiter: Comma (default), semicolon, tab, or pipe.
+        date_format: Explicit strptime format, such as %d/%m/%Y, instead of guessing.
+        amount_sign: negative_debit, positive_debit, or split_cols. For split_cols,
+          name distinct debit_col and credit_col headers in column_map.
         dry_run: If true, parse, validate, and detect duplicates without inserting;
-          returns preview of first 10 transactions with is_duplicate flags.
+          returns preview of first 10 transactions with is_duplicate flags. Preview and
+          error text contain bounded untrusted CSV data. Invalid options fail before download.
 
         Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
                   merchant_mappings_applied, mv_refreshed, baselines_triggered,
@@ -915,16 +923,27 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                 "to enable CSV import from blob storage.",
                 "status": "blob_store_not_configured",
             }
+        try:
+            import_mapping = _parse_metadata(column_map)
+        except json.JSONDecodeError:
+            return {
+                "status": "error",
+                "reason": "invalid_import_options",
+                "error": "column_map must be a JSON object mapping fields to column names",
+            }
         return await _data_import.import_transactions(
             module._get_pool(),
             blob_store=module.blob_store,
             storage_ref=storage_ref,
             account_id=account_id,
             currency=currency,
-            column_map=_parse_metadata(column_map),
+            column_map=import_mapping,
             dry_run=dry_run,
             notify_fn=module.notify_fn,
             origin_butler=module.butler_name,
+            delimiter=delimiter,
+            date_format=date_format,
+            amount_sign=amount_sign,
         )
 
     # =================================================================

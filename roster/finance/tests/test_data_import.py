@@ -809,11 +809,15 @@ class TestDeduplication:
         pool.fetch = AsyncMock(return_value=[])
 
         await _check_duplicates_batch(pool, batch, account_id=account_id)
-        # Verify the query includes account_id in WHERE clause.
-        call_args = pool.fetch.call_args
-        assert call_args is not None
-        query = call_args[0][0]
-        assert "account_id = $1" in query
+        pool.fetch.assert_awaited_once()
+        query, bound_account, dates, amounts, merchants = pool.fetch.await_args.args
+        assert "t.account_id IS NOT DISTINCT FROM $1::uuid" in query
+        assert bound_account == account_id
+        assert (dates, amounts, merchants) == (
+            (batch[0]["posted_at"],),
+            (batch[0]["amount"],),
+            (batch[0]["merchant"],),
+        )
 
     async def test_batch_dedup_empty_batch(self):
         """_check_duplicates_batch returns empty set for empty batch."""

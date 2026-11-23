@@ -9,8 +9,10 @@ from __future__ import annotations
 import importlib.util
 import shutil
 import sys
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import httpx
@@ -84,6 +86,55 @@ async def test_mcp_bulk_counts_existing_duplicate_as_skipped(finance_pool):
     assert result["skipped"] == 1
     assert result["errors"] == 0
     assert result["error_details"] == [{"index": 0, "reason": "duplicate"}]
+
+
+async def test_blob_csv_overrides_preview_import_and_retry_in_finance_role(finance_pool):
+    from butlers.tools.finance.data_import import import_transactions
+
+    blob = AsyncMock(scheme="s3", bucket="bucket")
+    blob.get.return_value = (
+        b"Date;Payee;Amount\n17/01/2026;Bookshop;12.34\n18/01/2026;Refund;-2.00\n"
+    )
+    options = {
+        "origin_butler": "finance",
+        "delimiter": ";",
+        "date_format": "%d/%m/%Y",
+        "amount_sign": "positive_debit",
+    }
+    ref = "s3://bucket/finance/statement.csv"
+    await finance_pool.execute(
+        """
+        INSERT INTO merchant_mappings (raw_pattern, normalized_merchant, category)
+        VALUES ('book%', 'Bookshop', 'shopping')
+        """
+    )
+
+    preview = await import_transactions(finance_pool, blob, ref, dry_run=True, **options)
+    assert [(row["direction"], row["is_duplicate"]) for row in preview["preview"]] == [
+        ("debit", False),
+        ("credit", False),
+    ]
+    assert preview["merchant_mappings_applied"] == 1
+    assert preview["preview"][0]["category"] == "shopping"
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 0
+    assert await finance_pool.fetchval("SELECT count(*) FROM spending_summaries") == 0
+
+    inserted = await import_transactions(finance_pool, blob, ref, **options)
+    assert (inserted["imported"], inserted["skipped"], inserted["errors"]) == (2, 0, 0)
+    assert inserted["mv_refreshed"] is True
+    assert await finance_pool.fetchval(
+        "SELECT total_amount FROM spending_summaries WHERE category = 'shopping'"
+    ) == Decimal("12.34")
+    rows = await finance_pool.fetch(
+        "SELECT posted_at, merchant, amount, direction FROM transactions ORDER BY posted_at"
+    )
+    assert [tuple(row) for row in rows] == [
+        (datetime(2026, 1, 17, tzinfo=UTC), "Bookshop", Decimal("12.34"), "debit"),
+        (datetime(2026, 1, 18, tzinfo=UTC), "Refund", Decimal("2.00"), "credit"),
+    ]
+    retried = await import_transactions(finance_pool, blob, ref, **options)
+    assert (retried["imported"], retried["skipped"], retried["errors"]) == (0, 2, 0)
+    assert await finance_pool.fetchval("SELECT count(*) FROM transactions") == 2
 
 
 async def test_rest_bulk_rows_list_and_counts_are_exact(finance_pool):
