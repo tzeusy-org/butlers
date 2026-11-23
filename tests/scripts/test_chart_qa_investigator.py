@@ -350,6 +350,30 @@ _BAD = [
     ("retries", _mutate(("spec", "backoffLimit"), 3), "never retries"),
     ("no-deadline", _mutate(("spec", "activeDeadlineSeconds"), _DELETE), "never retries"),
     ("name-not-attempt", _mutate(("metadata", "name"), "qa-" + str(uuid.uuid4())), "never retries"),
+    ("parallelism-2", _mutate(("spec", "parallelism"), 2), "never retries"),
+    ("completions-2", _mutate(("spec", "completions"), 2), "never retries"),
+    (
+        "service-links-on",
+        _mutate((*_SPEC, "enableServiceLinks"), True),
+        "no host namespace",
+    ),
+    (
+        "pod-apparmor-unconfined",
+        _mutate((*_SPEC, "securityContext", "appArmorProfile"), {"type": "Unconfined"}),
+        "seccomp",
+    ),
+    (
+        "container-apparmor-unconfined",
+        _mutate((*_C0, "securityContext", "appArmorProfile"), {"type": "Unconfined"}),
+        "unprivileged",
+    ),
+    ("no-resource-limits", _mutate((*_C0, "resources"), _DELETE), "unprivileged"),
+    (
+        "memory-emptydir",
+        _mutate((*_SPEC, "volumes", 1, "emptyDir"), {"medium": "Memory", "sizeLimit": "1Gi"}),
+        "volumes",
+    ),
+    ("unbounded-emptydir", _mutate((*_SPEC, "volumes", 0, "emptyDir"), {}), "volumes"),
     (
         "label-component-wrong",
         _mutate((*_SPEC[:-1], "metadata", "labels", "app.kubernetes.io/component"), "butlers-up"),
@@ -478,3 +502,123 @@ def test_the_daemon_mounts_the_exchange_only_when_enabled(on):
     assert volume["persistentVolumeClaim"]["claimName"] == "butlers-qa-exchange"
     off = _named(_docs(), "Deployment", "butlers-up")["spec"]["template"]["spec"]
     assert "qa-exchange" not in {v["name"] for v in off["volumes"]}
+
+
+def test_the_pod_policy_also_judges_ephemeral_container_updates(on):
+    policy = _named(on, "ValidatingAdmissionPolicy", "butlers-qa-investigator-pod")
+    rules = policy["spec"]["matchConstraints"]["resourceRules"]
+    assert any(
+        "pods/ephemeralcontainers" in r["resources"] and "UPDATE" in r["operations"] for r in rules
+    )
+
+
+def test_every_verifier_inverse_control_is_refused_by_admission_and_the_restored_probe_is_not(on):
+    """Under the default Deny action admission catches all five controls; the verifier scores
+    that as RED (caught_by=admission). The restored probe Job must be admitted."""
+    from butlers.core.qa import isolation_verifier as iv
+
+    probe = iv.build_probe_job(
+        _ATTEMPT,
+        release="butlers",
+        namespace=_NS,
+        image=_IMAGE,
+        exchange_claim="butlers-qa-exchange",
+        command=iv.probe_command(),
+        deadline_s=300,
+    )
+    on_docs = on
+    assert _cel_admit(on_docs, "job", probe, _LAUNCHER) == []
+    for control in iv.INVERSE_CONTROLS:
+        mutated = iv.render_inverse(probe, control)
+        failures = _cel_admit(on_docs, "job", mutated, _LAUNCHER)
+        assert failures, f"{control.name} was admitted by the Job policy"
+
+
+# What the API server adds to every pod before validating admission runs (DefaultTolerationSeconds
+# is a mutating plugin). A policy tested only on the raw template denies every real pod: the k3d
+# run 45142032830 (bu-ejow5p.11) hit exactly that.
+_DEFAULT_TOLERATIONS = [
+    {
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300,
+    },
+    {
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300,
+    },
+]
+
+
+def _defaulted_pod() -> dict:
+    pod = _pod_of(_good_job())
+    pod["spec"] = {**pod["spec"], "tolerations": [dict(t) for t in _DEFAULT_TOLERATIONS]}
+    return pod
+
+
+def test_a_pod_the_api_server_has_defaulted_is_still_admitted(on):
+    assert _cel_admit(on, "pod", _defaulted_pod(), _CONTROLLER) == []
+
+
+def test_only_the_defaulted_tolerations_are_admitted_on_a_pod(on):
+    for extra in (
+        {"operator": "Exists"},
+        {"key": "node.kubernetes.io/not-ready", "operator": "Exists", "effect": "NoSchedule"},
+        {"key": "dedicated", "operator": "Equal", "value": "gpu", "effect": "NoExecute"},
+        {**_DEFAULT_TOLERATIONS[0], "tolerationSeconds": 86400},
+        {k: v for k, v in _DEFAULT_TOLERATIONS[0].items() if k != "tolerationSeconds"},
+    ):
+        pod = _defaulted_pod()
+        pod["spec"]["tolerations"].append(extra)
+        failures = _cel_admit(on, "pod", pod, _CONTROLLER)
+        assert failures and any("no host namespace" in f for f in failures), extra
+
+
+def test_a_job_template_may_carry_no_toleration_at_all(on):
+    job = _good_job()
+    job["spec"]["template"]["spec"]["tolerations"] = [dict(_DEFAULT_TOLERATIONS[0])]
+    failures = _cel_admit(on, "job", job, _LAUNCHER)
+    assert failures and any("no host namespace" in f for f in failures)
+
+
+_GATE = ["/app/.venv/bin/python", "-I", "-m", "butlers.core.qa.egress_gate", "--"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["/bin/true"],  # no gate at all
+        ["python", "-I", "-m", "butlers.core.qa.egress_gate", "--", "/bin/true"],  # base python
+        [*_GATE[:4]],  # no separator, no command
+        [*_GATE],  # the gate with nothing to run
+        ["/app/.venv/bin/python", "-m", "butlers.core.qa.egress_gate", "-I", "--", "x"],
+    ],
+    ids=["none", "base-interpreter", "no-separator", "nothing-to-run", "reordered"],
+)
+def test_a_job_or_pod_without_the_gate_prefix_is_denied(on, command):
+    job = _good_job()
+    job["spec"]["template"]["spec"]["containers"][0]["command"] = command
+    for kind, obj, who in (
+        ("job", job, _LAUNCHER),
+        ("pod", _pod_of(job), _CONTROLLER),
+    ):
+        failures = _cel_admit(on, kind, obj, who)
+        assert failures and any("egress gate" in f for f in failures), (kind, command, failures)
+
+
+def test_a_job_without_any_command_is_denied(on):
+    job = _good_job()
+    del job["spec"]["template"]["spec"]["containers"][0]["command"]
+    failures = _cel_admit(on, "job", job, _LAUNCHER)
+    assert failures and any("egress gate" in f for f in failures)
+
+
+def test_the_policy_literals_match_the_gate_constants():
+    from butlers.core.qa import investigator_job as ij
+
+    template = (_CHART / "templates" / "qa-investigator.yaml").read_text()
+    for word in ij.GATE_PREFIX:
+        assert f"'{word}'" in template, word

@@ -22,10 +22,13 @@ Nothing here talks to a cluster or reads a credential; the output is plain JSON-
 
 from __future__ import annotations
 
+import copy
 import re
 import uuid
 from collections.abc import Sequence
 from typing import Any, Final
+
+from butlers.core.qa.egress_gate import DEFAULT_DEADLINE_S as EGRESS_GATE_DEADLINE_S
 
 #: Component label value shared with the chart (selectors, NetworkPolicies, the admission policy).
 INVESTIGATOR_COMPONENT: Final[str] = "qa-investigator"
@@ -42,7 +45,16 @@ EXCHANGE_SUBPATH_PREFIX: Final[str] = "attempts/"
 EXCHANGE_SUBPATH_PATTERN: Final[str] = (
     r"^attempts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
-MIN_DEADLINE_S: Final[int] = 60
+#: Limits every investigator pod carries (the admission policy requires cpu, memory and
+#: ephemeral-storage limits). Overridable per call; never absent.
+DEFAULT_RESOURCES: Final[dict[str, dict[str, str]]] = {
+    "requests": {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "256Mi"},
+    "limits": {"cpu": "2", "memory": "4Gi", "ephemeral-storage": "2Gi"},
+}
+SCRATCH_SIZE_LIMIT: Final[str] = "1Gi"
+#: A Job must outlive the egress gate's own wait plus time to run: a slow policy is then reported
+#: as ``containment_not_enforced`` (the gate's exit) and not as a deadline overrun.
+MIN_DEADLINE_S: Final[int] = EGRESS_GATE_DEADLINE_S + 60
 MAX_DEADLINE_S: Final[int] = 4 * 60 * 60
 ATTEMPT_LABEL: Final[str] = "butlers.io/qa-attempt"
 CONTAINMENT_LABEL: Final[str] = "butlers.io/qa-containment"
@@ -74,6 +86,30 @@ def _env(name: str, value: str) -> dict[str, str]:
     if not _SAFE_ENV_VALUE.fullmatch(value):
         raise InvestigatorJobError(f"environment value for {name} is not printable ASCII")
     return {"name": name, "value": value}
+
+
+#: Every investigator container starts under the egress gate (butlers.core.qa.egress_gate): the
+#: CNI programs a NetworkPolicy after the pod starts, so the real command runs only once the
+#: cluster's own API server has been refused several times in a row. ``exec`` keeps PID 1.
+EGRESS_GATE_MODULE = "butlers.core.qa.egress_gate"
+#: The daemon image installs butlers only into this sealed venv (Dockerfile ``production-install``
+#: ``--environment /app/.venv``), and the Job pins PATH to the base interpreter first, so the gate
+#: and the probe must name the venv interpreter by absolute path. A test pins it to the Dockerfile.
+DAEMON_VENV = "/app/.venv"
+INVESTIGATOR_PYTHON = f"{DAEMON_VENV}/bin/python"
+#: The five leading words of every investigator container command; the admission policy requires
+#: exactly this prefix, so the gate is not enforced by the launcher alone.
+GATE_PREFIX: Final[tuple[str, ...]] = (
+    INVESTIGATOR_PYTHON,
+    "-I",
+    "-m",
+    EGRESS_GATE_MODULE,
+    "--",
+)
+
+
+def gated_command(command: Sequence[str]) -> list[str]:
+    return [*GATE_PREFIX, *command]
 
 
 def build_investigator_job(
@@ -129,7 +165,7 @@ def build_investigator_job(
     container: dict[str, Any] = {
         "name": CONTAINER_NAME,
         "image": image,
-        "command": list(command),
+        "command": gated_command(command),
         "workingDir": working_dir,
         "env": env,
         "securityContext": {
@@ -150,8 +186,7 @@ def build_investigator_job(
             },
         ],
     }
-    if resources is not None:
-        container["resources"] = resources
+    container["resources"] = copy.deepcopy(resources or DEFAULT_RESOURCES)
 
     return {
         "apiVersion": "batch/v1",
@@ -181,8 +216,8 @@ def build_investigator_job(
                     },
                     "containers": [container],
                     "volumes": [
-                        {"name": "home", "emptyDir": {}},
-                        {"name": "tmp", "emptyDir": {}},
+                        {"name": "home", "emptyDir": {"sizeLimit": SCRATCH_SIZE_LIMIT}},
+                        {"name": "tmp", "emptyDir": {"sizeLimit": SCRATCH_SIZE_LIMIT}},
                         {
                             "name": "exchange",
                             "persistentVolumeClaim": {"claimName": exchange_claim},
