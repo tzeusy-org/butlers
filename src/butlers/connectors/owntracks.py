@@ -86,6 +86,7 @@ from butlers.connectors.filtered_event_buffer import (
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -1595,7 +1596,7 @@ class OwnTracksConnector:
         start_t = time.perf_counter()
         status = "success"
         try:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
             self._ingest_retry.succeeded(retry_key)
             self._last_ingest_ok = True
             self._health_error = None
@@ -1703,7 +1704,7 @@ class OwnTracksConnector:
                 raise EvidenceNotCommitted("replay_evidence_missing")
         else:
             await commit_envelope(self._db_pool, envelope)
-        await self._mcp_client.call_tool("ingest", envelope)
+        await submit_ingest(self._mcp_client, envelope)
 
     # ------------------------------------------------------------------
     # Checkpoint

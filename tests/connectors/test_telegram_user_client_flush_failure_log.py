@@ -184,7 +184,7 @@ async def test_real_submit_failure_log_withholds_an_echoed_ingest_rejection(
     call_tool.assert_awaited_once()
     submit_logs = [r for r in caplog.records if "Failed to submit" in r.getMessage()]
     assert len(submit_logs) == 1
-    assert submit_logs[0].error_class == "RuntimeError"
+    assert submit_logs[0].error_class == "IngestRejected"
     assert re.search(r"\w+\.py:\d+:\w+", submit_logs[0].raised_at)
     assert not hasattr(submit_logs[0], "error")
     _assert_nowhere(caplog, _CODE)

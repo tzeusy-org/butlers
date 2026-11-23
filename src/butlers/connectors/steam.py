@@ -61,6 +61,7 @@ from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import IngestSubmitResult, submit_ingest
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.ingestion_spans import CHANNEL_KIND_FEED
@@ -1651,44 +1652,17 @@ class SteamAccountPoller:
                 )
 
         result = await self._submit_envelope(envelope)
-        if not (
-            isinstance(result, dict)
-            and result.get("status") == "accepted"
-            and result.get("duplicate") is True
-        ):
+        if not result.duplicate:
             steam_events_submitted_total.labels(
                 event_type=event_type,
                 endpoint_identity=self._state.endpoint_identity,
             ).inc()
 
-    async def _submit_envelope(self, envelope: dict[str, Any]) -> Any:
-        """Submit an ingest.v1 envelope to the Switchboard via MCP.
-
-        Two bugs made every Steam ingest submission fail invisibly (bu-a38da):
-
-        1. ``envelope["event"]["type"]`` (e.g. "play_session") is an
-           internal-only field used locally by ``_maybe_submit`` /
-           ``_make_ingestion_envelope_for_filter`` for metrics labeling and
-           ingestion-policy raw_key construction. The ``ingest.v1`` wire
-           contract (``IngestEventV1``, ``extra="forbid"``) does not define
-           this field, so every Steam envelope was rejected server-side with
-           ``event.type: Extra inputs are not permitted``. ``_to_wire_envelope``
-           strips it before transmission.
-        2. The Switchboard's ``ingest`` MCP tool catches that validation
-           ``ValueError`` and returns a normal (non-erroring)
-           ``{"status": "error", "error": ...}`` response rather than raising
-           an MCP-level error — the same convention every other connector
-           (e.g. ``telegram_bot._submit_to_ingest``) checks for. This
-           connector never checked it, so ``call_tool`` returning without
-           raising was treated as success even though nothing was persisted
-           to ``public.ingestion_events``. Checked explicitly below.
-        """
+    async def _submit_envelope(self, envelope: dict[str, Any]) -> IngestSubmitResult:
+        """Remove the local event type before submitting the ingest.v1 wire envelope."""
         wire_envelope = _to_wire_envelope(envelope)
         try:
-            result = await self._mcp_client.call_tool("ingest", wire_envelope)
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = await submit_ingest(self._mcp_client, wire_envelope)
             self._metrics.record_ingest_submission(status="success")
             self._metrics.record_source_api_call(api_method="ingest", status="success")
             return result

@@ -35,6 +35,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.ingest_submit import IngestRejected
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.steam import (
     AccountPollerState,
@@ -423,8 +424,10 @@ async def test_submit_envelope_raises_on_ingest_tool_error_response() -> None:
         raw={},
     )
 
-    with pytest.raises(RuntimeError, match="extra_forbidden"):
+    with pytest.raises(IngestRejected) as caught:
         await poller._submit_envelope(envelope)
+    assert caught.value.is_refusal
+    assert "extra_forbidden" not in str(caught.value)
 
 
 async def test_submit_envelope_still_raises_on_transport_failure() -> None:
