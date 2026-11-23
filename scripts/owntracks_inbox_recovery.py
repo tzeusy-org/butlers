@@ -38,9 +38,10 @@ from butlers.connectors.owntracks import LocationPointRejected, location_point_f
 #: Kept equal to ``WITHHELD_TEXT`` in the Switchboard location-retention tool (a test pins it).
 WITHHELD_TEXT = "[location withheld: raw retention]"
 
-#: The read the whole script performs. ``DISTINCT ON`` collapses a key resent more than once.
+#: The read the whole script performs. A key resent more than once yields every copy; ``summarize``
+#: counts one candidate per key and prefers the earliest recoverable copy.
 CANDIDATES_SQL = """
-SELECT DISTINCT ON (key) key, received_at, normalized_text, raw
+SELECT key, received_at, normalized_text, raw
 FROM (
     SELECT i.request_context ->> 'idempotency_key' AS key,
            i.received_at,
@@ -93,7 +94,9 @@ def classify(key: str, normalized_text: str | None, raw: Any) -> tuple[str, int 
             raw = json.loads(raw)
         except ValueError:
             raw = None
-    if isinstance(raw, dict):
+    # A body without both explicit coordinates is no fix: ``location_point_fields`` would default
+    # a missing one to 0.0, inventing a position. Fall through to the text path instead.
+    if isinstance(raw, dict) and "lat" in raw and "lon" in raw:
         try:
             fields = location_point_fields({**raw, "tst": raw.get("tst", tst)})
         except LocationPointRejected:
@@ -121,15 +124,28 @@ def _iso(seconds: int | datetime | None) -> str | None:
     return moment.astimezone(UTC).isoformat()
 
 
+_RECOVERABLE = frozenset({"from_raw", "from_text"})
+
+
 def summarize(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """Counts and date ranges for the candidate rows. Never includes a key or a coordinate."""
     outcomes: Counter[str] = Counter()
     fix_times: list[int] = []
     received: list[datetime] = []
-    for row in rows:
-        outcome, tst = classify(row["key"], row["normalized_text"], row["raw"])
+    # One candidate per key: its earliest recoverable copy if any, else its first copy. The
+    # first-seen timestamp is the key's earliest copy either way.
+    chosen: dict[str, tuple[str, int | None]] = {}
+    first_seen: dict[str, datetime] = {}
+    for row in sorted(rows, key=lambda r: r["received_at"]):
+        key = row["key"]
+        outcome, tst = classify(key, row["normalized_text"], row["raw"])
+        first_seen.setdefault(key, row["received_at"])
+        held = chosen.get(key)
+        if held is None or (held[0] not in _RECOVERABLE and outcome in _RECOVERABLE):
+            chosen[key] = (outcome, tst)
+    for key, (outcome, tst) in chosen.items():
         outcomes[outcome] += 1
-        received.append(row["received_at"])
+        received.append(first_seen[key])
         if tst is not None:
             fix_times.append(tst)
     recoverable = {name: outcomes.pop(name, 0) for name in ("from_raw", "from_text")}

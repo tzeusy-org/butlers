@@ -93,3 +93,21 @@ async def test_a_write_inside_the_read_transaction_is_refused(seeded) -> None:
         async with conn.transaction(readonly=True):
             with pytest.raises(asyncpg.exceptions.ReadOnlySQLTransactionError):
                 await conn.execute("DELETE FROM switchboard.message_inbox")
+
+
+async def test_an_unreadable_first_copy_does_not_mask_a_recoverable_resend(seeded) -> None:
+    await _inbox(seeded, _key(7), "unreadable historical text", None)
+    await _inbox(
+        seeded,
+        _key(7),
+        "Location update: 1.5N, 103.5E",
+        {"_type": "location", "lat": 1.5, "lon": 103.5, "tst": _BASE + 7},
+    )
+    assert await seeded.fetchval("SELECT count(*) FROM switchboard.message_inbox") == 2
+
+    async with seeded.acquire() as conn:
+        report = await recovery.collect(conn)
+
+    assert report["candidates"] == 1
+    assert report["recoverable"] == {"from_raw": 1, "from_text": 0}
+    assert report["not_recoverable"] == {}

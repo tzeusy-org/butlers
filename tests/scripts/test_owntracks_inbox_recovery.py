@@ -207,3 +207,33 @@ async def test_the_connection_allows_five_minutes_for_the_unindexed_scan(monkeyp
     await recovery.run("postgresql://synthetic")
 
     assert seen["command_timeout"] == 300 and seen["closed"]
+
+
+@pytest.mark.parametrize("raw", [{}, {"lat": 1.5}, {"lon": 103.5}])
+def test_an_incomplete_raw_body_does_not_invent_a_coordinate(raw) -> None:
+    assert recovery.classify(_KEY, "unreadable historical row", raw)[0] not in {
+        "from_raw",
+        "from_text",
+    }
+
+
+def test_an_incomplete_raw_body_can_fall_back_to_a_complete_metadata_copy() -> None:
+    assert recovery.classify(_KEY, "Location update: 1.5N, 103.5E", {}) == ("from_text", _TST)
+
+
+def test_duplicate_copies_count_once_preferring_the_earliest_recoverable_one() -> None:
+    first, second = datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 2, tzinfo=UTC)
+    rows = [
+        {"key": _KEY, "received_at": first, "normalized_text": "unreadable", "raw": None},
+        {
+            "key": _KEY,
+            "received_at": second,
+            "normalized_text": "Location update: 1.5N, 103.5E",
+            "raw": {"lat": 1.5, "lon": 103.5, "tst": _TST},
+        },
+    ]
+    report = recovery.summarize(rows)
+    assert report["candidates"] == 1
+    assert report["recoverable"] == {"from_raw": 1, "from_text": 0}
+    assert report["not_recoverable"] == {}
+    assert report["received_at_range"][0] == first.isoformat()
