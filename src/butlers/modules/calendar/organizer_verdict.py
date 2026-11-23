@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 VERDICT_VERSION: Final = 1
+SWEEP_BATCH: Final = 200  # events stamped per sync pass
 
 Verdict = Literal["owner", "known_entity", "known_domain", "first_contact", "blocked", "unknown"]
 IdentityClass = Literal["known_entity", "known_domain", "none"]

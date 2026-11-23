@@ -1,12 +1,12 @@
 ## 1. Spec and verdict (this change, slice S1)
 
-- [ ] 1.1 OpenSpec change `add-organizer-verdict` validates.
-- [ ] 1.2 `organizer_verdict` pure function and closed lure badges; no free-text input.
-- [ ] 1.3 Migration: SECURITY DEFINER identity-class and connector-block functions.
-- [ ] 1.4 Projection stamps verdict, badges and `verdict_version` into event metadata.
-- [ ] 1.5 Idempotent bounded re-stamp sweep; a pre-existing blocked organizer's invite is stamped
+- [x] 1.1 OpenSpec change `add-organizer-verdict` validates.
+- [x] 1.2 `organizer_verdict` pure function and closed lure badges; no free-text input.
+- [x] 1.3 Migration: SECURITY DEFINER identity-class and connector-block functions.
+- [x] 1.4 Projection stamps verdict, badges and `verdict_version` into event metadata.
+- [x] 1.5 Idempotent bounded re-stamp sweep; a pre-existing blocked organizer's invite is stamped
       `blocked`.
-- [ ] 1.6 docs/modules/calendar.md.
+- [x] 1.6 docs/modules/calendar.md.
 
 ## 2. Readers (slice S2)
 
