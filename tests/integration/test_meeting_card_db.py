@@ -20,6 +20,7 @@ import pytest
 from butlers.core.state import state_set
 from butlers.jobs import meeting_card as card
 from butlers.jobs.calendar_prep import prep_key
+from butlers.modules.calendar.participants import sync_event_participants
 
 pytestmark = [
     pytest.mark.integration,
@@ -99,7 +100,7 @@ async def _event(
         "VALUES ($1, 'provider_event', 'owner') RETURNING id",
         f"test-{uuid.uuid4().hex[:8]}",
     )
-    return await pool.fetchval(
+    event_id = await pool.fetchval(
         """
         INSERT INTO calendar_events
             (source_id, origin_ref, title, location, timezone, starts_at, ends_at, all_day,
@@ -115,8 +116,11 @@ async def _event(
         starts_at + timedelta(hours=1),
         all_day,
         status,
-        json.dumps({"attendees": attendees or []}),
+        json.dumps({"attendees": attendees or [], "source_type": "provider_event"}),
     )
+    # The meeting card reads participant records, which the projection writes for a synced event.
+    await sync_event_participants(pool, event_id)
+    return event_id
 
 
 def _guests(*others: str) -> list[dict]:

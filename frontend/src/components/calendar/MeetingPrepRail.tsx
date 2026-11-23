@@ -323,6 +323,10 @@ export interface MeetingPrepRailProps {
   attendees: CalendarPrepAttendee[];
   /** Butlers that contributed context (rendered as a provenance footnote). */
   sourceButlers?: string[];
+  /** Attendees could not be read or are not resolved yet (never rendered as empty). */
+  attendeesUnavailable?: boolean;
+  /** Attendees that resolved to no one, shown as a count. */
+  unresolvedAttendees?: number;
 }
 
 /**
@@ -339,6 +343,8 @@ export function MeetingPrepRail({
   hasPrepContext,
   attendees,
   sourceButlers = [],
+  attendeesUnavailable = false,
+  unresolvedAttendees = 0,
 }: MeetingPrepRailProps) {
   const showEmpty =
     !isLoading && !isError && (!hasPrepContext || attendees.length === 0);
@@ -363,6 +369,13 @@ export function MeetingPrepRail({
         <p role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
           Couldn&apos;t load meeting prep. {error?.message ?? "Unknown error"}
         </p>
+      ) : attendeesUnavailable ? (
+        <p
+          data-testid="meeting-prep-attendees-unavailable"
+          className="font-mono text-[11px] leading-snug text-[var(--mfg)]"
+        >
+          Attendees unavailable.
+        </p>
       ) : showEmpty ? (
         // Honest empty-state — no specialist contributed prep context for this
         // event (co-attended / contact-link coverage not yet populated, or the
@@ -381,6 +394,14 @@ export function MeetingPrepRail({
               <PrepAttendeeCard key={attendee.entity_id} attendee={attendee} />
             ))}
           </div>
+          {unresolvedAttendees > 0 ? (
+            <p
+              data-testid="meeting-prep-unresolved"
+              className="font-mono text-[11px] text-[var(--mfg)]"
+            >
+              +{unresolvedAttendees} not identified
+            </p>
+          ) : null}
           {sourceButlers.length > 0 ? (
             <p
               data-testid="prep-source-butlers"
@@ -438,6 +459,8 @@ export function MeetingPrepRailContainer({
       hasPrepContext={prep?.has_prep_context ?? false}
       attendees={prep?.attendees ?? []}
       sourceButlers={prep?.source_butlers ?? []}
+      attendeesUnavailable={prep?.attendees_unavailable ?? false}
+      unresolvedAttendees={prep?.unresolved_attendees ?? 0}
     />
   );
 }

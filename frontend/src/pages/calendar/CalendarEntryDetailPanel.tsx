@@ -302,6 +302,17 @@ export function CalendarEntryDetailPanel({
         </div>
       ) : null}
 
+      {entry.attendees_unavailable ? (
+        <div className="flex flex-col gap-1" data-testid="detail-attendees-unavailable">
+          <span className={FIELD_LABEL_CLASS}>People</span>
+          <span className="text-sm text-muted-foreground">Attendees unavailable</span>
+        </div>
+      ) : entry.unresolved_attendees ? (
+        <span className="text-xs text-muted-foreground" data-testid="detail-unresolved-attendees">
+          +{entry.unresolved_attendees} not identified
+        </span>
+      ) : null}
+
       {/* Meeting-prep rail (bu-rct3g): attendee relationships, notes, last-met
           and per-attendee message context for an entity-linked meeting. Keyed on
           `event_id` (= `calendar_events.id`), not the per-instance `entry_id`;

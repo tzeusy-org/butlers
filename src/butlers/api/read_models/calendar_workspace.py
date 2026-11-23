@@ -44,6 +44,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from butlers.api.db import DatabaseManager
+from butlers.core.identity.attendees import RESOLVER_VERSION
 from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
@@ -63,6 +64,11 @@ from butlers.core.temporal.conflicts import (
     overlap_pair_id,
 )
 from butlers.core.temporal.household_context import HouseholdEvent, household_events
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
+from butlers.modules.calendar.participants import (
+    NAMEABLE_PARTICIPANTS_SQL,
+    unavailable_events_sql,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -810,19 +816,43 @@ class CalendarEntryPeopleResult:
 
     by_event: dict[UUID, list[CalendarEntryPerson]]
     available: bool = True
+    #: Events whose attendees could not be read or are not resolved yet (never "no one").
+    attendees_unavailable: set[UUID] = field(default_factory=set)
+    #: Attendees that resolved to no one, or to more than one, per event: a count, never named.
+    unresolved: dict[UUID, int] = field(default_factory=dict)
 
 
 #: Batch resolution of linked people for a set of events. ``$1`` is the event-id
 #: array; the join reaches ``public.entities`` (readable from every butler pool)
 #: for the display label. Keyed and ordered so avatar rendering is deterministic.
-_ENTRY_PEOPLE_SQL: str = """
-    SELECT ee.event_id AS event_id,
-           ee.entity_id AS entity_id,
+_ENTRY_PEOPLE_SQL: str = f"""
+    -- quarantine-exempt: the participant side mints nothing for a quarantined invitation
+    SELECT linked.event_id AS event_id,
+           linked.entity_id AS entity_id,
            en.canonical_name AS canonical_name
-    FROM calendar_event_entities ee
-    LEFT JOIN public.entities en ON en.id = ee.entity_id
-    WHERE ee.event_id = ANY($1::uuid[])
-    ORDER BY ee.event_id, lower(COALESCE(en.canonical_name, '')), ee.entity_id
+    FROM (
+        SELECT ee.event_id, ee.entity_id FROM calendar_event_entities ee
+        UNION
+        SELECT n.event_id, n.entity_id FROM ({NAMEABLE_PARTICIPANTS_SQL}) n
+    ) linked
+    LEFT JOIN public.entities en ON en.id = linked.entity_id
+    WHERE linked.event_id = ANY($1::uuid[])
+    ORDER BY linked.event_id, lower(COALESCE(en.canonical_name, '')), linked.entity_id
+"""
+
+#: Per event: whether its attendees are unreadable, or how many resolved to no one. ``$1`` is the
+#: event-id array and ``$2`` the resolver version.
+_ENTRY_PARTICIPANT_STATE_SQL: str = f"""
+    SELECT u.id AS event_id, true AS unavailable, 0 AS unresolved
+    FROM ({unavailable_events_sql("e")}) u
+    UNION ALL
+    SELECT p.event_id, false, count(*)::int
+    FROM calendar_event_participants p
+    JOIN calendar_events e ON e.id = p.event_id
+    WHERE p.event_id = ANY($1::uuid[]) AND p.resolution IN ('ambiguous', 'unresolved')
+      AND lower(COALESCE(p.response_status, '')) <> 'declined'
+      AND NOT {quarantined_invitation_sql("e")}
+    GROUP BY p.event_id
 """
 
 
@@ -872,6 +902,27 @@ async def query_calendar_entry_people(
         )
         return CalendarEntryPeopleResult(by_event={}, available=False)
 
+    unavailable: set[UUID] = set()
+    unresolved: dict[UUID, int] = {}
+    try:
+        state, state_failed = await db.fan_out_with_status(
+            _ENTRY_PARTICIPANT_STATE_SQL,
+            (list(event_ids), RESOLVER_VERSION),
+            butler_names=query_targets,
+        )
+    except Exception:
+        state, state_failed = {}, ["state"]
+    if state_failed:
+        # The state of the participants is unknown: say so for every event, never "no one".
+        logger.warning("query_calendar_entry_people participant state failed; degrading")
+        unavailable = set(event_ids)
+    for raw_rows in state.values():
+        for row in raw_rows:
+            if row["unavailable"]:
+                unavailable.add(row["event_id"])
+            else:
+                unresolved[row["event_id"]] = unresolved.get(row["event_id"], 0) + row["unresolved"]
+
     by_event: dict[UUID, list[CalendarEntryPerson]] = {}
     for _butler_name, raw_rows in results.items():
         for row in raw_rows:
@@ -880,7 +931,12 @@ async def query_calendar_entry_people(
             by_event.setdefault(event_id, []).append(
                 CalendarEntryPerson(entity_id=str(row["entity_id"]), display_label=label)
             )
-    return CalendarEntryPeopleResult(by_event=by_event, available=not failed)
+    return CalendarEntryPeopleResult(
+        by_event=by_event,
+        available=not failed,
+        attendees_unavailable=unavailable,
+        unresolved=unresolved,
+    )
 
 
 # ---------------------------------------------------------------------------

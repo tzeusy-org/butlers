@@ -102,6 +102,15 @@ describe("MeetingPrepRail", () => {
     expect(screen.getByTestId("meeting-prep-empty").textContent).toMatch(/no prep context yet/i);
   });
 
+  it("says attendees are unavailable instead of rendering an empty state", () => {
+    renderRail(<MeetingPrepRail hasPrepContext={false} attendees={[]} attendeesUnavailable />);
+
+    expect(screen.getByTestId("meeting-prep-attendees-unavailable").textContent).toMatch(
+      /attendees unavailable/i,
+    );
+    expect(screen.queryByTestId("meeting-prep-empty")).toBeNull();
+  });
+
   it("renders a loading state", () => {
     renderRail(<MeetingPrepRail isLoading hasPrepContext={false} attendees={[]} />);
 

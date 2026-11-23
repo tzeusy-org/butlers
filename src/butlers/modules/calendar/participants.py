@@ -355,6 +355,8 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
     people: list[dict[str, Any]] = []
     unresolved = withheld = 0
     for r in rows:
+        if r["resolution"] != "owner" and (r["response_status"] or "").lower() == "declined":
+            continue  # not expected at the meeting: neither named nor counted
         if r["resolution"] in ("ambiguous", "unresolved"):
             unresolved += 1
         elif r["resolution"] == "resource":
@@ -393,6 +395,18 @@ def _sql_normalized_email(expr: str) -> str:
 
 
 _PLAIN_ADDRESS_REGEX = "^[^@ \\t\\n\\r\\f\\v]+@[^@ \\t\\n\\r\\f\\v]+$"
+
+
+#: Participant rows a reader may turn into a person: a resolved entity that is not a room, not the
+#: owner's own seat, not declined, and active. Ambiguous and unresolved attendees are counted.
+NAMEABLE_PARTICIPANTS_SQL: Final = """
+    SELECT p.event_id AS event_id, p.entity_id AS entity_id
+    FROM calendar_event_participants p
+    JOIN public.entities pe ON pe.id = p.entity_id
+    WHERE p.resolution IN ('exact', 'manual') AND p.role <> 'resource'
+      AND p.entity_id IS NOT NULL AND COALESCE(pe.posture, 'active') = 'active'
+      AND lower(COALESCE(p.response_status, '')) <> 'declined'
+"""
 
 
 def _not_ready_predicate(alias: str, version_param: str) -> str:
@@ -503,3 +517,8 @@ async def backfill_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BAT
         if await sync_event_participants(pool, row["id"]) == "written":
             written += 1
     return written
+
+
+def other_people(read: dict[str, Any]) -> list[dict[str, Any]]:
+    """The named people of a :func:`read_participants` result, without the owner's own seat."""
+    return [p for p in read["participants"] if p["resolution"] != "owner"]
