@@ -100,6 +100,7 @@ from butlers.core.temporal.calendar_provenance import (
     is_status_event,
 )
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time, counts_as_owner_time
+from butlers.core.temporal.household_context import household_events
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -196,7 +197,11 @@ async def run_calendar_context_producer(
         # stronger signal (people take calls while away), so it keeps `meeting`.
         candidates = [pair for pair in candidates if pair[1] is ContextSignal.meeting]
     chosen = candidates[0] if candidates else None
-    marker = {"out_of_office": True} if out_of_office else {}
+    marker: dict[str, Any] = {"out_of_office": True} if out_of_office else {}
+    # Other people's live events are context for the owner's surfaces and assert nothing here
+    # (REQ-context-bus-019): they are reported, never a signal.
+    if live_household := len(household_events(rows)):
+        marker["household_events"] = live_household
 
     if chosen is None:
         # No live event — retract any stale meeting/focused assertion.

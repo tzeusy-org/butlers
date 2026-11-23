@@ -1693,3 +1693,35 @@ async def test_the_calendar_query_joins_the_source_role():
     sql = pool.fetch.await_args.args[0]
     assert "JOIN calendar_sources cs ON cs.id = ce.source_id" in sql
     assert "cs.time_role" in sql
+
+
+# -- household context: other people's live events are reported, never a signal (REQ-context-bus-019)
+
+
+async def test_a_household_event_sets_no_signal_but_is_reported():
+    result, set_context, clear_context = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Synthetic private appointment",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="household_member",
+            ),
+            _active_calendar_row(
+                title="Unclassified",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="unclassified",
+            ),
+        ]
+    )
+    assert result["signal"] is None
+    assert result["household_events"] == 1  # unclassified counts as nothing
+    set_context.assert_not_awaited()
+    assert "Synthetic private appointment" not in repr(result)
+    assert {c.args[2] for c in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_no_household_key_when_there_is_none():
+    result, _, _ = await _run_calendar([])
+    assert "household_events" not in result

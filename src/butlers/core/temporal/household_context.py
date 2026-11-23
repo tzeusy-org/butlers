@@ -1,6 +1,7 @@
 """Other people's calendar events as attributed, opaque context (REQ-module-calendar-038).
 
 Bead bu-5ii4gj.1, slice S3.
+
 A partner's or colleague's appointment is not the owner's time, but it is true and useful: the
 owner's meeting card can say "also on <name>'s calendar" without counting it as load. This module
 decides which events are household context and shapes them. It is pure (no I/O) and it is the
@@ -25,6 +26,7 @@ from zoneinfo import ZoneInfo
 from butlers.core.temporal.calendar_provenance import (
     counts_toward_owner_load,
     is_explicit_butler_generated,
+    is_status_event,
 )
 from butlers.core.temporal.calendar_source_roles import asserts_owner_time, normalize_role
 
@@ -67,6 +69,7 @@ def household_event(
     source_id: Any = "",
     subject_entity_id: Any = None,
     subject_label: str | None = None,
+    event_type: Any = None,
 ) -> HouseholdEvent | None:
     """The context event for a row, or ``None`` when the row is not household context.
 
@@ -78,6 +81,8 @@ def household_event(
         return None
     if asserts_owner_time(role, metadata):
         return None  # the owner is attending: owner time, not context
+    if is_status_event(event_type):
+        return None  # out of office and working location are statuses, not meetings
     if is_explicit_butler_generated(metadata) or not counts_toward_owner_load(metadata):
         return None  # a generated hold, or an event marked free
     return HouseholdEvent(
@@ -100,7 +105,7 @@ def household_events(
     """Context events for rows shaped with the keys ``household_event`` takes, in time order.
 
     A row is a mapping with ``time_role``, ``metadata``, ``starts_at``, ``ends_at``, ``all_day``,
-    ``source_id``, ``subject_entity_id`` and ``subject_label``; readers alias their own columns
+    ``source_id``, ``subject_entity_id``, ``subject_label`` and optionally ``event_type``; readers alias their own columns
     to these. With a window, only events overlapping it are kept.
     """
     events: list[HouseholdEvent] = []
@@ -114,6 +119,7 @@ def household_events(
             source_id=row.get("source_id", ""),
             subject_entity_id=row.get("subject_entity_id"),
             subject_label=row.get("subject_label"),
+            event_type=row.get("event_type"),
         )
         if event is None:
             continue

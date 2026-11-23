@@ -25,7 +25,7 @@ Scope: v1-mandatory
 ### Requirement: Calendar Producer Reports Household Context
 
 The calendar context producer SHALL report how many household context events are live
-(`household_events`) in its result and SHALL NOT assert, clear or extend any context signal
+(`household_events`, present only when it is above zero) in its result and SHALL NOT assert, clear or extend any context signal
 because of them.
 
 ID: REQ-context-bus-019
