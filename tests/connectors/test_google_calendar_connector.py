@@ -1202,3 +1202,85 @@ async def test_a_policy_evaluation_error_holds_the_token_and_recovers_next_cycle
     assert runtime._sync_token == "token-2"
     assert saved == ["token-2"]
     assert runtime._get_health_state()[0] == "healthy"
+
+
+async def test_a_global_policy_error_holds_the_token_and_submits_nothing(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "token-1"
+    runtime._record_source_api_success()
+
+    async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        item = {"id": "e1", "status": "confirmed", "organizer": {"email": "a@example.com"}}
+        return {"items": [item], "nextSyncToken": "token-2"}
+
+    runtime._gcal_api_get = api_get  # type: ignore[method-assign]
+    submit = AsyncMock(return_value=True)
+    allow = PolicyDecision(action="pass_through", matched_rule_id=None, reason="ok")
+    with (
+        patch.object(runtime, "_submit_to_ingest_api", submit),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=allow),
+        patch.object(
+            runtime._global_ingestion_policy, "evaluate", side_effect=RuntimeError("unreadable")
+        ),
+    ):
+        await runtime._run_one_poll_cycle()
+
+    assert runtime._sync_token == "token-1"
+    save.assert_not_called()
+    submit.assert_not_called()
+    assert runtime._get_health_state()[0] == "degraded"
+
+
+async def test_a_connector_blocked_replay_clears_a_policy_error_only_at_cycle_end(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "token-1"
+    runtime._record_source_api_success()
+    runtime._policy_error = "Ingestion policy evaluation failed: RuntimeError"
+
+    async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        item = {"id": "e1", "status": "confirmed", "organizer": {"email": "a@example.com"}}
+        return {"items": [item], "nextSyncToken": "token-2"}
+
+    runtime._gcal_api_get = api_get  # type: ignore[method-assign]
+    block = PolicyDecision(
+        action="block", matched_rule_id="r", matched_rule_type="sender_address", reason="b"
+    )
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor"),
+        patch.object(runtime._ingestion_policy, "evaluate", return_value=block),
+    ):
+        await runtime._run_one_poll_cycle()
+
+    assert runtime._sync_token == "token-2"
+    assert runtime._get_health_state()[0] == "healthy"
+
+
+async def test_a_policy_error_during_a_full_resync_keeps_the_marker_and_token(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._resync_pending = True
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    submit = AsyncMock(return_value=True)
+    with (
+        patch.object(runtime, "_submit_to_ingest_api", submit),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=""),
+        patch.object(runtime._ingestion_policy, "evaluate", side_effect=RuntimeError("down")),
+    ):
+        await runtime._ensure_sync_token()
+
+    assert runtime._hold_sync_token is True
+    submit.assert_not_called()
+    save.assert_not_called()  # the "" marker stays
+    assert runtime._resync_pending is True and runtime._sync_token is None
+    assert runtime._get_health_state()[0] == "degraded"

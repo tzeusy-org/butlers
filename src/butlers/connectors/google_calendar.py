@@ -1103,6 +1103,10 @@ class CalendarConnectorRuntime:
             if ingested:
                 ingested_count += 1
 
+        # A cycle that evaluated every event without a hold clears a policy error.
+        if not self._hold_sync_token:
+            self._policy_error = None
+
         # Advance checkpoint only after processing, and never past an event
         # whose ingest failed and is waiting for a retry.
         if self._hold_sync_token:
@@ -1448,6 +1452,8 @@ class CalendarConnectorRuntime:
                     # only from incremental sync (REQ-connector-google-calendar-010).
                     continue
                 await self._process_event(event)
+            if not self._hold_sync_token:
+                self._policy_error = None
 
         if self._hold_sync_token:
             # The old token stays, so the next cycle repeats this full sync.
@@ -1619,7 +1625,6 @@ class CalendarConnectorRuntime:
             global_decision = self._global_ingestion_policy.evaluate(policy_envelope)
         except Exception as exc:
             return self._hold_on_policy_error(event_id, exc)
-        self._policy_error = None
 
         if global_decision is not None and global_decision.action == "skip":
             self._filtered_event_buffer.record(
