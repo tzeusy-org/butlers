@@ -154,7 +154,31 @@ def _numeric_cases() -> list[tuple[str, object, bool]]:
         ("-1e-7", False),
     ):
         cases.append((f"number literal {literal}", _read_text(literal), valid))
+    cases.extend(_wide_number_elsewhere_cases())
     return cases
+
+
+WIDE = "1.2345678901234567890123456789012345678901234567890"  # 51 characters, not an integer
+
+
+def _wide_number_elsewhere_cases() -> list[tuple[str, object, bool]]:
+    """A number wider than the 40-character bound outside ``read_check.value``.
+
+    SQL bounds width only on the read value; everywhere else a number is simply the wrong type.
+    Both validators must refuse each of these, and neither may raise anything else.
+    """
+    leaf_text = json.dumps({**READ, "value": 1}, sort_keys=True)
+    texts = {
+        "wide number as a capability": leaf_text.replace(f'"{READ["capability"]}"', WIDE),
+        "wide number as a field": leaf_text.replace(f'"{READ["field"]}"', WIDE),
+        "wide number as a tag": leaf_text.replace('"read_check"', WIDE),
+        "wide number as a child": '{"tag":"all","children":[' + WIDE + "]}",
+        "wide number inside a child leaf": '{"tag":"any","children":['
+        + leaf_text.replace(f'"{READ["field"]}"', WIDE)
+        + "]}",
+        "wide exponent as a field": leaf_text.replace(f'"{READ["field"]}"', "1e999999999"),
+    }
+    return [(name, Raw(text), False) for name, text in texts.items()]
 
 
 def sized_document(target: int, number: float = 1.23456789e-6, extra: int = 2) -> dict:
