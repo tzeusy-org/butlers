@@ -89,6 +89,62 @@ class TestCrossProcessSerialization:
         assert overlap == 1
 
 
+class TestNoPoolDeadlock:
+    @pytest.fixture(autouse=True)
+    def _bind(self, pools, watches_url):
+        self.owner, self.runtime = pools
+        self.url = watches_url
+
+    async def test_a_transition_does_not_deadlock_with_every_pool_at_size_one(self):
+        from datetime import UTC, datetime
+        from uuid import UUID, uuid5
+
+        from butlers.conditions import ConditionEvaluator, Grant, Snapshot
+        from butlers.conditions.sql import PostgresConditionStore
+        from butlers.watches import OwnerApproval, WatchService
+
+        ns = UUID("22222222-2222-2222-2222-222222222222")
+        routine = str(uuid5(ns, "routine"))
+        source = "perception:expect.window"
+
+        def grant_for(watch_id):
+            return Grant(
+                goal_id=watch_id, sources=frozenset({source}), subjects=frozenset({routine})
+            )
+
+        async def single_connection_pool():
+            return await asyncpg.create_pool(
+                self.url, setup=_as_switchboard, min_size=1, max_size=1
+            )
+
+        store_pool, lock_pool, condition_pool = (
+            await single_connection_pool(),
+            await single_connection_pool(),
+            await single_connection_pool(),
+        )
+        try:
+            service = WatchService(
+                PostgresWatchStore(store_pool, lock_pool=lock_pool),
+                ConditionEvaluator(PostgresConditionStore(condition_pool)),
+                grant_for,
+            )
+            now = datetime(2026, 11, 23, 9, 0, tzinfo=UTC)
+            card = service.propose_create(
+                {"predicate": {"tag": "routine_deviation", "routine_id": routine}}, now=now
+            )
+
+            async def run():
+                approval = OwnerApproval(card_digest=card.digest, origin="owner")
+                watch = await service.approve(card, approval, Snapshot(now=now))
+                return await service.pause(watch.id, origin="owner", now=now)
+
+            paused = await asyncio.wait_for(run(), timeout=30)
+            assert paused.state is WatchState.PAUSED
+        finally:
+            for p in (store_pool, lock_pool, condition_pool):
+                await p.close()
+
+
 class TestTableGuards:
     @pytest.fixture(autouse=True)
     def _bind(self, pools):

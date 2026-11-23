@@ -63,8 +63,12 @@ def _values(watch: Watch) -> tuple[Any, ...]:
 
 
 class PostgresWatchStore:
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: asyncpg.Pool, *, lock_pool: asyncpg.Pool | None = None) -> None:
+        # ``lock_pool`` is a small pool of its own for the per-watch session locks. A transition
+        # holds one of its connections while it uses ``pool`` and the evaluator's pool, so it must
+        # not share either (a shared pool of one deadlocks: the #6015 lesson).
         self._pool = pool
+        self._lock_pool = lock_pool or pool
         self._local: dict[str, asyncio.Lock] = {}
 
     @asynccontextmanager
@@ -79,13 +83,13 @@ class PostgresWatchStore:
         key = f"butlers:owner-watch:{watch_id}"
         async with self._local.setdefault(watch_id, asyncio.Lock()):
             try:
-                connection = await self._pool.acquire()
+                connection = await self._lock_pool.acquire()
                 try:
                     await connection.execute(
                         "SELECT pg_advisory_lock(hashtextextended($1, 0))", key
                     )
                 except BaseException:
-                    await self._pool.release(connection)
+                    await self._lock_pool.release(connection)
                     raise
             except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
                 raise ConnectionError(f"watch store unavailable: {type(exc).__name__}") from exc
@@ -97,7 +101,7 @@ class PostgresWatchStore:
                         "SELECT pg_advisory_unlock(hashtextextended($1, 0))", key
                     )
                 finally:
-                    await self._pool.release(connection)
+                    await self._lock_pool.release(connection)
 
     async def get(self, watch_id: str) -> Watch | None:
         try:
