@@ -80,6 +80,7 @@ from butlers.connectors.filtered_event_buffer import (
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import IngestRejected, submit_ingest
 from butlers.connectors.known_contact_snapshot import (
     PriorityContactSnapshotSource,
     normalize_phone_digits,
@@ -2335,11 +2336,11 @@ class WhatsAppUserClientConnector:
             )
             raise
         try:
-            result = await self._mcp_client.call_tool("ingest", envelope)
-            if isinstance(result, dict) and result.get("status") == "error":
-                failure_class = "ingest_error_response"
+            result = await submit_ingest(self._mcp_client, envelope)
         except Exception as exc:
             failure_class = type(exc).__name__
+            if isinstance(exc, IngestRejected) and exc.is_refusal:
+                failure_class = "ingest_error_response"
 
         event_ref = _opaque_transport_ref(envelope.get("event", {}).get("external_event_id"))
         if failure_class is not None:
@@ -2353,7 +2354,7 @@ class WhatsAppUserClientConnector:
             "Submitted to Switchboard ingest",
             extra={
                 "outcome": "accepted",
-                "duplicate": result.get("duplicate", False) if isinstance(result, dict) else False,
+                "duplicate": result.duplicate,
                 "event_ref": event_ref,
             },
         )

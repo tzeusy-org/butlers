@@ -35,7 +35,7 @@ authority and does not enable any connector.
 Connectors are responsible for:
 - Reading events from external systems (Telegram, Gmail, etc.)
 - Normalizing to canonical `ingest.v1` format
-- Submitting to Switchboard MCP server via ingest tool
+- Submitting via `ingest_submit.submit_ingest()`, the shared Switchboard ingest caller
 - Handling checkpointing and crash-safe resume
 
 Connectors do NOT:

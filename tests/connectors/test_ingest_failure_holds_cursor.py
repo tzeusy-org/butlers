@@ -573,7 +573,8 @@ def _aw_submitted_ts(call_tool: AsyncMock) -> list[str]:
     return [c.args[1]["event"]["external_event_id"] for c in call_tool.await_args_list]
 
 
-async def test_activitywatch_checkpoint_stays_before_a_failed_event() -> None:
+@pytest.mark.parametrize("reply_status", [None, "error"])
+async def test_activitywatch_checkpoint_stays_before_a_failed_event(reply_status) -> None:
     failing = f"{_AW_BUCKET}:{(_AW_TS + timedelta(minutes=1)).isoformat()}"
     failures = {failing: 1}
 
@@ -581,6 +582,8 @@ async def test_activitywatch_checkpoint_stays_before_a_failed_event() -> None:
         eid = envelope["event"]["external_event_id"]
         if failures.get(eid, 0) > 0:
             failures[eid] -= 1
+            if reply_status:
+                return {"status": reply_status, "retryable": False}
             raise RuntimeError("switchboard down")
         return {"status": "accepted"}
 
