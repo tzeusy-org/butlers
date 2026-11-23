@@ -32,49 +32,43 @@ include_other_contacts = false
 enabled = false
 
 [[butler.schedule]]
-name = "day_sheet_push"
-# 22:30 owner-local, ahead of eod-tomorrow-prep. Dark: the job is a no-op unless
-# DAY_SHEET_PUSH_ENABLED is set. It records day_sheet/pushed/<date> for the prompt below.
-cron = "30 22 * * *"
-dispatch_mode = "job"
-job_name = "day_sheet_push"
-
-[[butler.schedule]]
 name = "eod-tomorrow-prep"
-# 23:00 owner-local (SGT): hour-pinned crons are evaluated in the owner timezone.
+# 23:00 owner-local: hour-pinned crons are evaluated in the owner timezone.
 cron = "0 23 * * *"
 prompt = """
 Tomorrow prep: review tomorrow's calendar and incorporate today's specialist highlights into a
-multi-domain preparation summary you send at the end of the day (23:00 SGT) to get the user ready for the day ahead.
+multi-domain preparation summary you send at the end of the day (23:00 owner-local) to get the user ready for the day ahead.
 Target under 500 words total.
 
 Steps:
-1. Determine today's and tomorrow's dates in SGT (UTC+8). Today's date string format: YYYY-MM-DD.
+1. Determine today's and tomorrow's dates in the owner's timezone (your session's current local
+   time). Date string format: YYYY-MM-DD.
 
-2. Fetch specialist highlights by calling state_get('briefing/combined/<today-SGT>') where
-   <today-SGT> is today's date in YYYY-MM-DD format (SGT). This returns a JSON payload with a
+2. Fetch specialist highlights by calling state_get('briefing/combined/<today>') where
+   <today> is today's owner-local date in YYYY-MM-DD format. This returns a JSON payload with a
    `contributions` list, each entry having fields: `butler`, `has_updates`, `highlights`, `summary`.
    If state_get returns null or empty, skip to step 3 and proceed with calendar-only mode.
 
-3. Read state_get('day_sheet/pushed/<tomorrow-SGT>') (tomorrow's date, YYYY-MM-DD). The
-   day_sheet_push job sends the calendar itself; never enumerate or describe events when it ran.
-   - Marker present, outcome "delivered": the calendar was sent separately.
-   - Marker present, any other outcome: the calendar was not confirmed delivered. Do not say
+3. Read state_get('day_sheet/pushed/latest'). It is applicable only when its `date` equals
+   tomorrow's date from step 1. The day_sheet_push loop sends the calendar itself; never
+   enumerate or describe events when an applicable marker exists.
+   - Applicable marker, outcome "delivered": the calendar was sent separately.
+   - Applicable marker, any other outcome: the calendar was not confirmed delivered. Do not say
      anything about tomorrow's events and never say the day is clear.
-   - Marker absent (the job is not enabled): fall back to calendar_list_events for tomorrow
-     (00:00 to 23:59 SGT). If that call fails, say the calendar could not be read; never say
-     "No events scheduled".
+   - No applicable marker (the push is not enabled): fall back to calendar_list_events for
+     tomorrow (00:00 to 23:59 owner-local). If that call fails, say the calendar could not be
+     read; never say "No events scheduled".
 
 4. Compose the briefing message as follows. Open with a title line that makes clear this previews
    the day ahead, using TOMORROW's weekday and date so the future date reads as intentional:
 
    **🌅 Tomorrow Prep — [Tomorrow's Weekday, Date]**
-   (Do NOT title this an "end-of-day briefing"; it is sent at the end of the day, 23:00 SGT, to prepare for tomorrow.)
+   (Do NOT title this an "end-of-day briefing"; it is sent at the end of the day, 23:00 owner-local, to prepare for tomorrow.)
 
    **Calendar — [Day, Date]**
-   Marker delivered: one line, "Tomorrow's day sheet was sent separately." Marker present but not
-   delivered: one line, "Tomorrow's calendar could not be confirmed." Marker absent: list the
-   events from step 3 in chronological order (times in SGT): title, time, duration, location,
+   Delivered marker: one line, "Tomorrow's day sheet was sent separately." Marker not
+   delivered: one line, "Tomorrow's calendar could not be confirmed." No applicable marker: list the
+   events from step 3 in chronological order (owner-local times): title, time, duration, location,
    with prep notes and free blocks.
 
    **Today's Highlights** (only include this section if any specialist contribution has

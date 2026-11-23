@@ -179,3 +179,34 @@ async def test_the_read_is_not_scoped_by_butler_attribution_and_spans_a_wide_win
         assert "butler_name" not in call.args[0].split("WHERE", 1)[1]
         start, end = call.args[1][2], call.args[1][1]
         assert end - start >= timedelta(hours=24 + 52)
+
+
+async def test_the_telegram_push_equals_the_dashboard_sheet_for_the_same_date(app, monkeypatch):
+    """One projection: a two-schema fixture yields the same text and digest on both surfaces."""
+    from unittest.mock import AsyncMock
+    from zoneinfo import ZoneInfo
+
+    from butlers.jobs import day_sheet_push as job
+
+    meeting = row("m1", DAY)
+    other = row("m1", DAY)  # the same provider event in the second schema
+    solo = row("m2", DAY + timedelta(hours=3))
+    app, db = _build_app(app, workspace_rows={"general": [meeting, solo], "relationship": [other]})
+    dashboard = (await get_sheet(app, date="2026-07-01", timezone="UTC")).json()["data"]
+
+    sent = AsyncMock(return_value="delivered")
+    monkeypatch.setenv(job.ENABLED_ENV, "1")
+    monkeypatch.setattr(job, "owner_zoneinfo", AsyncMock(return_value=ZoneInfo("UTC")))
+    monkeypatch.setattr(job, "_delivered_row_exists", AsyncMock(return_value=False))
+    monkeypatch.setattr(job, "failed_attempts", AsyncMock(return_value=(0, None)))
+    monkeypatch.setattr(
+        job.owner_notify, "check_owner_notify_suppression", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(job.owner_notify, "send_owner_telegram", sent)
+    monkeypatch.setattr(job, "state_set", AsyncMock())
+
+    result = await job.run_day_sheet_push(db, now=datetime(2026, 6, 30, 22, 40, tzinfo=UTC))
+
+    assert result["digest"] == dashboard["digest"]
+    assert sent.await_args.kwargs["message"] == f"Tomorrow Prep\n{dashboard['text']}"
+    assert dashboard["items"], "the fixture must actually list events"
