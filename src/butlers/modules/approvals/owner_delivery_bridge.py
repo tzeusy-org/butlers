@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_holds as holds
 from butlers.modules.approvals.previews import args_digest
 
 #: Card actions minted for an approval presentation. ``ack`` exists in the ledger for
@@ -60,6 +61,29 @@ def approval_digests(tool_name: str, tool_args: Any) -> tuple[str, str]:
     """``(content_digest, action_digest)``; the action digest is the card's args digest."""
     args = _tool_args(tool_args)
     return od.digest_of({"tool_name": tool_name, "tool_args": args}), args_digest(args)
+
+
+#: Tool-owning modules whose approvals a mode never holds. The inventory classes every finance
+#: tool (bills, subscriptions, transactions) as ``record``, so the effect class alone cannot
+#: tell a bill from a note; the owning module can. A conservative superset of "bills due
+#: within 48 hours" (owner decision bu-u33sb7 Q8=B): deliver.
+NEVER_MODE_HELD_MODULES = frozenset({"finance"})
+
+
+def action_effect_class(action: Mapping[str, Any]) -> str | None:
+    """The action's effect class for mode holds; ``None`` means never mode-held.
+
+    From the action's checked-in tool descriptor, the only effect metadata it already records.
+    ``None`` for an unknown tool and for any tool of ``NEVER_MODE_HELD_MODULES``. A mode holds
+    only ``read``/``record`` effects (owner decision bu-u33sb7 Q8=B); the rest is delivered.
+    """
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+
+    descriptor = TOOL_PRESENTATION_BY_NAME.get(action.get("tool_name"))
+    if getattr(descriptor, "module_name", None) in NEVER_MODE_HELD_MODULES:
+        return None
+    effect = getattr(descriptor, "effect_class", None)
+    return effect if isinstance(effect, str) else None
 
 
 async def open_approval_subject(conn: Any, action: Mapping[str, Any]) -> od.Subject:
@@ -181,6 +205,14 @@ async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Prese
     if action.get("status") != "pending" or not await od.rollout_enabled(conn):
         return None
     subject = await open_approval_subject(conn, action)
+    # The dashboard is read on demand, so a mode only annotates it; it never defers it.
+    await holds.consume(
+        conn,
+        subject,
+        action_id=action["id"],
+        effect_class=action_effect_class(action),
+        defers_push=False,
+    )
     now = await conn.fetchval("SELECT clock_timestamp()")
     presentation = await od.present(
         conn,
@@ -375,6 +407,8 @@ __all__ = [
     "BridgeReport",
     "ParityReport",
     "RFC0023_STATE_MAP",
+    "NEVER_MODE_HELD_MODULES",
+    "action_effect_class",
     "approval_digests",
     "bridge_existing",
     "open_approval_subject",

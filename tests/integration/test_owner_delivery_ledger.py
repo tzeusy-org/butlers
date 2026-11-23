@@ -2306,3 +2306,41 @@ async def test_defer_of_a_pending_action_whose_subject_already_closed_leaves_it_
         )
         == closed
     )
+
+
+async def test_a_mode_hold_defers_the_push_keeps_its_receipt_and_never_touches_urgency(
+    ledger_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from butlers.core import owner_delivery_holds as holds
+    from butlers.perception import flags
+
+    await _enable(ledger_pool)
+    await _park(ledger_pool, card=True)
+    repository = ApprovalDeliveryRepository(ledger_pool)
+    claim = await repository.claim_next()
+    assert claim is not None
+
+    held = {"on": True}
+
+    async def fake_mode_hold(
+        conn: Any, subject: od.Subject, effect_class: str | None
+    ) -> holds.ModeHold | None:
+        return holds.ModeHold(4, ("sick",)) if held["on"] else None
+
+    monkeypatch.setattr(holds, "mode_hold", fake_mode_hold)
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_MODE_HOLDS_LIVE", True)
+
+    with pytest.raises(od.OwnerDeliveryHeld):
+        await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    row = await ledger_pool.fetchrow(
+        "SELECT urgency_class, urgency_reason, holding_reason ->> 'stage' AS stage, "
+        "(SELECT count(*) FROM public.owner_delivery_presentations) AS cards "
+        "FROM public.owner_delivery_subjects"
+    )
+    assert (row["urgency_class"], row["urgency_reason"]) == ("routine", None)
+    assert row["stage"] == "owner_mode"
+    assert row["cards"] == 0
+
+    held["on"] = False
+    tokens = await repository.prepare_owner_delivery(claim, _RECIPIENT)
+    assert tokens and all(token.startswith("od1:") for token in tokens.values())

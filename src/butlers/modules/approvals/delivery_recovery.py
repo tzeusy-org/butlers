@@ -12,6 +12,7 @@ from datetime import timedelta
 from typing import Any, Literal
 
 from butlers.core import owner_delivery as od
+from butlers.core import owner_delivery_holds as holds
 from butlers.core.approval_delivery_worker import (
     SAFE_REASON_CODES,
     DeliveryClaim,
@@ -23,10 +24,13 @@ from butlers.modules.approvals.notifications import (
     build_approval_request_envelope,
 )
 from butlers.modules.approvals.owner_delivery_bridge import (
+    action_effect_class,
+    open_approval_subject,
     owner_presentation_for,
     prepare_telegram_presentation,
 )
 from butlers.modules.approvals.previews import args_digest
+from butlers.perception import flags
 
 _LEASE_SECONDS = 30
 _BACKOFF_BASE_SECONDS = 15
@@ -492,7 +496,7 @@ class ApprovalDeliveryRepository:
         tokens exist only in memory until the envelope is handed to Messenger.
         """
         if claim.presentation_mode != "single":
-            return None
+            return await self._prepare_digest_delivery(claim)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 if not await od.rollout_enabled(connection):
@@ -515,15 +519,69 @@ class ApprovalDeliveryRepository:
                 )
                 if action is None:
                     raise od.OwnerDeliveryRefused("claim_unavailable")
-                presentation = await prepare_telegram_presentation(
+                subject = await open_approval_subject(connection, action)
+                hold = await holds.consume(
                     connection,
-                    action=action,
-                    intent_id=action["intent_id"],
-                    rfc_presentation_id=claim.presentation_id,
-                    rfc_generation=claim.presentation_generation,
-                    owner_recipient=owner_recipient,
+                    subject,
+                    action_id=action["id"],
+                    effect_class=action_effect_class(action),
+                    defers_push=True,
                 )
-                return dict(presentation.tokens)
+                if hold is None:
+                    presentation = await prepare_telegram_presentation(
+                        connection,
+                        action=action,
+                        intent_id=action["intent_id"],
+                        rfc_presentation_id=claim.presentation_id,
+                        rfc_generation=claim.presentation_generation,
+                        owner_recipient=owner_recipient,
+                    )
+                    return dict(presentation.tokens)
+        # Raised after the transaction commits, so the hold receipt is kept.
+        raise od.OwnerDeliveryHeld
+
+    async def _prepare_digest_delivery(self, claim: DeliveryClaim) -> None:
+        """Defer a digest card while an owner mode holds every counted member; else ``None``.
+
+        A digest has no subject and mints no token. Members are the cohort's eligible,
+        unexpired, pending actions, taken under the action-first lock.
+        """
+        if not flags.OWNER_DELIVERY_MODE_HOLDS_LIVE:
+            return None  # dark: no rollout read, no member query, no lock
+        digest_held = False
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                if not await od.rollout_enabled(connection):
+                    return None
+                members = await connection.fetch(
+                    """
+                    SELECT pa.tool_name
+                      FROM approval_delivery_presentations AS p
+                      JOIN approval_delivery_cohort_members AS m ON m.cohort_id = p.cohort_id
+                      JOIN approval_delivery_intents AS i ON i.id = m.intent_id
+                      JOIN pending_actions AS pa ON pa.id = i.action_id
+                     WHERE p.id = $1 AND p.presentation_generation = $2
+                       AND p.claim_token = $3 AND p.claim_fence = $4
+                       AND p.state = 'claimed' AND m.eligible AND pa.status = 'pending'
+                       AND (pa.expires_at IS NULL OR pa.expires_at > clock_timestamp())
+                     ORDER BY pa.id
+                       FOR UPDATE OF pa
+                    """,
+                    claim.presentation_id,
+                    claim.presentation_generation,
+                    claim.claim_token,
+                    claim.claim_fence,
+                )
+                owner = await od.owner_entity_id(connection)
+                if owner is not None:
+                    digest_held = await holds.digest_held(
+                        connection,
+                        owner,
+                        [action_effect_class({"tool_name": row["tool_name"]}) for row in members],
+                    )
+        if digest_held:
+            raise od.OwnerDeliveryHeld
+        return None
 
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool:
         """Record a proven pre-provider failure and schedule from database time."""

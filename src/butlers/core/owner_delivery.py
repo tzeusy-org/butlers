@@ -63,6 +63,14 @@ class OwnerDeliveryRefused(Exception):
         self.reason = reason
 
 
+class OwnerDeliveryHeld(Exception):
+    """An owner mode holds this subject's push now; the caller retries later.
+
+    Raised only after the hold receipt is committed. It is not a refusal: nothing is wrong
+    with the subject, and the hold never changes its urgency.
+    """
+
+
 def mint_token() -> tuple[str, str]:
     """A fresh ``(token, verifier)``; persist only the verifier."""
     nonce = secrets.token_bytes(TOKEN_NONCE_BYTES)
@@ -1027,6 +1035,21 @@ async def record_holding_reason(conn: Any, subject_id: UUID, receipt: dict[str, 
     )
 
 
+async def clear_holding_reason(conn: Any, subject_id: UUID, stage: str) -> None:
+    """Drop a stale hold receipt of ``stage`` from an open subject (display only).
+
+    A hold that no longer applies, such as an unreadable-posture receipt once the posture
+    reads clean, must not keep showing. Another stage's receipt is left alone.
+    """
+    await conn.execute(
+        "UPDATE public.owner_delivery_subjects SET holding_reason = NULL "
+        "WHERE id = $1 AND holding_reason ->> 'stage' = $2 "
+        "AND state NOT IN ('decided', 'cancelled', 'expired')",
+        subject_id,
+        stage,
+    )
+
+
 __all__ = [
     "ACTIONS",
     "LOCK_ORDER",
@@ -1038,6 +1061,7 @@ __all__ = [
     "delivery_inputs",
     "owner_entity_id",
     "pending_retractions",
+    "clear_holding_reason",
     "record_holding_reason",
     "subject_for_source",
     "ROUTINE",
@@ -1046,6 +1070,7 @@ __all__ = [
     "URGENCY_REASONS",
     "Urgency",
     "urgency_from_decision",
+    "OwnerDeliveryHeld",
     "OwnerDeliveryRefused",
     "Presentation",
     "Redemption",
