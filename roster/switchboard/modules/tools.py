@@ -40,6 +40,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.routing import route as _route
 
     _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+    from butlers.watches import approval as _owner_watch_cards
 
     _tool = tool_registrar(mcp, config)
 
@@ -129,6 +130,26 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             channel=channel,
             address=address,
             display_name=display_name,
+        )
+
+    # =================================================================
+    # Owner watch tools
+    # =================================================================
+
+    @_tool("watches")
+    async def owner_watch_apply_card(card_json: str, digest: str) -> dict[str, Any]:
+        """Apply one owner-approved watch card: start, change, renew or delete a watch.
+
+        Only the owner's Approve on the owner-watch card runs this: the Switchboard
+        approvals gate parks any other invocation, and the handler refuses a call that is
+        not byte-for-byte the card Switchboard parked.
+        """
+        return await _owner_watch_cards.apply_watch_card(
+            module._get_pool(),
+            card_json=card_json,
+            digest=digest,
+            service_for=_owner_watch_cards.PROVIDERS.service_for,
+            snapshot_for=_owner_watch_cards.PROVIDERS.snapshot_for,
         )
 
     # =================================================================

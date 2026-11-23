@@ -535,6 +535,7 @@ def test_non_messenger_direct_park_sites_stay_declared() -> None:
         "connector_rotate_token",
         "identity_ignore_unknown_sender",  # unknown-sender Ignore card (bu-p7glz9)
         "memory_reclassify",
+        "owner_watch_apply_card",  # the owner-watch card (bu-4c7nvp.1.5 S3d)
     }
     assert {item.name for item in NON_MESSENGER_PRODUCER_INVENTORY} == expected_inventory
 

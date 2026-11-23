@@ -6117,7 +6117,7 @@
       "sha256": "66714932ce019bff227a28f7b017ae55be9216acb7f80ee1ef6ed4a2b68420b0"
     },
     "roster/switchboard/butler.toml": {
-      "sha256": "6d9c16a5787bb0c3ff4281519d4b19946ac4d3d6bf70572e0d24cd230bae85be"
+      "sha256": "ff0bb3c4af61ee1d2e1cbaf90e08bad4deed3237a6d97bf3d196873d0b677cae"
     },
     "roster/travel/butler.toml": {
       "sha256": "3a15504cf000731564856b1cd1b80c4ef809cadea23218d297ff7a8ab05c4f1b"

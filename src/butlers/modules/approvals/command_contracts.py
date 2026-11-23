@@ -96,6 +96,15 @@ UNKNOWN_SENDER_IGNORE_COMMAND = ExecutableApprovalCommand(
     ),
 )
 
+#: Switchboard's owner-watch card (bu-4c7nvp.1.5 S3d): parked deterministically with the
+#: exact card the owner reads, replayed on Approve to apply that card and nothing else.
+OWNER_WATCH_APPLY_COMMAND = ExecutableApprovalCommand(
+    name="owner_watch_apply_card",
+    owner_butler="switchboard",
+    argument_names=("card_json", "digest"),
+    producer_source=("src/butlers/watches/approval.py", "park_watch_card"),
+)
+
 #: ``owner_butler`` of a command a shared module registers on every butler that loads
 #: it. Each such butler validates the command when the tool is registered there.
 ANY_HOSTING_BUTLER = "*"
@@ -125,6 +134,7 @@ CONNECTOR_ROTATE_TOKEN_PRODUCER = NonReplayableApprovalProducer(
 EXECUTABLE_DIRECT_COMMANDS: tuple[ExecutableApprovalCommand, ...] = (
     CONNECTOR_DISCONNECT_COMMAND,
     MEMORY_RECLASSIFY_COMMAND,
+    OWNER_WATCH_APPLY_COMMAND,
     REPLAN_UNDO_COMMAND,
     UNKNOWN_SENDER_IGNORE_COMMAND,
 )
@@ -135,6 +145,7 @@ NON_MESSENGER_PRODUCER_INVENTORY: tuple[
     CONNECTOR_DISCONNECT_COMMAND,
     CONNECTOR_ROTATE_TOKEN_PRODUCER,
     MEMORY_RECLASSIFY_COMMAND,
+    OWNER_WATCH_APPLY_COMMAND,
     REPLAN_UNDO_COMMAND,
     UNKNOWN_SENDER_IGNORE_COMMAND,
 )

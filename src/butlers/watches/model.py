@@ -117,6 +117,39 @@ class WatchCard:
     def digest(self) -> str:
         return hashlib.sha256(canonical(self.body).encode()).hexdigest()
 
+    @classmethod
+    def from_body(cls, body: dict) -> WatchCard:
+        """Rebuild a card from its ``body``; refuses a body that is not exactly a card's."""
+        keys = {
+            "action", "watch_id", "target_version", "predicate", "grant_digest", "sources",
+            "categories", "delivery", "expires_at", "lifetime_days", "resume",
+        }  # fmt: skip
+        if type(body) is not dict or set(body) != keys:
+            raise WatchRefused("a watch card has exactly its declared fields")
+        try:
+            lifetime_days = body["lifetime_days"]
+            expires = body["expires_at"]
+            card = cls(
+                action=Action(body["action"]),
+                watch_id=body["watch_id"],
+                target_version=body["target_version"],
+                predicate=body["predicate"],
+                grant_digest=body["grant_digest"],
+                sources=tuple(body["sources"]),
+                categories=tuple(body["categories"]),
+                delivery=body["delivery"],
+                expires_at=datetime.fromisoformat(expires) if expires is not None else None,
+                lifetime=timedelta(days=lifetime_days) if lifetime_days is not None else None,
+                resume=body["resume"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise WatchRefused("the watch card is malformed") from exc
+        if card.delivery not in DELIVERY_MODES:
+            raise WatchRefused("the watch card names an unknown delivery mode")
+        if card.body != body:  # not canonical: refuse rather than approve a different card
+            raise WatchRefused("the watch card is not in canonical form")
+        return card
+
 
 @dataclass(frozen=True)
 class OwnerApproval:

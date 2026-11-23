@@ -164,10 +164,27 @@ lock and re-reads the committed row and the live grant first, so a paused, delet
 re-granted watch sends nothing. Generation 1 may fire on the current snapshot; every later one (a
 re-arm, a renewal, a resume or a repair) is registered with seeding off and the watch's last fire
 cursor as its floor, so a condition that stays true fires again only on a new event past the
-cursor, and an event that arrived during a pause still counts on resume. Delivery runs its duplicate check and insert on one
+cursor, and an event that arrived during a pause still counts on resume. A renewal or resume of a watch that never fired has no fire cursor, so its
+floor is the cursor at which the previous generation was registered (none, for a first renewal of a
+never-fired watch, so every event the feed still offers counts). A replay that finds an ACTIVE watch
+with no condition and a moved grant pauses it (`grant_changed` in the view) rather than leave it
+ACTIVE without a condition. Delivery runs its duplicate check and insert on one
 connection under a session advisory lock keyed by the dedup key, so racing runners queue one
 candidate. Pause, delete and expiry withdraw the watch's pending, unclaimed candidates
 (`InsightDelivery.withdraw`); a replayed close finishes an interrupted withdrawal, and every tick
 (so also the first one after a restart) sweeps the pending candidates of all paused, deleted and
-expired watches. The approval-card and `never`-reply surfaces
-and the scheduled tick that runs the loop are a later slice.
+expired watches. The owner approval card rides the approvals spine (`butlers.watches.approval`): a proposed card parks
+one approval-gated pending action for the Switchboard tool `owner_watch_apply_card`, whose call is the
+card's canonical JSON and digest. The action id derives from the digest, so a replayed proposal parks
+once. Approve replays the call, which refuses anything that is not byte-for-byte the card Switchboard
+parked (stored in the Switchboard `state` table in the same transaction) and then approves that exact
+card as the owner through `WatchService.approve`. Reject or expiry changes nothing. Applying needs a
+service and a snapshot provider that production does not wire yet, so until the goal-runtime cutover
+the apply refuses with `owner_watches_unavailable`. An owner `never` on a watch notice, through the authenticated dashboard route, pauses that watch after
+the insight feedback commits (`butlers.watches.never.pause_on_never`); the model-callable mute tool
+passes no owner origin and so pauses nothing, and a pause that fails never fails the reply. The
+scheduled `owner_watch_tick` job (every five minutes) runs `WatchRunner.tick` only when
+`OWNER_WATCHES_LIVE` is on; without a snapshot provider it reports `blind:no_snapshot_provider` in its result and a warning
+log, and fires and changes nothing. The tick takes an optional dependency reporter, but no
+production reporter is wired to the scheduled job (the `owner_watches` dependency is not a declared
+capability dependency), so a blind tick is visible in the job result and log only.

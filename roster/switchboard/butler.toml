@@ -42,7 +42,7 @@ groups = ["core", "entity"]
 enable_ingress_dedupe = true
 
 [modules.switchboard]
-groups = ["routing", "lifecycle", "identity"]
+groups = ["routing", "lifecycle", "identity", "watches"]
 
 [modules.approvals]
 groups = ["actions"]
@@ -55,6 +55,10 @@ risk_tier = "high"
 
 # The pre-cutover unknown-sender Ignore card (bu-p7glz9): parked at identity ingress.
 [modules.approvals.gated_tools.identity_ignore_unknown_sender]
+risk_tier = "low"
+
+# The owner-watch card (bu-4c7nvp.1.5 S3d): parked deterministically, applied on Approve.
+[modules.approvals.gated_tools.owner_watch_apply_card]
 risk_tier = "low"
 
 [modules.insight_broker]
@@ -74,6 +78,14 @@ name = "eligibility_sweep"
 cron = "*/5 * * * *"
 dispatch_mode = "job"
 job_name = "eligibility_sweep"
+
+# Owner watch tick (bu-4c7nvp.1.5 S3d): dark until OWNER_WATCHES_LIVE is on; blind (no fire,
+# health degraded) without a snapshot provider. Idempotent: every step replays safely.
+[[butler.schedule]]
+name = "owner-watch-tick"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "owner_watch_tick"
 
 # Proactive insight delivery — hold-until-first-active daily cadence
 # (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
