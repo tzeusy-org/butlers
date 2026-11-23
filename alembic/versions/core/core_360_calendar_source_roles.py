@@ -1,6 +1,6 @@
 """calendar_sources: every source gets a role and a basis (bu-5ii4gj.1, REQ-module-calendar-034).
 
-Revision ID: core_359
+Revision ID: core_360
 Revises: core_358
 Create Date: 2026-11-23 00:00:00.000000
 
@@ -36,7 +36,7 @@ from __future__ import annotations
 from alembic import op
 from sqlalchemy import text
 
-revision = "core_359"
+revision = "core_360"
 down_revision = "core_358"
 branch_labels = None
 depends_on = None

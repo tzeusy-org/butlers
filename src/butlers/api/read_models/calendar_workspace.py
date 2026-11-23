@@ -521,7 +521,7 @@ class CalendarWorkspaceRow:
     db_butler: str = ""
     #: The provider event type (core_341), verbatim; ``default`` when unknown.
     event_type: str = "default"
-    #: The source's role (core_359): whose time its events are. Absent reads as ``unclassified``.
+    #: The source's role (core_360): whose time its events are. Absent reads as ``unclassified``.
     source_time_role: str = "unclassified"
 
 

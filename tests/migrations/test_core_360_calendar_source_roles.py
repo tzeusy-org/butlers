@@ -1,4 +1,4 @@
-"""core_359: a role and a basis on each schema's ``calendar_sources`` (bu-5ii4gj.1).
+"""core_360: a role and a basis on each schema's ``calendar_sources`` (bu-5ii4gj.1).
 
 Real migrated databases only: existing rows are classified from stored discovery facts and never
 from a name, a re-run is a catalog no-op, the evidence-preserving downgrade keeps columns and
@@ -125,7 +125,7 @@ def test_existing_rows_are_classified_from_stored_facts_and_downgrade_keeps_evid
     command.upgrade(config, "core_358")
     _seed(db_url)
 
-    command.upgrade(config, "core_359")
+    command.upgrade(config, "core_360")
     rows = _fetch(db_url, _ROLES)
     assert {key: role for key, role, _ in rows} == _EXPECTED
     assert {basis for _, _, basis in rows} == {"provider_inferred"}
@@ -142,7 +142,7 @@ def test_existing_rows_are_classified_from_stored_facts_and_downgrade_keeps_evid
     command.downgrade(config, "core_358")
     assert _fetch(db_url, _ROLES) == stored
 
-    command.upgrade(config, "core_359")
+    command.upgrade(config, "core_360")
     assert _fetch(db_url, _ROLES) == stored
     assert _fetch(db_url, _TABLE_STATE) == table_state
 
@@ -152,7 +152,7 @@ def test_a_new_source_defaults_to_unclassified_and_the_checks_refuse_unknown_val
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"], target_schema=_SCHEMA)
-    command.upgrade(config, "core_359")
+    command.upgrade(config, "core_360")
 
     _execute(
         db_url,
@@ -174,4 +174,4 @@ def test_an_incompatible_existing_column_stops_the_upgrade(postgres_container) -
     _execute(db_url, "ALTER TABLE calendar_sources ADD COLUMN time_role INTEGER")
 
     with pytest.raises(Exception, match="unexpected shape"):
-        command.upgrade(config, "core_359")
+        command.upgrade(config, "core_360")
