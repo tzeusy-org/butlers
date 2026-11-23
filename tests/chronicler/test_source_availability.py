@@ -441,3 +441,39 @@ async def test_unsnapshotted_day_has_no_uncaptured_lanes() -> None:
     assert await load_uncaptured_with_streaks(
         _AvailabilityConn({}), local_date=date(2026, 11, 20), timezone="Asia/Singapore"
     ) == ([], {})
+
+
+async def test_a_retired_lane_stops_at_its_second_day_without_walking_back() -> None:
+    from butlers.chronicler.flags import load_uncaptured_with_streaks
+
+    today = date(2026, 11, 20)
+    retired = _all(AVAILABLE, **{"health.meals": RETIRED})
+    days = {today - timedelta(days=n): retired for n in range(0, 50)}
+    conn = _AvailabilityConn(days)
+    reads: list[date] = []
+    original = conn.fetch
+
+    async def counting(query: str, local_date: date, tz: str) -> list[dict[str, Any]]:
+        if "retired_at" not in query:
+            reads.append(local_date)
+        return await original(query, local_date, tz)
+
+    conn.fetch = counting  # type: ignore[method-assign]
+    _lanes, streaks = await load_uncaptured_with_streaks(
+        conn, local_date=today, timezone="Asia/Singapore"
+    )
+    assert streaks == {"eat": 2}
+    assert len(reads) == 2
+
+
+async def test_a_dark_lane_longer_than_the_lookback_reads_as_unknown_phase(monkeypatch) -> None:
+    from butlers.chronicler import flags as flags_module
+
+    monkeypatch.setattr(flags_module, "MAX_STREAK_LOOKBACK_DAYS", 5)
+    today = date(2026, 11, 20)
+    dark = _all(AVAILABLE, **{"health.meals": DARK})
+    days = {today - timedelta(days=n): dark for n in range(0, 30)}
+    _lanes, streaks = await flags_module.load_uncaptured_with_streaks(
+        _AvailabilityConn(days), local_date=today, timezone="Asia/Singapore"
+    )
+    assert streaks == {"eat": 0}

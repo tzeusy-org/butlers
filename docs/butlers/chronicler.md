@@ -94,7 +94,8 @@ The generic balance API retains its zero-filled response shape.
 - **Day-close unknowns name uncaptured lanes.** `owner_day.unknowns` gains one line per
   uncaptured lane ("Meals not captured (source retired since 13 Aug)"), stored every day and
   carrying no source identity. `owner_day.recap_mention` lists the lines the delivered recap may
-  mention: a dark lane on its first dark day and weekly after, a retired lane once.
+  mention: a dark lane on its first dark day and weekly after, a retired lane once. A dark lane's streak is
+  walked back up to 400 days; a longer one is stored every day and no longer mentioned.
 - **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
   usual, so a long night never yields both "slept more than usual" and "debt building".
 - **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to

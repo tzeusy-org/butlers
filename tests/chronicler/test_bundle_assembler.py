@@ -989,6 +989,7 @@ def test_bundle_without_uncaptured_lanes_is_unchanged() -> None:
         (_DARK_SLEEP, 15, True),
         (_RETIRED_EAT, 1, True),  # retired lanes: once
         (_RETIRED_EAT, 8, False),
+        (_DARK_SLEEP, 0, False),  # longer than the lookback: stored, never mentioned
     ],
 )
 def test_recap_mentions_first_dark_day_then_weekly_and_retired_once(

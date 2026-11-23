@@ -586,7 +586,10 @@ def uncaptured_lanes(
     return result
 
 
-MAX_STREAK_LOOKBACK_DAYS = 35
+#: A dark lane's streak is walked back at most this far. The weekly recap cadence needs the
+#: exact streak, so the bound is generous; a lane still dark past it reads as ``0`` (phase
+#: unknown) and is never mentioned in the recap, while its unknowns line is still stored.
+MAX_STREAK_LOOKBACK_DAYS = 400
 
 
 async def load_uncaptured_with_streaks(
@@ -598,8 +601,9 @@ async def load_uncaptured_with_streaks(
     """Uncaptured lanes for a frozen day plus each lane's consecutive-day streak.
 
     ``([], {})`` when the day was never snapshotted. The streak walks back through earlier
-    frozen days while the lane stays uncaptured, stopping at the first unsnapshotted day or after
-    :data:`MAX_STREAK_LOOKBACK_DAYS`.
+    frozen days while the lane stays uncaptured, stopping at the first unsnapshotted day. Only
+    a dark lane's weekly cadence needs the exact count; a lane that is not captured for another
+    reason (retired, not configured) is mentioned once, so it stops at ``2`` (not the first day).
     """
     availability = await load_day_availability(conn, local_date=local_date, timezone=timezone)
     if availability is None:
@@ -607,18 +611,21 @@ async def load_uncaptured_with_streaks(
     retired = await load_day_retired_since(conn, local_date=local_date, timezone=timezone)
     today = uncaptured_lanes(availability, retired_since=retired)
     streaks = {entry["lane"]: 1 for entry in today}
+    dark = {entry["lane"] for entry in today if entry["state"] == DARK}
     open_lanes = set(streaks)
     for back in range(1, MAX_STREAK_LOOKBACK_DAYS + 1):
         if not open_lanes:
-            break
+            return today, streaks
         earlier = await load_day_availability(
             conn, local_date=local_date - timedelta(days=back), timezone=timezone
         )
         still = {e["lane"] for e in uncaptured_lanes(earlier)} if earlier is not None else set()
-        for lane in open_lanes - still:
-            open_lanes.discard(lane)
+        open_lanes &= still
         for lane in open_lanes:
             streaks[lane] += 1
+        open_lanes -= {lane for lane in open_lanes if lane not in dark}
+    for lane in open_lanes:
+        streaks[lane] = 0
     return today, streaks
 
 
