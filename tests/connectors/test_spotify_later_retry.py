@@ -87,3 +87,48 @@ async def test_evidence_failure_keeps_all_spoken_starts_across_the_held_cap(monk
         for call in connector._mcp_client.call_tool.await_args_list
     }
     assert delivered == starts
+
+
+async def test_a_track_arriving_after_a_failed_row_write_goes_in_a_later_digest(connector):
+    """Native shape: A+B delivered, B's row write fails, C arrives, then recovery."""
+    t0 = _NOW
+    plays = {
+        "a": t0,
+        "b": t0 + timedelta(seconds=30),
+        "c": t0 + timedelta(seconds=60),
+    }
+
+    def item(name):
+        return {
+            "track": {"id": name, "uri": f"spotify:track:{name}", "name": f"Synthetic {name}"},
+            "played_at": plays[name].isoformat(),
+        }
+
+    connector._get_recently_played = AsyncMock(return_value=[item("b"), item("a")])
+    connector._gap_fill_play_already_observed = AsyncMock(return_value=False)
+    outcomes = iter([False, True, True])
+    written: list[list[str]] = []
+
+    async def persist(rows):
+        ok = next(outcomes)
+        if ok:
+            written.append([row["track_uri"] for row in rows])
+        return ok
+
+    connector._persist_gap_fill_track_plays = persist
+    stamp = (t0 + timedelta(minutes=2)).isoformat()
+
+    await connector._poll_recently_played(t0, stamp)
+    assert connector._mcp_client.call_tool.await_count == 1
+    assert connector._last_recently_played_cursor is None  # the write failed; cursor holds
+
+    connector._get_recently_played = AsyncMock(return_value=[item("c"), item("b"), item("a")])
+    await connector._poll_recently_played(t0, stamp)
+
+    sent = [
+        call.args[1]["payload"]["raw"]["tracks"]
+        for call in connector._mcp_client.call_tool.await_args_list
+    ]
+    assert sent == [["Synthetic a", "Synthetic b"], ["Synthetic c"]]
+    assert written == [["spotify:track:a", "spotify:track:b"], ["spotify:track:c"]]
+    assert connector._pending_gap_persist is None

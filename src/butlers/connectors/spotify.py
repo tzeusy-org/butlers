@@ -201,6 +201,14 @@ spotify_token_refreshes_total = Counter(
 
 
 @dataclass
+class _PendingGapPersist:
+    """A delivered gap-fill digest whose track-play rows are not yet committed."""
+
+    rows: list[dict[str, Any]]
+    cursor_ms: int
+
+
+@dataclass
 class _HeldDelivery:
     envelope: dict[str, Any]
     evidence: Callable[[], Awaitable[Any]]
@@ -1689,6 +1697,7 @@ class SpotifyConnector:
         self._held: dict[str, _HeldDelivery] = {}
         self._held_retry_now: datetime | None = None
         self._backpressure = False
+        self._pending_gap_persist: _PendingGapPersist | None = None
         # Spoken sessions whose start passed the policy gate and committed evidence; only
         # these may be updated in place.
         self._admitted_spoken: dict[str, None] = {}  # insertion-ordered set
@@ -2313,6 +2322,7 @@ class SpotifyConnector:
         # events (backpressure) and keeps retrying; nothing is evicted. What the source shows
         # only while polling is paused is a source limit, not an event the connector skipped.
         await self._retry_held_notifications(now)
+        await self._retry_pending_gap_persist()
         self._backpressure = len(self._held) >= _HELD_LIMIT
         if self._endpoint_identity:
             spotify_held_oldest_age_seconds.labels(endpoint_identity=self._endpoint_identity).set(
@@ -2600,6 +2610,8 @@ class SpotifyConnector:
         Gap-fill tracks are batched into a single digest envelope rather than
         emitting per-track events, to reduce downstream token costs.
         """
+        if not await self._retry_pending_gap_persist():
+            return
         try:
             items = await self._get_recently_played(self._last_recently_played_cursor)
         except Exception as exc:
@@ -2728,9 +2740,14 @@ class SpotifyConnector:
         # cursor holds, and the next poll rebuilds the same digest (same idempotency key), which
         # Switchboard deduplicates.
         rows = [row for _ms, row in steps if row is not None]
-        last_cursor_ms = 0
-        if not rows or await self._persist_gap_fill_track_plays(rows):
-            last_cursor_ms = max((ms for ms, _row in steps), default=0)
+        last_cursor_ms = max((ms for ms, _row in steps), default=0)
+        if rows and not await self._persist_gap_fill_track_plays(rows):
+            # The digest is delivered, so its batch is fixed: only this row write is retried
+            # (next poll, no resend), and the cursor moves once it commits. Tracks that arrive
+            # meanwhile go into a later digest that excludes this batch. Held in memory: a
+            # restart before the commit can send the batch's digest once more.
+            self._pending_gap_persist = _PendingGapPersist(rows, last_cursor_ms)
+            return
 
         if last_cursor_ms:
             # Advance only through recent items whose durable reconciliation succeeded.
@@ -2843,6 +2860,21 @@ class SpotifyConnector:
         except Exception as exc:
             logger.debug("SpotifyConnector: gap-fill reconciliation failed (non-fatal): %s", exc)
             return None
+
+    async def _retry_pending_gap_persist(self) -> bool:
+        """Retry a delivered digest's row transaction; True when nothing is left pending."""
+        pending = self._pending_gap_persist
+        if pending is None:
+            return True
+        if not await self._persist_gap_fill_track_plays(pending.rows):
+            return False
+        self._pending_gap_persist = None
+        try:
+            current = int(self._last_recently_played_cursor or 0)
+        except ValueError:
+            current = 0
+        self._last_recently_played_cursor = str(max(current, pending.cursor_ms))
+        return True
 
     async def _persist_gap_fill_track_plays(self, rows: list[dict[str, Any]]) -> bool:
         """Record a digest's recently-played tracks in one transaction (all or none)."""

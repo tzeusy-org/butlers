@@ -49,7 +49,8 @@ Scope: v1-mandatory
 - **AND** a failed write, or a failed submit whose park is not durable, SHALL retain the item for the next poll
 - **AND** when the retained items reach a fixed cap the connector SHALL stop consuming new one-shot events (pause its playback poll), report health `degraded` with reason `held_backpressure`, and keep retrying; it SHALL NOT evict a retained item
 - **AND** an event the source shows only while polling is paused is a source limit, not an event the connector consumed and skipped
-- **AND** a digest's track-play rows SHALL be written in one transaction after the digest is delivered, so a failed write holds the cursor and the retry rebuilds the same digest with the same idempotency key
+- **AND** once a digest is delivered its batch is fixed: its track-play rows SHALL be written in one transaction, a failed write SHALL retry only that transaction on the next poll (no resend), and the cursor SHALL advance when it commits; tracks that arrive meanwhile SHALL go into a later digest that excludes the delivered batch
+- **AND** that pending batch is held in memory, so a connector restart between delivery and the row commit can send the batch's digest once more (Switchboard deduplicates by idempotency key where the batch is rebuilt unchanged)
 
 #### Scenario: A replay verifies evidence and never re-runs policy
 
