@@ -12,15 +12,17 @@ will be applied. Approve replays the call; Reject or expiry does nothing.
   watch.
 * The apply is the owner's approval (``OwnerApproval.origin == "owner"``): the approvals gate
   parks every other invocation of the tool.
-* Applying needs a ``WatchService`` and a snapshot provider. Until production wires both, the
-  apply refuses with ``owner_watches_unavailable`` and changes nothing.
+* Applying needs a ``WatchService`` and a snapshot provider (``butlers.watches.providers``,
+  resolved only while ``OWNER_WATCHES_LIVE`` is on). Without them, or when the live grant source
+  cannot be read, the apply refuses with ``owner_watches_unavailable`` and changes nothing.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID, uuid5
@@ -43,6 +45,7 @@ CARD_TTL: Final = timedelta(hours=72)
 _ACTION_NAMESPACE: Final = UUID("6f1d2a52-3c1e-4f43-9a55-0b5e6c1d7a02")
 
 ServiceFor = Callable[[], WatchService | None]
+Prepare = Callable[[datetime], Awaitable[bool]]
 SnapshotFor = Callable[[datetime], Snapshot | None]
 
 _VERBS: Final = {
@@ -61,15 +64,22 @@ def _no_snapshot(now: datetime) -> Snapshot | None:
     return None
 
 
-class Providers:
-    """What an apply needs from production. Both default to absent, which refuses the apply.
+async def _prepared(now: datetime) -> bool:
+    return True
 
-    The real service (store, evaluator, grant source) and snapshot provider are wired by the
-    goal-runtime cutover; until then an approved card is refused, never half-applied.
+
+@dataclass(frozen=True)
+class Providers:
+    """What an apply and a tick need from production. All default to absent or no-op.
+
+    ``service_for`` and ``snapshot_for`` default to absent, which refuses the apply and blinds the
+    tick. ``prepare`` runs first (the production providers re-read the live grant source there);
+    False means the sources are unreadable, which is the same as absent.
     """
 
-    service_for: ServiceFor = staticmethod(_no_service)
-    snapshot_for: SnapshotFor = staticmethod(_no_snapshot)
+    service_for: ServiceFor = _no_service
+    snapshot_for: SnapshotFor = _no_snapshot
+    prepare: Prepare = _prepared
 
 
 PROVIDERS = Providers()
@@ -208,6 +218,7 @@ async def apply_watch_card(
     digest: str,
     service_for: ServiceFor,
     snapshot_for: SnapshotFor,
+    prepare: Prepare = _prepared,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Run the approved card: apply exactly the card Switchboard parked, as the owner.
@@ -230,6 +241,8 @@ async def apply_watch_card(
     if stored != {"card_json": card_json, "digest": digest}:
         return {"error": "watch_card_unknown"}
     service, moment = service_for(), now or datetime.now(UTC)
+    if service is not None and not await prepare(moment):
+        return {"error": "owner_watches_unavailable"}
     snapshot = snapshot_for(moment) if service is not None else None
     if service is None or snapshot is None:
         return {"error": "owner_watches_unavailable"}

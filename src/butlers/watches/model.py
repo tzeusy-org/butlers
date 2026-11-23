@@ -28,6 +28,11 @@ class WatchRefused(ValueError):
     """A watch request is outside the owner-authored, notify-only contract."""
 
 
+class GrantUnavailable(WatchRefused):
+    """The live grant cannot be read now. Unknown, never "the grant changed": a card is refused
+    and a running watch is left exactly as it is."""
+
+
 class CapExceeded(WatchRefused):
     """The owner already has the maximum number of active watches."""
 

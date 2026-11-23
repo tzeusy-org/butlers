@@ -135,6 +135,10 @@ ordinary identity or a differently owned private schema.
   [data retention](../operations/data-retention.md)). The immutable trigger permits a delete
   only as `perception_owner` inside that function, for an `owner.place` row older than 400
   days (by `at`), or a receipt of one.
+- `public.owner_watch_sources()` (core_368) is the one perception read the owner-watch providers make: each
+  registered kind and a boolean `written`, nothing else. It is a definer owned by `perception_owner`, executable
+  by `butler_switchboard_rw` only, and is outside the backup catalog's function profile (see
+  [conditions](conditions.md#production-providers-butlerswatchesproviders-dark)).
 
 ## Typed situation reads (dark, `.21`)
 

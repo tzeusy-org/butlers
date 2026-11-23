@@ -48,6 +48,8 @@ async def run_tick(
         return {"status": "dark"}
     moment = now or datetime.now(UTC)
     service = providers.service_for()
+    if service is not None and not await providers.prepare(moment):
+        service = None  # the live grant source is unreadable: blind, never a stale judgement
     snapshot = providers.snapshot_for(moment) if service is not None else None
     if service is None or snapshot is None:
         logger.warning("owner_watch_tick_blind reason=%s", BLIND)

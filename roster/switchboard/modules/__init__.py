@@ -137,6 +137,9 @@ class SwitchboardModule(Module):
         activates it.
         """
         self._db = db
+        from butlers.watches.providers import register_database
+
+        register_database(db)  # the owner-watch lock pool is made from it, only while live
         pool = db.pool
         repository = RuntimeAttentionOutbox(pool, instance_id=str(uuid.uuid4()))
         transport = build_messenger_transport(
@@ -163,6 +166,9 @@ class SwitchboardModule(Module):
             except asyncio.CancelledError:
                 pass
         self._runtime_attention_task = None
+        from butlers.watches.providers import close_runtime
+
+        await close_runtime()
         self._db = None
 
     async def _run_runtime_attention_worker(self, worker: RuntimeAttentionDeliveryWorker) -> None:

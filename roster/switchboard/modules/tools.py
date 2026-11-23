@@ -41,6 +41,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
 
     _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
     from butlers.watches import approval as _owner_watch_cards
+    from butlers.watches import providers as _owner_watch_providers
 
     _tool = tool_registrar(mcp, config)
 
@@ -144,12 +145,15 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         approvals gate parks any other invocation, and the handler refuses a call that is
         not byte-for-byte the card Switchboard parked.
         """
+        pool = module._get_pool()
+        providers = await _owner_watch_providers.resolve_providers(pool)
         return await _owner_watch_cards.apply_watch_card(
-            module._get_pool(),
+            pool,
             card_json=card_json,
             digest=digest,
-            service_for=_owner_watch_cards.PROVIDERS.service_for,
-            snapshot_for=_owner_watch_cards.PROVIDERS.snapshot_for,
+            service_for=providers.service_for,
+            snapshot_for=providers.snapshot_for,
+            prepare=providers.prepare,
         )
 
     # =================================================================
