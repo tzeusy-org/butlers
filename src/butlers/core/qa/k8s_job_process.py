@@ -23,6 +23,7 @@ from typing import Any, Final
 
 import httpx
 
+from butlers.core.qa.egress_gate import EXIT_NOT_ENFORCED as EGRESS_GATE_EXIT_NOT_ENFORCED
 from butlers.core.runtimes.base import JobLaunchRefused, JobOutcome
 
 logger = logging.getLogger(__name__)
@@ -271,6 +272,11 @@ class K8sJobProcess:
             )
         if state == "succeeded" and exit_code not in (None, 0):
             state = "failed"
+        if exit_code == EGRESS_GATE_EXIT_NOT_ENFORCED:
+            # The gate refused to start the investigator: a containment failure, never a result.
+            return JobOutcome(
+                state="failed", exit_code=exit_code, reason="containment_not_enforced"
+            )
         return JobOutcome(state=state, exit_code=exit_code, reason=reason)  # type: ignore[arg-type]
 
     async def _settled_pod(self, name: str) -> tuple[int | None, bool]:

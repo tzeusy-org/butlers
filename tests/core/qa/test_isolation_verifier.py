@@ -43,9 +43,12 @@ def test_the_probe_job_is_the_production_template_with_only_the_command_and_cont
     )
     probe_c = copy.deepcopy(probe)
     prod_c = copy.deepcopy(prod)
-    probe_c["spec"]["template"]["spec"]["containers"][0]["command"] = ["x"]
+    # Both run under the egress gate; only what follows ``--`` differs.
+    gate = ["python", "-I", "-m", "butlers.core.qa.egress_gate", "--"]
+    assert probe_c["spec"]["template"]["spec"]["containers"][0]["command"][:5] == gate
+    probe_c["spec"]["template"]["spec"]["containers"][0]["command"] = gate + ["x"]
     assert probe_c == prod_c
-    assert probe["spec"]["template"]["spec"]["containers"][0]["command"][:4] == [
+    assert probe["spec"]["template"]["spec"]["containers"][0]["command"][5:9] == [
         "python",
         "-I",
         "-m",

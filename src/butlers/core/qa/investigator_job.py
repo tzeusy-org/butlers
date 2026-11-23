@@ -84,6 +84,16 @@ def _env(name: str, value: str) -> dict[str, str]:
     return {"name": name, "value": value}
 
 
+#: Every investigator container starts under the egress gate (butlers.core.qa.egress_gate): the
+#: CNI programs a NetworkPolicy after the pod starts, so the real command runs only once the
+#: cluster's own API server has been refused several times in a row. ``exec`` keeps PID 1.
+EGRESS_GATE_MODULE = "butlers.core.qa.egress_gate"
+
+
+def gated_command(command: Sequence[str]) -> list[str]:
+    return ["python", "-I", "-m", EGRESS_GATE_MODULE, "--", *command]
+
+
 def build_investigator_job(
     *,
     attempt_id: uuid.UUID,
@@ -137,7 +147,7 @@ def build_investigator_job(
     container: dict[str, Any] = {
         "name": CONTAINER_NAME,
         "image": image,
-        "command": list(command),
+        "command": gated_command(command),
         "workingDir": working_dir,
         "env": env,
         "securityContext": {

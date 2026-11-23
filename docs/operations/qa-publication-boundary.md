@@ -75,6 +75,20 @@ namespace that is not `-dev`.
    review. It is operational evidence for that cluster and revision, not provider-side least
    privilege, and it does not close `bu-vc90le`.
 
+### The egress start-up gate (bu-ejow5p.11)
+
+A NetworkPolicy is programmed by the CNI after a pod starts, so a fresh pod can reach the network
+for a short window even though a default-deny policy existed first. The k3d verifier measured it:
+the API server was reachable when the probe started and refused about 20 seconds later. Every
+investigator container therefore starts under `butlers.core.qa.egress_gate`, which dials the
+cluster's own API server (`KUBERNETES_SERVICE_HOST`/`PORT`, always present) until it is refused
+three times in a row, within 120 seconds, and only then `exec`s the real command. It fails
+closed: with the address still reachable, or no target found, it exits 70 with a fixed token on
+stderr and the command never runs. The launcher reports exit 70 as
+`containment_not_enforced`, a containment failure and never an investigation result. The probe
+and the verifier run under the same gate, and the probe repeats its refused checks 20 seconds
+later (`...:after_settle`), so a gate that stops working shows as a first-pass failure.
+
 There is no credential-injecting model proxy yet: with no proxy URL the launcher refuses with
 `launch_refused:model_route_unavailable`, so the investigator cannot reach a model and nothing
 runs end to end. That decision is recorded with the owner question on `bu-ejow5p.11`.
