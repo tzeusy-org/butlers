@@ -153,5 +153,11 @@ Two stores implement `WatchStore`: `InMemoryWatchStore` and `PostgresWatchStore`
 `public.owner_watches` (core_364). The table is Switchboard-only behind row-level security (the
 core_323 posture), never deleted or truncated, with an immutable boundary, a version that rises
 by one, expiry that moves forward only with a new generation, closed rows frozen, and a trigger
-that backstops the cap of 50 active under one advisory lock. The approval-card and `never`-reply
-surfaces and delivery through the insight broker are later slices.
+that backstops the cap of 50 active under one advisory lock. `WatchRunner` (`butlers.watches.runner`) is the loop an evaluator instance's single fire needs: a
+tick claims a fired instance's intent, delivers one notice, then registers the next generation with
+the fired one's cursors as its floor. Delivery is `InsightDelivery`, a proposal to the insight
+broker keyed `owner_watch:<watch>:g<generation>` with a fixed, content-free line; `right_away` raises
+the candidate's priority (70, against 40 for the digest) and never interrupts quiet hours. A failed
+delivery leaves the watch fired and retried, never rearmed past a lost notice; a crash after delivery
+replays to the same key and the same next generation. The approval-card and `never`-reply surfaces
+and the scheduled tick that runs the loop are a later slice.
