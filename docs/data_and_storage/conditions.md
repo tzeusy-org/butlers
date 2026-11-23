@@ -164,7 +164,11 @@ lock and re-reads the committed row and the live grant first, so a paused, delet
 re-granted watch sends nothing. Generation 1 may fire on the current snapshot; every later one (a
 re-arm, a renewal, a resume or a repair) is registered with seeding off and the watch's last fire
 cursor as its floor, so a condition that stays true fires again only on a new event past the
-cursor, and an event that arrived during a pause still counts on resume. Delivery runs its duplicate check and insert on one
+cursor, and an event that arrived during a pause still counts on resume. A renewal or resume of a watch that never fired has no fire cursor, so its
+floor is the cursor at which the previous generation was registered (none, for a first renewal of a
+never-fired watch, so every event the feed still offers counts). A replay that finds an ACTIVE watch
+with no condition and a moved grant pauses it (`grant_changed` in the view) rather than leave it
+ACTIVE without a condition. Delivery runs its duplicate check and insert on one
 connection under a session advisory lock keyed by the dedup key, so racing runners queue one
 candidate. Pause, delete and expiry withdraw the watch's pending, unclaimed candidates
 (`InsightDelivery.withdraw`); a replayed close finishes an interrupted withdrawal, and every tick

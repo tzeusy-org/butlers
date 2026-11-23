@@ -394,3 +394,17 @@ class TestSweepAndEdgeTriggering:
         instance = conditions.instances[renewed.instance_id]
         assert renewed.generation == 3 and instance.floor == {SOURCE: 3}
         assert instance.state is State.OPEN
+
+
+class TestNeverFiredFloor:
+    async def test_a_renewal_of_a_never_fired_watch_floors_at_the_previous_registration(
+        self, service, conditions
+    ):
+        watch = await make_watch(service)
+        later = watch.expires_at - timedelta(days=7)
+        first = await service.propose_renew(watch.id, now=later)
+        renewed = await service.approve(
+            first, OwnerApproval(card_digest=first.digest, origin="owner"), Snapshot(now=later)
+        )
+        assert conditions.instances[renewed.instance_id].floor == {}  # gen 1 floor was empty
+        assert conditions.instances[renewed.instance_id].state is State.OPEN

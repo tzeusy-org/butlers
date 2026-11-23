@@ -16,7 +16,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from butlers.watches.approval import PROVIDERS, Providers
+from butlers.watches.approval import PROVIDERS, Providers, sweep_card_state
 from butlers.watches.delivery import InsightDelivery
 from butlers.watches.runner import Deliver, WatchRunner
 
@@ -45,6 +45,7 @@ async def run_tick(
     if not (OWNER_WATCHES_LIVE if live is None else live):
         return {"status": "dark"}
     moment = now or datetime.now(UTC)
+    await sweep_card_state(pool, now=moment)
     service = providers.service_for()
     snapshot = providers.snapshot_for(moment) if service is not None else None
     if service is None or snapshot is None:

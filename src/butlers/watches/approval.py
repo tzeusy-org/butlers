@@ -19,6 +19,7 @@ will be applied. Approve replays the call; Reject or expiry does nothing.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -26,6 +27,7 @@ from uuid import UUID, uuid5
 
 from butlers.conditions import Snapshot
 from butlers.conditions import predicate as ast
+from butlers.core.delivery_rendering import defang_delivery_text
 from butlers.modules.approvals.command_contracts import OWNER_WATCH_APPLY_COMMAND
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.approvals.rollout import read_approval_delivery_rollout
@@ -85,14 +87,31 @@ def card_args(card: WatchCard) -> dict[str, Any]:
     )
 
 
+_BARE = re.compile(r"[a-z0-9][a-z0-9_.:\-]{0,127}")
+
+
+def _literal(key: str, value: Any) -> str:
+    """One value as the owner reads it on the card.
+
+    A registered name or id (lowercase, no spaces) is bare. Everything else, and every
+    ``value`` field whatever it holds, is a quoted, escaped literal with its URL and address
+    separators neutralised, so text a model or a source supplied cannot read as card prose.
+    """
+    if key != "value" and type(value) is str and _BARE.fullmatch(value):
+        return value
+    return defang_delivery_text(json.dumps(value, ensure_ascii=True))
+
+
 def _leaf_line(leaf: ast.Leaf) -> str:
-    fields = ", ".join(f"{key}={leaf.body[key]}" for key in sorted(leaf.body) if key != "tag")
+    fields = ", ".join(
+        f"{key}={_literal(key, leaf.body[key])}" for key in sorted(leaf.body) if key != "tag"
+    )
     return f"{leaf.tag}: {fields}" if fields else leaf.tag
 
 
 def card_lines(card: WatchCard) -> list[str]:
     """What the owner reads. Ids and closed vocabulary only; no model prose, no message text."""
-    lines = [f"{_VERBS[card.action]} ({card.watch_id[:8]})"]
+    lines = [f"{_VERBS[card.action]} ({_literal('watch_id', card.watch_id[:8])})"]
     if card.action in (Action.CREATE, Action.UPDATE):
         root = card.predicate.get("tag")
         lines.append(
@@ -102,7 +121,7 @@ def card_lines(card: WatchCard) -> list[str]:
     lines.append(f"Delivery: {card.delivery}; it tells only you.")
     if card.categories:
         lines.append(f"Sensitivity categories: {', '.join(card.categories)}")
-    lines.append(f"Reads: {', '.join(card.sources)}")
+    lines.append(f"Reads: {', '.join(_literal('source', source) for source in card.sources)}")
     if card.lifetime is not None:
         lines.append(f"Lifetime: {card.lifetime.days} days from approval")
     elif card.expires_at is not None:
@@ -166,6 +185,22 @@ async def park_watch_card(pool: Any, card: WatchCard, *, now: datetime | None = 
     return not admission.duplicate and admission.intent_id is not None and rollout.worker_enabled
 
 
+async def sweep_card_state(pool: Any, *, now: datetime | None = None) -> int:
+    """Delete the parked-card snapshots whose approval window has long passed.
+
+    A snapshot outlives its card by one more window, so a retried approval still finds it; after
+    that nothing can apply that card and the row is only clutter. Returns the rows removed.
+    """
+    cutoff = (now or datetime.now(UTC)) - 2 * CARD_TTL
+    status = await pool.execute(
+        "DELETE FROM state WHERE left(key, $2) = $1 AND updated_at < $3",
+        SNAPSHOT_KEY_PREFIX,
+        len(SNAPSHOT_KEY_PREFIX),
+        cutoff,
+    )
+    return int(str(status).rsplit(" ", 1)[-1]) if status else 0
+
+
 async def apply_watch_card(
     pool: Any,
     *,
@@ -205,4 +240,4 @@ async def apply_watch_card(
     return {"status": "applied", "watch_id": watch.id, "state": str(watch.state)}
 
 
-__all__ = ["apply_watch_card", "card_lines", "park_watch_card"]
+__all__ = ["apply_watch_card", "card_lines", "park_watch_card", "sweep_card_state"]

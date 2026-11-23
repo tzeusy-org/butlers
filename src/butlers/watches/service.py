@@ -306,13 +306,22 @@ class WatchService:
         )
 
     async def _last_fire_cursors(self, watch: Watch) -> dict[str, int]:
-        """Cursors of the latest earlier generation that fired; empty when none ever did."""
+        """The floor of a later generation: the latest fired generation's cursors.
+
+        A watch that never fired falls back to the cursors the previous generation was registered
+        with (empty for the first renewal of a never-fired watch).
+        """
         async with self.evaluator.store.transaction() as tx:
+            registered: dict[str, int] | None = None
             for generation in range(watch.generation - 1, 0, -1):
                 prior = await tx.get_instance(f"{watch.id}:{generation}")
-                if prior is not None and prior.state is State.FIRED:
+                if prior is None:
+                    continue
+                if registered is None:
+                    registered = dict(prior.floor)
+                if prior.state is State.FIRED:
                     return dict(prior.cursors)
-        return {}
+        return registered or {}
 
     async def _cancel(self, watch: Watch, now: datetime) -> None:
         try:

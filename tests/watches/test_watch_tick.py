@@ -11,6 +11,15 @@ from butlers.watches.runner import WatchNotice
 from tests.watches.test_watch_runner import NOW, Recorder, fire, make_watch
 
 
+class SweepPool:
+    def __init__(self) -> None:
+        self.deleted: list[tuple] = []
+
+    async def execute(self, sql: str, *args):
+        self.deleted.append(args)
+        return "DELETE 0"
+
+
 class Reporter:
     def __init__(self) -> None:
         self.reports: list[tuple[str, str, str]] = []
@@ -36,7 +45,7 @@ async def test_a_dark_tick_touches_nothing(service):
     await fire(service, watch)
     recorder = Recorder()
     result = await tick.run_tick(
-        object(), now=NOW, providers=providers(service), deliver_for=lambda pool: recorder
+        SweepPool(), now=NOW, providers=providers(service), deliver_for=lambda pool: recorder
     )
     assert result == {"status": "dark"} and recorder.notices == []
 
@@ -44,7 +53,7 @@ async def test_a_dark_tick_touches_nothing(service):
 async def test_without_a_provider_the_tick_is_blind_and_degrades_health(service):
     reporter = Reporter()
     result = await tick.run_tick(
-        object(), now=NOW, live=True, providers=providers(None), reporter=reporter
+        SweepPool(), now=NOW, live=True, providers=providers(None), reporter=reporter
     )
     assert result == {"status": tick.BLIND}
     assert reporter.reports == [(tick.DEPENDENCY, "degraded", "no_snapshot_provider")]
@@ -55,7 +64,7 @@ async def test_without_a_snapshot_the_tick_fires_nothing_and_changes_nothing(ser
     await fire(service, watch)
     recorder = Recorder()
     result = await tick.run_tick(
-        object(),
+        SweepPool(),
         now=NOW,
         live=True,
         providers=providers(service, snapshot=False),
@@ -70,7 +79,7 @@ async def test_a_live_tick_with_providers_delivers_once_and_reports_healthy(serv
     await fire(service, watch)
     recorder, reporter = Recorder(), Reporter()
     result = await tick.run_tick(
-        object(),
+        SweepPool(),
         now=NOW,
         live=True,
         providers=providers(service),
@@ -94,3 +103,15 @@ def service():
     return WatchService(
         InMemoryWatchStore(), ConditionEvaluator(InMemoryConditionStore()), grant_for
     )
+
+
+async def test_a_live_tick_sweeps_old_card_snapshots_even_when_blind(service):
+    pool = SweepPool()
+    await tick.run_tick(pool, now=NOW, live=True, providers=providers(None))
+    assert len(pool.deleted) == 1 and pool.deleted[0][0] == "owner_watch:card:"
+
+
+async def test_a_dark_tick_sweeps_nothing(service):
+    pool = SweepPool()
+    await tick.run_tick(pool, now=NOW, providers=providers(service))
+    assert pool.deleted == []
