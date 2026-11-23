@@ -152,6 +152,17 @@ async def test_spotify_spoken_observation_survives_evidence_outage(music_connect
     total_sends = music_connector._mcp_client.call_tool.await_count
     assert (first_sends, total_sends - first_sends) == (0, 1)
 
+    # The recovered start is admitted: later polls and the closing persist both write.
+    writes = music_connector._cursor_pool.fetchval.await_count
+    later = next_tick + timedelta(minutes=1)
+    await music_connector._handle_spoken_playback({"item": item}, item, later, later.isoformat())
+    assert music_connector._cursor_pool.fetchval.await_count == writes + 1
+    drain = later + timedelta(minutes=1)
+    await music_connector._close_spoken_for_no_playback(drain)
+    far = drain + timedelta(seconds=music_connector._config.session_idle_timeout_s + 1)
+    await music_connector._close_spoken_for_no_playback(far)
+    assert music_connector._cursor_pool.fetchval.await_count >= writes + 2
+
 
 async def test_spotify_closed_music_summary_survives_evidence_outage(music_connector):
     from datetime import timedelta

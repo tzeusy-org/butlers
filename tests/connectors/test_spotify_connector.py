@@ -1784,3 +1784,54 @@ async def test_context_empty_and_rate_limit_keep_source_health(status, expected_
     client._http_client.request.return_value = httpx.Response(status, headers={"Retry-After": "5"})
     assert await connector._resolve_context_name("spotify:album:id") is None
     assert connector._source_api_ok is expected_ok
+
+
+async def test_gap_fill_digest_is_rebuilt_after_a_failed_delivery_not_skipped() -> None:
+    """Track-play rows go in only after the digest is delivered (bu-uhbhzq.4)."""
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._endpoint_identity = _ENDPOINT
+    connector._spotify_user_id = _SPOTIFY_USER_ID
+    connector._gap_fill_play_already_observed = AsyncMock(return_value=False)
+    connector._persist_gap_fill_track_play = AsyncMock(return_value=True)
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    track = {"id": "track-1", "uri": "spotify:track:track-1", "name": "Song 1"}
+    played_at = datetime.fromtimestamp(130, tz=UTC).isoformat().replace("+00:00", "Z")
+    connector._get_recently_played = AsyncMock(
+        return_value=[{"track": track, "played_at": played_at}]
+    )
+
+    with pytest.raises(EvidenceNotCommitted):
+        await connector._poll_recently_played(_NOW, _OBSERVED)
+    connector._persist_gap_fill_track_play.assert_not_awaited()
+    assert connector._last_recently_played_cursor is None
+
+    connector._submit_envelope = AsyncMock(return_value=True)
+    await connector._poll_recently_played(_NOW, _OBSERVED)
+    connector._submit_envelope.assert_awaited_once()
+    connector._persist_gap_fill_track_play.assert_awaited_once()
+    assert connector._last_recently_played_cursor == "130000"
+
+
+async def test_held_deliveries_and_admitted_sessions_are_capped_oldest_first() -> None:
+    from butlers.connectors import spotify as module
+    from butlers.connectors.evidence_journal import EvidenceNotCommitted
+
+    connector = SpotifyConnector(
+        SpotifyConnectorConfig(switchboard_mcp_url="http://switchboard.test/mcp")
+    )
+    connector._submit_envelope = AsyncMock(side_effect=EvidenceNotCommitted("RuntimeError"))
+    before = module.spotify_held_evictions_total.labels(kind="held")._value.get()
+    for n in range(module._HELD_LIMIT + 3):
+        await connector._deliver(f"k{n}", {}, AsyncMock())
+    assert len(connector._held) == module._HELD_LIMIT
+    assert next(iter(connector._held)) == "k3"
+    assert module.spotify_held_evictions_total.labels(kind="held")._value.get() == before + 3
+
+    for n in range(module._HELD_LIMIT + 2):
+        connector._admit_spoken(f"s{n}")
+    assert len(connector._admitted_spoken) == module._HELD_LIMIT
+    assert "s0" not in connector._admitted_spoken

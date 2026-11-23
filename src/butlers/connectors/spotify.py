@@ -111,6 +111,7 @@ _CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
+_HELD_LIMIT = 500  # per map; oldest evicted first and counted
 _POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked Spotify event keeps a preview only"
 
 # Spotify API URLs
@@ -156,6 +157,12 @@ spotify_digests_total = Counter(
     "connector_spotify_digests_total",
     "Total number of listening digest events emitted",
     labelnames=["endpoint_identity"],
+)
+
+spotify_held_evictions_total = Counter(
+    "connector_spotify_held_evictions_total",
+    "Held deliveries or admitted-session keys dropped because their cap was reached",
+    labelnames=["kind"],
 )
 
 spotify_sessions_total = Counter(
@@ -1672,7 +1679,7 @@ class SpotifyConnector:
         self._held_retry_now: datetime | None = None
         # Spoken sessions whose start passed the policy gate and committed evidence; only
         # these may be updated in place.
-        self._admitted_spoken: set[str] = set()
+        self._admitted_spoken: dict[str, None] = {}  # insertion-ordered set
 
         # Auth error state
         self._auth_error: bool = False
@@ -2575,7 +2582,10 @@ class SpotifyConnector:
 
         # Accumulate gap-fill tracks by context for batched submission
         gap_tracks: list[dict[str, Any]] = []
-        last_cursor_ms = 0
+        # Cursor steps in play order: (played_at_ms, track-play row to write once the digest is
+        # delivered, or None). The rows go in after delivery so a lost digest is rebuilt, not
+        # skipped as "already observed" (bu-uhbhzq.4).
+        steps: list[tuple[int, dict[str, Any] | None]] = []
 
         for item_wrapper in items_ordered:
             track = item_wrapper.get("track") or {}
@@ -2616,19 +2626,19 @@ class SpotifyConnector:
                 if already_observed is None:
                     break
                 if already_observed:
-                    last_cursor_ms = max(last_cursor_ms, played_at_ms)
+                    steps.append((played_at_ms, None))
                     continue
-                persisted = await self._persist_gap_fill_track_play(
-                    track_uri=track_uri,
-                    track_name=track_name,
-                    duration_ms=gap_duration_ms,
-                    played_at_ms=played_at_ms,
-                )
-                if not persisted:
-                    break
+                play_row: dict[str, Any] | None = {
+                    "track_uri": track_uri,
+                    "track_name": track_name,
+                    "duration_ms": gap_duration_ms,
+                    "played_at_ms": played_at_ms,
+                }
+            else:
+                play_row = None
 
             gap_tracks.append({"name": track_name, "played_at_ms": played_at_ms})
-            last_cursor_ms = max(last_cursor_ms, played_at_ms)
+            steps.append((played_at_ms, play_row))
 
         # Emit a single batched gap-fill digest if we found any tracks
         if gap_tracks:
@@ -2681,6 +2691,12 @@ class SpotifyConnector:
                 lambda: self._write_envelope_evidence(envelope),
                 retain=False,
             )
+
+        last_cursor_ms = 0
+        for played_at_ms, play_row in steps:
+            if play_row is not None and not await self._persist_gap_fill_track_play(**play_row):
+                break
+            last_cursor_ms = max(last_cursor_ms, played_at_ms)
 
         if last_cursor_ms:
             # Advance only through recent items whose durable reconciliation succeeded.
@@ -2893,11 +2909,19 @@ class SpotifyConnector:
             session=session,
             observed_at=observed_at,
         )
-        outcome = await self._deliver(
-            f"spoken:{key}", envelope, lambda: self._write_spoken_evidence(session)
+        await self._deliver(
+            f"spoken:{key}",
+            envelope,
+            lambda: self._write_spoken_evidence(session),
+            on_sent=lambda: self._admit_spoken(key),
         )
-        if outcome == "sent":
-            self._admitted_spoken.add(key)
+
+    def _admit_spoken(self, key: str) -> None:
+        """Record that a spoken session's start was delivered, so it may be updated in place."""
+        self._admitted_spoken[key] = None
+        while len(self._admitted_spoken) > _HELD_LIMIT:
+            self._admitted_spoken.pop(next(iter(self._admitted_spoken)))
+            spotify_held_evictions_total.labels(kind="admitted_spoken").inc()
 
     async def _deliver(
         self,
@@ -2927,7 +2951,13 @@ class SpotifyConnector:
                 else "park not durable",
                 getattr(exc, "reason", type(exc).__name__),
             )
+            self._held.pop(key, None)
             self._held[key] = _HeldDelivery(envelope, evidence, on_sent)
+            while len(self._held) > _HELD_LIMIT:
+                # Oldest first. Held items do not survive a restart; the source re-poll
+                # covers what it can.
+                self._held.pop(next(iter(self._held)))
+                spotify_held_evictions_total.labels(kind="held").inc()
             return "held"
         self._held.pop(key, None)
         if not admitted:
