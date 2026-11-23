@@ -146,29 +146,27 @@ async def _run_switchboard_security_question_cycle_job(
 
     from butlers.core.security_questions import run_security_question_cycle
     from butlers.credential_store import resolve_owner_telegram_recipient
+    from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
 
-    # The full delivery result (not the insight wrapper's) so a definite pre-send refusal can be
-    # told from a send that may have started.
     deliver = importlib.import_module("butlers.tools.switchboard.notification.deliver").deliver
 
     async def _notify(message: str) -> dict[str, Any]:
         recipient = await resolve_owner_telegram_recipient(pool)
         if not recipient:
             return {"status": "failed", "error_class": "recipient_unavailable"}
-        return await deliver(
-            pool,
-            source_butler="switchboard",
-            notify_request={
-                "schema_version": "notify.v1",
-                "origin_butler": "switchboard",
-                "delivery": {
-                    "intent": "send",
-                    "channel": "telegram",
-                    "recipient": recipient,
-                    "message": message,
-                },
-            },
+        attempt = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard", recipient=recipient, message=message
+                ),
+            ),
+            timeout_s=None,
+            propagate_errors=True,
         )
+        # Presentation owns the durable state and needs the typed refusal evidence.
+        return attempt.data
 
     # The link comes from the one dashboard-links helper: without a configured DASHBOARD_URL
     # there is no link the owner can open, so the question is `unavailable`, never sent.

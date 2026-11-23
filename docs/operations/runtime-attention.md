@@ -118,9 +118,11 @@ retry, or write an extra attention row. Caller policy and its one outcome writer
 | Daemon `notify()` | Permission, recipient and quiet/sleep checks precede dispatch; existing defer queue and session/cause linkage remain. |
 | Secrets lifecycle | Existing quiet-window queue, dedup marker and explicit retry owner remain; failure never advances success state. |
 | Deferred scheduler | Re-read attention state; keep the existing pending row on failure; terminal Telegram effects cannot replay. |
-| Unknown-sender review, WhatsApp session alert | Keep the existing single-claim/best-effort policy and record one outcome. |
+| Unknown-sender review | Keep the existing durable claim and record one outcome. |
+| WhatsApp session alert | Record one outcome per invalidation. A lost reply evicts the cached MCP session without replaying the alert. Later ingestion can reconnect. |
 | Insight daily/urgent broker | Existing owner/channel resolution (including its channel fallback), quiet/dedup/budget/amend policy and delivery references stay at the broker; one `source="insight"` outcome per candidate, no helper-written row. |
 | Runtime-attention outbox | Keep its fenced lease, typed transport outcome and terminal transition; no second helper-written outcome. |
+| Security question presentation | Its existing durable claim owns the only attempt. Keep typed unavailable, presented and ambiguous outcomes, and preserve terminal state without replay. |
 | Calendar reminders | Build the shared wire envelope with reminder lineage; its callback still owns delivery and raises for an unsent notification. |
 | Day Sheet, document deadlines, Goal runner failure notices | Use the owner Telegram helper. Claim, acknowledgement and retry decisions stay with each producer. |
 | Goal runner Decision Set cards | Use the checked helper. A failed call that already began remains unknown, and a confirmed provider ID still identifies the card for retraction. |

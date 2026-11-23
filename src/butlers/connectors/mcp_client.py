@@ -237,12 +237,8 @@ class CachedMCPClient:
             except asyncio.CancelledError as exc:
                 raise_if_task_cancelled(exc)
                 logger.debug("Cancelled while closing MCP client for %s", self._client_name)
-            except Exception:
-                logger.debug(
-                    "Error closing MCP client for %s",
-                    self._client_name,
-                    exc_info=True,
-                )
+            except Exception as exc:
+                logger.debug("Error closing cached MCP client: %s", type(exc).__name__)
             finally:
                 self._client_ctx = None
                 self._client = None
@@ -258,8 +254,10 @@ class CachedMCPClient:
                     async with asyncio.timeout(self._connect_timeout_s):
                         await self._disconnect()
 
-    async def call_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
-        """Call an MCP tool with single-retry reconnect on failure.
+    async def call_tool(
+        self, tool_name: str, args: dict[str, Any], *, retry_on_disconnect: bool = True
+    ) -> Any:
+        """Call an MCP tool with an optional single-retry reconnect on failure.
 
         Parameters
         ----------
@@ -267,6 +265,9 @@ class CachedMCPClient:
             Name of the MCP tool to invoke (e.g. ``"ingest"``).
         args:
             Arguments dict to pass to the tool.
+        retry_on_disconnect:
+            Whether a lost connection may replay the call. Disable this for a
+            side effect without server-side deduplication.
 
         Returns
         -------
@@ -279,9 +280,8 @@ class CachedMCPClient:
             If an attempt gets no reply within ``call_timeout_s``. The outcome is unknown,
             and it is not retried here: against a stalled server that only doubles the hold.
         ConnectionError
-            If both the initial call and the reconnect attempt fail at the
-            transport layer (including fastmcp session-drop RuntimeErrors), or
-            connecting takes longer than ``connect_timeout_s``.
+            If connecting fails, or a tool call loses its transport and any
+            permitted reconnect attempt also fails.
         TransientToolError
             If the tool replies ``status="transient_error"``; never retried here,
             the caller's own loop retries.
@@ -333,9 +333,14 @@ class CachedMCPClient:
                         f"No reply from {tool_name} on {self._endpoint_url} within "
                         f"{self._call_timeout_s:g}s; outcome unknown, it may have taken effect"
                     )
-                    logger.warning("MCP call timed out for %s: %s", self._client_name, msg)
+                    logger.warning(
+                        "Cached MCP call timed out (ToolCallTimeoutError), outcome unknown"
+                    )
                     await self._evict(client)
                     raise ToolCallTimeoutError(msg) from exc
+                if not retry_on_disconnect:
+                    await self._evict(client)
+                    raise ConnectionError("MCP call lost its connection; outcome unknown.") from exc
                 if reconnect:
                     msg = f"Failed to call {tool_name} on {self._endpoint_url}: {_describe(exc)}"
                     if first_exc is not None:

@@ -201,11 +201,11 @@ def classify_delivery(result: Any) -> tuple[str, str | None, str | None]:
 
     if not isinstance(result, dict):
         return "ambiguous", "unreadable_result", None
+    if terminal_telegram_metadata(result):
+        return "ambiguous", "effect_uncertain", None
     if result.get("status") == "sent":
         notification_id = result.get("notification_id")
         return "presented", None, str(notification_id) if notification_id else None
-    if terminal_telegram_metadata(result):
-        return "ambiguous", "effect_uncertain", None
     transport = result.get("transport")
     outcome = transport.get("outcome") if isinstance(transport, dict) else None
     if outcome in {"not_attempted", "rejected"}:
@@ -222,8 +222,8 @@ async def _send(notify: NotifyFn, message: str) -> tuple[str, str | None, str | 
     """Send once; a raise is ``ambiguous`` (the send may have started)."""
     try:
         result = await notify(message)
-    except Exception:
-        logger.warning("security question notify raised", exc_info=True)
+    except Exception as exc:
+        logger.warning("Security question delivery failed: %s", type(exc).__name__)
         return "ambiguous", "notify_raised", None
     return classify_delivery(result)
 

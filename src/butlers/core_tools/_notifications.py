@@ -1243,6 +1243,18 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 and intent in {"send", "insight", "confirm"}
                 and resolved_recipient is None
             ):
+                if entity_id is None and recipient is None and intent in {"send", "insight"}:
+                    await _record_cause_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason="no_recipient_configured",
+                        session_id=_ledger_session_id,
+                    )
                 return {
                     "status": "error",
                     "error": _NO_TELEGRAM_CHAT_CONFIGURED_ERROR,

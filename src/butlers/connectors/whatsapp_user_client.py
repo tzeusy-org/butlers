@@ -1252,6 +1252,7 @@ class WhatsAppUserClientConnector:
             lambda: self._mcp_client.call_tool(
                 "deliver",
                 {"source_butler": _CONNECTOR_TYPE, "notify_request": notify_request},
+                retry_on_disconnect=False,
             ),
             timeout_s=None,
         )

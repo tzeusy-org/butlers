@@ -335,7 +335,7 @@ async def scheduler_loop(
         from butlers.jobs.owner_notify import deliver_notification
         from butlers.telegram_api import terminal_telegram_metadata
 
-        if _client is None:
+        if _client is None and butler_name == "switchboard":
             if _db is None or _db.pool is None:
                 raise RuntimeError("Database not available for deferred notification delivery")
             from butlers.tools.switchboard.notification.deliver import deliver as _sw_deliver

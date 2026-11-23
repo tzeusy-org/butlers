@@ -107,10 +107,10 @@ async def deliver_notification(
         response = await asyncio.wait_for(send(), timeout=timeout_s)
     except Exception as exc:
         terminal = terminal_telegram_metadata(exc)
-        name = type(exc).__name__
-        logger.warning("Owner notification delivery failed: %s", name)
         if propagate_errors and not terminal:
             raise
+        name = type(exc).__name__
+        logger.warning("Owner notification delivery failed: %s", name)
         if terminal:
             data = {"status": "failed", **terminal}
         else:
