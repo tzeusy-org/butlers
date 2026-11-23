@@ -419,7 +419,7 @@ def _coerce_jsonb(value: Any) -> Any:
 def _record_findings_metric(triage_result: Any, dispatch_results: list[Any]) -> None:
     """Count each triaged finding by its authoritative outcome (RFC 0005 low-cardinality labels).
 
-    Runs after dispatch so a finding a halting gate held carries that gate's reason instead of
+    Runs after dispatch so a finding a halting gate stopped carries that gate's reason instead of
     reading as ``novel``; on a dispatch error it runs with no results, as before.
     """
     if _qa_findings_total is None:
@@ -1271,6 +1271,9 @@ class QaModule(Module):
             tag_butler_span(_patrol_span, "qa")
             _patrol_span_token = otel_context.attach(trace.set_span_in_context(_patrol_span))
 
+        # Triage result whose findings metric is still unrecorded; any exit before the post-dispatch
+        # recording (a raise in a pre-dispatch step included) counts the findings with no results.
+        pending_findings_metric: Any = None
         try:
             # Phase 1: Discover
             for source in self._sources:
@@ -1365,6 +1368,7 @@ class QaModule(Module):
                     if _triage_span_token is not None:
                         otel_context.detach(_triage_span_token)
 
+            pending_findings_metric = triage_result
             findings_count = len(triage_result.all_findings)
             novel_count = len(triage_result.novel_findings)
 
@@ -1426,7 +1430,6 @@ class QaModule(Module):
                     metrics=getattr(_spawner, "_metrics", None),
                 )
             except Exception as dispatch_exc:
-                _record_findings_metric(triage_result, [])
                 if _HAS_OTEL and _dispatch_span is not None:
                     _dispatch_span.record_exception(dispatch_exc)
                     _dispatch_span.set_status(trace.StatusCode.ERROR, str(dispatch_exc))
@@ -1440,6 +1443,7 @@ class QaModule(Module):
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
             _record_findings_metric(triage_result, dispatch_results)
+            pending_findings_metric = None
 
             # Phase 4: PR status check
             await self._check_pr_statuses(
@@ -1480,8 +1484,9 @@ class QaModule(Module):
             elif dispatched_count > 0:
                 patrol_status = "findings_dispatched"
             elif halt_reason is not None:
-                # A halting gate (breaker, no model, cap) held the novel findings for a later
-                # patrol. Remediation stopped; that is not the healthy "suppressed" outcome.
+                # A halting gate (breaker, no model, cap) stopped the novel findings from being
+                # dispatched; a breaker or cap hold queues them. Remediation stopped, which is not
+                # the healthy "suppressed" outcome.
                 patrol_status = "halted"
             elif novel_count > 0:
                 # Novel findings exist but none were dispatched (suppressed by
@@ -1594,6 +1599,8 @@ class QaModule(Module):
 
             return {"status": "error", "reason": error_msg}
         finally:
+            if pending_findings_metric is not None:
+                _record_findings_metric(pending_findings_metric, [])
             if _HAS_OTEL and _patrol_span is not None:
                 _patrol_span.end()
                 if _patrol_span_token is not None:

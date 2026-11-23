@@ -8,7 +8,7 @@ through :data:`LAST_QUALIFYING_PATROL_SQL`. Both sides derive the digest from
 this module so a configuration change makes every older row stop qualifying.
 
 A row qualifies only when it is ``origin='scheduled'``, finished
-``clean``/``findings_dispatched``/``suppressed``, has ``discovery_complete``
+``clean``/``findings_dispatched``/``halted``/``suppressed``, has ``discovery_complete``
 true, and carries the current configuration digest. Legacy rows keep null
 provenance and never qualify.
 """

@@ -38,7 +38,8 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   supervised control-plane observer records overdue patrols and fleet-wide
   expiry even when QA cannot run. Genuine completed `suppressed` or `halted` patrols with all enabled discovery sources
   successful count as healthy discovery (`halted` means remediation stopped behind a halting
-  gate and carries its `halt_reason`); dashboard-created synthetic
+  gate and carries its `halt_reason`; an open breaker or a full cap queue their findings, while
+  a missing model leaves them for a later patrol to rediscover); dashboard-created synthetic
   `suppressed` placeholders and legacy rows without source provenance do not.
 - **Triage:** Deduplicate findings against active investigations, dismissals,
   and cooldown windows before dispatching.

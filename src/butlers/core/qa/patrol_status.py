@@ -40,15 +40,17 @@ def require_patrol_status(value: str) -> QaPatrolStatus:
     return value
 
 
-#: Gates that hold a patrol's novel findings for a later patrol instead of investigating them,
-#: most blocking first. A cooldown or severity filter is a normal suppression, not a halt.
+#: Gates that stop a patrol from dispatching its novel findings, most blocking first. An open
+#: breaker or a full cap queue their findings for a later patrol; with no model they are not
+#: dispatched and a later patrol rediscovers them. A cooldown or severity filter is a normal
+#: suppression, not a halt.
 HALT_REASONS: Final[tuple[str, ...]] = ("circuit_breaker", "no_model", "concurrency_cap")
 
 
 def derive_halt_reason(reasons: Iterable[str]) -> str | None:
-    """Name the gate that held findings, or ``None`` when no finding was held.
+    """Name the gate that stopped dispatch, or ``None`` when no gate did.
 
-    ``reasons`` are the dispatch outcomes of the findings that were not investigated; the most
+    ``reasons`` are the dispatch outcomes of the findings that were not dispatched; the most
     blocking gate present wins so the status never understates why remediation stopped.
     """
     present = set(reasons)

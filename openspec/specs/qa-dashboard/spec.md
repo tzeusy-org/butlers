@@ -362,8 +362,10 @@ The dashboard SHALL render the case index at `/qa/investigations` using the Disp
 The QA dashboard SHALL treat the existing `public.qa_patrols.status` vocabulary
 as an explicit cross-layer contract. The canonical accepted values are `running`,
 `clean`, `findings_dispatched`, `error`, `skipped_overlap`, `suppressed`, and `halted`;
-`halted` marks a patrol whose novel findings were held behind a halting gate (open circuit
-breaker, no executor model, full concurrency cap) and is recorded with a `halt_reason`.
+`halted` marks a patrol whose novel findings were not dispatched because a halting gate stopped
+remediation (open circuit breaker, no executor model, full concurrency cap) and is recorded with a
+`halt_reason`. An open breaker or a full cap queue their findings; with no model they are not
+dispatched and a later patrol rediscovers them.
 
 #### Scenario: Canonical patrol-status filter validation
 

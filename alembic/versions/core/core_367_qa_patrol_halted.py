@@ -1,10 +1,10 @@
 """qa_patrols: a ``halted`` status and the ``halt_reason`` that names the gate (bu-ejow5p.3).
 
-A patrol whose novel findings were held behind a halting gate (open circuit breaker, no
-executor model, full concurrency cap) used to be recorded as ``suppressed``, which the QA
-manifesto counts as healthy discovery. ``halted`` says remediation stopped, and ``halt_reason``
-(``circuit_breaker``, ``no_model`` or ``concurrency_cap``) says why. Discovery still ran, so a
-halted patrol keeps counting as coverage.
+A patrol whose novel findings were not dispatched because a halting gate stopped remediation
+(open circuit breaker, no executor model, full concurrency cap) used to be recorded as
+``suppressed``, which the QA manifesto counts as healthy discovery. ``halted`` says remediation
+stopped, and ``halt_reason`` (``circuit_breaker``, ``no_model`` or ``concurrency_cap``) says why.
+Discovery still ran, so a halted patrol keeps counting as coverage.
 
 The core chain runs once per butler schema over this shared table, so every statement is
 idempotent and only the last schema to leave core_367 removes the status and the column
@@ -94,6 +94,9 @@ def downgrade() -> None:
     # One shared table serves every schema still at core_367; only the last one removes it.
     if _installation_count() > 1:
         return
+    # The lock first: an uncommitted halted insert is invisible to the rewrite below, and the
+    # restored check would then reject it when that insert commits.
+    op.execute(f"LOCK TABLE {_TABLE} IN ACCESS EXCLUSIVE MODE")
     op.execute(f"UPDATE {_TABLE} SET status = 'suppressed' WHERE status = 'halted'")
     op.execute(f"ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS {_CHECK}")
     op.execute(_check(_OLD))

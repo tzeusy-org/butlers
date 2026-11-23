@@ -632,6 +632,42 @@ class TestHaltedPatrol:
         assert written["halt_reason"] is None
         assert sorted(labels) == ["concurrency_cap", "concurrency_cap", "novel"]
 
+    async def test_findings_are_counted_even_when_a_pre_dispatch_step_raises(self):
+        import butlers.modules.qa as qa_module
+
+        triaged = self._triaged(2)
+        labels: list[str] = []
+
+        class FakeCounter:
+            def labels(self, *, source_type, dedup_reason):
+                labels.append(dedup_reason)
+                return self
+
+            def inc(self):
+                pass
+
+        mod = _make_module()
+        mod._config = QaConfig(enabled=True, enabled_sources=["butler_reports"])
+        mod._pool = _qa_pool()
+        mod._sources = []
+        original = qa_module._qa_findings_total
+        qa_module._qa_findings_total = FakeCounter()
+        try:
+            with (
+                patch("butlers.modules.qa.triage_findings", new_callable=AsyncMock) as mt,
+                patch.object(
+                    mod, "_refuse_write_token", new_callable=AsyncMock, side_effect=RuntimeError
+                ),
+            ):
+                mt.return_value = MagicMock(
+                    all_findings=triaged, novel_findings=triaged, dedup_counts={}
+                )
+                result = await mod._run_patrol_cycle()
+        finally:
+            qa_module._qa_findings_total = original
+        assert result["status"] == "error"
+        assert labels == ["novel", "novel"]
+
     async def test_cooldown_only_is_still_suppressed_not_halted(self):
         result, written, _ = await self._run(["cooldown", "cooldown"])
         assert result["status"] == "suppressed"

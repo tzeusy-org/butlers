@@ -94,6 +94,10 @@ def test_the_last_downgrade_keeps_rows_readable_then_restores_the_old_check(monk
 
     relabel = next(i for i, s in enumerate(fake.executed) if "SET status = 'suppressed'" in s)
     restore = next(i for i, s in enumerate(fake.executed) if "ADD CONSTRAINT" in s)
-    assert relabel < restore
+    lock = next(
+        i for i, s in enumerate(fake.executed) if s.startswith("LOCK TABLE public.qa_patrols")
+    )
+    assert "ACCESS EXCLUSIVE" in fake.executed[lock]
+    assert lock < relabel < restore
     assert "'halted'" not in fake.executed[restore]
     assert "DROP COLUMN IF EXISTS halt_reason" in fake.executed[-1]
