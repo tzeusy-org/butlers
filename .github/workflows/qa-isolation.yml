@@ -102,6 +102,8 @@ jobs:
             --show-only templates/egress-profiles.yaml > rendered.yaml
           kubectl apply -f rendered.yaml
       - name: Verify isolation
+        # bash -eo pipefail: a verifier exit is never masked by the tee that records the receipt.
+        shell: bash
         run: |
           api="$(kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
           dns="$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')"
@@ -110,6 +112,8 @@ jobs:
             --refused-tcp "tracker=${api}:443" \
             --reachable-tcp "dns=${dns}:53" \
             --readable-path /workspace | tee receipt.json
+          # A receipt that does not say passed:true is a failure, whatever the exit path was.
+          jq -e '.passed == true' receipt.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

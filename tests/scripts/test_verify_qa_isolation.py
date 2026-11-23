@@ -90,7 +90,9 @@ def test_a_failure_that_is_not_a_policy_denial_is_an_error_never_a_catch(
         _stub(monkeypatch, module, [(0, ""), (1, stderr)])
         code = module.main(["dry-run", "--namespace", "butlers-dev", "--image", _IMAGE])
         assert code == 3, stderr
-        assert "not a pass" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "not a pass" in err
+        assert stderr.splitlines()[0][:60] in err, "the log must say why, not just the class"
 
 
 def test_an_admitted_control_is_reported_unrefused(monkeypatch, capsys) -> None:
