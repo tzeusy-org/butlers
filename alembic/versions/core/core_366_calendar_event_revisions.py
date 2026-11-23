@@ -22,8 +22,10 @@ Shape:
 
 Grants: ``connector_writer`` holds SELECT and INSERT; ``butler_chronicler_rw`` holds SELECT; no
 other role holds any privilege. ``raw`` keeps titles, locations, times and attendees verbatim, so
-the connectors schema's default privileges (SELECT for every runtime role, DML for the writer) are
-revoked here and scripts/init-db.sql re-asserts the revokes after its blanket grants.
+this migration revokes the table grants the connectors schema's default privileges produced
+(SELECT for every runtime role, DML for the writer). It revokes ALL from PUBLIC and from both known
+roles before granting exactly the approved set, so a stray TRIGGER or WITH GRANT OPTION is repaired
+too, and scripts/init-db.sql re-asserts the revokes after its blanket grants.
 
 The relation is shared across schema-local core chains, so the migration is replay-safe: an advisory
 lock serialises installs, a chain that finds everything installed does no DDL, and the downgrade
@@ -115,11 +117,15 @@ AND NOT EXISTS (
     CROSS JOIN LATERAL aclexplode(c.relacl) AS a
     LEFT JOIN pg_roles r ON r.oid = a.grantee
     WHERE c.oid = to_regclass({_quote_literal(_TABLE)}) AND a.grantee <> c.relowner
-      AND NOT (
-          (r.rolname = {_quote_literal(_CONNECTOR_ROLE)}
-              AND a.privilege_type IN ('SELECT', 'INSERT'))
-          OR (r.rolname = {_quote_literal(_CHRONICLER_ROLE)} AND a.privilege_type = 'SELECT')
-      )
+      -- IS NOT TRUE, not NOT: a PUBLIC grant has no pg_roles row, so r.rolname is NULL and the
+      -- comparison below is NULL, which NOT would leave as NULL (not a violation).
+      AND (
+          (
+              (r.rolname = {_quote_literal(_CONNECTOR_ROLE)}
+                  AND a.privilege_type IN ('SELECT', 'INSERT'))
+              OR (r.rolname = {_quote_literal(_CHRONICLER_ROLE)} AND a.privilege_type = 'SELECT')
+          ) AND NOT a.is_grantable
+      ) IS NOT TRUE
 )
 AND (
     NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)})
@@ -249,15 +255,13 @@ def upgrade() -> None:
             IF EXISTS (
                 SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CONNECTOR_ROLE)}
             ) THEN
-                REVOKE UPDATE, DELETE, TRUNCATE ON TABLE {_TABLE}
-                    FROM {_quote_ident(_CONNECTOR_ROLE)};
+                REVOKE ALL ON TABLE {_TABLE} FROM {_quote_ident(_CONNECTOR_ROLE)};
                 GRANT SELECT, INSERT ON TABLE {_TABLE} TO {_quote_ident(_CONNECTOR_ROLE)};
             END IF;
             IF EXISTS (
                 SELECT 1 FROM pg_roles WHERE rolname = {_quote_literal(_CHRONICLER_ROLE)}
             ) THEN
-                REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {_TABLE}
-                    FROM {_quote_ident(_CHRONICLER_ROLE)};
+                REVOKE ALL ON TABLE {_TABLE} FROM {_quote_ident(_CHRONICLER_ROLE)};
                 GRANT SELECT ON TABLE {_TABLE} TO {_quote_ident(_CHRONICLER_ROLE)};
             END IF;
         END;

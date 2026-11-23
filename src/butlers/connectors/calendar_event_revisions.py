@@ -9,8 +9,10 @@ before it submits anything or saves its sync token; a failed write raises
 delta again.
 
 Privacy (owner decision 2026-11-22): titles, locations, times and attendees are kept verbatim;
-descriptions are scrubbed of links and passcodes, and conference join details are removed. A
-policy-blocked event keeps structure and times only (``raw`` is NULL).
+descriptions are scrubbed of links and passcodes, conference data is reduced to the solution name
+and key type, and attachment, source and gadget links are dropped. A policy-blocked event keeps
+structure and times only (``raw`` is NULL). Policy evaluation that cannot be resolved raises, so the
+batch is held rather than journaled as blocked or allowed.
 
 The kind of change (moved, retitled, cancelled, RSVP) is not stored. A reader derives it by
 diffing an event's consecutive revisions.
@@ -45,17 +47,21 @@ INSERT INTO connectors.calendar_event_revisions (
 ON CONFLICT (endpoint_identity, calendar_id, event_id, etag) DO NOTHING
 """
 
+_MEETING_HOSTS = (
+    r"zoom\.(?:us|com)|teams\.microsoft\.com|teams\.live\.com|meet\.google\.com|"
+    r"(?:[\w-]+\.)?webex\.com|gotomeeting\.com"
+)
 _URL = re.compile(
-    r"(?i)\b(?:https?://|www\.)\S+|\b[\w-]+(?:\.[\w-]+)*\.(?:google|zoom)\.[a-z]+/\S*"
+    r"(?i)\b(?:https?://|www\.)\S+"
+    r"|\b[\w-]+(?:\.[\w-]+)*\.(?:google|zoom)\.[a-z]+/\S*"
+    # Scheme-less meeting hosts, with or without a subdomain or a path.
+    rf"|\b(?:[\w-]+\.)*(?:{_MEETING_HOSTS})(?:/\S*)?"
 )
 # "passcode: 123456", "Password - abc", "PIN 1234 #", "meeting id" is not a secret, so not matched.
 _PASSCODE = re.compile(
     r"(?i)\b(pass\s?code|password|pin|access\s?code|dial[- ]in code)\b\s*[:=\-]?\s*#?\s*[\w#*-]+"
 )
 _REMOVED = "[removed]"
-_CONFERENCE_SECRET_KEYS = frozenset(
-    {"uri", "label", "pin", "password", "passcode", "accessCode", "meetingCode", "regionCode"}
-)
 
 
 def scrub_description(text: str) -> str:
@@ -63,29 +69,49 @@ def scrub_description(text: str) -> str:
     return _PASSCODE.sub(_REMOVED, _URL.sub(_REMOVED, text))
 
 
-def _scrub_conference(conference: Any) -> Any:
-    """Conference data without join links, pins or passcodes; the provider's solution stays."""
-    if not isinstance(conference, dict):
-        return conference
-    cleaned = {k: v for k, v in conference.items() if k != "entryPoints"}
-    entry_points = conference.get("entryPoints")
-    if isinstance(entry_points, list):
-        cleaned["entryPoints"] = [
-            {k: v for k, v in point.items() if k not in _CONFERENCE_SECRET_KEYS}
-            for point in entry_points
-            if isinstance(point, dict)
-        ]
-    return cleaned
+def _scrub_conference(conference: Any) -> dict[str, Any]:
+    """Only the provider's solution name and key type survive.
+
+    ``conferenceId`` is the Meet join code and ``notes`` and ``parameters`` hold dial-ins, so
+    nothing else is kept.
+    """
+    kept: dict[str, Any] = {}
+    solution = conference.get("conferenceSolution") if isinstance(conference, dict) else None
+    if isinstance(solution, dict):
+        scrubbed: dict[str, Any] = {}
+        if isinstance(solution.get("name"), str):
+            scrubbed["name"] = solution["name"]
+        key = solution.get("key")
+        if isinstance(key, dict) and isinstance(key.get("type"), str):
+            scrubbed["key"] = {"type": key["type"]}
+        if scrubbed:
+            kept["conferenceSolution"] = scrubbed
+    return kept
+
+
+def _keep(value: Any, keys: tuple[str, ...]) -> Any:
+    return {k: value[k] for k in keys if k in value} if isinstance(value, dict) else value
 
 
 def scrub_event(event: Mapping[str, Any]) -> dict[str, Any]:
-    """The verbatim provider event minus join links, passcodes and description links."""
+    """The verbatim provider event minus join links, passcodes and link-bearing fields."""
     cleaned = copy.deepcopy(dict(event))
     cleaned.pop("hangoutLink", None)
     if isinstance(cleaned.get("description"), str):
         cleaned["description"] = scrub_description(cleaned["description"])
     if "conferenceData" in cleaned:
         cleaned["conferenceData"] = _scrub_conference(cleaned["conferenceData"])
+    if isinstance(cleaned.get("attachments"), list):
+        # Title and type only: fileUrl, fileId and iconLink are links into the owner's files.
+        cleaned["attachments"] = [
+            _keep(a, ("title", "mimeType")) for a in cleaned["attachments"] if isinstance(a, dict)
+        ]
+    if isinstance(cleaned.get("source"), dict):
+        cleaned["source"] = _keep(cleaned["source"], ("title",))
+    if isinstance(cleaned.get("gadget"), dict):
+        cleaned["gadget"] = {
+            k: v for k, v in cleaned["gadget"].items() if k not in {"link", "iconLink"}
+        }
     return cleaned
 
 
@@ -100,13 +126,33 @@ def _strip_nul(value: Any) -> Any:
     return value
 
 
-def _etag(event: Mapping[str, Any]) -> str:
-    """The provider's etag; a content hash when it is absent, so the dedupe key is never empty."""
+#: Fields a policy-blocked row retains; its fallback version key is derived from these only.
+_STRUCTURE_KEYS = (
+    "id",
+    "recurringEventId",
+    "originalStartTime",
+    "updated",
+    "sequence",
+    "status",
+    "start",
+    "end",
+)
+
+
+def _etag(event: Mapping[str, Any], *, blocked: bool = False) -> str:
+    """The provider's etag; a content hash when it is absent, so the dedupe key is never empty.
+
+    A blocked event's hash covers only the structure the row keeps, never the excluded title or
+    attendees, so a private edit neither adds a row nor leaks through the key.
+    """
     etag = event.get("etag")
     if isinstance(etag, str) and etag:
         return etag
+    material: Mapping[str, Any] = (
+        {k: event.get(k) for k in _STRUCTURE_KEYS} if blocked else scrub_event(event)
+    )
     digest = hashlib.sha256(
-        json.dumps(event, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(material, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
     return f"sha256:{digest}"
 
@@ -147,7 +193,7 @@ def revision_row(
         _strip_nul(str(event.get("id") or "")),
         _strip_nul(event.get("recurringEventId")),
         original,
-        _strip_nul(_etag(event)),
+        _strip_nul(_etag(event, blocked=policy_blocked)),
         parse(updated) if isinstance(updated, str) else None,
         sequence if isinstance(sequence, int) else None,
         event.get("status") if isinstance(event.get("status"), str) else None,

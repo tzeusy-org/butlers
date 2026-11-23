@@ -21,6 +21,7 @@ from alembic import command
 from butlers.connectors.calendar_event_revisions import record_calendar_revisions
 from butlers.connectors.google_calendar import _parse_dt
 from butlers.migrations import _build_alembic_config
+from butlers.testing.migration import create_migration_db, migration_db_name
 
 pytestmark = [
     pytest.mark.integration,
@@ -176,5 +177,92 @@ def test_the_downgrade_refuses_while_rows_exist(fresh_db) -> None:
         config = _build_alembic_config(url, chains=["core"])
         with pytest.raises(DBAPIError, match="downgrade refused"):
             command.downgrade(config, _below_core_366())
+    finally:
+        engine.dispose()
+
+
+_TABLE = "connectors.calendar_event_revisions"
+
+
+def _acl(engine) -> set[tuple[str, str, bool]]:
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT coalesce(r.rolname, 'PUBLIC'), a.privilege_type, a.is_grantable "
+                "FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a "
+                "LEFT JOIN pg_roles r ON r.oid = a.grantee "
+                "WHERE c.oid = to_regclass(:t) AND a.grantee <> c.relowner"
+            ),
+            {"t": _TABLE},
+        )
+        return {(r[0], r[1], r[2]) for r in rows}
+
+
+_EXACT = {
+    ("connector_writer", "SELECT", False),
+    ("connector_writer", "INSERT", False),
+    ("butler_chronicler_rw", "SELECT", False),
+}
+
+
+def _upgrade(db_url: str, schema: str):
+    config = _build_alembic_config(db_url, chains=["core"], target_schema=schema)
+    command.upgrade(config, "core_366")
+    return config
+
+
+def test_a_second_schema_is_catalog_only_and_a_downgrade_keeps_the_shared_table(
+    postgres_container,
+) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _upgrade(db_url, "general")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    holder = engine.connect()
+    try:
+        assert _acl(engine) == _EXACT
+        # A held ROW EXCLUSIVE lock blocks any DDL (even a no-op CREATE OR REPLACE TRIGGER or
+        # REVOKE), so a short lock timeout turns "ran DDL" into a failure of the second upgrade.
+        holder.execute(text("BEGIN"))
+        holder.execute(text(f"LOCK TABLE {_TABLE} IN ROW EXCLUSIVE MODE"))
+        db_name = engine.url.database
+        with engine.connect() as admin:
+            admin.execute(text(f"ALTER DATABASE \"{db_name}\" SET lock_timeout = '1s'"))
+        try:
+            second = _upgrade(db_url, "travel")
+        finally:
+            holder.execute(text("ROLLBACK"))
+            with engine.connect() as admin:
+                admin.execute(text(f'ALTER DATABASE "{db_name}" RESET lock_timeout'))
+        assert _acl(engine) == _EXACT
+
+        command.downgrade(first, "core_362")
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is not None
+        command.downgrade(second, "core_362")
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is None
+    finally:
+        holder.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "stray",
+    [
+        "GRANT SELECT ON TABLE {t} TO PUBLIC",
+        "GRANT TRIGGER ON TABLE {t} TO connector_writer",
+        "GRANT SELECT ON TABLE {t} TO butler_chronicler_rw WITH GRANT OPTION",
+    ],
+)
+def test_a_later_schema_upgrade_repairs_a_stray_grant(postgres_container, stray: str) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    _upgrade(db_url, "general")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(stray.format(t=_TABLE)))
+        assert _acl(engine) != _EXACT
+        _upgrade(db_url, "travel")
+        assert _acl(engine) == _EXACT
     finally:
         engine.dispose()

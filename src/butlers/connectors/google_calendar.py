@@ -1128,21 +1128,34 @@ class CalendarConnectorRuntime:
     # ------------------------------------------------------------------
 
     def _policy_blocks(self, event: Mapping[str, Any]) -> bool:
-        """Whether source policy would block this event (no side effects)."""
+        """Whether source policy blocks this event (no side effects).
+
+        The global deny is evaluated on its own, so a connector-local policy error never skips a
+        known global block. An error that leaves the answer open raises: the journal batch is then
+        held, because a permanent blocked row for an event that might be allowed is worse.
+        """
         organizer_email = (event.get("organizer") or {}).get("email", "unknown")
         envelope = IngestionEnvelope(
             sender_address=organizer_email,
             source_channel=_DESCRIPTOR.channel,
             raw_key=event.get("id", ""),
         )
+        unresolved = False
+        try:
+            global_decision = self._global_ingestion_policy.evaluate(envelope)
+            if global_decision is not None and global_decision.action == "skip":
+                return True
+        except Exception:  # noqa: BLE001
+            unresolved = True
         try:
             decision = self._ingestion_policy.evaluate(envelope)
             if decision is not None and not decision.allowed:
                 return True
-            global_decision = self._global_ingestion_policy.evaluate(envelope)
-            return global_decision is not None and global_decision.action == "skip"
         except Exception:  # noqa: BLE001
-            return False
+            unresolved = True
+        if unresolved:
+            raise _PolicyUnresolvedError("policy evaluation failed")
+        return False
 
     async def _journal_events(self, events: list[dict[str, Any]], observation: str) -> bool:
         """Append every observed event version to the revision journal; False when it failed.
@@ -2220,6 +2233,10 @@ class CalendarAccountSource(GoogleAccountFleet[CalendarAccountLoop]):
 # ---------------------------------------------------------------------------
 # Internal exceptions
 # ---------------------------------------------------------------------------
+
+
+class _PolicyUnresolvedError(Exception):
+    """Source policy could not be evaluated; the journal batch is held."""
 
 
 class _SyncTokenExpiredError(Exception):

@@ -40,8 +40,10 @@ consecutive revisions; it is not stored.
 - Append-only: triggers refuse UPDATE, DELETE and TRUNCATE; nothing is pruned until the
   per-source retention contract (bu-uhbhzq.7).
 - Titles, locations, times and attendees are kept verbatim. Descriptions are scrubbed of links and
-  passcodes, and conference join links, pins and `hangoutLink` are removed. An event blocked by
-  source policy keeps structure and times only (no raw payload).
+  passcodes (also bare Zoom, Teams, Meet and Webex hosts). Conference data keeps only the solution
+  name and key type; `hangoutLink` and attachment, source and gadget links are removed. An event
+  blocked by source policy keeps structure and times only (no raw payload). If policy cannot be
+  evaluated, the batch is held like a failed journal write.
 - Only `connector_writer` (insert, select) and `butler_chronicler_rw` (select) can touch it.
 - If the write fails, nothing is submitted, the sync token is held and health is **degraded**
   ("Google Calendar revision journal write failed"); the next cycle journals the same delta.

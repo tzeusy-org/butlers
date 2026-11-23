@@ -52,8 +52,12 @@ A failed journal write SHALL submit nothing, hold the sync token, report degrade
 retried on the next cycle, and SHALL log the failure class only. Replaying a page or re-running a
 full sync over unchanged etags SHALL add no rows. No journal row SHALL ever be updated or deleted.
 Titles, locations, times and attendees SHALL be kept verbatim; descriptions SHALL be scrubbed of
-links and passcodes and conference join details removed; an event blocked by source policy SHALL
-keep structure and times only, with no raw payload. The kind of change SHALL be derived at read time
+links and passcodes (including scheme-less meeting hosts) and conference data reduced to the
+solution name and key type, and attachment, source and gadget links dropped; an event blocked by
+source policy SHALL keep structure and times only, with no raw payload, and its fallback version key
+SHALL derive only from that structure. A policy evaluation error that leaves the answer open SHALL
+hold the batch (nothing journaled or routed, token held, health degraded); the global deny SHALL be
+evaluated independently of connector-local policy. The kind of change SHALL be derived at read time
 from consecutive revisions and SHALL NOT be stored.
 
 ID: REQ-connector-google-calendar-012

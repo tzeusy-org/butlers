@@ -7,8 +7,9 @@ Synthetic ids and text only (bu-uhbhzq.1 slice 2).
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -287,3 +288,115 @@ async def test_the_policy_flag_reaches_the_journal() -> None:
     with patch("butlers.connectors.google_calendar.record_calendar_revisions", record):
         assert await runtime._journal_events([_event()], "change")
     assert blocked == [True]
+
+
+async def test_known_global_block_still_redacts_when_local_policy_raises() -> None:
+    from types import SimpleNamespace
+
+    runtime = _runtime([])
+    conn = _Conn()
+    cast(Any, runtime)._cursor_pool = _Pool(conn)
+    local = SimpleNamespace(evaluate=MagicMock(side_effect=ValueError("synthetic policy failure")))
+    global_ = SimpleNamespace(evaluate=MagicMock(return_value=SimpleNamespace(action="skip")))
+    with (
+        patch.object(runtime, "_ingestion_policy", local),
+        patch.object(runtime, "_global_ingestion_policy", global_),
+    ):
+        assert await runtime._journal_events([_event()], "change")
+
+    assert len(conn.rows) == 1
+    assert conn.rows[0][-2:] == (True, None)
+    global_.evaluate.assert_called_once()
+
+
+def test_a_blocked_fallback_version_key_depends_only_on_retained_structure() -> None:
+    base = _event()
+    base.pop("etag")
+    first = _row({**base, "summary": "synthetic detail A"}, policy_blocked=True)
+    changed_private = _row({**base, "summary": "synthetic detail B"}, policy_blocked=True)
+    changed_structure = _row({**base, "sequence": 42}, policy_blocked=True)
+
+    assert first[-1] is None and changed_private[-1] is None
+    assert first[5] == changed_private[5]
+    assert first[5] != changed_structure[5]
+
+
+async def test_unresolved_policy_error_holds_before_the_journal_write() -> None:
+    from types import SimpleNamespace
+
+    runtime = _runtime([])
+    runtime._record_source_api_success()
+    conn = _Conn()
+    cast(Any, runtime)._cursor_pool = _Pool(conn)
+    local = SimpleNamespace(evaluate=MagicMock(side_effect=ValueError("synthetic policy failure")))
+    global_ = SimpleNamespace(evaluate=MagicMock(return_value=None))
+    with (
+        patch.object(runtime, "_ingestion_policy", local),
+        patch.object(runtime, "_global_ingestion_policy", global_),
+    ):
+        assert not await runtime._journal_events([_event()], "change")
+
+    assert conn.rows == []
+    global_.evaluate.assert_called_once()
+    assert runtime._get_health_state()[0] == "degraded"
+
+
+def test_conference_data_keeps_only_the_solution_name_and_key_type() -> None:
+    event = _event(
+        conferenceData={
+            "conferenceId": "abc-defg-hij",
+            "conferenceSolution": {
+                "name": "Synthetic Meet",
+                "key": {"type": "hangoutsMeet"},
+                "iconUri": "https://icons.example.test/m.png",
+            },
+            "notes": "Dial +1 555 0100, code 998877",
+            "parameters": {"addOnParameters": {"parameters": {"room": "secret-room"}}},
+            "entryPoints": [{"uri": "https://meet.example.test/join", "pin": "9"}],
+        }
+    )
+    raw = json.loads(_row(event)[-1])
+    assert raw["conferenceData"] == {
+        "conferenceSolution": {"name": "Synthetic Meet", "key": {"type": "hangoutsMeet"}}
+    }
+    text = json.dumps(raw)
+    for secret in ("abc-defg-hij", "998877", "secret-room", "iconUri", "555 0100"):
+        assert secret not in text
+
+
+def test_attachment_source_and_gadget_links_are_dropped() -> None:
+    event = _event(
+        attachments=[
+            {
+                "title": "Synthetic plan.pdf",
+                "mimeType": "application/pdf",
+                "fileUrl": "https://drive.example.test/file/1",
+                "fileId": "1",
+                "iconLink": "https://icons.example.test/pdf.png",
+            }
+        ],
+        source={"title": "Synthetic source", "url": "https://source.example.test/p"},
+        gadget={"title": "Synthetic gadget", "link": "https://g.example.test/x", "width": 5},
+    )
+    raw = json.loads(_row(event)[-1])
+    assert raw["attachments"] == [{"title": "Synthetic plan.pdf", "mimeType": "application/pdf"}]
+    assert raw["source"] == {"title": "Synthetic source"}
+    assert raw["gadget"] == {"title": "Synthetic gadget", "width": 5}
+    assert "example.test/" not in json.dumps(raw).replace("guest@example.test", "")
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "zoom.us/j/123456789?pwd=abc",
+        "us02web.zoom.us/j/123456789",
+        "teams.microsoft.com/l/meetup-join/19%3a",
+        "meet.google.com/abc-defg-hij",
+        "company.webex.com/meet/someone",
+        "webex.com/join",
+    ],
+)
+def test_bare_meeting_hosts_are_scrubbed_from_descriptions(link: str) -> None:
+    scrubbed = revisions.scrub_description(f"Agenda. Join at {link} thanks")
+    assert link.split("/")[0] not in scrubbed and "[removed]" in scrubbed
+    assert scrubbed.startswith("Agenda. Join at ") and scrubbed.endswith(" thanks")
