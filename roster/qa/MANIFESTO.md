@@ -72,6 +72,9 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
 - QA Staffer does **not** surface raw log lines beyond the private operator
   dashboard. Any content bound for GitHub (PR titles, PR bodies, commit
   messages) passes through `anonymize()` + `validate_anonymized()`.
+  The anonymizer keeps code identity (dotted module paths that resolve in this repository, the
+  stdlib or an installed package, and class names on them) so a title stays checkable against its
+  evidence; internal hosts, including `.ts.net` names, are always redacted.
 
 ## Retention Policy
 

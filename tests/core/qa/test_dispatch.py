@@ -1768,3 +1768,20 @@ async def test_leaking_commit_without_publisher_is_refused_not_retained(tmp_path
         "category": "content_leak",
     }
     assert mocks["update"].await_args.args[2] == "anonymization_failed"
+
+
+def test_pr_title_keeps_code_identity_after_publisher_sanitizing() -> None:
+    """A finding on a real module yields a readable, checkable title (bu-ejow5p.4)."""
+    from butlers.core.qa.publication.proposal import compose_pr_text
+    from butlers.core.qa.publication.publisher import _sanitize
+
+    finding = _make_finding()
+    finding.exception_type = "builtins.ValueError"
+    finding.call_site = "src/butlers/core/spawner.py:spawn"
+    title, body = compose_pr_text(finding, uuid.uuid4(), {}, None)
+
+    sanitized = _sanitize(title, body, [], Path("/tmp/repo"))
+
+    assert not isinstance(sanitized, str)
+    assert "[REDACTED-HOST]" not in sanitized.title
+    assert "builtins.ValueError in src/butlers/core/spawner.py:spawn" in sanitized.title

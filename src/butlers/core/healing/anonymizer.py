@@ -13,8 +13,13 @@ Public API::
 
 from __future__ import annotations
 
+import functools
 import re
+import sys
+import sysconfig
 from pathlib import Path
+
+import butlers
 
 # ---------------------------------------------------------------------------
 # Credential patterns
@@ -205,9 +210,115 @@ _SAFE_DOMAINS = frozenset(
 )
 
 
+# Private-network suffixes that look public: a tailnet name ends in ``.net`` but names an
+# environment-specific host, so no suffix or domain allowance may admit it.
+_PRIVATE_SUFFIXES = (".ts.net",)
+
+_RE_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_RE_CLASS_NAME = re.compile(r"[A-Z][A-Za-z0-9_]*")
+_MAX_THIRD_PARTY_DEPTH = 3
+
+
+def _walk_module_names(root: Path, prefix: str, depth: int, out: dict[str, Path | None]) -> None:
+    """Map dotted module names under *root* to their source file, importing nothing."""
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        name = entry.name
+        if not _RE_IDENTIFIER.fullmatch(name.removesuffix(".py")):
+            continue
+        if entry.is_dir() and (entry / "__init__.py").is_file():
+            dotted = f"{prefix}{name}"
+            out.setdefault(dotted, entry / "__init__.py")
+            if depth > 1:
+                _walk_module_names(entry, f"{dotted}.", depth - 1, out)
+        elif entry.is_file() and name.endswith(".py") and name != "__init__.py":
+            out.setdefault(f"{prefix}{name.removesuffix('.py')}", entry)
+
+
+@functools.lru_cache(maxsize=1)
+def _code_modules() -> dict[str, Path | None]:
+    """Dotted module names of this repository, the stdlib and installed packages.
+
+    Built once from the file system (no import runs), so resolution is deterministic and
+    cheap per call.  A name is code only when it appears here; a hostname that merely
+    starts with an installed package name does not.  Values are the module's source file
+    (``None`` for built-in modules without one).
+    """
+    modules: dict[str, Path | None] = {}
+    roots: list[tuple[Path, int]] = [(Path(butlers.__file__).resolve().parent.parent, 8)]
+    for key in ("stdlib", "purelib", "platlib"):
+        location = sysconfig.get_paths().get(key)
+        if location:
+            roots.append((Path(location), _MAX_THIRD_PARTY_DEPTH))
+    for root, depth in roots:
+        _walk_module_names(root, "", depth, modules)
+    for name in (*sys.stdlib_module_names, "builtins"):
+        modules.setdefault(name, None)
+    return modules
+
+
+_MAX_SOURCE_BYTES = 4 * 1024 * 1024
+
+
+@functools.lru_cache(maxsize=4096)
+def _source_defines(path: Path, attribute: str) -> bool:
+    """True when the module source itself defines or re-exports *attribute* (no import).
+
+    Evidence is a top-level ``class``/``def`` or assignment of the name, or a single-line
+    ``from x import ... name`` re-export.  A capitalized word that appears nowhere as a
+    definition (a person's name, a hostname label) is not evidence.
+    """
+    try:
+        if path.stat().st_size > _MAX_SOURCE_BYTES:
+            return False
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    name = re.escape(attribute)
+    pattern = re.compile(
+        rf"^(?:(?:async\s+)?(?:class|def)\s+{name}\b|{name}\s*(?::[^=\n]*)?=(?!=)"
+        rf"|from\s+\S+\s+import\s+[^\n#]*\b{name}\b)",
+        re.MULTILINE,
+    )
+    return pattern.search(text) is not None
+
+
+def _is_code_identifier(token: str) -> bool:
+    """True when *token* is a resolvable dotted module path, or a class on one.
+
+    ``butlers.core.spawner`` and ``asyncio.exceptions`` are modules.  The last segment of
+    ``asyncpg.exceptions.UndefinedColumnError`` must be class-shaped AND evidenced: the
+    module, if already imported, really exposes it; otherwise the module's source file
+    defines it.  So ``asyncpg.Internal``, ``this.Alice`` and any host sharing only a
+    package prefix stay redacted, whether or not the module was imported.
+    """
+    parts = token.split(".")
+    if len(parts) < 2 or not all(_RE_IDENTIFIER.fullmatch(part) for part in parts):
+        return False
+    modules = _code_modules()
+    if token in modules:
+        return True
+    parent = ".".join(parts[:-1])
+    attribute = parts[-1]
+    if parent not in modules or not _RE_CLASS_NAME.fullmatch(attribute):
+        return False
+    imported = sys.modules.get(parent)
+    if imported is not None:
+        return hasattr(imported, attribute)
+    source = modules[parent]
+    return source is not None and _source_defines(source, attribute)
+
+
 def _is_safe_hostname(hostname: str) -> bool:
     """Return True if the hostname is safe to include (not internal/environment-specific)."""
     lower = hostname.lower()
+    if lower.endswith(_PRIVATE_SUFFIXES):
+        return False
+    if _is_code_identifier(hostname):
+        return True
     # Allowed by explicit whitelist
     if lower in _SAFE_DOMAINS:
         return True

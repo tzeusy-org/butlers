@@ -24,3 +24,18 @@ is emitted only after both persistence calls succeed; the error result does not 
 suppression. PostgreSQL durability and concurrent retry are covered by the named roundtrip in
 `tests/integration/test_infra_condition_suppression_persistence_roundtrip.py`; a collection result
 or mocked writer is not proof that those database bodies executed.
+
+## Log finding identity and the one-time fingerprint rotation
+
+The log scanner fingerprints a logged exception by its class, its innermost repository frame
+(`file:function`, no line number) and its normalized message, as written by
+`core.logging.add_exception_identity`; the rendered traceback is evidence only
+(`structured_evidence.traceback_tail`). One defect is therefore one fingerprint, and a deploy that
+shifts line numbers does not change it.
+
+**Rotation (bu-ejow5p.4).** Before this change the scanner hashed the rendered traceback as the
+exception type, so existing log fingerprints never repeated. On the first patrol after deploy every
+log-scanner fingerprint changes once. Dismissals, cooldowns, publication holds and active-attempt
+joins keyed on old fingerprints go inert (they are not rewritten or backfilled), and each live
+defect is investigated again once under its new fingerprint. Session-record and tool-call-failure
+fingerprints are unchanged. Expect one patrol of novel findings, then the stable count.
