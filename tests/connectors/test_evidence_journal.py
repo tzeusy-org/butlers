@@ -8,6 +8,7 @@ adds a second; the stored raw is the envelope's inbox-equivalent at its tier.
 from __future__ import annotations
 
 import copy
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -191,3 +192,38 @@ def _decode(text: str) -> dict[str, Any]:
     import json
 
     return json.loads(text)
+
+
+async def test_a_scrub_failure_writes_nothing_and_raises_a_content_blind_error(
+    monkeypatch, caplog
+) -> None:
+    """A scrub failure is not a duplicate: no row, no submit, and nothing of the cause leaks."""
+
+    def scrub_unavailable(*_args, **_kwargs):
+        raise RuntimeError("test-private-scrub-details")
+
+    for name, call in (
+        ("scrub_stored_record", lambda pool: journal.commit_envelope(pool, _envelope("gmail"))),
+        (
+            "scrub_evidence_json",
+            lambda pool: journal.commit(
+                pool,
+                source="gmail",
+                endpoint_identity="e",
+                provider_id="p",
+                observed_at=datetime.now(UTC),
+                raw={"k": "v"},
+                tier="full",
+            ),
+        ),
+    ):
+        pool = _Journal()
+        monkeypatch.setattr(journal, name, scrub_unavailable)
+        with pytest.raises(journal.EvidenceNotCommitted) as raised:
+            await call(pool)
+        monkeypatch.undo()
+
+        assert raised.value.reason == "RuntimeError"
+        assert raised.value.__cause__ is None and raised.value.__suppress_context__
+        assert "test-private-scrub-details" not in str(raised.value) + caplog.text
+        assert pool.rows == {}

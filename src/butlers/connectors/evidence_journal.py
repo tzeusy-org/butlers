@@ -151,7 +151,8 @@ async def commit(
     except EvidenceNotCommitted:
         raise
     except Exception as exc:
-        raise EvidenceNotCommitted(type(exc).__name__) from exc
+        # Class name only, and no chained cause: the original text can echo message content.
+        raise EvidenceNotCommitted(type(exc).__name__) from None
     return inserted is not None
 
 
@@ -179,7 +180,8 @@ async def commit_envelope(
             raw, str(raw["payload"].get("normalized_text") or "")
         )
     except Exception as exc:
-        raise EvidenceNotCommitted(type(exc).__name__) from exc
+        # Class name only, and no chained cause: the original text can echo message content.
+        raise EvidenceNotCommitted(type(exc).__name__) from None
     return await commit(
         pool,
         source=str(source["channel"]),
