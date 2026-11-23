@@ -26,6 +26,7 @@ HandoffClass = Literal["confirmed", "safe_retry", "ambiguous"]
 SAFE_REASON_CODES: frozenset[str] = frozenset(
     {
         "quiet_hours",
+        "owner_mode",
         "owner_recipient_unavailable",
         "callback_secret_unavailable",
         "transport_unavailable",
@@ -325,14 +326,20 @@ class ApprovalDeliveryWorker:
                         owner_tokens=owner_tokens,
                     )
             else:
+                # A digest has no tokens; the repository only defers it under an owner mode.
+                prepare_digest: Callable[..., Awaitable[Mapping[str, str] | None]] | None = getattr(
+                    self._repository, "prepare_owner_delivery", None
+                )
+                if prepare_digest:
+                    await prepare_digest(claim, owner_recipient)
                 envelope = self._renderer.render_digest(
                     subject,
                     owner_recipient=owner_recipient,
                 )
         except OwnerDeliveryHeld:
-            # An owner mode holds the push: the same closed reason a quiet period uses. The
-            # subject keeps its urgency and the card is rechecked on the next attempt.
-            await self._prestart_retry(claim, "quiet_hours")
+            # An owner mode holds the push. The subject keeps its urgency and the card is
+            # rechecked on the next attempt.
+            await self._prestart_retry(claim, "owner_mode")
             return True
         except Exception:
             await self._prestart_retry(claim, "provider_preflight_failed")

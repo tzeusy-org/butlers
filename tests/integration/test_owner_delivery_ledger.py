@@ -2312,6 +2312,7 @@ async def test_a_mode_hold_defers_the_push_keeps_its_receipt_and_never_touches_u
     ledger_pool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from butlers.core import owner_delivery_holds as holds
+    from butlers.perception import flags
 
     await _enable(ledger_pool)
     await _park(ledger_pool, card=True)
@@ -2321,10 +2322,13 @@ async def test_a_mode_hold_defers_the_push_keeps_its_receipt_and_never_touches_u
 
     held = {"on": True}
 
-    async def fake_mode_hold(conn: Any, subject: od.Subject) -> holds.ModeHold | None:
+    async def fake_mode_hold(
+        conn: Any, subject: od.Subject, effect_class: str | None
+    ) -> holds.ModeHold | None:
         return holds.ModeHold(4, ("sick",)) if held["on"] else None
 
     monkeypatch.setattr(holds, "mode_hold", fake_mode_hold)
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_MODE_HOLDS_LIVE", True)
 
     with pytest.raises(od.OwnerDeliveryHeld):
         await repository.prepare_owner_delivery(claim, _RECIPIENT)

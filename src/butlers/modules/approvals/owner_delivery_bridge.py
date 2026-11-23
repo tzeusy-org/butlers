@@ -63,6 +63,19 @@ def approval_digests(tool_name: str, tool_args: Any) -> tuple[str, str]:
     return od.digest_of({"tool_name": tool_name, "tool_args": args}), args_digest(args)
 
 
+def action_effect_class(action: Mapping[str, Any]) -> str | None:
+    """The action's effect class from its checked-in tool descriptor; ``None`` if unknown.
+
+    The only effect metadata an action already records. A mode holds only ``read``/``record``
+    effects; anything else, or an unknown tool, is delivered (owner decision bu-u33sb7 Q8=B).
+    """
+    from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
+
+    descriptor = TOOL_PRESENTATION_BY_NAME.get(action.get("tool_name"))
+    effect = getattr(descriptor, "effect_class", None)
+    return effect if isinstance(effect, str) else None
+
+
 async def open_approval_subject(conn: Any, action: Mapping[str, Any]) -> od.Subject:
     """Open (or return) the subject of one locked ``pending_actions`` row."""
     owner = await od.owner_entity_id(conn)
@@ -183,7 +196,13 @@ async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Prese
         return None
     subject = await open_approval_subject(conn, action)
     # The dashboard is read on demand, so a mode only annotates it; it never defers it.
-    await holds.consume(conn, subject, action_id=action["id"], defers_push=False)
+    await holds.consume(
+        conn,
+        subject,
+        action_id=action["id"],
+        effect_class=action_effect_class(action),
+        defers_push=False,
+    )
     now = await conn.fetchval("SELECT clock_timestamp()")
     presentation = await od.present(
         conn,
@@ -378,6 +397,7 @@ __all__ = [
     "BridgeReport",
     "ParityReport",
     "RFC0023_STATE_MAP",
+    "action_effect_class",
     "approval_digests",
     "bridge_existing",
     "open_approval_subject",

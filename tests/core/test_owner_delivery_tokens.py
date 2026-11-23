@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -206,8 +207,20 @@ async def test_worker_defers_the_push_while_an_owner_mode_holds_it() -> None:
     renderer = _Renderer()
     worker = ApprovalDeliveryWorker(repository, renderer, _Runtime())
     assert await worker.process_one() is True
-    repository.record_prestart_retry.assert_awaited_once_with(repository.claim, "quiet_hours")
+    repository.record_prestart_retry.assert_awaited_once_with(repository.claim, "owner_mode")
     repository.mark_handoff_started.assert_not_awaited()
+    assert renderer.calls == []
+
+
+async def test_worker_defers_a_digest_when_the_repository_holds_it() -> None:
+    repository = _Repository(None)
+    repository.claim = dataclasses.replace(repository.claim, presentation_mode="burst_digest")
+    repository.claim_next.return_value = repository.claim
+    repository.prepare_owner_delivery.side_effect = od.OwnerDeliveryHeld()
+    renderer = _Renderer()
+    worker = ApprovalDeliveryWorker(repository, renderer, _Runtime())
+    assert await worker.process_one() is True
+    repository.record_prestart_retry.assert_awaited_once_with(repository.claim, "owner_mode")
     assert renderer.calls == []
 
 

@@ -250,7 +250,8 @@ Rows from before core_357 read as routine.
 
 `owner_delivery_holds` (bu-dhloi1.22.1) lets owner modes and the owner law **hold** a subject and
 never raise its urgency. It is dark twice: behind the owner-delivery rollout flag and behind
-`perception.flags.OWNER_DELIVERY_MODE_HOLDS_LIVE`.
+`perception.flags.OWNER_DELIVERY_MODE_HOLDS_LIVE`, which also keeps the owner-law receipt
+unrecorded.
 
 - **Mode holds.** `prepare_owner_delivery` reads the `owner.mode` projection as the owner reader
   (`SET LOCAL ROLE` in a savepoint, restored before the overlay is read) and each active mode's
@@ -258,18 +259,23 @@ never raise its urgency. It is dark twice: behind the owner-delivery rollout fla
   no runtime policy until activation, so a locking read would see zero rows and fall back to the
   default profile. A mode whose profile holds `proactive` defers the Telegram push: the hold
   receipt `{stage: "owner_mode", generation, terms}` is committed, then `OwnerDeliveryHeld` makes
-  the worker retry with the existing `quiet_hours` reason. The dashboard card is annotated, never
-  held.
-- **What is never held.** A subject whose derived urgency is an interrupt (the owner's own flag or
-  clause, or a home-safety producer) is not held. An approval subject has no sender, bill or
-  medication kind, so `proactive` is the only class it carries.
-- **Unknown holds nothing.** A stale, unknown, off-shape or unreadable `owner.mode`, an
-  unreadable overlay, or a role that cannot be assumed means no mode hold, as an unknown posture
-  never manufactures urgency.
+  the worker retry with the `owner_mode` reason (approvals_024). A digest card is deferred only
+  when every counted member would be held. The dashboard card is annotated, never held.
+- **What is never mode-held** (RFC 0038 D7, bu-u33sb7 Q8=B). A `home_safety` interrupt
+  (`modes.PINNED`). An owner-origin interrupt (`owner_creation`, `owner_clause`) is held unless
+  the mode's `break_through` set names it. An approval is held only when its effect is
+  determinably proactive: the action's tool presentation descriptor `effect_class` is `read` or
+  `record`. `transact` (a bill or payment), `communicate` (a reply to a person), `actuate`,
+  `administer` and an unknown tool are delivered. No new taxonomy: this is the metadata an
+  action already records.
+- **Unreadable posture.** A stale, unknown, off-shape or unreadable `owner.mode`, an unreadable
+  overlay, or a role that cannot be assumed is always recorded as an `owner_mode` receipt whose
+  terms carry `{"unreadable": true}`, never as passed. Whether it holds or delivers is the single
+  constant `HOLD_WHEN_POSTURE_UNKNOWN`; it is `False` (deliver) and **awaits an owner decision**.
 - **Owner law.** The broker's hold on the parked action (`switchboard.owner_policy_holds`, keyed
   by the effect, which is the action's id) is attached as `holding_reason` for display. An
-  `always_ask` term is what parked the action, so its card is not held. A mode hold's receipt
-  takes the slot when both apply.
+  `always_ask` term is what parked the action, so its card is not held. A mode receipt takes
+  the slot when both apply.
 
 ## Later-owned inputs (not active here)
 
