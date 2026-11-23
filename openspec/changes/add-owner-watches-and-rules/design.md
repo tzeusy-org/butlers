@@ -24,18 +24,23 @@ unknown, and it can never author, widen or edit a watch or rule.
 ## D3: Authoring is an owner action behind an exact card
 
 Create, update and delete of a watch or rule are owner-origin administer effects approved on an
-exact card. A model, a mail body or a routine suggestion can only propose; the proposal installs
-nothing. Delivery is the owner only, through the RFC 0011 broker, with digest as the default.
+exact card. Only a model may propose; the proposal installs nothing, and mail, source text and
+read-check output are evidence only. Delivery is the owner only, through the RFC 0011 broker, with digest as the default.
 
 ## D4: Finance alert_config migrates by explicit mapping
 
-Finance `alert_config` facts have four types. Each maps to exactly one watch shape or is refused
-as blind when no evaluator seam measures it. The old and new path never both alert.
+Finance `alert_config` facts have four types. Each maps to a watch shape, is covered by its
+existing single-output path, or is shown blind. `large_transaction` becomes a watch and its
+response flag is suppressed while the watch exists; `price_change`, `budget_exceeded` and
+`new_merchant` keep their existing paths with no watch. The old and new path never both alert.
 
 ## D5: Modes only tighten automatically
 
-Automatic entry is limited to the closed registry's tighten-only modes (`asleep`, in-flight
-`travel`, `house_unattended`). Any loosening uses the existing step-up boundary.
+Automatic entry is limited to the tighten-only `asleep` and `house_unattended` modes and the
+travel-derived in-flight posture flag, which is not the `travel` mode (RFC 0038 S3). In-flight
+entry never arms the absence plan; that needs declared or confirmed travel. The adopted sick
+exemptions (safety, medication, bills due within 48h, replies to people) apply. Any loosening
+uses the existing step-up boundary.
 
 ## Open verification points
 
