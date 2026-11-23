@@ -155,39 +155,45 @@ async def credential_probe_observations(
     )
 
 
+async def gather_observations(db: Any, now: datetime) -> list[Observation]:
+    """Every probe, each in its own try: one failing never drops another's observation."""
+    from butlers.jobs.secrets_lifecycle import _collect_snapshots
+
+    observations: list[Observation] = []
+    try:
+        snapshots = await _collect_snapshots(db)
+        observations += await credential_probe_observations(
+            db.credential_shared_pool(), snapshots, now
+        )
+    except Exception:
+        mark_tick_incomplete()
+        logger.warning("capability health: credential collection failed")
+    try:
+        observations.append(await probe_conditions(db.pool("switchboard")))
+    except Exception:
+        mark_tick_incomplete()
+        logger.warning("capability health: conditions probe unavailable")
+    try:
+        from butlers.watches import tick as owner_watch_tick
+
+        observations.append(
+            await probe_owner_watches(
+                db.pool("switchboard"), live=owner_watch_tick.OWNER_WATCHES_LIVE
+            )
+        )
+    except Exception:
+        mark_tick_incomplete()
+        logger.warning("capability health: owner watch probe unavailable")
+    return observations
+
+
 async def run_capability_health_loop(
     db: Any, dsn: str, *, interval_s: float = DEFAULT_INTERVAL_S
 ) -> None:
     """Own the writer pool and run the collector loop (cancel to stop)."""
-    from butlers.jobs.secrets_lifecycle import _collect_snapshots
 
     async def gather(now: datetime) -> list[Observation]:
-        observations: list[Observation] = []
-        try:
-            snapshots = await _collect_snapshots(db)
-            observations += await credential_probe_observations(
-                db.credential_shared_pool(), snapshots, now
-            )
-        except Exception:
-            mark_tick_incomplete()
-            logger.warning("capability health: credential collection failed")
-        try:
-            observations.append(await probe_conditions(db.pool("switchboard")))
-        except Exception:
-            mark_tick_incomplete()
-            logger.warning("capability health: conditions probe unavailable")
-        try:
-            from butlers.watches import tick as owner_watch_tick
-
-            observations.append(
-                await probe_owner_watches(
-                    db.pool("switchboard"), live=owner_watch_tick.OWNER_WATCHES_LIVE
-                )
-            )
-        except Exception:
-            mark_tick_incomplete()
-            logger.warning("capability health: owner watch probe unavailable")
-        return observations
+        return await gather_observations(db, now)
 
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2, command_timeout=10)
     try:

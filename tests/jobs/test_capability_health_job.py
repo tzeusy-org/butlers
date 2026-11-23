@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -192,3 +193,46 @@ async def test_a_failed_owner_watches_publish_never_drops_the_other_dependencies
     assert len(store.written) == len(expected)
     assert "owner_watches" not in state  # the failed one is retried next tick, not remembered
     assert set(state) == DEPENDENCY_IDS - {"owner_watches"}  # all the others published
+
+
+DB = SimpleNamespace(pool=lambda name: object(), credential_shared_pool=lambda: object())
+
+
+@pytest.fixture
+def probes(monkeypatch):
+    from butlers.jobs import secrets_lifecycle
+
+    async def snapshots(db):
+        return []
+
+    async def credentials(pool, snaps, now):
+        return [Observation("google", "available", None, now)]
+
+    async def conditions(pool):
+        return Observation("conditions", "available", None, NOW)
+
+    async def owner_watches(pool, *, live):
+        return Observation("owner_watches", "available", None, NOW)
+
+    monkeypatch.setattr(secrets_lifecycle, "_collect_snapshots", snapshots)
+    monkeypatch.setattr(job, "credential_probe_observations", credentials)
+    monkeypatch.setattr(job, "probe_conditions", conditions)
+    monkeypatch.setattr(job, "probe_owner_watches", owner_watches)
+    return monkeypatch
+
+
+async def test_the_gather_collects_every_probe(probes) -> None:
+    seen = await job.gather_observations(DB, NOW)
+    assert {o.dependency for o in seen} == {"google", "conditions", "owner_watches"}
+
+
+async def test_a_raising_owner_watch_probe_never_drops_the_other_observations(
+    probes, caplog
+) -> None:
+    async def boom(pool, *, live):
+        raise RuntimeError("probe exploded")
+
+    probes.setattr(job, "probe_owner_watches", boom)
+    seen = await job.gather_observations(DB, NOW)
+    assert {o.dependency for o in seen} == {"google", "conditions"}
+    assert "owner watch probe unavailable" in caplog.text

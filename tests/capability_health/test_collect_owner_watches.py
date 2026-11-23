@@ -92,3 +92,29 @@ async def test_the_reporter_writes_only_closed_words_and_a_time():
     ((key, value),) = pool.writes
     assert key == "owner_watch:tick_health"
     assert value == {"state": "degraded", "reason": "sources_unreadable", "at": NOW.isoformat()}
+
+
+async def test_a_report_slightly_ahead_of_this_clock_is_still_fresh():
+    seen = await probe(Pool(record("up", "tick_ok", age=-20)))
+    assert seen.state == "available"
+
+
+async def test_a_report_far_ahead_of_this_clock_is_unmeasured():
+    seen = await probe(Pool(record("up", "tick_ok", age=-120)))
+    assert seen.state is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"state": ["up"], "reason": "tick_ok"},
+        {"state": "up", "reason": {"x": 1}},
+        {"state": {"a": 1}, "reason": None},
+        {"state": 5, "reason": "tick_ok"},
+    ],
+    ids=["list state", "dict reason", "dict state", "int state"],
+)
+async def test_an_unhashable_or_non_word_value_is_unmeasured(value):
+    row = json.dumps({**value, "at": NOW.isoformat()})
+    seen = await probe(Pool(row))
+    assert seen.state is None

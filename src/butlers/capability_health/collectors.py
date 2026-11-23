@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from butlers.capability_health.model import Observation
+from butlers.watches.health import DEGRADED, KEY, KNOWN, MAX_AGE_SECONDS, NO_SNAPSHOT_PROVIDER
 
 #: Credential key (``<scope>:<name>``) to the declared dependency it feeds.
 CREDENTIAL_DEPENDENCIES = {
@@ -121,6 +122,9 @@ async def probe_conditions(
     return Observation("conditions", "available", None, started)
 
 
+FUTURE_SKEW_SECONDS = 30  # a report stamped slightly ahead of this clock is still fresh
+
+
 async def probe_owner_watches(
     pool: Any,
     *,
@@ -134,8 +138,6 @@ async def probe_owner_watches(
     a ``degraded`` report is degraded, and no report, an old one or an unknown word is
     unmeasured, never available. The row is closed words and a time, observed at its own ``at``.
     """
-    from butlers.watches.health import DEGRADED, KEY, KNOWN, MAX_AGE_SECONDS, NO_SNAPSHOT_PROVIDER
-
     now = clock()
     if not live:
         return Observation("owner_watches", "unconfigured", "not_configured", now)
@@ -146,12 +148,16 @@ async def probe_owner_watches(
         )
         value = json.loads(raw) if isinstance(raw, str) else raw
         state, reason = value["state"], value["reason"]
+        if not isinstance(state, str) or not isinstance(reason, str | None):
+            return unmeasured  # an unhashable or non-word value says nothing
         at = datetime.fromisoformat(value["at"])
+        known = (state, reason) in KNOWN
     except Exception:
         return unmeasured  # absent, unreadable or malformed: says nothing
-    if (state, reason) not in KNOWN or at.tzinfo is None:
+    if not known or at.tzinfo is None:
         return unmeasured
-    if (now - at).total_seconds() > MAX_AGE_SECONDS or at > now:
+    skew = (now - at).total_seconds()
+    if skew > MAX_AGE_SECONDS or skew < -FUTURE_SKEW_SECONDS:
         return unmeasured
     if state == DEGRADED:
         cause = "provider_unavailable" if reason == NO_SNAPSHOT_PROVIDER else "signal_unmeasurable"
