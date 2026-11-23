@@ -167,7 +167,9 @@ def read_untrusted(root: Path, parts: Sequence[str], *, cap: int = _ARTIFACT_CAP
         for descriptor in fds:
             os.close(descriptor)
     with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        info = os.fstat(handle.fileno())
+        # A single-link regular file: a hard link to a daemon file would read as the pod's own.
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             return None
         return handle.read(cap)
 

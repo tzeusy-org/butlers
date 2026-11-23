@@ -119,6 +119,8 @@ def test_read_untrusted_refuses_links_fifos_and_oversize(tmp_path: Path) -> None
     assert read_untrusted(root, ["d", "link.txt"]) is None
     assert read_untrusted(root, ["dirlink", "outside.txt"]) is None
     assert read_untrusted(root, ["d", "pipe"]) is None
+    os.link(outside, root / "d" / "hard.txt")
+    assert read_untrusted(root, ["d", "hard.txt"]) is None
     assert read_untrusted(root, ["d", "missing"]) is None
     assert read_untrusted(root, ["d", "big.txt"], cap=10) == b"x" * 10
 
