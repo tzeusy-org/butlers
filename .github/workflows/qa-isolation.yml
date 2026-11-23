@@ -1,0 +1,105 @@
+name: QA isolation (k3d)
+# bu-ejow5p.11: proves the per-attempt investigator isolation on a real cluster (admission policy,
+# network policy, security context), not on a chart render. Path-filtered and not part of the
+# required `alls-green` fan-in: it must not add load to unrelated pull requests.
+on:
+  pull_request:
+    paths:
+      - src/butlers/core/qa/isolation_probe.py
+      - src/butlers/core/qa/isolation_verifier.py
+      - src/butlers/core/qa/investigator_job.py
+      - scripts/verify_qa_isolation.py
+      - deploy/helm/butlers/templates/qa-investigator.yaml
+      - deploy/helm/butlers/templates/networkpolicy.yaml
+      - deploy/helm/butlers/templates/tracker-egress.yaml
+      - deploy/helm/butlers/templates/egress-profiles.yaml
+      - deploy/egress-profiles.toml
+      - .github/workflows/qa-isolation.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: qa-isolation-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+env:
+  K3D_VERSION: v5.8.3
+  # Older than the dev cluster; ValidatingAdmissionPolicy is GA from 1.30.
+  K3S_IMAGE: rancher/k3s:v1.33.5-k3s1
+  CLUSTER: qa-isolation
+  NAMESPACE: butlers-dev
+jobs:
+  isolation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: Install k3d
+        run: |
+          base="https://github.com/k3d-io/k3d/releases/download/${K3D_VERSION}"
+          curl -fsSL -o k3d "${base}/k3d-linux-amd64"
+          curl -fsSL -o checksums.txt "${base}/checksums.txt"
+          grep " k3d-linux-amd64\$" checksums.txt | sed 's/k3d-linux-amd64/k3d/' | sha256sum -c -
+          sudo install -m 0755 k3d /usr/local/bin/k3d
+      - name: Create the cluster and a local registry
+        run: |
+          k3d registry create qa-registry.localhost --port 5111
+          k3d cluster create "${CLUSTER}" --image "${K3S_IMAGE}" \
+            --registry-use k3d-qa-registry.localhost:5111 --wait --timeout 180s
+          kubectl create namespace "${NAMESPACE}"
+          kubectl -n "${NAMESPACE}" create serviceaccount butlers-up
+      - name: Build the probe image and resolve its digest
+        run: |
+          # The probe is standard library only, so the image is python plus the probe module.
+          mkdir -p ctx/butlers/core/qa /tmp/ctx-unused
+          touch ctx/butlers/__init__.py ctx/butlers/core/__init__.py ctx/butlers/core/qa/__init__.py
+          cp src/butlers/core/qa/isolation_probe.py ctx/butlers/core/qa/
+          cat > ctx/Dockerfile <<'DOCKERFILE'
+          FROM python:3.12-slim
+          RUN mkdir /app /workspace && chmod 0777 /workspace
+          COPY butlers /usr/local/lib/python3.12/site-packages/butlers
+          DOCKERFILE
+          docker build -t localhost:5111/qa-probe:ci ctx
+          docker push localhost:5111/qa-probe:ci
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5111/qa-probe:ci | sed 's/.*@//')"
+          echo "DIGEST=${digest}" >> "${GITHUB_ENV}"
+          echo "IMAGE=k3d-qa-registry.localhost:5111/qa-probe@${digest}" >> "${GITHUB_ENV}"
+      - name: Render and apply the investigator machinery
+        run: |
+          docker run --rm -v "${PWD}/deploy/helm/butlers:/chart:ro" alpine/helm:3.17.3 \
+            template butlers /chart --namespace "${NAMESPACE}" \
+            -f /chart/values.yaml -f /chart/values.dev.yaml \
+            --set qaInvestigator.enabled=true \
+            --set "qaInvestigator.imageDigest=${DIGEST}" \
+            --set image.repository=k3d-qa-registry.localhost:5111/qa-probe \
+            --set image.tag=ci --set frontendImage.tag=ci \
+            --set egressProfiles.enabled=false --set egressPolicy.enabled=true \
+            --set trackerEgress.enabled=true --set 'trackerEgress.deniedCidrs={192.0.2.1/32}' \
+            --set connectors.telegram-user.enabled=false \
+            --set database.host=postgres.invalid \
+            --show-only templates/qa-investigator.yaml \
+            --show-only templates/networkpolicy.yaml \
+            --show-only templates/tracker-egress.yaml > rendered.yaml
+          kubectl apply -f rendered.yaml
+      - name: Verify isolation
+        run: |
+          api="$(kubectl get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
+          dns="$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')"
+          uv run python scripts/verify_qa_isolation.py run \
+            --namespace "${NAMESPACE}" --image "${IMAGE}" \
+            --refused-tcp "tracker=${api}:443" \
+            --reachable-tcp "dns=${dns}:53" \
+            --readable-path /workspace | tee receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-isolation-receipt
+          path: receipt.json
+          if-no-files-found: ignore
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          kubectl -n "${NAMESPACE}" get all,networkpolicy -o wide || true
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding || true
