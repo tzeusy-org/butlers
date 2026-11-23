@@ -139,6 +139,16 @@ dynamic = [
 ]
 
 
+[workloads.qa-investigator]
+summary = "bu-ejow5p.11 per-attempt QA investigator Job: cluster DNS only, no model route yet"
+# No gateway_port and no external host: the model path is a credential-injecting proxy
+# that does not exist yet, and a pod holding an API key would defeat the isolation
+# boundary. Until a reviewed change adds that route this pod can resolve names and reach
+# nothing, so a launched investigation fails closed.
+dynamic = [
+  { source = "ANTHROPIC_BASE_URL", reason = "Investigator template env name for the future credential-injecting model proxy: no destination is granted by this metadata, and no route exists until a reviewed profile change adds one" },
+]
+
 [workloads.dashboard-api]
 summary = "Dashboard API, its migrations and the runtime CLI login sandbox"
 gateway_port = 3104

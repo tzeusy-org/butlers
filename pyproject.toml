@@ -81,6 +81,8 @@ dev = [
     "import-linter>=2.15",
     "pytest-split>=0.11.0",
     "pyright==1.1.414",
+    # Evaluates the chart's ValidatingAdmissionPolicy CEL in tests (bu-ejow5p.11).
+    "cel-python==0.5.0",
 ]
 
 [project.scripts]
