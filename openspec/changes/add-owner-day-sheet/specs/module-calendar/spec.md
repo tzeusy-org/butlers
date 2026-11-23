@@ -14,7 +14,9 @@ event (out of office, working location), and the owner has not declined it. A tr
 be omitted. Items SHALL be in start order, all-day items first. A tentative event SHALL be listed and
 marked tentative; a butler-lane or butler-generated event SHALL be listed as `butler`. Only attended
 items, clipped to the day, SHALL count toward `load.attended_minutes`, and overlaps SHALL count once.
-Free gaps SHALL be computed inside the day window against attended, tentative and butler items.
+Free gaps SHALL be computed inside the day window against attended, tentative and butler items,
+including opaque all-day items, which block availability but add no meeting load; the longest free
+window SHALL be ranked by elapsed time, so a daylight-saving day is not mis-ranked.
 
 The sheet's `freshness.state` SHALL be `unreadable` when any source could not be read or when no source
 is known, `stale` when every source was read but one's last sync is older than its staleness bound,

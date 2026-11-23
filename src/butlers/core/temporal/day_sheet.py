@@ -272,11 +272,13 @@ def build_day_sheet(
         for o, start, end, kind in entries
     ]
 
-    def clipped(kinds: set[str]) -> list[tuple[datetime, datetime]]:
+    def clipped(kinds: set[str], *, all_day: bool = False) -> list[tuple[datetime, datetime]]:
         return _merge(
             (max(start, day_start), min(end, day_end))
             for o, start, end, kind in entries
-            if kind in kinds and not o.all_day and min(end, day_end) > max(start, day_start)
+            if kind in kinds
+            and (all_day or not o.all_day)
+            and min(end, day_end) > max(start, day_start)
         )
 
     attended = clipped({"attended"})
@@ -287,7 +289,9 @@ def build_day_sheet(
     win_end = min(_utc(datetime.combine(local_date, window[1], tzinfo=tz)), day_end)
     gaps: list[Gap] = []
     cursor = win_start
-    for start, end in clipped({"attended", "tentative", "butler"}):
+    # An opaque all-day item (a transparent one is not listed at all) holds the whole day, so it
+    # blocks availability even though it adds no meeting load.
+    for start, end in clipped({"attended", "tentative", "butler"}, all_day=True):
         if end <= cursor:
             continue
         if start > cursor and min(start, win_end) - cursor >= MIN_GAP:
@@ -297,7 +301,12 @@ def build_day_sheet(
             break
     if win_end - cursor >= MIN_GAP:
         gaps.append(Gap(cursor.astimezone(tz), win_end.astimezone(tz)))
-    longest = max(gaps, key=lambda g: (g.end - g.start, -g.start.timestamp()), default=None)
+    # Elapsed time, not wall-clock subtraction: a fall-back day's 00:00 to 02:15 is 195 minutes.
+    longest = max(
+        gaps,
+        key=lambda g: (g.end.timestamp() - g.start.timestamp(), -g.start.timestamp()),
+        default=None,
+    )
 
     freshness = _freshness(sources, now)
     if freshness.state == "unreadable":

@@ -327,3 +327,63 @@ def test_unreadable_source_names_are_cleaned_and_a_distant_since_shows_its_date(
 
     assert "a[@]b[.]example" in text
     assert "since 21 Nov 23:00" in text  # 15:00 UTC two days earlier
+
+
+def test_opaque_all_day_hold_blocks_free_gaps_without_meeting_load() -> None:
+    hold = occ(
+        "offsite",
+        at(0),
+        at(0, day=date(2026, 11, 25)),
+        all_day=True,
+        metadata={"transparency": "opaque", **self_attendee("accepted")},
+    )
+    meeting = occ("meeting", at(9), at(10))
+    result = sheet([hold, meeting])
+
+    assert [(i.ref, i.kind) for i in result.items] == [
+        ("offsite", "attended"),
+        ("meeting", "attended"),
+    ]
+    assert result.load.attended_minutes == 60
+    assert result.gaps == []
+    assert "Longest free window" not in render_day_sheet_text(result)
+
+
+def test_longest_gap_is_ranked_by_elapsed_duration_through_fall_back() -> None:
+    zone = "America/New_York"
+    tz = ZoneInfo(zone)
+    local = date(2026, 11, 1)
+    start = datetime.combine(local, time(2, 15), tzinfo=tz)
+    end = datetime.combine(local, time(4), tzinfo=tz)
+    anchor = datetime.combine(local, time(0), tzinfo=tz)
+
+    result = build_day_sheet(
+        [occ("occupied", start, end)],
+        [SourceRead("general", True, as_of=anchor)],
+        zone=zone,
+        local_date=local,
+        now=anchor,
+        window=(time(0), time(7)),
+    )
+
+    assert len(result.gaps) == 2
+    assert [
+        (g.end.astimezone(UTC) - g.start.astimezone(UTC)).total_seconds() // 60 for g in result.gaps
+    ] == [
+        195,
+        180,
+    ]
+    assert result.longest_gap == result.gaps[0]
+
+
+def test_a_transparent_all_day_item_does_not_block_availability() -> None:
+    free = occ(
+        "birthday",
+        at(0),
+        at(0, day=date(2026, 11, 25)),
+        all_day=True,
+        metadata={"transparency": "transparent"},
+    )
+    result = sheet([free])
+    assert result.items == []
+    assert result.gaps
