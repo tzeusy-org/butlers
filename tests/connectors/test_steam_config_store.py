@@ -8,18 +8,9 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-
-def _make_pool(conn_mock: Any) -> MagicMock:
-    """Build a pool mock whose acquire() returns an async context manager."""
-    pool = MagicMock()
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=conn_mock)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=acquire_ctx)
-    return pool
-
+from butlers.testing.fake_pool import fake_pool
 
 # ---------------------------------------------------------------------------
 # save_connector_settings unit tests
@@ -37,9 +28,7 @@ async def test_save_connector_settings_returns_merged_dict() -> None:
 
     merged = {"account_rescan_s": 120, "heartbeat_interval_s": 30}
 
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": merged})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"settings": merged})
 
     result = await save_connector_settings(pool, "steam", "steam:config", {"account_rescan_s": 120})
     assert result["account_rescan_s"] == 120
@@ -50,9 +39,7 @@ async def test_save_connector_settings_returns_empty_on_none_row() -> None:
     """save_connector_settings returns empty dict when the row returns None settings."""
     from butlers.connectors.cursor_store import save_connector_settings
 
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": None})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"settings": None})
 
     result = await save_connector_settings(pool, "steam", "steam:config", {"foo": 1})
     assert result == {}
@@ -70,14 +57,12 @@ async def test_save_connector_settings_executes_upsert_sql() -> None:
 
     settings_in = {"account_rescan_s": 60}
 
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": settings_in})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"settings": settings_in})
 
     await save_connector_settings(pool, "steam", "steam:config", settings_in)
 
-    conn_mock.fetchrow.assert_called_once()
-    call_args = conn_mock.fetchrow.call_args[0]
+    pool.connection.fetchrow.assert_called_once()
+    call_args = pool.connection.fetchrow.call_args[0]
     # First param is SQL; second/third are connector_type/endpoint_identity
     assert call_args[1] == "steam"
     assert call_args[2] == "steam:config"
@@ -93,10 +78,8 @@ async def test_save_connector_settings_handles_dict_settings() -> None:
 
     merged_dict = {"max_tracked_games": 5}
 
-    conn_mock = AsyncMock()
     # Return dict (asyncpg may decode JSONB to dict directly)
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": merged_dict})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"settings": merged_dict})
 
     result = await save_connector_settings(pool, "steam", "steam:config", merged_dict)
     assert result["max_tracked_games"] == 5

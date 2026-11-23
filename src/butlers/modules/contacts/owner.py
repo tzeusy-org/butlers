@@ -7,6 +7,16 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from butlers.core.service_plane import client as relay_client
+from butlers.core.service_plane.messenger_delivery import service_plane_auth_enabled
+from butlers.core.service_plane.registry import CONTACTS_REPORT_CHANNEL, CONTACTS_RESOLVE_CHANNEL
+
+#: The named relay that replaces each generic route to Relationship.
+_RELAYS = {
+    "contacts_resolve_channel": CONTACTS_RESOLVE_CHANNEL,
+    "contacts_report_channel": CONTACTS_REPORT_CHANNEL,
+}
+
 
 class ContactsOwnerUnavailable(RuntimeError):
     """A required owning operation did not return a complete usable result."""
@@ -33,20 +43,25 @@ class ContactsOwner:
         if client is None or not isinstance(source_butler, str) or not source_butler:
             raise ContactsOwnerUnavailable("contacts owner unavailable")
         try:
-            response = await asyncio.wait_for(
-                client.call_tool(
-                    "route",
-                    {
-                        "target_butler": "relationship",
-                        "tool_name": tool,
-                        "args": args,
-                        "source_butler": source_butler,
-                    },
-                ),
-                timeout=30,
-            )
-            raw = response.data
-            if response.is_error or not isinstance(raw, dict) or raw.get("error"):
+            if service_plane_auth_enabled():
+                raw = await self._call_relay(client, source_butler, tool, args)
+            else:
+                response = await asyncio.wait_for(
+                    client.call_tool(
+                        "route",
+                        {
+                            "target_butler": "relationship",
+                            "tool_name": tool,
+                            "args": args,
+                            "source_butler": source_butler,
+                        },
+                    ),
+                    timeout=30,
+                )
+                if response.is_error:
+                    raise ContactsOwnerUnavailable("contacts owner unavailable")
+                raw = response.data
+            if not isinstance(raw, dict) or raw.get("error"):
                 raise ContactsOwnerUnavailable("contacts owner unavailable")
             result = raw.get("result")
             if not isinstance(result, dict) or result.get("error"):
@@ -56,6 +71,27 @@ class ContactsOwner:
             # Neither a transport error nor a possible-commit timeout proves absence.
             # Retain no exception operands or new automatic retry.
             raise ContactsOwnerUnavailable("contacts owner unavailable") from None
+
+    @staticmethod
+    async def _call_relay(client: Any, source_butler: str, tool: str, args: dict[str, Any]) -> Any:
+        """The ``contacts.*`` named relay (RFC 0038 D7, bu-2c1g7v).
+
+        Switchboard authenticates this workload and admits only Contacts
+        daemons. The reply is Switchboard's route envelope, settled exactly as
+        the legacy route reply; a refusal is unavailability like any other.
+        """
+        switchboard_url = relay_client.configured_switchboard_url(client)
+        if switchboard_url is None:
+            raise ContactsOwnerUnavailable("contacts owner unavailable")
+        return await asyncio.wait_for(
+            relay_client.call_relay(
+                _RELAYS[tool],
+                args,
+                daemon=source_butler,
+                switchboard_url=switchboard_url,
+            ),
+            timeout=30,
+        )
 
     async def lookup(self, channel_type: str, value: str) -> uuid.UUID | None:
         request_id = str(uuid.uuid4())

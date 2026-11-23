@@ -9,6 +9,7 @@ PostgreSQL, no network, no real LLM call required.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from typing import Any
 from unittest.mock import AsyncMock
@@ -18,6 +19,7 @@ import pytest
 from butlers.chronicler.flags import FLAG_FEEDER_DARK, FLAG_SLEEP_MISSING
 from butlers.chronicler.models import DailyRollup, DailyRollupFlag
 from butlers.chronicler.narration import (
+    _SYSTEM_PROMPT,
     build_narration_prompt,
     narrate_daily_rollup,
     narration_enabled,
@@ -38,33 +40,44 @@ _DAY_END = datetime(2026, 7, 1, 17, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
+_EATING_DARK = [{"lane": "eat", "state": "not_captured", "since": "2026-08-13"}]
+
+
 def test_skips_when_no_rollup_rows() -> None:
-    skip, reason = should_skip_narration([], [])
+    skip, reason = should_skip_narration([], [], uncaptured=[])
     assert skip is True
     assert reason == "no_rollup_data"
 
 
-def test_skips_when_feeder_dark_flag_present() -> None:
-    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100)]
+def test_feeder_dark_flag_alone_no_longer_skips_the_whole_day() -> None:
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100),
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+    ]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_FEEDER_DARK)]
-    skip, reason = should_skip_narration(rollups, flags)
-    assert skip is True
-    assert reason == "feeder_dark"
+    assert should_skip_narration(rollups, flags, uncaptured=_EATING_DARK) == (False, None)
+
+
+def test_skips_only_when_every_rolled_up_lane_is_uncaptured() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0)]
+    skip, reason = should_skip_narration(rollups, [], uncaptured=_EATING_DARK)
+    assert (skip, reason) == (True, "all_lanes_dark")
+
+
+def test_unreadable_availability_skips_as_unknown() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    assert should_skip_narration(rollups, [], uncaptured=None) == (True, "availability_unknown")
 
 
 def test_does_not_skip_healthy_day_with_other_flags() -> None:
     rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=0)]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_SLEEP_MISSING)]
-    skip, reason = should_skip_narration(rollups, flags)
-    assert skip is False
-    assert reason is None
+    assert should_skip_narration(rollups, flags, uncaptured=[]) == (False, None)
 
 
 def test_does_not_skip_healthy_day_with_no_flags() -> None:
     rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
-    skip, reason = should_skip_narration(rollups, [])
-    assert skip is False
-    assert reason is None
+    assert should_skip_narration(rollups, [], uncaptured=[]) == (False, None)
 
 
 # ---------------------------------------------------------------------------
@@ -89,24 +102,24 @@ def _episode(
 def test_selects_top_n_titles_by_duration_per_lane() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="short session",
             start=_DAY_START,
             end=_DAY_START.replace(hour=18),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="long session",
             start=_DAY_START.replace(hour=19),
             end=_DAY_START.replace(hour=23),
         ),
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="third session",
             start=_DAY_START.replace(hour=23),
@@ -127,8 +140,8 @@ def test_selects_top_n_titles_by_duration_per_lane() -> None:
 def test_untitled_episodes_are_excluded() -> None:
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="",
             start=_DAY_START,
@@ -137,6 +150,10 @@ def test_untitled_episodes_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    titled = [{**episodes[0], "title": "counted Play"}]
+    assert select_top_episode_titles(titled, day_start_utc=_DAY_START, day_end_utc=_DAY_END) == {
+        "play": ["counted Play"]
+    }
 
 
 def test_episodes_with_no_lane_are_excluded() -> None:
@@ -159,8 +176,8 @@ def test_episodes_outside_window_are_excluded() -> None:
     outside_end = datetime(2026, 6, 1, 1, 0, tzinfo=UTC)
     episodes = [
         _episode(
-            source_name="spotify.session_summary",
-            episode_type="listening_episode",
+            source_name="chronicler.situation_inferred",
+            episode_type="play_block",
             layer="activity",
             title="way before the window",
             start=outside_start,
@@ -169,6 +186,9 @@ def test_episodes_outside_window_are_excluded() -> None:
     ]
     result = select_top_episode_titles(episodes, day_start_utc=_DAY_START, day_end_utc=_DAY_END)
     assert result == {}
+    assert select_top_episode_titles(
+        episodes, day_start_utc=outside_start, day_end_utc=outside_end
+    ) == {"play": ["way before the window"]}
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +256,81 @@ def test_parse_narration_response_drops_empty_label_values() -> None:
     assert result == ("fine", {})
 
 
+def test_prompt_lists_uncaptured_lanes_and_omits_them_when_none() -> None:
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    kwargs = dict(local_date=_LOCAL_DATE, rollup_rows=rollups, flag_rows=[], top_episode_titles={})
+    with_lanes = json.loads(build_narration_prompt(**kwargs, uncaptured=_EATING_DARK))
+    assert with_lanes["uncaptured_lanes"] == _EATING_DARK
+    assert json.loads(build_narration_prompt(**kwargs, uncaptured=[]))["uncaptured_lanes"] == []
+
+
+def test_system_prompt_forbids_describing_uncaptured_lanes() -> None:
+    assert "uncaptured_lanes" in _SYSTEM_PROMPT
+    assert "absence" in _SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The owner skipped lunch.",
+        "No meals today.",
+        "The day went without dinner.",
+        "Breakfast didn't happen.",
+        "You didn\u2019t eat much, but work went well.",
+        "Meals skipped.",
+    ],
+)
+def test_parse_rejects_absence_claim_about_uncaptured_lane(summary: str) -> None:
+    raw = json.dumps({"day_summary": summary, "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_EATING_DARK) is None
+
+
+def test_parse_rejects_absence_claim_inside_a_flag_label() -> None:
+    raw = json.dumps({"day_summary": "Fine.", "flag_labels": {"sleep_missing": "No meals today."}})
+    assert (
+        parse_narration_response(raw, known_flag_types=["sleep_missing"], uncaptured=_EATING_DARK)
+        is None
+    )
+
+
+_DARK = [{"lane": lane, "state": "dark", "since": None} for lane in ("eat", "work", "rest")]
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Meals were not captured.",
+        "No meals were logged.",
+        "Meal data is missing for today.",
+        "Lunch wasn\u2019t recorded.",
+        "There is no data on work today.",
+        "You didn't sleep before a work day, and slept in later.",
+        "Nothing else happened for the rest of the day.",
+        "Not a lot of movement; the rest of the day was at home.",
+    ],
+)
+def test_parse_accepts_honest_capture_wording_and_unrelated_negations(summary: str) -> None:
+    raw = json.dumps({"day_summary": summary, "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_DARK) == (summary, {})
+
+
+def test_parse_allows_other_lane_negations_and_positive_mentions() -> None:
+    raw = json.dumps(
+        {"day_summary": "No exercise was recorded; work dominated.", "flag_labels": {}}
+    )
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_EATING_DARK) == (
+        "No exercise was recorded; work dominated.",
+        {},
+    )
+    positive = json.dumps({"day_summary": "A long lunch meeting ran on.", "flag_labels": {}})
+    assert parse_narration_response(positive, known_flag_types=[], uncaptured=_EATING_DARK)
+
+
+def test_parse_without_uncaptured_lanes_is_unchanged() -> None:
+    raw = json.dumps({"day_summary": "No meals were logged.", "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[]) is not None
+
+
 # ---------------------------------------------------------------------------
 # narration_enabled (owner toggle)
 # ---------------------------------------------------------------------------
@@ -271,7 +366,30 @@ class _FakeDispatcher:
         return self._response
 
 
-def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str, Any]:
+class _AsyncContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, *_args):
+        return None
+
+
+class _NarrationConnection:
+    def transaction(self):
+        return _AsyncContext(self)
+
+
+class _NarrationPool:
+    def acquire(self):
+        return _AsyncContext(_NarrationConnection())
+
+
+def _patch_common(
+    monkeypatch, *, rollups, flags, top_episodes=None, uncaptured=()
+) -> dict[str, Any]:
     written: dict[str, Any] = {"day_narrative": None, "flag_narratives": {}}
 
     async def _fake_list_daily_rollups(pool, *, local_date):
@@ -291,6 +409,16 @@ def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str
         written["flag_narratives"][flag_type] = narrative
         return DailyRollupFlag(local_date=local_date, flag_type=flag_type, narrative=narrative)
 
+    async def _fake_capture_fact_write_token(_pool, **_kwargs):
+        return object()
+
+    async def _allow_fact_write(_conn):
+        return None
+
+    async def _fake_load_uncaptured(pool, *, local_date, timezone):
+        return None if uncaptured is None else list(uncaptured)
+
+    monkeypatch.setattr("butlers.chronicler.narration._load_uncaptured", _fake_load_uncaptured)
     monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollups", _fake_list_daily_rollups)
     monkeypatch.setattr(
         "butlers.chronicler.narration.list_daily_rollup_flags", _fake_list_daily_rollup_flags
@@ -304,12 +432,18 @@ def _patch_common(monkeypatch, *, rollups, flags, top_episodes=None) -> dict[str
     monkeypatch.setattr(
         "butlers.chronicler.narration.set_daily_rollup_flag_narrative", _fake_set_flag_narrative
     )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.capture_fact_write_token", _fake_capture_fact_write_token
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.make_fact_write_guard", lambda _token: _allow_fact_write
+    )
     return written
 
 
 async def test_narrate_daily_rollup_disabled(monkeypatch) -> None:
     monkeypatch.setenv("CHRONICLER_NARRATION_ENABLED", "false")
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
     assert result == {"local_date": "2026-07-05", "status": "disabled"}
 
 
@@ -317,20 +451,72 @@ async def test_narrate_daily_rollup_skips_no_rollup_data(monkeypatch) -> None:
     monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
     _patch_common(monkeypatch, rollups=[], flags=[])
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result == {"local_date": "2026-07-05", "status": "skipped_no_rollup_data"}
 
 
-async def test_narrate_daily_rollup_skips_feeder_dark(monkeypatch) -> None:
+async def test_narrate_feeder_dark_day_with_available_lanes_is_narrated(monkeypatch) -> None:
     monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
-    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=0)]
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+        DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0),
+    ]
     flags = [DailyRollupFlag(local_date=_LOCAL_DATE, flag_type=FLAG_FEEDER_DARK)]
-    _patch_common(monkeypatch, rollups=rollups, flags=flags)
+    written = _patch_common(monkeypatch, rollups=rollups, flags=flags, uncaptured=_EATING_DARK)
+    prompts: list[str] = []
 
+    class _Capturing(_FakeDispatcher):
+        async def call(self, prompt: str, system_prompt: str = "") -> str:
+            prompts.append(prompt)
+            return await super().call(prompt, system_prompt)
+
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *a, **kw: _Capturing(
+            response='{"day_summary": "Work dominated.", "flag_labels": {}}'
+        ),
+    )
+
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
+
+    assert result["status"] == "labeled"
+    assert written["day_narrative"] == "Work dominated."
+    assert json.loads(prompts[0])["uncaptured_lanes"] == _EATING_DARK
+
+
+async def test_narrate_skips_when_every_lane_uncaptured(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0)]
+    _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=_EATING_DARK)
     result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    assert result == {"local_date": "2026-07-05", "status": "skipped_all_lanes_dark"}
 
-    assert result == {"local_date": "2026-07-05", "status": "skipped_feeder_dark"}
+
+async def test_narrate_skips_when_availability_snapshot_unreadable(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=500)]
+    _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=None)
+    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    assert result == {"local_date": "2026-07-05", "status": "skipped_availability_unknown"}
+
+
+async def test_narrate_rejects_absence_claim_about_uncaptured_lane(monkeypatch) -> None:
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    rollups = [
+        DailyRollup(local_date=_LOCAL_DATE, lane="work", seconds=900),
+        DailyRollup(local_date=_LOCAL_DATE, lane="eat", seconds=0),
+    ]
+    written = _patch_common(monkeypatch, rollups=rollups, flags=[], uncaptured=_EATING_DARK)
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *a, **kw: _FakeDispatcher(
+            response='{"day_summary": "No meals today.", "flag_labels": {}}'
+        ),
+    )
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
+    assert result["status"] == "llm_output_invalid"
+    assert written["day_narrative"] is None
 
 
 async def test_narrate_daily_rollup_llm_unavailable_on_exception(monkeypatch) -> None:
@@ -377,7 +563,7 @@ async def test_narrate_daily_rollup_labels_successfully(monkeypatch) -> None:
         lambda *a, **kw: _FakeDispatcher(response=response),
     )
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result["status"] == "labeled"
     assert result["day_summary_written"] is True
@@ -399,9 +585,88 @@ async def test_narrate_daily_rollup_never_writes_unknown_flag_label(monkeypatch)
         lambda *a, **kw: _FakeDispatcher(response=response),
     )
 
-    result = await narrate_daily_rollup(AsyncMock(), local_date=_LOCAL_DATE)
+    result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)
 
     assert result["status"] == "labeled"
     assert result["flags_labeled"] == []
     assert written["flag_narratives"] == {}
     assert written["day_narrative"] == "Busy day."
+
+
+async def test_narration_refuses_to_publish_after_source_generation_changes(monkeypatch) -> None:
+    from butlers.chronicler.history_repair import RepairAdmissionError
+
+    monkeypatch.delenv("CHRONICLER_NARRATION_ENABLED", raising=False)
+    events: list[str] = []
+    rollups = [DailyRollup(local_date=_LOCAL_DATE, lane="sleep", seconds=100)]
+    written = _patch_common(monkeypatch, rollups=rollups, flags=[])
+
+    async def capture(_pool, **_kwargs):
+        events.append("capture")
+        return object()
+
+    async def guard(_conn):
+        events.append("guard")
+        raise RepairAdmissionError("daily repair state changed")
+
+    async def list_rollups(_pool, *, local_date):
+        events.append("rollups")
+        return rollups
+
+    async def list_flags(_pool, *, local_date):
+        events.append("flags")
+        return []
+
+    class Context:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *_args):
+            return None
+
+    class Connection:
+        def transaction(self):
+            return Context(self)
+
+    class Pool:
+        def acquire(self):
+            return Context(Connection())
+
+    async def call(_prompt, system_prompt=""):
+        events.append("llm")
+        return '{"day_summary":"A quiet day.","flag_labels":{}}'
+
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.capture_fact_write_token", capture, raising=False
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.make_fact_write_guard", lambda _token: guard, raising=False
+    )
+    monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollups", list_rollups)
+    monkeypatch.setattr("butlers.chronicler.narration.list_daily_rollup_flags", list_flags)
+    monkeypatch.setattr(
+        "butlers.chronicler.narration._fetch_top_episode_titles", AsyncMock(return_value={})
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.narration.DiscretionDispatcher",
+        lambda *args, **kwargs: type("Dispatcher", (), {"call": staticmethod(call)})(),
+    )
+
+    result = await narrate_daily_rollup(Pool(), local_date=_LOCAL_DATE)
+
+    assert result == {
+        "local_date": _LOCAL_DATE.isoformat(),
+        "status": "waiting_repair",
+        "reason": "daily repair state changed",
+    }
+    assert (
+        events.index("capture")
+        < events.index("rollups")
+        < events.index("llm")
+        < events.index("guard")
+    )
+    assert written["day_narrative"] is None
+    assert written["flag_narratives"] == {}

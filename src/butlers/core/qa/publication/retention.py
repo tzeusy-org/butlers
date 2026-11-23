@@ -89,16 +89,28 @@ def decode_objects(payload: bytes) -> tuple[ExportedObject, ...]:
     return tuple(objects)
 
 
-async def retain_export(pool: Any, attempt_id: uuid.UUID, export: SealedExport) -> None:
-    """Persist ``export`` for ``attempt_id`` once; raise :class:`PublicationRefused` otherwise."""
+async def retain_export(
+    pool: Any,
+    attempt_id: uuid.UUID,
+    export: SealedExport,
+    *,
+    sealed_before_isolation: bool = True,
+) -> None:
+    """Persist ``export`` for ``attempt_id`` once; raise :class:`PublicationRefused` otherwise.
+
+    ``sealed_before_isolation`` is recorded with the row and cannot change afterwards. It
+    defaults to true: an export is flagged unless the caller proves the investigation ran in a
+    per-attempt Job. A publisher must require a per-PR owner approval for a flagged export.
+    """
     export.verify()
     try:
         stored = await pool.fetchrow(
             """
             WITH inserted AS (
                 INSERT INTO public.qa_publication_exports
-                    (attempt_id, base_sha, head_sha, commits, objects, digest)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                    (attempt_id, base_sha, head_sha, commits, objects, digest,
+                     sealed_before_isolation)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (attempt_id) DO NOTHING
                 RETURNING digest, false AS pruned
             )
@@ -114,6 +126,7 @@ async def retain_export(pool: Any, attempt_id: uuid.UUID, export: SealedExport) 
             list(export.commits),
             encode_objects(export.objects),
             export.digest,
+            sealed_before_isolation,
         )
     except asyncpg.ForeignKeyViolationError as exc:
         raise PublicationRefused("unknown_attempt") from exc

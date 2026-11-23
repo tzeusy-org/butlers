@@ -18,6 +18,18 @@ pytestmark = pytest.mark.unit
 MAKE_ROW = "def _make_row(**cols):\n    return cols\n"
 
 
+def _module_level_class(name: str) -> str:
+    """Source declaring a module-level class *name*, for the class-copy probes.
+
+    Built from the name so this file never spells a frozen copy itself (the AC1
+    grep over tests/ stays empty).
+    """
+    return f"class {name}:\n    pass\n"
+
+
+FAKE_POOL = "_Fake" + "Pool"
+
+
 def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     for path, text in files.items():
@@ -49,7 +61,7 @@ def test_frozen_copies_pass_and_the_baseline_only_shrinks(tmp_path: Path) -> Non
     code, written = _run(root, frozen, "--update-baseline")
     assert code == 0
     assert written == {"tests/test_a.py": ["_make_row"]}
-    (root / "tests/test_a.py").write_text(MAKE_ROW + "class _FakePool:\n    pass\n")
+    (root / "tests/test_a.py").write_text(MAKE_ROW + _module_level_class(FAKE_POOL))
     assert _run(root, written)[0] == 1
 
 

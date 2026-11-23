@@ -447,7 +447,9 @@ async def test_feeder_dark_suppresses_sleep_missing(monkeypatch) -> None:
     upserted_by_type = {u["flag_type"]: u for u in fake.upserted}
     assert set(upserted_by_type) == {FLAG_FEEDER_DARK}
     assert upserted_by_type[FLAG_FEEDER_DARK]["detail"] == {
-        "dark_sources": ["google_health.measurements"]
+        "dark_sources": ["google_health.measurements"],
+        "retired_sources": [],
+        "configured_absent_sources": [],
     }
     # sleep_missing must be actively deleted (reconciled away), not just
     # never-upserted, in case a prior run had flagged it.
@@ -616,6 +618,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_sessions": "core.sessions",
     "chronicler_project_spotify": "spotify.session_summary",
     "chronicler_project_steam": "steam.play_history",
+    "chronicler_project_steam_status": "steam.status_history",
     "chronicler_project_owntracks": "owntracks.points",
     "chronicler_project_owntracks_place_cluster": "owntracks.place_cluster",
     "chronicler_project_owntracks_ssid": "owntracks.ssid_presence",
@@ -629,6 +632,7 @@ _FLAG_DEPENDENT_JOB_TO_SOURCE: dict[str, str] = {
     "chronicler_project_comms": "comms.message_bursts",
     "chronicler_project_activitywatch": "activitywatch.window",
     "chronicler_project_occupation_inferred": "chronicler.occupation_inferred",
+    "chronicler_project_situation_inferred": "chronicler.situation_inferred",
 }
 
 

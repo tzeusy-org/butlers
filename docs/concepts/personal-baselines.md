@@ -28,7 +28,39 @@ broker refuses that category without evidence. The wording reports the deviation
 own range and the days it rests on, without interpretation or advice. The job logs no measured
 values.
 
-Home energy and Finance spend are later slices; see
+## Finance category spend (slice 4)
+
+Finance judges a category's "unusual spending" against a weekly personal baseline per category and
+currency (`spend.category:<category>:<CCY>`; `src/butlers/jobs/finance_spend_baselines.py`). The daily
+`anomaly-insight-scan` job stores the median and MAD band of up to 26 complete owner-local weeks
+(Monday start) in the finance schema's `metric_baselines`; a week with no spend is not a sample, and
+a category needs 4 weeks of spend before it has a band. The `anomaly_scan` tool and the daily
+briefing score the spend of the week so far against the stored band and report only an `above` state
+with the usual range and the weeks it is drawn from; thin, stale or missing history is never called
+an anomaly, and nothing ever reports spending as normal or within range. A file import (`import_transactions`) of 50 or more
+transactions refreshes the same bands right away, so imported history does not wait for the next
+daily scan. Finance does not use the expected-signal measurability check: a category's weeks mix
+producers, and no consumer reads a silent producer as normal, since only above-band claims are
+surfaced and missing rows can only suppress one. Coverage, the 4-week floor and the staleness rule
+carry the honesty instead. Currencies are never mixed. Merchant amount anomalies and new-merchant
+detection keep their inline computation, and the finance butler's own system-authored
+`spending_baseline` memory facts are retracted (rows kept) by the same job. Rows with no recorded
+authority and owner-routed rows stay active by design.
+
+## Chronicles lane balance (slice 5)
+
+The Chronicler `/balance` and `/trends` endpoints score each lane's day against the same scorer
+(`src/butlers/chronicler/balance.py`). The band is the median and MAD of the lane's per-day seconds over
+the lookback days before the scored day (28 by default); a materialized rollup day is an observed day,
+and a lane with fewer than seven of them reads `insufficient_history` with no center and no anomaly.
+The band is the median plus or minus three scaled MADs, but never narrower than one hour on each side
+(`LANE_MIN_BAND_HALF_WIDTH_SECONDS`, the same for every lane), so a lane that is flat or short does not
+flag minute-level noise. A lookback also needs a quarter of its days materialized before it is scored.
+The center is returned as `baseline_seconds`, with `state`, `band_low`, `band_high` and
+`baseline_sample_days` beside it. It computes per request and persists nothing. Session spend is not
+scored.
+
+Home energy is a later slice; see
 `openspec/changes/add-personal-baselines/proposal.md`.
 
 

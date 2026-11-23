@@ -56,7 +56,7 @@ async def test_exact_prompt_binding_owner_f3_and_authoritative_content(ledger):
                 original.goal_id,
                 delivery=reference,
                 entity=entity,
-                channel="telegram",
+                channel="telegram_bot",
                 accepts=True,
                 expiry=datetime.now(UTC) + timedelta(minutes=9),
                 args_digest=effect_digest("test", prompt),
@@ -130,7 +130,7 @@ async def test_nonowner_and_timeout_never_become_owner(ledger):
             original.goal_id,
             delivery=reference,
             entity=entity,
-            channel="telegram",
+            channel="telegram_bot",
             accepts=True,
             expiry=datetime.now(UTC) + timedelta(minutes=9),
             args_digest=effect_digest("test", prompt),
@@ -193,7 +193,7 @@ async def test_quoted_card_owner_answer_monotonically_exposes_goal(ledger):
             original.goal_id,
             delivery=reference,
             entity=entity,
-            channel="telegram",
+            channel="telegram_bot",
             accepts=True,
             expiry=datetime.now(UTC) + timedelta(minutes=9),
             args_digest=effect_digest("test", prompt),
@@ -218,3 +218,39 @@ async def test_quoted_card_owner_answer_monotonically_exposes_goal(ledger):
         assert await admin.fetchval(
             "SELECT exposed FROM switchboard.goals WHERE id=$1", original.goal_id
         )
+
+
+async def test_a_broker_recorded_prompt_validates_only_in_the_ingress_channel_vocabulary(ledger):
+    """The broker records ``telegram_bot`` (what an inbound reply carries); ``telegram`` is stale."""
+    admin, runtime = ledger
+    original = await admit(runtime, Evidence("message", "test", owner=True))
+    entity = uuid4()
+    prompt = ConfirmPrompt(
+        "Which?",
+        (ConfirmOption("a", "A"), ConfirmOption("b", "B")),
+        Recipient(entity, "123", "100", False),
+    )
+    adapter = ConfirmAdmission(runtime, catalog=Catalogs())
+    results = {}
+    for channel in ("telegram_bot", "telegram"):
+        reference = str(uuid4())
+        await effect(
+            admin,
+            original.goal_id,
+            delivery=reference,
+            entity=entity,
+            channel=channel,
+            accepts=True,
+            expiry=datetime.now(UTC) + timedelta(minutes=9),
+            args_digest=effect_digest("test", prompt),
+            status="dispatched",
+        )
+        async with admin.acquire() as conn:
+            try:
+                results[channel] = await adapter.validate_prompt(
+                    "test", prompt, reference, connection=conn
+                )
+            except ValueError as exc:
+                results[channel] = str(exc)
+    assert isinstance(results["telegram_bot"], datetime)
+    assert results["telegram"] == "verified accepting prompt delivery required"

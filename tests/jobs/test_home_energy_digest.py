@@ -7,67 +7,44 @@ _build_digest_message, run_energy_digest, and daemon registry.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors.home_assistant_statistics import HAStatisticsError
+from butlers.home_assistant_client import HAStatisticsError
 from butlers.jobs.home import (
     _build_digest_message,
     _compute_device_totals,
+    _discover_energy_sensors,
     _fetch_weekly_statistics,
     _is_energy_entity,
     detect_anomalies,
     run_energy_digest,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records, row
 
 pytestmark = pytest.mark.unit
 
 
-def _make_pool(
-    *,
-    snapshot_count=5,
-    snapshot_rows=None,
-    state_rows=None,
-    facts_rows=None,
-    ha_status="healthy",
-) -> Any:
-    pool = MagicMock()
+def _energy_pool(
+    *, snapshot_count: int = 5, snapshot_rows: list[dict] | None = None, ha_status: str = "healthy"
+) -> FakePool:
+    """A home pool for one digest run, answering the job's reads in order.
 
-    async def _fetchval(query, *args, **kwargs):
-        count_q = "count(*)" in query.lower() and "ha_entity_snapshot" in query.lower()
-        return snapshot_count if count_q else None
-
-    async def _fetch(query, *args, **kwargs):
-        q = query.lower()
-        if "ha_entity_snapshot" in q:
-            return [r for r in (snapshot_rows or [])]
-        if "facts" in q and "energy_baseline" in q:
-            return [r for r in (facts_rows or [])]
-        return []
-
-    async def _fetchrow(query, *args, **kwargs):
-        q = query.lower()
-        if "ha_source_health" in q:
-            if ha_status is None:
-                return None
-            return {
-                "status": ha_status,
-                "last_success_at": datetime.now(UTC) if ha_status == "healthy" else None,
-                "lease_current": ha_status == "healthy",
-            }
-        if "state" in q and "key" in q and args:
-            for row in state_rows or []:
-                if row.get("key") == args[0]:
-                    return row
-        return None
-
-    pool.fetchval = AsyncMock(side_effect=_fetchval)
-    pool.fetch = AsyncMock(side_effect=_fetch)
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-    pool.execute = AsyncMock()
-    return pool
+    ``fetchrow``: the ``ha_source_health`` gate; ``fetchval``: the snapshot count,
+    then the (absent) ``home:thresholds:energy`` state key; ``fetch``: the snapshot.
+    """
+    healthy = ha_status == "healthy"
+    return fake_pool(
+        fetchrow=row(
+            status=ha_status,
+            last_success_at=datetime.now(UTC) if healthy else None,
+            lease_current=healthy,
+        ),
+        fetchval=AsyncMock(side_effect=[snapshot_count, None]),
+        fetch=records(snapshot_rows or []),
+    )
 
 
 def _make_energy_row(entity_id, state="10.5", friendly_name=None) -> dict:
@@ -90,6 +67,35 @@ def _make_totals(items):
 
 def _make_baselines(items):
     return {eid: {"content": f"{kwh:.1f} kWh weekly baseline"} for eid, kwh in items}
+
+
+# ---------------------------------------------------------------------------
+# _discover_energy_sensors
+# ---------------------------------------------------------------------------
+
+
+async def test_discover_energy_sensors_skips_non_energy_entities():
+    """Power/voltage/current, cost, tariff, switches and selects are not cumulative energy."""
+
+    def snap(entity_id, **attrs):
+        return {"entity_id": entity_id, "state": "1", "attributes": attrs}
+
+    pool = fake_pool(
+        fetch=records(
+            [
+                snap("sensor.a_energy", device_class="energy", unit_of_measurement="kWh"),
+                snap("sensor.a_power", device_class="power", unit_of_measurement="W"),
+                snap("sensor.a_voltage", device_class="voltage", unit_of_measurement="V"),
+                snap("sensor.a_energy_cost", device_class="monetary", unit_of_measurement="SGD"),
+                snap("sensor.tariff_kwh", unit_of_measurement="SGD/kWh"),
+                snap("switch.a_power"),
+                snap("select.a_power_on_behavior"),
+                snap("sensor.legacy_energy_kwh"),
+            ]
+        )
+    )
+    found = await _discover_energy_sensors(pool)
+    assert [s["entity_id"] for s in found] == ["sensor.a_energy", "sensor.legacy_energy_kwh"]
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +390,7 @@ def test_build_digest_message():
 
 async def test_run_energy_digest_unmeasurable_on_ha_outage():
     """A simulated HA outage (unhealthy source) short-circuits before the snapshot check."""
-    pool = _make_pool(snapshot_count=5, ha_status="error")
+    pool = _energy_pool(snapshot_count=5, ha_status="error")
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock) as notify:
         result = await run_energy_digest(pool, None)
     assert result == {"error": "ha_source_unmeasurable", "last_good_at": None}
@@ -396,10 +402,10 @@ async def test_run_energy_digest_unmeasurable_on_ha_outage():
 async def test_run_energy_digest_early_exits():
     """Empty snapshot → error; no energy sensors → error."""
     with patch("butlers.jobs.home._send_notify", new_callable=AsyncMock):
-        result = await run_energy_digest(_make_pool(snapshot_count=0), None)
+        result = await run_energy_digest(_energy_pool(snapshot_count=0), None)
     assert result == {"error": "no_entity_snapshot"}
 
-    pool = _make_pool(
+    pool = _energy_pool(
         snapshot_count=2,
         snapshot_rows=[
             _make_energy_row("sensor.temperature", "22.5", "Room Temp"),
@@ -416,7 +422,7 @@ async def test_run_energy_digest_full_run_with_anomalies():
         _make_energy_row("sensor.hvac_energy", "100", "HVAC Energy"),
         _make_energy_row("sensor.water_heater_energy", "200", "Water Heater"),
     ]
-    pool = _make_pool(snapshot_count=2, snapshot_rows=energy_rows)
+    pool = _energy_pool(snapshot_count=2, snapshot_rows=energy_rows)
     weekly_stats = {
         "available": True,
         "statistics": {
@@ -433,7 +439,7 @@ async def test_run_energy_digest_full_run_with_anomalies():
     with (
         patch("butlers.jobs.home._send_notify", new_callable=AsyncMock),
         patch(
-            "butlers.credential_store.resolve_owner_entity_info",
+            "butlers.jobs.home.resolve_owner_entity_info",
             new_callable=AsyncMock,
             return_value="token_value",
         ),
@@ -465,7 +471,7 @@ async def test_run_energy_digest_full_run_with_anomalies():
 
 async def test_run_energy_digest_rejects_all_unsupported_statistics():
     """Power-only sensors require an HA cumulative-energy helper instead of a fake zero."""
-    pool = _make_pool(
+    pool = _energy_pool(
         snapshot_count=1,
         snapshot_rows=[
             _make_energy_row("sensor.instantaneous_power", "750", "Instantaneous Power"),
@@ -509,7 +515,7 @@ async def test_run_energy_digest_rejects_all_unsupported_statistics():
 
 async def test_run_energy_digest_mixed_statistics_is_visibly_partial():
     """A partial sensor set reports device data without inventing a whole-home total."""
-    pool = _make_pool(
+    pool = _energy_pool(
         snapshot_count=2,
         snapshot_rows=[
             _make_energy_row("sensor.hvac_energy", "120", "HVAC Energy"),

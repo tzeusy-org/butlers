@@ -179,6 +179,65 @@ async def test_history_recovery_catches_up_measurements_after_outage(
 
 
 @pytest.mark.asyncio
+async def test_history_discovery_skips_transient_weight_sensor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recovery = _build_recovery(AsyncMock())
+
+    def _state(entity_id: str) -> dict[str, Any]:
+        return {
+            "entity_id": entity_id,
+            "state": "80.0",
+            "attributes": {"device_class": "weight", "unit_of_measurement": "kg"},
+            "last_changed": "2026-08-27T07:00:00+00:00",
+            "last_updated": "2026-08-27T07:00:00+00:00",
+        }
+
+    monkeypatch.setattr(
+        recovery,
+        "_get_json",
+        AsyncMock(
+            return_value=[
+                _state("sensor.scale_weight_non_stabilized"),
+                _state("sensor.scale_weight"),
+            ]
+        ),
+    )
+
+    entities = await recovery._fetch_weight_entities()
+
+    assert [entity.entity_id for entity in entities] == ["sensor.scale_weight"]
+
+
+@pytest.mark.asyncio
+async def test_history_rows_for_transient_entity_are_not_emitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    on_measurement = AsyncMock(return_value=True)
+    recovery = _build_recovery(on_measurement)
+    transient = EntityStateSnapshot(
+        entity_id="sensor.scale_weight_non_stabilized",
+        state="0.1",
+        attributes={"device_class": "weight", "unit_of_measurement": "kg"},
+        last_changed="2026-08-27T07:00:00+00:00",
+        last_updated="2026-08-27T07:00:00+00:00",
+    )
+    monkeypatch.setattr(recovery, "_fetch_weight_entities", AsyncMock(return_value=[transient]))
+    monkeypatch.setattr(
+        recovery,
+        "_fetch_entity_history",
+        AsyncMock(return_value=[_history_state("2026-08-27T07:00:00+00:00", "0.1")]),
+    )
+    monkeypatch.setattr(ha_rest, "load_cursor", AsyncMock(return_value=None))
+    monkeypatch.setattr(ha_rest, "save_cursor", AsyncMock())
+
+    result = await recovery.recover_once()
+
+    on_measurement.assert_not_awaited()
+    assert result.emitted == 0
+
+
+@pytest.mark.asyncio
 async def test_same_value_on_later_day_is_a_distinct_measurement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

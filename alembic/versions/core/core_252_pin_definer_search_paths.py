@@ -50,6 +50,14 @@ depends_on = None
 
 PINNED_SEARCH_PATH = "pg_catalog, pg_temp"
 
+# core_239 creates and replaces ``cost_claim_restore_row`` under this key. Its transaction ends at
+# the autocommit blocks of core_242 and later, so a chain still replaying core_239 can run beside
+# a chain already at this revision. Taking the same key first makes the two ``pg_proc`` updates
+# take turns instead of failing with "tuple concurrently updated".
+_LOCK_COST_CLAIMS = """
+SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_239:cost_claims', 0))
+"""
+
 _LOCK = """
 SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_252:definer_search_paths', 0))
 """
@@ -139,6 +147,7 @@ def _alter(signature: str, search_path: str) -> str:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    bind.execute(sa.text(_LOCK_COST_CLAIMS))
     bind.execute(sa.text(_LOCK))
     for signature, prior, current in _targets(bind):
         if current == PINNED_SEARCH_PATH:
@@ -153,6 +162,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
+    bind.execute(sa.text(_LOCK_COST_CLAIMS))
     bind.execute(sa.text(_LOCK))
     for signature, prior, current in _targets(bind):
         if current == prior:

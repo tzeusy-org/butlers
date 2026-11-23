@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
-from butlers.db import Database, schema_search_path
+from butlers.db import TCP_LIVENESS_SERVER_SETTINGS, Database, schema_search_path
 
 pytestmark = pytest.mark.unit
 
@@ -49,7 +49,8 @@ async def test_ssl_forwarded_to_provision_and_connect_and_retry(
     mock_create_pool.reset_mock()
     await Database(db_name="butlers", schema="general", role="butler_general_rw").connect()
     assert mock_create_pool.await_args.kwargs["server_settings"] == {
-        "search_path": "general,public"
+        **TCP_LIVENESS_SERVER_SETTINGS,
+        "search_path": "general,public",
     }
 
     # SSL retry on connection_lost: provision

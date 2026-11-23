@@ -219,6 +219,81 @@ def _redact_value(value: Any) -> Any:
 CREDENTIAL_REDACTION = CredentialRedactionFilter()
 
 
+def redact_exception(
+    logger: structlog.types.WrappedLogger,
+    method_name: str,
+    event_dict: structlog.types.EventDict,
+) -> structlog.types.EventDict:
+    """Scrub credential patterns from a record's traceback before rendering.
+
+    ``CredentialRedactionFilter`` only sees the message; the traceback is
+    rendered later from ``exc_info``, and exception text such as
+    ``httpx.HTTPStatusError`` carries the full request URL. When redaction
+    changes the rendered traceback, the redacted text replaces ``exc_info`` so
+    no renderer can re-format the original; otherwise ``exc_info`` is left for
+    the renderer (rich console tracebacks stay intact).
+    """
+    exc_info = event_dict.get("exc_info")
+    if exc_info:
+        rendered = structlog.processors.format_exc_info(
+            logger, method_name, {"exc_info": exc_info}
+        ).get("exception")
+        if isinstance(rendered, str):
+            redacted = _redact_text(rendered)
+            if redacted != rendered:
+                del event_dict["exc_info"]
+                event_dict["exception"] = redacted
+    for key in ("exception", "stack_info"):
+        if isinstance(event_dict.get(key), str):
+            event_dict[key] = _redact_text(event_dict[key])
+    return event_dict
+
+
+def _resolve_exc_info(value: Any) -> tuple[type[BaseException], BaseException, Any] | None:
+    if value is True:
+        value = sys.exc_info()
+    elif isinstance(value, BaseException):
+        value = (type(value), value, value.__traceback__)
+    if isinstance(value, tuple) and len(value) == 3 and isinstance(value[1], BaseException):
+        return value  # type: ignore[return-value]
+    return None
+
+
+def add_exception_identity(
+    logger: structlog.types.WrappedLogger,
+    method_name: str,
+    event_dict: structlog.types.EventDict,
+) -> structlog.types.EventDict:
+    """Write the canonical identity of a logged exception before it is rendered (bu-ejow5p.4).
+
+    ``exc_type`` is the fully qualified class of the exception that was raised (for a
+    chain, the outermost one), ``exc_frame`` the repo-relative ``file:function`` of its
+    innermost application frame, and ``exc_message_sanitized`` its credential-redacted
+    message with dynamic ids and timestamps normalized.  The QA log scanner fingerprints
+    these three fields instead of the rendered traceback, whose dates, line numbers and
+    object reprs change on every occurrence and deploy.  Never raises.
+    """
+    resolved = _resolve_exc_info(event_dict.get("exc_info"))
+    if resolved is None:
+        return event_dict
+    try:
+        from butlers.core.healing.fingerprint import (
+            _extract_call_site,
+            _fully_qualified_name,
+            _sanitize_message,
+        )
+
+        _, exc, tb = resolved
+        event_dict["exc_type"] = _fully_qualified_name(exc)
+        frame = _extract_call_site(tb)
+        if frame != "<unknown>:<unknown>":
+            event_dict["exc_frame"] = frame
+        event_dict["exc_message_sanitized"] = _sanitize_message(_redact_text(str(exc)))
+    except Exception:  # noqa: BLE001 — identity is best-effort; never break logging
+        pass
+    return event_dict
+
+
 class ButlerContextFileFilter(logging.Filter):
     """Route shared-process file logs to the active butler's file only."""
 
@@ -305,6 +380,9 @@ def _make_file_handler(path: Path, processors: list) -> logging.handlers.TimedRo
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            add_exception_identity,
+            structlog.processors.format_exc_info,
+            redact_exception,
             structlog.processors.JSONRenderer(),
         ],
         foreign_pre_chain=processors,
@@ -358,20 +436,28 @@ def configure_logging(
 
     if fmt == "json":
         console_processors = _build_processors(time_fmt="iso")
-        renderer = structlog.processors.JSONRenderer()
+        renderers: list[structlog.types.Processor] = [
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ]
     else:
         # Console: compact HH:MM:SS, no microseconds
         console_processors = _build_processors(time_fmt="%H:%M:%S")
         # Never render traceback locals: frames such as Database.connect hold
         # connection kwargs, including the login password.
-        renderer = structlog.dev.ConsoleRenderer(
-            exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False)
-        )
+        renderers = [
+            structlog.dev.ConsoleRenderer(
+                exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False)
+            )
+        ]
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            renderer,
+            # Before redact_exception, which may replace exc_info with redacted text.
+            add_exception_identity,
+            redact_exception,
+            *renderers,
         ],
         foreign_pre_chain=console_processors,
     )

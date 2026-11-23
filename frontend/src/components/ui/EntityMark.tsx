@@ -29,6 +29,7 @@ export type EntityType =
   | "person"
   | "organization"
   | "place"
+  | "animal"
   | "product"
   | "account"
   | "event"
@@ -40,6 +41,7 @@ const TYPE_GLYPHS: Record<string, string> = {
   person: "", // initials rendered separately
   organization: "O",
   place: "L",
+  animal: "A",
   product: "X",
   account: "@",
   email: "@", // alias of "account" — legacy entity type

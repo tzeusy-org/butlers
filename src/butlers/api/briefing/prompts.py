@@ -19,7 +19,7 @@ import json
 import logging
 from typing import Any
 
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity
 from butlers.credential_store import CredentialStore
 

@@ -249,8 +249,16 @@ describe("QaOverviewPage -- circuit breaker reset", () => {
     expect(screen.getByTestId("qa-breaker-reset-dialog")).toBeTruthy();
     expect(mutate).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("qa-breaker-reset-confirm"));
+    // A reset must name the cause it addresses; without one the confirm is disabled.
+    const confirm = screen.getByTestId("qa-breaker-reset-confirm") as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(screen.getByTestId("qa-breaker-reset-cause"), {
+      target: { value: "publisher_unconfigured:PR-1234" },
+    });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
 
     expect(mutate).toHaveBeenCalledOnce();
+    expect(mutate.mock.calls[0][0]).toBe("publisher_unconfigured:PR-1234");
   });
 });

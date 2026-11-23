@@ -16,8 +16,6 @@ from decimal import Decimal
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.finance.feed_reconciliation import (
     account_feed_freshness,
     reconcile_feed_vs_email,
@@ -31,27 +29,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + finance migrations (including 012) applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE bills, transactions, subscriptions, accounts CASCADE")
-    yield p
-    await p.close()
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance")
 
 
 async def _insert_account(
@@ -118,10 +99,10 @@ async def _insert_transaction(
 # ---------------------------------------------------------------------------
 
 
-async def test_freshness_never_synced_is_degraded(pool: asyncpg.Pool):
-    await _insert_account(pool, last_synced_at=None)
+async def test_freshness_never_synced_is_degraded(finance_pool: asyncpg.Pool):
+    await _insert_account(finance_pool, last_synced_at=None)
 
-    accounts = await account_feed_freshness(pool)
+    accounts = await account_feed_freshness(finance_pool)
 
     assert len(accounts) == 1
     assert accounts[0]["degraded"] is True
@@ -129,21 +110,21 @@ async def test_freshness_never_synced_is_degraded(pool: asyncpg.Pool):
     assert accounts[0]["last_synced_at"] is None
 
 
-async def test_freshness_stale_sync_is_degraded(pool: asyncpg.Pool):
+async def test_freshness_stale_sync_is_degraded(finance_pool: asyncpg.Pool):
     stale_at = datetime.now(UTC) - timedelta(hours=48)
-    await _insert_account(pool, last_synced_at=stale_at)
+    await _insert_account(finance_pool, last_synced_at=stale_at)
 
-    accounts = await account_feed_freshness(pool, staleness_threshold_hours=24)
+    accounts = await account_feed_freshness(finance_pool, staleness_threshold_hours=24)
 
     assert accounts[0]["degraded"] is True
     assert accounts[0]["reason"] == "stale"
 
 
-async def test_freshness_recent_sync_is_healthy(pool: asyncpg.Pool):
+async def test_freshness_recent_sync_is_healthy(finance_pool: asyncpg.Pool):
     recent_at = datetime.now(UTC) - timedelta(hours=1)
-    await _insert_account(pool, last_synced_at=recent_at)
+    await _insert_account(finance_pool, last_synced_at=recent_at)
 
-    accounts = await account_feed_freshness(pool, staleness_threshold_hours=24)
+    accounts = await account_feed_freshness(finance_pool, staleness_threshold_hours=24)
 
     assert accounts[0]["degraded"] is False
     assert accounts[0]["reason"] is None
@@ -154,22 +135,22 @@ async def test_freshness_recent_sync_is_healthy(pool: asyncpg.Pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_reconcile_reports_not_configured_with_no_synced_accounts(pool: asyncpg.Pool):
-    await _insert_account(pool, last_synced_at=None)
+async def test_reconcile_reports_not_configured_with_no_synced_accounts(finance_pool: asyncpg.Pool):
+    await _insert_account(finance_pool, last_synced_at=None)
 
-    result = await reconcile_feed_vs_email(pool)
+    result = await reconcile_feed_vs_email(finance_pool)
 
     assert result["configured"] is False
     assert result["matched"] == []
     assert result["unmatched_feed"] == []
 
 
-async def test_reconcile_matches_feed_and_email_transaction(pool: asyncpg.Pool):
-    account_id = await _insert_account(pool, last_synced_at=datetime.now(UTC))
+async def test_reconcile_matches_feed_and_email_transaction(finance_pool: asyncpg.Pool):
+    account_id = await _insert_account(finance_pool, last_synced_at=datetime.now(UTC))
     today = datetime.now(UTC)
 
     await _insert_transaction(
-        pool,
+        finance_pool,
         account_id=account_id,
         merchant="Trader Joes",
         amount="45.00",
@@ -177,7 +158,7 @@ async def test_reconcile_matches_feed_and_email_transaction(pool: asyncpg.Pool):
         source="aggregator",
     )
     await _insert_transaction(
-        pool,
+        finance_pool,
         account_id=account_id,
         merchant="Trader Joes #4521",
         amount="45.00",
@@ -185,7 +166,7 @@ async def test_reconcile_matches_feed_and_email_transaction(pool: asyncpg.Pool):
         source_message_id="msg-1",
     )
 
-    result = await reconcile_feed_vs_email(pool)
+    result = await reconcile_feed_vs_email(finance_pool)
 
     assert result["configured"] is True
     assert len(result["matched"]) == 1
@@ -195,12 +176,12 @@ async def test_reconcile_matches_feed_and_email_transaction(pool: asyncpg.Pool):
     assert result["unmatched_email_count"] == 0
 
 
-async def test_reconcile_leaves_non_matching_feed_transaction_unmatched(pool: asyncpg.Pool):
-    account_id = await _insert_account(pool, last_synced_at=datetime.now(UTC))
+async def test_reconcile_leaves_non_matching_feed_transaction_unmatched(finance_pool: asyncpg.Pool):
+    account_id = await _insert_account(finance_pool, last_synced_at=datetime.now(UTC))
     today = datetime.now(UTC)
 
     await _insert_transaction(
-        pool,
+        finance_pool,
         account_id=account_id,
         merchant="Uncommon Vendor XYZ",
         amount="12.34",
@@ -208,7 +189,7 @@ async def test_reconcile_leaves_non_matching_feed_transaction_unmatched(pool: as
         source="aggregator",
     )
     await _insert_transaction(
-        pool,
+        finance_pool,
         account_id=account_id,
         merchant="Completely Different Merchant",
         amount="99.99",
@@ -216,7 +197,7 @@ async def test_reconcile_leaves_non_matching_feed_transaction_unmatched(pool: as
         source_message_id="msg-2",
     )
 
-    result = await reconcile_feed_vs_email(pool)
+    result = await reconcile_feed_vs_email(finance_pool)
 
     assert len(result["unmatched_feed"]) == 1
     assert result["unmatched_feed"][0]["merchant"] == "Uncommon Vendor XYZ"

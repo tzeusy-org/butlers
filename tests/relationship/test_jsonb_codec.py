@@ -12,12 +12,17 @@ Insertion convention: pass Python dicts directly as parameters (``$1`` without
 encoder and the round-trip works correctly.  Using ``json.dumps(...)`` with
 ``$1::jsonb`` bypasses the encoder and can cause text-format vs. binary-format
 mismatches that produce incorrect results.
+
+Every test writes to real migrated JSONB columns: ``public.state.value`` and
+``public.entities.metadata`` from the core chain, ``facts.metadata`` from the
+memory chain.
 """
 
 from __future__ import annotations
 
 import shutil
 import uuid
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -34,8 +39,15 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-def _unique_db_name() -> str:
-    return f"test_{uuid.uuid4().hex[:12]}"
+async def _put_state(pool, value: object) -> str:
+    """Write *value* to the real ``state.value`` JSONB column; return its key."""
+    key = f"jsonb-codec-{uuid.uuid4().hex[:12]}"
+    await pool.execute("INSERT INTO state (key, value) VALUES ($1, $2)", key, value)
+    return key
+
+
+async def _get_state(pool, key: str) -> object:
+    return await pool.fetchval("SELECT value FROM state WHERE key = $1", key)
 
 
 # ---------------------------------------------------------------------------
@@ -46,69 +58,51 @@ def _unique_db_name() -> str:
 class TestDatabaseConnectJsonbCodec:
     """JSONB codec is registered on pools created via Database.connect()."""
 
-    async def test_jsonb_column_decoded_as_dict(self, provisioned_postgres_pool):
+    async def test_jsonb_column_decoded_as_dict(self, db_pool):
         """A JSONB column round-trips as a dict, not a string."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _jsonb_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    payload JSONB NOT NULL
-                )
-            """)
-            # Pass Python dict directly; asyncpg routes it through the JSONB encoder.
-            payload = {"source": "test", "confidence": 0.95, "tags": ["alpha", "beta"]}
-            await pool.execute("INSERT INTO _jsonb_test (payload) VALUES ($1)", payload)
-            row = await pool.fetchrow("SELECT payload FROM _jsonb_test LIMIT 1")
-            result = row["payload"]
-            # The codec contract: JSONB must arrive as a dict, not a string.
-            assert isinstance(result, dict), (
-                f"Expected dict from JSONB column but got {type(result).__name__!r}: {result!r}. "
-                "JSONB codec is likely not registered on this pool."
-            )
-            assert result["source"] == "test"
-            assert result["confidence"] == pytest.approx(0.95)
-            assert result["tags"] == ["alpha", "beta"]
+        pool = db_pool
+        # Pass Python dict directly; asyncpg routes it through the JSONB encoder.
+        payload = {"source": "test", "confidence": 0.95, "tags": ["alpha", "beta"]}
+        result = await _get_state(pool, await _put_state(pool, payload))
+        # The codec contract: JSONB must arrive as a dict, not a string.
+        assert isinstance(result, dict), (
+            f"Expected dict from JSONB column but got {type(result).__name__!r}: {result!r}. "
+            "JSONB codec is likely not registered on this pool."
+        )
+        assert result["source"] == "test"
+        assert result["confidence"] == pytest.approx(0.95)
+        assert result["tags"] == ["alpha", "beta"]
 
-    async def test_empty_jsonb_object_decoded_as_dict(self, provisioned_postgres_pool):
+    async def test_empty_jsonb_object_decoded_as_dict(self, db_pool):
         """An empty JSONB object '{}' is decoded as an empty dict, not a string."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _jsonb_empty_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    metadata JSONB NOT NULL DEFAULT '{}'
-                )
-            """)
-            await pool.execute("INSERT INTO _jsonb_empty_test DEFAULT VALUES")
-            row = await pool.fetchrow("SELECT metadata FROM _jsonb_empty_test LIMIT 1")
-            result = row["metadata"]
-            assert isinstance(result, dict), (
-                f"Expected empty dict from JSONB column but got {type(result).__name__!r}: {result!r}"
-            )
-            assert result == {}
+        pool = db_pool
+        # public.entities.metadata defaults to '{}'::jsonb.
+        entity_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name) VALUES ($1) RETURNING id",
+            f"empty-metadata-{uuid.uuid4().hex[:8]}",
+        )
+        row = await pool.fetchrow("SELECT metadata FROM public.entities WHERE id = $1", entity_id)
+        result = row["metadata"]
+        assert isinstance(result, dict), (
+            f"Expected empty dict from JSONB column but got {type(result).__name__!r}: {result!r}"
+        )
+        assert result == {}
 
-    async def test_nested_jsonb_decoded_correctly(self, provisioned_postgres_pool):
+    async def test_nested_jsonb_decoded_correctly(self, db_pool):
         """Nested JSONB objects and arrays are decoded to their Python equivalents."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _jsonb_nested_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    data JSONB NOT NULL
-                )
-            """)
-            nested = {
-                "provenance": {"origin": "email", "ingested_at": "2026-04-30"},
-                "badges": ["verified", "owner"],
-                "score": 42,
-            }
-            # Pass Python dict directly so the registered JSONB encoder is used.
-            await pool.execute("INSERT INTO _jsonb_nested_test (data) VALUES ($1)", nested)
-            row = await pool.fetchrow("SELECT data FROM _jsonb_nested_test LIMIT 1")
-            result = row["data"]
-            assert isinstance(result, dict)
-            assert isinstance(result["provenance"], dict)
-            assert result["provenance"]["origin"] == "email"
-            assert result["badges"] == ["verified", "owner"]
-            assert result["score"] == 42
+        pool = db_pool
+        nested = {
+            "provenance": {"origin": "email", "ingested_at": "2026-04-30"},
+            "badges": ["verified", "owner"],
+            "score": 42,
+        }
+        # Pass Python dict directly so the registered JSONB encoder is used.
+        result = await _get_state(pool, await _put_state(pool, nested))
+        assert isinstance(result, dict)
+        assert isinstance(result["provenance"], dict)
+        assert result["provenance"]["origin"] == "email"
+        assert result["badges"] == ["verified", "owner"]
+        assert result["score"] == 42
 
 
 # ---------------------------------------------------------------------------
@@ -119,24 +113,12 @@ class TestDatabaseConnectJsonbCodec:
 class TestDatabaseManagerJsonbCodec:
     """JSONB codec is registered on pools created via DatabaseManager._create_pool()."""
 
-    async def test_api_pool_decodes_jsonb_as_dict(self, postgres_container):
+    async def test_api_pool_decodes_jsonb_as_dict(self, postgres_container, fresh_db):
         """DatabaseManager pools decode JSONB columns to dicts."""
         from butlers.api.db import DatabaseManager
-        from butlers.db import Database
 
         pg = postgres_container
-
-        # Provision a fresh database for this test
-        db = Database(
-            db_name=_unique_db_name(),
-            host=pg.get_container_host_ip(),
-            port=int(pg.get_exposed_port(5432)),
-            user=pg.username,
-            password=pg.password,
-            min_pool_size=1,
-            max_pool_size=2,
-        )
-        await db.provision()
+        db_name = urlsplit(fresh_db("core")).path.lstrip("/")
 
         mgr = DatabaseManager(
             host=pg.get_container_host_ip(),
@@ -147,20 +129,12 @@ class TestDatabaseManagerJsonbCodec:
             max_pool_size=2,
         )
         try:
-            await mgr.add_butler("test_rel", db_name=db.db_name)
+            await mgr.add_butler("test_rel", db_name=db_name)
             pool = mgr.pool("test_rel")
 
-            await pool.execute("""
-                CREATE TEMP TABLE _api_jsonb_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    metadata JSONB NOT NULL
-                )
-            """)
             metadata = {"needs_disambiguation": False, "provenance": "email", "score": 1}
             # Pass Python dict directly so the JSONB encoder is invoked.
-            await pool.execute("INSERT INTO _api_jsonb_test (metadata) VALUES ($1)", metadata)
-            row = await pool.fetchrow("SELECT metadata FROM _api_jsonb_test LIMIT 1")
-            result = row["metadata"]
+            result = await _get_state(pool, await _put_state(pool, metadata))
             assert isinstance(result, dict), (
                 f"DatabaseManager pool returned {type(result).__name__!r} for JSONB column; "
                 "register_jsonb_codec may not be wired into _create_pool."
@@ -183,176 +157,68 @@ class TestEntityMetadataRoundtrip:
     no provenance/badges because the defensive guard dropped string-typed JSONB.
     """
 
-    async def test_entities_metadata_roundtrips_as_dict(self, provisioned_postgres_pool):
+    async def test_entities_metadata_roundtrips_as_dict(self, db_pool):
         """Entity metadata JSONB column round-trips to a populated dict."""
-        async with provisioned_postgres_pool() as pool:
-            # Minimal public.entities-shaped table for the regression test.
-            # Uses a temp table so it doesn't conflict with schema isolation tests.
-            await pool.execute("""
-                CREATE TEMP TABLE _entities_meta_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    name TEXT NOT NULL,
-                    metadata JSONB NOT NULL DEFAULT '{}'
-                )
-            """)
-            entity_id = uuid.uuid4()
-            entity_meta = {
-                "provenance": ["email-ingest", "manual"],
-                "badges": ["owner"],
-                "confidence": 0.99,
-            }
-            # Pass Python dict directly; asyncpg uses the registered JSONB encoder.
-            await pool.execute(
-                "INSERT INTO _entities_meta_test (id, name, metadata) VALUES ($1, $2, $3)",
-                entity_id,
-                "Alice Example",
-                entity_meta,
-            )
-            row = await pool.fetchrow(
-                "SELECT metadata FROM _entities_meta_test WHERE id = $1",
-                entity_id,
-            )
-            result = row["metadata"]
-            assert isinstance(result, dict), (
-                f"entities.metadata arrived as {type(result).__name__!r}; "
-                "the JSONB codec is not active on this pool."
-            )
-            assert result["provenance"] == ["email-ingest", "manual"]
-            assert result["badges"] == ["owner"]
-            assert result["confidence"] == pytest.approx(0.99)
+        pool = db_pool
+        entity_id = uuid.uuid4()
+        entity_meta = {
+            "provenance": ["email-ingest", "manual"],
+            "badges": ["owner"],
+            "confidence": 0.99,
+        }
+        # Pass Python dict directly; asyncpg uses the registered JSONB encoder.
+        await pool.execute(
+            "INSERT INTO public.entities (id, canonical_name, metadata) VALUES ($1, $2, $3)",
+            entity_id,
+            "Alice Example",
+            entity_meta,
+        )
+        row = await pool.fetchrow(
+            "SELECT metadata FROM public.entities WHERE id = $1",
+            entity_id,
+        )
+        result = row["metadata"]
+        assert isinstance(result, dict), (
+            f"entities.metadata arrived as {type(result).__name__!r}; "
+            "the JSONB codec is not active on this pool."
+        )
+        assert result["provenance"] == ["email-ingest", "manual"]
+        assert result["badges"] == ["owner"]
+        assert result["confidence"] == pytest.approx(0.99)
 
-    async def test_facts_metadata_roundtrips_as_dict(self, provisioned_postgres_pool):
+    async def test_facts_metadata_roundtrips_as_dict(self, db):
         """Facts metadata JSONB column round-trips to a populated dict (timeline regression)."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _facts_meta_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    predicate TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    metadata JSONB NOT NULL DEFAULT '{}',
-                    valid_at TIMESTAMPTZ DEFAULT now()
-                )
-            """)
-            fact_meta = {"emotion": "curious", "source": "call-transcript"}
-            # Pass Python dict directly so the registered JSONB encoder is used.
-            await pool.execute(
-                "INSERT INTO _facts_meta_test (predicate, content, metadata) VALUES ($1, $2, $3)",
-                "contact_note",
-                "Discussed project timeline",
-                fact_meta,
-            )
-            rows = await pool.fetch("SELECT metadata FROM _facts_meta_test")
-            assert len(rows) == 1
-            result = rows[0]["metadata"]
-            assert isinstance(result, dict), (
-                f"facts.metadata arrived as {type(result).__name__!r}; "
-                "timeline metadata would be silently dropped by the defensive guard."
-            )
-            assert result["emotion"] == "curious"
-            assert result["source"] == "call-transcript"
+        pool = await db("core", "memory")
+        fact_meta = {"emotion": "curious", "source": "call-transcript"}
+        # Pass Python dict directly so the registered JSONB encoder is used.
+        await pool.execute(
+            "INSERT INTO facts (subject, predicate, content, metadata) VALUES ($1, $2, $3, $4)",
+            "contact:alice",
+            "contact_note",
+            "Discussed project timeline",
+            fact_meta,
+        )
+        rows = await pool.fetch("SELECT metadata FROM facts")
+        assert len(rows) == 1
+        result = rows[0]["metadata"]
+        assert isinstance(result, dict), (
+            f"facts.metadata arrived as {type(result).__name__!r}; "
+            "timeline metadata would be silently dropped by the defensive guard."
+        )
+        assert result["emotion"] == "curious"
+        assert result["source"] == "call-transcript"
 
 
 # End-to-end regression: store_fact writes must survive metadata->>'key' filters
 # ---------------------------------------------------------------------------
 
 
-_FACTS_DDL = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject             TEXT NOT NULL,
-    predicate           TEXT NOT NULL,
-    content             TEXT NOT NULL,
-    embedding           TEXT,
-    search_vector       TSVECTOR,
-    importance          FLOAT NOT NULL DEFAULT 5.0,
-    confidence          FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate          FLOAT NOT NULL DEFAULT 0.002,
-    permanence          TEXT NOT NULL DEFAULT 'stable',
-    source_butler       TEXT,
-    source_episode_id   UUID,
-    supersedes_id       UUID REFERENCES facts(id) ON DELETE SET NULL,
-    validity            TEXT NOT NULL DEFAULT 'active',
-    scope               TEXT NOT NULL DEFAULT 'global',
-    reference_count     INTEGER NOT NULL DEFAULT 0,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_confirmed_at   TIMESTAMPTZ,
-    tags                JSONB DEFAULT '[]'::jsonb,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    entity_id           UUID,
-    object_entity_id    UUID,
-    valid_at            TIMESTAMPTZ DEFAULT NULL,
-    tenant_id           TEXT NOT NULL DEFAULT 'shared',
-    request_id          TEXT,
-    idempotency_key     TEXT,
-    observed_at         TIMESTAMPTZ DEFAULT now(),
-    invalid_at          TIMESTAMPTZ,
-    retention_class          TEXT NOT NULL DEFAULT 'operational',
-    sensitivity              TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version  TEXT DEFAULT 'unknown'
-)
-"""
-
-_PREDICATE_REGISTRY_DDL = """
-CREATE TABLE IF NOT EXISTS predicate_registry (
-    name                 TEXT PRIMARY KEY,
-    expected_subject_type TEXT,
-    expected_object_type TEXT,
-    is_edge              BOOLEAN NOT NULL DEFAULT false,
-    is_temporal          BOOLEAN NOT NULL DEFAULT false,
-    description          TEXT,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    status               TEXT NOT NULL DEFAULT 'active',
-    superseded_by        TEXT,
-    deprecated_at        TIMESTAMPTZ,
-    inverse_of           TEXT,
-    is_symmetric         BOOLEAN NOT NULL DEFAULT false,
-    aliases              TEXT[] NOT NULL DEFAULT '{}',
-    usage_count          INTEGER NOT NULL DEFAULT 0,
-    last_used_at         TIMESTAMPTZ
-)
-"""
-
-_EPISODES_DDL = """
-CREATE TABLE IF NOT EXISTS episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    butler           TEXT NOT NULL,
-    session_id       UUID,
-    content          TEXT NOT NULL,
-    embedding        TEXT,
-    search_vector    TSVECTOR,
-    importance       FLOAT NOT NULL DEFAULT 5.0,
-    expires_at       TIMESTAMPTZ NOT NULL,
-    metadata         JSONB DEFAULT '{}'::jsonb,
-    tenant_id        TEXT NOT NULL DEFAULT 'shared',
-    request_id       TEXT,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retention_class          TEXT NOT NULL DEFAULT 'operational',
-    sensitivity              TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version  TEXT DEFAULT 'unknown'
-)
-"""
-
-_MEMORY_LINKS_DDL = """
-CREATE TABLE IF NOT EXISTS memory_links (
-    id          BIGSERIAL PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    source_id   UUID NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id   UUID NOT NULL,
-    relation    TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_type, source_id, target_type, target_id)
-)
-"""
-
-
 def _mock_embedding_engine():
     from unittest.mock import MagicMock
 
     engine = MagicMock()
-    engine.embed.return_value = [0.0] * 8
+    # The real facts.embedding is vector(384); a unit vector keeps cosine distance defined.
+    engine.embed.return_value = [1.0] + [0.0] * 383
     engine.model_name = "test-model"
     return engine
 
@@ -369,7 +235,7 @@ class TestStoreFactDoubleEncodingRegression:
     and roster/relationship.
     """
 
-    async def test_store_fact_metadata_jsonb_filter_finds_row(self, provisioned_postgres_pool):
+    async def test_store_fact_metadata_jsonb_filter_finds_row(self, db):
         """A fact stored with metadata={'direction': 'incoming'} must be found
         by ``WHERE metadata->>'direction' = 'incoming'``.
 
@@ -378,36 +244,33 @@ class TestStoreFactDoubleEncodingRegression:
         """
         from butlers.modules.memory.storage import store_fact
 
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute(_PREDICATE_REGISTRY_DDL)
-            await pool.execute(_EPISODES_DDL)
-            await pool.execute(_FACTS_DDL)
-            await pool.execute(_MEMORY_LINKS_DDL)
+        # facts, episodes, predicate_registry and memory_links from the memory chain.
+        pool = await db("core", "memory")
 
-            embedding_engine = _mock_embedding_engine()
-            await store_fact(
-                pool,
-                subject="contact:alice",
-                predicate="interaction_call",
-                content="ringing the bell",
-                embedding_engine=embedding_engine,
-                metadata={"direction": "incoming", "category": "groceries"},
-            )
+        embedding_engine = _mock_embedding_engine()
+        await store_fact(
+            pool,
+            subject="contact:alice",
+            predicate="interaction_call",
+            content="ringing the bell",
+            embedding_engine=embedding_engine,
+            metadata={"direction": "incoming", "category": "groceries"},
+        )
 
-            count = await pool.fetchval(
-                "SELECT COUNT(*) FROM facts WHERE metadata->>'direction' = 'incoming'"
-            )
-            assert count == 1, (
-                "JSONB filter returned 0 rows; metadata was likely double-encoded "
-                "into a JSON string scalar. See bu-qki26."
-            )
+        count = await pool.fetchval(
+            "SELECT COUNT(*) FROM facts WHERE metadata->>'direction' = 'incoming'"
+        )
+        assert count == 1, (
+            "JSONB filter returned 0 rows; metadata was likely double-encoded "
+            "into a JSON string scalar. See bu-qki26."
+        )
 
-            row = await pool.fetchrow(
-                "SELECT metadata FROM facts WHERE metadata->>'direction' = 'incoming'"
-            )
-            assert isinstance(row["metadata"], dict)
-            assert row["metadata"]["direction"] == "incoming"
-            assert row["metadata"]["category"] == "groceries"
+        row = await pool.fetchrow(
+            "SELECT metadata FROM facts WHERE metadata->>'direction' = 'incoming'"
+        )
+        assert isinstance(row["metadata"], dict)
+        assert row["metadata"]["direction"] == "incoming"
+        assert row["metadata"]["category"] == "groceries"
 
 
 # ---------------------------------------------------------------------------
@@ -424,29 +287,21 @@ class TestNoDoubleEncoding:
     than a plain dict, so a read-back returns a str not a dict.
     """
 
-    async def test_dict_written_without_cast_roundtrips_as_dict(self, provisioned_postgres_pool):
+    async def test_dict_written_without_cast_roundtrips_as_dict(self, db_pool):
         """Writing a dict directly (no ::jsonb cast) stores a JSON object, not a string."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _no_double_enc_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    payload JSONB NOT NULL
-                )
-            """)
-            payload = {"key": "value", "count": 42, "nested": {"a": 1}}
-            # Pass dict directly — asyncpg codec encodes it once.
-            await pool.execute("INSERT INTO _no_double_enc_test (payload) VALUES ($1)", payload)
-            row = await pool.fetchrow("SELECT payload FROM _no_double_enc_test LIMIT 1")
-            result = row["payload"]
-            assert isinstance(result, dict), (
-                f"Expected dict but got {type(result).__name__!r}: {result!r}. "
-                "JSONB value may have been double-encoded (stored as a JSON string)."
-            )
-            assert result["key"] == "value"
-            assert result["count"] == 42
-            assert result["nested"]["a"] == 1
+        pool = db_pool
+        payload = {"key": "value", "count": 42, "nested": {"a": 1}}
+        # Pass dict directly — asyncpg codec encodes it once.
+        result = await _get_state(pool, await _put_state(pool, payload))
+        assert isinstance(result, dict), (
+            f"Expected dict but got {type(result).__name__!r}: {result!r}. "
+            "JSONB value may have been double-encoded (stored as a JSON string)."
+        )
+        assert result["key"] == "value"
+        assert result["count"] == 42
+        assert result["nested"]["a"] == 1
 
-    async def test_json_string_roundtrips_as_string_not_dict(self, provisioned_postgres_pool):
+    async def test_json_string_roundtrips_as_string_not_dict(self, db_pool):
         """A json.dumps() string written to a JSONB column gets double-encoded by the codec.
 
         This is the old pre-codec pattern.  With the JSONB codec registered, asyncpg
@@ -459,55 +314,38 @@ class TestNoDoubleEncoding:
         """
         import json
 
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _str_roundtrip_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    payload JSONB NOT NULL
-                )
-            """)
-            original = {"writer": "test", "value": 99}
-            # Pass dict directly: codec encodes once → stored as JSON object.
-            await pool.execute("INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", original)
-            row = await pool.fetchrow("SELECT payload FROM _str_roundtrip_test LIMIT 1")
-            result = row["payload"]
-            assert isinstance(result, dict), (
-                f"Expected dict from direct dict write but got {type(result).__name__!r}. "
-                "Check that the JSONB codec is active and no double-encoding occurred."
-            )
-            assert result["writer"] == "test"
-            assert result["value"] == 99
+        pool = db_pool
+        original = {"writer": "test", "value": 99}
+        # Pass dict directly: codec encodes once → stored as JSON object.
+        key = await _put_state(pool, original)
+        result = await _get_state(pool, key)
+        assert isinstance(result, dict), (
+            f"Expected dict from direct dict write but got {type(result).__name__!r}. "
+            "Check that the JSONB codec is active and no double-encoding occurred."
+        )
+        assert result["writer"] == "test"
+        assert result["value"] == 99
 
-            # Now demonstrate the double-encoding trap: passing json.dumps output
-            # as a string to a codec-backed pool causes the string itself to be
-            # JSON-encoded, so the DB stores a JSON string value (not an object).
-            await pool.execute("DELETE FROM _str_roundtrip_test")
-            json_str = json.dumps(original)
-            await pool.execute("INSERT INTO _str_roundtrip_test (payload) VALUES ($1)", json_str)
-            str_row = await pool.fetchrow("SELECT payload FROM _str_roundtrip_test LIMIT 1")
-            str_result = str_row["payload"]
-            # The round-trip returns a str, not a dict — proving double-encoding occurred.
-            assert isinstance(str_result, str), (
-                f"Expected str from json.dumps write (double-encoding) but got "
-                f"{type(str_result).__name__!r}. "
-                "This confirms the codec does NOT accept pre-serialized strings."
-            )
+        # Now demonstrate the double-encoding trap: passing json.dumps output
+        # as a string to a codec-backed pool causes the string itself to be
+        # JSON-encoded, so the DB stores a JSON string value (not an object).
+        await pool.execute("DELETE FROM state WHERE key = $1", key)
+        json_str = json.dumps(original)
+        str_result = await _get_state(pool, await _put_state(pool, json_str))
+        # The round-trip returns a str, not a dict — proving double-encoding occurred.
+        assert isinstance(str_result, str), (
+            f"Expected str from json.dumps write (double-encoding) but got "
+            f"{type(str_result).__name__!r}. "
+            "This confirms the codec does NOT accept pre-serialized strings."
+        )
 
-    async def test_list_written_directly_roundtrips_as_list(self, provisioned_postgres_pool):
+    async def test_list_written_directly_roundtrips_as_list(self, db_pool):
         """A Python list written directly to a JSONB column roundtrips as a list."""
-        async with provisioned_postgres_pool() as pool:
-            await pool.execute("""
-                CREATE TEMP TABLE _list_jsonb_test (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    tags JSONB NOT NULL
-                )
-            """)
-            tags = ["alpha", "beta", "gamma"]
-            await pool.execute("INSERT INTO _list_jsonb_test (tags) VALUES ($1)", tags)
-            row = await pool.fetchrow("SELECT tags FROM _list_jsonb_test LIMIT 1")
-            result = row["tags"]
-            assert isinstance(result, list), (
-                f"Expected list but got {type(result).__name__!r}: {result!r}. "
-                "List JSONB write may have double-encoded."
-            )
-            assert result == tags
+        pool = db_pool
+        tags = ["alpha", "beta", "gamma"]
+        result = await _get_state(pool, await _put_state(pool, tags))
+        assert isinstance(result, list), (
+            f"Expected list but got {type(result).__name__!r}: {result!r}. "
+            "List JSONB write may have double-encoded."
+        )
+        assert result == tags

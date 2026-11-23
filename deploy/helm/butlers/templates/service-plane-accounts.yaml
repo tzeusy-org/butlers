@@ -1,0 +1,26 @@
+{{- if and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled }}
+{{- /* RFC 0038 D7: one ServiceAccount per workload, so a projected token names its pod's
+workload. The API token stays mounted: each verifier reads the issuer JWKS with it
+through the default system:service-account-issuer-discovery binding. connector-owntracks
+calls one relay (location_retention.grants_ready, bu-s11n0s.7) and holds no RBAC grant; the
+namespace default account is never a workload. */}}
+{{- range list "butlers-control" "butlers-up" "connector-owntracks" }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ . }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+{{- end }}
+{{- if .Values.servicePlaneAuth.healthTLS.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-api
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}
+{{- end }}

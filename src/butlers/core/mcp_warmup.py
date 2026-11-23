@@ -29,6 +29,7 @@ be correlated with session MCP-discovery failure rates:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -37,6 +38,7 @@ from typing import Any
 import httpx
 
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
+from butlers.core.switchboard_tls import switchboard_http_options
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,7 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
       - ``success`` (bool)
       - ``latency_ms`` (int | None)
       - ``tool_count`` (int | None)
+      - ``tool_schema_bytes`` (int | None)
       - ``error`` (str | None)
 
     Never raises — all exceptions are caught and reflected in the result dict.
@@ -91,6 +94,7 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
         "success": False,
         "latency_ms": None,
         "tool_count": None,
+        "tool_schema_bytes": None,
         "error": None,
     }
 
@@ -98,7 +102,9 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
         t0 = time.monotonic()
         request_url = prefer_ipv4_loopback_url(url)
 
-        async with httpx.AsyncClient(timeout=_WARMUP_TIMEOUT_S) as client:
+        async with httpx.AsyncClient(
+            timeout=_WARMUP_TIMEOUT_S, **switchboard_http_options(request_url)
+        ) as client:
             # MCP initialize request (streamable-HTTP: single POST with JSON-RPC).
             init_payload = {
                 "jsonrpc": "2.0",
@@ -138,17 +144,24 @@ async def _warmup_endpoint(url: str, *, butler_name: str) -> dict[str, Any]:
 
             # Parse tool count from response body (best-effort).
             tool_count: int | None = None
+            tool_schema_bytes: int | None = None
             try:
                 body = tools_resp.json()
                 tools_list = body.get("result", {}).get("tools", [])
                 if isinstance(tools_list, list):
                     tool_count = len(tools_list)
+                    # Size of what the model is shown (names, descriptions, schemas);
+                    # only the byte count is kept, never the content.
+                    tool_schema_bytes = len(
+                        json.dumps(tools_list, separators=(",", ":")).encode("utf-8")
+                    )
             except Exception:
                 pass  # non-fatal: latency is the primary signal
 
             result["success"] = True
             result["latency_ms"] = latency_ms
             result["tool_count"] = tool_count
+            result["tool_schema_bytes"] = tool_schema_bytes
 
             logger.info(
                 "MCP warmup OK butler=%s url=%s latency_ms=%d tools=%s",

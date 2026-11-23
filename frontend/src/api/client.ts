@@ -13,6 +13,7 @@ import type {
   ApprovalActionsResponse,
   ApprovalActionParams,
   ApprovalApproveRequest,
+  OwnerDeliveryActionRequest,
   ApprovalDeferRequest,
   ApprovalDenyRequest,
   ApprovalDetail,
@@ -26,6 +27,11 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  StandingReplyTemplateDraft,
+  StandingReplyTemplateDraftCreateRequest,
+  StandingReplyTemplateDraftEditRequest,
+  StandingReplyTemplatePreview,
+  StandingReplyTemplatePreviewRequest,
   UnroutableAttentionItem,
   UnroutableRetryResult,
   AutonomySuggestion,
@@ -45,6 +51,7 @@ import type {
   CalendarAuditParams,
   CalendarAuditResponse,
   CalendarDayBriefingResponse,
+  DaySheetResponse,
   ConflictScanParams,
   ConflictScanResponse,
   CalendarInvitationsParams,
@@ -52,6 +59,8 @@ import type {
   CalendarResponseRequest,
   CalendarResponseReceipt,
   CalendarPrepResponse,
+  CalendarSourceRoleRequest,
+  CalendarSourceRoleResponse,
   CalendarSourceToggleRequest,
   CalendarProposalAcceptRequest,
   CalendarProposalActionResponse,
@@ -169,6 +178,7 @@ import type {
   EpisodeParams,
   Fact,
   FactParams,
+  FactVouch,
   MemoryActivity,
   MemoryInspectParams,
   MemoryInspectResult,
@@ -417,6 +427,13 @@ import type {
   ButlerLogsResponse,
   GeneralCollection,
   GeneralEntity,
+  GeneralProjectCharterInput,
+  GeneralProjectCreateRequest,
+  GeneralProjectDetail,
+  GeneralProjectLinkKind,
+  GeneralDriveFile,
+  DeadlineRecord,
+  GeneralProjectSummary,
   GeneralStats,
   HourlyActivity,
   HourlyActivityParams,
@@ -983,6 +1000,7 @@ export function escalateNotification(
 import type {
   AttentionLedgerSummaryParams,
   AttentionLedgerSummaryResponse,
+  InsightEfficacyResponse,
 } from "./types.ts";
 
 /**
@@ -1003,6 +1021,14 @@ export function getAttentionLedgerSummary(
   const qs = sp.toString();
   const path = qs ? `/attention/ledger/summary?${qs}` : "/attention/ledger/summary";
   return apiFetch<AttentionLedgerSummaryResponse>(path);
+}
+
+/**
+ * Fetch the latest observational verdict per insight class and priority band
+ * (bu-s11n0s.15 S2). Observe-only: nothing shapes delivery from it.
+ */
+export function getInsightEfficacy(): Promise<InsightEfficacyResponse> {
+  return apiFetch<InsightEfficacyResponse>("/attention/efficacy");
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,6 +1661,22 @@ export function getCalendarDayBriefing(params: {
 }
 
 /**
+ * Fetch the owner's day sheet. Read-only, no model: `freshness.state` says when the read could not
+ * be trusted, so a failed or stale read is never rendered as a clear day.
+ */
+export function getCalendarDaySheet(
+  params: { date?: string; timezone?: string } = {},
+): Promise<ApiResponse<DaySheetResponse>> {
+  const sp = new URLSearchParams();
+  if (params.date) sp.set("date", params.date);
+  if (params.timezone) sp.set("timezone", params.timezone);
+  const query = sp.toString();
+  return apiFetch<ApiResponse<DaySheetResponse>>(
+    `/calendar/workspace/day-sheet${query ? `?${query}` : ""}`,
+  );
+}
+
+/**
  * Fetch the meeting-prep rail context for a selected calendar event. Reads the
  * precomputed `calendar.v_prep_contributions` view (attendees + relationship
  * notes + last-met + per-attendee message context, merged across contributing
@@ -1690,6 +1732,16 @@ export function toggleCalendarSource(
   body: CalendarSourceToggleRequest,
 ): Promise<ApiResponse<CalendarSourceToggleResponse>> {
   return apiFetch<ApiResponse<CalendarSourceToggleResponse>>("/calendar/sources", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Set (or clear) whose time a calendar source's events are. */
+export function setCalendarSourceRole(
+  body: CalendarSourceRoleRequest,
+): Promise<ApiResponse<CalendarSourceRoleResponse>> {
+  return apiFetch<ApiResponse<CalendarSourceRoleResponse>>("/calendar/sources/role", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -2461,6 +2513,93 @@ export function getGeneralEntities(
 }
 
 // ---------------------------------------------------------------------------
+// General butler — owner projects (bu-jv1moa.12)
+// ---------------------------------------------------------------------------
+
+/** GET /api/general/projects — owner projects, drafts first. */
+export function getGeneralProjects(): Promise<PaginatedResponse<GeneralProjectSummary>> {
+  return apiFetch<PaginatedResponse<GeneralProjectSummary>>("/general/projects?limit=200");
+}
+
+/** GET /api/general/projects/{id} — current charter and typed links (unresolved). */
+export function getGeneralProject(projectId: string): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}`,
+  );
+}
+
+/** POST /api/general/projects — create a draft (owner dashboard session only). */
+export function createGeneralProject(
+  body: GeneralProjectCreateRequest,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>("/general/projects", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PUT /api/general/projects/{id}/charter — write the next charter version (CAS). */
+export function editGeneralProjectCharter(
+  projectId: string,
+  body: GeneralProjectCharterInput & { expected_version: number },
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/charter`,
+    { method: "PUT", body: JSON.stringify(body) },
+  );
+}
+
+/** POST /api/general/projects/{id}/close — close a draft at its current version. */
+export function closeGeneralProject(
+  projectId: string,
+  expectedVersion: number,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/close`,
+    { method: "POST", body: JSON.stringify({ expected_version: expectedVersion }) },
+  );
+}
+
+/** POST /api/general/projects/{id}/links — link an existing record by kind and id. */
+export function addGeneralProjectLink(
+  projectId: string,
+  link: { ref_kind: GeneralProjectLinkKind; ref_id: string },
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/links`,
+    { method: "POST", body: JSON.stringify(link) },
+  );
+}
+
+/** DELETE /api/general/projects/{id}/links/{linkId} — unlink; the record is untouched. */
+export function removeGeneralProjectLink(
+  projectId: string,
+  linkId: string,
+): Promise<ApiResponse<GeneralProjectDetail>> {
+  return apiFetch<ApiResponse<GeneralProjectDetail>>(
+    `/general/projects/${encodeURIComponent(projectId)}/links/${encodeURIComponent(linkId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** GET /api/general/drive-files/{fileId} — one Drive file's name and type (owner only). */
+export function getGeneralDriveFile(fileId: string): Promise<ApiResponse<GeneralDriveFile>> {
+  return apiFetch<ApiResponse<GeneralDriveFile>>(
+    `/general/drive-files/${encodeURIComponent(fileId)}`,
+  );
+}
+
+/** GET /api/butlers/{butler}/deadlines/{deadlineId} — one deadline (owner only). */
+export function getButlerDeadline(
+  butler: string,
+  deadlineId: string,
+): Promise<ApiResponse<DeadlineRecord>> {
+  return apiFetch<ApiResponse<DeadlineRecord>>(
+    `/butlers/${encodeURIComponent(butler)}/deadlines/${encodeURIComponent(deadlineId)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Memory
 // ---------------------------------------------------------------------------
 
@@ -2489,6 +2628,7 @@ function factSearchParams(params?: FactParams): URLSearchParams {
     sp.set("importance_min", String(params.importance_min));
   if (params?.source_episode_id)
     sp.set("source_episode_id", params.source_episode_id);
+  if (params?.held != null) sp.set("held", String(params.held));
   if (params?.offset != null) sp.set("offset", String(params.offset));
   if (params?.limit != null) sp.set("limit", String(params.limit));
   return sp;
@@ -2575,6 +2715,18 @@ export function getFact(factId: string): Promise<ApiResponse<Fact>> {
 export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
   return apiFetch<ApiResponse<Fact>>(
     `/memory/facts/${encodeURIComponent(factId)}/confirm`,
+    { method: "POST" },
+  );
+}
+
+/**
+ * Vouch for a held fact: the owner stands behind a claim a non-owner made.
+ * POST /api/memory/facts/{id}/vouch (bu-jv1moa.14). Owner only; additive, so the
+ * fact keeps its original authority. Idempotent.
+ */
+export function vouchFact(factId: string): Promise<ApiResponse<FactVouch>> {
+  return apiFetch<ApiResponse<FactVouch>>(
+    `/memory/facts/${encodeURIComponent(factId)}/vouch`,
     { method: "POST" },
   );
 }
@@ -3470,6 +3622,7 @@ function approvalActionSearchParams(params?: ApprovalActionParams): URLSearchPar
   if (params?.tool_name) qs.set("tool_name", params.tool_name);
   if (params?.status) qs.set("status", params.status);
   if (params?.butler) qs.set("butler", params.butler);
+  if (params?.goal_id) qs.set("goal_id", params.goal_id);
   if (params?.offset != null) qs.set("offset", params.offset.toString());
   if (params?.limit != null) qs.set("limit", params.limit.toString());
   return qs;
@@ -3584,9 +3737,21 @@ export function retryUnroutableAttention(
   );
 }
 
-export function getApprovalDetail(actionId: string, reviewSource?: string): Promise<ApiResponse<ApprovalDetail>> {
+/**
+ * `statusOnly` sends `present=false`: the server then mints no owner-delivery card, so use it
+ * only for a read that never renders the card.
+ */
+export function getApprovalDetail(
+  actionId: string,
+  reviewSource?: string,
+  options: { statusOnly?: boolean } = {},
+): Promise<ApiResponse<ApprovalDetail>> {
+  const params = new URLSearchParams();
+  if (reviewSource !== undefined) params.set("review_source", reviewSource);
+  if (options.statusOnly) params.set("present", "false");
+  const query = params.toString();
   return apiFetch<ApiResponse<ApprovalDetail>>(
-    `/approvals/${encodeURIComponent(actionId)}${reviewSource !== undefined ? `?review_source=${encodeURIComponent(reviewSource)}` : ""}`,
+    `/approvals/${encodeURIComponent(actionId)}${query ? `?${query}` : ""}`,
   );
 }
 
@@ -3602,6 +3767,17 @@ export function approveApproval(
       body: JSON.stringify(request ?? {}),
     },
   );
+}
+
+/** Decide one card through its single-use token; a refusal never falls back to another route. */
+export function redeemOwnerDeliveryAction(
+  request: OwnerDeliveryActionRequest,
+): Promise<ApiResponse<ApprovalAction>> {
+  return apiFetch<ApiResponse<ApprovalAction>>("/owner-delivery/actions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
 }
 
 export function retryApproval(
@@ -3667,6 +3843,73 @@ export function updateApprovalsPolicy(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(policy),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Standing-reply template drafts (owner-only, inactive; bu-jv1moa.10/.42)
+// ---------------------------------------------------------------------------
+
+export function listReplyTemplateDrafts(
+  cursor?: string | null,
+): Promise<CursorPage<StandingReplyTemplateDraft>> {
+  const qs = new URLSearchParams();
+  if (cursor) qs.set("cursor", cursor);
+  const query = qs.toString();
+  return apiFetch<CursorPage<StandingReplyTemplateDraft>>(
+    query ? `/approvals/reply-templates?${query}` : "/approvals/reply-templates",
+  );
+}
+
+export function createReplyTemplateDraft(
+  request: StandingReplyTemplateDraftCreateRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>("/approvals/reply-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function editReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplateDraftEditRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function revokeReplyTemplateDraft(
+  draftId: string,
+  expectedRevision: number,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    },
+  );
+}
+
+export function previewReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplatePreviewRequest,
+): Promise<ApiResponse<StandingReplyTemplatePreview>> {
+  return apiFetch<ApiResponse<StandingReplyTemplatePreview>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 /**
@@ -4259,6 +4502,7 @@ import type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 } from "./types.ts";
 
@@ -4282,6 +4526,7 @@ export type {
   ConnectorSummariesResponse,
   ConnectorSummary,
   IngestionPeriod,
+  ListeningState,
   PipelineStats,
 };
 
@@ -4331,10 +4576,8 @@ export interface _BackendStatsRow {
   messages_failed: number;
   /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
   messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
+  /** Heartbeat-derived listening state (bu-s11n0s.5); absent on older responses. */
+  listening?: ListeningState;
   uptime_pct?: number | null;
 }
 
@@ -4379,7 +4622,8 @@ function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
       messages_failed: entry.today_messages_failed,
       uptime_pct: null,
     },
-    hourly_events: entry.hourly_events ?? Array(24).fill(0),
+    // Absent counts are unreported (bu-s11n0s.5.1), never 24 fabricated zeros.
+    hourly_events: entry.hourly_events ?? [],
   };
 }
 
@@ -4419,6 +4663,7 @@ function _toConnectorStats(
   endpointIdentity: string,
   period: IngestionPeriod,
   hourlyEventsAvailable: boolean,
+  listeningAvailable: boolean,
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
     bucket: (r.hour ?? r.day ?? ""),
@@ -4426,9 +4671,8 @@ function _toConnectorStats(
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
     messages_filtered: r.messages_filtered ?? 0,
-    healthy_count: r.healthy_count,
-    degraded_count: r.degraded_count,
-    error_count: r.error_count,
+    // Absent (older backend) is "cannot say", never "listening".
+    listening: r.listening ?? "unknown",
   }));
 
   const totalIngested = timeseries.reduce((s, r) => s + r.messages_ingested, 0);
@@ -4454,6 +4698,7 @@ function _toConnectorStats(
     summary,
     timeseries,
     hourly_events_available: hourlyEventsAvailable,
+    listening_available: listeningAvailable,
   };
 }
 
@@ -4487,6 +4732,7 @@ export async function getConnectorStats(
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
   const hourlyEventsAvailable = resp.meta?.hourly_events_available !== false;
+  const listeningAvailable = resp.meta?.listening_available !== false;
   return {
     ...resp,
     data: _toConnectorStats(
@@ -4495,6 +4741,7 @@ export async function getConnectorStats(
       endpointIdentity,
       period,
       hourlyEventsAvailable,
+      listeningAvailable,
     ),
   };
 }
@@ -5630,9 +5877,13 @@ export function getQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerStatus>
 }
 
 /** POST /api/qa/circuit-breaker/reset — reset a tripped circuit breaker */
-export function resetQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerResetResponse>> {
+export function resetQaCircuitBreaker(
+  causeRef: string,
+): Promise<ApiResponse<CircuitBreakerResetResponse>> {
   return apiFetch<ApiResponse<CircuitBreakerResetResponse>>("/qa/circuit-breaker/reset", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cause_ref: causeRef }),
   });
 }
 
@@ -6090,6 +6341,11 @@ export interface SystemConditionsParams {
   source?: string;
   /** "open" | "aging" | "resolved" */
   state?: string;
+  /**
+   * "work" | "personal" | "undeclared" -- owner ledger only (400 otherwise).
+   * Narrows to commitments by the sphere the owner declared.
+   */
+  sphere?: string;
   offset?: number;
   limit?: number;
 }
@@ -6113,6 +6369,7 @@ export function getSystemConditions(
   if (params.ledger) query.set("ledger", params.ledger);
   if (params.source) query.set("source", params.source);
   if (params.state) query.set("state", params.state);
+  if (params.sphere) query.set("sphere", params.sphere);
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const qs = query.toString();

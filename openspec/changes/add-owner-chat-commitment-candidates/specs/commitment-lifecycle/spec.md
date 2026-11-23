@@ -13,7 +13,9 @@ the owner's timezone, and SHALL take the counterparty only from the chat's singl
 channel identity, resolved through the Relationship channel-identity resolver, never from a
 capitalised name in the text. The counterparty SHALL be a known contact: it resolves to a live
 entity that is neither the owner nor marked unidentified. A candidate SHALL carry
-`direction: "owner_to_other"`, the detector's `kind`, `confidence` and `marker`, an action
+`direction: "owner_to_other"`, the detector's `kind` and `confidence`, the detector marker as a
+fixed category from a closed set (never the matched text, which in the relay forms carries a
+third party's name; a form with no category SHALL be refused), an action
 description of at most 120 characters, the optional deadline, the commitment fingerprint, the
 source channel, the source event time, an immutable source evidence reference (the ingestion
 event id and the provider message id) and an untrusted-origin taint stamp. The store SHALL NOT
@@ -179,7 +181,8 @@ receipt without a second mutation. `track` SHALL be the only disposition that wr
 commitment: it SHALL call `create_commitment` with the candidate's kind, direction, counterparty,
 confidence, action and deadline, and `evidence_opened` carrying `source: "owner_chat_candidate"`,
 the channel, the source evidence reference, the source event time, the marker, the candidate id,
-the `confirm_id` and the answer time, and SHALL then mark the candidate `tracked` with the
+the `confirm_id` and the application time (`applied_at`); the answer time stays on the confirm
+row. It SHALL then mark the candidate `tracked` with the
 resulting fingerprint. Inside the sink transaction, `track` SHALL first look up an active
 commitment with the candidate's fingerprint; when one exists, `track` SHALL NOT call
 `create_commitment` and SHALL mark the candidate `tracked` with that fingerprint, leaving the
@@ -241,7 +244,8 @@ when tracked. Tombstones SHALL be deleted once their source event time is more t
 The Relationship candidate store SHALL retain no candidate content longer than the 14-day
 horizon. The card's prompt copy (question and quoted action) in the signed confirm transport's
 `public.pending_confirms` row is outside this store and follows that transport's own retention
-and backup policy; this requirement does not claim to purge it.
+and backup policy (redaction 14 days after the confirm settles); this requirement does not
+claim to purge it.
 
 ID: REQ-commitment-lifecycle-015
 Source: bu-jv1moa.11 recorded decisions (unconfirmed candidates lapse silently after 14 days; content retention limited to the action phrase)

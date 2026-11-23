@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.modules.memory.tools._helpers import _storage
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ async def memory_stats(
     pool: Pool,
     *,
     scope: str | None = None,
+    memory_schema: str | None = None,
 ) -> dict[str, Any]:
     """Return system health indicators across all memory types.
 
@@ -130,26 +132,36 @@ async def memory_stats(
     scope_filter_facts = ""
     scope_params: list[Any] = []
     if scope is not None:
-        scope_filter_facts = " AND scope IN ('global', $1)"
+        scope_filter_facts = " AND f.scope IN ('global', $1)"
         scope_params = [scope]
+    visibility = await local_fact_visibility_condition(pool, memory_schema=memory_schema, alias="f")
+    visibility_filter = f" AND {visibility}" if visibility is not None else ""
 
     # validity is the authoritative fading signal (set by run_decay_sweep) — the
     # legacy metadata->>'status' check is dropped so this no longer diverges
     # from the dashboard/API's own `validity = 'fading'` reads.
     facts_active = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'active'" + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts AS f WHERE f.validity = 'active'"
+        + visibility_filter
+        + scope_filter_facts,
         *scope_params,
     )
     facts_fading = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'fading'" + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts AS f WHERE f.validity = 'fading'"
+        + visibility_filter
+        + scope_filter_facts,
         *scope_params,
     )
     facts_superseded = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'superseded'" + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts AS f WHERE f.validity = 'superseded'"
+        + visibility_filter
+        + scope_filter_facts,
         *scope_params,
     )
     facts_expired = await pool.fetchval(
-        "SELECT COUNT(*) FROM facts WHERE validity = 'expired'" + scope_filter_facts,
+        "SELECT COUNT(*) FROM facts AS f WHERE f.validity = 'expired'"
+        + visibility_filter
+        + scope_filter_facts,
         *scope_params,
     )
 

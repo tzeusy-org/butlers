@@ -5,7 +5,7 @@
  * Renders the operator-managed configuration QA investigations need to clone,
  * commit, and open PRs:
  *   - repository configuration (repo URL + clone/sync status)
- *   - GitHub token status (BUTLERS_QA_GH_TOKEN presence)
+ *   - GitHub token status (BUTLERS_QA_GH_READ_TOKEN presence)
  *   - git author identity status (BUTLERS_QA_GIT_AUTHOR_NAME / _EMAIL presence)
  *   - the allowed-repositories whitelist
  *
@@ -278,7 +278,7 @@ export default function QaStafferCard() {
         ) : (
           <>
             <div className="flex flex-col divide-y divide-border/40">
-              <StatusLine label="GitHub token · BUTLERS_QA_GH_TOKEN" state={ghTokenState} />
+              <StatusLine label="GitHub token · BUTLERS_QA_GH_READ_TOKEN (read-only)" state={ghTokenState} />
               <StatusLine
                 label="Git author name · BUTLERS_QA_GIT_AUTHOR_NAME"
                 state={authorNameState}

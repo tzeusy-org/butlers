@@ -164,3 +164,93 @@ def test_sanitize_labels_blocks_residual_sensitive_content(monkeypatch: pytest.M
     assert violations, "expected the validation backstop to flag residual sensitive content"
     # Audit/log safety: the raw sensitive value must not appear in the violation text.
     assert all("tester@synthetic.example" not in v for v in violations)
+
+
+# ---------------------------------------------------------------------------
+# Code-identity preservation (bu-ejow5p.4): resolvable module paths and typed class
+# names survive hostname scrubbing; internal hosts, even identifier-shaped ones, do not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "butlers.core.spawner",
+        "asyncpg.exceptions.UndefinedColumnError",
+        "builtins.ValueError",
+        "asyncio.exceptions.TimeoutError",
+        "Failed in butlers.core.spawner while calling asyncpg.exceptions.PostgresError",
+    ],
+)
+def test_resolvable_code_identifiers_are_preserved(text: str):
+    assert anonymize(text, REPO_ROOT) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "nas-box.example-lan.ts.net",
+        "redis.internal",  # 'redis' is installed; first segment alone must not allow it
+        "db.prod",
+        "butlers.internal",  # real package, lowercase attribute that does not exist
+        "butlers.core.spawner.internal-host",
+        "asyncpg.Internal",  # class-shaped, but the imported module has no such attribute
+        "butlers.core.nonexistent",
+        "jane.doe",  # a person's name is not a module
+        "butlers.core.spawner.evil.example-corp.lan",
+    ],
+)
+def test_identifier_shaped_internal_hosts_stay_redacted(text: str):
+    out = anonymize(f"connect {text} now", REPO_ROOT)
+    assert "[REDACTED-HOST]" in out
+    assert text not in out
+
+
+def test_code_identifier_near_secrets_does_not_leak_neighbours():
+    text = (
+        "butlers.core.spawner failed for jane.doe@corp.example.com "
+        "token=sk-ant-api03-abc123XYZ_extra-long-token host db.prod 10.1.2.3"
+    )
+    out = anonymize(text, REPO_ROOT)
+    assert out.startswith("butlers.core.spawner failed")
+    for leaked in ("jane.doe", "corp.example.com", "abc123XYZ", "db.prod", "10.1.2.3"):
+        assert leaked not in out
+    assert validate_anonymized(out)[0] is True
+
+
+def test_validation_pass_still_rejects_real_secrets_beside_code_identifiers():
+    ok, violations = validate_anonymized("butlers.core.spawner leaked a@b.example.org")
+    assert ok is False and violations
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "this.Alice",  # stdlib module, not imported, person-like name
+        "turtle.Bob",
+        "json.Carol",  # stdlib package
+        "butlers.core.spawner.Dave",  # repo module + name
+        "asyncpg.exceptions.Erin",  # third-party module + name
+        "asyncio.exceptions.Frank",
+        "tomllib.Grace",
+    ],
+)
+def test_capitalized_names_are_kept_only_with_import_free_source_evidence(text: str):
+    import sys
+
+    for name in ("this", "turtle", "tomllib"):
+        sys.modules.pop(name, None)  # the attribute check must not rely on an import
+    out = anonymize(f"owner {text} said", REPO_ROOT)
+    assert text not in out
+    assert "[REDACTED-HOST]" in out
+
+
+def test_real_classes_are_preserved_without_importing_their_module():
+    import sys
+
+    sys.modules.pop("tomllib", None)
+    assert anonymize("tomllib.TOMLDecodeError", REPO_ROOT) == "tomllib.TOMLDecodeError"
+    assert "tomllib" not in sys.modules  # preservation did not import it
+    assert anonymize("concurrent.futures.TimeoutError", REPO_ROOT) == (
+        "concurrent.futures.TimeoutError"
+    )

@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +19,7 @@ import pytest
 
 from butlers.config import ButlerConfig, ConfigError, SchedulerConfig, load_config
 from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
 pytestmark = pytest.mark.unit
 
@@ -61,116 +61,6 @@ def _make_butler_toml(
         ]
     (tmp_path / "butler.toml").write_text("\n".join(lines))
     return tmp_path
-
-
-def _patch_infra():
-    """Return patches for all infrastructure dependencies used by ButlerDaemon.start()."""
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_audit_db = MagicMock()
-    mock_audit_db.connect = AsyncMock()
-    mock_audit_db.close = AsyncMock()
-    mock_audit_db.pool = AsyncMock()
-
-    _db_call_count = 0
-
-    def _db_from_env_factory(db_name: str) -> MagicMock:
-        nonlocal _db_call_count
-        _db_call_count += 1
-        if _db_call_count == 1:
-            return mock_db
-        return mock_audit_db
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    return {
-        "db_from_env": patch(
-            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
-        ),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter",
-            return_value=type(
-                "MockAdapter",
-                (),
-                {
-                    "binary_name": "claude",
-                    "__init__": lambda self, **kwargs: None,
-                },
-            )(),
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_audit_db": mock_audit_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
 
 
 def _make_daemon_with_loop(butler_dir: Path, name: str, interval: int) -> ButlerDaemon:
@@ -219,41 +109,27 @@ class TestSchedulerConfig:
 class TestSchedulerLoopBehavior:
     """Tests for the _scheduler_loop() coroutine behavior."""
 
-    async def test_task_lifecycle_and_tick_params(self, tmp_path: Path) -> None:
-        """Task created on start, cleared after shutdown; tick() gets the runtime pool and name.
+    @pytest.mark.integration
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_task_is_created_on_start_and_cleared_on_shutdown(
+        self, booted_daemon, tmp_path: Path
+    ) -> None:
+        """The real startup starts the scheduler loop; the real shutdown clears it."""
+        booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+        daemon = booted.daemon
+        assert isinstance(daemon._scheduler_loop_task, asyncio.Task)
+        assert not daemon._scheduler_loop_task.done()
+
+        await booted.shutdown()
+
+        assert daemon._scheduler_loop_task is None
+
+    async def test_tick_gets_the_runtime_pool_and_name(self, tmp_path: Path) -> None:
+        """tick() gets the runtime pool and name.
 
         QA's policy read uses tick's primary pool, so it must be the daemon's own
         role-scoped pool rather than the audit pool passed as eligibility_pool.
         """
-        butler_dir = _make_butler_toml(tmp_path)
-        patches = _patch_infra()
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-
-        try:
-            assert daemon._scheduler_loop_task is not None
-            assert isinstance(daemon._scheduler_loop_task, asyncio.Task)
-        finally:
-            await daemon.shutdown()
-
-        assert daemon._scheduler_loop_task is None
-
         # tick() called with correct stagger_key and butler_name
         tick_calls: list[tuple] = []
 
@@ -421,7 +297,7 @@ async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch
     async def tick(pool, dispatch, *, notify_fn, **kwargs):
         from uuid import uuid4
 
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
         now = datetime.now(UTC)
         anchor = now - timedelta(minutes=1)

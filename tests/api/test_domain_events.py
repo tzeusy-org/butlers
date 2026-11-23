@@ -1,6 +1,6 @@
 """Tests for GET /api/domain-events/{subscriptions,deliveries} — bu-317s5.
 
-Mirrors the ``_MockDB``/``_Record`` harness style from ``tests/api/test_delegation.py``.
+Mirrors the ``_Record`` harness style from ``tests/api/test_delegation.py``.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -70,25 +71,22 @@ def _make_delivery_row(
     )
 
 
-class _MockDB:
-    """Minimal DatabaseManager stand-in — one pool serving the public tables."""
-
-    def __init__(
-        self,
-        *,
-        rows: list[dict],
-        total: int | None = None,
-        raises: Exception | None = None,
-        reaction_rows: list[dict] | None = None,
-        contract_rows: list[dict] | None = None,
-    ) -> None:
-        self.butler_names = ["finance"]
-        self.pool_mock = AsyncMock()
-        if raises is not None:
-            self.pool_mock.fetch = AsyncMock(side_effect=raises)
-            self.pool_mock.fetchval = AsyncMock(side_effect=raises)
-            return
-        self.pool_mock.fetchval = AsyncMock(return_value=total if total is not None else len(rows))
+def _wire_db(
+    app,
+    *,
+    rows: list[dict],
+    total: int | None = None,
+    raises: Exception | None = None,
+    reaction_rows: list[dict] | None = None,
+    contract_rows: list[dict] | None = None,
+) -> AsyncMock:
+    """Serve one pool (the public tables) under ``finance``; return that pool."""
+    pool = AsyncMock()
+    if raises is not None:
+        pool.fetch = AsyncMock(side_effect=raises)
+        pool.fetchval = AsyncMock(side_effect=raises)
+    else:
+        pool.fetchval = AsyncMock(return_value=total if total is not None else len(rows))
 
         async def _fetch(query: str, *_args):
             # Route by table so a reaction lookup never reads back delivery
@@ -100,32 +98,10 @@ class _MockDB:
                 return contract_rows or []
             return rows
 
-        self.pool_mock.fetch = AsyncMock(side_effect=_fetch)
-
-    def pool(self, name: str):
-        if name not in self.butler_names:
-            raise KeyError(name)
-        return self.pool_mock
-
-
-def _wire_db(
-    app,
-    *,
-    rows: list[dict],
-    total: int | None = None,
-    raises: Exception | None = None,
-    reaction_rows: list[dict] | None = None,
-    contract_rows: list[dict] | None = None,
-) -> _MockDB:
-    mock_db = _MockDB(
-        rows=rows,
-        total=total,
-        raises=raises,
-        reaction_rows=reaction_rows,
-        contract_rows=contract_rows,
-    )
-    app.dependency_overrides[get_db] = lambda: mock_db
-    return mock_db
+        pool.fetch = AsyncMock(side_effect=_fetch)
+    manager = db_manager({"finance": pool})
+    app.dependency_overrides[get_db] = lambda: manager
+    return pool
 
 
 async def test_list_subscriptions_returns_rows(app):
@@ -145,7 +121,7 @@ async def test_list_subscriptions_returns_rows(app):
 
 
 async def test_list_subscriptions_passes_filters_through(app):
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -156,7 +132,7 @@ async def test_list_subscriptions_passes_filters_through(app):
         )
 
     assert resp.status_code == 200
-    fetch_query, *fetch_args = mock_db.pool_mock.fetch.await_args.args
+    fetch_query, *fetch_args = pool.fetch.await_args.args
     assert "subscriber_butler = $1" in fetch_query
     assert "event_type = $2" in fetch_query
     assert fetch_args[:2] == ["health", "travel.trip_active"]
@@ -206,7 +182,7 @@ async def test_list_deliveries_rejects_invalid_status(app):
 
 
 async def test_list_deliveries_passes_filters_through(app):
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -217,7 +193,7 @@ async def test_list_deliveries_passes_filters_through(app):
         )
 
     assert resp.status_code == 200
-    fetch_query, *fetch_args = mock_db.pool_mock.fetch.await_args.args
+    fetch_query, *fetch_args = pool.fetch.await_args.args
     assert "d.subscriber_butler = $1" in fetch_query
     assert "e.source_butler = $2" in fetch_query
     assert "d.status = $3" in fetch_query
@@ -237,7 +213,7 @@ async def test_list_deliveries_surfaces_a_failed_source_as_an_error(app):
 
 async def test_replay_failed_permanent_delivery_requeues_once(app, monkeypatch):
     delivery_id = uuid.uuid4()
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
     replay = AsyncMock(return_value="pending")
     monkeypatch.setattr("butlers.api.routers.domain_events.requeue_failed_delivery", replay)
 
@@ -248,7 +224,7 @@ async def test_replay_failed_permanent_delivery_requeues_once(app, monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["data"] == {"delivery_id": str(delivery_id), "status": "pending"}
-    replay.assert_awaited_once_with(mock_db.pool_mock, delivery_id)
+    replay.assert_awaited_once_with(pool, delivery_id)
 
 
 async def test_replay_delivery_conflicts_after_first_requeue(app, monkeypatch):
@@ -291,7 +267,7 @@ async def test_replay_unknown_delivery_returns_not_found(app, monkeypatch):
 
 
 async def test_replay_delivery_rejects_malformed_id_before_write(app):
-    mock_db = _wire_db(app, rows=[])
+    pool = _wire_db(app, rows=[])
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -299,7 +275,7 @@ async def test_replay_delivery_rejects_malformed_id_before_write(app):
         resp = await client.post("/api/domain-events/deliveries/not-a-uuid/replay")
 
     assert resp.status_code == 400
-    mock_db.pool_mock.fetchval.assert_not_awaited()
+    pool.fetchval.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

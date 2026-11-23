@@ -100,10 +100,10 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: Incident Correlation and Reasoning Admission
-QA SHALL retain source observations independently while correlating them into incident generations by trustworthy shared occurrence/session/request/condition or verified goal/invocation lineage, and SHALL atomically admit reasoning on material state changes within finite persisted budgets.
+QA SHALL retain source observations independently while correlating them into incident generations by trustworthy shared occurrence/session/request/condition or verified goal/invocation lineage, and SHALL atomically admit reasoning on material state changes within finite persisted budgets. Incident admission SHALL remain QA-owned deterministic infrastructure, distinct from RFC 0038 goal admission.
 
 ID: REQ-qa-triage-003
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D5, D10 and D18; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Multiple discovery sources observe one failure
@@ -126,3 +126,9 @@ Scope: v1-mandatory
 - **WHEN** an existing trusted publisher receipt reports unavailable repository access
 - **THEN** QA records an action-needed capability condition and retains candidate artifacts rather than repeatedly executing identical coding work
 - **AND** this condition adds no credential lookup, provider probe or broader permission beyond the existing publisher contract
+
+#### Scenario: Staffer triage goal and incident admission stay separate
+- **WHEN** a `qa_triage_v1` staffer goal is admitted for an acknowledged canonical finding in a switched mode
+- **THEN** its admission decision lives only in the goal ledger and its invocations draw only on its D10 staffer budget
+- **AND** it neither creates, joins nor revises an incident generation, reserves or consumes the incident work budget, nor launches an investigation
+- **AND** its judgment is exposed data that cannot satisfy or bypass any admission gate, and incident admission never depends on a goal being admitted

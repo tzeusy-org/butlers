@@ -17,7 +17,6 @@ from butlers.modules.approvals.execution_context import (
     reset_approval_execution_context,
     set_approval_execution_context,
 )
-from butlers.testing.schema_standins import APPROVAL_EVENTS
 from butlers.tools.relationship.fact_authority import record_admitted_approval
 
 
@@ -46,8 +45,10 @@ async def synthetic_owner(pool):
 
 
 async def approve_fixture(pool, action_id):
-    """A synthetic decision with actual stored arguments and append-only event."""
-    await pool.execute(APPROVAL_EVENTS.ddl())
+    """A synthetic decision with actual stored arguments and append-only event.
+
+    *pool* must carry the approvals chain (``approval_events``).
+    """
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute("UPDATE pending_actions SET status='approved' WHERE id=$1", action_id)
         await conn.execute(

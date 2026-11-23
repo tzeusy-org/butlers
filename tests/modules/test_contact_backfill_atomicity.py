@@ -16,59 +16,44 @@ After bu-tzyuh: create_contact writes to public.entities (not public.contacts).
 from __future__ import annotations
 
 import uuid
+from unittest.mock import MagicMock
 
 import pytest
 
 from butlers.modules.contacts.backfill import ContactBackfillEngine, ContactBackfillWriter
 from butlers.modules.contacts.sync import CanonicalContact
+from butlers.testing.fake_pool import FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
-# Fakes: a pool whose acquire()/transaction() record entry/exit so we can prove
-# the writer calls happen inside the transaction.
+# A kit pool whose connection's transaction() records entry/exit, so we can
+# prove the writer calls happen inside the transaction.
 # ---------------------------------------------------------------------------
 
 
-class _FakeTxn:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
+class _RecordedTransaction:
+    """Logs entry and exit (with the exception type) into the shared event list."""
 
-    async def __aenter__(self) -> _FakeTxn:
-        self._conn.events.append("txn_enter")
+    def __init__(self, events: list) -> None:
+        self._events = events
+
+    async def __aenter__(self) -> _RecordedTransaction:
+        self._events.append("txn_enter")
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
-        self._conn.events.append(("txn_exit", exc_type))
+        self._events.append(("txn_exit", exc_type))
         return False  # never swallow — real asyncpg rolls back on exception
 
 
-class _FakeConn:
-    def __init__(self) -> None:
-        self.events: list = []
-
-    def transaction(self) -> _FakeTxn:
-        return _FakeTxn(self)
-
-
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, *a) -> bool:
-        return False
-
-
-class _FakePool:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire(self._conn)
+def _new_contact_pool(events: list) -> FakePool:
+    # The reappearing-anchor lookup (every provider since bu-iqmmi0) finds no
+    # inactive source link for a brand-new contact.
+    pool = fake_pool(fetchrow=None)
+    pool.connection.transaction = MagicMock(side_effect=lambda: _RecordedTransaction(events))
+    return pool
 
 
 def _contact() -> CanonicalContact:
@@ -81,9 +66,11 @@ def _contact() -> CanonicalContact:
     )
 
 
-def _engine_with_recording_writer(conn: _FakeConn):
+def _engine_with_recording_writer():
     """Build an engine whose resolver returns 'new' and whose writer records calls."""
-    engine = ContactBackfillEngine(_FakePool(conn), provider="google", account_id="default")
+    events: list = []
+    pool = _new_contact_pool(events)
+    engine = ContactBackfillEngine(pool, provider="google", account_id="default")
 
     calls: list[tuple] = []
     new_id = uuid.uuid4()
@@ -92,12 +79,12 @@ def _engine_with_recording_writer(conn: _FakeConn):
         return (None, "new")
 
     async def _create_contact(_contact, *, executor=None):
-        conn.events.append("create_contact")
+        events.append("create_contact")
         calls.append(("create_contact", executor))
         return new_id
 
     async def _upsert_source_link(_local_id, _contact, *, executor=None):
-        conn.events.append("upsert_source_link")
+        events.append("upsert_source_link")
         calls.append(("upsert_source_link", _local_id, executor))
 
     async def _noop(*a, **k):
@@ -110,12 +97,11 @@ def _engine_with_recording_writer(conn: _FakeConn):
     engine._writer.upsert_addresses = _noop  # type: ignore[assignment]
     engine._writer.upsert_important_dates = _noop  # type: ignore[assignment]
     engine._writer.upsert_labels = _noop  # type: ignore[assignment]
-    return engine, calls, conn, new_id
+    return engine, calls, pool.connection, events, new_id
 
 
 async def test_new_contact_create_and_source_link_share_one_transaction():
-    conn = _FakeConn()
-    engine, calls, conn, new_id = _engine_with_recording_writer(conn)
+    engine, calls, conn, events, new_id = _engine_with_recording_writer()
 
     await engine(_contact())
 
@@ -127,12 +113,10 @@ async def test_new_contact_create_and_source_link_share_one_transaction():
     assert link[1] == new_id  # linked to the just-created contact
 
     # ...and both happened strictly between txn_enter and txn_exit.
-    enter = conn.events.index("txn_enter")
-    exit_ = next(
-        i for i, e in enumerate(conn.events) if isinstance(e, tuple) and e[0] == "txn_exit"
-    )
-    create_at = conn.events.index("create_contact")
-    link_at = conn.events.index("upsert_source_link")
+    enter = events.index("txn_enter")
+    exit_ = next(i for i, e in enumerate(events) if isinstance(e, tuple) and e[0] == "txn_exit")
+    create_at = events.index("create_contact")
+    link_at = events.index("upsert_source_link")
     assert enter < create_at < link_at < exit_
 
     # Child-table upserts are best-effort and run OUTSIDE the transaction
@@ -149,11 +133,10 @@ async def test_source_link_failure_rolls_back_and_propagates():
     on the next cycle — at which point no half-written contact exists to find,
     so it creates cleanly rather than duplicating.
     """
-    conn = _FakeConn()
-    engine, _calls, conn, _new_id = _engine_with_recording_writer(conn)
+    engine, _calls, _conn, events, _new_id = _engine_with_recording_writer()
 
     async def _boom(_local_id, _contact, *, executor=None):
-        conn.events.append("upsert_source_link")
+        events.append("upsert_source_link")
         raise RuntimeError("link write failed")
 
     engine._writer.upsert_source_link = _boom  # type: ignore[assignment]
@@ -163,7 +146,7 @@ async def test_source_link_failure_rolls_back_and_propagates():
 
     # The transaction context manager saw the exception on exit (would roll
     # back the contact INSERT in real asyncpg).
-    txn_exit = next(e for e in conn.events if isinstance(e, tuple) and e[0] == "txn_exit")
+    txn_exit = next(e for e in events if isinstance(e, tuple) and e[0] == "txn_exit")
     assert txn_exit[1] is RuntimeError
 
 

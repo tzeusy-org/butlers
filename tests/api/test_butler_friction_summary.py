@@ -15,6 +15,8 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record, row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -28,44 +30,39 @@ _ALL_KINDS = (
 )
 
 
-def _make_pool(
+_ZERO_TOTALS = {
+    "total_sessions": 0,
+    "total_input_tokens": 0,
+    "total_output_tokens": 0,
+    "total_cached_input_tokens": 0,
+    "total_cache_creation_tokens": 0,
+    "succeeded": 0,
+    "failed": 0,
+}
+
+
+def _summary_pool(
     *,
-    friction_rows: list[dict] | None = None,
+    friction_rows: list[Record] | None = None,
     totals: dict | None = None,
-    by_model_rows: list[dict] | None = None,
-    by_marker_rows: list[dict] | None = None,
-) -> AsyncMock:
-    """Wire a fake pool whose fetch/fetchrow branch on the query text.
+    by_model_rows: list[Record] | None = None,
+    by_marker_rows: list[Record] | None = None,
+) -> FakePool:
+    """Pool answering the endpoint's reads in call order.
 
-    ``friction_summary`` issues one ``pool.fetch`` (sessions_friction JOIN).
-    ``sessions_summary`` issues one ``pool.fetchrow`` (totals) and two more
-    ``pool.fetch`` calls (by_model, by_error_marker) -- distinguished here by
-    a distinctive substring in each query.
+    The endpoint awaits ``friction_summary`` (one fetch) then ``sessions_summary``
+    (totals fetchrow, then by_model and by_error_marker fetches). SQL correctness
+    of both readers is covered on a real DB in tests/core/test_core_sessions.py.
     """
-    totals = totals or {
-        "total_sessions": 0,
-        "total_input_tokens": 0,
-        "total_output_tokens": 0,
-        "total_cached_input_tokens": 0,
-        "total_cache_creation_tokens": 0,
-        "succeeded": 0,
-        "failed": 0,
-    }
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=totals)
-
-    async def _fetch(query: str, *args: object) -> list[dict]:
-        if "sessions_friction" in query:
-            return friction_rows or []
-        if "marker" in query:
-            return by_marker_rows or []
-        return by_model_rows or []
-
-    pool.fetch = AsyncMock(side_effect=_fetch)
-    return pool
+    return fake_pool(
+        fetchrow=row(**(totals or _ZERO_TOTALS)),
+        fetch=AsyncMock(
+            side_effect=[friction_rows or [], by_model_rows or [], by_marker_rows or []]
+        ),
+    )
 
 
-def _make_app(pool: AsyncMock) -> object:
+def _make_app(pool: FakePool) -> object:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
     app = create_app()
@@ -83,7 +80,7 @@ def _make_app_missing_butler(butler_name: str) -> object:
 
 async def test_friction_summary_zero_fills_every_kind() -> None:
     """A clean-session butler still reports every kind at 0, not a sparse dict."""
-    pool = _make_pool()
+    pool = _summary_pool()
     app = _make_app(pool)
 
     async with httpx.AsyncClient(
@@ -104,10 +101,10 @@ async def test_friction_summary_zero_fills_every_kind() -> None:
 
 async def test_friction_summary_combines_friction_and_outcomes() -> None:
     """Friction counts and session outcomes both land in one response."""
-    pool = _make_pool(
+    pool = _summary_pool(
         friction_rows=[
-            {"kind": "guardrail_termination", "count": 3},
-            {"kind": "dead_end", "count": 1},
+            row(kind="guardrail_termination", count=3),
+            row(kind="dead_end", count=1),
         ],
         totals={
             "total_sessions": 20,
@@ -118,7 +115,7 @@ async def test_friction_summary_combines_friction_and_outcomes() -> None:
             "succeeded": 16,
             "failed": 4,
         },
-        by_marker_rows=[{"marker": "token_budget_exceeded", "count": 3}],
+        by_marker_rows=[row(marker="token_budget_exceeded", count=3)],
     )
     app = _make_app(pool)
 
@@ -141,7 +138,7 @@ async def test_friction_summary_combines_friction_and_outcomes() -> None:
 
 async def test_friction_summary_invalid_period_returns_422() -> None:
     """period is constrained to the Literal set at the FastAPI layer."""
-    pool = _make_pool()
+    pool = _summary_pool()
     app = _make_app(pool)
 
     async with httpx.AsyncClient(

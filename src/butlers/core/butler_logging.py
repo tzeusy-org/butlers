@@ -17,6 +17,16 @@ Rationale:
 Buffer flush cadence: N/A — no buffer.  Each ``log_nowait()`` call schedules
 one ``create_task`` immediately; ``log()`` awaits ``_write()`` directly.
 
+Loop ownership and shutdown
+---------------------------
+An asyncpg pool belongs to the event loop that opened it; driving it from any
+other loop corrupts the connection's protocol state ("got result for unknown
+protocol state").  ``log_nowait()`` therefore always schedules the write on the
+logger's own loop, handing a line logged from another thread or loop over with
+``call_soon_threadsafe`` (bu-rvgzmf.12).  The logger tracks its in-flight
+writes, and ``aclose()`` stops new ones and lets the in-flight ones finish, so
+shutdown can close the pool without racing them (bu-rvgzmf.7).
+
 Retention policy: no automatic vacuum or partition.  Retention is handled
 out-of-band by the operator (cron delete, pg_partman, or table truncation).
 See migration ``core_089`` for the table definition.
@@ -36,6 +46,7 @@ ready (see ``butlers.lifecycle.run_startup``).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from datetime import datetime
@@ -47,6 +58,9 @@ logger = logging.getLogger(__name__)
 # Ordered list of severity levels for >= comparisons.
 _LEVEL_ORDER = ("DEBUG", "INFO", "WARN", "ERROR")
 _VALID_LEVELS = frozenset(_LEVEL_ORDER)
+
+# How long shutdown waits for in-flight log writes before cancelling them.
+_DRAIN_TIMEOUT_S = 5.0
 
 
 def _level_rank(level: str) -> int:
@@ -88,6 +102,14 @@ class ButlerLogger:
         self._pool = pool
         self._schema = schema
         self._min_rank = _level_rank(norm_min)
+        # The loop that owns the pool: the one constructing the logger, or else the
+        # first loop that logs through it.
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+        self._pending: set[asyncio.Task[None]] = set()
+        self._closed = False
 
     # ------------------------------------------------------------------
     # Public API
@@ -103,23 +125,61 @@ class ButlerLogger:
         metadata: dict[str, Any] | None = None,
         ts: datetime | None = None,
     ) -> None:
-        """Schedule a log write without awaiting it (fire-and-forget).
+        """Schedule a log write on the pool's loop without awaiting it.
 
-        Safe to call from synchronous or async contexts.  If there is no
-        running event loop the write is silently skipped.
+        Safe to call from any thread or loop: a line logged anywhere but the
+        logger's own loop is handed over to that loop.  Lines are dropped once
+        the logger is closed, or when no loop owns it yet and none is running.
         """
+        if self._closed:
+            return
         try:
-            loop = asyncio.get_running_loop()
+            running: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
+            running = None
+        if self._loop is None:
+            self._loop = running
+        owner = self._loop
+        if owner is None:
             logger.warning(
                 "butler_logging: no running event loop; dropping %s log line for schema %s",
                 level,
                 self._schema,
             )
             return
-        loop.create_task(
-            self._write(level, msg, source=source, request_id=request_id, metadata=metadata, ts=ts)
+        write = functools.partial(
+            self._schedule,
+            level,
+            msg,
+            source=source,
+            request_id=request_id,
+            metadata=metadata,
+            ts=ts,
         )
+        if running is owner:
+            write()
+            return
+        try:
+            owner.call_soon_threadsafe(write)
+        except RuntimeError:
+            # The owning loop is closed: nothing can write through its pool.
+            return
+
+    async def aclose(self, timeout: float = _DRAIN_TIMEOUT_S) -> None:  # noqa: ASYNC109
+        """Stop accepting lines and let in-flight writes finish, before the pool closes.
+
+        Writes still running after *timeout* seconds are cancelled and awaited,
+        so none outlives the pool.
+        """
+        self._closed = True
+        if not self._pending:
+            return
+        pending = set(self._pending)
+        _done, stuck = await asyncio.wait(pending, timeout=timeout)
+        for task in stuck:
+            task.cancel()
+        if stuck:
+            await asyncio.gather(*stuck, return_exceptions=True)
 
     async def log(
         self,
@@ -143,6 +203,14 @@ class ButlerLogger:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _schedule(self, level: str, msg: str, **fields: Any) -> None:
+        """Start one tracked write task; runs only on the logger's own loop."""
+        if self._closed:
+            return
+        task = asyncio.get_running_loop().create_task(self._write(level, msg, **fields))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     async def _write(
         self,
@@ -248,7 +316,8 @@ class ButlerDBLogHandler(logging.Handler):
     """Logging handler that persists records to a butler's ``butler_logs`` table.
 
     Attach one instance per butler to the root logger after the butler's
-    asyncpg pool is ready, and detach it before the pool is closed.
+    asyncpg pool is ready; detach it and await :meth:`aclose` before the pool
+    is closed.
 
     Why a context filter
     --------------------
@@ -273,6 +342,10 @@ class ButlerDBLogHandler(logging.Handler):
         super().__init__(level=level)
         self._butler_logger = butler_logger
         self._butler_name = butler_name
+
+    async def aclose(self) -> None:
+        """Let this handler's in-flight writes finish; call after detaching it."""
+        await self._butler_logger.aclose()
 
     def emit(self, record: logging.LogRecord) -> None:
         # Lazy import to avoid a circular reference (core.logging imports

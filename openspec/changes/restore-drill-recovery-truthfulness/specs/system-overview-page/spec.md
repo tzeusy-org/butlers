@@ -1,11 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: Backup State Facts
-The `/api/system/backups` endpoint SHALL return the recency and size of the
-most recent database backup, a short history of recent backup events, and a
-genuinely verified health verdict for the most recent backup and restore drill.
-No field in this response SHALL be hardcoded or assumed: every status is
-derived from an actual check or explicitly reports that its source is
+The `/api/system/backups` endpoint SHALL return the recency and size of the most recent
+database backup, plus a short history of recent backup events, plus a genuinely
+verified health verdict for the most recent backup and the most recent restore
+drill. No field in this response SHALL be a hardcoded or assumed value -- every status
+is derived from an actual check (bu-9r3hd.5) or explicitly reports that its source is
 unavailable.
 
 ID: REQ-system-overview-page-005
@@ -32,12 +32,13 @@ Scope: v1-mandatory
 
 #### Scenario: Unavailable backup source degrades gracefully
 - **WHEN** the backup metadata source (MinIO/S3 or filesystem) is unreachable
-- **THEN** `last_backup_at` and `last_backup_size_bytes` are `null`,
-  `backup_source_reachable` is `false`, `backup_history` is empty,
-  `last_backup_status` is `"missing"`, and `backup_stale` is `false`
+- **THEN** `last_backup_at` and `last_backup_size_bytes` are `null`
+- **AND** `backup_source_reachable` is `false`
+- **AND** `backup_history` is an empty array
+- **AND** `last_backup_status` is `"missing"` and `backup_stale` is `false`
 - **AND** the response is HTTP 200 with the degraded payload rather than HTTP 503
-- **AND** the frontend renders a backup-status-unavailable indicator rather than
-  an error state or a passing backup verdict
+- **AND** the frontend renders a "backup status unavailable" indicator rather than an
+  error state or a passing backup verdict
 
 #### Scenario: Restore-drill authority read failure degrades only drill facts
 - **WHEN** the restore-drill executor-owner authority ledger cannot be read

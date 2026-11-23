@@ -1,0 +1,28 @@
+# Short-lived egress allow for the public MCP probe pods in `mcp` (live checks and smoke only).
+# Namespace `mcp` is default-deny in both directions (homelab helm/traefik_mcp_local); only DNS
+# leaves it. Without this, a probe there is rejected on egress and can never reach the public
+# pod, whatever the public chart allows. It selects only pods carrying the probe marker label
+# (no gateway pod has it) and allows only the public pod's MCP port. The scripts apply it before
+# their probes and delete it on exit. The filter-proxy release has its own egress allow in homelab.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: butlers-public-mcp-probe-egress
+  namespace: mcp
+  labels:
+    app.kubernetes.io/part-of: butlers-public-mcp-checks
+spec:
+  podSelector:
+    matchLabels:
+      butlers.tze.how/public-mcp-probe: "true"
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: butlers-public-dev
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: butlers-public-mcp
+      ports:
+        - {protocol: TCP, port: 8080}

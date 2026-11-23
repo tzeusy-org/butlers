@@ -37,6 +37,15 @@ async def test_db_scopes_a_butler_schema_and_round_trips_jsonb(db) -> None:
     assert await pool.fetchval("SELECT '{\"a\": 1}'::jsonb") == {"a": 1}
 
 
+@session_loop
+async def test_db_open_pools_a_fresh_db_url_it_will_close(db, fresh_db) -> None:
+    url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
+    pool = await db.open(url, schema="switchboard")
+    assert (await pool.fetchval("SHOW search_path")).startswith("switchboard")
+    assert await pool.fetchval("SELECT '{\"a\": 1}'::jsonb") == {"a": 1}
+    assert table_exists(url, "state")
+
+
 def test_fresh_db_stops_at_the_requested_revision(fresh_db) -> None:
     head = fresh_db("core")
     early = fresh_db("core", revisions={"core": "core_001"})
@@ -56,3 +65,39 @@ def test_clone_cost_is_reported(fresh_db) -> None:
     # reaches the CI log's warnings summary.
     warnings.warn(f"CORE-CLONE-SECONDS {per_clone:.3f}", UserWarning, stacklevel=1)
     assert per_clone < 30
+
+
+@session_loop
+async def test_fresh_provision_metadata_does_not_transfer_pool_ownership(
+    provisioned_postgres_pool, postgres_container, monkeypatch
+) -> None:
+    from butlers.testing import storage
+
+    events = []
+    original = storage.database_event
+
+    def record(event, container, name, kind):
+        events.append((event, container, name, kind))
+        original(event, container, name, kind)
+
+    monkeypatch.setattr(storage, "database_event", record)
+    async with provisioned_postgres_pool() as pool:
+        name = await pool.fetchval("SELECT current_database()")
+        assert [
+            (event, kind)
+            for event, container, dbname, kind in events
+            if container is postgres_container and dbname == name
+        ] == [("intent", "F"), ("created", "F"), ("ready", "F")]
+        assert await pool.fetchval("SELECT 1") == 1
+    # Closing a borrower pool is not deletion authority for a physical database.
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(postgres_container.get_connection_url())
+    try:
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname=:name)"),
+                {"name": name},
+            ).scalar_one()
+    finally:
+        engine.dispose()

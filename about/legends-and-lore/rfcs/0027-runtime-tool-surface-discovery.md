@@ -1,6 +1,6 @@
 # RFC 0027: Runtime Tool Surface Discovery and Exposure
 
-**Status:** Accepted
+**Status:** Accepted; landed gen1 catalog/control-plane contracts reconciled, with unlanded native discovery succeeded by the RFC 0038 broker (`bu-r980fk`) and adapters (`bu-kiuh8v`).
 **Date:** 2026-08-30
 **Baseline:** `ba1c55c31056af5eaa362a254193bbf43741e86a`
 **Related:** RFC 0001, RFC 0002, RFC 0005, RFC 0008

@@ -25,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY, PENDING_ACTIONS
 from butlers.tools.relationship.fact_coverage import (
     compose_state,
     predicate_coverage,
@@ -43,7 +42,6 @@ from butlers.tools.relationship.relationship_assert_fact import (
 )
 from roster.relationship.tests.evidence_schema import (
     MAX_TEXT_CHARS,
-    apply_evidence_schema,
 )
 from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
 
@@ -52,7 +50,7 @@ _PRED_HAS_PHONE = "has-phone"
 
 _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 
-# The Postgres testcontainer and its pool are session-scoped; a per-test loop
+# The Postgres testcontainer and its rel_pool are session-scoped; a per-test loop
 # would hand asyncpg futures from another loop and every DB test would fail on
 # "attached to a different loop" rather than on anything it asserts.
 _session_loop = pytest.mark.asyncio(loop_scope="session")
@@ -188,67 +186,14 @@ class TestEvidenceValidation:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Relationship schema plus the rel_034 evidence ledger and coverage table."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email', 'contact', 'literal', 'Email address for the entity.'),
-                ('has-phone', 'contact', 'literal', 'Phone number for the entity.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        await p.execute(PENDING_ACTIONS.ddl())
-        await apply_evidence_schema(p)
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship + approvals chains (flat; entity_facts in ``relationship``)."""
+    return await db("core", "memory", "relationship", "approvals")
 
 
 @pytest.fixture
-async def entity(pool: asyncpg.Pool) -> uuid.UUID:
-    return await pool.fetchval(
+async def entity(rel_pool: asyncpg.Pool) -> uuid.UUID:
+    return await rel_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Alice Foo', 'person', '{}')
@@ -258,8 +203,8 @@ async def entity(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 @pytest.fixture
-async def owner_entity(pool: asyncpg.Pool) -> uuid.UUID:
-    return await pool.fetchval(
+async def owner_entity(rel_pool: asyncpg.Pool) -> uuid.UUID:
+    return await rel_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Owner User', 'person', '{owner}')
@@ -278,9 +223,9 @@ _EVIDENCE = [
 @_docker
 @_session_loop
 class TestDirectWriteEvidence:
-    async def test_direct_write_persists_evidence_and_provenance(self, pool, entity):
+    async def test_direct_write_persists_evidence_and_provenance(self, rel_pool, entity):
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -289,7 +234,7 @@ class TestDirectWriteEvidence:
         )
         assert result.outcome == AssertOutcome.inserted
 
-        packet = await read_fact_evidence(pool, result.fact_id)
+        packet = await read_fact_evidence(rel_pool, result.fact_id)
         assert packet["provenance"]["origin"] == "direct"
         assert packet["provenance"]["action_id"] is None
         assert [(e["type"], e["ref"]) for e in packet["evidence"]] == [
@@ -299,13 +244,13 @@ class TestDirectWriteEvidence:
         assert {e["src"] for e in packet["evidence"]} == {"test"}
         assert all(e["carried_from"] is None for e in packet["evidence"])
 
-    async def test_evidence_is_visible_only_if_the_fact_committed(self, pool, entity):
+    async def test_evidence_is_visible_only_if_the_fact_committed(self, rel_pool, entity):
         """Atomicity, held from the failing side: a rolled-back write leaves no ledger."""
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             tx = conn.transaction()
             await tx.start()
             result = await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_HAS_EMAIL,
                 "rolled-back@example.test",
@@ -324,22 +269,22 @@ class TestDirectWriteEvidence:
             await tx.rollback()
 
         assert (
-            await pool.fetchval(
+            await rel_pool.fetchval(
                 "SELECT count(*) FROM relationship.fact_evidence WHERE fact_id = $1",
                 result.fact_id,
             )
             == 0
         )
         assert (
-            await pool.fetchval(
+            await rel_pool.fetchval(
                 "SELECT count(*) FROM relationship.entity_facts WHERE id = $1", result.fact_id
             )
             == 0
         )
 
-    async def test_ledger_rows_cannot_be_rewritten(self, pool, entity):
+    async def test_ledger_rows_cannot_be_rewritten(self, rel_pool, entity):
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -347,14 +292,14 @@ class TestDirectWriteEvidence:
             evidence=list(_EVIDENCE),
         )
         with pytest.raises(asyncpg.PostgresError, match="append-only"):
-            await pool.execute(
+            await rel_pool.execute(
                 "UPDATE relationship.fact_evidence SET note = 'edited' WHERE fact_id = $1",
                 result.fact_id,
             )
 
-    async def test_recited_reference_does_not_duplicate(self, pool, entity):
+    async def test_recited_reference_does_not_duplicate(self, rel_pool, entity):
         first = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -362,7 +307,7 @@ class TestDirectWriteEvidence:
             evidence=list(_EVIDENCE),
         )
         again = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -371,12 +316,12 @@ class TestDirectWriteEvidence:
         )
         assert again.outcome == AssertOutcome.unchanged
         assert again.fact_id == first.fact_id
-        packet = await read_fact_evidence(pool, first.fact_id)
+        packet = await read_fact_evidence(rel_pool, first.fact_id)
         assert len(packet["evidence"]) == len(_EVIDENCE)
 
-    async def test_reassertion_appends_new_references(self, pool, entity):
+    async def test_reassertion_appends_new_references(self, rel_pool, entity):
         first = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -384,20 +329,20 @@ class TestDirectWriteEvidence:
             evidence=list(_EVIDENCE),
         )
         await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
             src="test",
             evidence=[{"type": "url", "ref": "https://example.test/thread/2", "note": "Again."}],
         )
-        packet = await read_fact_evidence(pool, first.fact_id)
+        packet = await read_fact_evidence(rel_pool, first.fact_id)
         assert len(packet["evidence"]) == 3
         assert [e["seq"] for e in packet["evidence"]] == [1, 2, 3]
 
-    async def test_supersession_carries_evidence_onto_the_new_row(self, pool, entity):
+    async def test_supersession_carries_evidence_onto_the_new_row(self, rel_pool, entity):
         first = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -406,7 +351,7 @@ class TestDirectWriteEvidence:
         )
         # Different provenance (src) forces supersession rather than an update.
         second = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.test",
@@ -416,8 +361,8 @@ class TestDirectWriteEvidence:
         assert second.outcome == AssertOutcome.superseded
         assert second.fact_id != first.fact_id
 
-        old = await read_fact_evidence(pool, first.fact_id)
-        new = await read_fact_evidence(pool, second.fact_id)
+        old = await read_fact_evidence(rel_pool, first.fact_id)
+        new = await read_fact_evidence(rel_pool, second.fact_id)
 
         # The superseded row keeps exactly the ledger it was written with.
         assert [(e["ref"], e["carried_from"]) for e in old["evidence"]] == [
@@ -429,20 +374,20 @@ class TestDirectWriteEvidence:
         assert carried["https://example.test/thread/9"] is None
         assert len(new["evidence"]) == 3
 
-    async def test_source_content_is_rejected_before_any_write(self, pool, entity):
+    async def test_source_content_is_rejected_before_any_write(self, rel_pool, entity):
         with pytest.raises(ValueError, match="references, not source content"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_HAS_EMAIL,
                 "alice@example.test",
                 src="test",
                 evidence=[{"type": "text", "ref": "x" * (MAX_TEXT_CHARS + 1), "note": ""}],
             )
-        assert await pool.fetchval("SELECT count(*) FROM relationship.entity_facts") == 0
+        assert await rel_pool.fetchval("SELECT count(*) FROM relationship.entity_facts") == 0
 
-    async def test_unknown_fact_id_is_a_miss_not_an_error(self, pool):
-        packet = await read_fact_evidence(pool, uuid.uuid4())
+    async def test_unknown_fact_id_is_a_miss_not_an_error(self, rel_pool):
+        packet = await read_fact_evidence(rel_pool, uuid.uuid4())
         assert packet == {"fact": None, "provenance": None, "evidence": []}
 
 
@@ -453,38 +398,42 @@ class TestApprovedWriteEvidence:
     """The owner-approved path must land the fact AND its parked evidence."""
 
     @staticmethod
-    async def _park(pool, owner_entity, value="owner@example.test"):
+    async def _park(rel_pool, owner_entity, value="owner@example.test"):
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship"
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await approve_fixture(pool, result.action_id)
+        await approve_fixture(rel_pool, result.action_id)
         return result.action_id
 
-    async def test_parked_args_carry_the_action_id_dispatch_needs(self, pool, owner_entity):
-        action_id = await self._park(pool, owner_entity)
-        args = await pool.fetchval("SELECT tool_args FROM pending_actions WHERE id = $1", action_id)
+    async def test_parked_args_carry_the_action_id_dispatch_needs(self, rel_pool, owner_entity):
+        action_id = await self._park(rel_pool, owner_entity)
+        args = await rel_pool.fetchval(
+            "SELECT tool_args FROM pending_actions WHERE id = $1", action_id
+        )
         import json
 
         args = json.loads(args) if isinstance(args, str) else args
         assert args["approval_action_id"] == str(action_id)
 
-    async def test_parked_args_never_carry_the_asserting_source(self, pool, owner_entity):
+    async def test_parked_args_never_carry_the_asserting_source(self, rel_pool, owner_entity):
         """src/observed_at stay out of tool_args, which dispatch splats as kwargs.
 
         Every key in tool_args must also be a parameter of the MCP tool, and a
         ``src`` parameter there is precisely the owner-carve-out bypass bu-vj46x
         closed. The provenance lives in a server-written row instead.
         """
-        action_id = await self._park(pool, owner_entity)
-        args = await pool.fetchval("SELECT tool_args FROM pending_actions WHERE id = $1", action_id)
+        action_id = await self._park(rel_pool, owner_entity)
+        args = await rel_pool.fetchval(
+            "SELECT tool_args FROM pending_actions WHERE id = $1", action_id
+        )
         import json
 
         args = json.loads(args) if isinstance(args, str) else args
         assert "src" not in args
         assert "observed_at" not in args
 
-        ctx = await pool.fetchrow(
+        ctx = await rel_pool.fetchrow(
             "SELECT src, observed_at FROM relationship.fact_approval_context WHERE action_id = $1",
             action_id,
         )
@@ -493,12 +442,12 @@ class TestApprovedWriteEvidence:
         assert ctx["observed_at"] is not None
 
     async def test_approved_replay_keeps_the_observation_time_not_the_approval_time(
-        self, pool, owner_entity
+        self, rel_pool, owner_entity
     ):
         """The fact is observed when proposed; approving it later must not refresh it."""
         observed = datetime.now(UTC) - timedelta(days=30)
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -506,9 +455,9 @@ class TestApprovedWriteEvidence:
             observed_at=observed,
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await approve_fixture(pool, result.action_id)
+        await approve_fixture(rel_pool, result.action_id)
         replayed = await replay_fixture(
-            pool,
+            rel_pool,
             relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
@@ -517,15 +466,17 @@ class TestApprovedWriteEvidence:
             approval_action_id=result.action_id,
         )
         assert replayed.outcome == AssertOutcome.inserted
-        stored = await pool.fetchval(
+        stored = await rel_pool.fetchval(
             "SELECT observed_at FROM relationship.entity_facts WHERE id = $1", replayed.fact_id
         )
         assert abs((stored - observed).total_seconds()) < 1
 
-    async def test_approved_replay_writes_the_fact_instead_of_reparking(self, pool, owner_entity):
-        action_id = await self._park(pool, owner_entity)
+    async def test_approved_replay_writes_the_fact_instead_of_reparking(
+        self, rel_pool, owner_entity
+    ):
+        action_id = await self._park(rel_pool, owner_entity)
         result = await replay_fixture(
-            pool,
+            rel_pool,
             relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
@@ -536,14 +487,14 @@ class TestApprovedWriteEvidence:
         assert result.outcome == AssertOutcome.inserted
         assert result.fact_id is not None
         # Exactly one pending_actions row — the replay did not ask again.
-        assert await pool.fetchval("SELECT count(*) FROM pending_actions") == 1
+        assert await rel_pool.fetchval("SELECT count(*) FROM pending_actions") == 1
 
     async def test_approved_write_records_approved_provenance_and_evidence(
-        self, pool, owner_entity
+        self, rel_pool, owner_entity
     ):
-        action_id = await self._park(pool, owner_entity)
+        action_id = await self._park(rel_pool, owner_entity)
         result = await replay_fixture(
-            pool,
+            rel_pool,
             relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
@@ -551,11 +502,11 @@ class TestApprovedWriteEvidence:
             src="relationship",
             approval_action_id=action_id,
         )
-        packet = await read_fact_evidence(pool, result.fact_id)
+        packet = await read_fact_evidence(rel_pool, result.fact_id)
         assert packet["provenance"]["origin"] == "approved"
         assert packet["provenance"]["action_id"] == str(action_id)
         # The dossier the owner actually saw is what got persisted.
-        parked = await pool.fetchval(
+        parked = await rel_pool.fetchval(
             "SELECT evidence FROM pending_actions WHERE id = $1", action_id
         )
         import json
@@ -566,10 +517,10 @@ class TestApprovedWriteEvidence:
         }
         assert {e["origin"] for e in packet["evidence"]} == {"approved"}
 
-    async def test_unknown_action_id_is_rejected(self, pool, owner_entity):
+    async def test_unknown_action_id_is_rejected(self, rel_pool, owner_entity):
         with pytest.raises(ValueError, match="does not identify a pending action"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 owner_entity,
                 _PRED_HAS_EMAIL,
                 "owner@example.test",
@@ -577,27 +528,27 @@ class TestApprovedWriteEvidence:
                 approval_action_id=uuid.uuid4(),
             )
 
-    async def test_action_approved_for_another_triple_is_rejected(self, pool, owner_entity):
+    async def test_action_approved_for_another_triple_is_rejected(self, rel_pool, owner_entity):
         """The escalation attempt: borrow a real approval, write something else."""
-        action_id = await self._park(pool, owner_entity, value="owner@example.test")
+        action_id = await self._park(rel_pool, owner_entity, value="owner@example.test")
         with pytest.raises(ValueError, match="approved for a different triple"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 owner_entity,
                 _PRED_HAS_PHONE,
                 "+10000000000",
                 src="relationship",
                 approval_action_id=action_id,
             )
-        assert await pool.fetchval("SELECT count(*) FROM relationship.entity_facts") == 0
+        assert await rel_pool.fetchval("SELECT count(*) FROM relationship.entity_facts") == 0
 
-    async def test_still_pending_action_cannot_execute(self, pool, owner_entity):
+    async def test_still_pending_action_cannot_execute(self, rel_pool, owner_entity):
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.test", src="relationship"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.test", src="relationship"
         )
         with pytest.raises(ValueError, match="only an approved action"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 owner_entity,
                 _PRED_HAS_EMAIL,
                 "owner@example.test",
@@ -605,8 +556,8 @@ class TestApprovedWriteEvidence:
                 approval_action_id=result.action_id,
             )
 
-    async def test_action_for_another_tool_cannot_authorise_a_fact(self, pool, owner_entity):
-        foreign = await pool.fetchval(
+    async def test_action_for_another_tool_cannot_authorise_a_fact(self, rel_pool, owner_entity):
+        foreign = await rel_pool.fetchval(
             """
             INSERT INTO pending_actions (tool_name, tool_args, status)
             VALUES ('notify', '{}'::jsonb, 'approved')
@@ -615,7 +566,7 @@ class TestApprovedWriteEvidence:
         )
         with pytest.raises(ValueError, match="different tool"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 owner_entity,
                 _PRED_HAS_EMAIL,
                 "owner@example.test",
@@ -628,59 +579,59 @@ class TestApprovedWriteEvidence:
 @_docker
 @_session_loop
 class TestPredicateCoverage:
-    async def test_uncovered_predicate_reads_unknown(self, pool, entity):
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_PHONE])
+    async def test_uncovered_predicate_reads_unknown(self, rel_pool, entity):
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_PHONE])
         assert report["target"] == "available"
         assert report["coverage"][_PRED_HAS_PHONE]["state"] == "unknown"
         assert report["coverage"][_PRED_HAS_PHONE]["receipts"] == []
 
-    async def test_a_write_records_its_own_present_receipt(self, pool, entity):
+    async def test_a_write_records_its_own_present_receipt(self, rel_pool, entity):
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.test", src="test"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.test", src="test"
         )
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_EMAIL])
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_EMAIL])
         entry = report["coverage"][_PRED_HAS_EMAIL]
         assert entry["state"] == "present"
         assert entry["value_count"] == 1
         assert [(r["src"], r["outcome"]) for r in entry["receipts"]] == [("test", "present")]
 
-    async def test_explicit_absent_receipt_proves_absence(self, pool, entity):
-        async with pool.acquire() as conn:
+    async def test_explicit_absent_receipt_proves_absence(self, rel_pool, entity):
+        async with rel_pool.acquire() as conn:
             await record_coverage(
                 conn, subject=entity, predicate=_PRED_HAS_PHONE, src="test", outcome="absent"
             )
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_PHONE])
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_PHONE])
         assert report["coverage"][_PRED_HAS_PHONE]["state"] == "absent_proven"
 
-    async def test_unconsultable_source_is_not_evidence_of_absence(self, pool, entity):
-        async with pool.acquire() as conn:
+    async def test_unconsultable_source_is_not_evidence_of_absence(self, rel_pool, entity):
+        async with rel_pool.acquire() as conn:
             await record_coverage(
                 conn, subject=entity, predicate=_PRED_HAS_PHONE, src="test", outcome="unavailable"
             )
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_PHONE])
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_PHONE])
         assert report["coverage"][_PRED_HAS_PHONE]["state"] == "unavailable"
 
-    async def test_merged_away_subject_reads_unavailable(self, pool, entity):
+    async def test_merged_away_subject_reads_unavailable(self, rel_pool, entity):
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.test", src="test"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.test", src="test"
         )
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE public.entities SET metadata = jsonb_build_object('merged_into', $2::text) "
             "WHERE id = $1",
             entity,
             str(uuid.uuid4()),
         )
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_EMAIL])
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_EMAIL])
         assert report["target"] == "unavailable"
         assert report["coverage"][_PRED_HAS_EMAIL]["state"] == "unavailable"
 
-    async def test_unknown_subject_reads_unavailable(self, pool):
-        report = await predicate_coverage(pool, uuid.uuid4(), [_PRED_HAS_EMAIL])
+    async def test_unknown_subject_reads_unavailable(self, rel_pool):
+        report = await predicate_coverage(rel_pool, uuid.uuid4(), [_PRED_HAS_EMAIL])
         assert report["target"] == "unavailable"
 
-    async def test_stale_replay_cannot_rewind_a_receipt(self, pool, entity):
+    async def test_stale_replay_cannot_rewind_a_receipt(self, rel_pool, entity):
         now = datetime.now(UTC)
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             await record_coverage(
                 conn,
                 subject=entity,
@@ -697,24 +648,24 @@ class TestPredicateCoverage:
                 outcome="unavailable",
                 observed_at=now - timedelta(days=1),
             )
-        report = await predicate_coverage(pool, entity, [_PRED_HAS_PHONE])
+        report = await predicate_coverage(rel_pool, entity, [_PRED_HAS_PHONE])
         assert report["coverage"][_PRED_HAS_PHONE]["state"] == "absent_proven"
 
-    async def test_predicates_reported_in_request_order_deduplicated(self, pool, entity):
+    async def test_predicates_reported_in_request_order_deduplicated(self, rel_pool, entity):
         report = await predicate_coverage(
-            pool, entity, [_PRED_HAS_PHONE, _PRED_HAS_EMAIL, _PRED_HAS_PHONE]
+            rel_pool, entity, [_PRED_HAS_PHONE, _PRED_HAS_EMAIL, _PRED_HAS_PHONE]
         )
         assert list(report["coverage"]) == [_PRED_HAS_PHONE, _PRED_HAS_EMAIL]
 
-    async def test_rejects_an_unknown_outcome(self, pool, entity):
-        async with pool.acquire() as conn:
+    async def test_rejects_an_unknown_outcome(self, rel_pool, entity):
+        async with rel_pool.acquire() as conn:
             with pytest.raises(ValueError, match="coverage outcome must be one of"):
                 await record_coverage(
                     conn, subject=entity, predicate=_PRED_HAS_PHONE, src="test", outcome="maybe"
                 )
 
 
-async def _apply_knowledge_gap_schema(pool: asyncpg.Pool) -> None:
+async def _apply_knowledge_gap_schema(rel_pool: asyncpg.Pool) -> None:
     """Run the real mem_014 DDL, so this fixture cannot drift from the migration."""
     import importlib.util
     from pathlib import Path
@@ -727,40 +678,40 @@ async def _apply_knowledge_gap_schema(pool: asyncpg.Pool) -> None:
     module.op = type("Op", (), {"execute": staticmethod(statements.append)})
     module.upgrade()
     for statement in statements:
-        await pool.execute(statement)
+        await rel_pool.execute(statement)
 
 
 @pytest.mark.integration
 @_docker
 @_session_loop
 class TestKnowledgeGapClosure:
-    async def _open_gap(self, pool, entity, predicate=_PRED_HAS_PHONE):
-        await _apply_knowledge_gap_schema(pool)
-        return await pool.fetchval(
+    async def _open_gap(self, rel_pool, entity, predicate=_PRED_HAS_PHONE):
+        await _apply_knowledge_gap_schema(rel_pool)
+        return await rel_pool.fetchval(
             "INSERT INTO knowledge_gaps (entity_id, predicate, question_summary)"
             " VALUES ($1, $2, 'What is Alice phone?') RETURNING id",
             entity,
             predicate,
         )
 
-    async def test_assert_answers_the_open_gap_in_the_same_transaction(self, pool, entity):
-        gap_id = await self._open_gap(pool, entity)
+    async def test_assert_answers_the_open_gap_in_the_same_transaction(self, rel_pool, entity):
+        gap_id = await self._open_gap(rel_pool, entity)
 
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             tx = conn.transaction()
             await tx.start()
             await relationship_assert_fact(
-                pool, entity, _PRED_HAS_PHONE, "+15550100", src="test", conn=conn
+                rel_pool, entity, _PRED_HAS_PHONE, "+15550100", src="test", conn=conn
             )
             await tx.rollback()
-        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
-            "open"
-        )
+        assert await rel_pool.fetchval(
+            "SELECT status FROM knowledge_gaps WHERE id = $1", gap_id
+        ) == ("open")
 
         result = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+            rel_pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
         )
-        gap = await pool.fetchrow("SELECT * FROM knowledge_gaps WHERE id = $1", gap_id)
+        gap = await rel_pool.fetchrow("SELECT * FROM knowledge_gaps WHERE id = $1", gap_id)
         assert (gap["status"], gap["answered_by_ref"], gap["answered_value"]) == (
             "answerable",
             f"entity_fact:{result.fact_id}",
@@ -768,10 +719,10 @@ class TestKnowledgeGapClosure:
         )
         assert gap["answered_authority"] == "system"  # no routing context: a job, not a sender
 
-    async def test_a_closure_failure_leaves_the_fact_written(self, pool, entity, monkeypatch):
+    async def test_a_closure_failure_leaves_the_fact_written(self, rel_pool, entity, monkeypatch):
         from butlers.modules.memory import knowledge_gaps
 
-        gap_id = await self._open_gap(pool, entity)
+        gap_id = await self._open_gap(rel_pool, entity)
 
         async def boom(*_a, **_kw):
             raise RuntimeError("lock service down")
@@ -779,27 +730,29 @@ class TestKnowledgeGapClosure:
         monkeypatch.setattr(knowledge_gaps, "_lock_pair", boom)
 
         result = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+            rel_pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
         )
 
         assert result.outcome is AssertOutcome.inserted
-        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
-            "open"
+        assert await rel_pool.fetchval(
+            "SELECT status FROM knowledge_gaps WHERE id = $1", gap_id
+        ) == ("open")
+
+    async def test_an_unchanged_reassertion_does_not_answer_again(self, rel_pool, entity):
+        gap_id = await self._open_gap(rel_pool, entity)
+        await relationship_assert_fact(rel_pool, entity, _PRED_HAS_PHONE, "+15550100", src="test")
+        await rel_pool.execute(
+            "UPDATE knowledge_gaps SET status = 'delivered' WHERE id = $1", gap_id
         )
 
-    async def test_an_unchanged_reassertion_does_not_answer_again(self, pool, entity):
-        gap_id = await self._open_gap(pool, entity)
-        await relationship_assert_fact(pool, entity, _PRED_HAS_PHONE, "+15550100", src="test")
-        await pool.execute("UPDATE knowledge_gaps SET status = 'delivered' WHERE id = $1", gap_id)
-
         again = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
+            rel_pool, entity, _PRED_HAS_PHONE, "+15550100", src="test"
         )
 
         assert again.outcome is AssertOutcome.unchanged
-        assert await pool.fetchval("SELECT status FROM knowledge_gaps WHERE id = $1", gap_id) == (
-            "delivered"
-        )
+        assert await rel_pool.fetchval(
+            "SELECT status FROM knowledge_gaps WHERE id = $1", gap_id
+        ) == ("delivered")
 
 
 # ---------------------------------------------------------------------------

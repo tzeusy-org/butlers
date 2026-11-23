@@ -1,0 +1,556 @@
+"""The location retention job: reconcile grants, then state lag and failures (bu-s11n0s.7 S4b-4c).
+
+``run_location_retention_job`` reconciles ready grants, counts the raw fixes past the retention
+horizon by why they are still there, and reconciles those counts into the owner condition ledger
+under ``chronicler:location-retention-projection-lag``. Failures are a separate source,
+``chronicler:location-retention-purge-failed``: the job's consecutive failure streak and the
+grants that failed reconciliation. The ledger is state only; nothing is delivered. The run record
+(``location_retention_runs``) commits before any work and the outcome after it.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+import asyncpg
+import pytest
+
+from butlers.chronicler import location_retention_job as job
+from butlers.chronicler.location_retention_grant import (
+    prepare_retention_grant,
+    record_holder_receipt,
+)
+from butlers.chronicler.location_retention_holders import HoldersUnavailable
+from tests.integration import test_owntracks_retention_grant_integration as _grant_suite
+
+grant_url = _grant_suite.grant_url
+chronicler_db = _grant_suite.chronicler_db
+runtime_db = _grant_suite.runtime_db
+_REVISIONS = _grant_suite._REVISIONS
+_cover = _grant_suite._cover
+_hold = _grant_suite._hold
+_insert_point = _grant_suite._insert_point
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
+]
+
+_STATE = "INSERT INTO location_retention_grant_states (grant_id, state) VALUES ($1, $2)"
+
+
+async def _prepare(chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool, minute: int) -> UUID:
+    await _cover(chronicler_db, await _insert_point(chronicler_db, minute))
+    async with runtime_db.acquire() as conn:
+        return (await prepare_retention_grant(conn, config_revisions=_REVISIONS)).id
+
+
+async def _every_category(chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool) -> None:
+    """One overdue raw fix per reason it is still there, and one inside the horizon."""
+    await _prepare(chronicler_db, runtime_db, 0)  # awaiting_holders: prepared, never ready
+    ready = await _prepare(chronicler_db, runtime_db, 5)  # awaiting_deletion
+    await chronicler_db.execute(_STATE, ready, "ready")
+    await _insert_point(chronicler_db, 10)  # uncovered
+    held = await _insert_point(chronicler_db, 15)
+    await _cover(chronicler_db, held, skip="owntracks.place_cluster")
+    await _hold(chronicler_db, held, "owntracks.place_cluster")  # held_open
+    blocked = await _prepare(chronicler_db, runtime_db, 25)  # holder_blocked
+    async with runtime_db.acquire() as conn:
+        await record_holder_receipt(
+            conn, blocked, "switchboard.message_inbox", outcome="blocked", receipt={"blocked": 1}
+        )
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 20))  # awaiting_grant
+    await chronicler_db.execute(
+        "INSERT INTO connectors.owntracks_points (idempotency_key, ts, lat, lon, accuracy, "
+        "trigger, endpoint_identity, raw_payload, recorded_at) VALUES ('recent', now(), 1.3, "
+        "103.8, 10.0, 'p', 'owntracks:alice', '{}'::jsonb, now() - interval '1 hour')"
+    )
+
+
+async def _active(target: asyncpg.Pool, source: str) -> dict[str, dict]:
+    rows = await target.fetch(
+        "SELECT metadata FROM public.owner_conditions "
+        "WHERE source = $1 AND state IN ('open', 'aging')",
+        source,
+    )
+
+    def loaded(raw) -> dict:
+        return dict(json.loads(raw) if isinstance(raw, str) else raw)
+
+    return {meta["category"]: meta for meta in map(loaded, (r["metadata"] for r in rows))}
+
+
+async def _run_row(target: asyncpg.Pool) -> asyncpg.Record:
+    return await target.fetchrow("SELECT * FROM location_retention_runs WHERE id = 1")
+
+
+async def test_lag_is_counted_by_why_each_overdue_fix_is_still_there(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _every_category(chronicler_db, runtime_db)
+
+    async with runtime_db.acquire() as conn:
+        lag = await job.read_retention_lag(conn)
+
+    assert lag.counts == {
+        "awaiting_holders": 1,
+        "holder_blocked": 1,
+        "awaiting_deletion": 1,
+        "uncovered": 1,
+        "held_open": 1,
+        "awaiting_grant": 1,
+    }
+    assert all(hours > 24 for hours in lag.oldest_age_hours.values())
+
+
+async def test_the_job_states_lag_and_resolves_it_once_the_fixes_are_gone(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _every_category(chronicler_db, runtime_db)
+
+    result = await job.run_location_retention_job(runtime_db)
+
+    assert result["status"] == "ok"
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {
+        "awaiting_holders": 1,
+        "holder_blocked": 1,
+        "awaiting_deletion": 1,
+        "uncovered": 1,
+        "held_open": 1,
+        "awaiting_grant": 1,
+    }
+    # Count-only evidence; ``identity_payload`` is the ledger's own version lineage.
+    assert set(lag["uncovered"]) - {"identity_payload"} == {"category", "count", "oldest_age_hours"}
+    assert await _active(chronicler_db, job.FAILED_SOURCE) == {}
+    run = await _run_row(chronicler_db)
+    assert (run["last_outcome"], run["consecutive_failures"]) == ("succeeded", 0)
+
+    await chronicler_db.execute(
+        "DELETE FROM connectors.owntracks_points WHERE idempotency_key <> 'recent'"
+    )
+    await job.run_location_retention_job(runtime_db)
+    assert await _active(chronicler_db, job.LAG_SOURCE) == {}
+
+
+async def test_a_failing_run_is_its_own_condition_and_never_clears_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _every_category(chronicler_db, runtime_db)
+    await job.run_location_retention_job(runtime_db)
+
+    async def broken(conn, **kwargs):
+        raise RuntimeError("connector evidence unreadable")
+
+    monkeypatch.setattr(job, "reconcile_ready_grants", broken)
+    for streak in (1, 2):
+        result = await job.run_location_retention_job(runtime_db)
+        assert (result["status"], result["consecutive_failures"]) == ("failed", streak)
+
+    run = await _run_row(chronicler_db)
+    assert (run["last_outcome"], run["last_error_class"]) == ("failed", "RuntimeError")
+    failing = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failing["run_failing"]["consecutive_failures"] == 2
+    assert failing["run_failing"]["error_class"] == "RuntimeError"
+    assert len(await _active(chronicler_db, job.LAG_SOURCE)) == 6  # not closed by omission
+
+    monkeypatch.undo()
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+    assert await _active(chronicler_db, job.FAILED_SOURCE) == {}
+    assert (await _run_row(chronicler_db))["consecutive_failures"] == 0
+
+
+async def test_a_grant_that_failed_reconciliation_stays_a_condition(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    grant = await _prepare(chronicler_db, runtime_db, 0)
+    await chronicler_db.execute(_STATE, grant, "ready")
+    await chronicler_db.execute(_STATE, grant, "failed")
+
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+
+    assert (await _active(chronicler_db, job.FAILED_SOURCE))["failed_grants"]["count"] == 1
+    assert (await _active(chronicler_db, job.LAG_SOURCE))["grant_failed"]["count"] == 1
+
+
+async def test_a_ready_grant_pending_past_the_threshold_is_a_stalled_condition(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    fresh = await _prepare(chronicler_db, runtime_db, 0)
+    await chronicler_db.execute(_STATE, fresh, "ready")
+    stalled = await _prepare(chronicler_db, runtime_db, 5)
+    settled = await _prepare(chronicler_db, runtime_db, 10)
+    for grant in (stalled, settled):
+        await chronicler_db.execute(
+            "INSERT INTO location_retention_grant_states (grant_id, state, recorded_at) "
+            "VALUES ($1, 'ready', now() - $2::interval)",
+            grant,
+            job.STALLED_AFTER + timedelta(hours=2),
+        )
+    await chronicler_db.execute(_STATE, settled, "failed")
+
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+
+    failing = await _active(chronicler_db, job.FAILED_SOURCE)
+    # Only the old ready grant with no receipt: not the fresh one, not the settled one.
+    assert failing["stalled_grants"]["count"] == 1
+    assert (
+        failing["stalled_grants"]["oldest_age_hours"] >= job.STALLED_AFTER.total_seconds() // 3600
+    )
+    assert failing["failed_grants"]["count"] == 1
+
+
+async def test_coverage_at_a_revision_the_adapter_no_longer_runs_is_uncovered(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    stale = await _insert_point(chronicler_db, 0)
+    await _cover(chronicler_db, stale, revision={"owntracks.points": "v1:" + "c" * 64})
+    other_content = await _insert_point(chronicler_db, 5)
+    await _cover(chronicler_db, other_content, digest={"owntracks.ssid_presence": "v1:" + "b" * 64})
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 10))
+    await chronicler_db.execute(
+        "DELETE FROM location_projection_attempts WHERE adapter_name = 'owntracks.place_cluster'"
+    )
+
+    async with runtime_db.acquire() as conn:
+        lag = await job.read_retention_lag(conn)
+
+    # With no recorded run for one adapter, nothing can be exactly covered.
+    assert lag.counts == {"uncovered": 3}
+
+
+async def test_exactly_covered_rows_await_a_grant(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    stale = await _insert_point(chronicler_db, 0)
+    await _cover(chronicler_db, stale, revision={"owntracks.points": "v1:" + "c" * 64})
+    other_content = await _insert_point(chronicler_db, 5)
+    await _cover(chronicler_db, other_content, digest={"owntracks.ssid_presence": "v1:" + "b" * 64})
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 10))
+
+    async with runtime_db.acquire() as conn:
+        lag = await job.read_retention_lag(conn)
+
+    assert lag.counts == {"uncovered": 2, "awaiting_grant": 1}
+
+
+async def test_a_run_whose_lease_was_taken_over_leaves_the_outcome_to_the_new_run(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def taken_over(conn, **kwargs):
+        await chronicler_db.execute(
+            "UPDATE location_retention_runs SET last_started_at = now() + interval '1 second'"
+        )
+        return []
+
+    monkeypatch.setattr(job, "reconcile_ready_grants", taken_over)
+
+    assert await job.run_location_retention_job(runtime_db) == {
+        "status": "skipped",
+        "reason": "lease_lost",
+    }
+    assert (await _run_row(chronicler_db))["last_outcome"] == "running"
+
+
+async def test_an_unfinished_run_skips_within_its_lease_and_counts_as_a_failure_after(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = datetime.now(UTC) - timedelta(minutes=5)
+    await chronicler_db.execute(
+        "INSERT INTO location_retention_runs (id, last_started_at, last_outcome) "
+        "VALUES (1, $1, 'running')",
+        started,
+    )
+
+    assert await job.run_location_retention_job(runtime_db) == {
+        "status": "skipped",
+        "reason": "running",
+    }
+    assert (await _run_row(chronicler_db))["last_started_at"] == started
+
+    await chronicler_db.execute(
+        "UPDATE location_retention_runs SET last_started_at = now() - $1::interval",
+        job.RUN_LEASE + timedelta(minutes=1),
+    )
+
+    async def broken(conn, **kwargs):
+        raise RuntimeError("still broken")
+
+    monkeypatch.setattr(job, "reconcile_ready_grants", broken)
+    result = await job.run_location_retention_job(runtime_db)
+
+    # The unfinished run is unknown, never green: it counts toward the streak.
+    assert result["consecutive_failures"] == 2
+
+
+async def test_a_taken_over_run_stays_failing_until_a_later_clean_run(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await chronicler_db.execute(
+        "INSERT INTO location_retention_runs (id, last_started_at, last_outcome) "
+        "VALUES (1, now() - $1::interval, 'running')",
+        job.RUN_LEASE + timedelta(minutes=1),
+    )
+
+    # The takeover run itself succeeds, but the run it replaced never finished.
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+    failing = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failing["run_failing"]["error_class"] == "Unfinished"
+    assert failing["run_failing"]["consecutive_failures"] == 1
+    assert (await _run_row(chronicler_db))["last_outcome"] == "succeeded"
+
+    assert (await job.run_location_retention_job(runtime_db))["status"] == "ok"
+    assert await _active(chronicler_db, job.FAILED_SOURCE) == {}
+    assert (await _run_row(chronicler_db))["consecutive_failures"] == 0
+
+
+async def test_job_args_are_refused(runtime_db: asyncpg.Pool) -> None:
+    with pytest.raises(ValueError):
+        await job.run_location_retention_job(runtime_db, {"limit": 5})
+
+
+async def _complete(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+    n = len(keys)
+    return {
+        "outcome": "complete",
+        "items": n,
+        "forgotten": n,
+        "already_forgotten": 0,
+        "absent": 0,
+        "blocked": 0,
+    }
+
+
+async def test_with_a_forgetter_the_job_makes_a_grant_ready_before_reconciling(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    grant = await _prepare(chronicler_db, runtime_db, 0)
+
+    result = await job.run_location_retention_job(runtime_db, forget=_complete)
+
+    assert result["status"] == "ok"
+    assert result["holders"] == {"ready": 1, "blocked": 0}
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", grant
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_deletion": 1}
+
+
+async def test_without_a_forgetter_no_holder_is_asked(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _prepare(chronicler_db, runtime_db, 0)
+
+    result = await job.run_location_retention_job(runtime_db)
+
+    assert result["status"] == "ok"
+    assert "holders" not in result
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_holders": 1}
+
+
+async def test_an_unavailable_holder_fails_the_run_and_keeps_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _prepare(chronicler_db, runtime_db, 0)
+
+    async def unavailable(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+        raise HoldersUnavailable("RelayUnavailable")
+
+    result = await job.run_location_retention_job(runtime_db, forget=unavailable)
+
+    assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
+    failed = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failed["run_failing"]["error_class"] == "HoldersUnavailable"
+
+
+async def test_one_failing_grant_does_not_stall_the_others_reconcile_or_lag(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """The other grants are still asked, reconcile and lag still run, and the run fails."""
+    bad = await _prepare(chronicler_db, runtime_db, 0)
+    good = await _prepare(chronicler_db, runtime_db, 5)
+
+    async def forget(grant_id: UUID, keys: tuple[str, ...]) -> dict:
+        if grant_id == bad:
+            raise HoldersUnavailable("RelayRefused")
+        return await _complete(grant_id, keys)
+
+    result = await job.run_location_retention_job(runtime_db, forget=forget)
+
+    assert (result["status"], result["error_class"]) == ("failed", "HoldersUnavailable")
+    states = await chronicler_db.fetch(
+        "SELECT grant_id, state FROM location_retention_grant_states ORDER BY grant_id"
+    )
+    assert [(row["grant_id"], row["state"]) for row in states] == [(good, "ready")]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {
+        "awaiting_holders": 1,
+        "awaiting_deletion": 1,
+    }
+    failed = await _active(chronicler_db, job.FAILED_SOURCE)
+    assert failed["run_failing"]["consecutive_failures"] == 1
+
+
+# ── The scheduled job: the owner's switch decides what runs (bu-s11n0s.75) ─────────────────
+
+
+async def _current(pool: asyncpg.Pool) -> dict[str, str]:
+    return dict(_REVISIONS)
+
+
+async def _grant_count(target: asyncpg.Pool) -> int:
+    return await target.fetchval("SELECT count(*) FROM location_retention_grants")
+
+
+async def test_switched_on_the_scheduled_job_prepares_asks_and_reconciles(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 0))
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=_current, forget=_complete
+    )
+
+    assert (result["status"], result["enforced"]) == ("ok", True)
+    assert result["prepared"]["items"] == 1
+    assert result["holders"] == {"ready": 1, "blocked": 0}
+    grant = UUID(result["prepared"]["grant_id"])
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", grant
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    lag = await _active(chronicler_db, job.LAG_SOURCE)
+    assert {category: meta["count"] for category, meta in lag.items()} == {"awaiting_deletion": 1}
+
+
+async def test_switched_off_the_scheduled_job_only_reconciles(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """Off: no grant is prepared, no holder asked, no revision read; lag is not stated."""
+    await _prepare(chronicler_db, runtime_db, 0)
+    await job.run_location_retention_job(runtime_db)
+    assert await _active(chronicler_db, job.LAG_SOURCE)
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 5))
+    await chronicler_db.execute(_grant_suite.ENFORCE, False)
+    before = await _grant_count(chronicler_db)
+
+    async def untouched(*args):
+        raise AssertionError("called while expiry is off")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=untouched, forget=untouched
+    )
+
+    assert (result["status"], result["enforced"], result["reconciled"]) == ("ok", False, 0)
+    assert "prepared" not in result and "holders" not in result
+    assert await _grant_count(chronicler_db) == before
+    # Lag measures expiry the owner turned off; the open conditions are withdrawn.
+    assert await _active(chronicler_db, job.LAG_SOURCE) == {}
+
+
+async def test_a_missing_policy_row_counts_as_off(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    await chronicler_db.execute("DELETE FROM location_retention_policy")
+
+    async def untouched(*args):
+        raise AssertionError("called without a policy")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=untouched, forget=untouched
+    )
+    assert (result["status"], result["enforced"]) == ("ok", False)
+
+
+async def test_a_failed_preparation_fails_the_run_but_holders_and_reconcile_still_run(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    pending = await _prepare(chronicler_db, runtime_db, 0)
+
+    async def stale(pool: asyncpg.Pool) -> dict[str, str]:
+        return {**_REVISIONS, "owntracks.points": "v1:" + "d" * 64}
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=stale, forget=_complete
+    )
+
+    assert (result["status"], result["error_class"]) == ("failed", "StaleRevisions")
+    states = await chronicler_db.fetch(
+        "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", pending
+    )
+    assert [row["state"] for row in states] == ["ready"]
+    assert await _grant_count(chronicler_db) == 1
+
+
+async def test_the_scheduled_job_takes_no_job_args(runtime_db: asyncpg.Pool) -> None:
+    with pytest.raises(ValueError):
+        await job.run_scheduled_location_retention(runtime_db, {"limit": 5})
+
+
+def _smoke_script():
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "location_retention_smoke.py"
+    spec = importlib.util.spec_from_file_location("location_retention_smoke", script)
+    assert spec is not None and spec.loader is not None
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    return smoke
+
+
+async def test_the_smoke_check_reads_a_healthy_switched_on_state(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """scripts/location_retention_smoke.py: its queries run read-only and see the run."""
+    smoke = _smoke_script()
+
+    await _cover(chronicler_db, await _insert_point(chronicler_db, 0))
+    await job.run_scheduled_location_retention(runtime_db, revisions=_current, forget=_complete)
+    async with chronicler_db.acquire() as conn:
+        await conn.execute("SET default_transaction_read_only = on")
+        try:
+            report = await smoke.collect(conn)
+        finally:
+            await conn.execute("RESET default_transaction_read_only")
+
+    assert smoke.problems(report) == []
+    assert report["policy"]["enforced"] is True
+    assert report["grants"]["ready"] == {"grants": 1, "items": 1}
+    assert report["overdue_raw_fixes"] == 1
+    assert report["run"]["last_outcome"] == "succeeded"
+
+
+async def test_switched_off_mid_run_no_holder_is_asked(
+    chronicler_db: asyncpg.Pool, runtime_db: asyncpg.Pool
+) -> None:
+    """The switch is read again right before holders are asked: off by then, none is asked."""
+    pending = await _prepare(chronicler_db, runtime_db, 0)
+
+    async def switched_off(pool: asyncpg.Pool) -> dict[str, str]:
+        # Runs after the run read the switch on, before holders are asked.
+        await chronicler_db.execute(_grant_suite.ENFORCE, False)
+        return dict(_REVISIONS)
+
+    async def untouched(*args):
+        raise AssertionError("a holder was asked after expiry was switched off")
+
+    result = await job.run_scheduled_location_retention(
+        runtime_db, revisions=switched_off, forget=untouched
+    )
+
+    assert (result["status"], result["enforced"]) == ("ok", True)
+    assert "prepared" not in result and "holders" not in result
+    assert (
+        await chronicler_db.fetch(
+            "SELECT state FROM location_retention_grant_states WHERE grant_id = $1", pending
+        )
+        == []
+    )

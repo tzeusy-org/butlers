@@ -92,6 +92,7 @@ class TestStartAllPortRetry:
             instance = AsyncMock()
             instance.start = AsyncMock(side_effect=_mock_start.__get__(instance))
             instance.shutdown = AsyncMock()
+            instance._module_runtime_states = {}
             MockDaemon.return_value = instance
 
             loop = asyncio.get_event_loop()
@@ -204,6 +205,7 @@ class TestStartAllDbRetry:
             instance = AsyncMock()
             instance.start = AsyncMock(side_effect=_mock_start.__get__(instance))
             instance.shutdown = AsyncMock()
+            instance._module_runtime_states = {}
             MockDaemon.return_value = instance
 
             loop = asyncio.get_event_loop()

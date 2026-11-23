@@ -163,10 +163,14 @@ function setData(rows: StatusBoardRow[]) {
   setState(rows, makeAggregates({ total: rows.length, butlerCount: rows.length }));
 }
 
+function HeartbeatTileWithQuery() {
+  return <ButlerHeartbeatTile heartbeat={useButlerHeartbeats()} />;
+}
+
 function render(): string {
   return renderToStaticMarkup(
     <MemoryRouter>
-      <ButlerHeartbeatTile />
+      <HeartbeatTileWithQuery />
     </MemoryRouter>,
   );
 }
@@ -270,15 +274,15 @@ describe("ButlerHeartbeatTile -- running/idle butlers", () => {
     expect(html).toContain("2026-05-03T09:00:00Z");
   });
 
-  it("renders an active session badge for butlers with active sessions", () => {
+  it("renders a historical session badge for butlers with incomplete session records", () => {
     const html = render();
-    expect(html).toContain("2 active");
+    expect(html).toContain("2 incomplete session records");
   });
 
-  it("does not render an active badge for butlers with zero sessions", () => {
+  it("does not render an incomplete session badge for butlers with zero sessions", () => {
     const html = render();
     // Only one badge for the memory butler -- no badge for general
-    const count = (html.match(/\d+ active/g) ?? []).length;
+    const count = (html.match(/\d+ incomplete session records?/g) ?? []).length;
     expect(count).toBe(1);
   });
 
@@ -291,8 +295,8 @@ describe("ButlerHeartbeatTile -- running/idle butlers", () => {
   it("keeps the canonical liveness verdict in accessible and visual-hover labels", () => {
     const html = render();
     expect(html).toContain('aria-label="Observation: healthy"');
-    expect(html).toContain('Activity: running');
-    expect(html).toContain('Activity: idle');
+    expect(html).toContain("Board activity: running");
+    expect(html).toContain("Board activity: idle");
     expect(html).toContain('title="healthy"');
   });
 
@@ -321,7 +325,7 @@ describe("ButlerHeartbeatTile -- overdue and offline/quarantined butlers", () =>
       heartbeatFact("down-butler", {observation_state: "unavailable", effective_eligibility: "ineligible"})]);
   });
 
-  it("renders an amber dot for the overdue butler (matches the roster board's tone)", () => {
+  it("renders an amber dot for a stale observation", () => {
     const html = render();
     expect(html).toContain("var(--amber)");
   });
@@ -336,9 +340,9 @@ describe("ButlerHeartbeatTile -- overdue and offline/quarantined butlers", () =>
     expect(html).toContain("var(--red)");
   });
 
-  it("does not render an active badge for any of these non-running butlers", () => {
+  it("does not render an incomplete session badge for any of these non-running butlers", () => {
     const html = render();
-    expect(html).not.toMatch(/\d+ active/);
+    expect(html).not.toMatch(/\d+ incomplete session records?/);
   });
 });
 
@@ -497,7 +501,7 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
     vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
     const client = new QueryClient({defaultOptions: {queries: {retry: false, gcTime: 0}}});
     try {
-      const view = renderDom(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
+      const view = renderDom(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
       await waitFor(() => expect(screen.getByRole("link", {name: "View service-0"}).querySelectorAll("dd")[0]?.textContent).toBe("healthy"));
       const indexVisibleRows = () => {
         const links = new Map<string, HTMLElement[]>();
@@ -549,11 +553,16 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
       expect(rowFor("service-0").textContent).toContain("2001-01-01T00:00:00Z");
       expect(rowFor("service-0").textContent).toContain("Last probe attempt");
       expect(calls).toEqual([{url: "/api/system/butlers/heartbeat", method: "GET"}]);
+      facts[0] = { ...facts[0], administrative_policy: "paused", effective_eligibility: "paused" };
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-      await waitFor(() => expect(calls).toHaveLength(2));
+      await waitFor(() => {
+        expect(calls).toHaveLength(2);
+        const row = screen.getByRole("link", { name: "View service-0" });
+        expect(row.querySelector("[aria-label='Service eligibility: paused']")?.textContent).toBe("paused");
+      });
       expect(calls.every((entry) => entry.url === "/api/system/butlers/heartbeat" && entry.method === "GET")).toBe(true);
       vi.mocked(useButlerStatusBoard).mockReturnValue({rows: [], needsYou: [], aggregates: makeAggregates({isError: true})});
-      view.rerender(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
+      view.rerender(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
       visibleRows = indexVisibleRows();
       expect(screen.getByText("Board activity unavailable.").textContent).toContain("unavailable");
       expect(rowFor("schema-only").querySelectorAll("dd")[0]?.textContent).toBe("healthy");

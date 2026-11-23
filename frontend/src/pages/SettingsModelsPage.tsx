@@ -17,7 +17,8 @@
  * bu-q2nz3 — Phase 2: /settings/models page
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
 
@@ -1456,11 +1457,13 @@ function CapabilityChips({ capabilities }: { capabilities?: Record<string, boole
 
 function ModelRow({
   model,
+  highlighted = false,
   attention,
   attentionLoading,
   attentionAvailable,
 }: {
   model: ModelCatalogEntry;
+  highlighted?: boolean;
   attention?: ModelAttentionEpisode;
   attentionLoading: boolean;
   attentionAvailable: boolean;
@@ -1475,6 +1478,12 @@ function ModelRow({
   const [reissueResult, setReissueResult] = useState<string | null>(null);
   const [reissueError, setReissueError] = useState<string | null>(null);
   const reissue = useReissueModelAttention();
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  // Deep-link entry: bring the linked row on screen once, without moving focus.
+  useEffect(() => {
+    if (highlighted) rowRef.current?.scrollIntoView?.({ block: "center" });
+  }, [highlighted]);
 
   const toggleEnabled = () => {
     updateEntry.mutate(
@@ -1532,14 +1541,19 @@ function ModelRow({
 
   return (
     <div
+      ref={rowRef}
+      data-highlighted={highlighted ? "true" : undefined}
+      aria-current={highlighted ? "true" : undefined}
       className={[
-        "grid items-center gap-3 px-4 py-2.5 border-b border-border/50",
+        // One column on a phone (the 8-track row overflows 390px); the table row from md up.
+        "grid grid-cols-1 items-center gap-3 px-4 py-2.5 border-b border-border/50",
+        "md:grid-cols-[auto_1fr_auto_auto_auto_auto_auto_auto]",
         "text-sm transition-colors hover:bg-muted/20",
         !model.enabled && "opacity-60",
+        highlighted && "bg-muted/40 ring-1 ring-inset ring-primary",
       ]
         .filter(Boolean)
         .join(" ")}
-      style={{ gridTemplateColumns: "auto 1fr auto auto auto auto auto auto" }}
     >
       {/* Priority stepper */}
       <PriorityStepper entryId={model.id} priority={model.priority} />
@@ -1826,6 +1840,9 @@ export default function SettingsModelsPage() {
   const [tierFilter, setTierFilter] = useState<ComplexityTier | "all">("all");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [addOpen, setAddOpen] = useState(false);
+  // A Telegram runtime-attention link lands here as ?highlight=<catalog entry id>.
+  const [searchParams] = useSearchParams();
+  const highlightId = searchParams.get("highlight");
 
   const { data, isLoading, isError } = useModelCatalog();
   const attentionQuery = useModelAttention();
@@ -2070,6 +2087,7 @@ export default function SettingsModelsPage() {
                       <ModelRow
                         key={model.id}
                         model={model}
+                        highlighted={model.id === highlightId}
                         attention={attentionQuery.data?.data.episodes?.[model.id]}
                         attentionLoading={attentionQuery.isLoading}
                         attentionAvailable={

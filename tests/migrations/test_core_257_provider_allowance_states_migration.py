@@ -33,45 +33,40 @@ async def _run_migration(pool: asyncpg.Pool, direction: str) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_upgrade_is_idempotent_constrained_and_downgrade_removes_objects(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool() as pool:
+async def test_upgrade_is_idempotent_constrained_and_downgrade_removes_objects(db) -> None:
+    # The real catalog as core_257's predecessor left it (seed rows included).
+    pool = await db("core", revisions={"core": "core_256"})
+    await pool.execute(
+        "INSERT INTO public.model_catalog (alias, runtime_type, model_id) "
+        "VALUES ('core-257-codex', 'codex', 'core-257-model')"
+    )
+
+    await _run_migration(pool, "upgrade")
+    await _run_migration(pool, "upgrade")  # the core chain replays once per butler schema
+
+    # Existing catalog rows need no backfill: NULL means "the runtime default".
+    assert await pool.fetchval("SELECT allowance_account FROM public.model_catalog LIMIT 1") is None
+    await pool.execute(
+        "INSERT INTO public.provider_allowance_states "
+        "(account_key, state, reset_at, reset_source) "
+        "VALUES ('codex', 'exhausted', now() + interval '1 hour', 'parsed')"
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
         await pool.execute(
-            "CREATE TABLE public.model_catalog "
-            "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), runtime_type TEXT NOT NULL)"
+            "INSERT INTO public.provider_allowance_states (account_key, state) "
+            "VALUES ('x', 'maybe')"
         )
-        await pool.execute("INSERT INTO public.model_catalog (runtime_type) VALUES ('codex')")
-
-        await _run_migration(pool, "upgrade")
-        await _run_migration(pool, "upgrade")  # the core chain replays once per butler schema
-
-        # Existing catalog rows need no backfill: NULL means "the runtime default".
-        assert (
-            await pool.fetchval("SELECT allowance_account FROM public.model_catalog LIMIT 1")
-            is None
-        )
+    with pytest.raises(asyncpg.CheckViolationError):
         await pool.execute(
-            "INSERT INTO public.provider_allowance_states "
-            "(account_key, state, reset_at, reset_source) "
-            "VALUES ('codex', 'exhausted', now() + interval '1 hour', 'parsed')"
+            "INSERT INTO public.provider_allowance_states (account_key, state, reset_source) "
+            "VALUES ('y', 'unknown', 'guessed')"
         )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
-                "INSERT INTO public.provider_allowance_states (account_key, state) "
-                "VALUES ('x', 'maybe')"
-            )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
-                "INSERT INTO public.provider_allowance_states (account_key, state, reset_source) "
-                "VALUES ('y', 'unknown', 'guessed')"
-            )
 
-        await _run_migration(pool, "downgrade")
-        assert await pool.fetchval("SELECT to_regclass('public.provider_allowance_states')") is None
-        assert not await pool.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = 'model_catalog' "
-            "AND column_name = 'allowance_account')"
-        )
-        await _run_migration(pool, "downgrade")  # idempotent
+    await _run_migration(pool, "downgrade")
+    assert await pool.fetchval("SELECT to_regclass('public.provider_allowance_states')") is None
+    assert not await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'model_catalog' "
+        "AND column_name = 'allowance_account')"
+    )
+    await _run_migration(pool, "downgrade")  # idempotent

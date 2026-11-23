@@ -22,24 +22,27 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastmcp.client.client import CallToolResult
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
 
 from butlers.api.audit_emit import authenticated_principal
+from butlers.api.butler_tool_calls import parse_tool_text, tool_result_is_error, tool_result_text
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse, ErrorDetail, ErrorResponse
 from butlers.api.models.schedule import (
+    DeadlineRecord,
     Schedule,
     ScheduleCreate,
     ScheduleToggleRequest,
     ScheduleToggleResult,
     ScheduleUpdate,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
 from butlers.api.routers.audit import log_audit_entry
 from butlers.api.routers.model_settings import _validate_complexity_tier
 from butlers.core.model_routing import coerce_complexity_tier
+from butlers.core.temporal.deadlines_db import supersession_fields
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +121,7 @@ def _row_to_schedule(row) -> Schedule:
         if str(raw_mode).strip().lower() in {_DISPATCH_MODE_PROMPT, _DISPATCH_MODE_JOB}
         else _DISPATCH_MODE_PROMPT
     )
+    job_args = _normalize_job_args(_row_value(row, "job_args"))
     return Schedule(
         id=row["id"],
         name=row["name"],
@@ -125,7 +129,8 @@ def _row_to_schedule(row) -> Schedule:
         dispatch_mode=dispatch_mode,
         prompt=_row_value(row, "prompt"),
         job_name=_row_value(row, "job_name"),
-        job_args=_normalize_job_args(_row_value(row, "job_args")),
+        job_args=job_args,
+        **supersession_fields(job_args),
         complexity=_coerce_complexity(_row_value(row, "complexity")),
         timezone=_row_value(row, "timezone"),
         start_at=_row_value(row, "start_at"),
@@ -181,29 +186,21 @@ async def _call_mcp_tool(
         ) from exc
 
     unavailable = "Owner creation unavailable; retry the same operation"
-    if isinstance(result, CallToolResult):
-        if result.is_error:
-            raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
-        blocks = result.content
-    else:
-        # Legacy clients return the content list directly.
-        blocks = result
-    if isinstance(blocks, list):
-        for block in blocks:
-            text = getattr(block, "text", None)
-            if text:
-                try:
-                    payload = json.loads(text)
-                except (json.JSONDecodeError, TypeError):
-                    if meta is not None:
-                        raise HTTPException(503, unavailable) from None
-                    return {"result": text}
-                if meta is not None and not isinstance(payload, dict):
-                    raise HTTPException(503, unavailable)
-                return payload
-    if meta is not None:
+    if tool_result_is_error(result):
+        raise HTTPException(503, unavailable if meta is not None else "MCP tool call failed")
+    text = tool_result_text(result)
+    if text is None:
+        if meta is not None:
+            raise HTTPException(503, unavailable)
+        return {"result": str(getattr(result, "content", result))}
+    payload = parse_tool_text(text)
+    if isinstance(payload, str):
+        if meta is not None:
+            raise HTTPException(503, unavailable)
+        return {"result": payload}
+    if meta is not None and not isinstance(payload, dict):
         raise HTTPException(503, unavailable)
-    return {"result": str(blocks)}
+    return payload
 
 
 async def _log_legacy_schedule_mutation(
@@ -272,6 +269,49 @@ async def list_schedules(
     rows = await pool.fetch(f"SELECT {_SCHEDULE_COLUMNS} FROM scheduled_tasks ORDER BY created_at")
     schedules = [_row_to_schedule(row) for row in rows]
     return ApiResponse[list[Schedule]](data=schedules)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/butlers/{name}/deadlines/{deadline_id} — owner single-record reader
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{name}/deadlines/{deadline_id}",
+    response_model=ApiResponse[DeadlineRecord],
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_deadline(
+    name: str,
+    deadline_id: UUID,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> ApiResponse[DeadlineRecord]:
+    """Return one deadline task's identity and status, owner only.
+
+    Project links resolve deadlines through this reader.  An unknown butler or
+    a task that is not a deadline reads as not found; the prompt and alert
+    configuration are never returned.
+    """
+    if name not in db.butler_names:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    try:
+        pool = db.pool(name)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Butler '{name}' database is not available",
+        ) from exc
+    row = await pool.fetchrow(
+        "SELECT id, name, display_title, target_date, deadline_status, enabled "
+        "FROM scheduled_tasks WHERE id = $1 AND task_type = 'deadline' "
+        "AND target_date IS NOT NULL",
+        deadline_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Deadline not found")
+    return ApiResponse[DeadlineRecord](data=DeadlineRecord(butler=name, **dict(row)))
 
 
 # ---------------------------------------------------------------------------
@@ -621,11 +661,77 @@ async def _clause_authoring(request: Request, action: str, values: dict) -> dict
         raise HTTPException(exc.status_code, exc.message) from None
 
 
+@router.get("/attention/break-through-clauses", response_model=ApiResponse[dict])
+async def list_break_through_clauses(request: Request, db: Db):
+    """The owner's current (unrevoked) break-through clauses, newest first. Cookie-only read.
+
+    Each clause naming an entity also carries its display name (``entity_name``) so the owner
+    sees who, not an id. A name that cannot be read is simply absent; the list never fails on it.
+    """
+    data = await _clause_authoring(request, "clause_list", {})
+    clauses: list[dict] = data.get("clauses") or []
+    ids = [c["entity_id"] for c in clauses if isinstance(c, dict) and c.get("entity_id")]
+    if ids:
+        try:
+            rows = await db.pool("switchboard").fetch(
+                "SELECT id::text AS id, canonical_name FROM public.entities "
+                "WHERE id = ANY($1::uuid[])",
+                ids,
+            )
+            names = {row["id"]: row["canonical_name"] for row in rows}
+            for clause in clauses:
+                if clause.get("entity_id") in names:
+                    clause["entity_name"] = names[clause["entity_id"]]
+        except Exception:
+            logger.debug("break-through clause entity names unavailable", exc_info=True)
+    return ApiResponse(data=data)
+
+
 @router.post("/attention/break-through-clauses", response_model=ApiResponse[dict], status_code=201)
 async def create_break_through_clause(body: BreakThroughClauseCreate, request: Request):
     return ApiResponse(
         data=await _clause_authoring(request, "clause_create", body.model_dump(mode="json"))
     )
+
+
+# Telegram `/reach add` writes a pending proposal (matchers only, 24h). Only the cookie session
+# with CSRF can confirm it into a clause; the connector credential reaches none of these routes.
+@router.get("/attention/break-through-proposals", response_model=ApiResponse[dict])
+async def list_break_through_proposals(request: Request):
+    """Pending, unexpired proposals from the Telegram owner channel, newest first. Cookie-only."""
+    return ApiResponse(data=await _clause_authoring(request, "proposal_list", {}))
+
+
+@router.post(
+    "/attention/break-through-proposals/{proposal_id}/confirm", response_model=ApiResponse[dict]
+)
+async def confirm_break_through_proposal(proposal_id: UUID, request: Request):
+    """Create the clause a live proposal names and consume the proposal, in one transaction."""
+    return ApiResponse(
+        data=await _clause_authoring(request, "proposal_confirm", {"id": str(proposal_id)})
+    )
+
+
+@router.delete("/attention/break-through-proposals/{proposal_id}", response_model=ApiResponse[dict])
+async def dismiss_break_through_proposal(proposal_id: UUID, request: Request):
+    return ApiResponse(
+        data=await _clause_authoring(request, "proposal_dismiss", {"id": str(proposal_id)})
+    )
+
+
+# Decay (bu-s11n0s.8 S4) only narrows: a clause nobody opened is asked about, and one that has had
+# no hit for 90 days goes dormant. Keeping or reviving one is a grant-adjacent act, so it is the
+# cookie session with CSRF alone; the Telegram channel has no route to it.
+@router.get("/attention/break-through-decay", response_model=ApiResponse[dict])
+async def list_break_through_decay(request: Request):
+    """Which live clauses are asked about ('asked') or dormant, by clause id. Cookie-only read."""
+    return ApiResponse(data=await _clause_authoring(request, "decay_state", {}))
+
+
+@router.post("/attention/break-through-clauses/{clause_id}/keep", response_model=ApiResponse[dict])
+async def keep_break_through_clause(clause_id: UUID, request: Request):
+    """Keep an asked clause or revive a dormant one (it is evaluated again)."""
+    return ApiResponse(data=await _clause_authoring(request, "clause_keep", {"id": str(clause_id)}))
 
 
 @router.delete("/attention/break-through-clauses/{clause_id}", response_model=ApiResponse[dict])

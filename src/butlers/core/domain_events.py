@@ -57,6 +57,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import event_lineage
+
 VALID_DELIVERY_STATUSES = frozenset(
     {"pending", "delivered", "conflict", "failed", "failed_permanent"}
 )
@@ -98,16 +100,27 @@ async def record_event(
     Not best-effort: the event row *is* the publish record, so a write
     failure here must propagate to the caller rather than being silently
     absorbed (mirrors ``delegation_ledger.record_ask``).
+
+    An event produced inside a broker-verified call carries that call's goal
+    lineage (RFC 0038 D7), which caused admission reads; it comes from the
+    verified context only, never from ``payload``.
     """
+    lineage = event_lineage()
     event_id = await pool.fetchval(
         """
-        INSERT INTO public.domain_events (event_type, source_butler, payload)
-        VALUES ($1, $2, $3::jsonb)
+        INSERT INTO public.domain_events
+            (event_type, source_butler, payload, goal_id, goal_invocation_id,
+             goal_effect_id, goal_exposed)
+        VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
         RETURNING id
         """,
         event_type,
         source_butler,
         _dumps_payload(payload),
+        lineage["goal_id"],
+        lineage["goal_invocation_id"],
+        lineage["goal_effect_id"],
+        lineage["goal_exposed"],
     )
     return str(event_id)
 
@@ -116,7 +129,8 @@ async def get_event(pool: asyncpg.Pool, event_id: uuid.UUID | str) -> dict[str, 
     """Return a single domain-event row by id, or ``None`` if it does not exist."""
     row = await pool.fetchrow(
         """
-        SELECT id, event_type, source_butler, payload, occurred_at, created_at
+        SELECT id, event_type, source_butler, payload, occurred_at, created_at,
+               goal_id, goal_invocation_id, goal_effect_id, goal_exposed
         FROM public.domain_events
         WHERE id = $1
         """,
@@ -156,7 +170,8 @@ async def list_events(
     total = await pool.fetchval(f"SELECT count(*) FROM public.domain_events{where}", *args)
     rows = await pool.fetch(
         f"""
-        SELECT id, event_type, source_butler, payload, occurred_at, created_at
+        SELECT id, event_type, source_butler, payload, occurred_at, created_at,
+               goal_id, goal_invocation_id, goal_effect_id, goal_exposed
         FROM public.domain_events{where}
         ORDER BY occurred_at DESC
         OFFSET ${idx} LIMIT ${idx + 1}

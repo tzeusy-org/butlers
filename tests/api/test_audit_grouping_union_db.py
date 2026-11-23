@@ -45,8 +45,6 @@ from butlers.api.audit_grouping import (
 )
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -61,32 +59,17 @@ BASE_URL = "http://test"
 EGRESS_PATH = "/api/system/egress"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain (public.audit_log + metadata/result/error from
-    core_122) and the switchboard chain (dashboard_audit_log).  Both land in
-    ``public`` (flat topology), mirroring what the read surfaces query."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def audit_pool(db) -> asyncpg.Pool:
+    """Core (public.audit_log) + switchboard chains, both in ``public`` (flat topology).
+
+    Identity rows are cleared so each test can seed its own owner under the
+    owner-singleton partial unique index on public.entities.
+    """
+    p = await db("core", "switchboard")
     await clear_audit_log_for_test(p)
-    # The owner-singleton partial unique index on public.entities persists across
-    # tests; clear identity rows so each test can seed a fresh owner.
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 # ---------------------------------------------------------------------------
@@ -123,18 +106,18 @@ async def _insert_canonical(
 # ---------------------------------------------------------------------------
 
 
-async def test_canonical_only_error_appears_in_grouping(pool: asyncpg.Pool) -> None:
+async def test_canonical_only_error_appears_in_grouping(audit_pool: asyncpg.Pool) -> None:
     """An error row written ONLY to public.audit_log must surface in the grouping
     that previously read dashboard_audit_log exclusively."""
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="health",
         action="session",
         result="error",
         error="DB connection timeout",
     )
 
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     issues = [issue_from_audit_group_row(r) for r in rows]
     assert any("DB connection timeout" in i.error_message for i in issues), (
         f"canonical-only error invisible in grouping; got {[i.error_message for i in issues]}"
@@ -148,18 +131,20 @@ async def test_canonical_only_error_appears_in_grouping(pool: asyncpg.Pool) -> N
 # guaranteed structurally by the table's non-existence.
 
 
-async def test_grouping_reads_canonical_only(pool: asyncpg.Pool) -> None:
+async def test_grouping_reads_canonical_only(audit_pool: asyncpg.Pool) -> None:
     """Only public.audit_log error rows are returned; success rows are filtered.
 
     (The legacy dashboard_audit_log table was dropped by sw_026, so there is no
     live UNION to leak legacy rows — the canonical-only contract is structural.)
     """
     await _insert_canonical(
-        pool, actor="health", action="session", result="error", error="canonical-err"
+        audit_pool, actor="health", action="session", result="error", error="canonical-err"
     )
-    await _insert_canonical(pool, actor="health", action="rotated", result="success", error=None)
+    await _insert_canonical(
+        audit_pool, actor="health", action="rotated", result="success", error=None
+    )
 
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     summaries = {r["error_summary"] for r in rows}
     assert "canonical-err" in summaries
     # success rows contribute no group
@@ -167,30 +152,30 @@ async def test_grouping_reads_canonical_only(pool: asyncpg.Pool) -> None:
     assert len(rows) == 1
 
 
-async def test_canonical_scheduled_failure_classified_critical(pool: asyncpg.Pool) -> None:
+async def test_canonical_scheduled_failure_classified_critical(audit_pool: asyncpg.Pool) -> None:
     """Schedule detection (operation='session' + trigger_source 'schedule:NAME')
     survives the UNION when the row comes from public.audit_log's metadata."""
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="calendar",
         action="session",
         result="error",
         error="OAuth token expired",
         metadata={"trigger_source": "schedule:daily-sync"},
     )
-    rows = await pool.fetch(build_audit_group_query())
+    rows = await audit_pool.fetch(build_audit_group_query())
     issues = [issue_from_audit_group_row(r) for r in rows]
     target = next(i for i in issues if "OAuth token expired" in i.error_message)
     assert target.severity == "critical"
     assert target.type == "scheduled_task_failure:daily-sync"
 
 
-async def test_where_extra_window_filters_unified_source(pool: asyncpg.Pool) -> None:
+async def test_where_extra_window_filters_unified_source(audit_pool: asyncpg.Pool) -> None:
     """The created_at window filter injected by the briefing applies across the
     UNION (ts maps to created_at on the canonical side)."""
     old = datetime(2020, 1, 1, tzinfo=UTC)
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="health",
         action="session",
         result="error",
@@ -198,7 +183,7 @@ async def test_where_extra_window_filters_unified_source(pool: asyncpg.Pool) -> 
         ts=old,
     )
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="health",
         action="session",
         result="error",
@@ -207,7 +192,7 @@ async def test_where_extra_window_filters_unified_source(pool: asyncpg.Pool) -> 
     sql = build_audit_group_query(
         where_extra="\n                  AND created_at >= NOW() - INTERVAL '24 hours'"
     )
-    rows = await pool.fetch(sql)
+    rows = await audit_pool.fetch(sql)
     summaries = {r["error_summary"] for r in rows}
     assert "fresh-canonical-err" in summaries
     assert "stale-canonical-err" not in summaries
@@ -219,10 +204,10 @@ async def test_where_extra_window_filters_unified_source(pool: asyncpg.Pool) -> 
 
 
 @pytest.fixture
-def egress_app(pool: asyncpg.Pool) -> FastAPI:
+def egress_app(audit_pool: asyncpg.Pool) -> FastAPI:
     """Wire the system router's switchboard pool to the migrated flat-public DB."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
     application = create_app()
     application.dependency_overrides[get_db] = lambda: mock_db
     return application
@@ -246,15 +231,15 @@ async def _get(app: FastAPI, path: str) -> httpx.Response:
         return await client.get(path)
 
 
-async def test_egress_counts_canonical_only(pool: asyncpg.Pool, egress_app: FastAPI) -> None:
+async def test_egress_counts_canonical_only(audit_pool: asyncpg.Pool, egress_app: FastAPI) -> None:
     """The egress catalog aggregates llm_api_call counts from public.audit_log
     ONLY (action -> operation).  The legacy dashboard_audit_log table was dropped
     by sw_026, so there is no live UNION arm to over-count (bu-j26e8 removed the
     read arm; bu-o699b dropped the table)."""
-    await _seed_owner(pool)
+    await _seed_owner(audit_pool)
     # 3 canonical rows whose action maps onto the operation grouping key.
     for _ in range(3):
-        await _insert_canonical(pool, actor="x", action="llm_api_call", result="success")
+        await _insert_canonical(audit_pool, actor="x", action="llm_api_call", result="success")
 
     resp = await _get(egress_app, EGRESS_PATH)
     assert resp.status_code == 200
@@ -267,11 +252,11 @@ async def test_egress_counts_canonical_only(pool: asyncpg.Pool, egress_app: Fast
 
 
 async def test_egress_canonical_only_operation_visible(
-    pool: asyncpg.Pool, egress_app: FastAPI
+    audit_pool: asyncpg.Pool, egress_app: FastAPI
 ) -> None:
     """An operation present only in public.audit_log appears in the catalog."""
-    await _seed_owner(pool)
-    await _insert_canonical(pool, actor="x", action="llm_api_call", result="success")
+    await _seed_owner(audit_pool)
+    await _insert_canonical(audit_pool, actor="x", action="llm_api_call", result="success")
 
     resp = await _get(egress_app, EGRESS_PATH)
     assert resp.status_code == 200
@@ -285,7 +270,7 @@ async def test_egress_canonical_only_operation_visible(
 
 
 async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
-    pool: asyncpg.Pool,
+    audit_pool: asyncpg.Pool,
 ) -> None:
     """Real-Postgres regression: a group can straddle both scheduled and
     non-scheduled rows behind the same normalized ``error_summary`` --
@@ -299,7 +284,7 @@ async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
     relative to the total it claims, no matter how many pages are fetched.
     """
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="calendar",
         action="session",
         result="error",
@@ -307,7 +292,7 @@ async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
         metadata={"trigger_source": "schedule:daily-sync"},
     )
     await _insert_canonical(
-        pool,
+        audit_pool,
         actor="calendar",
         action="manual_trigger",
         result="error",
@@ -315,7 +300,7 @@ async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
         metadata={},
     )
 
-    group_rows = await pool.fetch(build_audit_group_query())
+    group_rows = await audit_pool.fetch(build_audit_group_query())
     assert len(group_rows) == 1
     group = group_rows[0]
     assert group["error_summary"] == "Connection timeout"
@@ -324,7 +309,7 @@ async def test_occurrences_query_does_not_undercount_mixed_schedule_group(
     butlers = [str(b) for b in group["butlers"]]
 
     occurrences_sql = build_audit_group_occurrences_query()
-    occ_rows = await pool.fetch(occurrences_sql, str(group["error_summary"]), butlers, 50, 0)
+    occ_rows = await audit_pool.fetch(occurrences_sql, str(group["error_summary"]), butlers, 50, 0)
     assert len(occ_rows) == total, (
         f"occurrences drill-down returned {len(occ_rows)} rows but the group "
         f"reports occurrences={total} -- a scheduled/non-scheduled mix under "

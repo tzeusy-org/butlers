@@ -14,6 +14,7 @@ Drops: trivial Pydantic field tests, router discovery internals,
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -79,12 +80,51 @@ class TestDatabaseAndDeps:
         assert complete.configured_butlers_with_module("approvals") == ["messenger", "offline"]
         assert complete.butlers_with_module("approvals") is None
 
-    async def test_mcp_manager_raises_for_unregistered_and_lists_registered(self):
+    @pytest.mark.parametrize("close_mode", ["normal", "error", "timeout", "replaced"])
+    async def test_mcp_manager_raises_for_unregistered_and_lists_registered(
+        self, close_mode, monkeypatch, caplog
+    ):
+        import butlers.api.deps as deps
+
         mgr = MCPClientManager()
         with pytest.raises(ButlerUnreachableError):
             await mgr.get_client("nonexistent")
         mgr.register("alpha", ButlerConnectionInfo("alpha", 41100))
         assert "alpha" in mgr.butler_names
+        monkeypatch.setattr(deps, "_MCP_CLIENT_CLOSE_TIMEOUT_S", 0.01, raising=False)
+        cancelled = asyncio.Event()
+
+        async def close(*_):
+            if close_mode == "error":
+                raise RuntimeError("synthetic-private-cleanup-payload")
+            if close_mode == "timeout":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+        failed = MagicMock()
+        failed.__aexit__ = AsyncMock(side_effect=close)
+        healthy = MagicMock()
+        healthy.__aexit__ = AsyncMock()
+        mgr._clients["alpha"] = healthy if close_mode == "replaced" else failed
+        with caplog.at_level(logging.WARNING, logger="butlers.api.deps"):
+            await asyncio.wait_for(
+                mgr.invalidate_client("alpha", expected_client=failed), timeout=0.5
+            )
+
+        if close_mode == "replaced":
+            assert mgr._clients["alpha"] is healthy
+            healthy.__aexit__.assert_not_awaited()
+            failed.__aexit__.assert_not_awaited()
+            # Unconditional invalidation remains available to read-only probes.
+            await mgr.invalidate_client("alpha")
+            healthy.__aexit__.assert_awaited_once()
+        else:
+            failed.__aexit__.assert_awaited_once()
+            assert cancelled.is_set() == (close_mode == "timeout")
+        assert "alpha" not in mgr._clients
+        assert "synthetic-private-cleanup-payload" not in caplog.text
 
     async def test_init_db_manager_logs_butler_name_db_and_schema_on_pool_failure(
         self, caplog, monkeypatch

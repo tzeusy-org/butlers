@@ -23,9 +23,34 @@ Semantics:
   per the ``Map Render Privacy Contract`` requirement, not by blanket
   classification at the adapter layer.  The ``restricted`` class still
   exists for episodes that must be hidden entirely (bu-6c5i6).
-- Watermark on ``ts`` only. ``connectors.owntracks_points.id`` is a UUID,
-  not an integer serial, so this adapter must not use the integer
-  ``watermark_id`` tuple-watermark path.
+- Ingestion progress is an arrival-order cursor, not device time
+  (bu-e6lrho). OwnTracks uploads offline-queued fixes late, so a fix with an
+  older device ``ts`` can arrive after a newer one was projected; a ``ts``
+  watermark would skip it forever. The adapter pages ``(recorded_at, id)``
+  (server arrival time, UUID tie-break) and stores that cursor in the
+  checkpoint carryover under ``_ingest_cursor``: the relational
+  ``watermark_id`` column is an integer and cannot hold a UUID. Rows newer
+  than ``now() - ingest_settle_seconds`` wait for the next run, so a
+  slow-committing insert stamped with an earlier ``recorded_at`` cannot land
+  behind an already-advanced cursor. Device ``ts`` still orders points and
+  bounds episodes; the relational ``watermark`` reports the newest device
+  ``ts`` projected, as before.
+- Cutover from a legacy ``ts``-only checkpoint (no ``_ingest_cursor``) does not
+  rescan history: the cursor starts at the earliest-arrived row with
+  ``ts > watermark`` (inclusive), or after the newest settled row when every
+  row is already covered. Only rows that arrived since then are re-read;
+  their projections are idempotent by ``source_ref``.
+- Late fixes and movement episodes: a fix whose device ``ts`` is at or before
+  its endpoint's open-episode carryover ``end_at`` is *late* (an offline queue
+  delivered after newer fixes, or a cutover re-read). Late fixes always get
+  their ``location`` point event, but never extend, replace or reorder the
+  endpoint's carryover; the carryover with the newest ``end_at`` stays. A
+  late span within the movement gap (``movement_gap_minutes``) of the open
+  carryover episode or of any stored movement episode for that endpoint
+  produces no episode write, so a queue flush never splits or overlaps an
+  already-emitted trip. Only a late span more than the movement gap away from
+  every open or stored episode (with at least ``MIN_MOVEMENT_POINTS`` fixes)
+  becomes its own standalone movement episode.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -45,6 +70,41 @@ Clock-skew detection:
   ``_project_movement_episodes`` remains for cross-batch carryover cases.
 - Threshold default: 4 hours — wider than legitimate timezone confusion.
   Override via the ``clock_skew_threshold_hours`` constructor argument.
+
+Projection coverage (bu-s11n0s.7, ``butlers.chronicler.projection_coverage``):
+- Each run records, in its projection savepoint, which raw rows it has finished
+  with (``chronicler.location_projection_coverage``) and which are still held by
+  an open carry (``chronicler.location_projection_open_members``). It reads the
+  row's immutable ``retention_at`` (core_340) and its content digest, and copies
+  both as read; records carry the adapter's config revision (``coverage_revision``:
+  movement gap, minimum points, clock-skew threshold, trail policy). The carryover
+  keeps the revision its carries were held under; after a change those carries are
+  void, so their members are covered only if a later run reads them again.
+- A row is **held** (open, never covered) while it is the endpoint's trail
+  bootstrap seed or a pending trail candidate (carry ``trail:<endpoint>``: the
+  next run re-reads it and may still revise it), or while it belongs to the
+  endpoint's open movement segment kept in carryover (carry
+  ``movement:<endpoint>``). The open segment may already be upserted as an
+  episode; that is not terminal while the segment can still be extended.
+- A row is **projected** once it is in no open carry and has at least one output
+  this adapter wrote for it: its ``location`` point event, plus the movement
+  episode its segment produced. A segment closes when a later fix of the same
+  endpoint falls more than the movement gap after it (in this or a later run),
+  when its carry is discarded (rejected bootstrap seed, malformed carryover), or
+  at once for a late span. A segment that closes below ``MIN_MOVEMENT_POINTS``
+  emits no episode, so its rows are projected with the point event only;
+  likewise a late fix whose span writes no episode.
+- No coverage at all for a malformed row (skipped by ``_normalize_row``), a row
+  with no point event (tombstoned projection, or a missing projection that
+  ``existing_only`` will not recreate), a row without ``retention_at``, or a
+  row the settle window has not let the adapter read. Coverage is written once
+  per revision and digest (first terminal record wins); a later re-read that
+  re-absorbs a covered row into a carry lists it as open again without
+  weakening the record. Each run's attempt record holds the count of settled
+  rows still uncovered (``projection_coverage.discover_uncovered``).
+- An open segment is closed only by a later fix, never by elapsed time: a late
+  offline fix can still extend it. The final segment before tracking stops
+  therefore stays held.
 """
 
 from __future__ import annotations
@@ -52,6 +112,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -67,10 +128,12 @@ from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.owntracks_trail import (
     OUTLIER_PAYLOAD_KEY,
     TRAIL_ANCHORS_CARRYOVER_KEY,
+    TRAIL_POLICY_SETTINGS,
     TRAIL_STATE_CARRYOVER_KEY,
     TrailOutlier,
     classify_trail,
     dump_anchors,
+    haversine_meters,
     load_anchors,
     load_trail_state,
     trail_order_key,
@@ -80,6 +143,7 @@ from butlers.chronicler.confidence import (
     derive_confidence,
     evidence_refs_from_event_ids,
 )
+from butlers.chronicler.location_forgetting import drop_forgotten_rows
 from butlers.chronicler.models import (
     Episode,
     Layer,
@@ -87,6 +151,12 @@ from butlers.chronicler.models import (
     PointEvent,
     Precision,
     Privacy,
+)
+from butlers.chronicler.projection_coverage import (
+    COVERAGE_REVISION_CARRYOVER_KEY,
+    ProjectionCoverage,
+    config_revision,
+    raw_row_digest_sql,
 )
 from butlers.chronicler.storage import (
     get_owntracks_carryover as get_carryover,
@@ -128,6 +198,81 @@ MIN_MOVEMENT_POINTS = 2
 # ``OwnTracksPointAdapter(clock_skew_threshold_hours=...)``.
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 
+# Carryover key of the arrival-order ingestion cursor (see module docstring).
+INGEST_CURSOR_CARRYOVER_KEY = "_ingest_cursor"
+
+# Coverage carry keys (see "Projection coverage" in the module docstring).
+MOVEMENT_CARRY_PREFIX = "movement:"
+TRAIL_CARRY_PREFIX = "trail:"
+
+# Rows whose ``recorded_at`` is newer than ``now()`` minus this many seconds are
+# left for the next run. ``recorded_at`` defaults to the inserting
+# transaction's start time, so an insert that commits late can carry a stamp
+# older than rows already visible; the settle window keeps the cursor behind it.
+INGEST_SETTLE_SECONDS = 60
+
+# Cumulative movement path (bu-s11n0s.7 S3): metres travelled so far and the fix the path
+# ends on (``None`` before the first fix). A ``None`` state means the path is unknown.
+PathState = tuple[float, tuple[float, float] | None]
+_FRESH_PATH: PathState = (0.0, None)
+
+
+def _extend_path(prior: PathState | None, rows: list[dict[str, Any]]) -> float | None:
+    """Add each great-circle edge between consecutive fixes once; unknown stays unknown."""
+    if prior is None:
+        return None
+    total, tail = prior
+    for row in rows:
+        here = (float(row["lat"]), float(row["lon"]))
+        if tail is not None:
+            total += haversine_meters(*tail, *here)
+        tail = here
+    return total
+
+
+def _known_path(value: Any) -> float | None:
+    """A stored path length, or ``None`` when absent or malformed (never coerced to 0)."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) and numeric >= 0 else None
+
+
+def _known_coordinate(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    numeric = float(value)
+    return numeric if math.isfinite(numeric) else None
+
+
+@dataclass(frozen=True)
+class IngestCursor:
+    """Position in ``connectors.owntracks_points`` arrival order.
+
+    ``inclusive`` is only set by the legacy-checkpoint cutover, whose start row
+    has not been projected yet; every persisted cursor is exclusive.
+    """
+
+    recorded_at: datetime
+    id: UUID
+    inclusive: bool = False
+
+    def dump(self) -> dict[str, Any]:
+        return {"version": 1, "recorded_at": self.recorded_at.isoformat(), "id": str(self.id)}
+
+    @classmethod
+    def load(cls, raw: object) -> IngestCursor | None:
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            return None
+        try:
+            recorded_at = datetime.fromisoformat(raw["recorded_at"])
+            row_id = UUID(raw["id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if recorded_at.tzinfo is None:
+            return None
+        return cls(recorded_at=recorded_at, id=row_id)
+
 
 class OwnTracksPointAdapter(ProjectionAdapter):
     """Project ``connectors.owntracks_points`` rows into Chronicler.
@@ -143,15 +288,31 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         batch_limit: int = DEFAULT_BATCH_LIMIT,
         movement_gap_minutes: int = MOVEMENT_GAP_MINUTES,
         clock_skew_threshold_hours: int = CLOCK_SKEW_THRESHOLD_HOURS,
+        ingest_settle_seconds: int = INGEST_SETTLE_SECONDS,
     ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
+        if ingest_settle_seconds < 0:
+            raise ValueError(
+                f"ingest_settle_seconds must be non-negative, got {ingest_settle_seconds}"
+            )
+        self.ingest_settle_seconds = ingest_settle_seconds
         self.movement_gap_minutes = movement_gap_minutes
         if clock_skew_threshold_hours < 0:
             raise ValueError(
                 f"clock_skew_threshold_hours must be non-negative, got {clock_skew_threshold_hours}"
             )
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
+        # Everything that decides this adapter's outputs; a change makes coverage stale.
+        self.coverage_revision = config_revision(
+            SOURCE_NAME,
+            {
+                "movement_gap_minutes": movement_gap_minutes,
+                "min_movement_points": MIN_MOVEMENT_POINTS,
+                "clock_skew_threshold_hours": clock_skew_threshold_hours,
+                "trail": TRAIL_POLICY_SETTINGS,
+            },
+        )
 
     async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
         # Optional owner lookup keeps its original pool/error isolation.
@@ -168,7 +329,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             )
 
         return await run_owntracks_projection(
-            chronicler_pool, self.source_name, project, self._llm_probe
+            chronicler_pool,
+            self.source_name,
+            project,
+            self._llm_probe,
+            coverage_revision=self.coverage_revision,
         )
 
     async def project(
@@ -197,19 +362,35 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_points(pool, since)
-        if rows is None:
+        prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+        stored_cursor = IngestCursor.load(prior_carryover.get(INGEST_CURSOR_CARRYOVER_KEY))
+        fetched = await self._fetch_points(pool, since, cursor=stored_cursor)
+        if fetched is None:
             result.skipped = True
             result.skipped_reason = (
                 f"{_EVIDENCE_TABLE} not found; OwnTracks evidence surface unavailable"
             )
             return result
+        rows, start_cursor = fetched
 
         if not rows:
+            # A cutover cursor positioned after every settled row completes the
+            # upgrade now; an inclusive one still points at an unread row.
+            if (
+                start_cursor is not None
+                and not start_cursor.inclusive
+                and start_cursor != stored_cursor
+            ):
+                await save_carryover(
+                    chronicler_pool,
+                    self.source_name,
+                    {**prior_carryover, INGEST_CURSOR_CARRYOVER_KEY: start_cursor.dump()},
+                )
             result.watermark = since
             return result
 
         latest_watermark = since
+        new_carryover: dict = dict(prior_carryover)
         valid_rows: list[dict[str, Any]] = []
         for row in rows:
             ts = row["ts"]
@@ -228,7 +409,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # Judge plausibility in device-time order with the shared trail
             # policy (owntracks_trail.py); anchors persist across batches.
             valid_rows.sort(key=trail_order_key)
-            prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             state = load_trail_state(prior_carryover)
             # Classification may reset this bounded state during replay. Keep
             # its historical identities before that mutation: a fetched overlap
@@ -269,6 +449,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 if identity in pending_ids and identity not in current_ids
             ]
             valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
+            # Resurrection floor, before any trail, movement or coverage decision.
+            valid_rows = await drop_forgotten_rows(chronicler_pool, valid_rows, result)
             changes = {}
             rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
@@ -278,8 +460,28 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 changes=changes,
                 rejected_seeds=rejected_seeds,
             )
+            coverage = ProjectionCoverage(self.source_name, config_revision=self.coverage_revision)
+            # A carry opened under other settings never closes into a current-revision record.
+            coverage.void_carries_from_other_revisions(
+                prior_carryover.get(COVERAGE_REVISION_CARRYOVER_KEY),
+                MOVEMENT_CARRY_PREFIX,
+                TRAIL_CARRY_PREFIX,
+            )
+            for normalized_row in valid_rows:
+                coverage.observe(normalized_row)
+            # Trail consensus is recomputed in full: a bootstrap seed or pending candidate
+            # is re-read next run and may still be revised, so it stays open until it leaves.
+            coverage.release_prefix(TRAIL_CARRY_PREFIX)
+            for endpoint, entry in state.items():
+                for identity in (entry["seed_id"], *entry["pending_ids"]):
+                    if identity is not None:
+                        coverage.hold(identity, f"{TRAIL_CARRY_PREFIX}{endpoint}")
             for endpoint in rejected_seeds:
-                prior_carryover.pop(endpoint, None)
+                popped = prior_carryover.pop(endpoint, None)
+                coverage.close_carry(
+                    f"{MOVEMENT_CARRY_PREFIX}{endpoint}",
+                    popped.get("episode_id") if isinstance(popped, dict) else None,
+                )
 
             # Map each location point event's idempotency_key → its chronicler
             # point-event id, so movement episodes can record their corroborating
@@ -307,6 +509,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     accepted_rows.append(normalized_row)
                 if event is not None and event.id is not None:
                     event_id_by_key[normalized_row["idempotency_key"]] = event.id
+                    coverage.record_event(normalized_row, event.id)
                 result.rows_projected += 1
                 result.point_events += 1
 
@@ -318,7 +521,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         f"{_EVIDENCE_TABLE}:{previous['idempotency_key']}",
                         verdict.to_payload() if verdict else None,
                     )
-            new_carryover: dict = {
+            new_carryover = {
                 key: value for key, value in prior_carryover.items() if not key.startswith("_")
             }
             if accepted_rows:
@@ -328,12 +531,24 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     prior_carryover,
                     event_id_by_key=event_id_by_key,
                     entity_id=entity_id,
+                    coverage=coverage,
                 )
                 result.episodes_closed += episodes_closed
                 new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
-            await save_carryover(chronicler_pool, self.source_name, new_carryover)
+            new_carryover[COVERAGE_REVISION_CARRYOVER_KEY] = self.coverage_revision
+            # Same connection and savepoint as the outputs and the cursor written below.
+            async with owntracks_connection(chronicler_pool) as conn:
+                await coverage.flush(conn)
+
+        # Advance arrival-order progress past every fetched row, valid or not,
+        # in the same transaction as the projections it covers.
+        last_row = rows[-1]
+        new_carryover[INGEST_CURSOR_CARRYOVER_KEY] = IngestCursor(
+            recorded_at=last_row["recorded_at"], id=last_row["id"]
+        ).dump()
+        await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
         # Leave watermark_id unset: owntracks_points.id is UUID, while the
@@ -424,6 +639,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "endpoint_identity": endpoint_identity.strip(),
             "raw_payload": row["raw_payload"],
             "recorded_at": row["recorded_at"],
+            # The immutable retention clock (core_340) and the row's content digest as read,
+            # carried only into coverage.
+            "retention_at": row.get("retention_at"),
+            "content_digest": row.get("content_digest"),
         }
         return normalized, warnings
 
@@ -453,19 +672,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
-        since_id: int | None = None,
-    ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        *,
+        cursor: IngestCursor | None,
+    ) -> tuple[list[asyncpg.Record], IngestCursor | None] | None:
+        """Fetch the next settled rows in arrival order after ``cursor``.
 
-        ``since_id`` is intentionally ignored. The evidence table primary key
-        is UUID, while ``projection_checkpoints.watermark_id`` is an integer
-        field for serial-id sources. Use single-column ``WHERE ts > $1`` so a
-        stale integer checkpoint cannot make Postgres compare UUIDs to ints.
-
-        Returns ``None`` if the evidence table is missing — degrade
-        gracefully per RFC 0014 optional-schema guard.
+        Returns ``(rows, start_cursor)``; ``start_cursor`` is ``cursor`` or, for
+        a legacy ``ts``-only checkpoint, the derived cutover position. Returns
+        ``None`` if the evidence table is missing — degrade gracefully per
+        RFC 0014 optional-schema guard.
         """
-        del since_id
+        columns = (
+            "id, idempotency_key, ts, lat, lon, accuracy, trigger, event, "
+            "endpoint_identity, raw_payload, recorded_at, retention_at, "
+            f"{raw_row_digest_sql()} AS content_digest"
+        )
+        settled = "recorded_at <= now() - make_interval(secs => $1)"
         try:
             async with owntracks_connection(pool) as conn:
                 # Roll back a caught read error before updating projection status.
@@ -482,37 +704,82 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     if not exists:
                         return None
 
-                    if since is None:
+                    if cursor is None and since is not None:
+                        cursor = await self._cutover_cursor(conn, since)
+
+                    if cursor is None:
                         rows = await conn.fetch(
                             f"""
-                            SELECT id, idempotency_key, ts, lat, lon,
-                                   accuracy, trigger, event, endpoint_identity,
-                                   raw_payload, recorded_at
+                            SELECT {columns}
                             FROM {_EVIDENCE_TABLE}
-                            ORDER BY ts ASC, id ASC
-                            LIMIT $1
+                            WHERE {settled}
+                            ORDER BY recorded_at ASC, id ASC
+                            LIMIT $2
                             """,
+                            float(self.ingest_settle_seconds),
                             self.batch_limit,
                         )
                     else:
+                        op = ">=" if cursor.inclusive else ">"
                         rows = await conn.fetch(
                             f"""
-                            SELECT id, idempotency_key, ts, lat, lon,
-                                   accuracy, trigger, event, endpoint_identity,
-                                   raw_payload, recorded_at
+                            SELECT {columns}
                             FROM {_EVIDENCE_TABLE}
-                            WHERE ts > $1
-                            ORDER BY ts ASC, id ASC
-                            LIMIT $2
+                            WHERE {settled}
+                              AND (recorded_at, id) {op} ($2, $3)
+                            ORDER BY recorded_at ASC, id ASC
+                            LIMIT $4
                             """,
-                            since,
+                            float(self.ingest_settle_seconds),
+                            cursor.recorded_at,
+                            cursor.id,
                             self.batch_limit,
                         )
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
 
-        return list(rows)
+        return list(rows), cursor
+
+    async def _cutover_cursor(
+        self,
+        conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        since: datetime,
+    ) -> IngestCursor | None:
+        """Translate a legacy device-``ts`` watermark without rescanning history.
+
+        Rows with ``ts > since`` were never projected, so start at the
+        earliest-arrived of them (inclusive). If none exist, every row is
+        covered: start after the newest settled row. ``None`` (empty table)
+        starts from the beginning.
+        """
+        first_unprojected = await conn.fetchrow(
+            f"""
+            SELECT recorded_at, id FROM {_EVIDENCE_TABLE}
+            WHERE ts > $1
+            ORDER BY recorded_at ASC, id ASC
+            LIMIT 1
+            """,
+            since,
+        )
+        if first_unprojected is not None:
+            return IngestCursor(
+                recorded_at=first_unprojected["recorded_at"],
+                id=first_unprojected["id"],
+                inclusive=True,
+            )
+        newest_settled = await conn.fetchrow(
+            f"""
+            SELECT recorded_at, id FROM {_EVIDENCE_TABLE}
+            WHERE recorded_at <= now() - make_interval(secs => $1)
+            ORDER BY recorded_at DESC, id DESC
+            LIMIT 1
+            """,
+            float(self.ingest_settle_seconds),
+        )
+        if newest_settled is None:
+            return None
+        return IngestCursor(recorded_at=newest_settled["recorded_at"], id=newest_settled["id"])
 
     async def _project_point_event(
         self,
@@ -586,6 +853,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         *,
         event_id_by_key: dict[str, UUID] | None = None,
         entity_id: UUID | None = None,
+        coverage: ProjectionCoverage | None = None,
     ) -> tuple[int, dict]:
         """Collapse point sequences into movement episodes.
 
@@ -615,104 +883,125 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         event_id_by_key = event_id_by_key or {}
 
-        # Segment in device-time order.  Sorting by upload time instead would
-        # yield negative ts gaps for buffered points, which pass the gap check
-        # and merge fixes taken hours (and airports) apart (bu-8r9q06).
-        # Group by endpoint first so interleaved devices cannot fragment each
-        # other's movement into single-fix segments.
-        rows = sorted(rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r)))
-
+        # Late fixes: arrival-order paging can deliver fixes at or before an
+        # endpoint's open-episode horizon (offline queues, legacy cutover
+        # re-reads). They never extend or replace that carryover; see
+        # ``_late_segments``.
+        horizons = self._carryover_horizons(prior_carryover)
+        late_rows = [
+            r
+            for r in rows
+            if (h := horizons.get(r["endpoint_identity"])) is not None and r["ts"] <= h[1]
+        ]
+        late_keys = {id(r) for r in late_rows}
+        rows = [r for r in rows if id(r) not in late_keys]
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
-
-        # Each segment: list of rows in the same movement episode.
-        # Also tracks whether the segment continues a prior-batch open episode.
         segments: list[dict] = []
-        first_row = rows[0]
-        endpoint = first_row["endpoint_identity"]
+        if rows:
+            # Segment in device-time order.  Sorting by upload time instead would
+            # yield negative ts gaps for buffered points, which pass the gap check
+            # and merge fixes taken hours (and airports) apart (bu-8r9q06).
+            # Group by endpoint first so interleaved devices cannot fragment each
+            # other's movement into single-fix segments.
+            rows = sorted(rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r)))
 
-        # Check if the first row continues a prior-batch open episode.
-        carry = prior_carryover.get(endpoint)
-        existing_source_ref: str | None = None
-        prior_start_at: datetime | None = None
-        prior_start_lat: float | None = None
-        prior_start_lon: float | None = None
-        prior_point_count = 0
+            # Each segment: list of rows in the same movement episode.
+            # Also tracks whether the segment continues a prior-batch open episode.
+            first_row = rows[0]
+            endpoint = first_row["endpoint_identity"]
 
-        if carry:
-            resolved = self._resolve_carryover_segment(
-                endpoint=endpoint,
-                carry=carry,
-                row_ts=first_row["ts"],
-                gap=gap,
-            )
-            if resolved is not None:
-                (
-                    existing_source_ref,
-                    prior_start_at,
-                    prior_start_lat,
-                    prior_start_lon,
-                    prior_point_count,
-                ) = resolved
+            # Check if the first row continues a prior-batch open episode.
+            carry = prior_carryover.get(endpoint)
+            existing_source_ref: str | None = None
+            prior_start_at: datetime | None = None
+            prior_start_lat: float | None = None
+            prior_start_lon: float | None = None
+            prior_point_count = 0
+            prior_path: PathState | None = _FRESH_PATH
 
-        current: list[dict[str, Any]] = [first_row]
-        current_source_ref: str | None = existing_source_ref
-        current_prior_start_at: datetime | None = prior_start_at
-        current_prior_start_lat: float | None = prior_start_lat
-        current_prior_start_lon: float | None = prior_start_lon
-        current_prior_point_count = prior_point_count
-
-        for row in rows[1:]:
-            prev = current[-1]
-            same_identity = row["endpoint_identity"] == prev["endpoint_identity"]
-            time_gap = row["ts"] - prev["ts"]
-            if same_identity and time_gap <= gap:
-                current.append(row)
-            else:
-                segments.append(
-                    {
-                        "rows": current,
-                        "source_ref": current_source_ref,
-                        "prior_start_at": current_prior_start_at,
-                        "prior_start_lat": current_prior_start_lat,
-                        "prior_start_lon": current_prior_start_lon,
-                        "prior_point_count": current_prior_point_count,
-                    }
+            if carry:
+                resolved = self._resolve_carryover_segment(
+                    endpoint=endpoint,
+                    carry=carry,
+                    row_ts=first_row["ts"],
+                    gap=gap,
                 )
-                current = [row]
-                current_source_ref = None
-                current_prior_start_at = None
-                current_prior_start_lat = None
-                current_prior_start_lon = None
-                current_prior_point_count = 0
-                # Check carryover for this new segment's endpoint too.
-                new_endpoint = row["endpoint_identity"]
-                new_carry = prior_carryover.get(new_endpoint)
-                if new_carry:
-                    new_resolved = self._resolve_carryover_segment(
-                        endpoint=new_endpoint,
-                        carry=new_carry,
-                        row_ts=row["ts"],
-                        gap=gap,
+                if resolved is not None:
+                    (
+                        existing_source_ref,
+                        prior_start_at,
+                        prior_start_lat,
+                        prior_start_lon,
+                        prior_point_count,
+                    ) = resolved
+                    prior_path = self._carry_path(carry)
+
+            current: list[dict[str, Any]] = [first_row]
+            current_source_ref: str | None = existing_source_ref
+            current_prior_start_at: datetime | None = prior_start_at
+            current_prior_start_lat: float | None = prior_start_lat
+            current_prior_start_lon: float | None = prior_start_lon
+            current_prior_point_count = prior_point_count
+            current_prior_path = prior_path
+
+            for row in rows[1:]:
+                prev = current[-1]
+                same_identity = row["endpoint_identity"] == prev["endpoint_identity"]
+                time_gap = row["ts"] - prev["ts"]
+                if same_identity and time_gap <= gap:
+                    current.append(row)
+                else:
+                    segments.append(
+                        {
+                            "rows": current,
+                            "source_ref": current_source_ref,
+                            "prior_start_at": current_prior_start_at,
+                            "prior_start_lat": current_prior_start_lat,
+                            "prior_start_lon": current_prior_start_lon,
+                            "prior_point_count": current_prior_point_count,
+                            "prior_path": current_prior_path,
+                        }
                     )
-                    if new_resolved is not None:
-                        (
-                            current_source_ref,
-                            current_prior_start_at,
-                            current_prior_start_lat,
-                            current_prior_start_lon,
-                            current_prior_point_count,
-                        ) = new_resolved
-        segments.append(
-            {
-                "rows": current,
-                "source_ref": current_source_ref,
-                "prior_start_at": current_prior_start_at,
-                "prior_start_lat": current_prior_start_lat,
-                "prior_start_lon": current_prior_start_lon,
-                "prior_point_count": current_prior_point_count,
-            }
-        )
+                    current = [row]
+                    current_source_ref = None
+                    current_prior_start_at = None
+                    current_prior_start_lat = None
+                    current_prior_start_lon = None
+                    current_prior_point_count = 0
+                    current_prior_path = _FRESH_PATH
+                    # Check carryover for this new segment's endpoint too.
+                    new_endpoint = row["endpoint_identity"]
+                    new_carry = prior_carryover.get(new_endpoint)
+                    if new_carry:
+                        new_resolved = self._resolve_carryover_segment(
+                            endpoint=new_endpoint,
+                            carry=new_carry,
+                            row_ts=row["ts"],
+                            gap=gap,
+                        )
+                        if new_resolved is not None:
+                            (
+                                current_source_ref,
+                                current_prior_start_at,
+                                current_prior_start_lat,
+                                current_prior_start_lon,
+                                current_prior_point_count,
+                            ) = new_resolved
+                            current_prior_path = self._carry_path(new_carry)
+            segments.append(
+                {
+                    "rows": current,
+                    "source_ref": current_source_ref,
+                    "prior_start_at": current_prior_start_at,
+                    "prior_start_lat": current_prior_start_lat,
+                    "prior_start_lon": current_prior_start_lon,
+                    "prior_point_count": current_prior_point_count,
+                    "prior_path": current_prior_path,
+                }
+            )
+
+        segments.extend(self._late_segments(late_rows, gap))
 
         new_carryover: dict = {}
 
@@ -733,6 +1022,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # Count the whole episode, not just this batch's slice: an
             # extension carrying one new fix is not a "1 point" movement.
             point_count = seg["prior_point_count"] + len(seg_rows)
+            path_m = _extend_path(seg["prior_path"], seg_rows)
+            tail = (float(last["lat"]), float(last["lon"]))
+            last_fix_at = last["ts"]
 
             # Defensive guard: device clock skew can produce an inverted episode
             # even after ts sorting (e.g. when the prior-batch carryover
@@ -760,17 +1052,44 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             effective_start_lat = float(raw_start_lat)
             effective_start_lon = float(raw_start_lon)
 
-            # Record carryover for every segment (keyed by endpoint, so the
-            # last one wins) before deciding whether to emit: a segment still
-            # below the minimum evidence may grow past it next batch.
-            new_carryover[endpoint_identity] = {
+            if seg.get("late"):
+                # Point events only when the late span lies within the
+                # movement gap of the open carryover episode or any stored
+                # movement episode (the live path would have joined them);
+                # otherwise a standalone episode. Either way the carryover
+                # stays put.
+                if point_count < MIN_MOVEMENT_POINTS:
+                    continue
+                carry_start, carry_end = horizons[endpoint_identity]
+                if effective_start_at <= carry_end + gap and end_at >= carry_start - gap:
+                    continue
+                async with owntracks_connection(chronicler_pool) as pooled:
+                    if await self._merge_overlapping_episode(
+                        cast(asyncpg.Connection, pooled),
+                        endpoint_identity=endpoint_identity,
+                        start_at=effective_start_at - gap,
+                        end_at=end_at + gap,
+                    ):
+                        continue
+            # Record carryover for every live segment (keyed by endpoint, so
+            # the last one wins) before deciding whether to emit: a segment
+            # still below the minimum evidence may grow past it next batch.
+            # A late segment's state is discarded with ``slot``.
+            slot: dict[str, Any] = {
                 "source_ref": seg_source_ref,
                 "start_at": effective_start_at.isoformat(),
                 "end_at": end_at.isoformat(),
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
                 "point_count": point_count,
+                # Cumulative path so far and the fix it ends on, so the next batch adds
+                # exactly one connecting edge. ``None`` is unknown, never zero.
+                "path_m": path_m,
+                "path_tail_lat": tail[0],
+                "path_tail_lon": tail[1],
             }
+            if not seg.get("late"):
+                new_carryover[endpoint_identity] = slot
 
             # Minimum movement evidence: one fix is a location, not a movement.
             if point_count < MIN_MOVEMENT_POINTS:
@@ -787,6 +1106,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             ]
 
             merged = None
+            spatial: dict[str, Any] = {}
             if seg["source_ref"] is None:
                 # Only a segment that starts fresh this batch can duplicate a
                 # stored episode; a carryover extension already targets one.
@@ -808,10 +1128,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 # Never emit a second chunk over the same span: widen the
                 # already-stored episode instead (late or replayed fixes).
                 seg_source_ref = cast(str, merged["source_ref"])
-                if merged["start_at"] < effective_start_at:
+                # A tie keeps the stored start, as a tie on the end keeps the stored end:
+                # retention may have coarsened it, and a replay must not restore the fix.
+                if merged["start_at"] < effective_start_at or (
+                    merged["start_at"] == effective_start_at and merged["start_known"]
+                ):
                     effective_start_at = merged["start_at"]
                     effective_start_lat = merged["start_lat"]
                     effective_start_lon = merged["start_lon"]
+                    spatial = merged["spatial"]
                 end_at = max(end_at, merged["end_at"])
                 # Count distinct evidence, never a sum: a replayed batch's
                 # fixes are already linked to the stored episode.
@@ -821,13 +1146,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 else:
                     # Legacy episode without linked evidence: extend its stored count.
                     point_count += merged["point_count"]
-                new_carryover[endpoint_identity].update(
+                # This batch cannot rebuild the stored episode's path. Only an exact replay,
+                # which contributes no new fix, keeps the stored value; anything else is
+                # unknown rather than a guess. The carry continues from that path only when
+                # the stored episode ends on this batch's last fix.
+                replayed = bool(linked) and set(seg_event_ids) <= linked
+                path_m = merged["path_m"] if replayed else None
+                carry_path_m = path_m if merged["end_at"] <= last_fix_at else None
+                slot.update(
                     source_ref=seg_source_ref,
                     start_at=effective_start_at.isoformat(),
                     end_at=end_at.isoformat(),
                     start_lat=effective_start_lat,
                     start_lon=effective_start_lon,
                     point_count=point_count,
+                    path_m=carry_path_m,
                 )
 
             title = f"Movement ({point_count} points)"
@@ -835,12 +1168,14 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             payload: dict = {
                 "endpoint_identity": endpoint_identity,
                 "point_count": point_count,
+                "path_m": round(path_m, 1) if path_m is not None else None,
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
+                **spatial,
             }
             if terminal is not None:
                 payload.update(end_lat=terminal[0], end_lon=terminal[1])
-            new_carryover[endpoint_identity].update(
+            slot.update(
                 end_lat=terminal[0] if terminal is not None else None,
                 end_lon=terminal[1] if terminal is not None else None,
             )
@@ -875,6 +1210,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     # Write owner row into episode_entities join table (bu-4c1ks).
                     ep_id = episode.id if episode is not None else None
                     await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+                if isinstance(ep_id, UUID):
+                    # Coverage attaches only an episode this run actually wrote.
+                    seg["episode_id"] = ep_id
+                    slot["episode_id"] = str(ep_id)
                 # Link each GPS fix into the canonical evidence chain.
                 if ep_id is not None:
                     for event_id in seg_event_ids:
@@ -886,7 +1225,84 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         )
             episodes_upserted += 1
 
+        if coverage is not None:
+            self._record_movement_coverage(coverage, segments, prior_carryover)
         return episodes_upserted, new_carryover
+
+    @staticmethod
+    def _record_movement_coverage(
+        coverage: ProjectionCoverage, segments: list[dict], prior_carryover: dict
+    ) -> None:
+        """Feed the coverage ledger the movement outcome of this batch.
+
+        Every segment's rows gain the episode this run wrote for it (if any). Per endpoint,
+        the rows of the last live segment are the open carry and stay held. The prior run's
+        carry is closed unless that last segment extends it; it closes with the episode its
+        extension wrote this run, or else the episode recorded in its carryover slot.
+        """
+        live: dict[str, list[dict]] = {}
+        for seg in segments:
+            coverage.record_episode(seg["rows"], seg.get("episode_id"))
+            if not seg.get("late"):
+                live.setdefault(seg["rows"][0]["endpoint_identity"], []).append(seg)
+        for endpoint, segs in live.items():
+            key = f"{MOVEMENT_CARRY_PREFIX}{endpoint}"
+            for row in segs[-1]["rows"]:
+                coverage.hold(row["id"], key)
+            first = segs[0]
+            if len(segs) == 1 and first["source_ref"] is not None:
+                continue  # the open carry was extended and is still open
+            if first["source_ref"] is not None:
+                closing = first.get("episode_id")
+            else:
+                prior = prior_carryover.get(endpoint)
+                closing = prior.get("episode_id") if isinstance(prior, dict) else None
+            coverage.close_carry(key, closing)
+
+    def _carryover_horizons(self, prior_carryover: dict) -> dict[str, tuple[datetime, datetime]]:
+        """Map endpoint → readable open-episode span ``(start_at, end_at)``."""
+        horizons: dict[str, tuple[datetime, datetime]] = {}
+        for endpoint, carry in prior_carryover.items():
+            if endpoint.startswith("_") or not isinstance(carry, dict):
+                continue
+            try:
+                start_at = datetime.fromisoformat(carry["start_at"])
+                end_at = datetime.fromisoformat(carry["end_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start_at.tzinfo is None or end_at.tzinfo is None:
+                continue
+            horizons[endpoint] = (min(start_at, end_at), max(start_at, end_at))
+        return horizons
+
+    @staticmethod
+    def _late_segments(late_rows: list[dict[str, Any]], gap: timedelta) -> list[dict]:
+        """Group late fixes by endpoint and gap into standalone segments."""
+        segments: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        for row in sorted(late_rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r))):
+            if current and (
+                row["endpoint_identity"] != current[-1]["endpoint_identity"]
+                or row["ts"] - current[-1]["ts"] > gap
+            ):
+                segments.append(current)
+                current = []
+            current.append(row)
+        if current:
+            segments.append(current)
+        return [
+            {
+                "rows": seg,
+                "source_ref": None,
+                "prior_start_at": None,
+                "prior_start_lat": None,
+                "prior_start_lon": None,
+                "prior_point_count": 0,
+                "prior_path": _FRESH_PATH,
+                "late": True,
+            }
+            for seg in segments
+        ]
 
     async def _merge_overlapping_episode(
         self,
@@ -947,9 +1363,31 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "end_lon": self._coerce_finite_float(payload.get("end_lon")),
             "start_lat": start_lat if start_lat is not None else 0.0,
             "start_lon": start_lon if start_lon is not None else 0.0,
+            "start_known": start_lat is not None and start_lon is not None,
+            # Set once retention coarsened the stored summary (bu-s11n0s.7).
+            "spatial": {
+                key: payload[key]
+                for key in ("spatial_precision_m", "spatial_scheme")
+                if key in payload
+            },
             "point_count": stored_count,
+            "path_m": _known_path(payload.get("path_m")),
             "linked_event_ids": set(row["linked_event_ids"] or ()),
         }
+
+    @staticmethod
+    def _carry_path(carry: dict) -> PathState | None:
+        """The path a continued carry ends on, or ``None`` when it is not exactly known.
+
+        A carry written before path tracking has no ``path_m``; its path is unknown and
+        stays unknown for the life of the episode.
+        """
+        path_m = _known_path(carry.get("path_m"))
+        tail_lat = _known_coordinate(carry.get("path_tail_lat"))
+        tail_lon = _known_coordinate(carry.get("path_tail_lon"))
+        if path_m is None or tail_lat is None or tail_lon is None:
+            return None
+        return path_m, (tail_lat, tail_lon)
 
     @staticmethod
     def _carryover_continues(
@@ -1083,8 +1521,13 @@ __all__ = [
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_MOVEMENT",
     "EVENT_TYPE_LOCATION",
+    "INGEST_CURSOR_CARRYOVER_KEY",
+    "INGEST_SETTLE_SECONDS",
+    "IngestCursor",
     "MIN_MOVEMENT_POINTS",
+    "MOVEMENT_CARRY_PREFIX",
     "MOVEMENT_GAP_MINUTES",
     "OwnTracksPointAdapter",
     "SOURCE_NAME",
+    "TRAIL_CARRY_PREFIX",
 ]

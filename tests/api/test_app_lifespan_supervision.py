@@ -5,13 +5,13 @@ restart/backoff/cancellation semantics in isolation) by driving the *real*
 ``butlers.api.app.lifespan`` context manager end-to-end -- with only DB/MCP/
 pricing dependencies mocked out -- to prove:
 
-1. All nine dashboard lifespan background loops are wired through
+1. All eleven dashboard lifespan background loops are wired through
    ``supervise_lifespan_loop`` exactly once (the lifespan-inventory test).
-2. Shutdown cancels every one of the nine tasks, including the calendar-sync
+2. Shutdown cancels every one of the eleven tasks, including the calendar-sync
    deadman -- which was previously *omitted* from the shutdown cancellation
    block even though it was created at startup (a real bug this bead fixes;
    see the regression assertion below).
-3. None of the nine loops restart as a result of shutdown cancellation.
+3. None of the eleven loops restart as a result of shutdown cancellation.
 4. The external-deadman loop is present only when EXTERNAL_DEADMAN_URL is
    configured (existing conditional-start behavior, preserved).
 """
@@ -29,7 +29,7 @@ from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.asyncio
 
-# The nine dashboard lifespan loops, independent of
+# The twelve dashboard lifespan loops, independent of
 # EXTERNAL_DEADMAN_URL configuration.
 _ALWAYS_ON_LOOP_NAMES = {
     "secrets_lifecycle",
@@ -39,6 +39,9 @@ _ALWAYS_ON_LOOP_NAMES = {
     "secrets_staleness",
     "migration_drift",
     "calendar_sync_deadman",
+    "calendar_overcommitment",
+    "day_sheet_push",
+    "backup_facts_snapshot",
     "fleet_shadow_observer",
     "fleet_readiness",
 }
@@ -55,8 +58,12 @@ _MODULE_LEVEL_LOOP_FUNCS = [
     "run_secrets_staleness_loop",
     "run_migration_drift_loop",
     "run_calendar_sync_deadman_loop",
+    "run_calendar_overcommitment_loop",
+    "run_day_sheet_push_loop",
+    "run_backup_facts_snapshot_loop",
     "run_external_deadman_loop",
     "run_readiness_sampler_loop",
+    "run_capability_health_loop",
 ]
 
 
@@ -152,6 +159,7 @@ async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(
     monkeypatch, caplog, bridge_start_failure
 ):
     monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
     call_counts: dict[str, int] = {}
     _install_common_mocks(monkeypatch, call_counts=call_counts)
     calls = _spy_on_supervisor(monkeypatch)
@@ -184,6 +192,24 @@ async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(
         tasks_by_name = dict(calls)
         for name, task in tasks_by_name.items():
             assert not task.done(), f"{name} task must be running, not finished, at steady state"
+
+
+async def test_lifespan_wires_the_control_plane_carrier_into_the_mcp_manager(monkeypatch):
+    """RFC 0038 D7: the dashboard's clients carry model-reachable calls.
+
+    ``butlers.api.deps`` cannot import the carrier itself: deps is reached by
+    the Finder's no-LLM import walk, and the carrier's signed-call client
+    reaches the runtime graph. So the app hands it in at startup.
+    """
+    from butlers.api.control_plane_carrier import carry_via_control_plane
+
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    _install_common_mocks(monkeypatch, call_counts={})
+    init = MagicMock(return_value=(MagicMock(), []))
+    monkeypatch.setattr(api_app, "init_dependencies", init)
+
+    async with api_app.lifespan(FastAPI()):
+        init.assert_called_once_with(carrier=carry_via_control_plane)
 
 
 async def test_external_deadman_wired_only_when_url_configured(monkeypatch):
@@ -248,3 +274,38 @@ async def test_shutdown_cancels_all_dashboard_loops_including_calendar_deadman(m
         f"a loop restarted during/after shutdown: {call_counts}"
     )
     assert "restarting in" not in caplog.text
+
+
+async def test_capability_health_wired_only_with_its_own_writer_dsn(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.setenv("BUTLERS_HEALTH_WRITER_DSN", "postgresql://perception_health_writer@h/db")
+    _install_common_mocks(monkeypatch, call_counts={})
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert {name for name, _ in calls} == _ALWAYS_ON_LOOP_NAMES | {"capability_health"}
+
+
+async def test_capability_health_never_borrows_the_dashboard_login(monkeypatch):
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://dashboard@h/db")
+    _install_common_mocks(monkeypatch, call_counts={})
+    calls = _spy_on_supervisor(monkeypatch)
+    async with api_app.lifespan(FastAPI()):
+        assert "capability_health" not in {name for name, _ in calls}
+
+
+async def test_capability_health_without_a_dsn_is_reported_disabled(monkeypatch):
+    from butlers.core import job_health
+
+    disabled: list[str] = []
+
+    async def spy(self):
+        disabled.append(self.spec.name)
+
+    monkeypatch.setattr(job_health.JobRecorder, "disabled", spy)
+    monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
+    monkeypatch.delenv("BUTLERS_HEALTH_WRITER_DSN", raising=False)
+    _install_common_mocks(monkeypatch, call_counts={})
+    async with api_app.lifespan(FastAPI()):
+        assert "capability_health" in disabled

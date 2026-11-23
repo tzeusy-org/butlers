@@ -16,12 +16,15 @@ before this job existed.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import asyncpg
+
+logger = logging.getLogger(__name__)
 
 _JOB_NAME = "chronicler_gap_interview"
 
@@ -41,6 +44,11 @@ async def ask_gap_interview(
     """
     import httpx
 
+    from butlers.chronicler.adapters.situation import (
+        env_place_references,
+        load_accepted_fixes,
+    )
+    from butlers.chronicler.anchors import load_anchors
     from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
     from butlers.chronicler.gap_interview import run_gap_interview
     from butlers.chronicler.gap_interview_telegram import build_telegram_transport
@@ -78,6 +86,14 @@ async def ask_gap_interview(
                     str(decision.occupation_episode_id) if decision.occupation_episode_id else None
                 ),
                 "routine_id": str(decision.routine_id) if decision.routine_id else None,
+                # Block interviews: the window a lane answer covers (bu-r3fmja).
+                "block_start_at": (
+                    decision.block_start_utc.isoformat() if decision.block_start_utc else None
+                ),
+                "block_end_at": (
+                    decision.block_end_utc.isoformat() if decision.block_end_utc else None
+                ),
+                "options": list(decision.options),
                 "answered": False,
             },
         )
@@ -104,8 +120,19 @@ async def ask_gap_interview(
             priority="low", current_time=now_local, prefs=prefs, channel="telegram"
         )
 
-    episodes = await list_episodes(pool, start_from=start_at, start_to=end_at, limit=1000)
+    # Overlap, not start-in-day: a sleep that began before midnight still covers
+    # the morning it ran into.
+    episodes = await list_episodes(pool, overlaps_with=(start_at, end_at), limit=1000)
     episode_dicts = [asdict(ep) for ep in episodes]
+    # Location only enriches the question; a failing read must not cost the ask.
+    try:
+        fixes = await load_accepted_fixes(pool, start=start_at, end=end_at)
+        anchors = await load_anchors(
+            pool, tz=tzinfo, now=datetime.now(UTC), references=env_place_references()
+        )
+    except Exception:  # noqa: BLE001 — degrade to "no location fixes"
+        logger.warning("Gap interview location context unavailable", exc_info=True)
+        fixes, anchors = [], ()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         transport = await build_telegram_transport(
@@ -131,6 +158,8 @@ async def ask_gap_interview(
             delivery_allowed=delivery_allowed,
             waking_hour_start=WAKING_HOUR_START,
             waking_hour_end=WAKING_HOUR_END,
+            fixes=fixes,
+            anchors=anchors,
         )
 
 

@@ -104,6 +104,9 @@ Alembic migration). Predicates MUST be grouped into families:
   catalog predicate.
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
+- **State predicates** (`kind='state'`, `object_kind='literal'`): `queue.dismissed`, and the
+  automated-evidence predicates `away-until` and `undeliverable-email` (see "Automated email
+  evidence becomes away-until and dead-address facts").
 
 Predicate names in the registry are **hyphenated** (`friend-of`, not `friend_of`). The set is
 extended ONLY by adding seed rows to `relationship.entity_predicate_registry`; no predicate ID
@@ -504,6 +507,24 @@ been rebound.
 - **THEN** that absence MUST be classified separately from a failed write
 - **AND** it MUST NOT be counted as a successful rebind
 
+#### Scenario: A verified row survives a same-key merge collapse
+
+- **WHEN** a merge collapses two unknown-default rows with the same final key and only the source row is `verified`
+- **THEN** the source row MUST stay active on the survivor and the target row MUST be superseded
+- **AND** in every other case the target row MUST stay active and the source row MUST be superseded
+
+#### Scenario: A same-key merge collapse keeps both rows' evidence
+
+- **WHEN** a merge collapses two rows with the same final key
+- **THEN** the surviving row MUST receive the evidence of the superseded row
+- **AND** the superseded row MUST keep the evidence it was written with
+
+#### Scenario: A verified value survives a single-cardinality merge
+
+- **WHEN** a merge resolves different active values of a single-cardinality predicate with no effective time
+- **THEN** a `verified` row MUST beat an unverified one, whatever their confidence
+- **AND** evidence MUST NOT move between them, because they are different claims
+
 ### Requirement: Approved fact writes execute under server-recorded provenance
 
 When the owner carve-out or the confidence gate parks a fact write, the
@@ -721,3 +742,91 @@ Scope: v1-mandatory
 - **WHEN** a later owner session replays or closes a gap from an existing third-party fact
 - **THEN** the stored reporter/authority SHALL govern the answer and remain unchanged
 - **AND** an owner-confirmed positive SHALL use its stored confirmation once
+
+### Requirement: Automated email evidence becomes away-until and dead-address facts
+
+A scheduled, deterministic Relationship job (`automated_evidence_sync`, no session and no model)
+SHALL read inbound email rows of `switchboard.message_inbox` whose `raw_payload.control` carries
+`automated_kind` and `automated_evidence` (written by the Gmail connector, `connector-gmail`), and
+SHALL write through `relationship_assert_fact()` with `src='automated_evidence_sync'`:
+
+- `away-until` with the civil return date (`YYYY-MM-DD`) on the auto-reply sender's entity, only
+  when the evidence shows `original_sent`, `sender_was_recipient` and `sender_authenticated` all
+  true and the date lies between the receipt date and 180 days after it;
+- `undeliverable-email` with the address on the entity owning each address in
+  `failed_recipients`, only when the evidence shows `original_sent` and `sender_authenticated`
+  true and the DSN sender is `mailer-daemon@googlemail.com` or its domain equals, or is a
+  subdomain of, the failed address's domain (a co-recipient's own signed DSN naming another
+  address writes nothing).
+
+Both predicates are seeded with `kind='state'`, `object_kind='literal'` and
+`cardinality='multi'` (`rel_044`). Each distinct return date is its own row; a reader SHALL take
+the most recently observed active `away-until` row. The job SHALL re-check every evidence
+condition rather than trust the row, SHALL resolve an address with the shared channel resolver,
+and SHALL write nothing for an address that resolves to no entity, to more than one entity, or to
+the owner. A resolution fault SHALL fail the run without advancing its checkpoint. Each fact
+cites its inbox row as evidence and copies no text of the automated message. The same job SHALL
+retract an active `undeliverable-email` fact, citing the inbox row as evidence, when a later
+inbound email from exactly that address (compared stripped and lower-cased) was received after the
+fact's own `observed_at`, and SHALL NOT re-mark an address from an older bounce once such a message
+exists. Reading these facts is `REQ-relationship-facts-014`; the owner's door to replace a dead
+address is not built.
+
+ID: REQ-relationship-facts-013
+Source: bu-s11n0s.14 acceptance criteria and design constraint (bind to sent mail, check sender authentication, delays never dead); RFC 0038 deterministic-handler check
+Scope: v1-mandatory
+
+#### Scenario: Bound auto-reply writes availability without a session
+- **WHEN** the scheduled job reads a bound, authenticated auto-reply from a known contact
+- **THEN** an active `away-until` fact with the return date SHALL exist on that contact's entity
+- **AND** the LLM spawner SHALL never be called
+
+#### Scenario: Backscatter writes no fact
+- **WHEN** a DSN names no original in the owner's SENT mailbox (`original_sent` false)
+- **THEN** no `undeliverable-email` fact SHALL be written, even if the row lists recipients
+
+#### Scenario: Replay is idempotent
+- **WHEN** the job reads the same inbox row again
+- **THEN** the central writer SHALL report `unchanged`
+- **AND** exactly one fact row SHALL exist for that subject, predicate and object
+
+#### Scenario: Ambiguous address writes nothing
+- **WHEN** the address resolves to two entities, to no entity, or to the owner
+- **THEN** no fact SHALL be written and no approval SHALL be parked
+
+#### Scenario: A later inbound message clears the dead address
+- **WHEN** an active `undeliverable-email` fact exists and an inbound email from exactly that address is received after the fact's `observed_at`
+- **THEN** the job SHALL retract the fact with that inbox row as evidence, and a replay SHALL clear nothing and write no new fact
+- **AND** a message received before the fact, or from a different address, SHALL leave the fact active
+
+### Requirement: Away-until and undeliverable-email facts change what is sent
+Two readers consume the facts of `REQ-relationship-facts-013`, both deterministic and neither adding a cross-butler read or delegation path.
+
+The weekly `relationship-maintenance` job SHALL defer a contact whose current away-until date is today or later. The current away-until date is the most recently observed active `away-until` fact whose date is not before today, with today taken in the owner's timezone; a past date SHALL NOT defer. A deferred contact SHALL be left out of that run and reconsidered by the first run after the date, so the nudge is deferred to the day after the return date. When deferral removes every overdue contact the job SHALL send neither a suggestion nor the all-clear. A failed read of the facts SHALL fail the run without sending.
+
+`notify()` with an `entity_id` and the email channel SHALL skip an address that carries an active `undeliverable-email` fact for the same address (compared case-insensitively) and SHALL deliver to another live address when one exists. When the entity has email addresses and every one is undeliverable, `notify()` SHALL return a non-retryable `no_live_address` error, record one failed attention-ledger row, and neither send nor park an approval. An entity with no email address at all keeps the existing missing-identifier path. An undeliverable-email fact stays in force until it is retracted, which a later inbound message from the same address does (`REQ-relationship-facts-013`).
+
+ID: REQ-relationship-facts-014
+Source: bu-s11n0s.14 acceptance criteria (producer deferral to until_date+1) and design (Messenger prefers a live address); RFC 0038 deterministic-handler check
+Scope: v1-mandatory
+
+#### Scenario: A reconnect nudge is deferred to the day after the return date
+- **WHEN** an overdue contact has an away-until fact dated today or later
+- **THEN** the weekly maintenance run SHALL leave that contact out of its suggestions
+- **AND** the first run dated after that date SHALL consider the contact again
+
+#### Scenario: A past away-until date does not defer
+- **WHEN** the only away-until facts on an overdue contact are dated before today in the owner's timezone
+- **THEN** the contact SHALL be suggested as usual
+
+#### Scenario: Everyone deferred sends nothing
+- **WHEN** every overdue contact is away
+- **THEN** the job SHALL send no suggestion and no all-clear
+
+#### Scenario: A dead address loses to a live one
+- **WHEN** an entity has two email addresses and one carries an undeliverable-email fact
+- **THEN** notify SHALL resolve the other address
+
+#### Scenario: No live address is surfaced, not sent
+- **WHEN** every email address of the entity carries an undeliverable-email fact
+- **THEN** notify SHALL return `no_live_address` and SHALL NOT send, park or retry

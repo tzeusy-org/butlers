@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from butlers.mcp_liveness import ServerUnresponsive
+
 ROUTE_TIMEOUT_S = 30
 
 # Route dispatch handles sockets, not local files. Keep the same bounded
@@ -52,6 +54,11 @@ _RETRYABLE_ROUTE_OS_ERRNOS = frozenset(
 
 def _is_direct_retryable_route_exception(exc: Exception) -> bool:
     """Return whether ``exc`` itself is a known transient route failure."""
+    if isinstance(exc, ServerUnresponsive):
+        # The peer stopped answering mid-call, so the call may still run, or run later, when it
+        # recovers: cancelling the client task does not stop the server's handler. A resend
+        # could run it twice, so this is not a failure a retry can repair.
+        return False
     if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
     if isinstance(exc, (httpx.NetworkError, httpx.TimeoutException)):

@@ -10,7 +10,6 @@ prior path, then upgrades and proves no decoy runs.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import shutil
 import uuid
@@ -22,7 +21,7 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config, run_migrations
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, load_migration, migration_db_name
 
 pytestmark = [
     pytest.mark.integration,
@@ -134,16 +133,8 @@ def _definers(db_url: str) -> dict[str, tuple[str, str, list[str]]]:
         engine.dispose()
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_252_under_test", _CORE_252_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _expected_prior(schema: str, name: str) -> str:
-    priors = _load_migration().PRIOR_SEARCH_PATHS
+    priors = load_migration(_CORE_252_PATH, "core_252_under_test").PRIOR_SEARCH_PATHS
     prior = priors.get((schema, name)) or priors[(None, name)]
     return f"search_path={prior}"
 

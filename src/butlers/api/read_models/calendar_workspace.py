@@ -34,8 +34,8 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Mapping
-from dataclasses import dataclass, fields
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -45,15 +45,23 @@ import asyncpg
 
 from butlers.api.db import DatabaseManager
 from butlers.core.temporal.calendar_provenance import (
-    counts_toward_owner_load,
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
+    is_owner_attending,
+    is_status_event,
+)
+from butlers.core.temporal.calendar_source_roles import (
+    DEFAULT_ROLE,
+    counts_as_owner_time,
+    normalize_role,
 )
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     DetectedIssue,
     detect_conflict_issues,
+    overlap_pair_id,
 )
+from butlers.core.temporal.household_context import HouseholdEvent, household_events
 
 logger = logging.getLogger(__name__)
 
@@ -315,6 +323,8 @@ SOURCE_COLUMNS: str = (
     " s.display_name,"
     " s.writable,"
     " s.metadata AS source_metadata,"
+    " s.time_role AS source_time_role,"
+    " s.role_basis AS source_role_basis,"
     " c.cursor_name,"
     " c.last_synced_at,"
     " c.last_success_at,"
@@ -376,6 +386,7 @@ WORKSPACE_COLUMNS: str = (
     " e.visibility,"
     " e.recurrence_rule,"
     " e.metadata AS event_metadata,"
+    " e.event_type,"
     " e.source_butler,"
     " e.source_session_id,"
     " s.id AS source_id,"
@@ -388,6 +399,10 @@ WORKSPACE_COLUMNS: str = (
     " s.display_name,"
     " s.writable,"
     " s.metadata AS source_metadata,"
+    " s.time_role AS source_time_role,"
+    " s.role_subject_entity_id AS source_subject_entity_id,"
+    " (SELECT en.canonical_name FROM public.entities en"
+    "  WHERE en.id = s.role_subject_entity_id) AS source_subject_label,"
     " c.cursor_name,"
     " c.last_synced_at,"
     " c.last_success_at,"
@@ -462,6 +477,8 @@ class CalendarSourceRow:
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
     db_butler: str = ""
+    time_role: str = "unclassified"
+    role_basis: str = "provider_inferred"
 
 
 @dataclass
@@ -515,6 +532,13 @@ class CalendarWorkspaceRow:
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
     db_butler: str = ""
+    #: The provider event type (core_341), verbatim; ``default`` when unknown.
+    event_type: str = "default"
+    #: The source's role (core_360): whose time its events are. Absent reads as ``unclassified``.
+    source_time_role: str = "unclassified"
+    #: Whose calendar a household source is (core_368): the entity and its display name.
+    source_subject_entity_id: UUID | None = None
+    source_subject_label: str | None = None
 
 
 def shallow_asdict(row: Any) -> dict[str, Any]:
@@ -668,6 +692,8 @@ def row_to_source(row: asyncpg.Record, *, db_butler: str) -> CalendarSourceRow:
         last_error=row["last_error"],
         full_sync_required=bool(row["full_sync_required"] or False),
         db_butler=db_butler,
+        time_role=row.get("source_time_role") or "unclassified",
+        role_basis=row.get("source_role_basis") or "provider_inferred",
     )
 
 
@@ -716,6 +742,10 @@ def row_to_workspace(row: asyncpg.Record, *, db_butler: str) -> CalendarWorkspac
         last_error=row["last_error"],
         full_sync_required=bool(row["full_sync_required"] or False),
         db_butler=db_butler,
+        event_type=row.get("event_type") or "default",
+        source_time_role=row.get("source_time_role") or "unclassified",
+        source_subject_entity_id=row.get("source_subject_entity_id"),
+        source_subject_label=row.get("source_subject_label"),
     )
 
 
@@ -1220,6 +1250,115 @@ class CalendarConflictScan:
 
     issues: list[DetectedIssue]
     available: bool = True
+    #: ``False`` when the dedup rules or keep-separate pins could not be read and the
+    #: collapse fell back to the defaults. The radar ignores it (its fail-open contract);
+    #: the overcommitment producer must not treat such a scan as complete, since a
+    #: different collapse can change which events exist and so which issues are seen.
+    dedup_available: bool = True
+    #: ``entry_id`` -> provider identity of each scanned entry: the ``origin_ref``
+    #: dedup cluster key (non-recurring: ``origin_ref``; recurring: ``origin_ref`` plus
+    #: start), or the instance id for a refless row. Unlike ``entry_id``, it does not
+    #: change when a resync makes another schema's copy of the same event survive the
+    #: collapse. Opaque provider ids only, never a title.
+    entry_identity_keys: dict[str, str] = field(default_factory=dict)
+    #: Calendars whose events were left out because their source is ``unclassified`` and the owner
+    #: is not invited, and how many events that is. A coverage line, so a missing conflict is not
+    #: mistaken for a clear window (REQ-calendar-conflict-overcommitment-radar-002).
+    unclassified_sources: int = 0
+    unclassified_events: int = 0
+    #: Other people's events overlapping the window, attributed and opaque
+    #: (REQ-module-calendar-038).
+    #: Context only: they form no issue and add no hours.
+    household_context: list[HouseholdEvent] = field(default_factory=list)
+
+
+def _household_from_workspace_rows(
+    rows: Iterable[Mapping[str, Any]], *, start: datetime, end: datetime
+) -> list[HouseholdEvent]:
+    """Household context events among flattened workspace rows; only time and subject survive."""
+    return household_events(
+        (
+            {
+                "time_role": row.get("source_time_role"),
+                # One effective-occurrence rule: an exception's own metadata (its attendees) wins
+                # over the series', as the free-slot search and the card do in SQL.
+                "metadata": _effective_metadata(row),
+                "starts_at": row["instance_starts_at"],
+                "ends_at": row["instance_ends_at"],
+                "all_day": row.get("all_day"),
+                "source_id": row.get("source_id"),
+                "subject_entity_id": row.get("source_subject_entity_id"),
+                "subject_label": row.get("source_subject_label"),
+                "event_type": row.get("event_type"),
+            }
+            for row in rows
+            if "cancelled" not in (row.get("event_status"), row.get("instance_status"))
+        ),
+        start=start,
+        end=end,
+    )
+
+
+def _effective_metadata(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The occurrence's metadata: the series' with the instance's keys laid over it."""
+    merged: dict[str, Any] = {}
+    for key in ("event_metadata", "instance_metadata"):
+        value = row.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        if isinstance(value, dict):
+            merged.update(value)
+    return merged
+
+
+@dataclass
+class HouseholdTimeRead:
+    """Result of :func:`query_household_time`: context events and whether the read was complete."""
+
+    events: list[HouseholdEvent]
+    available: bool = True
+
+
+async def query_household_time(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+) -> HouseholdTimeRead:
+    """Other people's events in ``[start, end)``, attributed and opaque, never owner load.
+
+    Reads the same user-lane window and duplicate collapse as the conflict scan, so a provider
+    event synced into several butler schemas appears once. Fail-open: a failed fan-out returns
+    ``available=False`` rather than raising, and an empty list then means nothing was checked.
+    """
+    try:
+        rows, failed = await query_calendar_workspace(
+            db, view="user", start=start, end=end, butlers=butlers
+        )
+    except Exception:
+        logger.warning("query_household_time workspace fan-out failed", exc_info=True)
+        return HouseholdTimeRead([], available=False)
+    flattened = [shallow_asdict(row) for row in rows]
+    flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
+    dedup_rules, _ = await _read_dedup_rules(db)
+    keep_separate, _ = await _read_keep_separate_keys(db)
+    deduped, _clusters = _dedup_workspace_rows(
+        flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
+    )
+    return HouseholdTimeRead(
+        _household_from_workspace_rows(deduped, start=start, end=end), available=not failed
+    )
+
+
+def _entry_identity_key(row: Mapping[str, Any]) -> str:
+    """Provider identity of one deduped row; see ``CalendarConflictScan.entry_identity_keys``."""
+    if row.get("origin_ref"):
+        return _cluster_key(row, "origin_ref", aggressive=False)
+    return f"instance\x01{row['instance_id']}"
 
 
 @dataclass
@@ -1433,7 +1572,7 @@ async def query_calendar_conflicts(
     runs the pure :func:`~butlers.core.temporal.conflicts.detect_conflict_issues`
     detector over the eligible collapsed set, and joins any ``pending``
     ``calendar_event_proposals`` whose ``source_event_id`` equals an overlap
-    issue's canonical pair id.
+    issue's provider-identity pair id (or its legacy instance-based pair id).
 
     **Dedup-aware radar (bu-hmdqz.10).** Before this pass, a duplicate cluster
     of N synced copies of one real-world event (the same Google event synced
@@ -1474,8 +1613,8 @@ async def query_calendar_conflicts(
     flattened = [shallow_asdict(row) for row in rows]
     flattened.sort(key=lambda r: (r["instance_starts_at"], r["instance_id"]))
 
-    dedup_rules = await load_dedup_rules(db)
-    keep_separate = await load_keep_separate_keys(db)
+    dedup_rules, rules_read = await _read_dedup_rules(db)
+    keep_separate, pins_read = await _read_keep_separate_keys(db)
     deduped, _clusters = _dedup_workspace_rows(
         flattened, strategy=dedup_rules.match_strategy, keep_separate=keep_separate
     )
@@ -1489,6 +1628,9 @@ async def query_calendar_conflicts(
             timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
             status=str(row.get("instance_status") or row.get("event_status") or "confirmed"),
             all_day=bool(row.get("all_day")),
+            # Out of office and working location are statuses: busy time when opaque
+            # (overlap, back to back) but zero day-load hours (bu-s11n0s.4 AC D).
+            counts_toward_day_load=not is_status_event(row.get("event_type")),
         )
         for row in deduped
         if is_calendar_analysis_candidate(
@@ -1498,7 +1640,24 @@ async def query_calendar_conflicts(
             ends_at=row["instance_ends_at"],
             timezone=row.get("instance_timezone") or row.get("event_timezone"),
         )
-        and counts_toward_owner_load(row.get("event_metadata"))
+        # Only the owner's own time is analysed (REQ-calendar-conflict-overcommitment-radar-002):
+        # another person's calendar stays on the grid as context but adds no conflict or load.
+        and counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
+    ]
+
+    unclassified = [
+        row
+        for row in deduped
+        if normalize_role(row.get("source_time_role")) == DEFAULT_ROLE
+        and is_calendar_analysis_candidate(
+            metadata=row.get("event_metadata"),
+            all_day=row.get("all_day") is True,
+            starts_at=row["instance_starts_at"],
+            ends_at=row["instance_ends_at"],
+            timezone=row.get("instance_timezone") or row.get("event_timezone"),
+        )
+        and not counts_as_owner_time(row.get("source_time_role"), row.get("event_metadata"))
+        and is_owner_attending(row.get("event_metadata"))
     ]
 
     issues = detect_conflict_issues(
@@ -1508,9 +1667,23 @@ async def query_calendar_conflicts(
         overloaded_day_hours=overloaded_day_hours,
     )
 
-    # Join pending proposals by the canonical overlap-pair id. query_calendar_proposals
-    # is itself fail-open (returns [] on failure), so a missing proposals table
-    # leaves proposal_ids empty rather than degrading the whole scan.
+    identity_keys = {str(row["instance_id"]): _entry_identity_key(row) for row in deduped}
+
+    # Re-key each overlap's pair_id onto provider identity (bu-nd32y3). The detector's
+    # pair id hashes instance ids, and the surviving instance of a provider event rotates
+    # between butler schemas on resync, so a proposal stored under it would detach. The
+    # instance-based id is kept as a legacy join key for proposals written before.
+    legacy_pair_ids: dict[int, str] = {}
+    for issue in issues:
+        if issue.pair_id is not None and len(issue.events) == 2:
+            legacy_pair_ids[id(issue)] = str(issue.pair_id)
+            issue.pair_id = overlap_pair_id(
+                *(identity_keys.get(e.entry_id, f"instance\x01{e.entry_id}") for e in issue.events)
+            )
+
+    # Join pending proposals by the provider-identity pair id, or the legacy instance
+    # pair id. query_calendar_proposals is itself fail-open (returns [] on failure), so a
+    # missing proposals table leaves proposal_ids empty rather than degrading the scan.
     pending = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
     by_source: dict[str, list[str]] = {}
     for proposal in pending:
@@ -1519,12 +1692,21 @@ async def query_calendar_conflicts(
     if by_source:
         for issue in issues:
             if issue.pair_id is not None:
-                issue.proposal_ids = by_source.get(str(issue.pair_id), [])
+                keys = [str(issue.pair_id), legacy_pair_ids.get(id(issue))]
+                issue.proposal_ids = [pid for key in keys if key for pid in by_source.get(key, [])]
 
     # A partial events fan-out failure means we scanned an incomplete event set,
     # so a real conflict could be hidden — degrade honestly even though ``issues``
     # may be non-empty from the schemas that did respond.
-    return CalendarConflictScan(issues=issues, available=not failed)
+    return CalendarConflictScan(
+        issues=issues,
+        available=not failed,
+        dedup_available=rules_read and pins_read,
+        entry_identity_keys=identity_keys,
+        unclassified_sources=len({str(row.get("source_id")) for row in unclassified}),
+        unclassified_events=len(unclassified),
+        household_context=_household_from_workspace_rows(deduped, start=start, end=end),
+    )
 
 
 async def query_calendar_proposal_by_id(
@@ -1992,22 +2174,33 @@ async def load_dedup_rules(db: DatabaseManager) -> CalendarDedupRules:
     table (never configured), or any query failure degrades to the defaults
     (``balanced`` strategy, threshold ``2``) rather than raising.
     """
+    rules, _read = await _read_dedup_rules(db)
+    return rules
+
+
+async def _read_dedup_rules(db: DatabaseManager) -> tuple[CalendarDedupRules, bool]:
+    """:func:`load_dedup_rules` plus whether the store was actually read.
+
+    An empty table is a genuine read (never configured); no pool or a failed
+    query is not.
+    """
     pool = _dedup_pool(db)
     if pool is None:
-        return CalendarDedupRules()
+        return CalendarDedupRules(), False
     try:
         row = await pool.fetchrow(
             f"SELECT match_strategy, noisy_threshold FROM {_DEDUP_RULES_TABLE} WHERE id = TRUE"
         )
     except Exception:
         logger.warning("load_dedup_rules failed; returning defaults (fail-open)", exc_info=True)
-        return CalendarDedupRules()
+        return CalendarDedupRules(), False
     if row is None:
-        return CalendarDedupRules()
+        return CalendarDedupRules(), True
     strategy = row["match_strategy"]
     if strategy not in DEDUP_STRATEGIES:
         strategy = DEDUP_DEFAULT_STRATEGY
-    return CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
+    rules = CalendarDedupRules(match_strategy=strategy, noisy_threshold=int(row["noisy_threshold"]))
+    return rules, True
 
 
 async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
@@ -2016,12 +2209,18 @@ async def load_keep_separate_keys(db: DatabaseManager) -> set[str]:
     A missing ``public.calendar_dedup_overrides`` table or any query failure
     degrades to an empty set (no overrides) rather than raising.
     """
+    keys, _read = await _read_keep_separate_keys(db)
+    return keys
+
+
+async def _read_keep_separate_keys(db: DatabaseManager) -> tuple[set[str], bool]:
+    """:func:`load_keep_separate_keys` plus whether the store was actually read."""
     pool = _dedup_pool(db)
     if pool is None:
-        return set()
+        return set(), False
     try:
         rows = await pool.fetch(f"SELECT cluster_key FROM {_DEDUP_OVERRIDES_TABLE}")
     except Exception:
         logger.warning("load_keep_separate_keys failed; returning empty (fail-open)", exc_info=True)
-        return set()
-    return {row["cluster_key"] for row in rows}
+        return set(), False
+    return {row["cluster_key"] for row in rows}, True

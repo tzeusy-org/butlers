@@ -1,0 +1,111 @@
+## MODIFIED Requirements
+
+### Requirement: GET runtime config endpoint
+
+The dashboard API SHALL expose `GET /api/butlers/{name}/runtime-config` returning the current runtime config from the DB. This is a core API route in `src/butlers/api/routers/` (not an auto-discovered butler-specific route per RFC 0007 §Auto-Discovered Butler Routes), because it is cross-butler infrastructure that reads from any butler's schema.
+
+ID: REQ-runtime-config-api-001
+Source: RFC 0007 §Dashboard API Surface, §Response Envelope
+Scope: v1-mandatory
+
+#### Scenario: Successful read
+- **WHEN** a GET request is made for an existing butler
+- **THEN** the response SHALL contain all runtime_config fields with their current values, `updated_at` timestamp, and `field_tiers` map
+- **AND** it SHALL include `core_groups_narrowing_reason`, the Git-declared and effective groups, the effective source, registered-tool counts, and a bounded three-way diff
+- **AND** decorator failures SHALL remain named in `tool_registration_failures` by tool, module, and exception type without exposing the exception message
+
+#### Scenario: Butler not found
+- **WHEN** a GET request is made for a non-existent butler
+- **THEN** the response SHALL return HTTP 404
+
+#### Scenario: Tool declaration snapshot is unavailable
+- **WHEN** the daemon status tool cannot provide a valid declaration snapshot
+- **THEN** the response SHALL set `tool_snapshot_status` to `unavailable`
+- **AND** it SHALL NOT represent the missing snapshot as an empty or complete tool surface
+
+#### Scenario: Field tiers included in response
+- **WHEN** a GET response is returned
+- **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold
+- **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
+
+#### Scenario: Stored exposure policy is returned
+
+- **WHEN** a GET response is returned
+- **THEN** it SHALL include the stored `tool_exposure_policy` and mark that field `hot` in `field_tiers`
+- **AND** a legacy row missing the field SHALL use `eager_filtered`
+- **AND** the API field tier SHALL NOT establish that a runtime planner consumes the policy
+
+### Requirement: PATCH runtime config endpoint
+
+The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accepting a partial update of runtime config fields.
+
+ID: REQ-runtime-config-api-002
+Source: RFC 0007 §Dashboard API Surface
+Scope: v1-mandatory
+
+#### Scenario: Accepted fields
+- **WHEN** a PATCH request is processed
+- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, and `tool_exposure_policy` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
+
+#### Scenario: Catalog read sensitivity updates hot
+
+- **WHEN** a PATCH sets `catalog_read_sensitivity` to `normal`, `internal`, or `confidential`
+- **THEN** the DB row SHALL be updated and `restart_required` SHALL remain empty for that field
+- **AND** any other value SHALL return HTTP 422
+
+#### Scenario: Update cold field
+- **WHEN** a PATCH request updates `core_groups`
+- **THEN** the DB row SHALL be updated, `updated_at` SHALL be set to now, and the response SHALL include `restart_required: ["core_groups"]`
+
+#### Scenario: Narrowing requires an explicit reason
+- **WHEN** a PATCH proposes a `core_groups` subset of the Git declaration
+- **THEN** it SHALL require a non-blank `core_groups_narrowing_reason`
+- **AND** both fields SHALL require a daemon restart
+
+#### Scenario: Clearing the reason restores Git authority
+- **WHEN** a PATCH clears `core_groups_narrowing_reason`
+- **THEN** the response SHALL show Git as the effective source and the Git-declared groups as effective
+- **AND** startup reconciliation SHALL persist that Git group set idempotently
+
+#### Scenario: All managed fields are cold
+- **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
+- **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
+- **AND** the historical no-hot-fields clause is superseded for new fields only: `catalog_read_sensitivity` is hot and MUST NOT appear in `restart_required`
+
+#### Scenario: Invalid field value — negative concurrency
+- **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero
+- **THEN** the response SHALL return HTTP 422 with a validation error
+
+#### Scenario: Invalid core_groups — unknown group name
+- **WHEN** a PATCH request sets `core_groups` to `["infra", "foo"]`
+- **THEN** the response SHALL return HTTP 422 with a validation error listing `"foo"` as an unknown group
+- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`, `cost_claims`, `continuity`
+
+#### Scenario: delegation is a known core group
+- **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
+- **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
+
+#### Scenario: Empty PATCH body
+- **WHEN** a PATCH request has an empty body or no changed fields
+- **THEN** the response SHALL return HTTP 200 with the current config unchanged and `restart_required: []`
+
+#### Scenario: Butler not found
+- **WHEN** a PATCH request targets a non-existent butler
+- **THEN** the response SHALL return HTTP 404
+
+#### Scenario: Exposure policy update is persisted without restart
+
+- **WHEN** a PATCH supplies `tool_exposure_policy` as `eager_filtered` or `auto`
+- **THEN** the DB row SHALL be updated and that field SHALL NOT appear in `restart_required`
+- **AND** persistence SHALL NOT claim native discovery activation or an implemented per-attempt planner
+
+#### Scenario: Invalid exposure policy is rejected
+
+- **WHEN** a PATCH supplies another non-null exposure policy value
+- **THEN** the API SHALL return HTTP 422 without changing the stored policy
+
+## Source References
+
+- Non-Negotiable Rule 3 (MCP inter-butler communication)
+- Non-Negotiable Rule 5 (DB-persisted operational tuning)
+- RFC 0027 (catalog and exposure contract; unlanded runtime work succeeds to RFC 0038)

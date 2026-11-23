@@ -27,7 +27,6 @@ from butlers.config import (
     ApprovalRiskTier,
     GatedToolConfig,
 )
-from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 from butlers.modules.approvals.gate import apply_approval_gates
 from butlers.modules.email import EmailConfig, EmailModule
@@ -35,6 +34,8 @@ from butlers.modules.telegram import TelegramModule
 from butlers.modules.whatsapp import WhatsAppModule
 from butlers.testing.approval_parking_fake import record_pending_action
 from butlers.testing.mcp import tool_fn
+from butlers.testing.tool_host import host_tools
+from tests.core.gate_state import readable_gate_state  # noqa: F401
 
 pytestmark = pytest.mark.unit
 
@@ -46,6 +47,10 @@ def _available_permission_for_owner_resolution(request, monkeypatch):
     if request.node.name == "test_send_to_secondary_owner_email_is_allowed_cross_schema":
         monkeypatch.setattr(
             "butlers.modules.email.require_permission", AsyncMock(return_value=None)
+        )
+        # The pool here is a mock; tests/core/test_custody_egress.py covers the custody fence.
+        monkeypatch.setattr(
+            "butlers.modules.email.require_custody_clear", AsyncMock(return_value=None)
         )
 
 
@@ -278,104 +283,16 @@ def butler_dir(tmp_path: Path) -> Path:
     return d
 
 
-def _make_daemon_patches() -> dict[str, Any]:
-    """Create the standard patch set for daemon testing (proven pattern)."""
+async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
+    """The daemon's real notify on a DB-free host: no lifecycle runs (bu-rvgzmf.2).
+
+    notify's outbound-safety decisions are the subject, not the boot.
+    """
     mock_pool = AsyncMock()
     mock_pool.fetchval = AsyncMock(return_value=None)
     mock_pool.execute = AsyncMock()
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    # Mock RuntimeConfigAccessor so phase 9b doesn't hit the real DB.
-    from butlers.core.runtime_config import RuntimeConfig as DBRuntimeConfig
-
-    _mock_effective_runtime = DBRuntimeConfig(butler_name="test")
-    _mock_accessor = MagicMock()
-    _mock_accessor.seed_if_empty = AsyncMock(return_value=_mock_effective_runtime)
-    _mock_accessor.get = AsyncMock(return_value=_mock_effective_runtime)
-    _mock_accessor._cache = _mock_effective_runtime
-    _mock_accessor_cls = MagicMock(return_value=_mock_accessor)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "RuntimeConfigAccessor": patch(
-            "butlers.core.runtime_config.RuntimeConfigAccessor",
-            _mock_accessor_cls,
-        ),
-    }
-
-
-async def _boot_daemon_with_notify(butler_dir: Path) -> tuple[Any, Any]:
-    """Boot a daemon and extract the notify tool function."""
-    patches = _make_daemon_patches()
-    runtime_mcp = FastMCP("email-outbound-notify")
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["RuntimeConfigAccessor"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        notify_tool = await runtime_mcp.get_tool("notify")
-        assert notify_tool is not None
-        return daemon, notify_tool.fn
+    host = await host_tools(butler_dir, pool=mock_pool)
+    return host.daemon, await host.tool("notify")
 
 
 def _mock_switchboard_client() -> Any:
@@ -1320,33 +1237,28 @@ def _messenger_dir(tmp_path: Path) -> Path:
 async def _boot_messenger_with_route_execute(
     butler_dir: Path,
 ) -> tuple[Any, Any]:
-    """Boot a messenger daemon and extract the route_execute tool function."""
-    patches = _make_daemon_patches()
-    runtime_mcp = FastMCP("email-outbound-route-execute")
+    """The messenger's route.execute after its own module phases, on a DB-free host.
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["configure_logging"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
-        patches["Spawner"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["RuntimeConfigAccessor"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-        route_execute_tool = await runtime_mcp.get_tool("route.execute")
-        assert route_execute_tool is not None
-        return daemon, route_execute_tool.fn
+    Module selection, config validation and the module-tools phase (tool
+    registration, approval gates, runtime wiring) run unpatched; module startup is
+    skipped, so no provider connects. The subject is route.execute's outbound
+    safety, not the boot (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+
+    mock_pool = AsyncMock()
+    mock_pool.fetchval = AsyncMock(return_value=None)
+    mock_pool.execute = AsyncMock()
+    host = await host_tools(butler_dir, pool=mock_pool)
+    daemon = host.daemon
+    daemon.spawner = MagicMock(drain=AsyncMock())
+    state = lifecycle.StartupState()
+    state.pool = mock_pool
+    await lifecycle._startup_modules(daemon, state)
+    await lifecycle._startup_module_config(daemon, state)
+    await lifecycle._startup_module_startup(daemon, state)
+    await lifecycle._startup_module_tools(daemon, state)
+    return daemon, await host.tool("route.execute")
 
 
 def _make_route_envelope(
@@ -1417,7 +1329,12 @@ def _make_route_envelope(
 
 
 def _parked_route_command(daemon: Any) -> tuple[str, dict[str, Any]]:
-    """Return the single stored command captured by the pending-action insert."""
+    """Return the single stored command captured by the pending-action insert.
+
+    A plain routed send/reply parks as the registered native tool with exactly
+    the handler args its standing-rule match used (module-approvals replayable
+    commands), never the routing envelope.
+    """
     pending_inserts = [
         call
         for call in daemon.db.pool.execute.await_args_list
@@ -1485,7 +1402,7 @@ class TestRouteExecuteApprovalGate:
                 "subject": "[relationship] Notification",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         reply_spy.assert_not_awaited()
 
     async def test_send_to_secondary_owner_email_is_allowed_cross_schema(
@@ -1582,7 +1499,7 @@ class TestRouteExecuteApprovalGate:
                 "body": "Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_without_provider_thread_identity_fails_before_parking(
@@ -1739,7 +1656,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_send_to_owner_telegram_is_allowed(self, tmp_path: Path) -> None:
@@ -1862,7 +1779,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Hello friend",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_to_non_owner_telegram_parks_native_reply_command(
@@ -1906,7 +1823,7 @@ class TestRouteExecuteTelegramApprovalGate:
                 "text": "[relationship] Reply in place",
             },
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         reply_spy.assert_not_awaited()
 
 
@@ -1976,7 +1893,7 @@ class TestRouteExecuteWhatsAppApprovalGate:
             "whatsapp_send_message",
             {"recipient": recipient, "text": "[relationship] Hello friend"},
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
     async def test_reply_parks_current_native_send_semantics(self, tmp_path: Path) -> None:
@@ -2013,7 +1930,7 @@ class TestRouteExecuteWhatsAppApprovalGate:
             "whatsapp_send_message",
             {"recipient": thread_identity, "text": "[relationship] Reply in place"},
         )
-        assert _parked_route_command(daemon) == ("route.execute", envelope)
+        assert _parked_route_command(daemon) == rules.await_args.args[1:]
         send_spy.assert_not_awaited()
 
 

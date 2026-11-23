@@ -20,6 +20,8 @@ from uuid import UUID
 
 import httpx
 
+from butlers.core.switchboard_tls import switchboard_http_options
+
 TOOL = "subscription_warning_still_relevant"
 HEADER = "X-Butlers-Finance-Warning"
 VERIFY_PATH = "/internal/finance-warning/verify"
@@ -567,8 +569,11 @@ class FinanceWarningControlOwner:
         async def operation():
             nonce = secrets.token_urlsafe(32)
             verification_start = asyncio.get_running_loop().time()
+            options = switchboard_http_options(
+                self.verifier_url, require_origin=True, trust_env=False
+            )
             async with self.client_context(
-                httpx.AsyncClient(trust_env=False, timeout=DEADLINE_SECONDS)
+                httpx.AsyncClient(timeout=DEADLINE_SECONDS, **options)
             ) as client:
                 response = await client.post(
                     self.verifier_url,
@@ -618,9 +623,18 @@ class FinanceWarningControlOwner:
         return await self._bounded(operation, deadline)
 
     async def settle(self):
+        # Gathering only done tasks completes without yielding (shield of a done
+        # task returns it, and gather of done futures finishes eagerly), so a done
+        # task still waiting on its settled() callback would be re-gathered
+        # forever. Yield once so queued settled() callbacks (readmission
+        # bookkeeping) run before settle() returns, then drop the snapshot; the
+        # loop picks up tasks owned while settling (bu-dhloi1.237).
         while self.tasks or self.children:
             tasks = tuple(self.tasks | self.children)
             await asyncio.gather(*(asyncio.shield(t) for t in tasks), return_exceptions=True)
+            await asyncio.sleep(0)
+            self.tasks.difference_update(tasks)
+            self.children.difference_update(tasks)
         if self.closed and _owners.get(id(self.pool)) is self:
             del _owners[id(self.pool)]
 

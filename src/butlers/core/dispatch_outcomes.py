@@ -360,10 +360,11 @@ async def _produce_edge(
     together.  Postgres poisons the whole transaction on a raised exception,
     though, so an unauthorized producer would take the attempt row down with
     it: both v2 producers raise ``42501`` unless ``current_setting('role')``
-    is a canonical ``butler_*_rw``, and outside hardened posture ``db.py``
-    fails open and runs the pool with no ``SET ROLE`` at all.  On a dev stack
-    that lost every breaker-edge failure row permanently, so the breaker
-    could never trip.  The nested transaction is the savepoint we roll back
+    is a canonical ``butler_*_rw``.  ``db.py`` fails closed for a schema-bound
+    pool (``_RuntimeRoleError``), but a role-less pool (an administrative
+    utility or a test pool) runs with no ``SET ROLE`` at all, and losing the
+    attempt row there would lose every breaker-edge failure row permanently,
+    so the breaker could never trip.  The nested transaction is the savepoint we roll back
     to, leaving the outer transaction — and the attempt row — intact.
 
     Returns ``(episode_id, unauthorized)``.  Only ``42501`` is absorbed; any

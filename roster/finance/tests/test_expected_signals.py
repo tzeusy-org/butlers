@@ -89,6 +89,30 @@ async def test_runtime_owner_requires_server_resolved_owner_entity(
     assert await runtime_signal_source(pool) == FinanceSignalSource("owner")
 
 
+async def test_held_owner_endpoint_is_no_owner_signal_or_owner_subscription_writer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REQ-endpoint-custody-holds-005: a held or unreadable owner endpoint attests nothing."""
+    from butlers.roster_imports import roster_module
+
+    subscriptions = roster_module("finance", "tools/subscriptions")
+    monkeypatch.setattr(
+        expected_signals_module,
+        "get_current_runtime_session_routing_context",
+        lambda: {
+            "source_entity_id": "00000000-0000-0000-0000-000000000001",
+            "source_custody": "endpoint_held",
+            "request_context": {"source_channel": "telegram_user_client"},
+        },
+    )
+    pool = AsyncMock()
+    pool.fetchval.return_value = True
+
+    assert await runtime_signal_source(pool) is None
+    assert await subscriptions._writer_is_owner(pool) is False
+    pool.fetchval.assert_not_awaited()
+
+
 @pytest.mark.parametrize("endpoint", [None, "", "email:user:owner@example.invalid"])
 async def test_runtime_malformed_gmail_cannot_fall_through_to_owner(
     monkeypatch: pytest.MonkeyPatch,

@@ -26,6 +26,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_update
 from butlers.tools.health._helpers import _get_owner_entity_id, _row_to_dict
 
 logger = logging.getLogger(__name__)
@@ -332,13 +333,17 @@ async def meal_update(
     description = updates.get("description", row["content"])
     eaten_at = updates.get("eaten_at", row["valid_at"])
 
+    taint = taint_update(6)
     await pool.execute(
-        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5 WHERE id = $1",
+        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5"
+        f"{taint.assignments}"
+        " WHERE id = $1",
         meal_uuid,
         predicate,
         description,
         new_meta,
         eaten_at,
+        *taint.values,
     )
 
     return _fact_to_meal(

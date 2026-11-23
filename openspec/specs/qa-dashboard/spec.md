@@ -276,6 +276,7 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 - **WHEN** the Case Dossier renders the right column
 - **THEN** it renders a PR panel (when `pr` is non-null) containing:
   - State chip (drafted/open/merged/closed) with appropriate state color from the Dispatch palette
+  - A neutral `PR state unknown` chip when a known PR has nullable lifecycle; its Open PR link remains available, without a no-PR, closed, merged or success claim
   - Mono `pr #<number> · <state>`
   - Sans-500 14 px PR title
   - Mono caption with branch name, CI status, `+<additions> −<deletions>`
@@ -310,6 +311,9 @@ The dashboard API SHALL expose case-shaped resources under `/api/qa/cases` for t
 - **WHEN** `GET /api/qa/cases/:id` is called with an attempt UUID
 - **THEN** it returns the full dossier payload: the case summary, `state_track_stage`, derived `proposal_state` (`none`, `unpublished`, or `published`), `proposal_diff_snapshot` (validated independently so a diff-only fallback remains visible), `investigation_notes` (or null when no notes have been emitted yet), a `pr` summary block (or null), the most recent 50 journal events, the attempt's `healing_session_id` (or null), its `session_ids[]` (empty when none), and `error_detail` (the raw `healing_attempts.error_detail` text, or null — populated regardless of state, but only rendered by the UI's failure banner in the `failed` state)
 - **AND** when the attempt id does not exist, it returns the standard 404 envelope from RFC 0007
+- **AND** known PR identity is independent of nullable PR lifecycle: terminal attempt outcomes never imply a closed PR, and unavailable lifecycle metadata retains the PR summary/link and published classification
+- **AND** read-only dossier metadata may supersede a positive local PR state with explicit GitHub open/draft/closed/merged evidence; only a positively merged observation supplies the merge timestamp, never the attempt's closure time
+- **AND** missing, malformed or unavailable provider observations do not synthesize lifecycle; an unavailable checks observation does not discard valid PR lifecycle metadata, and case-list reads perform no provider lookup
 
 #### Scenario: GET /api/qa/cases/:id/journal
 - **WHEN** `GET /api/qa/cases/:id/journal` is called with optional `cursor` and `limit` (default 50, max 500)
@@ -357,13 +361,16 @@ The dashboard SHALL render the case index at `/qa/investigations` using the Disp
 
 The QA dashboard SHALL treat the existing `public.qa_patrols.status` vocabulary
 as an explicit cross-layer contract. The canonical accepted values are `running`,
-`clean`, `findings_dispatched`, `error`, `skipped_overlap`, and `suppressed`; this
-change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
+`clean`, `findings_dispatched`, `error`, `skipped_overlap`, `suppressed`, and `halted`;
+`halted` marks a patrol whose novel findings were not dispatched because a halting gate stopped
+remediation (open circuit breaker, no executor model, full concurrency cap) and is recorded with a
+`halt_reason`. An open breaker or a full cap queue their findings; with no model they are not
+dispatched and a later patrol rediscovers them.
 
 #### Scenario: Canonical patrol-status filter validation
 
 - **WHEN** an operator requests `GET /api/qa/patrols` with `status` equal to one of
-  the six canonical values
+  the seven canonical values
 - **THEN** the API accepts the filter and returns matching patrol records
 - **AND** when `status` is any other value, the API returns HTTP 422 naming the
   rejected value and the canonical vocabulary
@@ -393,6 +400,7 @@ change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
   - `clean`: label `clean`, healthy green
   - `findings_dispatched`: label `findings dispatched`, amber attention
   - `suppressed`: label `findings suppressed`, amber warning
+  - `halted`: label `dispatch halted`, amber warning
   - `error`: label `patrol error`, destructive red
   - `running`: label `patrol running`, explicit muted non-success
   - `skipped_overlap`: label `patrol skipped due to overlap`, explicit muted
@@ -420,7 +428,7 @@ change SHALL NOT add a status value or alter how the QA patrol loop chooses one.
 - **WHEN** an operator opens the QA butler detail's recent-patrol cadence stripe
 - **THEN** each status badge renders the same human-readable label as the shared
   patrol-status mapping for every canonical value
-- **AND** only `clean` is green; `findings_dispatched` and `suppressed` use amber
+- **AND** only `clean` is green; `findings_dispatched`, `suppressed` and `halted` use amber
   attention semantics; `error` and an unknown persisted value are destructive; and
   `running` and `skipped_overlap` remain explicit muted non-success states
 - **AND** an unknown persisted value renders `unknown patrol status`, never its raw

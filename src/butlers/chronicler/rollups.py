@@ -135,7 +135,7 @@ def _local_day_bounds_utc(local_date: date, tzinfo: ZoneInfo) -> tuple[datetime,
 
 
 async def materialize_daily_rollups(
-    pool: asyncpg.Pool,
+    pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     timezone: str = DEFAULT_TIMEZONE,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
@@ -188,17 +188,21 @@ async def materialize_daily_rollups(
             rows = await pool.fetch(
                 f"""
                 SELECT
-                    source_name,
-                    episode_type,
-                    start_at,
-                    end_at,
-                    layer,
-                    payload->>'trigger_source' AS trigger_source
-                FROM v_episodes_corrected
-                WHERE start_at < $2
-                  AND (end_at IS NULL OR end_at > $1)
-                  AND tombstone_at IS NULL
-                  AND privacy IN ({privacy_placeholders})
+                    episode.source_name,
+                    episode.episode_type,
+                    episode.start_at,
+                    episode.end_at,
+                    episode.layer,
+                    episode.payload->>'trigger_source' AS trigger_source
+                FROM v_episodes_corrected AS episode
+                WHERE episode.start_at < $2
+                  AND (episode.end_at IS NULL OR episode.end_at > $1)
+                  AND episode.tombstone_at IS NULL
+                  AND episode.privacy IN ({privacy_placeholders})
+                  AND NOT EXISTS (
+                      SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
+                      WHERE redaction.source_id = episode.id
+                  )
                 """,
                 day_start_utc,
                 day_end_utc,

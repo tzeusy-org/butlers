@@ -47,6 +47,14 @@ Owner authentication (passkey, or `DASHBOARD_API_KEY` in configured-key mode) co
 every other dashboard API route. The callback connector token is not a substitute for it and does
 not grant general dashboard access.
 
+## Owner-Audio Authorship Key
+
+`AUDIO_AUTHORSHIP_KEY` is a Tier-1 shared-public credential (at least 32 bytes, no environment
+fallback). The Telegram bot connector uses it to bind an owner voice-note transcript to its audio,
+and goal admission verifies that binding. It is not provisioned: without it, transcripts carry no
+owner authorship and owner audio admits exposed. Provisioning it is a separate activation step
+(see [Goal ledger and admission](../architecture/goal-ledger-and-admission.md), Owner audio).
+
 ## Butler Roster Layout
 
 Each butler's configuration is git-tracked under `roster/{butler}/`:

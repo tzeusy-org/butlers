@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 #: The one audience a runtime-probe control capability may claim.
 CONTROL_AUDIENCE: Final = "switchboard.runtime_probe_control.v1"
 
+#: The dashboard service-call audience (RFC 0038 D7), signed by the same key.
+SERVICE_CALL_AUDIENCE: Final = "switchboard.service_call.v1"
+
 #: Dashboard-only private signer.  Deployment-secret mount, never a DB row.
 SIGNER_PATH: Final = Path("/run/secrets/runtime_probe_control_signing_key")
 

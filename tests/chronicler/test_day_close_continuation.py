@@ -408,15 +408,21 @@ async def test_real_scheduler_tail_reaches_shared_canonical_owner(tmp_path, monk
         )
         return 1
 
+    tail_reached = asyncio.Event()
+
     async def stop(*args):
-        raise asyncio.CancelledError
+        tail_reached.set()
+        await asyncio.Event().wait()
 
     monkeypatch.setattr("butlers.chronicler.jobs.run_rollup_daily", rollup)
     monkeypatch.setattr("butlers.daemon._tick", tick)
     monkeypatch.setattr("butlers.background._sweep_domain_event_reactions", stop)
     # Only the loop interval is cold configuration; no new scheduling policy.
     daemon.config.scheduler.tick_interval_seconds = 0
-    await daemon._scheduler_loop()
+    loop = asyncio.create_task(daemon._scheduler_loop())
+    await asyncio.wait_for(tail_reached.wait(), timeout=5)
+    loop.cancel()
+    await loop
     assert daemon.spawner.trigger.await_count == 1
     assert (
         daemon.spawner.trigger.call_args.kwargs["trigger_source"]
@@ -492,3 +498,118 @@ async def test_zero_fill_checkpoint_is_not_automatic_quiet_authority():
     pending = next(value for key, value in pool.state.items() if "pending:" in key)
     assert pending["processed"] is None
     assert pool.witness is None
+
+
+async def test_the_refresh_trigger_source_passes_the_session_validator():
+    """bu-2cgabc: the source the real refresh path builds must be a creatable session."""
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    continuation, _pool, daemon = owner()
+    assert (await continuation.resume_once())["status"] == "success"
+    source = daemon._dispatch_scheduled_task.call_args.kwargs["trigger_source"]
+    assert source == "api:day_close_refresh:2026-05-01"
+    assert _is_valid_trigger_source(source)
+
+
+async def test_a_failed_refresh_backs_off_instead_of_retrying_every_tick():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("Invalid trigger_source")
+    first = await continuation.resume_once()
+    assert first["code"] == "dispatch_failed"
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+    assert "processed" not in pending or pending["processed"] is None
+
+    continuation.begin_tick()
+    again = await continuation.resume_once()
+    assert again["status"] != "error" or again.get("code") != "dispatch_failed"
+    assert daemon._dispatch_scheduled_task.await_count == 1
+
+
+async def _four_ticks(continuation):
+    """Run four ticks and return how many reached the refresh service."""
+    real = continuation.service.refresh
+    calls = []
+
+    async def counted(*args, **kwargs):
+        calls.append(1)
+        return await real(*args, **kwargs)
+
+    continuation.service.refresh = counted
+    for _ in range(4):
+        continuation.begin_tick()
+        await continuation.resume_once()
+    return len(calls)
+
+
+async def test_a_failure_hold_lasts_until_retry_at_across_ticks():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("Invalid trigger_source")
+    assert await _four_ticks(continuation) == 1
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+
+
+async def test_a_rate_limit_hold_lasts_until_retry_at_across_ticks():
+    continuation, pool, _daemon = owner()
+    pool.cache = {"cache_built_at": datetime.now(UTC)}
+    pool.witness = {"covered_at": datetime.now(UTC)}
+    assert await _four_ticks(continuation) == 1
+    pending = next(value for key, value in pool.state.items() if "pending:" in key)
+    assert datetime.fromisoformat(pending["retry_at"]) > datetime.now(UTC)
+
+
+async def test_an_elapsed_hold_is_retried_and_cleared_on_success():
+    continuation, pool, daemon = owner()
+    daemon._dispatch_scheduled_task.side_effect = ValueError("boom")
+    await continuation.resume_once()
+    key = next(k for k in pool.state if "pending:" in k)
+    pool.state[key]["retry_at"] = "2000-01-01T00:00:00+00:00"
+    daemon._dispatch_scheduled_task.side_effect = None
+    continuation.begin_tick()
+    assert (await continuation.resume_once())["status"] == "success"
+    assert "retry_at" not in pool.state[key]
+
+
+async def test_snapshot_adds_uncaptured_lane_unknowns_from_frozen_availability(monkeypatch):
+    continuation, _, _ = owner()
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_episodes", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_point_events", AsyncMock(return_value=[])
+    )
+    lane = {"lane": "eat", "state": "not_captured", "since": "2026-04-13"}
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.load_uncaptured_with_streaks",
+        AsyncMock(return_value=([lane], {"eat": 1})),
+    )
+
+    class _Pool:
+        def acquire(self):
+            return _Ctx()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, *_):
+            return False
+
+    continuation.pool = _Pool()
+    bundle = await continuation._snapshot(DAY)
+    assert (
+        "Meals not captured (source retired since 13 Apr)" in bundle.bundle["owner_day"]["unknowns"]
+    )
+
+
+async def test_snapshot_without_readable_availability_adds_no_unknowns(monkeypatch):
+    continuation, _, _ = owner()
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_episodes", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        "butlers.chronicler.day_close_continuation.list_point_events", AsyncMock(return_value=[])
+    )
+    bundle = await continuation._snapshot(DAY)  # the StatePool has no acquire()
+    assert len(bundle.bundle["owner_day"]["unknowns"]) == 1

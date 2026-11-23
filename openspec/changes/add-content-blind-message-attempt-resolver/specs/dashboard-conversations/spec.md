@@ -4,7 +4,7 @@
 
 The dashboard API SHALL expose `GET /api/butlers/{name}/conversation-turns/{message_id}` as a read-only resolver under the existing dashboard access authority. A found response SHALL identify only the exact immutable user message, its conversation, the sanitized owner-facing durable-turn outcome, and that projection's version. Authoritative point-in-time absence and source/projection unavailability SHALL be distinct error outcomes. Every found, absence, and unavailable response SHALL carry `Cache-Control: no-store`. The resolver SHALL NOT read or return message content, infer identity from content, mutate state, or authorize retry or replay.
 
-ID: REQ-dashboard-conversations-009
+ID: REQ-dashboard-conversations-015
 Source: heart-and-soul/vision.md § What Butlers Is Not (Not an experiment); dashboard-conversations § Message Data Model and Durable Dashboard Turn Control; durable-dashboard-terminal-action-recovery REQ-dashboard-conversations-002 and REQ-dashboard-conversations-005; design.md Decisions 1-7
 Scope: v1-mandatory
 

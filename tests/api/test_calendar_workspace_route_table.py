@@ -34,6 +34,7 @@ KEPT = {
     (f"{_W}/day-briefing", "get"),
     (f"{_W}/invitations", "get"),
     (f"{_W}/conflicts", "get"),
+    (f"{_W}/household-time", "get"),
     (f"{_W}/search", "get"),
     (f"{_W}/entries/{{entry_id}}", "get"),
     (f"{_W}/meta", "get"),
@@ -48,8 +49,10 @@ KEPT = {
     (f"{_W}/proposals/{{proposal_id}}/accept", "post"),
     (f"{_W}/proposals/{{proposal_id}}/dismiss", "post"),
     (f"{_W}/audit", "get"),
+    (f"{_W}/day-sheet", "get"),
     ("/api/calendar/accounts", "get"),
     ("/api/calendar/sources", "post"),
+    ("/api/calendar/sources/role", "post"),
 }
 
 

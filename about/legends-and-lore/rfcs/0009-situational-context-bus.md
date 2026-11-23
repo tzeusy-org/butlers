@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-03-25
 **Proposed amendment (bu-dhloi1.17):** The response-building integration example under How Butlers Use Context, plus the Owner Attention Policy Sleep Producer, Context Preamble, Bound Owner Context Mutation and Bounded Suppression Read Failures clauses below, are reviewable replacement text, pending independent conformance review and exact-text owner adoption. The existing RFC remains accepted outside this pending amendment; this draft does not authorize implementation or activation.
-Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (the context bus is a named v1 capability).
+Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Ships](../../heart-and-soul/v1.md#what-v1-ships) (the context bus is a named v1 capability).
 
 ## Summary
 
@@ -519,6 +519,25 @@ The renderer MUST omit non-allowlisted values and metadata. It neither confers
 owner authority nor removes RFC0038 exposure. Type vocabulary, confidence
 labels, TTL filtering and empty-input behavior remain unchanged.
 
+### Calendar Event Types (bu-s11n0s.4)
+
+The calendar producer reads Google's stored `event_type` (core_341) and never
+infers a type from a title.
+
+- A `focusTime` event asserts `focused`.
+- Out of office (`outOfOffice`) and working location (`workingLocation`) are
+  declared statuses, not meetings. They never assert `meeting` or `focused`.
+- An active out-of-office event suppresses `focused`. An attended meeting
+  overlapping it keeps `meeting`. Out of office writes no `away` signal (that
+  maps to `owner.place`) and enters no owner mode (bu-u33sb7).
+- Working location is not a context signal. The declaration is persisted and
+  readable through the calendar module's typed read, bounded to the owner-local
+  day. Publishing it waits for a perception kind (`owner.work_location`) at the
+  M7/.21 switch, so this retiring bus gains no signal type or writer.
+- Neither status gets a meeting hold, prep, meeting card, debrief or
+  starting-soon notice. The broker's suppression set, caps and priority are
+  unchanged.
+
 ### Bound Owner Context Mutation
 
 Model-mediated set_context/clear_context MUST require the server-verified
@@ -660,3 +679,11 @@ This text does not implement any reducer, switch an existing consumer, alter
 .18 mode policy, authorize deployment, or widen a grant. Perception detail and
 recall remain source-labelled; exposed/third-party views are availability-only
 and raw coordinates never enter model context.
+
+### Dark representation implementation (2026-11-09)
+
+The canonical representation and shadow API are implemented separately from this
+legacy context table in [dark perception](../../../docs/data_and_storage/perception.md).
+They carry no live reader switch or producer activation. The first-switch parity,
+unsafe-alias, authority and consumer prerequisites above remain binding; the
+canonical tables alone do not establish them.

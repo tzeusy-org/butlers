@@ -113,7 +113,7 @@ Connectors maintain their own health sockets for liveness probes, heartbeat repo
 ### Connector Environment Variables
 
 Each connector derives its static type, channel and provider from its canonical row
-in `butlers.connectors.catalog`. Runtime and transport settings remain configurable:
+in `butlers.connector_catalog`. Runtime and transport settings remain configurable:
 
 - `SWITCHBOARD_MCP_URL` --- SSE endpoint URL for the Switchboard MCP server (required for all connectors)
 - `CONNECTOR_POLL_INTERVAL_S` --- poll interval for polling-based connectors

@@ -3,7 +3,7 @@
 
 import { act } from "react";
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
@@ -56,17 +56,20 @@ it("keeps real HTTP invitation evidence, pagination and details honest through f
   render(<QueryClientProvider client={qc}><MemoryRouter initialEntries={["/calendar?view=user&range=week&anchor=2026-07-01&timezone=UTC"]}>
     <CalendarWorkspacePage />
   </MemoryRouter></QueryClientProvider>);
-  const user = userEvent.setup();
-  await screen.findByRole("button", { name: "Provider invitation" });
+  // Whole-page role queries compute accessibility for every jsdom node and dominate CPU under load;
+  // scope them to the verdict landmark and drop userEvent's per-action timer.
+  const user = userEvent.setup({ delay: null });
+  const invitations = within(await screen.findByRole("region", { name: "Unanswered invitations" }));
+  await invitations.findByRole("button", { name: "Provider invitation" });
   expect(screen.getByText("Organizer: Organizer")).toBeTruthy();
   expect(screen.getByText("Conflict availability unknown")).toBeTruthy();
   expect(screen.queryByTestId("calendar-verdict-all-clear")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Show overlap conflict for Provider invitation" }));
-  expect(screen.getByRole("region", { name: "Invitation conflict evidence" }).textContent).toContain("Matched radar overlap");
-  await user.click(screen.getByRole("button", { name: "Close conflict evidence" }));
-  await user.click(screen.getByRole("button", { name: "More invitations" }));
-  await waitFor(() => expect(screen.queryByRole("button", { name: "More invitations" })).toBeNull());
-  await user.click(screen.getByRole("button", { name: "Provider invitation" }));
+  await user.click(invitations.getByRole("button", { name: "Show overlap conflict for Provider invitation" }));
+  expect(invitations.getByRole("region", { name: "Invitation conflict evidence" }).textContent).toContain("Matched radar overlap");
+  await user.click(invitations.getByRole("button", { name: "Close conflict evidence" }));
+  await user.click(invitations.getByRole("button", { name: "More invitations" }));
+  await waitFor(() => expect(invitations.queryByRole("button", { name: "More invitations" })).toBeNull());
+  await user.click(invitations.getByRole("button", { name: "Provider invitation" }));
   await waitFor(() => expect(fetch.mock.calls.some(([url]) => url.includes("/entries/invitation-1"))).toBe(true));
   state = "failed";
   await act(async () => { await qc.invalidateQueries({ queryKey: ["calendar-invitations"] }); });

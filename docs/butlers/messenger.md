@@ -55,7 +55,8 @@ for the current contract.
 
 Approval cards carry typed self references, not raw dashboard URLs. The fixed
 server registry maps `approval_detail` (canonical UUID `action_id`) to
-`/approvals/<action_id>` and `approvals_queue` (no parameters) to `/approvals`.
+`/approvals/<action_id>`, `approvals_queue` (no parameters) to `/approvals`, and
+`decision_set` (canonical UUID `set_id`, nothing else) to `/decision-sets/<set_id>`.
 Switchboard resolves these references using the configured HTTPS `DASHBOARD_URL`
 origin. Messenger independently resolves them again; a wire URL, host, label,
 provenance string or claimed server flag is never link authority. Valid controls
@@ -65,8 +66,10 @@ The public notify contract rejects server-only `open_link` output and raw
 `dashboard_url` actions. Missing or unsafe origin configuration, unknown routes,
 invalid parameters and URLs over 300 characters produce `[link not verified]`
 without a URL button, while preserving delivery and valid signed callbacks.
-Origins cannot supply paths, queries, fragments, user information, IP or IDN
-hosts, or non-default ports. The builder's legacy `dashboard_base_url` argument
+Origins may carry one fixed path prefix such as `/butlers-dev` (plain ASCII
+segments, at most 64 characters; routes are joined under it) but cannot supply
+`.`/`..`, empty or percent-encoded segments, queries, fragments, user
+information, IP or IDN hosts, or non-default ports. The builder's legacy `dashboard_base_url` argument
 remains accepted for call compatibility but does not authorize or mint a URL.
 
 Normal and authenticated recovery delivery use the same resolver. Existing

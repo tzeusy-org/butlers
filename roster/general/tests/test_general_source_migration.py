@@ -24,11 +24,7 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import (
-    assert_at_chain_head,
-    create_migrated_test_db,
-    migration_db_name,
-)
+from butlers.testing.migration import assert_at_chain_head
 
 pytestmark = [
     pytest.mark.integration,
@@ -39,14 +35,8 @@ _SCHEMA = "general"
 _LEGACY = "gen_002"
 
 
-def _staged_at_legacy(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["general"],
-        schemas={"general": _SCHEMA},
-        revisions={"general": _LEGACY},
-    )
+def _staged_at_legacy(fresh_db) -> str:
+    return fresh_db("general", schemas={"general": _SCHEMA}, revisions={"general": _LEGACY})
 
 
 def _migrate(db_url: str, target: str) -> None:
@@ -128,9 +118,9 @@ def _seed_legacy(conn) -> None:
 
 
 def test_upgrade_adds_passive_ordinary_representation_beside_legacy_uniqueness(
-    postgres_container,
+    fresh_db,
 ) -> None:
-    db_url = _staged_at_legacy(postgres_container)
+    db_url = _staged_at_legacy(fresh_db)
     engine = _engine(db_url)
     try:
         with engine.begin() as conn:
@@ -183,10 +173,10 @@ def test_upgrade_adds_passive_ordinary_representation_beside_legacy_uniqueness(
 
 
 def test_upgrade_preserves_a_compatible_cut_over_schema_and_its_private_rows(
-    postgres_container,
+    fresh_db,
 ) -> None:
     """Synthetic post-cutover fixture: General readiness, not a custody implementation."""
-    db_url = _staged_at_legacy(postgres_container)
+    db_url = _staged_at_legacy(fresh_db)
     engine = _engine(db_url)
     profile = {"possession_profile": {"schema_version": 1, "revision": 3}}
     try:
@@ -239,9 +229,9 @@ def test_upgrade_preserves_a_compatible_cut_over_schema_and_its_private_rows(
 
 @pytest.mark.parametrize("flag_column", [False, True], ids=["no-classification", "ordinary-flag"])
 def test_upgrade_refuses_a_reserved_profile_without_private_classification(
-    postgres_container, flag_column: bool
+    fresh_db, flag_column: bool
 ) -> None:
-    db_url = _staged_at_legacy(postgres_container)
+    db_url = _staged_at_legacy(fresh_db)
     engine = _engine(db_url)
     try:
         with engine.begin() as conn:
@@ -279,9 +269,9 @@ def test_upgrade_refuses_a_reserved_profile_without_private_classification(
 
 
 def test_downgrade_before_private_use_restores_legacy_schema_and_keeps_history(
-    postgres_container,
+    fresh_db,
 ) -> None:
-    db_url = _staged_at_legacy(postgres_container)
+    db_url = _staged_at_legacy(fresh_db)
     _migrate(db_url, "head")
     engine = _engine(db_url)
     item_id = uuid.uuid4()
@@ -338,9 +328,9 @@ def test_downgrade_before_private_use_restores_legacy_schema_and_keeps_history(
 
 @pytest.mark.parametrize("state", ["private-row", "duplicate-names"])
 def test_downgrade_refuses_private_rows_or_duplicate_names_without_repair(
-    postgres_container, state: str
+    fresh_db, state: str
 ) -> None:
-    db_url = _staged_at_legacy(postgres_container)
+    db_url = _staged_at_legacy(fresh_db)
     _migrate(db_url, "head")
     engine = _engine(db_url)
     try:

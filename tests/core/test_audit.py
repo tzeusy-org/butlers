@@ -23,7 +23,7 @@ pytestmark = pytest.mark.unit
 class TestWriteAuditEntry:
     async def test_routes_to_public_audit_log_append(self):
         """butler->actor, operation->action, summary->metadata, result/error mapped."""
-        pool = MagicMock()
+        pool = MagicMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         pool.fetchval = AsyncMock(return_value=42)
 
         await write_audit_entry(
@@ -59,7 +59,7 @@ class TestWriteAuditEntry:
 
     async def test_path_maps_to_target_and_error_recorded(self):
         """request_summary.path -> target; error result/message land on their columns."""
-        pool = MagicMock()
+        pool = MagicMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         pool.fetchval = AsyncMock(return_value=7)
 
         await write_audit_entry(
@@ -82,7 +82,7 @@ class TestWriteAuditEntry:
         await write_audit_entry(None, butler="any", operation="session", request_summary={})
 
         # DB error -> swallowed, no raise
-        pool = MagicMock()
+        pool = MagicMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
         pool.fetchval = AsyncMock(side_effect=RuntimeError("connection lost"))
         await write_audit_entry(
             pool, butler="my-butler", operation="session", request_summary={"key": "value"}
@@ -94,7 +94,15 @@ class TestWriteAuditEntry:
 )
 async def test_required_append_refuses_unavailable_storage_but_diagnostic_continues(storage):
     """Required writes cannot return success without a persisted receipt."""
-    pool = None if storage == "absent" else MagicMock(fetchval=AsyncMock(return_value=None))
+    pool = (
+        None
+        if storage == "absent"
+        else MagicMock(
+            spec=asyncpg.Pool,
+            is_closing=MagicMock(return_value=False),
+            fetchval=AsyncMock(return_value=None),
+        )
+    )
     failures = {
         "denied": asyncpg.InsufficientPrivilegeError("controlled denial"),
         "unmigrated": asyncpg.UndefinedColumnError("controlled missing column"),
@@ -116,7 +124,11 @@ async def test_required_append_refuses_unavailable_storage_but_diagnostic_contin
     ],
 )
 async def test_required_append_preserves_cancellation_and_programming_errors(failure):
-    pool = MagicMock(fetchval=AsyncMock(side_effect=failure))
+    pool = MagicMock(
+        spec=asyncpg.Pool,
+        is_closing=MagicMock(return_value=False),
+        fetchval=AsyncMock(side_effect=failure),
+    )
     with pytest.raises(type(failure)) as observed:
         await append(pool, "owner", "permission.set")
     assert observed.value is failure
@@ -131,6 +143,7 @@ def _native_connection_without_network():
         connected = False
 
     protocol = SimpleNamespace(
+        is_in_transaction=lambda: False,
         is_connected=lambda: connected,
         get_settings=lambda: SimpleNamespace(server_version="17.0"),
         close=close_protocol,

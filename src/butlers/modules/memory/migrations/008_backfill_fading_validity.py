@@ -37,7 +37,7 @@ Guards (mirrors the core_166 self-guarding backfill pattern):
     matching cleanup in ``run_decay_sweep`` itself).
 
 Applied per butler schema like every other migration in this module chain
-(``src/butlers/migrations.py`` runs the ``memory`` chain once per schema for
+(``src/butlers/migrations/__init__.py`` runs the ``memory`` chain once per schema for
 every butler with ``[modules.memory]`` enabled) — unqualified ``facts``
 resolves via each schema's own search_path, so one migration file backfills
 every butler's data, not just one.

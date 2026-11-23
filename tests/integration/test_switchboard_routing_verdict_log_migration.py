@@ -28,13 +28,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import (
-    create_migrated_test_db,
-    index_exists,
-    migration_db_name,
-    table_exists,
-)
+from butlers.testing.migration import index_exists, table_exists
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
 
 docker_available = shutil.which("docker") is not None
@@ -44,30 +38,19 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def verdict_url(fresh_db) -> str:
     # Provision the switchboard chain into its own schema (bu-9auxy) so the harness
     # mirrors prod's per-butler-schema topology instead of landing switchboard tables
     # in public.
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    return fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
+async def switchboard_pool(db) -> asyncpg.Pool:
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    yield p
-    await p.close()
 
 
 async def _insert_ingestion_event(pool: asyncpg.Pool, *, dedupe_key: str) -> uuid.UUID:
@@ -116,10 +99,10 @@ async def _insert_session(pool: asyncpg.Pool) -> uuid.UUID:
 # ---------------------------------------------------------------------------
 
 
-def test_routing_verdict_log_table_exists_with_expected_columns(migrated_db_url: str) -> None:
-    assert table_exists(migrated_db_url, "routing_verdict_log", schema="switchboard")
+def test_routing_verdict_log_table_exists_with_expected_columns(verdict_url: str) -> None:
+    assert table_exists(verdict_url, "routing_verdict_log", schema="switchboard")
 
-    engine = create_engine(migrated_db_url)
+    engine = create_engine(verdict_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -144,11 +127,11 @@ def test_routing_verdict_log_table_exists_with_expected_columns(migrated_db_url:
     }
 
 
-def test_expected_indexes_exist(migrated_db_url: str) -> None:
+def test_expected_indexes_exist(verdict_url: str) -> None:
     assert index_exists(
-        migrated_db_url, "ix_routing_verdict_log_sender_channel_decided", schema="switchboard"
+        verdict_url, "ix_routing_verdict_log_sender_channel_decided", schema="switchboard"
     )
-    assert index_exists(migrated_db_url, "ix_routing_verdict_log_llm_only", schema="switchboard")
+    assert index_exists(verdict_url, "ix_routing_verdict_log_llm_only", schema="switchboard")
 
 
 # ---------------------------------------------------------------------------
@@ -157,10 +140,12 @@ def test_expected_indexes_exist(migrated_db_url: str) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_verdict_source_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
-    event_id = await _insert_ingestion_event(pool, dedupe_key="check-source-bogus")
+async def test_verdict_source_check_constraint_rejects_bogus_value(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="check-source-bogus")
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO routing_verdict_log
                 (ingestion_event_id, sender_key, source_channel, verdict_source, verdict_action)
@@ -171,10 +156,12 @@ async def test_verdict_source_check_constraint_rejects_bogus_value(pool: asyncpg
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_verdict_action_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
-    event_id = await _insert_ingestion_event(pool, dedupe_key="check-action-bogus")
+async def test_verdict_action_check_constraint_rejects_bogus_value(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="check-action-bogus")
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO routing_verdict_log
                 (ingestion_event_id, sender_key, source_channel, verdict_source, verdict_action)
@@ -185,9 +172,9 @@ async def test_verdict_action_check_constraint_rejects_bogus_value(pool: asyncpg
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_ingestion_event_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
+async def test_ingestion_event_id_fk_is_enforced(switchboard_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.ForeignKeyViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO routing_verdict_log
                 (ingestion_event_id, sender_key, source_channel, verdict_source, verdict_action)
@@ -198,10 +185,10 @@ async def test_ingestion_event_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_matched_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
-    event_id = await _insert_ingestion_event(pool, dedupe_key="fk-rule-bogus")
+async def test_matched_rule_id_fk_is_enforced(switchboard_pool: asyncpg.Pool) -> None:
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="fk-rule-bogus")
     with pytest.raises(asyncpg.ForeignKeyViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO routing_verdict_log
                 (ingestion_event_id, sender_key, source_channel, verdict_source,
@@ -219,10 +206,10 @@ async def test_matched_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ingestion_event_fk_has_on_delete_cascade(migrated_db_url: str) -> None:
+def test_ingestion_event_fk_has_on_delete_cascade(verdict_url: str) -> None:
     """pg_constraint.confdeltype == 'c' (CASCADE) for the event FK, not the
     default 'a' (NO ACTION / RESTRICT) it shipped with in sw_019."""
-    engine = create_engine(migrated_db_url)
+    engine = create_engine(verdict_url)
     with engine.connect() as conn:
         confdeltype = conn.execute(
             text(
@@ -235,13 +222,15 @@ def test_ingestion_event_fk_has_on_delete_cascade(migrated_db_url: str) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_deleting_ingestion_event_cascades_to_verdict_log(pool: asyncpg.Pool) -> None:
+async def test_deleting_ingestion_event_cascades_to_verdict_log(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """Deleting a ``public.ingestion_events`` row with an attached verdict row
     succeeds and cascades the verdict row away — the exact shape of an
     ``OwnTracksRetention`` purge cycle hitting a routed (full-tier) event."""
-    event_id = await _insert_ingestion_event(pool, dedupe_key="cascade-delete")
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="cascade-delete")
     row_id = await record_routing_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=event_id,
         sender_identity="alerts@chase.com",
         source_channel="email",
@@ -252,9 +241,11 @@ async def test_deleting_ingestion_event_cascades_to_verdict_log(pool: asyncpg.Po
     assert row_id is not None
 
     # The purge DELETE must NOT raise a ForeignKeyViolationError.
-    await pool.execute("DELETE FROM public.ingestion_events WHERE id = $1", event_id)
+    await switchboard_pool.execute("DELETE FROM public.ingestion_events WHERE id = $1", event_id)
 
-    orphan = await pool.fetchrow("SELECT 1 FROM routing_verdict_log WHERE id = $1::uuid", row_id)
+    orphan = await switchboard_pool.fetchrow(
+        "SELECT 1 FROM routing_verdict_log WHERE id = $1::uuid", row_id
+    )
     assert orphan is None
 
 
@@ -265,13 +256,13 @@ async def test_deleting_ingestion_event_cascades_to_verdict_log(pool: asyncpg.Po
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_record_routing_verdict_round_trips_llm_verdict_with_session_id(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
-    event_id = await _insert_ingestion_event(pool, dedupe_key="roundtrip-llm")
-    session_id = await _insert_session(pool)
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="roundtrip-llm")
+    session_id = await _insert_session(switchboard_pool)
 
     row_id = await record_routing_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=event_id,
         sender_identity="Billing <billing@chase.com>",
         source_channel="email",
@@ -282,7 +273,9 @@ async def test_record_routing_verdict_round_trips_llm_verdict_with_session_id(
     )
     assert row_id is not None
 
-    row = await pool.fetchrow("SELECT * FROM routing_verdict_log WHERE id = $1::uuid", row_id)
+    row = await switchboard_pool.fetchrow(
+        "SELECT * FROM routing_verdict_log WHERE id = $1::uuid", row_id
+    )
     assert row is not None
     assert row["ingestion_event_id"] == event_id
     assert row["sender_key"] == "billing@chase.com"
@@ -296,13 +289,13 @@ async def test_record_routing_verdict_round_trips_llm_verdict_with_session_id(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_record_routing_verdict_round_trips_rule_verdict_with_matched_rule_id(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
-    event_id = await _insert_ingestion_event(pool, dedupe_key="roundtrip-rule")
-    rule_id = await _insert_ingestion_rule(pool)
+    event_id = await _insert_ingestion_event(switchboard_pool, dedupe_key="roundtrip-rule")
+    rule_id = await _insert_ingestion_rule(switchboard_pool)
 
     row_id = await record_routing_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=event_id,
         sender_identity="alerts@chase.com",
         source_channel="email",
@@ -313,7 +306,9 @@ async def test_record_routing_verdict_round_trips_rule_verdict_with_matched_rule
     )
     assert row_id is not None
 
-    row = await pool.fetchrow("SELECT * FROM routing_verdict_log WHERE id = $1::uuid", row_id)
+    row = await switchboard_pool.fetchrow(
+        "SELECT * FROM routing_verdict_log WHERE id = $1::uuid", row_id
+    )
     assert row["verdict_source"] == "rule"
     assert row["matched_rule_id"] == rule_id
     assert row["session_id"] is None
@@ -321,14 +316,14 @@ async def test_record_routing_verdict_round_trips_rule_verdict_with_matched_rule
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_record_routing_verdict_returns_none_on_bad_ingestion_event_id(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Best-effort contract: an FK violation (e.g. a stale/racy
     ingestion_event_id) must be swallowed, not raised, and the caller gets
     ``None`` back rather than an exception breaking the routing decision it
     describes."""
     row_id = await record_routing_verdict(
-        pool,
+        switchboard_pool,
         ingestion_event_id=uuid.uuid4(),
         sender_identity="user@example.com",
         source_channel="email",
@@ -344,15 +339,10 @@ async def test_record_routing_verdict_returns_none_on_bad_ingestion_event_id(
 # ---------------------------------------------------------------------------
 
 
-def test_downgrade_drops_table_and_indexes(postgres_container) -> None:
+def test_downgrade_drops_table_and_indexes(fresh_db) -> None:
     from butlers.migrations import _build_alembic_config
 
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    db_url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
     # target_schema makes the downgrade run against the switchboard schema (its
     # alembic_version + search_path), matching the schema the chain provisioned into.

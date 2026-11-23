@@ -774,6 +774,8 @@ class InsightCandidate(BaseModel):
     delivered_at: str | None = None
     delivery_attempt_count: int = 0
     prepared_action_id: str | None = None
+    taint_goal_id: str | None = None  # RFC 0038 D6: exposed goal that proposed it
+    taint_invocation_id: str | None = None
 
 
 class InsightFeedbackResponse(BaseModel):

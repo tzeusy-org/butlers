@@ -13,15 +13,23 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
   (same module). `tests/api/test_actor_attribution_sweep.py` guards every route; extend its
   allow-lists only with a recorded justification. `X-Butlers-Decision-Actor` on approvals is
   server-verified and is not this defect.
+- Approval dispatch probes the selected MCP client with a read-only ping before invoking the
+  stored action. A closed or broken session may be conditionally evicted and ping retried once,
+  within the existing acquisition deadline. Eviction compares the observed client identity so a
+  concurrent healthy replacement survives, and closing the failed client is bounded. The action
+  itself is called once: closure after the ping returns the truthful dispatch failure and never
+  replays the action automatically. A later explicit owner Retry can acquire a fresh client.
 - Enumerating API routes: FastAPI mounts included routers lazily, so `create_app().routes` holds
   `_IncludedRouter` objects. Recurse into `route.original_router.routes`; the body model is
   `route.body_field.field_info.annotation`.
 - A dashboard disconnect watcher inside nested `BaseHTTPMiddleware` needs AnyIO cancellation: a
   one-shot `Task.cancel()` then awaiting the watcher can deadlock response delivery.
   `IngestionReadBudgetRoute` uses a watcher-owned `CancelScope`.
-- OAuth token refresh exists more than once per provider under look-alike names (Spotify has both
-  `SpotifyClient._refresh_access_token` and `SpotifyConnector._refresh_access_token`). Before
-  closing a token fix, grep the tree for every `expires_in` / `access_token` extraction site.
+- Spotify connector and module tools share `butlers.spotify_client.SpotifyClient`.
+  Keep token-response validation and secured owner-row persistence in that client;
+  connector lifecycle classification and metrics adapt typed, allowlisted failures.
+  A resource 401 after refresh is degraded, rather than proof of token revocation.
+
 - A 200 from a token endpoint is not a validated payload: `int(data.get("expires_in", 3600))`
   accepts strings, bools, floats and negatives. Validate before assigning, as
   `spotify_credentials.parse_spotify_token_response` does.
@@ -40,5 +48,7 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
 - `CredentialRedactionFilter` (Telegram `/bot<token>/`, `Bearer`, `?key=`-style query parameters)
   sits on every handler `configure_logging` installs, never on the root logger: a logger's own
   filters only see records logged directly to it, so a root filter never sees records propagated
-  from `httpx` or `butlers.*`. It scrubs the message only; exception text in tracebacks is not
-  scrubbed, so log only the exception type for errors raised from credential-bearing URLs.
+  from `httpx` or `butlers.*`. It scrubs the message; the formatters' `redact_exception` processor
+  applies the same rules to `exc_info` tracebacks (e.g. `httpx.HTTPStatusError` URLs) and stack
+  text. Patterns outside those rules still pass through tracebacks, so errors that can carry
+  unpublished or private text (QA publication pre-egress failures) log the exception type only.

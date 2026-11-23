@@ -20,6 +20,7 @@ from butlers.modules.approvals.gate import (
 )
 from butlers.modules.approvals.gate import _resolve_target_contact, match_standing_rule
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -63,15 +64,11 @@ def _non_owner_contact():
     )
 
 
-def _make_pool(*, fetchrow_return: Any = None, fetchrow_side_effect: Any = None) -> AsyncMock:
-    """Build a minimal mock asyncpg pool."""
-    pool = AsyncMock()
+def _gate_pool(*, fetchrow_return: Any = None, fetchrow_side_effect: Any = None) -> FakePool:
+    """Build a minimal fake asyncpg pool."""
     if fetchrow_side_effect is not None:
-        pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
-    else:
-        pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-    pool.fetch = AsyncMock(return_value=[])
-    return pool
+        fetchrow_return = AsyncMock(side_effect=fetchrow_side_effect)
+    return fake_pool(fetchrow=fetchrow_return, fetch=[], execute=None)
 
 
 def _make_original_fn() -> AsyncMock:
@@ -94,7 +91,7 @@ class TestToolArgumentBoundary:
         ) -> dict[str, str]:
             return {"status": "sent"}
 
-        pool = _make_pool()
+        pool = _gate_pool()
         wrapper = _make_gate_wrapper(
             tool_name="email_reply_to_thread",
             original_fn=email_reply_to_thread,
@@ -219,7 +216,7 @@ class TestDirectEntityResolution:
 
     async def test_live_owner_entity_resolves(self) -> None:
         owner_id = uuid.uuid4()
-        pool = _make_pool(
+        pool = _gate_pool(
             fetchrow_return={
                 "entity_id": owner_id,
                 "name": "Owner",
@@ -248,7 +245,7 @@ class TestDirectEntityResolution:
         def return_only_when_filter_is_missing(query: str, _entity_id: str):
             return None if required_clause in query else owner_row
 
-        pool = _make_pool(fetchrow_side_effect=return_only_when_filter_is_missing)
+        pool = _gate_pool(fetchrow_side_effect=return_only_when_filter_is_missing)
 
         resolved = await _resolve_target_contact(pool, {"entity_id": str(owner_id)})
 
@@ -263,7 +260,7 @@ class TestGateOwnerOutboundAutoApprove:
         """Owner send to primary telegram chat_id is auto-approved."""
         owner = _owner_contact()
         # is_primary=True for the targeted chat_id
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
 
         result = await _call_gate(
             {"chat_id": "12345", "message": "hello"},
@@ -282,7 +279,7 @@ class TestGateOwnerOutboundAutoApprove:
         """
         owner = _owner_contact()
         # Even with a non-primary row, the owner channel must auto-approve.
-        pool = _make_pool(fetchrow_return={"primary": False})
+        pool = _gate_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
             {"chat_id": "99999", "message": "hello from secondary"},
@@ -294,7 +291,7 @@ class TestGateOwnerOutboundAutoApprove:
     async def test_owner_non_primary_whatsapp_auto_approves(self) -> None:
         """Owner send to a non-primary whatsapp_jid auto-approves (bu-nd5me)."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": False})
+        pool = _gate_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
             {"recipient": "+15550001111", "message": "hi from secondary jid"},
@@ -307,7 +304,7 @@ class TestGateOwnerOutboundAutoApprove:
         """A live owner entity needs no channel-candidate normalization."""
         owner_id = uuid.uuid4()
         owner = _owner_contact(owner_id)
-        pool = _make_pool(fetchrow_return={"primary": False})
+        pool = _gate_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
             {"entity_id": str(owner_id), "channel": "telegram", "message": "hi"},
@@ -319,7 +316,7 @@ class TestGateOwnerOutboundAutoApprove:
     async def test_owner_plain_string_evidence_is_rejected_before_persistence(self) -> None:
         """Owner bypass may omit a dossier, but supplied evidence stays strict."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
         original_fn = _make_original_fn()
 
         result = await _call_gate(
@@ -341,7 +338,7 @@ class TestGateOwnerOutboundAutoApprove:
     async def test_owner_typed_dossier_remains_optional_and_is_persisted(self) -> None:
         """Owner metadata is optional but valid supplied context is not discarded."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
         evidence = [
             {
                 "type": "text",
@@ -378,7 +375,7 @@ class TestGateOwnerOutboundAutoApprove:
     async def test_non_owner_with_primary_telegram_goes_through_rules(self) -> None:
         """Non-owner telegram target goes through rules path regardless of is_primary."""
         non_owner = _non_owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
 
         with patch(
             "butlers.modules.approvals.gate._resolve_target_contact",
@@ -416,7 +413,7 @@ class TestDecisionDossierBoundary:
     """Non-owner calls must carry an honest, typed dossier before parking."""
 
     async def test_missing_why_is_retryable_and_does_not_park(self) -> None:
-        pool = _make_pool(fetchrow_return=None)
+        pool = _gate_pool(fetchrow_return=None)
         original_fn = _make_original_fn()
 
         result = await _call_gate(
@@ -435,7 +432,7 @@ class TestDecisionDossierBoundary:
         original_fn.assert_not_awaited()
 
     async def test_invalid_dossier_enum_is_rejected_before_persistence(self) -> None:
-        pool = _make_pool(fetchrow_return=None)
+        pool = _gate_pool(fetchrow_return=None)
 
         result = await _call_gate(
             {
@@ -455,7 +452,7 @@ class TestDecisionDossierBoundary:
         pool.execute.assert_not_awaited()
 
     async def test_legacy_plain_string_evidence_is_rejected_without_coercion(self) -> None:
-        pool = _make_pool(fetchrow_return=None)
+        pool = _gate_pool(fetchrow_return=None)
 
         result = await _call_gate(
             {
@@ -474,7 +471,7 @@ class TestDecisionDossierBoundary:
         pool.execute.assert_not_awaited()
 
     async def test_typed_dossier_parks_and_persists_risk_fields(self) -> None:
-        pool = _make_pool(fetchrow_return=None)
+        pool = _gate_pool(fetchrow_return=None)
         evidence = [
             {
                 "type": "url",
@@ -575,7 +572,7 @@ class TestGateEmitsCreatedEvent:
     async def test_owner_auto_approve_emits_created(self) -> None:
         """Owner-targeted primary channel: gate publishes kind='created' with status='approved'."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
 
         result, mock_publish = await self._call_gate_patched(
             {"chat_id": "12345", "message": "hello"},
@@ -601,7 +598,7 @@ class TestGateEmitsCreatedEvent:
         A non-owner contact with no matching standing rule parks for approval.
         """
         non_owner = _non_owner_contact()
-        pool = _make_pool(fetchrow_return=None)
+        pool = _gate_pool(fetchrow_return=None)
 
         with (
             patch(
@@ -641,7 +638,7 @@ class TestGateEmitsCreatedEvent:
     async def test_emit_created_survives_import_failure(self) -> None:
         """If publish_fleet_event raises, gate wrapper must not crash."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": True})
+        pool = _gate_pool(fetchrow_return={"primary": True})
 
         from butlers.modules.approvals.executor import ExecutionResult
 
@@ -695,7 +692,7 @@ class TestOwnerCrossSchemaFallback:
     async def _run(self, *, resolve_return, definer_return, fetch_return=None):
         from butlers.modules.approvals.executor import ExecutionResult
 
-        pool = _make_pool()
+        pool = _gate_pool()
         if fetch_return is not None:
             pool.fetch = AsyncMock(return_value=fetch_return)
         original_fn = _make_original_fn()
@@ -784,7 +781,7 @@ class TestNotifySecondaryOwnerChannel:
     async def test_notify_secondary_owner_email_auto_approves(self) -> None:
         """A direct unique owner lookup bypasses approval regardless of primacy."""
         owner = _owner_contact()
-        pool = _make_pool(fetchrow_return={"primary": False})
+        pool = _gate_pool(fetchrow_return={"primary": False})
 
         result = await _call_gate(
             {
@@ -805,7 +802,7 @@ class TestNotifySecondaryOwnerChannel:
         from butlers.modules.approvals.executor import ExecutionResult
 
         owner = _owner_contact()
-        pool = _make_pool()
+        pool = _gate_pool()
         exec_mock = AsyncMock(return_value=ExecutionResult(success=True, result={"status": "sent"}))
         wrapper = _make_gate_wrapper(
             tool_name="notify",
@@ -841,7 +838,7 @@ class TestNotifySecondaryOwnerChannel:
         Guardrail: owner-associated bypass must not auto-approve non-owners.
         """
         non_owner = _non_owner_contact()
-        pool = _make_pool(fetchrow_return=None)  # no standing rules (fetch → [])
+        pool = _gate_pool(fetchrow_return=None)  # no standing rules (fetch → [])
 
         with (
             patch(
@@ -875,7 +872,7 @@ class TestStandingRuleUseClaim:
     async def _call(self, *, claim_row):
         from datetime import UTC, datetime
 
-        pool = _make_pool(fetchrow_return=claim_row)
+        pool = _gate_pool(fetchrow_return=claim_row)
         pool.fetch = AsyncMock(
             return_value=[
                 {

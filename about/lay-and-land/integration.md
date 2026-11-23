@@ -49,6 +49,12 @@ graph TB
         Shared["public schema (cross-butler tables)"]
     end
 
+    subgraph PublicSurface["Public MCP surface (Draft, RFC 0039)"]
+        Gateway["owner gateway filter-proxy"]
+        PublicMCP["butlers-public-mcp"]
+        Projection["projection DB"]
+    end
+
     C -- "ingest.v1 / MCP SSE" --> Ingest
     Ingest --> Classify
     Classify -- "durable classified targets" --> Intent
@@ -66,6 +72,10 @@ graph TB
     FastAPI -- "SQL / asyncpg" --> Shared
     MCP -- "SQL / asyncpg" --> Schema
     MCP -- "SQL / asyncpg" --> Shared
+
+    Gateway -- "MCP stateless HTTP + assertion" --> PublicMCP
+    PublicMCP -- "SQL: read views, inbox INSERT" --> Projection
+    DB -- "logical replication, one way" --> Projection
 ```
 
 ---
@@ -263,6 +273,9 @@ between domain butlers.
 **Exception**: The Switchboard itself holds MCP client connections to all
 registered domain butlers for route dispatch.
 
+The planned public MCP server (§10) is not a butler peer: it holds no MCP client to any
+butler or to the Switchboard, so this rule is unchanged.
+
 The candidate in-room voice envelopes (`voice_origin.v1`,
 `voice_presence_attest.v1`) keep this rule and are specified in
 [RFC 0034](../legends-and-lore/rfcs/0034-messenger-voice-egress.md); they are
@@ -307,6 +320,27 @@ the [control-plane design](../../openspec/changes/restore-butler-control-plane-l
 **Failure behavior**: Heartbeat failures are logged but never crash or block
 ingestion.
 
+### OwnTracks raw-fix expiry (dark)
+
+The OwnTracks connector is the one connector that reads a domain butler, and only through
+Switchboard: the `location_retention.grants_ready` named relay
+([service plane](../../docs/architecture/service-plane.md)) admits only the
+`(connector-owntracks, owntracks)` caller, takes no arguments and forwards to Chronicler's
+service-only `location_retention_grants_ready_service`. The reply is the ready, unsettled grants:
+grant id, cutoff, and each raw row's id, logical key and v1 digest. The connector deletes a raw
+row only when its key and recomputed digest still match and it is older than the cutoff, and
+records a tombstone and a receipt in `connectors` in the same transaction. An unreachable relay,
+a refusal or a malformed reply deletes nothing. No connector reaches a butler's MCP server.
+The worker runs only with `OWNTRACKS_RAW_RETENTION_ENABLED=true` (set in the chart), is inert
+before the connector has a workload token, and is offered nothing unless the owner has turned
+raw expiry on (`location_retention_policy.enforced`, bu-s11n0s.75).
+
+Before a grant is ready, Chronicler asks Switchboard to forget its `message_inbox` copies of the
+granted fixes through the `location_retention.forget_copies` named relay (bu-s11n0s.7 S4c-3;
+only while the owner has raw expiry on). Only `(butlers-up, chronicler)` may call it, with exactly the grant id and its distinct
+OwnTracks logical keys. Switchboard answers it itself (a local relay, no MCP tool) and returns a
+count-only receipt; Chronicler records it and makes the grant ready only when it is `complete`.
+
 ---
 
 ## 9. Observability: Trace Propagation
@@ -327,6 +361,89 @@ classification, routing, and session execution.
 
 ---
 
+## 10. Owner AI Client to Public MCP Server (Draft)
+
+Accepted design, not implemented:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md) D6, D7, D10 and D17.
+
+**Transport**: MCP streamable HTTP, stateless, JSON responses, no SSE GET. Path: client, then
+the Cloudflare Worker, then `cloudflared-mcp`, then `traefik-mcp`, then filter-proxy release
+`butlers` (namespace `mcp`), then the `butlers-public-mcp` Service. Placement:
+[`deployment.md` §Public MCP read surface](deployment.md#public-mcp-read-surface-draft).
+
+**Credentials on each request**:
+
+| Header | Set by | Proves | Checked at home as |
+|---|---|---|---|
+| `Authorization: Bearer <UPSTREAM_BEARER>` | filter-proxy | The request passed the one filter-proxy release. Never an identity. | Constant-time compare against a file-mounted SHA-256 digest; 401 before the body is parsed |
+| `X-MCP-Assertion` (compact JWS, `typ` `butlers-mcp-assertion+v1`) | Cloudflare Worker | The GitHub user (`sub`), OAuth client (`cid`), method, tool, query string and body SHA-256 of this exact call | Ed25519 against the keyring ConfigMap; JCS canonical payload; `exp = iat + 30`; `jti` replay set; `iat` not before process start |
+
+Only `initialize`, `notifications/initialized`, `notifications/cancelled`, `ping`,
+`tools/list` and `server/discover` may arrive unasserted; they return static content and open
+no database connection. The verifier reuses the `runtime_probe_control` signed codec, but its
+`typ` and keyring are distinct, and no RFC 0038 broker accepts it. Inbound `X-MCP-User-Id`
+headers are never trusted.
+
+**Errors**: auth failures are JSON-RPC `-32001` with `{"reason":"unauthorized"}`. Tool
+failures are `isError: true` results with a fixed `error.code` (`domain_disabled`,
+`projection_stale`, `projection_apply_pending`, `budget_exhausted`, `blocked`, ...).
+
+---
+
+## 11. Primary to Projection: Logical Replication (Draft)
+
+**Transport**: PostgreSQL 17 logical replication, publication `butlers_public_v1` on the primary
+to subscription `butlers_public_sub` on `butlers_public`, as `butlers_projection_publisher`, which
+has no credential and connects over the instance's local socket by peer authentication (OD14).
+Both databases live on the same CNPG cluster, `postgres-<env>` (RFC 0039 D3), so the owner step
+(`butlers public-mcp owner-sql`, run as superuser through `kubectl exec`, by every
+`make deploy-dev` after the migrations on dev, OD20, and by the owner elsewhere) pre-creates
+the slot with `pg_create_logical_replication_slot(..., 'pgoutput')` and creates the subscription
+with `create_slot = false` and `password_required = false`, then hands it to
+`mcp_subscription_owner`.
+
+**Contract** (RFC 0039 D2, D4): column lists and row filters are generated from the manifest
+`src/butlers/knowledge_read/projection.toml` by `butlers public-mcp reconcile` in the migration
+Job; the subscriber DDL is in the owner step; DDL is never replicated. Row-filter columns sit in each table's replica identity, so a row that later stops
+matching (reclassified, restricted) arrives as a DELETE. Chronicler publishes source-owned
+`episodes_public` and `rollups_public` tables, because its corrections live in an overlay a row
+filter cannot see. No JSONB column is published: entity flags, finance overlays and health
+values reach the projection through trigger-maintained plain columns or tables, and since OD17
+every scalar leaf of a finance or health JSONB column reaches it through
+`finance.json_fields_public` and `health.json_fields_public`, skipping credential-named paths.
+Finance and health publish everything they hold except credentials (OD17); the other domains
+stay narrow, under the breadth tier of the column denylist and literal predicate allowlists with
+no contact- or identity-kind predicate, which also filter graph edges through a trigger-kept
+`publish_key` (OD21). The manifest
+digest and the kill-switch rows replicate via `mcp_surface`; the public pod refuses tools when
+the replicated digest differs from its built-in one (`projection_version_mismatch`) and when the
+digest the last owner step applied differs from it (`projection_apply_pending`). A CI contract
+test asserts, on a PG17 testcontainer with all migrations applied, that the publication equals
+the manifest. Narrowing the manifest makes the owner step truncate and re-copy the subscriber
+tables; until it runs the surface refuses.
+
+---
+
+## 12. Proposal Inbox to Relationship Importer (Draft)
+
+**Transport**: SQL pull from the Butlers side (namespace `butlers-<env>`). The Relationship job
+`public_mcp_proposal_import` (`dispatch_mode = "job"`, every 5 minutes) connects to the
+projection as `mcp_proposals_reader` (which `pg_hba` admits to `butlers_public` only), copies up to 100 rows from `mcp_inbox.proposals` into
+`relationship.external_fact_proposals`, then deletes them. Nothing on the public side can push
+into Butlers.
+
+**Handoff**: each valid proposal is parked through a new approvals entry point,
+`park_external_proposal` (collapsed presentation, never a delivery provider), as
+`relationship_assert_fact` with `deduplication_key = 'external_mcp:<proposal_id>'`, no standing
+rule match, no push notification and evidence limited to the client label and a digest of the
+evidence URL. The importer reads the `proposals` and `all` kill switches from
+`mcp_surface.controls` on the primary. The owner approves on the dashboard approvals page under a
+passkey session (`POST /api/approvals/actions/{id}/approve`); the executor applies it
+deterministically with `content_authority = 'third_party'` and `src = 'external_mcp:<id>'`
+(RFC 0039 D13). `pending_actions.origin` is not widened.
+
+---
+
 ## Protocol Summary
 
 | Boundary | Protocol | Envelope | Transport |
@@ -338,6 +455,11 @@ classification, routing, and session execution.
 | Dashboard -> Database | SQL | asyncpg queries | TCP |
 | Butler -> Database | SQL | asyncpg queries | TCP |
 | Connector -> Switchboard (heartbeat) | MCP | `connector.heartbeat` | SSE |
+| OwnTracks connector -> Switchboard -> Chronicler (dark) | Named relay | `location_retention.grants_ready`, no arguments; grant ids, cutoffs, raw ids, keys, digests back | HTTP POST on 41100 with a workload token; Switchboard to Chronicler over MCP |
 | Control plane -> daemon (liveness) | backend-network HTTP GET | `butler.control.v1` bounded facts | HTTP |
 | Switchboard -> target (ingestion delivery) | MCP | stable per-target acceptance identity and receipt | Streamable HTTP or SSE |
 | All -> OTel | OTLP | Traces + metrics | gRPC |
+| Owner AI client -> public MCP, via gateway (Draft) | MCP | JSON-RPC + hop bearer + `X-MCP-Assertion` | Stateless streamable HTTP |
+| Primary -> projection (Draft) | PostgreSQL logical replication | publication `butlers_public_v1` | local Unix socket (`/controller/run`), peer auth, same instance; no TCP |
+| Public MCP -> projection (Draft) | SQL | `mcp_read` SELECT, inbox INSERT as `mcp_public_ro` | TCP 5432 |
+| Relationship importer -> projection inbox (Draft) | SQL | SELECT, DELETE as `mcp_proposals_reader` | TCP 5432 |

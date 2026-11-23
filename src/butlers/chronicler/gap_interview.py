@@ -55,7 +55,12 @@ from butlers.chronicler.adapters.occupation import (
 from butlers.chronicler.adapters.occupation import (
     SOURCE_NAME as OCCUPATION_SOURCE_NAME,
 )
-from butlers.chronicler.aggregations import untracked_seconds_for_window
+from butlers.chronicler.aggregations import (
+    _local_waking_windows_utc,
+    untracked_seconds_for_window,
+)
+from butlers.chronicler.anchors import AnchorPlace, home_anchor, nearest_anchor
+from butlers.chronicler.situation import Fix, subtract
 
 # ── Tunables ────────────────────────────────────────────────────────────────
 
@@ -80,19 +85,56 @@ ROUTINE_DECAY_DELTA: float = 0.15
 
 
 class GapInterviewAnswer(enum.StrEnum):
-    """The three one-tap answers the owner can give.
+    """The one-tap answers the owner can give.
+
+    Occupation interviews ("looks like a work day — confirm?"):
 
     ``confirm`` — "yes, that was a work day": keep the inferred block, reinforce
         the routine.
     ``correct`` — "no, that was not a work day": tombstone the inferred block via
         an override, decay the routine.
-    ``dismiss`` — "don't count this either way": record the interaction as an
-        override note, leave the routine untouched.
+
+    Block interviews ("07:55–10:40 isn't accounted for"): ``work`` / ``social`` /
+    ``play`` / ``eat`` / ``rest`` record one owner-attested activity block over the
+    named interval in that lane.
+
+    ``dismiss`` (both) — "don't count this either way": record the interaction as
+    an override note when there is a block to annotate, leave the routine
+    untouched, and count nothing.
     """
 
     CONFIRM = "confirm"
     CORRECT = "correct"
     DISMISS = "dismiss"
+    # Lane answers for a block-targeted interview (bu-r3fmja,
+    # REQ-butler-chronicler-017): the owner says what the unexplained block was.
+    WORK = "work"
+    SOCIAL = "social"
+    PLAY = "play"
+    EAT = "eat"
+    REST = "rest"
+
+
+# Lane answers, in button order. Each records one owner-attested activity block.
+LANE_ANSWERS: tuple[GapInterviewAnswer, ...] = (
+    GapInterviewAnswer.WORK,
+    GapInterviewAnswer.SOCIAL,
+    GapInterviewAnswer.PLAY,
+    GapInterviewAnswer.EAT,
+    GapInterviewAnswer.REST,
+)
+BLOCK_OPTIONS: tuple[str, ...] = (
+    *(a.value for a in LANE_ANSWERS),
+    GapInterviewAnswer.DISMISS.value,
+)
+
+# Owner answers are their own source (contracts.py); the category map sends
+# owner_<lane>_block to the lane answered.
+OWNER_ANSWER_SOURCE = "chronicler.owner_answer"
+
+# The block a lane interview asks about must be at least this long; a day whose
+# unexplained time is only scattered slivers has nothing concrete to ask about.
+MIN_BLOCK_SECONDS: int = 30 * 60
 
 
 # ── Episode-field access (tolerates enum-or-str + canonical-or-raw shapes) ──
@@ -192,20 +234,76 @@ class GapInterviewDecision:
         GapInterviewAnswer.CORRECT.value,
         GapInterviewAnswer.DISMISS.value,
     )
+    # Block interviews only: the unexplained interval the question names (UTC)
+    # and what location said about it.
+    block_start_utc: datetime | None = None
+    block_end_utc: datetime | None = None
+    location_context: str | None = None
 
 
 def _format_question(
     *,
     window_start_local: str | None,
     window_end_local: str | None,
-    unaccounted_seconds: float,
-    has_occupation: bool,
 ) -> str:
-    """Build the single owner-facing question line, deterministically."""
-    if has_occupation and window_start_local and window_end_local:
-        return f"Yesterday {window_start_local}-{window_end_local} looks like a work day — confirm?"
-    hours = unaccounted_seconds / 3600.0
-    return f"Yesterday has about {hours:.1f}h of unaccounted waking time — was that a work day?"
+    """The occupation confirm question, deterministically."""
+    if not (window_start_local and window_end_local):
+        return "Yesterday looks like a work day — confirm?"
+    return f"Yesterday {window_start_local}-{window_end_local} looks like a work day — confirm?"
+
+
+def _format_block_question(start_local: str, end_local: str, location_context: str) -> str:
+    """The block question (REQ-butler-chronicler-017), deterministically."""
+    return (
+        f"Yesterday {start_local}–{end_local} isn't accounted for ({location_context}). "
+        "What were you doing?"
+    )
+
+
+def longest_uncovered_block(
+    activity_intervals: Sequence[tuple[datetime, datetime]],
+    day_start_utc: datetime,
+    day_end_utc: datetime,
+    tz: tzinfo,
+    *,
+    waking_hour_start: int,
+    waking_hour_end: int,
+) -> tuple[datetime, datetime] | None:
+    """The longest waking interval no activity covers (earliest wins a tie)."""
+    best: tuple[datetime, datetime] | None = None
+    for w_start, w_end in _local_waking_windows_utc(
+        day_start_utc, day_end_utc, tz, waking_hour_start, waking_hour_end
+    ):
+        for piece in subtract(w_start, w_end, activity_intervals):
+            if best is None or piece[1] - piece[0] > best[1] - best[0]:
+                best = piece
+    return best
+
+
+def describe_location(
+    fixes: Sequence[Fix],
+    anchors: Sequence[AnchorPlace],
+    start: datetime,
+    end: datetime,
+) -> str:
+    """What location evidence says about ``[start, end)``, coordinate-free.
+
+    ``"no location fixes"``; ``"at <anchor label>"`` when every fix lies in one
+    anchor; else ``"about N km from home"`` (the farthest fix); else, with no
+    home anchor, ``"away from any registered place"``.
+    """
+    inside = [f for f in fixes if start <= f.at < end]
+    if not inside:
+        return "no location fixes"
+    hits = {getattr(nearest_anchor(anchors, f.lat, f.lon), "label", None) for f in inside}
+    if len(hits) == 1 and None not in hits:
+        return f"at {hits.pop()}"
+    home = home_anchor(anchors)
+    if home is None:
+        return "away from any registered place"
+    km = max(home.distance_m(f.lat, f.lon) for f in inside) / 1000.0
+    shown = f"{km:.1f}" if km < 10 else f"{km:.0f}"
+    return f"about {shown} km from home"
 
 
 def evaluate_gap_interview(
@@ -218,6 +316,9 @@ def evaluate_gap_interview(
     waking_hour_start: int = DEFAULT_WAKING_HOUR_START,
     waking_hour_end: int = DEFAULT_WAKING_HOUR_END,
     unaccounted_threshold_seconds: int = DEFAULT_UNACCOUNTED_THRESHOLD_SECONDS,
+    fixes: Sequence[Fix] = (),
+    anchors: Sequence[AnchorPlace] = (),
+    min_block_seconds: int = MIN_BLOCK_SECONDS,
 ) -> GapInterviewDecision | None:
     """Decide whether a closed local day warrants one gap-interview prompt.
 
@@ -237,6 +338,13 @@ def evaluate_gap_interview(
        (always emitted at ``confidence=low`` by the occupation adapter) is
        present. The pipeline recognised a probable workday but was never sure;
        one tap either confirms it or corrects it.
+
+    With an occupation block the question is the work-day confirmation. Without
+    one, it names the longest uncovered waking interval (at least
+    ``min_block_seconds``) and what the day's location ``fixes`` say about it
+    against the owner's ``anchors``, and offers lane answers (bu-r3fmja,
+    REQ-butler-chronicler-017). A day whose unexplained time has no such interval
+    returns ``None``: there is no concrete block to ask about.
     """
     activity_intervals: list[tuple[datetime, datetime]] = []
     occupation_blocks: list[Mapping[str, Any]] = []
@@ -287,11 +395,35 @@ def evaluate_gap_interview(
             window_start_local = _local_hhmm(a_start, tz)
             window_end_local = _local_hhmm(a_end, tz)
 
+    if not occupation_blocks:
+        block = longest_uncovered_block(
+            activity_intervals,
+            day_start_utc,
+            day_end_utc,
+            tz,
+            waking_hour_start=waking_hour_start,
+            waking_hour_end=waking_hour_end,
+        )
+        if block is None or (block[1] - block[0]).total_seconds() < min_block_seconds:
+            return None
+        context = describe_location(fixes, anchors, block[0], block[1])
+        start_local, end_local = _local_hhmm(block[0], tz), _local_hhmm(block[1], tz)
+        return GapInterviewDecision(
+            local_date=local_date,
+            question=_format_block_question(start_local, end_local, context),
+            reasons=tuple(reasons),
+            unaccounted_seconds=unaccounted_seconds,
+            window_start_local=start_local,
+            window_end_local=end_local,
+            options=BLOCK_OPTIONS,
+            block_start_utc=block[0],
+            block_end_utc=block[1],
+            location_context=context,
+        )
+
     question = _format_question(
         window_start_local=window_start_local,
         window_end_local=window_end_local,
-        unaccounted_seconds=unaccounted_seconds,
-        has_occupation=bool(occupation_blocks),
     )
 
     return GapInterviewDecision(
@@ -389,6 +521,62 @@ async def apply_gap_interview_answer(
     }
 
 
+async def record_lane_answer(
+    conn: Any,
+    *,
+    answer: GapInterviewAnswer,
+    interview_id: str,
+    local_date: str,
+    block_start_at: datetime,
+    block_end_at: datetime,
+    owner_id: UUID | None = None,
+) -> dict[str, Any]:
+    """Write the owner's lane answer as one counted block (REQ-butler-chronicler-017).
+
+    The episode is keyed on the interview, so a replay upserts the same row
+    rather than writing a second one. ``owner_id`` is resolved by the caller
+    before its transaction opens: a failed lookup inside it would abort it.
+    """
+    from butlers.chronicler.adapters._owner_entity import (
+        owner_episode_transaction,
+        upsert_owner_episode_entity,
+    )
+    from butlers.chronicler.models import Confidence, Episode, Layer, Precision, Privacy
+    from butlers.chronicler.storage import upsert_episode
+
+    answer = GapInterviewAnswer(answer)
+    if answer not in LANE_ANSWERS:
+        raise ValueError(f"{answer.value!r} is not a lane answer")
+    async with owner_episode_transaction(conn):
+        episode = await upsert_episode(
+            conn,
+            Episode(
+                source_name=OWNER_ANSWER_SOURCE,
+                source_ref=f"gap_interview:{interview_id}",
+                episode_type=f"owner_{answer.value}_block",
+                start_at=block_start_at,
+                end_at=block_end_at,
+                precision=Precision.MINUTE,
+                title=f"{answer.value.capitalize()} (your answer)",
+                payload={
+                    "interview_id": interview_id,
+                    "local_date": local_date,
+                    "answer": answer.value,
+                },
+                privacy=Privacy.NORMAL,
+                layer=Layer.ACTIVITY,
+                confidence=Confidence.HIGH,
+            ),
+        )
+        await upsert_owner_episode_entity(conn, episode.id, owner_id=owner_id)
+    return {
+        "status": "applied",
+        "answer": answer.value,
+        "local_date": local_date,
+        "episode_id": str(episode.id),
+    }
+
+
 # ── One-tap callback round-trip (cgi: prefix) ───────────────────────────────
 #
 # The telegram inline-button transport encodes each button's answer into a
@@ -459,6 +647,21 @@ async def resolve_gap_interview_callback(
             return await _resolve_on_conn(conn, interview_id, answer, now)
 
 
+async def _owner_id_in_savepoint(conn: Any) -> UUID | None:
+    """The owner entity id, read in a savepoint so a missing table cannot abort
+    the resolver's transaction; ``None`` when unavailable."""
+    import asyncpg
+
+    from butlers.chronicler.adapters._owner_entity import _fetch_owner_row
+
+    try:
+        async with conn.transaction():
+            row = await _fetch_owner_row(conn)
+    except asyncpg.PostgresError:
+        return None
+    return _coerce_uuid(row["id"]) if row is not None else None
+
+
 async def _resolve_on_conn(
     conn: Any, interview_id: str, answer: str, now: datetime
 ) -> dict[str, Any]:
@@ -484,9 +687,50 @@ async def _resolve_on_conn(
     except ValueError:
         return {
             "status": "error",
-            "error": f"invalid answer {answer!r}; expected confirm/correct/dismiss",
+            "error": (
+                f"invalid answer {answer!r}; expected one of "
+                f"{'/'.join(a.value for a in GapInterviewAnswer)}"
+            ),
             "interview_id": interview_id,
         }
+
+    # Pending rows written before bu-r3fmja carry no ``options``; they were all
+    # occupation interviews.
+    offered = pending.get("options") or [
+        GapInterviewAnswer.CONFIRM.value,
+        GapInterviewAnswer.CORRECT.value,
+        GapInterviewAnswer.DISMISS.value,
+    ]
+    if parsed.value not in offered:
+        return {
+            "status": "error",
+            "error": f"answer {parsed.value!r} was not offered for this interview",
+            "interview_id": interview_id,
+        }
+
+    if parsed in LANE_ANSWERS:
+        block_start = _coerce_dt(pending.get("block_start_at"))
+        block_end = _coerce_dt(pending.get("block_end_at"))
+        if block_start is None or block_end is None:
+            # A lane interview always stores its block; refuse rather than guess.
+            return {
+                "status": "error",
+                "error": f"answer {parsed.value!r} was not offered for this interview",
+                "interview_id": interview_id,
+            }
+        result = await record_lane_answer(
+            conn,
+            answer=parsed,
+            interview_id=interview_id,
+            local_date=pending["local_date"],
+            block_start_at=block_start,
+            block_end_at=block_end,
+            owner_id=await _owner_id_in_savepoint(conn),
+        )
+        pending["answered"] = True
+        await state_set(conn, pending_key, pending)
+        result["interview_id"] = interview_id
+        return result
 
     occ = pending.get("occupation_episode_id")
     rid = pending.get("routine_id")
@@ -563,6 +807,8 @@ async def run_gap_interview(
     waking_hour_start: int = DEFAULT_WAKING_HOUR_START,
     waking_hour_end: int = DEFAULT_WAKING_HOUR_END,
     unaccounted_threshold_seconds: int = DEFAULT_UNACCOUNTED_THRESHOLD_SECONDS,
+    fixes: Sequence[Fix] = (),
+    anchors: Sequence[AnchorPlace] = (),
 ) -> dict[str, Any]:
     """Orchestrate one gap-interview cycle for a closed day.
 
@@ -596,6 +842,8 @@ async def run_gap_interview(
         waking_hour_start=waking_hour_start,
         waking_hour_end=waking_hour_end,
         unaccounted_threshold_seconds=unaccounted_threshold_seconds,
+        fixes=fixes,
+        anchors=anchors,
     )
     if decision is None:
         return {"status": "no_gap", "local_date": local_date}
@@ -624,10 +872,14 @@ async def run_gap_interview(
 
 
 __all__ = [
+    "BLOCK_OPTIONS",
     "CALLBACK_PREFIX",
     "DEFAULT_UNACCOUNTED_THRESHOLD_SECONDS",
     "DEFAULT_WAKING_HOUR_END",
     "DEFAULT_WAKING_HOUR_START",
+    "LANE_ANSWERS",
+    "MIN_BLOCK_SECONDS",
+    "OWNER_ANSWER_SOURCE",
     "ROUTINE_DECAY_DELTA",
     "ROUTINE_REINFORCE_DELTA",
     "GapInterview",
@@ -637,8 +889,11 @@ __all__ = [
     "TransportResult",
     "apply_gap_interview_answer",
     "build_callback_data",
+    "describe_location",
     "evaluate_gap_interview",
+    "longest_uncovered_block",
     "parse_gap_interview_callback",
+    "record_lane_answer",
     "resolve_gap_interview_callback",
     "run_gap_interview",
 ]

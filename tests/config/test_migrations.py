@@ -490,7 +490,7 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
             ).scalar_one()
 
     # Genuine checked-init -> immutable bounded replay -> second schema -> repair.
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     command.upgrade(relationship_core, "core_076")
     assert relationship_read_default() is False
     check_bootstrap_database(db_url)
@@ -569,13 +569,16 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
     finally:
         engine.dispose()
 
-    with pytest.raises(ProgrammingError, match="permission denied"):
+    # sw_079 grants the reader as soon as the chain creates message_inbox.
+    assert (
         _execute_as_role(
             db_url,
             RUNTIME_ROLES["relationship"],
             "SELECT COUNT(*) FROM switchboard.message_inbox",
             scalar=True,
         )
+        == 1
+    )
 
     relationship_core = _build_alembic_config(db_url, chains=["core"], target_schema="relationship")
     # pinned-revision: both genuine schema histories must finish core_083's
@@ -613,13 +616,15 @@ def test_core_migration_repairs_relationship_read_access_to_switchboard_message_
         scalar=True,
     )
     assert count == 1
+    # core_077 restored the read default; only the Switchboard schema's own core run
+    # (core_339, below) narrows it, so another schema's head leaves it in place.
     assert relationship_read_default() is True
     check_bootstrap_database(db_url)
     command.upgrade(relationship_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     command.upgrade(switchboard_core, "core@head")
     check_bootstrap_database(db_url)
-    assert relationship_read_default() is True
+    assert relationship_read_default() is False
     assert (
         _execute_as_role(
             db_url,
@@ -1707,7 +1712,8 @@ def test_current_schema_event_chains_qa_role_tick_and_foreign_write_refusal(post
     """Real QA policy reads and scheduler tick work without granting foreign writes."""
     import asyncpg
 
-    from butlers.core.scheduler import QaSchedulePolicy, read_qa_schedule_policy, tick
+    from butlers.core.scheduler.claim import QaSchedulePolicy, read_qa_schedule_policy
+    from butlers.core.scheduler.dispatch import tick
     from butlers.db import register_jsonb_codec
 
     db_name = migration_db_name()

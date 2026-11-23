@@ -83,6 +83,10 @@ describe("route-registry", () => {
     expect(unique.size).toBe(chords.length);
   });
 
+  it("never assigns the g prefix key itself as a chord (it re-arms before lookup)", () => {
+    expect(ALL_ROUTES.filter((route) => route.chord === "g")).toEqual([]);
+  });
+
   it("gives every global capability one unique chord", () => {
     const globalRoutes = ALL_ROUTES.filter((route) => route.discoverability === "global");
     const chords = globalRoutes.map((route) => route.chord);

@@ -80,7 +80,9 @@ class CommandLogEntry(BaseModel):
     approval_id: UUID | None = None
     requested_state: dict[str, Any] | None = None
     observed_state: dict[str, Any] | None = None
-    status: Literal["attempting", "succeeded", "failed", "unverified"] | None = None
+    status: (
+        Literal["attempting", "succeeded", "failed", "unverified", "already_satisfied"] | None
+    ) = None
     rollback_hint: dict[str, Any] | None = None
     failure_reason: str | None = None
     completed_at: str | None = None
@@ -326,11 +328,184 @@ class SafetyWatchUpsertRequest(BaseModel):
         return stripped
 
 
+class DepartureWatchEntry(BaseModel):
+    """One thing the owner wants checked on departure (``home.departure_watch``)."""
+
+    entity_id: str
+    owner_label: str
+    secure_states: list[str]
+    updated_at: str | None = None
+
+
+class DepartureWatchUpsertRequest(BaseModel):
+    """Declare (or relabel) an entity the departure card checks, and its secure states."""
+
+    entity_id: str = Field(..., pattern=r"^[a-z_]+\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+    secure_states: list[str] = Field(..., min_length=1, max_length=8)
+
+    @field_validator("owner_label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("owner_label must not be blank")
+        return stripped
+
+    @field_validator("secure_states")
+    @classmethod
+    def _states_are_ha_state_words(cls, value: list[str]) -> list[str]:
+        for state in value:
+            if not re.fullmatch(r"[a-z0-9_]{1,32}", state):
+                raise ValueError("secure_states are lower-case Home Assistant state words")
+        return list(dict.fromkeys(value))
+
+
+class DepartureFixEntry(BaseModel):
+    """The one exact call declared for a watched item (``home.departure_fixes``)."""
+
+    entity_id: str
+    domain: str
+    service: str
+    target_entity_id: str
+    data: dict[str, Any]
+    risk: str
+    updated_at: str | None = None
+
+
+class DepartureFixUpsertRequest(BaseModel):
+    """Declare the exact fix for one watched item; every field is the owner's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^[a-z_]+\.[a-z0-9_]+$", max_length=255)
+    domain: str = Field(..., pattern=r"^[a-z0-9_]{1,64}$")
+    service: str = Field(..., pattern=r"^[a-z0-9_]{1,64}$")
+    target_entity_id: str = Field(..., pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$", max_length=255)
+    data: dict[str, Any] = Field(default_factory=dict, max_length=8)
+
+
+class CriticalEntityEntry(BaseModel):
+    """One entity the owner marked critical (``home.critical_entities``)."""
+
+    entity_id: str
+    owner_label: str
+    added_by: str
+    added_at: str | None = None
+
+
+class CriticalEntityUpsertRequest(BaseModel):
+    """Mark one explicit entity critical.  The label is display text and never authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^[a-z0-9_]+\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("owner_label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("owner_label must not be blank")
+        return stripped
+
+
+# ---------------------------------------------------------------------------
+# Away safety (home_007; bu-jv1moa.87, REQ-home-deterministic-jobs-002)
+# ---------------------------------------------------------------------------
+#
+# Owner-confirmed values only: the bounds below validate, they never suggest, and nothing
+# here has a default.
+
+
+def _strip_label(value: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("owner_label must not be blank")
+    return stripped
+
+
+class TemperatureWatchEntry(BaseModel):
+    """One declared freezer (``home.temperature_watch``); thresholds are in °C."""
+
+    entity_id: str
+    owner_label: str
+    unit: Literal["°C", "°F"]
+    max_c: float
+    hysteresis_c: float
+    dwell_minutes: int
+    max_reading_age_minutes: int
+    updated_at: str | None = None
+
+
+class TemperatureWatchUpsertRequest(BaseModel):
+    """Declare a freezer, or change any of its values; all of them are required."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    entity_id: str = Field(..., pattern=r"^sensor\.[a-z0-9_]+$", max_length=255)
+    owner_label: str = Field(..., min_length=1, max_length=80)
+    unit: Literal["°C", "°F"]
+    max_c: float = Field(..., ge=-30.0, le=0.0, allow_inf_nan=False)
+    hysteresis_c: float = Field(..., ge=0.5, le=10.0, allow_inf_nan=False)
+    dwell_minutes: int = Field(..., ge=5, le=240, strict=True)
+    max_reading_age_minutes: int = Field(..., ge=10, le=360, strict=True)
+
+    _label = field_validator("owner_label")(_strip_label)
+
+
+class AwayAlertRequest(BaseModel):
+    """Arm a departure-watch item for the away-door condition."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    away_alert_after_minutes: int = Field(..., ge=30, le=1440, strict=True)
+
+
+class BlindSettingsRequest(BaseModel):
+    """How long a declared role may stay unseen, while the owner is away, before Home says so."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blind_after_minutes: int = Field(..., ge=5, le=1440, strict=True)
+
+
+class AwayDoorEntry(BaseModel):
+    """A departure-watch item and its away duration; ``None`` means not armed."""
+
+    entity_id: str
+    owner_label: str
+    away_alert_after_minutes: int | None = None
+
+
+class AwaySafetyStatus(BaseModel):
+    """What each producer can do with the current declarations; ``unconfigured`` is silent."""
+
+    freezer: Literal["ok", "unconfigured"]
+    away_door: Literal["ok", "unconfigured"]
+    blind: Literal["ok", "unconfigured"]
+    #: The installation sensing group is registered only by the privileged activation act.
+    sensing_group: Literal["registered", "unconfigured", "unknown"]
+
+
+class AwaySafetyConfig(BaseModel):
+    freezers: list[TemperatureWatchEntry]
+    doors: list[AwayDoorEntry]
+    blind_after_minutes: int | None = None
+    status: AwaySafetyStatus
+
+
 # ---------------------------------------------------------------------------
 # Owner place registry (public.owner_places, core_303; bu-jv1moa.7)
 # ---------------------------------------------------------------------------
 
 _HA_ZONE_PATTERN = re.compile(r"\Azone\.[a-z0-9_]+\Z", re.ASCII)
+
+# Owner presence entity settings (home:presence:owner_entities; REQ-home-presence-configuration).
+_PRESENCE_ENTITY_PATTERN = re.compile(r"\A[a-z0-9_]+\.[a-z0-9_]+\Z", re.ASCII)
+PRESENCE_MAX_ENTITIES = 50
+PRESENCE_ENTITY_MAX_BYTES = 255
 
 
 def _coordinate(value: Any, *, bound: int) -> float:
@@ -418,6 +593,53 @@ class OwnerPlaceUpdate(OwnerPlaceInput):
     """A whole-row edit guarded by the version the editor last read."""
 
     expected_version: int = Field(..., ge=1)
+
+
+class PresenceOwnerEntitiesUpdate(BaseModel):
+    """The whole owner presence entity list, guarded by the version the editor last read.
+
+    Ids are evaluated exactly as submitted: never trimmed, case-folded, normalized or
+    resolved from a friendly name, and not limited to person/device_tracker domains.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    owner_entities: list[str] = Field(..., max_length=PRESENCE_MAX_ENTITIES)
+    expected_version: int = Field(..., ge=0)
+
+    @field_validator("owner_entities")
+    @classmethod
+    def _owner_entities(cls, values: list[str]) -> list[str]:
+        if any(
+            len(value.encode("utf-8")) > PRESENCE_ENTITY_MAX_BYTES
+            or _PRESENCE_ENTITY_PATTERN.fullmatch(value) is None
+            for value in values
+        ):
+            raise ValueError("entity id is malformed")
+        if len(set(values)) != len(values):
+            raise ValueError("entity ids repeat")
+        return values
+
+
+class PresenceOwnerEntitiesResponse(BaseModel):
+    """The literal stored owner presence entity list, ASCII-sorted."""
+
+    configured: bool
+    owner_entities: list[str]
+    version: int
+
+
+class PresenceTransition(BaseModel):
+    """One confirmed owner leave or enter. Coordinate-free; the place is an opaque reference."""
+
+    id: UUID
+    direction: Literal["leave", "enter"]
+    place_ref: UUID | None
+    at: datetime
+    confirmed_at: datetime
+    late: bool
+    retracted: bool
+    retraction_event_id: UUID | None = None
 
 
 class OwnerPlaceResponse(BaseModel):

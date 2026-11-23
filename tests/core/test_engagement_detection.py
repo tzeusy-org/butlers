@@ -119,6 +119,17 @@ _NON_OWNER_CONTACT = ResolvedContact(name="Chloe", roles=[], entity_id=None)
 _OWNER_TOOL_ARGS = {"source_channel": "telegram", "source_id": "1"}
 
 
+@pytest.fixture(autouse=True)
+def _owner_endpoint_unheld():
+    """The custody read is its own seam (tests/core/test_custody_ingress.py); the mocked
+    pools here cannot answer it, so the owner endpoint is treated as unheld."""
+    with patch(
+        "butlers.core.custody_ingress.owner_source_custody_reason",
+        AsyncMock(return_value=None),
+    ):
+        yield
+
+
 class TestPipelineEngagementDetection:
     @patch(
         "butlers.tools.switchboard.routing.classify._load_available_butlers",

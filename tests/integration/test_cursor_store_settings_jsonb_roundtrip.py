@@ -32,8 +32,6 @@ import asyncpg
 import pytest
 
 from butlers.connectors.cursor_store import load_connector_settings, save_connector_settings
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -43,43 +41,21 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + switchboard chains — switchboard.connector_registry.
-
-    ``core`` is required alongside ``switchboard`` as of migration ``sw_019``
-    (bu-aga08): ``switchboard.routing_verdict_log`` FKs to
-    ``public.ingestion_events``, so the switchboard chain no longer migrates
-    standalone.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE switchboard.connector_registry")
-    yield p
-    await p.close()
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """switchboard.connector_registry; switchboard FKs to core since sw_019."""
+    return await db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
 
-async def test_save_then_load_round_trips_as_object(pool: asyncpg.Pool) -> None:
+async def test_save_then_load_round_trips_as_object(switchboard_pool: asyncpg.Pool) -> None:
     """save_connector_settings + load_connector_settings round-trip a dict, not
     a jsonb-typed string, and no ``isinstance(..., str)`` parsing is needed."""
-    merged = await save_connector_settings(pool, "steam", "steam:config", {"account_rescan_s": 120})
+    merged = await save_connector_settings(
+        switchboard_pool, "steam", "steam:config", {"account_rescan_s": 120}
+    )
     assert merged == {"account_rescan_s": 120}
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT settings FROM switchboard.connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         "steam",
@@ -92,21 +68,23 @@ async def test_save_then_load_round_trips_as_object(pool: asyncpg.Pool) -> None:
     )
     assert stored == {"account_rescan_s": 120}
 
-    loaded = await load_connector_settings(pool, "steam", "steam:config")
+    loaded = await load_connector_settings(switchboard_pool, "steam", "steam:config")
     assert loaded == {"account_rescan_s": 120}
 
 
-async def test_save_shallow_merges_existing_settings(pool: asyncpg.Pool) -> None:
+async def test_save_shallow_merges_existing_settings(switchboard_pool: asyncpg.Pool) -> None:
     """A second save shallow-merges into the existing settings object (JSONB
     ``||``), rather than corrupting it into an array or a nested string."""
-    await save_connector_settings(pool, "steam", "steam:config", {"account_rescan_s": 60})
+    await save_connector_settings(
+        switchboard_pool, "steam", "steam:config", {"account_rescan_s": 60}
+    )
     merged = await save_connector_settings(
-        pool, "steam", "steam:config", {"heartbeat_interval_s": 30}
+        switchboard_pool, "steam", "steam:config", {"heartbeat_interval_s": 30}
     )
 
     assert merged == {"account_rescan_s": 60, "heartbeat_interval_s": 30}
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT settings FROM switchboard.connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         "steam",
@@ -116,18 +94,18 @@ async def test_save_shallow_merges_existing_settings(pool: asyncpg.Pool) -> None
     assert row["settings"] == {"account_rescan_s": 60, "heartbeat_interval_s": 30}
 
 
-async def test_save_sanitizes_non_json_native_values(pool: asyncpg.Pool) -> None:
+async def test_save_sanitizes_non_json_native_values(switchboard_pool: asyncpg.Pool) -> None:
     """Non-JSON-native values (e.g. tuples) are sanitized (default=str fallback
     for anything json can't natively serialize) rather than raising or binding
     an unencodable Python object straight through to asyncpg."""
     merged = await save_connector_settings(
-        pool, "steam", "steam:config", {"poll_intervals": {"recently_played": 300}}
+        switchboard_pool, "steam", "steam:config", {"poll_intervals": {"recently_played": 300}}
     )
     assert merged == {"poll_intervals": {"recently_played": 300}}
 
 
 async def test_buggy_write_path_would_have_corrupted_settings_into_a_string(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Documents the pre-fix failure mode: json.dumps() + ``::jsonb`` double
     encodes the settings dict into a jsonb-typed STRING instead of an OBJECT,
@@ -135,7 +113,7 @@ async def test_buggy_write_path_would_have_corrupted_settings_into_a_string(
     import json
 
     buggy_json_string = json.dumps({"account_rescan_s": 120})
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         INSERT INTO switchboard.connector_registry
             (connector_type, endpoint_identity, settings)
@@ -148,7 +126,7 @@ async def test_buggy_write_path_would_have_corrupted_settings_into_a_string(
         buggy_json_string,
     )
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT settings FROM switchboard.connector_registry "
         "WHERE connector_type = $1 AND endpoint_identity = $2",
         "buggy",

@@ -140,7 +140,7 @@ Scope: v1-mandatory
 
 #### Scenario: Defer replaces the current presentation generation atomically
 - **WHEN** an authenticated dashboard actor defers a still-pending action for a valid bounded hour value
-- **THEN** the transaction extends the action expiry, supersedes any pre-handoff current generation, and creates generation `g + 1` with `not_before = now + hours`
+- **THEN** the transaction extends the action expiry, supersedes any pre-handoff current generation, and creates generation `g + 1` with `not_before = now + hours`, before the new expiry, which is that time plus the action's original decision window
 - **AND** it retains the same logical action key, does not use `deferred_notifications`, and emits no provider call before the new generation is due
 
 #### Scenario: Defer races a handoff start

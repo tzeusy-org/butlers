@@ -132,3 +132,22 @@ async def test_run_chronicler_project_calendar_job_runs_adapter() -> None:
     assert result["source_name"] == "google_calendar.completed"
     assert result["rows_projected"] == 2
     assert result["episodes_closed"] == 2
+
+
+async def test_steam_status_job_routes_to_registered_evidence_adapter():
+    from butlers.chronicler import jobs
+
+    result = AdapterResult(source_name="steam.status_history", rows_projected=1)
+    pool = object()
+    with patch.object(jobs, "_run_adapter", AsyncMock(return_value={"rows_projected": 1})) as run:
+        assert await jobs.run_project_steam_status(pool, {"batch_limit": 2}) == {
+            "rows_projected": 1
+        }
+    adapter = run.call_args.kwargs["adapter"]
+    assert adapter.source_name == result.source_name and adapter.batch_limit == 2
+    handler = _DETERMINISTIC_SCHEDULE_JOB_REGISTRY["chronicler"]["chronicler_project_steam_status"]
+    with patch.object(
+        jobs, "run_project_steam_status", AsyncMock(return_value={"ok": True})
+    ) as invoke:
+        assert await handler(pool, {"batch_limit": 2}) == {"ok": True}
+    invoke.assert_awaited_once_with(pool, {"batch_limit": 2})

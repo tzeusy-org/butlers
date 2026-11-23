@@ -16,7 +16,7 @@ import logging
 import secrets
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException
 
@@ -52,6 +52,9 @@ from butlers.cli_auth.session import (
 from butlers.core.runtimes.opencode import canonical_to_execution_model
 from butlers.credential_store import CredentialStore
 
+if TYPE_CHECKING:
+    from butlers.session_host.codex_auth import CodexAuthTarget
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cli-auth", tags=["cli-auth"])
@@ -86,8 +89,13 @@ class _DeviceAuthAuthorityPersistence:
 
     requires_prelaunch_prepare = True
 
-    def __init__(self, store: CredentialStore) -> None:
+    def __init__(
+        self, store: CredentialStore, *, session_host: CodexAuthTarget | None = None
+    ) -> None:
         self._store = store
+        # Dark (RFC 0038 D3, bu-kiuh8v.3): no live caller sets this yet, so a
+        # Codex login still lands in this process's ~/.codex/auth.json.
+        self._session_host = session_host
         self._provider_name: str | None = None
         self._expected_authority_value: str | None = None
 
@@ -120,12 +128,16 @@ class _DeviceAuthAuthorityPersistence:
         if completed_provider.name != self._provider_name:
             logger.warning("CLI auth on_success: device-auth provider identity changed")
             return False
+        retarget: dict[str, CodexAuthTarget] = {}
+        if self._session_host is not None and completed_provider.name == "codex":
+            retarget["session_host"] = self._session_host
         persisted = await persist_validated_staged_device_auth_bytes(
             completed_provider,
             self._store,
             staged_output,
             expected_authority_value=self._expected_authority_value,
             codex_authority=self._store if completed_provider.name == "codex" else None,
+            **retarget,
         )
 
         if completed_provider.name == "codex":
@@ -140,17 +152,20 @@ class _DeviceAuthAuthorityPersistence:
         return persisted
 
 
-def _build_on_success(db_manager: Any):
+def _build_on_success(db_manager: Any, *, session_host: CodexAuthTarget | None = None):
     """Return the synchronous compatibility factory consumed by ``secrets_v2``.
 
     ``secrets_v2`` owns an older synchronous handoff and is deliberately out
     of this slice.  Keep that public callable shape intact while returning an
     object whose common prelaunch hook fences every session before child spawn.
+    ``session_host`` stays None on every live path while the session host is dark.
     """
     store = _make_credential_store(db_manager)
     if store is None:
         return None
-    return _DeviceAuthAuthorityPersistence(store)
+    if session_host is None:
+        return _DeviceAuthAuthorityPersistence(store)
+    return _DeviceAuthAuthorityPersistence(store, session_host=session_host)
 
 
 # ---------------------------------------------------------------------------

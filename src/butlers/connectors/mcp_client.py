@@ -11,6 +11,7 @@ to avoid duplicating connection management across connectors.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -20,6 +21,9 @@ from urllib.parse import urlparse
 import httpx
 from fastmcp import Client as MCPClient
 from fastmcp.exceptions import ToolError
+
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
+from butlers.core.switchboard_tls import switchboard_http_options, switchboard_mcp_transport
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,23 @@ class TransientToolError(ConnectionError):
     tell it apart from a ``RuntimeError`` tool error without string matching.
     """
 
+
+class ToolCallTimeoutError(ConnectionError):
+    """No reply within the deadline, so whether the tool took effect is unknown.
+
+    The server keeps running after the client stops waiting: an ``ingest`` may already have
+    committed, or commit later. Never read this as "not ingested". A ``ConnectionError``
+    subclass so callers that hold their checkpoint on transport failures stay fail-closed,
+    and a resubmission of the same event relies on Switchboard's dedupe key.
+    """
+
+
+# Per-attempt bounds. Dev ingest calls run past 10s, and the histogram's totals cannot
+# rule out one as long as ~175s, so the call deadline sits above that; some connectors
+# lose the event when a call fails, which makes too short worse than too long. Connecting
+# runs under the client's lock, so its bound also limits how long other callers queue.
+DEFAULT_CALL_TIMEOUT_S: float = 180.0
+DEFAULT_CONNECT_TIMEOUT_S: float = 30.0
 
 # Readiness probe defaults
 _PROBE_INITIAL_DELAY_S: float = 0.5
@@ -106,7 +127,9 @@ async def wait_for_switchboard_ready(
         _safe_url,
     )
 
-    async with httpx.AsyncClient(timeout=http_timeout_s) as client:
+    async with httpx.AsyncClient(
+        timeout=http_timeout_s, **switchboard_http_options(health_url)
+    ) as client:
         for attempt in range(1, max_attempts + 1):
             try:
                 resp = await client.get(health_url)
@@ -143,6 +166,11 @@ async def wait_for_switchboard_ready(
     )
 
 
+def _describe(exc: BaseException) -> str:
+    """An exception's text, or its repr when it has none, as ``CancelledError`` does not."""
+    return str(exc) or repr(exc)
+
+
 class CachedMCPClient:
     """Lazy, reconnecting MCP client for connector-to-Switchboard calls.
 
@@ -152,11 +180,24 @@ class CachedMCPClient:
         SSE endpoint URL of the target MCP server (e.g. ``http://localhost:41100/sse``).
     client_name:
         Human-readable name for logging and MCP session metadata.
+    call_timeout_s:
+        Deadline for one attempt at a tool call.
+    connect_timeout_s:
+        Deadline for one attempt at connecting, including closing the previous session.
     """
 
-    def __init__(self, endpoint_url: str, *, client_name: str = "connector") -> None:
+    def __init__(
+        self,
+        endpoint_url: str,
+        *,
+        client_name: str = "connector",
+        call_timeout_s: float = DEFAULT_CALL_TIMEOUT_S,
+        connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S,
+    ) -> None:
         self._endpoint_url = endpoint_url
         self._client_name = client_name
+        self._call_timeout_s = call_timeout_s
+        self._connect_timeout_s = connect_timeout_s
         self._lock = asyncio.Lock()
         self._client_ctx: MCPClient | None = None
         self._client: Any = None
@@ -177,7 +218,13 @@ class CachedMCPClient:
     async def _connect(self) -> None:
         """Establish a new MCP client connection."""
         await self._disconnect()
-        client_ctx = MCPClient(self._endpoint_url, name=self._client_name)
+        # fastmcp gives ``initialize`` no deadline by default; bound it by the connect deadline so
+        # the handshake itself ends, and the client cleans up, instead of leaning on the outer wait.
+        client_ctx = MCPClient(
+            switchboard_mcp_transport(self._endpoint_url),
+            name=self._client_name,
+            init_timeout=self._connect_timeout_s,
+        )
         entered = await client_ctx.__aenter__()
         self._client_ctx = client_ctx
         self._client = entered if entered is not None else client_ctx
@@ -187,7 +234,8 @@ class CachedMCPClient:
         if self._client_ctx is not None:
             try:
                 await self._client_ctx.__aexit__(None, None, None)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                raise_if_task_cancelled(exc)
                 logger.debug("Cancelled while closing MCP client for %s", self._client_name)
             except Exception:
                 logger.debug(
@@ -198,6 +246,17 @@ class CachedMCPClient:
             finally:
                 self._client_ctx = None
                 self._client = None
+
+    async def _evict(self, client: Any) -> None:
+        """Drop ``client`` so the next call reconnects, unless it was already replaced."""
+        async with self._lock:
+            if self._client is client:
+                # Closing a stalled session can overrun too. That must not replace the
+                # caller's ToolCallTimeoutError with a bare TimeoutError, which connectors
+                # do not treat as transport. _disconnect clears the slot either way.
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(self._connect_timeout_s):
+                        await self._disconnect()
 
     async def call_tool(self, tool_name: str, args: dict[str, Any]) -> Any:
         """Call an MCP tool with single-retry reconnect on failure.
@@ -216,9 +275,13 @@ class CachedMCPClient:
 
         Raises
         ------
+        ToolCallTimeoutError
+            If an attempt gets no reply within ``call_timeout_s``. The outcome is unknown,
+            and it is not retried here: against a stalled server that only doubles the hold.
         ConnectionError
             If both the initial call and the reconnect attempt fail at the
-            transport layer (including fastmcp session-drop RuntimeErrors).
+            transport layer (including fastmcp session-drop RuntimeErrors), or
+            connecting takes longer than ``connect_timeout_s``.
         TransientToolError
             If the tool replies ``status="transient_error"``; never retried here,
             the caller's own loop retries.
@@ -226,40 +289,57 @@ class CachedMCPClient:
             If the tool returns an MCP error result (fastmcp ``ToolError``);
             never retried.
         """
-        first_exc: Exception | None = None
+        first_exc: BaseException | None = None
 
         for reconnect in (False, True):
             async with self._lock:
                 if reconnect or self._client is None or not self.is_connected():
                     try:
-                        await self._connect()
-                    except Exception as exc:
+                        async with asyncio.timeout(self._connect_timeout_s):
+                            await self._connect()
+                    except (Exception, asyncio.CancelledError) as exc:
+                        raise_if_task_cancelled(exc)
                         if first_exc is not None:
                             raise ConnectionError(
-                                f"Failed to connect to {self._endpoint_url} "
-                                f"for {tool_name}: {first_exc} (reconnect failed: {exc})"
+                                f"Failed to connect to {self._endpoint_url} for {tool_name}: "
+                                f"{_describe(first_exc)} (reconnect failed: {_describe(exc)})"
                             ) from exc
                         raise ConnectionError(
-                            f"Failed to connect to {self._endpoint_url} for {tool_name}: {exc}"
+                            f"Failed to connect to {self._endpoint_url} "
+                            f"for {tool_name}: {_describe(exc)}"
                         ) from exc
                 client = self._client
 
+            deadline = asyncio.timeout(self._call_timeout_s)
             try:
-                result = await client.call_tool(tool_name, args)
+                async with deadline:
+                    result = await client.call_tool(tool_name, args)
             except ToolError as exc:
                 # The tool ran and reported is_error: an application error, so
                 # a reconnect would only repeat it. Surface it as RuntimeError,
                 # the documented contract callers already handle.
                 raise RuntimeError(str(exc) or f"Tool '{tool_name}' returned an error.") from exc
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 # Everything else is transport: fastmcp raises RuntimeError for a
                 # dropped session ("Server session was closed unexpectedly",
                 # "Session task completed unexpectedly", "Client is not
-                # connected"), alongside httpx/anyio/timeout errors.
+                # connected"), alongside httpx/anyio/timeout errors. When the session
+                # task is cancelled mid-call it re-raises that task's CancelledError
+                # into a caller nobody cancelled, and the connector loops calling this
+                # would treat that as their own shutdown.
+                raise_if_task_cancelled(exc)
+                if deadline.expired():
+                    msg = (
+                        f"No reply from {tool_name} on {self._endpoint_url} within "
+                        f"{self._call_timeout_s:g}s; outcome unknown, it may have taken effect"
+                    )
+                    logger.warning("MCP call timed out for %s: %s", self._client_name, msg)
+                    await self._evict(client)
+                    raise ToolCallTimeoutError(msg) from exc
                 if reconnect:
-                    msg = f"Failed to call {tool_name} on {self._endpoint_url}: {exc}"
+                    msg = f"Failed to call {tool_name} on {self._endpoint_url}: {_describe(exc)}"
                     if first_exc is not None:
-                        msg += f" (first attempt: {first_exc})"
+                        msg += f" (first attempt: {_describe(first_exc)})"
                     raise ConnectionError(msg) from exc
                 first_exc = exc
                 logger.info(

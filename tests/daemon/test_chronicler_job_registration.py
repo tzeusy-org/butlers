@@ -13,13 +13,16 @@ pytestmark = pytest.mark.unit
 
 _CHRONICLER_JOBS = (
     "chronicler_project_sessions",
+    "chronicler_custody_device_fix_evidence",
     "chronicler_project_calendar",
     "chronicler_project_owntracks",
     "chronicler_project_owntracks_ssid",
     "chronicler_project_steam",
+    "chronicler_project_steam_status",
     "chronicler_project_exercise_inferred",
     "chronicler_project_comms",
     "chronicler_routines_mine",
+    "chronicler_public_projection_sweep",
 )
 
 

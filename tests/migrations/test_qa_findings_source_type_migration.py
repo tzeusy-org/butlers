@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import uuid
 from datetime import UTC, datetime
@@ -22,6 +21,7 @@ from butlers.modules.qa import _KNOWN_SOURCES
 from butlers.testing.migration import (
     create_migrated_test_db,
     create_migration_db,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -42,14 +42,6 @@ _INFRA_STATE_MIGRATION_PATH = (
     / "core"
     / "core_170_qa_findings_infra_state_source.py"
 )
-
-
-def _load_migration(module_name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 @pytest.fixture(scope="module")
@@ -108,7 +100,7 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
     """A late schema can replay core after shared QA data reached a later vocabulary."""
     db_url = create_migration_db(postgres_container, migration_db_name())
     asyncio.run(run_migrations(db_url, chain="core", schema="general"))
-    tool_call_migration = _load_migration("core_139_replay", _TOOL_CALL_MIGRATION_PATH)
+    tool_call_migration = load_migration(_TOOL_CALL_MIGRATION_PATH, "core_139_replay")
 
     async def _seed() -> uuid.UUID:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
@@ -194,7 +186,7 @@ def test_new_schema_replay_preserves_newer_public_source_types(postgres_containe
 def test_downgrade_preserves_persisted_infra_state_findings(postgres_container) -> None:
     """One-revision rollback must not delete, relabel, or reject existing findings."""
     db_name = migration_db_name()
-    infra_state_migration = _load_migration("core_170", _INFRA_STATE_MIGRATION_PATH)
+    infra_state_migration = load_migration(_INFRA_STATE_MIGRATION_PATH, "core_170")
     # Stop at the migration under test: later core revisions install privileged
     # boundaries whose rollback is deliberately bootstrap-only, so migrating to
     # head first would make this one-revision rollback walk them.

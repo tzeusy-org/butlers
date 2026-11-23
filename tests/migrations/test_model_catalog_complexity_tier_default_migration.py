@@ -13,16 +13,15 @@ default.  Downgrade restores the prior ``'medium'`` default.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
 
-pytestmark = pytest.mark.integration
+from butlers.testing.migration import load_migration
 
-_NEW_CHECK = "('reasoning', 'workhorse', 'cheap', 'specialty', 'local', 'legacy')"
+pytestmark = pytest.mark.integration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -38,17 +37,9 @@ _MIGRATION_PATH = (
 # ---------------------------------------------------------------------------
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_147", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _replay(pool: asyncpg.Pool, direction: str) -> None:
     """Replay the migration's upgrade()/downgrade() SQL against the live pool."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_147")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -56,30 +47,6 @@ async def _replay(pool: asyncpg.Pool, direction: str) -> None:
         getattr(mod, direction)()
     for sql in sqls:
         await pool.execute(sql)
-
-
-async def _create_post_core_093_model_catalog(pool: asyncpg.Pool) -> None:
-    """Materialise model_catalog in its post-core_093 state: stale DEFAULT + new CHECK.
-
-    This is the exact bug state on main before core_147 -- column DEFAULT is the
-    legacy ``'medium'`` while the CHECK only accepts the canonical six.
-    """
-    await pool.execute(f"""
-        CREATE TABLE public.model_catalog (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            alias           TEXT NOT NULL UNIQUE,
-            runtime_type    TEXT NOT NULL DEFAULT 'codex',
-            model_id        TEXT NOT NULL DEFAULT 'dummy',
-            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
-            complexity_tier TEXT NOT NULL DEFAULT 'medium',
-            enabled         BOOLEAN NOT NULL DEFAULT true,
-            priority        INTEGER NOT NULL DEFAULT 0,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT chk_model_catalog_complexity_tier
-                CHECK (complexity_tier IN {_NEW_CHECK})
-        )
-    """)
 
 
 async def _column_default(pool: asyncpg.Pool) -> str:
@@ -96,11 +63,13 @@ async def _column_default(pool: asyncpg.Pool) -> str:
 
 
 @pytest.fixture
-async def migration_pool(provisioned_postgres_pool):
-    """Fresh DB with model_catalog in its buggy post-core_093 state."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_post_core_093_model_catalog(pool)
-        yield pool
+async def migration_pool(db):
+    """Core at core_146: model_catalog in its buggy post-core_093 state.
+
+    This is the exact bug state before core_147 -- column DEFAULT is the legacy
+    ``'medium'`` while the CHECK only accepts the canonical six.
+    """
+    return await db("core", revisions={"core": "core_146"})
 
 
 # ---------------------------------------------------------------------------

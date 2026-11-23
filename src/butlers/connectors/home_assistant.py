@@ -57,12 +57,11 @@ from __future__ import annotations
 
 import asyncio
 import heapq
-import json
 import logging
 import os
 import random
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -70,7 +69,7 @@ from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
@@ -90,6 +89,13 @@ from butlers.connectors.home_assistant_wellness import (
 )
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
+from butlers.home_assistant_client import (
+    HAAuthInvalidError,
+    HAHandshakeProtocolError,
+    authenticate,
+    decode_ws_text,
+    ws_url,
+)
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_FEED
 
@@ -190,7 +196,7 @@ class HAWebSocketClient:
 
     Implements:
     - 3.1 Connector process lifecycle (start/stop)
-    - 3.2 WebSocket auth handshake (auth_required → auth → auth_ok/auth_invalid)
+    - 3.2 WebSocket auth handshake (server greeting → auth → auth_ok/auth_invalid)
     - 3.3 Event subscriptions: state_changed, automation_triggered, call_service
     - 3.4 Ping/pong keepalive (configurable interval + timeout)
     - 3.5 Exponential backoff reconnection (1s → cap, with jitter)
@@ -270,17 +276,8 @@ class HAWebSocketClient:
     # ------------------------------------------------------------------
 
     def _ws_url(self) -> str:
-        """Derive the WebSocket URL from the HA base HTTP URL.
-
-        Converts ``http://`` → ``ws://`` and ``https://`` → ``wss://``.
-
-        Returns:
-            HA WebSocket API endpoint URL.
-        """
-        base = self._ha_base_url
-        if base.startswith("https://"):
-            return base.replace("https://", "wss://", 1) + "/api/websocket"
-        return base.replace("http://", "ws://", 1) + "/api/websocket"
+        """Return the shared HA WebSocket endpoint."""
+        return ws_url(self._ha_base_url)
 
     # ------------------------------------------------------------------
     # Task 3.2 — Authentication handshake
@@ -290,7 +287,7 @@ class HAWebSocketClient:
         """Open WebSocket connection and complete the HA auth handshake (task 3.2).
 
         HA WebSocket auth flow:
-        1. Server sends: ``{"type": "auth_required", "ha_version": "..."}``
+        1. Server sends: the server greeting
         2. Client sends: ``{"type": "auth", "access_token": "..."}``
         3. Server replies: ``{"type": "auth_ok"}`` or ``{"type": "auth_invalid"}``
 
@@ -317,29 +314,17 @@ class HAWebSocketClient:
         )
 
         try:
-            # Step 1: expect auth_required
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            if msg.get("type") != "auth_required":
-                raise RuntimeError(
-                    f"HAWebSocketClient: expected auth_required, got: {msg.get('type')!r}"
-                )
-
-            # Step 2: send auth
-            await self._ws_connection.send_json(
-                {"type": "auth", "access_token": self._ha_access_token}
-            )
-
-            # Step 3: expect auth_ok or auth_invalid
-            msg = await self._ws_connection.receive_json(timeout=10.0)
-            msg_type = msg.get("type")
-            if msg_type == "auth_invalid":
-                raise RuntimeError(
-                    "HAWebSocketClient: authentication failed (auth_invalid). "
-                    "Check the HA_ACCESS_TOKEN or CredentialStore."
-                )
-            if msg_type != "auth_ok":
-                raise RuntimeError(f"HAWebSocketClient: unexpected auth response: {msg_type!r}")
-        except Exception:
+            msg = await authenticate(self._ws_connection, self._ha_access_token)
+        except HAAuthInvalidError:
+            await self._close_connection()
+            raise RuntimeError(
+                "HAWebSocketClient: authentication failed (auth_invalid). "
+                "Check the HA_ACCESS_TOKEN or CredentialStore."
+            ) from None
+        except HAHandshakeProtocolError:
+            await self._close_connection()
+            raise RuntimeError("HAWebSocketClient: unexpected authentication response") from None
+        except (Exception, asyncio.CancelledError):
             await self._close_connection()
             raise
 
@@ -518,25 +503,14 @@ class HAWebSocketClient:
                 except TimeoutError:
                     continue
 
-                if raw.type == aiohttp.WSMsgType.TEXT:
+                if raw.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
                     try:
-                        msg: dict[str, Any] = json.loads(raw.data)
-                    except json.JSONDecodeError:
+                        messages = decode_ws_text(raw.data)
+                    except ValueError:
                         logger.warning("HAWebSocketClient: invalid JSON message withheld")
                         continue
-                    if not isinstance(msg, dict):
-                        continue
-                    await self._dispatch_message(msg)
-
-                elif raw.type == aiohttp.WSMsgType.BINARY:
-                    try:
-                        msg = json.loads(raw.data)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        logger.warning("HAWebSocketClient: invalid binary message")
-                        continue
-                    if not isinstance(msg, dict):
-                        continue
-                    await self._dispatch_message(msg)
+                    for msg in messages:
+                        await self._dispatch_message(msg)
 
                 elif raw.type in (
                     aiohttp.WSMsgType.CLOSE,
@@ -996,7 +970,7 @@ ha_wellness_classify_total = Counter(
     "Wellness classifier outcomes for filter-passing events",
     labelnames=["endpoint_identity", "outcome", "metric"],
 )
-"""outcome: promoted | no_match | skipped_non_numeric | denylisted.
+"""outcome: promoted | no_match | skipped_non_numeric | denylisted | skipped_transient.
 
 metric: matched metric name, or 'none' when not promoted."""
 
@@ -1097,7 +1071,7 @@ class HAConnectorMetrics:
 
         Args:
             outcome: One of ``promoted``, ``no_match``, ``skipped_non_numeric``,
-                ``denylisted``.
+                ``denylisted``, ``skipped_transient``.
             metric: Matched metric name, or ``None`` (recorded as ``"none"``).
         """
         ha_wellness_classify_total.labels(
@@ -1741,6 +1715,30 @@ async def persist_ha_history(
 # ---------------------------------------------------------------------------
 
 
+# A live event is never re-delivered, so a transport blip gets one more try
+# before the envelope is parked. Kept short: the dispatcher awaits it inline,
+# so a longer wait would hold up the event stream behind it (bu-dhloi1.224).
+_LIVE_INGEST_ATTEMPTS = 2
+_LIVE_INGEST_RETRY_DELAY_S = 0.25
+
+
+async def _ingest_live(mcp_client: Any, envelope: dict[str, Any]) -> None:
+    """Submit *envelope*, retrying a transport failure once after a short pause.
+
+    Only ``ConnectionError`` (``CachedMCPClient``'s transport failure, which
+    ``TransientToolError`` subclasses) is retried; any other error, or a second
+    transport failure, propagates for the caller to park.
+    """
+    for attempt in range(1, _LIVE_INGEST_ATTEMPTS + 1):
+        try:
+            await mcp_client.call_tool("ingest", envelope)
+            return
+        except ConnectionError:
+            if attempt >= _LIVE_INGEST_ATTEMPTS:
+                raise
+            await asyncio.sleep(_LIVE_INGEST_RETRY_DELAY_S)
+
+
 async def emit_with_wellness_promotion(
     *,
     mcp_client: Any,
@@ -1760,6 +1758,7 @@ async def emit_with_wellness_promotion(
     emit_home_assistant: bool = True,
     classification_result: ClassifyResult | None = None,
     content_blind_errors: bool = False,
+    on_failed: Callable[[dict[str, Any], BaseException], Awaitable[None]] | None = None,
 ) -> bool:
     """Submit the ``home_assistant`` envelope and, when warranted, a second
     ``wellness`` envelope for the same event (design ADR-3).
@@ -1772,18 +1771,31 @@ async def emit_with_wellness_promotion(
     logs. Both emissions reuse the same ``external_event_id`` — the Switchboard's
     channel-inclusive dedup key keeps them independent on replay.
 
+    A caller on a stream that never re-delivers (the live dispatcher) passes
+    *on_failed*: each submission retries a transport failure once
+    (``_ingest_live``), an envelope that still fails is handed to it, scrubbed,
+    to park for replay (bu-dhloi1.224), and a failed primary no longer stops the
+    secondary channel, which would otherwise never be sent.
+
     Returns:
         ``True`` if every attempted submission succeeded (caller may advance the
-        checkpoint once); ``False`` if any submission failed transiently (caller
-        must NOT advance — replay re-emits both channels, deduped per channel).
+        checkpoint once); ``False`` if any submission failed (caller must NOT
+        advance; history recovery re-reads and re-emits both channels, deduped
+        per channel).
     """
     from butlers.connectors.home_assistant_envelope import build_wellness_envelope
 
+    submitted_all = True
     if emit_home_assistant:
         if ha_envelope is None:
             raise ValueError("ha_envelope is required when emit_home_assistant=True")
+        scrubbed: dict[str, Any] | None = None
         try:
-            await mcp_client.call_tool("ingest", scrub_ha_envelope(ha_envelope))
+            scrubbed = scrub_ha_envelope(ha_envelope)
+            if on_failed is None:
+                await mcp_client.call_tool("ingest", scrubbed)
+            else:
+                await _ingest_live(mcp_client, scrubbed)
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1802,11 +1814,15 @@ async def emit_with_wellness_promotion(
                 )
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "error")
-            # Primary failed: do not attempt the secondary channel, do not advance.
-            return False
+            if on_failed is None or scrubbed is None:
+                # Primary failed (or its scrub withheld it): do not attempt the
+                # secondary channel, do not advance.
+                return False
+            await on_failed(scrubbed, exc)
+            submitted_all = False
 
     if not promotion_enabled:
-        return True
+        return submitted_all
 
     # Classify for the secondary (wellness) channel.
     result = classification_result
@@ -1822,7 +1838,7 @@ async def emit_with_wellness_promotion(
             metrics.inc_wellness_classify(result.outcome, result.metric)
 
     if result.outcome != "promoted" or result.metric is None or result.value is None:
-        return True
+        return submitted_all
 
     wellness_envelope = build_wellness_envelope(
         endpoint_identity=endpoint_identity,
@@ -1837,8 +1853,13 @@ async def emit_with_wellness_promotion(
         new_state=new_state,
     )
 
+    scrubbed_wellness: dict[str, Any] | None = None
     try:
-        await mcp_client.call_tool("ingest", scrub_ha_envelope(wellness_envelope))
+        scrubbed_wellness = scrub_ha_envelope(wellness_envelope)
+        if on_failed is None:
+            await mcp_client.call_tool("ingest", scrubbed_wellness)
+        else:
+            await _ingest_live(mcp_client, scrubbed_wellness)
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -1858,11 +1879,13 @@ async def emit_with_wellness_promotion(
             )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
-        # Secondary failed transiently: leave the checkpoint un-advanced so the
-        # replay re-emits both channels (the accepted primary will dedupe).
+        if on_failed is not None and scrubbed_wellness is not None:
+            await on_failed(scrubbed_wellness, exc)
+        # Secondary failed: leave the checkpoint un-advanced so a re-read
+        # re-emits both channels (the accepted primary will dedupe).
         return False
 
-    return True
+    return submitted_all
 
 
 async def _emit_history_wellness_measurement(
@@ -2247,6 +2270,17 @@ def _make_event_dispatcher(
             return transport
         return "rest_fallback" if connector._rest_fallback_active else "websocket"
 
+    def _parker(entity_id: str) -> Callable[[dict[str, Any], BaseException], Awaitable[None]]:
+        # The live stream never re-delivers an event, so a failed submission is
+        # parked durably as a replayable error row instead of dropped
+        # (bu-dhloi1.224).
+        async def park(envelope: dict[str, Any], exc: BaseException) -> None:
+            await ha_filter_persistence.park_submission_failure(
+                envelope=envelope, entity_id=entity_id, exc=exc
+            )
+
+        return park
+
     async def _dispatch(
         event_type: str, event: dict[str, Any], transport: str | None = None
     ) -> None:
@@ -2335,17 +2369,21 @@ def _make_event_dispatcher(
                 friendly_name=friendly_name,
                 domain=domain,
             )
+            scrubbed: dict[str, Any] | None = None
             try:
                 ingest_start = time.monotonic()
-                await connector._mcp_client.call_tool("ingest", scrub_ha_envelope(envelope))
+                scrubbed = scrub_ha_envelope(envelope)
+                await _ingest_live(connector._mcp_client, scrubbed)
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )
-            except Exception:
+            except Exception as exc:
                 logger.warning(
                     "ha-connector: failed to submit automation_triggered envelope",
                 )
                 connector.on_event_received(passed_all_filters=False)
+                if scrubbed is not None:
+                    await _parker(entity_id)(scrubbed, exc)
                 return
 
             connector.on_event_received(passed_all_filters=True)
@@ -2519,6 +2557,7 @@ def _make_event_dispatcher(
                         promotion_enabled=True,
                         emit_home_assistant=False,
                         classification_result=wellness_result,
+                        on_failed=_parker(entity_id),
                     )
                     if connector._ha_metrics is not None:
                         connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
@@ -2551,9 +2590,9 @@ def _make_event_dispatcher(
 
         # Emit on the home_assistant channel and, when the reading is
         # health-shaped, additionally on the wellness channel (ADR-3). The
-        # checkpoint is advanced once, only after BOTH submissions succeed; a
-        # transient secondary failure leaves it un-advanced so the replay
-        # re-emits both channels (deduped per channel by the Switchboard).
+        # checkpoint is advanced once, only after BOTH submissions succeed. The
+        # live stream never re-delivers an event, so each envelope that fails is
+        # parked as a replayable error row (bu-dhloi1.224).
         ingest_start = time.monotonic()
         submitted_all = await emit_with_wellness_promotion(
             mcp_client=connector._mcp_client,
@@ -2571,12 +2610,14 @@ def _make_event_dispatcher(
             metrics=connector._ha_metrics,
             promotion_enabled=config.wellness_promotion_enabled,
             classification_result=wellness_result,
+            on_failed=_parker(entity_id),
         )
         if connector._ha_metrics is not None:
             connector._ha_metrics.observe_event_latency(time.monotonic() - ingest_start)
 
         if not submitted_all:
-            # Do not advance the checkpoint; the event will be replayed.
+            # The failed envelopes were parked durably as replayable error rows.
+            # The checkpoint stays put (it only deduplicates).
             return
 
         # Persist person.* state-change events to the history evidence table

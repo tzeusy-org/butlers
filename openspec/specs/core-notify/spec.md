@@ -432,6 +432,12 @@ The `notify` tool accepts `entity_id` (UUID) and `recipient` (string) as optiona
 - **THEN** the butler daemon MUST forward the call to the Switchboard with `recipient='user@example.com'`
 - **AND** `entity_id`-based resolution MUST NOT be attempted
 
+#### Scenario: Telegram @username recipient resolves to a numeric chat id before the gate
+- **WHEN** a runtime instance calls `notify(channel='telegram', message='Hi', recipient='@alice')` with a `send`, `insight` or `confirm` intent
+- **THEN** the daemon MUST resolve `@alice` to a known contact's numeric chat id (the owner through the owner definer and the owner's chat id, any other contact through `relationship.entity_facts`) before recipient approval gating
+- **AND** the approval gate, any parked action's preview and arguments, and the executed delivery MUST all name that numeric chat id
+- **AND** if the username matches no unique contact or the contact has no numeric chat id, the call MUST return `status='error'` before any action is parked, because the Telegram Bot API cannot message a private user by username
+
 ### Requirement: Missing Channel Identifier Fallback
 When `entity_id` is provided but the entity has no `relationship.entity_facts` triple for the requested channel, the `notify` tool MUST NOT silently fail.
 If approval parking is available for the calling butler's own database pool, it
@@ -538,18 +544,54 @@ This requirement exists because the delivery architecture has two layers: `notif
 - **THEN** the target MUST NOT receive the owner bypass
 - **AND** delivery MUST follow the standing-rule or pending-approval path
 
+#### Scenario: Messenger route.execute honours a verified owner-approved notify
+- **WHEN** an owner-approved `notify` reaches the Messenger's `route.execute` from its owning butler's approval executor
+- **AND** the request arrived on the kernel-admitted Switchboard approval hop carrying a Switchboard attestation that the owning butler verified and consumed its single-use proof for this action
+- **AND** the attestation names the routed sender and `origin_butler`, carries no recovery correlation, and its digest equals the digest of the exact routed `notify_request`
+- **THEN** the shared approval matcher MUST treat the delivery as approved and send it once without parking a second pending action (RFC 0038 D13)
+
+#### Scenario: Messenger route.execute ignores an unverified approved-notify claim
+- **WHEN** the Messenger's `route.execute` receives a delivery whose input carries an approved-notify attestation field, a caller origin, or an action id
+- **AND** the request did not arrive on the kernel-admitted Switchboard approval hop, or the attestation is malformed, names another source, or does not cover the exact routed `notify_request`
+- **THEN** the field MUST grant no approval
+- **AND** delivery MUST follow the standing-rule or pending-approval path
+
 ### Requirement: [TARGET-STATE] Notify Response Envelope
 
 The implementation SHALL provide the behavior described by this requirement.
-Successful delivery returns `notify_response.v1` with `status="ok"` and delivery metadata. Failed delivery returns `status="error"` with canonical error class and message.
+Successful delivery returns `notify_response.v1` with `status="ok"` and delivery
+metadata. Failed delivery returns `status="error"` with canonical error class and message.
+An end-to-end notification SHALL be considered successfully delivered
+only when the routed response is successful and contains a nested
+`notify_response.v1` whose status is `ok`, whose delivery channel matches the
+resolved request channel, and whose non-empty `delivery_id` is supplied by the
+channel's adopted confirmation contract. Telegram message sends require the
+provider's message id; provider-confirmed operations that return no native id,
+and existing channels whose provider exposes no receipt id, MAY use their
+established stable correlation reference. A Telegram message-send request id
+or generated UUID SHALL NOT substitute for its provider message receipt.
+Missing, malformed, mismatched, or error
+responses SHALL never be persisted or returned as sent or delivered.
 
 #### Scenario: Successful delivery response
 - **WHEN** the Messenger successfully delivers the message
 - **THEN** the notify tool returns a response with `status="ok"` and `delivery.channel` and `delivery.delivery_id`
+- **AND** the routed response contains nested `notify_response.v1`, the requested channel, and a non-empty confirmed `delivery_id`
+- **AND** only then may notification and attention evidence be recorded as sent or delivered
 
 #### Scenario: Failed delivery response
 - **WHEN** the Messenger fails to deliver
-- **THEN** the notify tool returns a response with `status="error"`, `error.class`, and `error.message`
+- **THEN** the notify tool returns a response with `status="error"`, `error.class`, and `error.message`, or the existing explicit uncertain-transport classification when provider start cannot be excluded
+- **AND** no notification, ledger, or conversation-history record claims sent or delivered
+
+#### Scenario: Nested route failure is not delivery
+- **WHEN** the outer route call completes but `route_response.v1` or its nested `notify_response.v1` reports an error
+- **THEN** the notify boundary propagates the nested failure
+- **AND** it does not infer success from the absence of a top-level transport exception
+
+#### Scenario: Missing or malformed receipt is not delivery
+- **WHEN** the nested response is absent, malformed, names a different channel, or has an empty delivery id
+- **THEN** the result is not classified, persisted, or returned as sent or delivered
 
 ### Requirement: Origin Butler Identity
 
@@ -864,12 +906,13 @@ Scope: v1-mandatory
 - **THEN** its existing delivery, tool response, ledger, privacy and recovery-isolation contracts remain intact
 - **AND** this routed review correlation adds no action permission, recursive park, synthesized local ledger row or recovery capability
 
-
 ### Requirement: Fixed dashboard self references in owner controls
 Approval notification producers SHALL emit an `open_dashboard` action with
 `reference: {kind: "self", route_key, params}` instead of a raw `dashboard_url`.
 The fixed Python route registry SHALL contain `approval_detail` with exactly one
-canonical UUID `action_id` parameter and `approvals_queue` with no parameters.
+canonical UUID `action_id` parameter, `approvals_queue` with no parameters and
+`decision_set` with exactly one canonical UUID `set_id` parameter and no other (no
+version, selection, digest or call content).
 Self references SHALL NOT expire. Callback actions SHALL retain their signed
 callback tokens and SHALL NOT carry link URLs or self references.
 
@@ -890,19 +933,32 @@ required on both normal and recovery delivery paths.
 
 Live URLs SHALL be at most 300 characters, use HTTPS without user information,
 IP literals, internationalized or punycode hosts, or a non-default port. The
-configured origin SHALL NOT contain a path, query or fragment. This requirement
-does not authorize general model-supplied URLs, research links or login actions.
+configured origin MAY carry one fixed path prefix (for example `/butlers-dev`)
+under which the registry routes are joined. A prefix SHALL be at most 64
+characters of plain ASCII segments, each starting with a letter or digit and
+using only letters, digits, `.`, `_` and `-`; a trailing slash is normalised
+away. Empty, `.`/`..`, percent-encoded or otherwise special segments, and any
+query or fragment, SHALL make the origin unsafe. This requirement does not
+authorize general model-supplied URLs, research links or login actions.
+
+#### Scenario: Decision set card opens its set page by id alone
+- **WHEN** an admitted owner notification carries `decision_set` with its canonical UUID `set_id`
+- **THEN** delivery constructs `/decision-sets/<set_id>` at the configured origin and Messenger independently reconstructs it
+- **AND** a reference with a missing, non-canonical or extra parameter, or a `set_id` under another route key, resolves to no link
 
 #### Scenario: Approval detail becomes a fixed dashboard button
 - **WHEN** an admitted owner approval notification carries `approval_detail`
   with its canonical UUID `action_id` and a valid configured HTTPS origin
-- **THEN** delivery constructs `/approvals/<action_id>` at that origin
+- **THEN** delivery constructs `/approvals/<action_id>` at that origin, under
+  its fixed path prefix when one is configured (`https://host/butlers-dev`
+  yields `https://host/butlers-dev/approvals/<action_id>`)
 - **AND** Messenger independently reconstructs that URL before rendering the
   host-labelled dashboard button, retaining signed Approve and Reject controls
 
 #### Scenario: An unverifiable self reference preserves the notification
 - **WHEN** the route key is unknown, parameters are invalid, the configured
-  origin is absent or unsafe, or the resulting URL exceeds 300 characters
+  origin is absent or unsafe (including a path with `..`, empty or
+  percent-encoded segments, or a query or fragment), or the resulting URL exceeds 300 characters
 - **THEN** the message is still delivered through the existing admission path
 - **AND** it contains `[link not verified]` and no URL button for that reference
 - **AND** unresolved links do not disable otherwise valid signed callbacks

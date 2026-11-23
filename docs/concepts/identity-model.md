@@ -18,7 +18,7 @@ The entity table is the anchor for identity. Each row represents a known person 
 
 - **`id`** (UUID) --- primary key; the authoritative identity key
 - **`canonical_name`** --- display name
-- **`entity_type`** --- typically `"person"`
+- **`entity_type`** --- typically `"person"`; one of `person`, `organization`, `place`, `animal`, `other`
 - **`roles`** (TEXT[]) --- role assignments (e.g., `['owner']`); the authoritative source of truth for identity roles
 - **`aliases`** (TEXT[]) --- alternative names
 - **`metadata`** (JSONB) --- extensible metadata; temporary entities carry `{"unidentified": true}`
@@ -89,15 +89,84 @@ The identity preamble for unknown senders includes `-- pending disambiguation`, 
 Normal Switchboard fleet ingress enables identity resolution and supplies a
 deterministic owner-notification callback. When the helper surfaces a
 transitory entity, it first atomically inserts a sender-scoped claim in the
-Switchboard `state` table. Only the winner sends one content-free `notify.v1`
-notice through the normal Switchboard-to-Messenger boundary; the notice points
-to `/entities/index?state=unidentified`, never a contacts route.
+Switchboard `state` table. Only the winner sends one `notify.v1` notice through
+the normal Switchboard-to-Messenger boundary to the owner's Telegram. One notice
+goes out per sender; there is no digest.
+
+The notice names the sender so the owner can decide without opening the
+dashboard (`inject.unknown_sender_notice_lines`):
+
+```text
+New sender on email: Chloe L <chloe@x.com>
+Subject: Re: dinner
+Open: https://<DASHBOARD_URL>/entities/<entity_id>
+```
+
+- The display name comes from the connector's sender label (Gmail's `From:`
+  display name, carried as `sender.display_name`). Without one, the line shows
+  the bare address. Batch speakers (WhatsApp/Telegram user-client batches) carry
+  only neutral labels, so their notice shows the address alone.
+- The raw address is shown because the notice goes only to the owner.
+- The subject is the first `Subject:` line of an email's normalized text. The
+  message body is never included.
+- Every sender-controlled field is whitespace-collapsed, length-bounded and
+  Markdown-neutralised, so a sender cannot plant a disguised link.
+- The `Open:` link is built by `core.dashboard_links`. Without `DASHBOARD_URL` the
+  last line reads "Review it in Unidentified Entities on the dashboard." and
+  carries no link.
 
 The claim remains after a delivery failure, so later ingress cannot turn an
 outage into a notification storm. If the state claim cannot be persisted, the
 helper logs the problem, skips the owner send, and leaves normal unknown-sender
 routing intact. The owner can still review the transitory entity through the
 Unidentified Entities flow.
+
+#### Ignore card (pre-cutover, bu-p7glz9)
+
+The claim winner also parks one approval-gated pending action,
+`identity_ignore_unknown_sender`, through `park_pending_action`
+(`unknown_sender_cards.park_ignore_card`, wired in `switchboard_wiring.py`). The
+live decision-loop push (RFC 0021) turns it into a Telegram card with Approve,
+Reject and Open:
+
+```text
+Approval needed: Ignore this new sender
+Name: Chloe L
+Address: chloe@x.com
+Channel: email
+Entity: <entity_id>
+Effect: Archive this sender and skip their future email
+Started by: switchboard butler
+Assistant says (claims, not verified):
+  Why: Chloe L <chloe@x.com> wrote to you for the first time on email, subject "Re: dinner". ...
+  Blast radius: self
+  Reversibility: reversible
+```
+
+- Approve ignores the sender: it archives the entity (`metadata.archived_at`) and,
+  for an email address, adds one global `sender_address` skip rule. A replay finds
+  both in place. A non-email sender is archived only. Both are reversible from the
+  dashboard (unarchive the entity, delete the rule).
+- Reject or expiry (72 hours) changes nothing; the sender stays in Unidentified
+  Entities.
+- The action id derives from the entity id, so a replay or backlog rescan never
+  parks a second card.
+- The call carries the entity id, channel, address and display name, and the card
+  shows each. The park writes the same fields to the Switchboard `state` table
+  (`identity:unknown_ignore:<entity_id>`) in the same transaction. The tool refuses
+  any call that does not match them, and refuses an owner, merged or since-identified
+  entity.
+- While Switchboard's `approval_delivery_rollout` is off, the pending action is
+  committed for dashboard review with no push, and the plain-text notice still
+  goes out. When admission and the delivery worker are both on, the card replaces
+  the plain-text notice. If the park fails, the notice is still sent. A burst of new
+  senders may fold into one "N actions awaiting review" message.
+
+A fuller card (Add as contact / Ignore this sender / Open) is built as the
+`switchboard.unknown_sender` signed-confirm source
+(`roster/switchboard/tools/identity/unknown_sender_cards.py`) but stays dark with
+the rest of signed confirm. See
+[signed confirms](../runtime/signed-confirms.md); bu-6hszs3 tracks turning it on.
 
 ## Identity Preamble
 
@@ -133,7 +202,19 @@ their local pending receipt immediately and refreshes dashboard caches. Event
 delivery is deliberately not the recovery authority: a daemon that missed it
 establishes its listener before draining pending receipts during startup. A
 listener connection failure triggers re-establishment plus another pending
-drain. PostgreSQL row security permits only Relationship to create a cohort
+drain. A running daemon also sweeps the ledger about once a minute while idle,
+so a missed event does not wait for a restart, and each sweep or startup drain
+retries a `failed` receipt once 15 minutes have passed since its last attempt.
+A receipt keeps the target it opened with, but its references move to whichever
+entity that target's `merged_into` chain now ends at, so a merge settled in the
+meantime cannot strand them on a tombstone. If that entity has been forgotten,
+nothing moves: forgetting cascades along `merged_into`, so the schema retracts the
+live facts that reference the merged-away source through its own forget
+retraction, and the receipt settles as `skipped_forgotten` and is never retried.
+Each schema changes only its own rows. The accepted cost is that a merge made by
+mistake lets forgetting one person also erase the other's merged data. The failure log names the receipt, schema, step, error class and
+SQLSTATE, never the driver's message, which can carry key values from `facts`.
+PostgreSQL row security permits only Relationship to create a cohort
 and permits each runtime role to settle only the receipt bound to its own
 schema.
 
@@ -173,6 +254,20 @@ psql -h localhost -U butlers -d butlers -c \
 ```
 
 ## Implementation Notes
+
+Accepted-source report capture releases its initial Switchboard connection before
+the independent Relationship routing lookup and MCP call. It then locks and
+rechecks the accepted context/payload/text digest and lifecycle before freezing
+the report and actual entity lifetime witness. A concurrent stored report wins
+unchanged; a changed source refuses instead of using the earlier resolution.
+The initial snapshot shares one monotonic five-second content budget between
+pool acquisition and its query; the query receives only the remaining budget.
+Driver cancellation, release and reset keep their existing bounded cleanup policy,
+which may outlast the content deadline. The resolver and locked database phase
+retain their capture-local five-second bounds. Resolver unavailability remains
+unresolved third-party attribution; cancellation propagates through owned cleanup.
+No channel-mapping current-at-commit or external authentication guarantee follows
+from this ordering. A source capability is issued only after the report commits.
 
 - Owner bootstrap at daemon startup (`src/butlers/owner_bootstrap.py::_ensure_owner_entity`,
   called from `src/butlers/lifecycle.py`) resolves an existing owner via

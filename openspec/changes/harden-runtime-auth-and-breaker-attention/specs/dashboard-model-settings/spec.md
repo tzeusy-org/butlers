@@ -39,9 +39,10 @@ Scope: v1-mandatory
 
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
-- **THEN** the system requests a signed Switchboard runtime probe for each enabled model concurrently with a bounded concurrency of 8
+- **THEN** the system issues a 1-token completion against each enabled model, requested as a signed Switchboard runtime probe, concurrently with a bounded concurrency of 8
 - **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
-- **AND** only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
+- **AND** for each model, only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
+- **AND** `last_verified_error` is set to the truncated exception text on failure (or `"verification returned an empty response"` when the probe completed with no usable output) and cleared to `NULL` on success
 - **AND** a control-plane unavailable result preserves the prior verification evidence and is reported separately from a completed failed probe
 - **AND** the response data contains exactly `accepted`, `total`, `ok`, `failed`, and `unavailable`
 - **AND** the call is rate-limited to once per minute system-wide; subsequent calls within the minute return `429 Too Many Requests`
@@ -77,13 +78,18 @@ Scope: v1-mandatory
 
 The dashboard-api process SHALL run an hourly background sweep
 (`butlers.jobs.model_verify.run_model_verify_loop`, started from the FastAPI
-lifespan alongside the other periodic jobs). Each interval tick SHALL call the
-same verification core as the manual endpoint through the registered `scheduler`
-caller and signed Switchboard runtime-probe control client, so verification is
-attempted roughly once per interval even when no operator visits the Models tab.
-A control-plane-unavailable result preserves prior verification evidence. The
-sweep does not construct a runtime adapter or persist verification evidence
-inside the dashboard process.
+lifespan alongside the other periodic jobs) that calls the same verification core
+as the manual endpoint, so `last_verified_ok`/`last_verified_at` are never more
+than roughly one interval stale even when no operator visits the Models tab
+(while the control plane is available). Each interval tick SHALL reach that core
+through the registered `scheduler` caller and signed Switchboard runtime-probe
+control client. A control-plane-unavailable result preserves prior verification
+evidence. The sweep does not construct a runtime adapter or persist verification
+evidence inside the dashboard process.
+
+ID: REQ-dashboard-model-settings-008
+Source: dashboard-model-settings Hourly Automated Verification Sweep; harden-runtime-auth-and-breaker-attention design.md
+Scope: v1-mandatory
 
 #### Scenario: Hourly sweep runs independently of the manual rate limit
 - **WHEN** the sweep's interval (default `DEFAULT_MODEL_VERIFY_INTERVAL_S = 3600`,

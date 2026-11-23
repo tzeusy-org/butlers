@@ -73,6 +73,17 @@ Telegram user-client credentials are resolved **exclusively from owner entity_in
 | `telegram_api_hash` | Owner entity_info (type: `telegram_api_hash`) |
 | `telegram_user_session` | Owner entity_info (type: `telegram_user_session`) |
 
+Owner-outbound point events (`connectors.owner_outbound_events`, shared with the WhatsApp
+user-client) also need the system secret `OWNER_OUTBOUND_DEDUP_KEY` in the shared credential
+store (`butler_secrets`, no environment fallback). It keys the HMAC over `chat_id:message_id`
+that forms the dedup key, so stored rows cannot be matched back to a chat by enumerating
+sequential message ids. If the key is missing, the connector logs one startup warning and
+records no point events; it never falls back to an unkeyed hash. The key is resolved once at
+connector startup, so provisioning it (or recovering from a credential-store probe failure,
+which logs a distinct `probe failed` warning) takes effect only after a connector restart. Rotating the key only lets a
+replayed message be recorded once more. Rows written before the key existed hold a legacy
+unkeyed SHA-256 key; they cannot be rehashed, so removing them is an owner-gated data scrub.
+
 ### Obtaining Credentials
 
 1. Visit https://my.telegram.org and log in with your phone number.
@@ -168,6 +179,13 @@ services:
       - switchboard
     restart: unless-stopped
 ```
+
+## Capture manifest
+
+- **Provider offers:** MTProto message history for the chats the account can read, with message ids, so a missed range can be re-read.
+- **We keep:** one `connectors.evidence_journal` row per submitted batch or message (`source = telegram_user_client`, `provider_id` = the envelope's external event id), committed before the Switchboard submit and the checkpoint advance. `raw` is the envelope's inbox-equivalent at its tier after the bearer scrub, including the login-code scrub. Discretion-ignored and policy-blocked messages are never journaled.
+- **If the journal write fails:** nothing is submitted, the checkpoint does not move, and the batch or message stays held and is retried without spending its retry budget; it is never parked. A failed submit keeps the row.
+- **Provider retention and backfill:** history is re-readable by message id while the account stays in the chat.
 
 ## Idempotency and Resume
 

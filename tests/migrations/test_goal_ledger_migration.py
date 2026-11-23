@@ -23,6 +23,7 @@ from butlers.testing.migration import (
     migration_bootstrap_db_url,
     migration_db_name,
 )
+from scripts.ci_test_images import prepare_alias_on_hosted_runner
 from tests.switchboard.goal_ledger_fixtures import (  # noqa: F401
     TABLES,
     admit,
@@ -259,6 +260,8 @@ def test_goal_ledger_existing_full_backup_restores_losslessly(
     before = snapshot(ledger_url)
     parsed = urlparse(ledger_url)
     password_env = {**os.environ, "PGPASSWORD_FOR_TEST": parsed.password or ""}
+    # Acquire the image outside each run's 120s timeout (cold pulls are slow).
+    prepare_alias_on_hosted_runner("postgres:17")
     base = [
         "docker",
         "run",

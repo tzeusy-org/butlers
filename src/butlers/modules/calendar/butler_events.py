@@ -8,9 +8,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 from zoneinfo import ZoneInfo
 
-from butlers.core.scheduler import schedule_create as _schedule_create
-from butlers.core.scheduler import schedule_delete as _schedule_delete
-from butlers.core.scheduler import schedule_update as _schedule_update
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
+from butlers.core.scheduler.crud import schedule_delete as _schedule_delete
+from butlers.core.scheduler.update import schedule_update as _schedule_update
+from butlers.modules.calendar_approval import calendar_approval_args, calendar_approval_datetime
 
 from .constants import (
     _CALENDAR_EVENT_DEFAULT_ACTION,
@@ -175,7 +176,6 @@ def register_butler_event_tools(
         action_args: dict[str, Any] | None = None,
         source_hint: ButlerEventSourceHint | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Create a butler-view workspace event as schedule or reminder.
 
@@ -193,6 +193,26 @@ def register_butler_event_tools(
         executable actions, and action arguments belong to scheduled-task events
         and are rejected when ``source_hint`` selects ``butler_reminder``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_create_butler_event",
+            butler_name=butler_name,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone,
+            description=description,
+            location=location,
+            recurrence_rule=recurrence_rule,
+            cron=cron,
+            until_at=until_at,
+            action=action,
+            action_args=action_args,
+            source_hint=source_hint,
+            request_id=request_id,
+        )
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
+        until_at = calendar_approval_datetime(until_at)
         normalized_butler = butler_name.strip()
         if not normalized_butler:
             raise ValueError("butler_name must be a non-empty string")
@@ -272,7 +292,8 @@ def register_butler_event_tools(
             action_type="workspace_butler_create",
             request_id=normalized_request_id,
             action_payload=action_payload,
-            allow_pending_replay=_approval_bypass,
+            tool_name="calendar_create_butler_event",
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -442,7 +463,6 @@ def register_butler_event_tools(
         body: str | None = None,
         entity_ids: list[uuid.UUID] | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Update a butler schedule/reminder event.
 
@@ -450,6 +470,25 @@ def register_butler_event_tools(
         ``body`` is stored for calendar-native reminders and remains
         audit-only for scheduled tasks.
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_butler_event",
+            event_id=event_id,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone,
+            recurrence_rule=recurrence_rule,
+            cron=cron,
+            until_at=until_at,
+            enabled=enabled,
+            source_hint=source_hint,
+            body=body,
+            entity_ids=entity_ids,
+            request_id=request_id,
+        )
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
+        until_at = calendar_approval_datetime(until_at)
         normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
         normalized_request_id = module._normalize_request_id(request_id)
         action_payload = {
@@ -470,7 +509,8 @@ def register_butler_event_tools(
             action_type="workspace_butler_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
-            allow_pending_replay=_approval_bypass,
+            tool_name="calendar_update_butler_event",
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -616,12 +656,20 @@ def register_butler_event_tools(
         instance_start_at: datetime | None = None,
         source_hint: ButlerEventSourceHint | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete a butler schedule/reminder event at the requested scope.
 
         ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_butler_event",
+            event_id=event_id,
+            scope=scope,
+            instance_start_at=instance_start_at,
+            source_hint=source_hint,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if scope not in {"this", "following", "series"}:
             raise ValueError("scope must be one of: this | following | series")
         if scope != "series":
@@ -641,7 +689,8 @@ def register_butler_event_tools(
             action_type="workspace_butler_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
-            allow_pending_replay=_approval_bypass,
+            tool_name="calendar_delete_butler_event",
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -651,17 +700,11 @@ def register_butler_event_tools(
             if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
             else SOURCE_KIND_INTERNAL_SCHEDULER
         )
-        if not _approval_bypass and scope != "this":
+        if scope != "this":
             approval_result = await module._gate_high_impact_mutation(
                 action_type="workspace_butler_delete",
                 tool_name="calendar_delete_butler_event",
-                tool_args={
-                    "event_id": event_id,
-                    "scope": scope,
-                    "instance_start_at": instance_start_at,
-                    "source_hint": source_hint,
-                    "request_id": normalized_request_id,
-                },
+                tool_args=approval_args,
                 request_id=normalized_request_id,
                 idempotency_key=idempotency_key,
                 action_payload=action_payload,
@@ -753,12 +796,18 @@ def register_butler_event_tools(
         enabled: bool,
         source_hint: ButlerEventSourceHint | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Pause/resume a butler schedule/reminder event.
 
         ``source_hint`` selects ``scheduled_task`` or ``butler_reminder``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_toggle_butler_event",
+            event_id=event_id,
+            enabled=enabled,
+            source_hint=source_hint,
+            request_id=request_id,
+        )
         normalized_source_hint = module._normalize_butler_event_source_hint(source_hint)
         normalized_request_id = module._normalize_request_id(request_id)
         action_payload = {
@@ -770,7 +819,8 @@ def register_butler_event_tools(
             action_type="workspace_butler_toggle",
             request_id=normalized_request_id,
             action_payload=action_payload,
-            allow_pending_replay=_approval_bypass,
+            tool_name="calendar_toggle_butler_event",
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -780,23 +830,17 @@ def register_butler_event_tools(
             if normalized_source_hint == BUTLER_EVENT_SOURCE_REMINDER
             else SOURCE_KIND_INTERNAL_SCHEDULER
         )
-        if not _approval_bypass:
-            approval_result = await module._gate_high_impact_mutation(
-                action_type="workspace_butler_toggle",
-                tool_name="calendar_toggle_butler_event",
-                tool_args={
-                    "event_id": event_id,
-                    "enabled": enabled,
-                    "source_hint": source_hint,
-                    "request_id": normalized_request_id,
-                },
-                request_id=normalized_request_id,
-                idempotency_key=idempotency_key,
-                action_payload=action_payload,
-                source_kind=tentative_source_kind,
-            )
-            if approval_result is not None:
-                return approval_result
+        approval_result = await module._gate_high_impact_mutation(
+            action_type="workspace_butler_toggle",
+            tool_name="calendar_toggle_butler_event",
+            tool_args=approval_args,
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_kind=tentative_source_kind,
+        )
+        if approval_result is not None:
+            return approval_result
 
         try:
             source_type, target_id = await module._resolve_butler_event_target(

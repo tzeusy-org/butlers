@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { RowLink } from "@/components/ui/RowLink";
 import { Time } from "@/components/ui/time";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
-import { useButlerHeartbeats } from "@/hooks/use-system";
+import type { useButlerHeartbeats } from "@/hooks/use-system";
 import type { ButlerHeartbeat } from "@/api/types";
 import { useForceButlerTick } from "@/hooks/use-butlers";
 import type { StatusBoardRow, ActivityVerb } from "@/hooks/use-butler-status-board";
@@ -79,6 +79,7 @@ function ButlerRow({ row, factsUnavailable, onTriggerTick, isTicking }: ButlerRo
   const compatibility = fact(row.facts?.route_compatibility, ["compatible", "incompatible", "unknown"]);
   const eligibility = fact(row.facts?.effective_eligibility, ["eligible", "paused", "ineligible", "unknown"]);
   const lastHeartbeat = row.facts ? row.facts.last_heartbeat_at : row.lastHeartbeatISO;
+  const factsAreLastKnown = factsUnavailable && row.facts !== undefined;
 
   return (
     <li className="py-1.5">
@@ -104,13 +105,17 @@ function ButlerRow({ row, factsUnavailable, onTriggerTick, isTicking }: ButlerRo
             <span className="truncate text-sm font-medium">{row.name}</span>
             {(row.schemaUnreachable || row.facts?.error === "schema_unreachable") && (
               <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
-                unreachable
+                Schema unreachable
               </Badge>
             )}
           </div>
           <dl className="grid grid-cols-2 gap-x-4 gap-y-1 pl-3.5 text-xs sm:grid-cols-4">
-            {[["Observation", observation], ["Administrative policy", policy],
-              ["Service compatibility", compatibility], ["Service eligibility", eligibility]].map(([label, value]) => (
+            {[
+              ["Observation", observation],
+              [factsAreLastKnown ? "Last known administrative policy" : "Administrative policy", policy],
+              [factsAreLastKnown ? "Last known service compatibility" : "Service compatibility", compatibility],
+              [factsAreLastKnown ? "Last known service eligibility" : "Service eligibility", eligibility],
+            ].map(([label, value]) => (
               <div key={label}>
                 <dt className="text-muted-foreground">{label}</dt>
                 <dd aria-label={`${label}: ${value}`}>{value}</dd>
@@ -118,17 +123,17 @@ function ButlerRow({ row, factsUnavailable, onTriggerTick, isTicking }: ButlerRo
             ))}
           </dl>
           <div className="flex flex-wrap gap-x-3 gap-y-1 pl-3.5 text-xs text-muted-foreground">
-            <span>Activity: {row.activity}</span>
+            <span>Board activity: {row.activity}</span>
             <span>{lastHeartbeat ? <>Last recorded heartbeat <Time value={lastHeartbeat} mode="relative" /></> : "No heartbeat recorded"}</span>
             <span>{row.facts?.last_probe_at ? <>Last probe attempt <Time value={row.facts.last_probe_at} mode="relative" /></> : "No probe recorded"}</span>
+            {row.activeSessionCount > 0 && (
+              <Badge variant="secondary">
+                {row.activeSessionCount} incomplete session {row.activeSessionCount === 1 ? "record" : "records"}
+              </Badge>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {row.activeSessionCount > 0 && (
-            <Badge variant="secondary" className="shrink-0">
-              {row.activeSessionCount} active
-            </Badge>
-          )}
           {showTickRemedy && (
             <Button
               variant="ghost"
@@ -155,10 +160,13 @@ function ButlerRow({ row, factsUnavailable, onTriggerTick, isTicking }: ButlerRo
 // Main component
 // ---------------------------------------------------------------------------
 
-export function ButlerHeartbeatTile() {
+export function ButlerHeartbeatTile({
+  heartbeat,
+}: {
+  heartbeat: ReturnType<typeof useButlerHeartbeats>;
+}) {
   const { rows, aggregates } = useButlerStatusBoard();
   const { isLoading, isError } = aggregates;
-  const heartbeat = useButlerHeartbeats();
   const heartbeatRows = heartbeat.data?.data?.butlers;
   const byName = new Map(heartbeatRows?.map((entry) => [entry.name, entry]));
   const combined: HeartbeatRow[] = rows.map((row) => ({ ...row, facts: byName.get(row.name) }));

@@ -531,7 +531,7 @@ async def _exercise_hidden_tick_failure(monkeypatch, fault, expected):
         async def write(self, spec, state, reason, **evidence):
             events.append((state, reason, evidence))
 
-    def pool(_):
+    def butler_pool(_):
         if (
             fault in {"calendar_no_pool", "lifecycle_butler_pool", "staleness_butler_pool"}
             and not phase["recovered"]
@@ -546,7 +546,7 @@ async def _exercise_hidden_tick_failure(monkeypatch, fault, expected):
 
     db = SimpleNamespace(
         butler_names=["health"] if fault.endswith("butler_pool") else [],
-        pool=pool,
+        pool=butler_pool,
         credential_shared_pool=credential_pool,
     )
 
@@ -858,6 +858,8 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
     monkeypatch.setattr(fleet_conditions, "get_active_condition", AsyncMock(return_value=None))
     reconcile = AsyncMock(return_value=[])
     monkeypatch.setattr(fleet_conditions, "reconcile_snapshot", reconcile)
+    # QA remediation-loop liveness has its own proofs; this pool only scripts fleet/patrol SQL.
+    monkeypatch.setattr(fleet_conditions, "reconcile_remediation_loop", AsyncMock(return_value=[]))
     configs = [
         SimpleNamespace(
             name="qa",

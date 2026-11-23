@@ -73,6 +73,23 @@ def is_transparent(metadata: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() == "transparent"
 
 
+#: Google ``eventType`` values that declare a status rather than a meeting (core_341 stores
+#: the type verbatim). Such an event never asserts a meeting, adds no meeting-hours and gets no
+#: meeting hold, prep card, debrief or starting-soon notice.
+STATUS_EVENT_TYPES = frozenset({"outOfOffice", "workingLocation"})
+OUT_OF_OFFICE = "outOfOffice"
+FOCUS_TIME = "focusTime"
+
+
+def is_status_event(event_type: Any) -> bool:
+    """Whether a stored event type is a declared status (out of office, working location).
+
+    A missing or unrecognised type is an ordinary event: only the provider's own type
+    excludes, never a title.
+    """
+    return isinstance(event_type, str) and event_type in STATUS_EVENT_TYPES
+
+
 def counts_toward_owner_load(metadata: Any) -> bool:
     """Whether an event is busy time the owner will attend (radar and day load)."""
     return is_owner_attending(metadata) and not is_transparent(metadata)

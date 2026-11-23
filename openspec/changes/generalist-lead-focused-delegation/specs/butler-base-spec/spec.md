@@ -385,7 +385,7 @@ Scope: v1-mandatory
 - **AND** no domain's `CLAUDE.md` or memory context is injected; the lead retrieves them through `guidance.load`, `context.search` and domain read capabilities
 
 #### Scenario: Interactive response mode
-- **WHEN** a goal's input carries a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram_bot`, `email`)
+- **WHEN** a goal's input carries a REQUEST CONTEXT JSON block with a `source_channel` field (e.g., `telegram_bot`, `whatsapp`)
 - **THEN** the lead engages interactive response mode as defined in the lead policy
 - **AND** selects from response styles: React (emoji only), Affirm (acknowledgment), Follow-up (clarifying question), Answer (substantive response), or React+Reply (emoji + response)
 
@@ -444,7 +444,7 @@ ID: REQ-butler-base-spec-006
 #### Scenario: Credential isolation in runtime sessions
 - **WHEN** the goal runner builds a goal invocation's environment
 - **THEN** it holds only `PATH`, its staged model credential, its MCP config and adapter-owned non-secret pointers to files staged inside its sandbox — no module, connector or database credential and no credential-store access
-- **AND** an engineering executor launched by the Spawner receives only the credentials its contract declares (for example `GH_TOKEN`)
+- **AND** an engineering executor launched by the Spawner receives only the credentials its contract declares, and a QA investigation executor declares no GitHub credential such as `GH_TOKEN`
 - **AND** no host environment variables leak, so no session can use a credential to act outside the broker
 
 ### Requirement: Instance Facts Internal Interface

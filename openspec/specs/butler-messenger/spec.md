@@ -39,6 +39,20 @@ Sensitive channel sends SHALL remain approval-gated before execution.
 - **THEN** its configured Telegram, email, and WhatsApp send/reply tools require
   approval before production use
 
+#### Scenario: An owner-approved notify is not parked twice
+- **WHEN** an owner-approved `notify` arrives through Switchboard from its owning
+  butler's approval executor with a source-verified, single-use attestation that
+  covers the exact routed `notify_request`
+- **THEN** Messenger delivers it once without parking a second pending action
+- **AND** a bare attestation flag, a caller origin, or an action id without that
+  verified attestation still parks a non-owner delivery
+
+#### Scenario: A recipient park is replayable through the native tool
+- **WHEN** Messenger parks a non-owner plain send or reply
+- **THEN** the pending action names the registered native channel tool with that
+  tool's handler arguments, so the approval card renders its native preview and
+  approval replays that tool exactly once
+
 ### Requirement: Truthful Delivery Observability
 Messenger SHALL not expose tracking, retry, dead-letter, or health endpoints
 that do not observe the live adapter path.

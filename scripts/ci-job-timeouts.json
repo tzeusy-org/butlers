@@ -205,17 +205,24 @@
       "p95_s": null,
       "candidate_timeout_minutes": 30,
       "retry_extra_s": 0,
-      "state": "provisional; no healthy p95 proof",
+      "state": "provisional cold source-owned producer and four-image chain; no hosted healthy timing or p95 calibration",
       "sample_source": "other-workflow-timing-metadata.json",
       "retained_original_candidate_minutes": 30,
       "review_uv_nominal_envelope_s": 640,
       "review_browser_hard_retry_interval_s": 0,
       "review_conservative_before_only_candidate_minutes": null,
-      "review_setup_placement": "retain existing setup sequence; gate-only check loses UV in M2",
+      "review_setup_placement": "complete public/closed producer contexts, immutable base and four app variants precede unchanged installed export and real-kernel sandbox tests",
       "review_policy": "candidate only; remeasure changed cold setup; observed baseline retained plus full reserve avoids undocumented first-attempt subtraction; unknown healthy remains provisional; rare existing30min provisional remains subject to healthy validation",
       "reviewed_job_name": "exact-image-sandbox",
       "additional_provisional_cold_dependency_allowance_s": 0,
-      "installed_timeout_minutes": 30
+      "installed_timeout_minutes": 330,
+      "source_build_envelope": {
+        "codex_actual_seconds": 5111.299,
+        "remaining_serial_producers_and_images_allowance_seconds": 12000,
+        "sandbox_setup_export_and_evidence_reserve_seconds": 2688.701,
+        "bound_seconds": 19800,
+        "qualification": "One host Codex observation is not hosted whole-job calibration; all previous provenance retained."
+      }
     },
     {
       "workflow": ".github/workflows/nightly.yml",
@@ -403,20 +410,55 @@
       "p95_s": null
     },
     {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "check",
+      "workflow": ".github/workflows/merge-queue-sweep.yml",
+      "job": "sweep",
       "installed_timeout_minutes": 3,
-      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
-      "sample_source": "none; same envelope as alls-green",
+      "state": "provisional source-derived bound for a sparse checkout plus a few Actions API pages and cancels (bu-29wkwj.16); current calibration unknown",
+      "sample_source": "none; local dry run against the live repo took seconds",
       "p95_s": null
     },
     {
-      "workflow": ".github/workflows/ci.yml",
-      "job": "frontend",
-      "installed_timeout_minutes": 3,
-      "state": "provisional source-derived bound for a one-line mirror of alls-green (bu-29wkwj.3 compatibility adapter); no checkout or install",
-      "sample_source": "none; same envelope as alls-green",
-      "p95_s": null
+      "workflow": ".github/workflows/session-host-causal.yml",
+      "job": "causal",
+      "existing_timeout_minutes": 20,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 20,
+      "retry_extra_s": 0,
+      "state": "provisional source-derived watchdog for the fixed-source disposable-VM causal experiment; no p95 calibration",
+      "sample_source": "Reviewed PR5479 launcher: retains the installed 20-minute whole-job watchdog, a 300-second probe envelope under a 6-minute step, source verification and dependency setup, success-only bounded evidence staging and 2-minute artifact upload. This admission row does not infer p95 from the single completed causal run.",
+      "review_uv_nominal_envelope_s": 640,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "installed_timeout_minutes": 20
+    },
+    {
+      "workflow": ".github/workflows/fact-source-capture-before-control.yml",
+      "job": "fact-capture-before-control",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 45,
+      "installed_timeout_minutes": 45,
+      "retry_extra_s": 0,
+      "state": "provisional finite control; no hosted observation or calibration yet",
+      "sample_source": "bu-g0fmdv separate immutable old-runtime PG control source",
+      "review_uv_nominal_envelope_s": 640,
+      "review_setup_placement": "start one2480s aggregate before checkout; owned UV640/environment640/two480s phases including cleanup/setup120/evidence120;45min job provisional"
+    },
+    {
+      "workflow": ".github/workflows/qa-isolation.yml",
+      "job": "isolation",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 25,
+      "installed_timeout_minutes": 25,
+      "retry_extra_s": 0,
+      "state": "provisional finite control; no hosted observation or calibration yet",
+      "sample_source": "bu-ejow5p.11 path-filtered k3d isolation check, not a required check",
+      "review_uv_nominal_envelope_s": 0,
+      "review_setup_placement": "k3d cluster create 180s, image build, then up to three Jobs per control (baseline, mutated, restored); 25min job provisional"
     }
   ],
   "tests": [

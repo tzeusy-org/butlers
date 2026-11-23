@@ -161,6 +161,12 @@ selecting `contacts-backfill` and a fresh third-party report itself. Subject UUI
 provider locators and transport trace context supply no owner or approval authority.
 No foreign SQL fallback, extra grant, role switch or automatic retry is added.
 
+With `BUTLERS_SERVICE_PLANE_AUTH` on, the same two operations go through the
+`contacts.resolve_channel` / `contacts.report_channel` named relays instead of the
+generic `route` (see [Service plane](../architecture/service-plane.md)). Only
+butlers declaring `[modules.contacts]` are admitted, and a relay refusal is
+unavailability like any other failure.
+
 Source-link matching remains first. Email uses strip/lower normalization; phones
 retain the stripped exact and digits/plus alternatives. Only a completed empty
 owning lookup permits fallback to the next channel or local name/new-person path.

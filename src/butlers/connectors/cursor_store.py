@@ -28,7 +28,7 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from butlers.connectors.registry_roles import CHECKPOINT, UNKNOWN
+from butlers.core.connector_registry_roles import CHECKPOINT, UNKNOWN
 
 if TYPE_CHECKING:
     import asyncpg

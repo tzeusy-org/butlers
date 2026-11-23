@@ -8,7 +8,6 @@ checks).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +18,7 @@ from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import create_migrated_test_db, load_migration, migration_db_name
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -35,14 +34,6 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_182", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture(scope="module")
@@ -196,7 +187,7 @@ def test_upgrade_is_idempotent_when_applied_a_second_time(fresh_core_only_db_url
     """AC6: replay this migration's own upgrade() a second time against a DB
     already at core_182 head — every statement is IF NOT EXISTS/DO-block
     guarded, so this must succeed without error."""
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_182")
     engine = create_engine(fresh_core_only_db_url)
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn)

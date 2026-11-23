@@ -54,6 +54,9 @@ from butlers.modules.approvals.autonomy_tracker import (
     compute_fingerprint as _compute_fingerprint,
 )
 from butlers.modules.approvals.autonomy_tracker import (
+    counts_toward_promotion as _counts_toward_promotion,
+)
+from butlers.modules.approvals.autonomy_tracker import (
     record_approval as _record_approval,
 )
 from butlers.modules.approvals.autonomy_tracker import (
@@ -65,6 +68,17 @@ from butlers.modules.approvals.events import ApprovalEventType, record_approval_
 from butlers.modules.approvals.executor import _approval_write_transaction, execute_approved_action
 from butlers.modules.approvals.executor import (
     list_executed_actions as _list_executed_actions_query,
+)
+from butlers.modules.approvals.external_proposals import (
+    EXTERNAL_PROPOSAL_REVIEW_ONLY,
+    EXTERNAL_PROPOSAL_RULE_REFUSAL,
+    is_external_proposal_action,
+    is_external_proposal_key,
+)
+from butlers.modules.approvals.goal_fence import (
+    GOAL_EFFECT_REQUIRES_BROKER,
+    goal_effect_refusal,
+    is_goal_effect,
 )
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.rules import has_narrow_constraints, validate_rule_constraints
@@ -124,7 +138,7 @@ class ApprovalsConfig(ToolGroupMixin, BaseModel):
     promotions : list_promotion_suggestions, confirm_promotion_suggestion,
                  dismiss_promotion_suggestion
 
-    Extra fields (default_expiry_hours, default_risk_tier, gated_tools) are
+    Extra fields (default_expiry_hours, default_risk_tier, gated_tools, domain_producers) are
     consumed by the daemon's approval-gate wiring via parse_approval_config()
     and are intentionally ignored here.
     """
@@ -679,6 +693,8 @@ class ApprovalsModule(Module):
         row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
             return {"error": f"Action not found: {action_id}"}
+        if is_goal_effect(row):
+            return goal_effect_refusal(action_id)
 
         action = PendingAction.from_row(row)
         # Executed actions are pure replays. Do this before checking for an
@@ -731,11 +747,14 @@ class ApprovalsModule(Module):
             origin_butler=self._butler_name,
         )
         if not execution.success:
-            return {
+            failed: dict[str, Any] = {
                 "error": (
                     execution.error or f"Approved action {action_id} did not complete execution"
                 )
             }
+            if execution.failure_code:
+                failed["failure_code"] = execution.failure_code
+            return failed
 
         final_row = await self._db.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1", parsed_id
@@ -795,12 +814,25 @@ class ApprovalsModule(Module):
         constraint_overrides: dict | None = None,
         actor: ActorContext | None = None,
     ) -> dict:
+        refusal = await self._external_rule_refusal(action_id)
+        if refusal is not None:
+            return refusal
         return await self._rule_write(
             "from_action",
             dict(action_id=action_id, constraint_overrides=constraint_overrides),
             "_create_rule_from_action_write",
             actor,
         )
+
+    async def _external_rule_refusal(self, action_id: str) -> dict | None:
+        """An external MCP proposal never becomes a standing rule."""
+        try:
+            parsed_id = uuid.UUID(action_id)
+        except ValueError:
+            return None  # the owning write reports the malformed id
+        if await is_external_proposal_action(self._db, parsed_id):
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
+        return None
 
     async def _approve_action(
         self,
@@ -810,6 +842,10 @@ class ApprovalsModule(Module):
     ) -> dict:
         if not create_rule:
             return await self._approve_action_write(action_id, False, actor)
+        # Refused before any step-up or status change (REQ-module-approvals-010).
+        refusal = await self._external_rule_refusal(action_id)
+        if refusal is not None:
+            return refusal
         result = await self._rule_write(
             "approve_with_rule",
             dict(action_id=action_id, create_rule=True),
@@ -865,6 +901,8 @@ class ApprovalsModule(Module):
         row = await self._db.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
         if row is None:
             return {"error": f"Action not found: {action_id}"}
+        # The owner decides a goal effect here; only the broker runs it.
+        goal_effect = is_goal_effect(row)
 
         action = PendingAction.from_row(row)
 
@@ -873,6 +911,13 @@ class ApprovalsModule(Module):
             validate_transition(action.status, ActionStatus.APPROVED)
         except InvalidTransitionError as exc:
             return {"error": str(exc)}
+        if is_external_proposal_key(action.deduplication_key):
+            # A model-driven tool call never approves an outside proposal: only the
+            # owner's passkey dashboard review does (REQ-dashboard-approvals-904).
+            refusal = (
+                EXTERNAL_PROPOSAL_RULE_REFUSAL if create_rule else EXTERNAL_PROPOSAL_REVIEW_ONLY
+            )
+            return {"error": refusal}
 
         transition = await transition_pending_action(
             self._db,
@@ -902,7 +947,7 @@ class ApprovalsModule(Module):
         # A queue can intentionally exist without automatic gates; in that
         # case approval remains an auditable, retryable `approved` transition
         # until the normal dispatch seam can reach an owning executor.
-        if self._tool_executor is not None:
+        if self._tool_executor is not None and not goal_effect:
             # Wrap the ToolExecutor callback as a tool_fn for the executor
             _exec = self._tool_executor
             _tname = action.tool_name
@@ -927,8 +972,10 @@ class ApprovalsModule(Module):
                 updated_action_row = await tracker_connection.fetchrow(
                     "SELECT * FROM pending_actions WHERE id = $1", parsed_id
                 )
-                if updated_action_row is not None:
-                    updated_action = PendingAction.from_row(updated_action_row)
+                updated_action = (
+                    PendingAction.from_row(updated_action_row) if updated_action_row else None
+                )
+                if updated_action is not None and _counts_toward_promotion(updated_action):
                     tool_meta = self._tool_metadata.get(action.tool_name)
                     fingerprint = _compute_fingerprint(
                         action.tool_name, action.tool_args, tool_meta=tool_meta
@@ -1031,6 +1078,8 @@ class ApprovalsModule(Module):
         result = PendingAction.from_row(final_row).to_dict()
         if rule_dict is not None:
             result["created_rule"] = rule_dict
+        if goal_effect:
+            result["execution_code"] = GOAL_EFFECT_REQUIRES_BROKER
 
         return result
 
@@ -1261,6 +1310,8 @@ class ApprovalsModule(Module):
             return {"error": f"Action not found: {action_id}"}
 
         action = PendingAction.from_row(row)
+        if is_external_proposal_key(action.deduplication_key):
+            return {"error": EXTERNAL_PROPOSAL_RULE_REFUSAL}
 
         # Generate suggested constraints
         suggested = suggest_constraints(action.tool_name, action.tool_args)

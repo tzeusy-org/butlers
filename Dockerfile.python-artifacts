@@ -1,0 +1,37 @@
+# syntax=docker/dockerfile:1.7
+
+# Required named context python-source is the producer's closed checkout snapshot.
+# The pinned Python child is Linux/amd64 CPython3.12.13/glibc2.41.
+FROM python:3.12.13-slim-trixie@sha256:c2d8472b831337ab296a8ce652e1ba786e9e3034fc445dc58b50a7f5251f0003 AS public-inputs
+COPY scripts/runtime_clis/fetch_uv_toolchain.py /tools/fetch_uv_toolchain.py
+COPY deploy/runtime-clis/toolchains.json /inputs/toolchains.json
+RUN --network=default --mount=type=tmpfs,target=/root \
+    test "$HOME" = /root \
+    && python -I /tools/fetch_uv_toolchain.py \
+      --manifest /inputs/toolchains.json --output /opt/uv
+ENV PATH="/opt/uv/wheel/uv-0.12.22.data/scripts:${PATH}"
+
+FROM public-inputs AS seed
+COPY scripts/runtime_clis/produce_python_artifacts.py /tools/produce_python_artifacts.py
+COPY deploy/runtime-clis/python-artifacts/build-lock.toml /inputs/build-lock.toml
+COPY --from=python-source / /inputs/source
+RUN --network=none mkdir -p /work /artifacts
+# Preparation only: no final context is exported by this networked layer.
+RUN --network=default --mount=type=tmpfs,target=/root \
+    test "$HOME" = /root \
+    && python -I /tools/produce_python_artifacts.py \
+      --phase public-seed --project /inputs/source --work /work/python \
+      --output /artifacts/python --backend-lock /inputs/build-lock.toml \
+    && test ! -e /artifacts/python
+
+FROM seed AS verified
+# Same immutable source/tools/work/backend; actual children check their namespace.
+RUN --network=none --mount=type=tmpfs,target=/root \
+    test "$HOME" = /root \
+    && python -I /tools/produce_python_artifacts.py \
+      --phase offline-verify --project /inputs/source --work /work/python \
+      --output /artifacts/python --backend-lock /inputs/build-lock.toml \
+    && test -f /artifacts/python/verification.json
+
+FROM scratch AS artifacts
+COPY --from=verified /artifacts/python/ /

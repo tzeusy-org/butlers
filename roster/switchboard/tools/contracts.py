@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
@@ -19,7 +19,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
-from butlers.connectors.catalog import ingress_providers_by_channel
+from butlers.connector_catalog import ingress_providers_by_channel
 from butlers.ingestion_spans import SpanKind, normalize_spans
 
 NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -196,7 +196,7 @@ class IngestAttachment(BaseModel):
     Eager-fetched attachments have a ``storage_ref`` pointing to blob storage.
     Lazy-fetched attachments (e.g. large CSVs) have ``storage_ref=None`` and
     carry ``source_message_id`` / ``source_attachment_id`` for on-demand
-    retrieval via the connector's ``fetch_attachment()`` method.
+    retrieval through Switchboard's ``attachment_materialize``.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -246,6 +246,32 @@ class IngestTranscriptionV1(BaseModel):
     stt_backend: NonEmptyStr | None = None
 
 
+class IngestAudioAuthorshipV1(BaseModel):
+    """A producer's keyed binding of one transcript to its source audio (REQ-audio-authorship-002).
+
+    Separate from ``transcription`` outcome metadata. Carries digests and the provider media
+    identity, never audio, transcript text or key material. It is no authority by itself: goal
+    admission verifies the tag with the server-held key and re-checks every field against the
+    accepted row and retained provider update (``butlers.audio_authorship``).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    v: int
+    channel: NonEmptyStr
+    endpoint_identity: NonEmptyStr
+    idempotency_key: NonEmptyStr
+    external_event_id: NonEmptyStr
+    sender_identity: NonEmptyStr
+    source_media: NonEmptyStr
+    media_ref: NonEmptyStr
+    media_sha256: NonEmptyStr
+    transform: NonEmptyStr
+    transcript_sha256: NonEmptyStr
+    outcome: NonEmptyStr
+    tag: NonEmptyStr
+
+
 class IngestPayloadV1(BaseModel):
     """Source payload for canonical ingest payloads.
 
@@ -270,6 +296,8 @@ class IngestPayloadV1(BaseModel):
     only: no routing step reads it."""
     transcription: IngestTranscriptionV1 | None = None
     """Connector speech-to-text outcome; absent when no transcription attempt was evaluated."""
+    audio_authorship: IngestAudioAuthorshipV1 | None = None
+    """Keyed producer binding for a transcript; absent unless the producer could attest one."""
 
     @model_validator(mode="before")
     @classmethod
@@ -319,6 +347,46 @@ class IngestPayloadV1(BaseModel):
 PayloadType = Literal["conversation_history"]
 
 
+#: Mirrors ``butlers.connectors.automated_evidence.MAX_AWAY_DAYS``: an auto-reply is not a
+#: sabbatical plan, so a return date further out is refused at ingest too.
+AWAY_UNTIL_MAX_DAYS = 180
+
+
+class AutomatedEvidenceV1(BaseModel):
+    """Connector-verified facts about an automated reply or bounce (bu-s11n0s.14).
+
+    ``automated_kind`` is sender-asserted. These fields record what the connector checked: the
+    message answers mail found in the owner's SENT mailbox, the sender was one of its
+    recipients, and Gmail's own Authentication-Results passed. ``away_until`` is set only when
+    all three hold; ``failed_recipients`` lists only permanently failed (5.x.x) addresses the
+    original was sent to.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    original_sent: bool
+    sender_was_recipient: bool
+    sender_authenticated: bool
+    away_until: date | None = None
+    failed_recipients: list[NonEmptyStr] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _bound_before_effect(self) -> AutomatedEvidenceV1:
+        if self.away_until is not None and not (
+            self.original_sent and self.sender_was_recipient and self.sender_authenticated
+        ):
+            raise PydanticCustomError(
+                "automated_evidence_unbound",
+                "automated_evidence.away_until requires bound, authenticated evidence.",
+            )
+        if self.failed_recipients and not self.original_sent:
+            raise PydanticCustomError(
+                "automated_evidence_unbound",
+                "automated_evidence.failed_recipients requires a sent original.",
+            )
+        return self
+
+
 class IngestControlV1(BaseModel):
     """Optional ingest control metadata.
 
@@ -350,6 +418,11 @@ class IngestControlV1(BaseModel):
 
     Such an envelope is Tier 2 (metadata-only); the marker lets later admission logic read
     why without re-parsing headers. Persisted into ``raw_payload.control``."""
+    automated_evidence: AutomatedEvidenceV1 | None = None
+    """What the connector verified about an ``automated_kind`` message (bu-s11n0s.14).
+
+    Only alongside ``automated_kind`` on a metadata-tier envelope. Persisted into
+    ``raw_payload.control``; carries typed values only, never third-party text."""
     known_contact: bool | None = None
     """Connector-asserted: the sender matched the loaded known-contact snapshot.
 
@@ -369,6 +442,25 @@ class IngestControlV1(BaseModel):
     misrouted. Used by per-butler dashboard conversations to pin follow-up
     messages to the butler the owner is already talking to.
     """
+
+    @model_validator(mode="after")
+    def _evidence_belongs_to_its_kind(self) -> IngestControlV1:
+        evidence = self.automated_evidence
+        if evidence is None:
+            return self
+        if self.automated_kind is None or self.ingestion_tier != "metadata":
+            raise PydanticCustomError(
+                "automated_evidence_without_kind",
+                "control.automated_evidence requires automated_kind on a metadata envelope.",
+            )
+        if (self.automated_kind == "auto_reply" and evidence.failed_recipients) or (
+            self.automated_kind == "bounce" and evidence.away_until is not None
+        ):
+            raise PydanticCustomError(
+                "automated_evidence_kind_mismatch",
+                "away_until belongs to an auto_reply and failed_recipients to a bounce.",
+            )
+        return self
 
 
 class IngestEnvelopeV1(BaseModel):
@@ -416,6 +508,27 @@ class IngestEnvelopeV1(BaseModel):
                     "Tier 1 (full) envelopes must have a non-null payload.raw dict.",
                     {},
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_away_until_window(self) -> IngestEnvelopeV1:
+        """``away_until`` lies 0 to ``AWAY_UNTIL_MAX_DAYS`` days after the message was observed.
+
+        The bound is on the UTC calendar date of ``event.observed_at``, with one day of slack on
+        each side because the connector reads the date in the mailbox's own day.
+        """
+        evidence = self.control.automated_evidence
+        if evidence is None or evidence.away_until is None:
+            return self
+        observed = self.event.observed_at.astimezone(UTC).date()
+        earliest = observed - timedelta(days=1)
+        latest = observed + timedelta(days=AWAY_UNTIL_MAX_DAYS + 1)
+        if not earliest <= evidence.away_until <= latest:
+            raise PydanticCustomError(
+                "automated_evidence_away_until_out_of_window",
+                "control.automated_evidence.away_until must be 0 to 180 days after "
+                "event.observed_at.",
+            )
         return self
 
     @model_validator(mode="after")
@@ -615,6 +728,22 @@ class SelfLinkReferenceV1(BaseModel):
     params: dict[str, Any]
 
 
+class DoorReferenceV1(BaseModel):
+    """A reference to an owner-confirmed vendor door (bu-jv1moa.40), never a URL.
+
+    Not admitted by any notify action yet; the sender and receiver resolve it independently
+    against ``public.vendor_doors_current`` (``butlers.core.vendor_door_resolver``) and discard
+    any wire label, URL, host or provenance. ``slots`` values are strings the resolver types.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["door"]
+    door_id: UUID
+    version: Annotated[int, Field(ge=1)]
+    slots: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+
 _RESOLVED_LINK_CONTEXT = object()
 
 
@@ -629,6 +758,54 @@ class _ResolvedOpenLinkV1(BaseModel):
     url: NonEmptyStr
     host: NonEmptyStr
     provenance: Literal["dashboard"]
+
+
+class OpenDoorActionV1(BaseModel):
+    """A producer's request to link an owner-confirmed vendor door, by reference only.
+
+    Valid on ``send`` and ``insight`` notifications, at most one, and never on an approval
+    request. The server resolves it independently in the sender and in Messenger.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["open_door"]
+    reference: DoorReferenceV1
+
+
+class _ResolvedDoorLinkV1(BaseModel):
+    """Private delivery output for a door; its fields are re-derived by the receiver."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    verb: Literal["open_link"]
+    reference: DoorReferenceV1
+    label: NonEmptyStr
+    url: NonEmptyStr
+    host: NonEmptyStr
+    provenance: Literal["vendor_door"]
+
+
+_DOOR_ACTION_TYPES = (OpenDoorActionV1, _ResolvedDoorLinkV1)
+# The fixed, server-chosen page a degraded door points at (the Finance subscriptions roster).
+DOOR_FALLBACK_ROUTE_KEY = "finance_subscriptions"
+# Intents that may carry a door action, and only a door action.
+_DOOR_ACTION_INTENTS = ("send", "insight")
+
+
+def _is_door_fallback(action: object) -> bool:
+    """Whether *action* is a self-link to the fixed door fallback page and nothing else."""
+    if isinstance(action, ApprovalRequestActionV1):
+        if action.verb != "open_dashboard" or action.callback_token is not None:
+            return False
+    elif not isinstance(action, _ResolvedOpenLinkV1):
+        return False
+    reference = action.reference
+    return (
+        reference is not None
+        and reference.route_key == DOOR_FALLBACK_ROUTE_KEY
+        and not reference.params
+    )
 
 
 class ApprovalRequestActionV1(BaseModel):
@@ -676,7 +853,13 @@ class NotifyRequestV1(BaseModel):
     # envelope only preserves the already-validated context across deferred
     # delivery so Messenger can validate it again against the flush-time target.
     decision_dossier: dict[str, Any] | None = None
-    actions: tuple[ApprovalRequestActionV1 | _ResolvedOpenLinkV1, ...] | None = None
+    actions: (
+        tuple[
+            ApprovalRequestActionV1 | _ResolvedOpenLinkV1 | OpenDoorActionV1 | _ResolvedDoorLinkV1,
+            ...,
+        ]
+        | None
+    ) = None
     recovery: ApprovalRecoveryV1 | None = None
     render_links_inert: bool = Field(default=False, strict=True)
 
@@ -765,11 +948,49 @@ class NotifyRequestV1(BaseModel):
         requires an explicit target and action affordances so that a request
         can never degrade into an unaddressed, non-interactive owner page.
         """
-        if self.actions and any(isinstance(a, _ResolvedOpenLinkV1) for a in self.actions):
+        if self.actions and any(
+            isinstance(a, (_ResolvedOpenLinkV1, _ResolvedDoorLinkV1)) for a in self.actions
+        ):
             if info.context is not _RESOLVED_LINK_CONTEXT:
                 raise PydanticCustomError(
                     "server_open_link_only", "open_link is server delivery output only.", {}
                 )
+        door_actions = [a for a in (self.actions or ()) if isinstance(a, _DOOR_ACTION_TYPES)]
+        if door_actions:
+            if self.delivery.intent not in _DOOR_ACTION_INTENTS:
+                raise PydanticCustomError(
+                    "door_action_intent",
+                    "a door action is only valid for send and insight intents.",
+                    {},
+                )
+            if len(door_actions) != len(self.actions or ()) or len(door_actions) > 1:
+                raise PydanticCustomError(
+                    "door_action_only",
+                    "a door action must be the only action, at most one per request.",
+                    {},
+                )
+            if self.render_links_inert:
+                raise PydanticCustomError(
+                    "door_action_inert", "a door action is not valid under inert links.", {}
+                )
+            if self.recovery is not None:
+                raise PydanticCustomError(
+                    "approval_recovery_intent_required",
+                    "recovery is only valid for approval_request intent.",
+                    {},
+                )
+            return self
+        if (
+            self.delivery.intent in _DOOR_ACTION_INTENTS
+            and info.context is _RESOLVED_LINK_CONTEXT
+            and not self.render_links_inert
+            and self.recovery is None
+            and self.actions is not None
+            and len(self.actions) == 1
+            and _is_door_fallback(self.actions[0])
+        ):
+            # The server's degraded form of a door: one self-link to the fixed fallback page.
+            return self
         if self.delivery.intent != "approval_request":
             if self.actions is not None:
                 raise PydanticCustomError(

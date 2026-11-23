@@ -6,10 +6,9 @@ Verifies that core tool handlers and module tools are wrapped with
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from opentelemetry import trace
@@ -19,9 +18,10 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pydantic import BaseModel
 
-from butlers.daemon import ButlerDaemon, _SpanWrappingMCP
+from butlers.daemon import _SpanWrappingMCP
 from butlers.modules.base import Module
-from butlers.modules.registry import ModuleRegistry
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -132,103 +132,6 @@ def _make_butler_toml(tmp_path: Path, modules: dict | None = None) -> Path:
     return tmp_path
 
 
-def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
-    """Create a ModuleRegistry with the given module classes pre-registered."""
-    registry = ModuleRegistry()
-    for cls in module_classes:
-        registry.register(cls)
-    return registry
-
-
-def _patch_infra():
-    """Return a dict of patches for all infrastructure dependencies."""
-    mock_pool = AsyncMock()
-
-    async def _runtime_row(query, *args):
-        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
-            return {
-                "butler_name": args[0],
-                "core_groups": None,
-                "core_groups_narrowing_reason": None,
-                "catalog_read_sensitivity": "normal",
-                "max_concurrent": 3,
-                "max_queued": 10,
-                "tool_exposure_policy": "eager_filtered",
-                "blind_spot_preamble_enabled": True,
-                "seeded_at": None,
-                "updated_at": None,
-            }
-        return None
-
-    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
-
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.execute = AsyncMock(return_value=None)
-
-    @asynccontextmanager
-    async def _transaction():
-        yield
-
-    mock_conn.transaction = MagicMock(side_effect=_transaction)
-
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
-
-    mock_pool.acquire = MagicMock(side_effect=_acquire)
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_trigger_result = MagicMock()
-    mock_trigger_result.result = "ok"
-    mock_trigger_result.error = None
-    mock_trigger_result.duration_ms = 100
-    mock_spawner.trigger = AsyncMock(return_value=mock_trigger_result)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter",
-            return_value=type(
-                "MockAdapter",
-                (),
-                {"binary_name": "claude", "__init__": lambda self, **kwargs: None},
-            )(),
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Tests: _SpanWrappingMCP
 # ---------------------------------------------------------------------------
@@ -297,44 +200,19 @@ class TestSpanWrappingMCP:
         assert wrapper.some_attr == "hello"
 
     async def test_module_tool_creates_span_via_daemon(self, tmp_path, otel_provider):
-        """Module tool registered via daemon produces span with correct name."""
+        """A module tool the daemon registers produces a span with the right name.
+
+        The subject is the daemon's module-tool wrapping, not the boot: the
+        daemon's own ``_register_module_tools`` runs on a DB-free host (bu-rvgzmf.2).
+        """
         butler_dir = _make_butler_toml(tmp_path, modules={"stub_span": {}})
-        registry = _make_registry(StubSpanModule)
-        patches = _patch_infra()
+        host = await host_tools(butler_dir, pool=fake_pool())
+        module = StubSpanModule()
+        host.daemon._modules = [module]
+        await host.daemon._register_module_tools()
 
-        tool_fns: dict[str, Any] = {}
-        mock_mcp = MagicMock()
-
-        def tool_decorator(*_decorator_args, **decorator_kwargs):
-            declared_name = decorator_kwargs.get("name")
-
-            def decorator(fn):
-                tool_fns[declared_name or fn.__name__] = fn
-                return fn
-
-            return decorator
-
-        mock_mcp.tool = tool_decorator
-
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-            patches["Spawner"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["recover_route_inbox"],
-        ):
-            daemon = ButlerDaemon(butler_dir, registry=registry)
-            await daemon.start()
-
-        assert "stub_action" in tool_fns
-        result = await tool_fns["stub_action"](x=21)
+        assert module.tools_registered
+        result = await host.call("stub_action", x=21)
         assert result == {"result": 42}
 
         spans = otel_provider.get_finished_spans()

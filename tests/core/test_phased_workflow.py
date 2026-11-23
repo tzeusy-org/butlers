@@ -306,6 +306,11 @@ async def test_qa_dispatch_records_phase_session_on_success():
             "butlers.core.qa.dispatch.build_sandbox_env",
             return_value={},
         ),
+        patch(
+            "butlers.core.qa.dispatch.retain_unpublished_proposal",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         await _run_investigation_session(
             pool=pool,
@@ -326,10 +331,9 @@ async def test_qa_dispatch_records_phase_session_on_success():
     assert call_args.args[2] == "investigate"  # phase
     assert call_args.args[3] == session_id  # session_id
 
-    # Publication fails closed, so the phase session ends "failed" with the fixed reason
+    # The proposal was sealed and retained, so the phase session completes (bu-ejow5p.2)
     mock_update_phase.assert_called_once()
-    assert mock_update_phase.call_args.args[2] == "failed"
-    assert mock_update_phase.call_args.kwargs["error_detail"] == "publication_unavailable"
+    assert mock_update_phase.call_args.args[2] == "completed"
 
 
 @pytest.mark.asyncio

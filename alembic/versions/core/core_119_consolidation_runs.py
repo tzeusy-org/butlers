@@ -44,6 +44,11 @@ Butler runtime roles receive read-only ``SELECT`` only. The consolidation job
 writes through the owning database role (the migration/runtime owner), which
 retains full access regardless of these grants — mirroring the privilege
 posture for a cross-butler read surface.
+
+Superseded by core_308: the writer is in fact each memory-enabled butler
+daemon (``butler_<name>_rw``), and bootstrap default privileges outlived this
+SELECT-only grant. core_308 makes the table append-only (SELECT, INSERT) for
+butler roles and read-only for ``connector_writer``.
 """
 
 from __future__ import annotations

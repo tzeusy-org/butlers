@@ -82,9 +82,14 @@ vi.mock("@/api/index.ts", () => ({
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
   getUnroutableAttention: vi.fn(),
+  // Standing-reply drafts panel (bu-jv1moa.42): an empty, healthy list.
+  listReplyTemplateDrafts: vi.fn(() =>
+    Promise.resolve({ items: [], next_cursor: null, limit: 50 }),
+  ),
   retryUnroutableAttention: vi.fn(),
   getApprovalDetail: vi.fn(),
   approveApproval: vi.fn(),
+  redeemOwnerDeliveryAction: vi.fn(),
   denyApproval: vi.fn(),
   deferApproval: vi.fn(),
   retryApproval: vi.fn(),
@@ -117,6 +122,7 @@ vi.mock("@/api/index.ts", () => ({
 
 import {
   approveApproval,
+  redeemOwnerDeliveryAction,
   abandonApproval,
   confirmAutonomySuggestion,
   deferApproval,
@@ -882,6 +888,44 @@ describe("ApprovalsPage - failed-push indicator + callback-secret banner (bu-p5s
     }
   });
 
+  it("shows the server-built goal lineage lines, and none for an action no goal parked", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1", "send_email")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        ...(await makePendingDetail("a1")).data,
+        goal: {
+          goal_id: "11111111-1111-4111-8111-111111111111",
+          invocation_id: "22222222-2222-4222-8222-222222222222",
+          depth: 0,
+          exposed: true,
+          origin: "third_party",
+          exposure_cause: "read",
+          rule_possible: false,
+          facts: [
+            { label: "Goal", value: "11111111 (lead)" },
+            { label: "Exposed by", value: "Outside content it read" },
+          ],
+        },
+      }) as AnyMock,
+    );
+    renderPage();
+    await flushUntil(() => container.querySelector('[data-testid="approval-goal-lineage"]') !== null);
+    const lineage = container.querySelector('[data-testid="approval-goal-lineage"]');
+    expect(lineage?.textContent).toContain("Exposed by");
+    expect(lineage?.textContent).toContain("Outside content it read");
+
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({ ...(await makePendingDetail("a1")).data, goal: null }) as AnyMock,
+    );
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+      await flush();
+    });
+    expect(container.querySelector('[data-testid="approval-goal-lineage"]')).toBeNull();
+  });
+
   it("renders the dossier push-failed alert when the selected approval's push failed", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([
@@ -1270,6 +1314,36 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(toast.success).not.toHaveBeenCalledWith("Approved & dispatched");
   });
 
+  it("decides through the dossier's owner-delivery tokens when it has them", async () => {
+    const tokens = {
+      subject_id: "s1",
+      generation: 1,
+      approve_token: "od1:approve",
+      reject_token: "od1:reject",
+    };
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("a1")]) as AnyMock,
+    );
+    const detail = await makePendingDetail("a1");
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({ ...detail.data, owner_delivery: tokens }) as AnyMock,
+    );
+    vi.mocked(redeemOwnerDeliveryAction).mockReturnValue(
+      makeApiResponse({ id: "a1", status: "rejected" }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(() => findButton(container, "Deny") !== undefined);
+
+    await act(async () => {
+      findButton(container, "Deny")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush();
+    });
+
+    expect(redeemOwnerDeliveryAction).toHaveBeenCalledWith({ token: "od1:reject" });
+    expect(denyApproval).not.toHaveBeenCalled();
+  });
+
   it("toasts success when approve actually dispatches (executed)", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([makeSummary("a2")]) as AnyMock,
@@ -1546,6 +1620,49 @@ describe("ApprovalsPage — honest dispatch status + retry (bu-j1xkd)", () => {
     expect(outcomeText).toContain("***REDACTED***");
     expect(outcomeText).not.toContain("postgres://operator:top-secret");
     expect(container.querySelector('[data-testid="approval-decision-provenance"]')).not.toBeNull();
+    expect(findButton(container, "Retry dispatch")).toBeUndefined();
+  });
+
+  it("shows a content-free failure when the provider rejected an approved send", async () => {
+    vi.mocked(getApprovalsFlat).mockReturnValue(
+      makeApiResponse([makeSummary("send-rejected")]) as AnyMock,
+    );
+    vi.mocked(getApprovalDetail).mockReturnValue(
+      makeApiResponse({
+        id: "send-rejected",
+        title: "Notify (general)",
+        butler: "general",
+        created_at: "2026-05-17T10:00:00Z",
+        expires_at: null,
+        why: "The owner approved this.",
+        evidence: [],
+        proposed_action: { tool_name: "notify", tool_args: {}, agent_summary: null },
+        status: "executed",
+        decided_by: "human:owner@telegram",
+        decided_at: "2026-05-17T10:05:00Z",
+        execution_result: {
+          success: true,
+          result: { status: "delivery_rejected", delivery_confirmed: false },
+        },
+        execution_failure: {
+          code: "provider_rejected",
+          label: "The provider rejected the send",
+          terminal: true,
+        },
+        target_contact: null,
+      }) as AnyMock,
+    );
+
+    renderPage();
+    await flushUntil(
+      () => container.querySelector('[data-testid="approval-execution-failure"]') !== null,
+    );
+
+    const failure = container.querySelector('[data-testid="approval-execution-failure"]');
+    const text = failure?.textContent ?? "";
+    expect(text).toContain("Send failed");
+    expect(text).toContain("The provider rejected the send");
+    expect(text).toContain("not delivered");
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
   });
 
@@ -2170,6 +2287,134 @@ describe("ApprovalsPage — /approvals/:id routing (bu-86c4c.12)", () => {
     });
   }
 
+  // The detail GET mints card tokens and records a delivery, so it must mean the
+  // owner can see this page (bu-dhloi1.95).
+  describe("in a hidden tab", () => {
+    function setVisibility(state: DocumentVisibilityState) {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: state });
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+    }
+
+    function dossierText() {
+      return container.querySelector('[data-testid="approval-dossier-pane"]')?.textContent ?? "";
+    }
+
+    const expiringSoon = () => ({
+      ...makeSummary("urgent"),
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    });
+
+    afterEach(() => {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    });
+
+    it("a new top-ranked approval fetches no dossier until the tab is visible", async () => {
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals");
+      await flushUntil(() => dossierText().includes("Send Email"));
+      expect(getApprovalDetail).toHaveBeenCalledTimes(1);
+
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(
+        makeApiResponse([makeSummary("a1"), expiringSoon()]) as AnyMock,
+      );
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "flat"] });
+        await flush();
+      });
+
+      expect(container.querySelector('[data-approval-id="urgent"]')).not.toBeNull();
+      expect(getApprovalDetail).not.toHaveBeenCalledWith("urgent");
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("urgent");
+      expect(getApprovalDetail).toHaveBeenCalledTimes(2);
+    });
+
+    it("a page opened hidden selects the top row and loads it once shown", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals");
+      await flushUntil(() => container.querySelector('[data-approval-id="a1"]') !== null);
+      await act(async () => {
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+      expect(container.textContent).not.toContain("Select a pending approval to review.");
+    });
+
+    it.each([
+      ["the top row", "/approvals"],
+      ["a row named in the URL", "/approvals/a1"],
+    ])("%s already shown isn't fetched again until the tab is visible", async (_name, path) => {
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt(path);
+      await flushUntil(() => dossierText().includes("Send Email"));
+      vi.mocked(getApprovalDetail).mockClear();
+
+      setVisibility("hidden");
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["approvals", "detail"] });
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("Send Email");
+
+      setVisibility("visible");
+      await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+
+    it("a link opened in a background tab loads when shown", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([makeSummary("a1")]) as AnyMock);
+      renderAt("/approvals/a1");
+      await flushUntil(() => container.querySelector('[data-approval-id="a1"]') !== null);
+      await act(async () => {
+        await flush();
+      });
+
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+      expect(dossierText()).toContain("loading…");
+
+      setVisibility("visible");
+      await flushUntil(() => dossierText().includes("Send Email"));
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1");
+    });
+
+    it("the stalled link check waits for the tab too", async () => {
+      setVisibility("hidden");
+      vi.mocked(getApprovalsFlat).mockReturnValue(makeApiResponse([]) as AnyMock);
+      renderAt("/approvals/a1?state=stalled");
+      await act(async () => {
+        await flush(10);
+      });
+
+      expect(getApprovalsFlat).toHaveBeenCalled();
+      expect(getApprovalDetail).not.toHaveBeenCalled();
+
+      setVisibility("visible");
+      await flushUntil(() => vi.mocked(getApprovalDetail).mock.calls.length > 0);
+
+      expect(getApprovalDetail).toHaveBeenCalledWith("a1", undefined, { statusOnly: true });
+    });
+  });
+
   it("selects the approval named in the URL, not the first-arrived item", async () => {
     vi.mocked(getApprovalsFlat).mockReturnValue(
       makeApiResponse([
@@ -2611,7 +2856,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     await flushUntil(() => findButton(container, "Retry dispatch") !== undefined);
 
     expect(getApprovalsFlat).toHaveBeenCalledWith("stalled", 100);
-    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(outOfWindowId, undefined, { statusOnly: true });
     expect(container.textContent).toContain("Approved, awaiting dispatch.");
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
@@ -2841,7 +3086,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
 
     // A separate fresh request begins despite the ordinary cache entry, and
     // neither its stale title nor its Retry control becomes visible first.
-    expect(getApprovalDetail).toHaveBeenCalledWith(actionId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(actionId, undefined, { statusOnly: true });
     expect(container.textContent).not.toContain("Cached stale dossier");
     expect(findButton(container, "Retry dispatch")).toBeUndefined();
     expect(findButton(container, "Approve")).toBeUndefined();
@@ -3101,7 +3346,7 @@ describe("ApprovalsPage — URL-backed stalled lane", () => {
     await flushUntil(
       () => vi.mocked(getApprovalDetail).mock.calls.some(([id]) => id === pendingId),
     );
-    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId);
+    expect(getApprovalDetail).toHaveBeenCalledWith(pendingId, undefined, { statusOnly: true });
     expect(findButton(container, "Approve")).toBeUndefined();
     expect(findButton(container, "Deny")).toBeUndefined();
     expect(findButton(container, "Defer")).toBeUndefined();

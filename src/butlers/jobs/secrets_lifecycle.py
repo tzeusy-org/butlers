@@ -114,7 +114,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -138,6 +137,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.dashboard_links import dashboard_base_url
 from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
@@ -186,7 +186,6 @@ _STATE_DESCRIPTIONS: dict[str, str] = {
     "expired": "has expired",
 }
 
-_DASHBOARD_PORT_DEFAULT = "41200"
 
 # bu-hmdqz.3 slice 2: how long to wait before retrying a transport-failed
 # delivery via the deferred_notifications flusher. The retry envelope is
@@ -198,19 +197,6 @@ _DASHBOARD_PORT_DEFAULT = "41200"
 _RETRY_BACKOFF = timedelta(minutes=30)
 
 
-def _dashboard_url() -> str:
-    """Resolve the dashboard base URL from the environment.
-
-    Mirrors the lookup in ``butlers.startup_guard._default_dashboard_url``
-    (kept local rather than imported — that module is about a distinct
-    concern, the Google-credential startup guard).
-    """
-    return os.environ.get(
-        "DASHBOARD_URL",
-        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
-    )
-
-
 @dataclass(frozen=True)
 class CredentialSnapshot:
     """One credential's current lifecycle-relevant state, for the scan below."""
@@ -220,6 +206,9 @@ class CredentialSnapshot:
     label: str
     state: str
     provider: str | None = None  # user family only — display provider slug
+    # Where the probe log keeps this credential's attempts (``public.secret_probe_log``).
+    probe_scope: str | None = None
+    probe_key: str | None = None
 
 
 async def _collect_snapshots(
@@ -276,6 +265,8 @@ async def _collect_snapshots(
                     family="system",
                     label=row.key,
                     state=row.state,
+                    probe_scope="system",
+                    probe_key=row.key,
                 )
             )
 
@@ -304,6 +295,8 @@ async def _collect_snapshots(
                 family="system",
                 label=row.key,
                 state=row.state,
+                probe_scope="system",
+                probe_key=row.key,
             )
         )
 
@@ -314,6 +307,8 @@ async def _collect_snapshots(
                 family="cli",
                 label=row.key,
                 state=row.state,
+                probe_scope="cli",
+                probe_key=row.key,
             )
         )
 
@@ -330,6 +325,8 @@ async def _collect_snapshots(
                 label=provider_meta.label if provider_meta is not None else provider,
                 state=row.state,
                 provider=provider,
+                probe_scope="user",
+                probe_key=row.type,
             )
         )
 
@@ -398,7 +395,7 @@ def _focus_fragment(key: str) -> str:
     return f"/secrets?focus={quote(key, safe='')}"
 
 
-def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
+def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str | None) -> str:
     """Build the owner-facing notification body for one lifecycle transition.
 
     Always includes a deep link to the exact card on /secrets
@@ -413,9 +410,12 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     except a bare-root deployment. The /secrets deep link already lands on the
     card whose re-authorize button starts the same dance.
     """
-    focus_url = f"{dashboard_url}{_focus_fragment(snapshot.key)}"
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
-    lines = [f"Credential '{snapshot.label}' {description}.", focus_url]
+    lines = [f"Credential '{snapshot.label}' {description}."]
+    # The focus fragment is always its own line: retry supersession matches on it. With no
+    # configured dashboard origin it is the bare path, a marker rather than a dead localhost link.
+    origin = dashboard_url.rstrip("/") if dashboard_url else ""
+    lines.append(f"{origin}{_focus_fragment(snapshot.key)}")
 
     if snapshot.provider is not None:
         provider_meta = PROVIDER_CATALOG.get(snapshot.provider)
@@ -501,7 +501,7 @@ async def _enqueue_deferred_envelope(
     transport, and — before slice 3's ``resolve_cross_container_mcp_url`` fix
     — always failed the same way), this writes a ``notify.v1`` envelope
     directly into ``switchboard.deferred_notifications``. Switchboard's own
-    scheduler tick (``butlers.core.scheduler._tick_deferred_notification_pass``)
+    scheduler tick (``butlers.core.scheduler.deferred_pass._tick_deferred_notification_pass``)
     runs inside butlers-up — the SAME container every butler daemon lives in
     — and flushes it in-process via ``switchboard.notification.deliver.deliver``
     (see ``butlers.background``'s ``_scheduler_notify_fn``), so the retry is
@@ -713,7 +713,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     snapshots = await _collect_snapshots(db, tracker=tracker)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
 
-    dashboard_url = _dashboard_url()
+    dashboard_url = dashboard_base_url()
     delivered = deferred = suppressed = errors = 0
 
     for snapshot in attention:

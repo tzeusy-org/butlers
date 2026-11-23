@@ -16,8 +16,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP, ENTITY_GRAPH_EDGES
-
 # ---------------------------------------------------------------------------
 # Pure-function tests (no DB required)
 # ---------------------------------------------------------------------------
@@ -395,96 +393,9 @@ pytestmark_integration = [
 
 
 @pytest.fixture
-async def dunbar_pool(provisioned_postgres_pool):
-    """Provision a fresh DB with all tables needed by the Dunbar engine."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contacts table (kept; dunbar now reads via contact_entity_map + entities)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge that
-        # dunbar reads instead of public.contacts (Phase 7.4e).
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        # important_dates table (for context bonus tests)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS important_dates (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                contact_id UUID NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-                label TEXT NOT NULL,
-                month INT NOT NULL,
-                day INT NOT NULL,
-                year INT,
-                created_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # facts table
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '',
-                embedding TEXT,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                entity_id UUID,
-                valid_at TIMESTAMPTZ,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID,
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_referenced_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                search_vector tsvector,
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred ON facts (subject, predicate)"
-        )
-        yield p
+async def dunbar_pool(db):
+    """Core + memory + relationship chains, flat in ``public`` (as the Dunbar engine reads)."""
+    return await db("core", "memory", "relationship")
 
 
 # Helper
@@ -504,7 +415,7 @@ async def _make_contact(
         # reads these off public.entities (rel_031), not public.contacts.
         entity_row = await pool.fetchrow(
             """
-            INSERT INTO public.entities (name, listed, stay_in_touch_days)
+            INSERT INTO public.entities (canonical_name, listed, stay_in_touch_days)
             VALUES ($1, $2, $3)
             RETURNING id
             """,
@@ -515,8 +426,8 @@ async def _make_contact(
         entity_id = entity_row["id"]
     row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed, stay_in_touch_days)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO contacts (name, first_name, entity_id, listed, stay_in_touch_days)
+        VALUES ($1::text, $1::text, $2, $3, $4)
         RETURNING id, first_name, entity_id, listed, stay_in_touch_days
         """,
         name,
@@ -1611,7 +1522,7 @@ async def test_urgency_stay_in_touch_overrides_tier_cadence(dunbar_pool):
 
     # Tier 5 has cadence=14 days; override to 90 days
     contact = await _make_contact(dunbar_pool, "LongCadenceInner", stay_in_touch_days=90)
-    await _log_interaction(dunbar_pool, contact["id"], days_ago=20)
+    await _log_interaction(dunbar_pool, contact["entity_id"], days_ago=20)
 
     # Add an upcoming date (within 14 days) to provide a context bonus
     # so the contact passes the "zero-context" filter
@@ -1681,7 +1592,7 @@ async def test_urgency_excludes_non_overdue_zero_context_contacts(dunbar_pool):
     # context_bonus = 0 (no dates, gifts, or positive notes)
     # Result: should be EXCLUDED from output
     contact = await _make_contact(dunbar_pool, "NoUrgency", stay_in_touch_days=365)
-    await _log_interaction(dunbar_pool, contact["id"], days_ago=20)
+    await _log_interaction(dunbar_pool, contact["entity_id"], days_ago=20)
 
     scores = [
         {
@@ -1741,107 +1652,9 @@ _LAMBDA_NEW = math.log(2) / 30.0
 
 
 @pytest.fixture
-async def simple_pool(provisioned_postgres_pool):
-    """Provision a fresh database with entities, contacts, cem and facts tables."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities — dunbar reads listed + stay_in_touch_days here (rel_031).
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                listed BOOLEAN NOT NULL DEFAULT true,
-                posture TEXT NOT NULL DEFAULT 'active',
-                stay_in_touch_days INT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID,
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '',
-                embedding TEXT,
-                search_vector tsvector,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                entity_id UUID,
-                object_entity_id UUID,
-                valid_at TIMESTAMPTZ,
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_referenced_at TIMESTAMPTZ,
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute(
-            "CREATE INDEX IF NOT EXISTS idx_facts_subj_pred_new ON facts (subject, predicate)"
-        )
-        # public.memory_catalog + public.entity_graph_edges (bu-9ltqm) — the
-        # cascade targets dunbar_tier_set's bulk override retraction disowns/deletes.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.memory_catalog (
-                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_schema TEXT NOT NULL,
-                source_table  TEXT NOT NULL,
-                source_id     UUID NOT NULL,
-                tenant_id     TEXT NOT NULL DEFAULT 'owner',
-                entity_id     UUID,
-                summary       TEXT NOT NULL DEFAULT '',
-                memory_type   TEXT NOT NULL DEFAULT 'fact',
-                confidence    DOUBLE PRECISION,
-                invalid_at    TIMESTAMPTZ,
-                updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_schema, source_table, source_id)
-            )
-        """)
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-        yield p
+async def simple_pool(db):
+    """Core + memory + relationship chains, flat in ``public``."""
+    return await db("core", "memory", "relationship")
 
 
 async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) -> dict:
@@ -1852,19 +1665,18 @@ async def _make_simple_contact(pool, first_name: str, *, listed: bool = True) ->
     """
     entity_row = await pool.fetchrow(
         """
-        INSERT INTO public.entities (name, canonical_name, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO public.entities (canonical_name, listed)
+        VALUES ($1, $2)
         RETURNING id
         """,
-        first_name,
         first_name,
         listed,
     )
     entity_id = entity_row["id"]
     row = await pool.fetchrow(
         """
-        INSERT INTO contacts (first_name, entity_id, listed)
-        VALUES ($1, $2, $3)
+        INSERT INTO contacts (name, first_name, entity_id, listed)
+        VALUES ($1::text, $1::text, $2, $3)
         RETURNING id, entity_id, first_name, listed
         """,
         first_name,
@@ -2075,6 +1887,9 @@ async def test_dunbar_tier_set_bulk_retraction_cascades_every_affected_fact(simp
 
     # Simulate two active overrides for the same entity by inserting the
     # second directly, bypassing dunbar_tier_set's own retract-then-insert.
+    # The real schema forbids that state today, so lift its one-active-fact
+    # index to reproduce the pre-migration corruption this guards against.
+    await simple_pool.execute("DROP INDEX idx_facts_entity_scope_predicate_active")
     fact_id_1 = await simple_pool.fetchval(
         """
         INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, permanence)
@@ -2152,7 +1967,7 @@ async def test_dunbar_tier_set_no_entity_id_raises(simple_pool):
     from butlers.tools.relationship.dunbar import dunbar_tier_set
 
     row = await simple_pool.fetchrow(
-        "INSERT INTO contacts (first_name, entity_id) VALUES ('Ghost', NULL) RETURNING id"
+        "INSERT INTO contacts (name, first_name, entity_id) VALUES ('Ghost', 'Ghost', NULL) RETURNING id"
     )
     cid = uuid.UUID(str(row["id"]))
 
@@ -2173,7 +1988,7 @@ async def test_get_contact_dunbar_no_entity(simple_pool):
     from butlers.tools.relationship.dunbar import get_contact_dunbar
 
     row = await simple_pool.fetchrow(
-        "INSERT INTO contacts (first_name, entity_id) VALUES ('Ghost', NULL) RETURNING id"
+        "INSERT INTO contacts (name, first_name, entity_id) VALUES ('Ghost', 'Ghost', NULL) RETURNING id"
     )
     cid = uuid.UUID(str(row["id"]))
 
@@ -2533,32 +2348,8 @@ async def test_override_via_dunbar_tier_set_honored_by_compute_tier_ranking(simp
 
 @pytest.fixture
 async def maintenance_pool(dunbar_pool):
-    """dunbar_pool plus the expected-signal and identity tables stale-contact evaluation reads."""
-    await dunbar_pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.expected_signals (
-            signal_key                 TEXT PRIMARY KEY,
-            producer                   TEXT NOT NULL,
-            producer_endpoint_identity TEXT,
-            expected_cadence_seconds   BIGINT NOT NULL,
-            last_observed_at           TIMESTAMPTZ,
-            measurability              TEXT NOT NULL,
-            unmeasurable_reason        TEXT,
-            evaluated_at               TIMESTAMPTZ NOT NULL,
-            updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await dunbar_pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await dunbar_pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            subject     UUID NOT NULL,
-            predicate   TEXT NOT NULL,
-            object      TEXT NOT NULL,
-            object_kind TEXT NOT NULL DEFAULT 'literal',
-            validity    TEXT NOT NULL DEFAULT 'active'
-        )
-    """)
-    yield dunbar_pool
+    """dunbar_pool: the real chains already carry expected_signals and entity_facts."""
+    return dunbar_pool
 
 
 async def _make_tiered_contact(pool, name: str, tier: int) -> dict:

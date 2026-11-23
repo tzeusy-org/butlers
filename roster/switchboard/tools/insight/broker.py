@@ -15,10 +15,13 @@ Database tables used (all in the ``public`` schema):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import uuid
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -34,9 +37,10 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.baselines import DEVIATION_CATEGORIES, validate_baseline_evidence
+from butlers.core.goal_lineage import taint_insert, taint_read
 from butlers.core.insight_premise import normalize_premise
 from butlers.telegram_api import terminal_telegram_metadata
-from butlers.telegram_text import PartialDeliveryLatch
+from butlers.telegram_text import MAX_VISIBLE_UNITS, PartialDeliveryLatch, text_units
 from butlers.tools.switchboard.insight.catchup import reconcile_catchup_task
 from butlers.tools.switchboard.insight.premises import check_premise
 
@@ -51,8 +55,15 @@ _PARTIAL_INSIGHTS = PartialDeliveryLatch()
 VALID_STATUSES = frozenset({"pending", "delivered", "expired", "filtered", "withdrawn"})
 TERMINAL_STATUSES = frozenset({"delivered", "expired", "filtered", "withdrawn"})
 VALID_FEEDBACK_VERDICTS = frozenset({"useful", "not_now", "never"})
-_BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup"})
+_BLOCKED_BY_REASONS = frozenset({"budget", "cooldown", "held_by", "dedup", "premise_unknown"})
 _NEXT_REGULAR_CYCLE = timedelta(days=1)
+INSIGHT_LANES = frozenset({"digest", "timed"})
+# A digest claim older than this is released for a retry (at-least-once, as
+# before the claim existed). Far longer than one send; see delivery_cycle.
+DIGEST_STALE_CLAIM_AFTER = timedelta(minutes=30)
+# Every delivery worker serialises its budget count and claim on this lock, so
+# a digest and a timed send cannot both take the last slot.
+_DELIVERY_CLAIM_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:insight:claim', 0))"
 
 # Default cooldown periods by priority range (days)
 _DEFAULT_COOLDOWN_BY_PRIORITY: list[tuple[range, int]] = [
@@ -65,10 +76,17 @@ _DEFAULT_COOLDOWN_BY_PRIORITY: list[tuple[range, int]] = [
 # Verbosity presets: name -> daily budget
 VERBOSITY_BUDGETS: dict[str, int] = {
     "off": 0,
+    # The state the total-disengagement ratchet writes. Budget 0 like "off", but an owner-declared
+    # break-through candidate is still delivered (bu-s11n0s.8): the owner commissioned it, so the
+    # fleet going quiet on unread routine speech must not mute it. An explicit "off" stops all.
+    "auto_off": 0,
     "minimal": 1,
     "normal": 3,
     "verbose": 5,
 }
+
+# The one candidate category an auto-off ratchet does not mute (bu-s11n0s.8).
+BREAK_THROUGH_CATEGORY = "break_through"
 
 # Compiled dedup_key pattern
 _DEDUP_KEY_PATTERN = re.compile(r"^[^:]+:[^:]+:[^:]+(?::[^:]+)?$")
@@ -90,7 +108,9 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             id INTEGER PRIMARY KEY DEFAULT 1,
             verbosity TEXT NOT NULL DEFAULT 'minimal',
             custom_budget INTEGER,
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            outcome_shaping TEXT NOT NULL DEFAULT 'observe',
+            shaping_state JSONB NOT NULL DEFAULT '{}'::jsonb
         )
     """)
     await pool.execute("""
@@ -114,16 +134,51 @@ async def create_insight_tables(pool: asyncpg.Pool) -> None:
             delivery_ref JSONB
         )
     """)
-    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py.
+    # bu-jv1moa.8: mirrors alembic/versions/core/core_334_insight_timed_lane.py.
+    await pool.execute("""
+        ALTER TABLE insight_candidates
+            ADD COLUMN IF NOT EXISTS lane TEXT NOT NULL DEFAULT 'digest',
+            ADD COLUMN IF NOT EXISTS deliver_after TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS claim_id UUID,
+            ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS attempt_started_at TIMESTAMPTZ
+    """)
+    await pool.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'chk_insight_candidates_lane'
+            ) THEN
+                ALTER TABLE insight_candidates ADD CONSTRAINT chk_insight_candidates_lane
+                    CHECK (lane IN ('digest', 'timed'));
+            END IF;
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'chk_insight_candidates_timed_window'
+            ) THEN
+                ALTER TABLE insight_candidates ADD CONSTRAINT chk_insight_candidates_timed_window
+                    CHECK (
+                        (lane = 'timed') = (deliver_after IS NOT NULL)
+                        AND (deliver_after IS NULL OR deliver_after < expires_at)
+                    );
+            END IF;
+        END
+        $$
+    """)
+    await pool.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_candidates_timed_dedup
+        ON insight_candidates (dedup_key) WHERE lane = 'timed'
+    """)
+    # bu-q7vx1q.5: mirrors alembic/versions/core/core_255_insight_premise_binding.py as
+    # amended by core_312 (no candidate foreign key; terminal 'orphaned').
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS insight_amendments (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            candidate_id UUID NOT NULL REFERENCES insight_candidates(id) ON DELETE CASCADE,
+            candidate_id UUID NOT NULL,
             episode_key TEXT NOT NULL,
             reason TEXT NOT NULL,
             summary TEXT,
             state TEXT NOT NULL DEFAULT 'pending'
-                CHECK (state IN ('pending', 'applied', 'fold', 'folded')),
+                CHECK (state IN ('pending', 'applied', 'fold', 'folded', 'orphaned')),
             attempts INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             resolved_at TIMESTAMPTZ,
@@ -231,6 +286,57 @@ def _get_default_cooldown(priority: int) -> int:
 # ---------------------------------------------------------------------------
 
 
+async def withdraw_pending_candidates(
+    pool: asyncpg.Pool,
+    *,
+    origin_butler: str,
+    dedup_keys: list[str],
+    reason: str,
+    now: datetime | None = None,
+) -> int:
+    """Withdraw the named pending, unclaimed timed candidates of *origin_butler*, premise gone.
+
+    The same guarded ``status = 'pending' AND claim_id IS NULL`` transition and ``withdrawn``
+    attention event as the premise recheck, for a producer that knows its own candidate went
+    stale (bu-jv1moa.9: a moved meeting's card). A sent, claimed or terminal candidate is left
+    alone. Returns the number withdrawn. Never deletes.
+    """
+    moment = now or datetime.now(UTC)
+    withdrawn = 0
+    for key in dict.fromkeys(dedup_keys):
+        rows = await pool.fetch(
+            """
+            UPDATE insight_candidates
+            SET status = 'withdrawn',
+                metadata = COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('withdrawn_at', $2::text,
+                                                 'withdrawn_reason', $3::text)
+            WHERE dedup_key = $1 AND origin_butler = $4 AND lane = 'timed'
+              AND status = 'pending' AND claim_id IS NULL
+            RETURNING id, origin_butler, priority, channel, dedup_key
+            """,
+            key,
+            moment.isoformat(),
+            reason,
+            origin_butler,
+        )
+        for row in rows:
+            withdrawn += 1
+            await record_attention_event(
+                pool,
+                origin_butler=row["origin_butler"],
+                source="insight",
+                outcome="withdrawn",
+                channel=row["channel"],
+                intent="insight",
+                priority=row["priority"],
+                dedup_key=row["dedup_key"],
+                notification_ref=str(row["id"]),
+                reason=reason,
+            )
+    return withdrawn
+
+
 async def propose_insight_candidate(
     pool: asyncpg.Pool,
     *,
@@ -246,11 +352,20 @@ async def propose_insight_candidate(
     prepared_action_id: Any | None = None,
     premise: dict | None = None,
     now: datetime | None = None,
+    lane: str = "digest",
+    deliver_after: datetime | None = None,
 ) -> dict[str, str]:
     """Validate and insert an insight candidate into the staging table.
 
     Parameters
     ----------
+    lane / deliver_after:
+        bu-jv1moa.8: ``"timed"`` queues a candidate the timed sub-cycle sends on
+        its own between ``deliver_after`` and ``expires_at``, or not at all
+        (RFC 0011 Amendment 8). Refused while ``timed.TIMED_INSIGHTS_LIVE`` is
+        off. A second timed proposal for the same ``dedup_key`` returns
+        ``{"status": "duplicate"}`` and changes nothing. The default
+        ``"digest"`` behaves exactly as before.
     premise:
         bu-q7vx1q.5: the typed fact this insight asserts (see
         ``butlers.core.insight_premise``). The delivery cycle re-checks it
@@ -322,6 +437,25 @@ async def propose_insight_candidate(
     if expires_dt <= reference_now:
         return {"status": "error", "reason": "expires_at must be in the future"}
 
+    # --- Lane validation (bu-jv1moa.8) ---
+    if lane not in INSIGHT_LANES:
+        return {"status": "error", "reason": "lane must be 'digest' or 'timed'"}
+    if lane == "digest" and deliver_after is not None:
+        return {"status": "error", "reason": "deliver_after is only valid for the timed lane"}
+    deliver_after_dt: datetime | None = None
+    if lane == "timed":
+        if deliver_after is None:
+            return {"status": "error", "reason": "deliver_after is required for the timed lane"}
+        deliver_after_dt = deliver_after
+        if deliver_after_dt.tzinfo is None:
+            deliver_after_dt = deliver_after_dt.replace(tzinfo=UTC)
+        if deliver_after_dt >= expires_dt:
+            return {"status": "error", "reason": "deliver_after must be before expires_at"}
+        from . import timed
+
+        if not timed.TIMED_INSIGHTS_LIVE:
+            return {"status": "error", "reason": "the timed lane is not live"}
+
     # --- Premise validation ---
     try:
         premise = normalize_premise(premise)
@@ -337,19 +471,27 @@ async def propose_insight_candidate(
     # --- Verbosity gate ---
     settings = await get_insight_settings(pool)
     verbosity = settings.get("verbosity", "minimal")
+    exempt = verbosity == "auto_off" and category == BREAK_THROUGH_CATEGORY
     if verbosity == "off" and settings.get("custom_budget") is None:
         return {"status": "filtered", "reason": "verbosity is off"}
     configured_budget = _get_configured_budget(settings)
-    if configured_budget == 0:
+    if configured_budget == 0 and not exempt:
         return {"status": "filtered", "reason": "verbosity is off"}
 
     # --- Insert candidate ---
+    # A timed candidate is one per canonical edge: a replayed proposal for the
+    # same dedup_key is a no-op, never a second send.
+    taint = taint_insert(14)
+    conflict = "ON CONFLICT (dedup_key) WHERE lane = 'timed' DO NOTHING" if lane == "timed" else ""
     candidate_id = await pool.fetchval(
-        """
+        f"""
         INSERT INTO insight_candidates
             (origin_butler, priority, category, dedup_key, cooldown_days,
-             expires_at, message, channel, metadata, status, prepared_action_id, premise)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10, $11::jsonb)
+             expires_at, message, channel, metadata, status, prepared_action_id,
+             premise, lane, deliver_after{taint.columns})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, 'pending', $10,
+                $11::jsonb, $12, $13{taint.placeholders})
+        {conflict}
         RETURNING id
         """,
         origin_butler,
@@ -363,7 +505,12 @@ async def propose_insight_candidate(
         metadata,
         prepared_action_id,
         premise,
+        lane,
+        deliver_after_dt,
+        *taint.values,
     )
+    if candidate_id is None:
+        return {"status": "duplicate", "reason": "a timed candidate for this edge already exists"}
     if isinstance(candidate_id, uuid.UUID):
         from butlers.core.attention_urgency import remember_candidate_origin
 
@@ -479,6 +626,9 @@ async def record_insight_feedback(
 async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) -> int:
     """Mark stale candidates expired and record one honest ledger row each.
 
+    A claimed candidate is left to its claim holder (or to the stale-claim
+    sweep): its send may be in flight, so "expired" could be a lie.
+
     Returns the number of candidates expired.
     """
     if now is None:
@@ -489,7 +639,7 @@ async def expire_candidates(pool: asyncpg.Pool, *, now: datetime | None = None) 
                 """
                 UPDATE insight_candidates
                 SET status = 'expired'
-                WHERE status = 'pending' AND expires_at <= $1
+                WHERE status = 'pending' AND claim_id IS NULL AND expires_at <= $1
                 RETURNING id, origin_butler, priority, dedup_key, channel, metadata
                 """,
                 now,
@@ -575,7 +725,7 @@ async def filter_by_cooldown(
             SET status = 'filtered',
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('blocked_by', 'cooldown')
-            WHERE id = ANY($1::uuid[])
+            WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
             """,
             filtered_ids,
         )
@@ -621,7 +771,7 @@ async def deduplicate_candidates(
             SET status = 'filtered',
                 metadata = COALESCE(metadata, '{}'::jsonb)
                            || jsonb_build_object('blocked_by', 'dedup')
-            WHERE id = ANY($1::uuid[])
+            WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
             """,
             loser_ids,
         )
@@ -798,7 +948,9 @@ async def check_and_update_engagement(
 
     Called on each Switchboard ingress request: if the user sends any message
     to any butler within 60 minutes of an insight's delivered_at, the insight
-    is considered engaged.
+    is considered engaged. Under the owner's ``outcome_shaping=shape`` a delivery the outcome
+    signal covers never gets an engagement row (``ShapingPlan.proxy_retired``), so this proxy
+    never sees it (bu-s11n0s.15 S5); unpremised and unmeasured classes keep it.
 
     Parameters
     ----------
@@ -847,9 +999,16 @@ async def cleanup_old_rows(
     now: datetime | None = None,
     retention_days: int = 30,
 ) -> None:
-    """Delete old insight data to prevent unbounded table growth.
+    """Delete old insight bookkeeping rows to prevent unbounded table growth.
 
-    - insight_candidates: non-pending rows older than retention_days
+    ``insight_candidates`` is never touched here (bu-3jyrqz): terminal
+    candidates are pruned only by the opt-in, default-off, dry-run-first
+    retention pruner [C] (``butlers.jobs.retention.prune_insight_candidates``,
+    90-day bound), per docs/operations/data-retention.md. Amendments are not
+    cascaded since ``core_312`` (no FK to the candidate).
+
+    - insight_amendments: never deleted (kept as evidence); a ``pending`` or ``fold``
+      row whose candidate is gone settles to terminal ``orphaned`` (bu-q7vx1q.32)
     - insight_cooldowns: rows where cooldown_until is older than retention_days
     - insight_engagement: rows older than retention_days, after first rolling
       each affected day's delivered/engaged counts into
@@ -860,12 +1019,16 @@ async def cleanup_old_rows(
         now = datetime.now(UTC)
     cutoff = now - timedelta(days=retention_days)
 
+    # Amendment evidence outlives its candidate (core_312 dropped the cascade), but a
+    # correction with nothing left to correct must not wait forever.
     await pool.execute(
         """
-        DELETE FROM insight_candidates
-        WHERE status != 'pending' AND created_at < $1
+        UPDATE insight_amendments a
+        SET state = 'orphaned', resolved_at = $1
+        WHERE a.state IN ('pending', 'fold')
+          AND NOT EXISTS (SELECT 1 FROM insight_candidates c WHERE c.id = a.candidate_id)
         """,
-        cutoff,
+        now,
     )
     await pool.execute(
         """
@@ -929,8 +1092,9 @@ async def check_total_disengagement_auto_off(
     """Check for total disengagement (0% engagement for 14 consecutive days).
 
     Per spec: if engagement_rate == 0.0 for 14 consecutive days with at least
-    1 insight delivered per day, auto-downgrade verbosity to 'off' and deliver
-    a final notification.
+    1 insight delivered per day, auto-downgrade verbosity to 'auto_off' (budget 0 like
+    'off', but an owner-declared break-through candidate is still delivered) and
+    deliver a final notification.
 
     Returns True if auto-off was triggered, False otherwise.
     """
@@ -1022,7 +1186,7 @@ async def check_total_disengagement_auto_off(
     """)
     await pool.execute(
         """
-        UPDATE insight_settings SET verbosity = 'off', updated_at = $1
+        UPDATE insight_settings SET verbosity = 'auto_off', updated_at = $1
         WHERE id = 1
         """,
         now,
@@ -1036,6 +1200,11 @@ async def check_total_disengagement_auto_off(
             logger.exception("insight-delivery-cycle: failed to deliver auto-off notification")
 
     return True
+
+
+def _is_digest_only(plan: Any, candidate: dict[str, Any]) -> bool:
+    shaped = plan.by_candidate.get(str(candidate["id"]))
+    return shaped is not None and shaped.digest_only
 
 
 def _format_standalone(candidate: dict[str, Any]) -> str:
@@ -1260,6 +1429,247 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Tension clusters (bu-7dpw8 — producer-declared conflicting choices become one
+# owner question instead of several digest lines)
+# ---------------------------------------------------------------------------
+
+TENSION_PRODUCER = "insight_broker"
+TENSION_SINK = "insight_tension"
+_TENSION_MAX_OPTIONS = 4  # ConfirmPrompt allows 2-4 options
+_TENSION_OPTION_LABEL_CHARS = 80
+_TENSION_TIMEOUT_SECONDS = 86400
+
+
+@dataclass(frozen=True, slots=True)
+class TensionOption:
+    value: str  # closed vocabulary ``o0``..``o3``; the label is producer text
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class TensionQuestion:
+    """One owner question for a tension cluster; built by code, never a model."""
+
+    ref: str
+    question: str
+    options: tuple[TensionOption, ...]
+    member_ids: tuple[str, ...]
+
+
+def _candidate_choice(candidate: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a candidate's declared ``metadata.choice`` as ``(key, option)``."""
+    metadata = _json_object(candidate.get("metadata"))
+    choice = metadata.get("choice") if metadata else None
+    if not isinstance(choice, dict):
+        return None
+    key, option = choice.get("key"), choice.get("option")
+    if not isinstance(key, str) or not isinstance(option, str):
+        return None
+    key, option = key.strip(), option.strip()
+    return (key, option) if key and option else None
+
+
+def _tension_choices(cluster: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Group declared options by choice key, keeping only conflicting keys."""
+    by_key: dict[str, set[str]] = {}
+    for candidate in cluster:
+        if (choice := _candidate_choice(candidate)) is not None:
+            by_key.setdefault(choice[0], set()).add(choice[1])
+    return {key: options for key, options in by_key.items() if len(options) > 1}
+
+
+def _is_tension(cluster: list[dict[str, Any]]) -> bool:
+    """True when two or more members declare one choice key with different options."""
+    return bool(_tension_choices(cluster))
+
+
+def _tension_ref(cluster: list[dict[str, Any]]) -> str:
+    """Stable identity of a tension: the sorted member dedup keys, hashed."""
+    keys = "\n".join(sorted(str(c.get("dedup_key")) for c in cluster))
+    return hashlib.sha256(keys.encode()).hexdigest()[:32]
+
+
+def _tension_members(cluster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Members that declare the asked (first conflicting) choice key.
+
+    A cluster can link unrelated candidates by entity or time; only the members
+    taking part in the conflict belong to the question. The rest stay in the digest.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return []
+    key = sorted(conflicts)[0]
+    return [c for c in cluster if (choice := _candidate_choice(c)) and choice[0] == key]
+
+
+def tension_question(cluster: list[dict[str, Any]]) -> TensionQuestion | None:
+    """Build the owner question for a tension cluster, or None if it cannot be asked.
+
+    Only the first conflicting key is asked, over the members declaring it; its
+    distinct options (sorted, so the option vocabulary is stable across cycles)
+    must fit the 2-4 option card.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return None
+    cluster = _tension_members(cluster)
+    options = sorted(conflicts[sorted(conflicts)[0]])
+    if len(options) > _TENSION_MAX_OPTIONS:
+        return None
+    labels = [option[:_TENSION_OPTION_LABEL_CHARS] for option in options]
+    if len(set(labels)) != len(labels):
+        return None
+    butlers = sorted({str(c.get("origin_butler") or "") for c in cluster} - {""})
+    source = ", ".join(b.capitalize() for b in butlers) or "Your butlers"
+    return TensionQuestion(
+        ref=_tension_ref(cluster),
+        question=f"{source} suggested {len(options)} options that can't all happen. Which one?",
+        options=tuple(TensionOption(f"o{i}", label) for i, label in enumerate(labels)),
+        member_ids=tuple(sorted(str(c["id"]) for c in cluster)),
+    )
+
+
+async def absorb_tensions(
+    pool: Any,
+    candidates: list[dict[str, Any]],
+    confirm_fn: Any | None,
+    *,
+    budget: int,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Ask one owner question per tension cluster and remove its members.
+
+    ``confirm_fn(question) -> {"status": "asked" | "open" | ...}`` is the owner
+    confirm transport (``None`` when none is wired). ``asked`` is a new question and
+    ``open`` an already-open identical one; both absorb the members, which settle as
+    delivered with ``tension_ref`` stamped so the answer path can find them. Any
+    other result, an exception or a missing transport leaves the members in
+    ``candidates`` so they ride the normal digest (never silent). Each question
+    spends one slot of ``budget``. Returns ``(remaining, questions_absorbed)``.
+    """
+    if confirm_fn is None or budget <= 0:
+        return candidates, 0
+    if now is None:
+        now = datetime.now(UTC)
+    absorbed_ids: set[str] = set()
+    absorbed = 0
+    for cluster in _cluster_candidates(candidates):
+        if absorbed >= budget or not _is_tension(cluster):
+            continue
+        question = tension_question(cluster)
+        if question is None:
+            continue
+        try:
+            outcome = await confirm_fn(question)
+        except Exception:
+            logger.warning("insight tension question transport raised", exc_info=True)
+            continue
+        if not isinstance(outcome, dict) or outcome.get("status") not in {"asked", "open"}:
+            continue
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                UPDATE insight_candidates
+                SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
+                    metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('tension_ref', $3::text)
+                WHERE id = ANY($1::uuid[]) AND status = 'pending' AND claim_id IS NULL
+                """,
+                list(question.member_ids),
+                now,
+                question.ref,
+            )
+            members = _tension_members(cluster)
+            await record_cooldowns(conn, members, now=now)
+            await record_engagement_rows(conn, members, delivered_at=now)
+        absorbed_ids.update(question.member_ids)
+        absorbed += 1
+    return [c for c in candidates if str(c["id"]) not in absorbed_ids], absorbed
+
+
+async def apply_tension_answer(
+    pool: Any, tension_ref: str, value: str, *, confirm_id: Any = None
+) -> dict[str, Any]:
+    """Record the owner's pick as ``useful`` feedback on every member of the tension.
+
+    The options are the cluster's sorted distinct declared options, so ``o<i>`` maps
+    back to one of them. Safe to retry: a member already carrying this confirm's
+    evidence is skipped (the confirm service re-applies after loss or restart).
+    """
+    rows = await pool.fetch(
+        "SELECT id, metadata FROM insight_candidates "
+        "WHERE metadata->>'tension_ref' = $1 ORDER BY id",
+        tension_ref,
+    )
+    members = [{"id": row["id"], "metadata": row["metadata"]} for row in rows]
+    question = tension_question(members)
+    if question is None or value not in {o.value for o in question.options}:
+        raise ValueError("tension answer does not match the recorded options")
+    chosen = next(o.label for o in question.options if o.value == value)
+    evidence = f"tension:{tension_ref}:{chosen}"
+    for member in members:
+        # The confirm service re-invokes this after errors and timeouts, and each
+        # feedback call inserts a row: skip members that already carry this evidence.
+        if await pool.fetchval(
+            "SELECT 1 FROM insight_feedback WHERE insight_id = $1::uuid AND evidence_ref = $2",
+            str(member["id"]),
+            evidence,
+        ):
+            continue
+        result = await record_insight_feedback(
+            pool,
+            insight_id=str(member["id"]),
+            verdict="useful",
+            actor="owner",
+            evidence_ref=evidence,
+        )
+        if result.get("status") != "recorded":
+            raise ValueError("tension feedback was not recorded")
+    return {"status": "applied", "members": len(members), "chosen": chosen}
+
+
+def tension_sink_registration(pool: Any) -> Any:
+    """Confirm-service sink that turns a tension answer into member feedback."""
+    from butlers.core.confirm_service import SinkRegistration
+
+    async def apply(confirm_id: Any, sink_ref: str, value: str) -> dict[str, Any]:
+        return await apply_tension_answer(pool, sink_ref, value, confirm_id=confirm_id)
+
+    return SinkRegistration(
+        producer=TENSION_PRODUCER,
+        values=frozenset(f"o{i}" for i in range(_TENSION_MAX_OPTIONS)),
+        apply=apply,
+    )
+
+
+def make_tension_confirm_fn(service: Any, recipient: Any) -> Any:
+    """Adapt a ``ConfirmService`` and resolved owner ``Recipient`` into ``confirm_fn``.
+
+    The service's per-producer key makes a repeated identical tension return the
+    existing row, so a pending row reports ``open`` rather than a second question.
+    """
+    from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt
+
+    async def confirm_fn(question: TensionQuestion) -> dict[str, Any]:
+        prompt = ConfirmPrompt(
+            question=question.question,
+            options=tuple(ConfirmOption(o.value, o.label) for o in question.options),
+            recipient=recipient,
+            timeout_seconds=_TENSION_TIMEOUT_SECONDS,
+        )
+        row = await service.create(
+            TENSION_PRODUCER,
+            question.ref,
+            prompt,
+            sink=TENSION_SINK,
+            sink_ref=question.ref,
+        )
+        return {"status": "open" if row["status"] == "pending" else "settled"}
+
+    return confirm_fn
+
+
+# ---------------------------------------------------------------------------
 # LLM cluster synthesis (bu-ep4ks.9 slice 3 — one sentence per correlated
 # cluster, best-effort, no new budget knob)
 # ---------------------------------------------------------------------------
@@ -1296,7 +1706,8 @@ async def _synthesize_cluster_sentence(
     budget — no separate accounting is needed.
 
     Fails open to ``None`` on ANY error: no model resolved for the "cheap"
-    tier, a non-"api" resolved runtime, over quota, a timeout, or a blank
+    tier, a non-"api" resolved runtime, over quota, the monthly spend ceiling reached or
+    unreadable (bu-svqpzo.14), a timeout, or a blank
     response. The caller falls back to the pre-slice-3 plain bullet list —
     synthesis is a cosmetic enhancement, never a correctness-relevant
     dependency of digest delivery.
@@ -1304,6 +1715,7 @@ async def _synthesize_cluster_sentence(
     try:
         from butlers.core.model_routing import (
             Complexity,
+            ceiling_refusal_reason,
             check_token_quota,
             record_token_usage,
             resolve_model_with_effective_tier,
@@ -1328,6 +1740,13 @@ async def _synthesize_cluster_sentence(
 
         quota = await check_token_quota(pool, catalog_entry_id)
         if not quota.allowed:
+            return None
+
+        # The owner's monthly spend ceiling caps this lane too (bu-svqpzo.14): reached or
+        # unreadable skips synthesis this cycle; the digest keeps its plain bullet list.
+        refusal = await ceiling_refusal_reason(pool)
+        if refusal is not None:
+            logger.warning("insight-delivery-cycle: cluster synthesis skipped: %s", refusal)
             return None
 
         bullets = "\n".join(f"- [{c.get('origin_butler', '')}] {c['message']}" for c in cluster)
@@ -1690,7 +2109,7 @@ async def _revalidate_premises(
             """
             SELECT id, origin_butler, priority, dedup_key, channel, premise
             FROM insight_candidates
-            WHERE status = 'pending' AND premise IS NOT NULL
+            WHERE status = 'pending' AND claim_id IS NULL AND premise IS NOT NULL
             """
         )
     verdicts: dict[str, bool | None] = {}
@@ -1711,7 +2130,7 @@ async def _revalidate_premises(
                                'withdrawn_at', $2::text,
                                'withdrawn_reason', 'premise_false'
                            )
-            WHERE id = $1 AND status = 'pending'
+            WHERE id = $1 AND status = 'pending' AND claim_id IS NULL
             """,
             row["id"],
             now.isoformat(),
@@ -1776,6 +2195,8 @@ def _build_delivery_ref(
     standalone: bool,
     digest_line_index: int | None,
     delivered_at: datetime,
+    line_text: str | None = None,
+    delivery_text: str | None = None,
 ) -> dict[str, Any]:
     """Describe where a delivered candidate landed, for later in-place amendment.
 
@@ -1789,6 +2210,11 @@ def _build_delivery_ref(
         "digest_line_index": digest_line_index,
         "delivered_at": delivered_at.isoformat(),
     }
+    if digest_line_index is not None:
+        # bu-q7vx1q.31: a digest edit re-renders the whole message with this
+        # line struck, so the sent text and the line's own text are kept.
+        ref["line_text"] = line_text
+        ref["delivery_text"] = delivery_text
     if isinstance(notify_result, dict):
         ref["notification_id"] = notify_result.get("notification_id")
         found = _find_provider_message(notify_result.get("result"))
@@ -1827,8 +2253,10 @@ async def apply_pending_amendments(
 
     ``amend_fn(delivery_ref, text)`` returns ``{"status": "edited" | "rejected"
     | "error"}``. A standalone Telegram delivery is edited to a struck-through
-    "Resolved HH:MM" form with no new ping. A delivery that cannot be edited
-    (email, a digest line, a rejected edit, three transport failures) becomes a
+    "Resolved HH:MM" form with no new ping. A Telegram digest is edited once per
+    message, striking every resolved line and keeping earlier strikes. A
+    delivery that cannot be edited (email, a rejected edit, three transport
+    failures) becomes a
     ``fold`` amendment instead: it rides the next delivery as a "since last
     digest" line, never a standalone message. Every state change is guarded on
     ``state = 'pending'``, so a replayed cycle neither double-edits nor
@@ -1847,38 +2275,109 @@ async def apply_pending_amendments(
         """,
         _AMENDMENT_BATCH,
     )
+    # Group pending digest-line amendments by the Telegram message they sit in:
+    # one edit per message carries every strike.
+    digest_groups: dict[tuple[str, int], list[Any]] = {}
+    units: list[tuple[Any, list[Any]]] = []
     for row in rows:
         ref = _json_object(row["delivery_ref"]) or {}
-        premise = _json_object(row["premise"])
-        note = await _resolution_note(pool, premise)
-        editable = bool(
-            ref.get("standalone")
-            and ref.get("channel") == "telegram"
-            and ref.get("chat_id")
-            and ref.get("provider_message_id")
-        )
-        next_state = "fold"
-        if editable:
-            try:
-                result = await amend_fn(ref, f"~~{row['message']}~~\n{note}")
-                status = result.get("status") if isinstance(result, dict) else "error"
-            except Exception:
-                logger.warning(
-                    "insight-delivery-cycle: amend of candidate %s raised",
-                    row["candidate_id"],
-                    exc_info=True,
-                )
-                status = "error"
-            if status == "edited":
-                next_state = "applied"
-            elif status == "error" and row["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+        if _is_editable_digest_ref(ref):
+            key = (str(ref["chat_id"]), int(ref["provider_message_id"]))
+            if key not in digest_groups:
+                digest_groups[key] = []
+                units.append((ref, digest_groups[key]))
+            digest_groups[key].append(row)
+        else:
+            units.append((ref, [row]))
+    for ref, group in units:
+        if _is_editable_digest_ref(ref):
+            # The daily cycle and the urgent subcycle can overlap; one lock per
+            # message keeps the later run rendering from the earlier run's
+            # applied strikes instead of overwriting them.
+            lock_key = f"insight-digest-amend:{ref['chat_id']}:{ref['provider_message_id']}"
+            async with pool.acquire() as lock_conn, lock_conn.transaction():
+                if not await lock_conn.fetchval(
+                    "SELECT pg_try_advisory_xact_lock(hashtext($1))", lock_key
+                ):
+                    continue  # another run owns this message; rows stay pending
+                still_pending = {
+                    r["id"]
+                    for r in await pool.fetch(
+                        "SELECT id FROM insight_amendments "
+                        "WHERE id = ANY($1::uuid[]) AND state = 'pending'",
+                        [r["id"] for r in group],
+                    )
+                }
+                group = [r for r in group if r["id"] in still_pending]
+                if group:
+                    await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+        else:
+            await _settle_amendment_unit(pool, amend_fn, ref, group, now, counts)
+    return counts
+
+
+async def _settle_amendment_unit(
+    pool: asyncpg.Pool,
+    amend_fn: Any,
+    ref: dict[str, Any],
+    group: list[Any],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    """Edit one delivered message for ``group`` (or fold what cannot be edited)."""
+    notes = {r["id"]: await _resolution_note(pool, _json_object(r["premise"])) for r in group}
+    is_digest = _is_editable_digest_ref(ref)
+    fold_rows: list[Any] = []
+    edit_rows = group
+    text = ""
+    if is_digest:
+        text, edit_rows, fold_rows = await _render_struck_digest(pool, ref, group, notes)
+    elif not (
+        ref.get("standalone")
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+    ):
+        fold_rows, edit_rows = group, []
+    else:
+        text = f"~~{group[0]['message']}~~\n{notes[group[0]['id']]}"
+    if edit_rows:
+        first = edit_rows[0]
+        try:
+            result = await amend_fn(ref, text)
+            status = result.get("status") if isinstance(result, dict) else "error"
+        except Exception:
+            logger.warning(
+                "insight-delivery-cycle: amend of candidate %s raised",
+                first["candidate_id"],
+                exc_info=True,
+            )
+            status = "error"
+        if status == "edited":
+            await _settle_rows(pool, edit_rows, "applied", notes, now, counts)
+        elif status == "error" and first["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+            for row in edit_rows:
                 await pool.execute(
                     "UPDATE insight_amendments SET attempts = attempts + 1 "
                     "WHERE id = $1 AND state = 'pending'",
                     row["id"],
                 )
-                counts["retry"] += 1
-                continue
+            counts["retry"] += len(edit_rows)
+        else:
+            fold_rows = fold_rows + edit_rows
+    if fold_rows:
+        await _settle_rows(pool, fold_rows, "fold", notes, now, counts)
+
+
+async def _settle_rows(
+    pool: asyncpg.Pool,
+    rows: list[Any],
+    next_state: str,
+    notes: dict[Any, str],
+    now: datetime,
+    counts: dict[str, int],
+) -> None:
+    for row in rows:
         updated = await pool.execute(
             """
             UPDATE insight_amendments
@@ -1887,7 +2386,7 @@ async def apply_pending_amendments(
             """,
             row["id"],
             next_state,
-            note,
+            notes[row["id"]],
             now,
         )
         if not str(updated).endswith(" 1"):
@@ -1908,7 +2407,86 @@ async def apply_pending_amendments(
             )
         else:
             counts["folded"] += 1
-    return counts
+
+
+def _is_editable_digest_ref(ref: dict[str, Any]) -> bool:
+    """A Telegram digest line whose sent text and line text were recorded."""
+    return bool(
+        not ref.get("standalone")
+        and ref.get("digest_line_index") is not None
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+        and ref.get("delivery_text")
+        and ref.get("line_text")
+    )
+
+
+def strike_digest_lines(
+    delivery_text: str, strikes: list[tuple[str, str]]
+) -> tuple[str, list[bool]]:
+    """Strike each ``(line_text, note)`` on its own whole digest line.
+
+    A line is the numbered or bulleted ``[Butler] message`` row, so a message
+    that is a prefix or substring of another row never matches it. A strike
+    whose line is not found exactly once is left out and reported ``False``.
+    """
+    lines = delivery_text.split("\n")
+    anchored = [False] * len(strikes)
+    for n, (line_text, note) in enumerate(strikes):
+        pattern = re.compile(r"^(?:\d+\. |- )(?:\[[^\]]*\] )?" + re.escape(line_text) + r"$")
+        hits = [i for i, row in enumerate(lines) if pattern.match(row)]
+        if len(hits) != 1 or "~~" in lines[hits[0]]:
+            continue
+        i = hits[0]
+        prefix = lines[i][: len(lines[i]) - len(line_text)]
+        lines[i] = f"{prefix}~~{line_text}~~ {note}"
+        anchored[n] = True
+    return "\n".join(lines), anchored
+
+
+async def _render_struck_digest(
+    pool: asyncpg.Pool,
+    ref: dict[str, Any],
+    pending: list[Any],
+    notes: dict[Any, str],
+) -> tuple[str, list[Any], list[Any]]:
+    """Re-render a delivered digest with every resolved line struck through.
+
+    Returns ``(text, rows_to_edit, rows_to_fold)``. Earlier strikes come from
+    already-applied amendments on the same message, so a later edit keeps them
+    and replays are idempotent. Rows whose line is not uniquely anchored, or
+    every row when the original or re-rendered text exceeds one Telegram
+    message (an edit cannot be truncated or chunked), fold instead.
+    """
+    applied = await pool.fetch(
+        """
+        SELECT a.summary, c.delivery_ref
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'applied'
+          AND c.delivery_ref ->> 'provider_message_id' = $1
+          AND c.delivery_ref ->> 'chat_id' = $2
+        """,
+        str(ref["provider_message_id"]),
+        str(ref["chat_id"]),
+    )
+    strikes = [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", r["summary"] or "Resolved")
+        for r in applied
+    ]
+    earlier = len(strikes)
+    strikes += [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text") or "", notes[r["id"]])
+        for r in pending
+    ]
+    original = str(ref["delivery_text"])
+    text, anchored = strike_digest_lines(original, strikes)
+    edit = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if ok]
+    fold = [r for r, ok in zip(pending, anchored[earlier:], strict=True) if not ok]
+    if text_units(original) > MAX_VISIBLE_UNITS or text_units(text) > MAX_VISIBLE_UNITS:
+        return text, [], pending
+    return text, edit, fold
 
 
 async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
@@ -1930,6 +2508,116 @@ async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Shared delivery claim (bu-jv1moa.8)
+# ---------------------------------------------------------------------------
+#
+# Every delivery worker -- the digest cycle, the urgent sub-cycle and the timed
+# sub-cycle -- claims the candidates it is about to send with one row-level
+# compare-and-set before calling the transport, and writes the final
+# disposition only while it still holds that claim. Before this, selection read
+# ``status = 'pending'`` and the delivered UPDATE had no status guard, so two
+# overlapping cycles could both send one candidate.
+
+
+class _ClaimContended(Exception):
+    """Another worker holds one of the candidates; roll the whole claim back."""
+
+
+def _utc_day(now: datetime) -> tuple[datetime, datetime]:
+    start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    return start, start + timedelta(days=1)
+
+
+async def sends_today(
+    conn: asyncpg.Pool | asyncpg.Connection, *, now: datetime, lane: str | None = None
+) -> int:
+    """Count today's (UTC) delivered candidates plus in-flight claims, optionally per lane."""
+    start, end = _utc_day(now)
+    count = await conn.fetchval(
+        """
+        SELECT count(*) FROM insight_candidates
+        WHERE ($3::text IS NULL OR lane = $3)
+          AND (
+            (status = 'delivered' AND delivered_at >= $1 AND delivered_at < $2
+             AND COALESCE(metadata ->> 'digest_fold', '') <> 'true')
+            OR (status = 'pending' AND claim_id IS NOT NULL)
+          )
+        """,
+        start,
+        end,
+        lane,
+    )
+    return int(count or 0)
+
+
+async def claim_for_delivery(
+    pool: asyncpg.Pool,
+    candidate_ids: list[str],
+    *,
+    now: datetime,
+    budget_check: Any | None = None,
+    unexpired_at: datetime | None = None,
+) -> tuple[uuid.UUID | None, str | None]:
+    """Claim every candidate in ``candidate_ids`` or none of them.
+
+    Returns ``(claim_id, None)`` on success, or ``(None, reason)``:
+    ``claim_contended`` when another worker holds (or already settled) one of
+    them, or the reason ``budget_check(conn)`` returned. The budget check and
+    the claim run under one advisory lock, so two workers cannot both count the
+    same last slot. With ``unexpired_at`` (the timed lane's send instant) a
+    candidate whose window has closed by then is not claimed (``claim_contended``).
+    """
+    claim_id = uuid.uuid4()
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(_DELIVERY_CLAIM_LOCK)
+            if budget_check is not None and (reason := await budget_check(conn)):
+                return None, reason
+            rows = await conn.fetch(
+                """
+                UPDATE insight_candidates SET claim_id = $1, claimed_at = $2
+                WHERE id = ANY($3::uuid[]) AND status = 'pending' AND claim_id IS NULL
+                  AND ($4::timestamptz IS NULL OR expires_at > $4)
+                RETURNING id
+                """,
+                claim_id,
+                now,
+                candidate_ids,
+                unexpired_at,
+            )
+            if len(rows) != len(set(candidate_ids)):
+                raise _ClaimContended
+    except _ClaimContended:
+        return None, "claim_contended"
+    return claim_id, None
+
+
+async def mark_attempt_started(pool: asyncpg.Pool, claim_id: uuid.UUID, now: datetime) -> None:
+    """Commit "the transport may now be called" for a claim, before calling it.
+
+    A stale claim with this set may have been sent; one without it never was.
+    """
+    await pool.execute(
+        "UPDATE insight_candidates SET attempt_started_at = $2 WHERE claim_id = $1",
+        claim_id,
+        now,
+    )
+
+
+async def _release_stale_digest_claims(pool: asyncpg.Pool, *, now: datetime) -> None:
+    """Release digest claims whose holder died; the digest keeps at-least-once retry."""
+    await pool.execute(
+        """
+        UPDATE insight_candidates
+        SET claim_id = NULL, claimed_at = NULL, attempt_started_at = NULL
+        WHERE lane = 'digest' AND status = 'pending' AND claim_id IS NOT NULL
+          AND claimed_at <= $1
+        """,
+        now - DIGEST_STALE_CLAIM_AFTER,
+    )
+
+
 async def delivery_cycle(
     pool: asyncpg.Pool,
     *,
@@ -1940,8 +2628,19 @@ async def delivery_cycle(
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
     finance_warning_reader: Any | None = None,
+    tension_confirm_fn: Any | None = None,
+    candidate_ids: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
+
+    ``candidate_ids`` (bu-s11n0s.8): restrict selection to these pending candidates. The
+    break-through sensor passes the candidate it just proposed so one declared message is
+    delivered within seconds without sweeping unrelated urgent work. Premise revalidation,
+    expiry and the suppression and verbosity reads are unchanged.
+
+    ``tension_confirm_fn`` (bu-7dpw8): optional owner-confirm transport; a cluster
+    whose members declare conflicting ``metadata.choice`` options becomes one owner
+    question (one budget slot) instead of digest lines. ``None`` keeps the digest.
 
     Steps (per spec §Delivery cycle execution order):
     1. Check quiet hours — if active, skip and return
@@ -2052,7 +2751,12 @@ async def delivery_cycle(
     # the time-based quiet-hours/context-bus deferral above), so it applies
     # even in urgent_only mode: a verified cause never overrides this opt-out.
     configured_budget = _get_configured_budget(settings)
-    if configured_budget == 0:
+    # An auto-off ratchet mutes routine speech but not an owner-declared break-through. Under it
+    # an urgent cycle runs for owner-clause candidates alone; an explicit "off" stops everything.
+    auto_off = settings.get("verbosity") == "auto_off" and settings.get("custom_budget") is None
+    if configured_budget == 0 and auto_off and urgent_only:
+        pass
+    elif configured_budget == 0:
         if urgent_only:
             # Only touch the urgent working set this cycle actually considers.
             # Routine (sub-threshold) candidates must stay untouched 'pending'
@@ -2066,7 +2770,7 @@ async def delivery_cycle(
             await pool.execute(
                 """
                 UPDATE insight_candidates SET status = 'filtered'
-                WHERE status = 'pending' AND priority >= $1
+                WHERE status = 'pending' AND claim_id IS NULL AND priority >= $1
                 """,
                 URGENT_PRIORITY_THRESHOLD,
             )
@@ -2075,19 +2779,27 @@ async def delivery_cycle(
             await pool.execute(
                 """
                 UPDATE insight_candidates SET status = 'filtered'
-                WHERE status = 'pending'
-                """
+                WHERE status = 'pending' AND claim_id IS NULL
+                  AND NOT ($1 AND category = $2)
+                """,
+                auto_off,
+                BREAK_THROUGH_CATEGORY,
             )
         result["skipped"] = True
         return result
 
-    async def settle_terminal_insights(ids: list[str], metadata: dict[str, bool]) -> None:
+    async def settle_terminal_insights(
+        ids: list[str], metadata: dict[str, bool], held_claim: uuid.UUID | None = None
+    ) -> None:
+        # Only the claim holder (or nobody, for a quarantined row) settles a row.
         await pool.execute(
             "UPDATE insight_candidates SET status = 'filtered', "
             "metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb "
-            "WHERE id = ANY($1::uuid[])",
+            "WHERE id = ANY($1::uuid[]) AND status = 'pending' "
+            "AND claim_id IS NOT DISTINCT FROM $3",
             ids,
             {"delivery_failure": True, **metadata},
+            held_claim,
         )
         for item in ids:
             _PARTIAL_INSIGHTS.clear(pool, str(item))
@@ -2112,6 +2824,10 @@ async def delivery_cycle(
             metadata=metadata,
         )
 
+    # bu-jv1moa.8: a digest claim whose holder died returns to pending (the
+    # digest's retry semantics are unchanged; the timed lane sweeps its own).
+    await _release_stale_digest_claims(pool, now=now)
+
     # Step 2: Expire candidates. Runs unconditionally — expiry bookkeeping
     # must not stall just because this cycle is (or may be) suppressed.
     expired = await expire_candidates(pool, now=now)
@@ -2124,10 +2840,18 @@ async def delivery_cycle(
         pool, now=now, urgent_only=False, finance_warning_reader=finance_warning_reader
     )
 
-    # Priority remains a ranking signal, never an authorization selector.
+    # Priority remains a ranking signal, never an authorization selector. A
+    # timed candidate belongs to the timed sub-cycle alone, and a claimed one
+    # to its claim holder.
     rows = await pool.fetch(
         "SELECT id FROM insight_candidates WHERE status = 'pending' "
-        "ORDER BY priority DESC, created_at ASC"
+        "AND lane = 'digest' AND claim_id IS NULL "
+        "AND ($1::uuid[] IS NULL OR id = ANY($1::uuid[])) "
+        "AND (NOT $2::bool OR category = $3) "
+        "ORDER BY priority DESC, created_at ASC",
+        None if candidate_ids is None else [uuid.UUID(str(c)) for c in candidate_ids],
+        configured_budget == 0,
+        BREAK_THROUGH_CATEGORY,
     )
     pending_ids = [str(row["id"]) for row in rows]
     if not pending_ids:
@@ -2143,9 +2867,11 @@ async def delivery_cycle(
         if not gates:
             gates.append("context")  # urgent-only requires a real cause even outside quiet hours
         for gate in gates:
-            if not (
-                await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
-            ).interrupts:
+            decision = await candidate_interruption(pool, uuid.UUID(candidate_id), gate=gate)
+            if not decision.interrupts:
+                return False
+            # Under an auto-off ratchet only the owner's own clause may speak.
+            if configured_budget == 0 and decision.cause != "owner_clause":
                 return False
         return True
 
@@ -2217,7 +2943,12 @@ async def delivery_cycle(
     if urgent_only:
         effective_budget = len(eligible_ids)
     else:
-        effective_budget = await compute_effective_budget(pool, settings, now=now)
+        # bu-jv1moa.8: a timed send today already spent one of these slots.
+        effective_budget = max(
+            0,
+            await compute_effective_budget(pool, settings, now=now)
+            - await sends_today(pool, now=now, lane="timed"),
+        )
     result["effective_budget"] = effective_budget
 
     if effective_budget == 0:
@@ -2227,16 +2958,24 @@ async def delivery_cycle(
     # an equal-priority candidate that cannot survive until the next regular
     # cycle wins the deadline tiebreak.
     rows = await pool.fetch(
-        """
+        f"""
         SELECT id, origin_butler, priority, category, dedup_key,
                cooldown_days, expires_at, message, channel, metadata,
-               prepared_action_id, created_at, premise
-        FROM insight_candidates
+               prepared_action_id, created_at, premise, {taint_read("c")}
+        FROM insight_candidates c
         WHERE id = ANY($1::uuid[]) AND status = 'pending'
         """,
         eligible_ids,
     )
     candidates = [dict(row) for row in rows]
+    candidates, tensions_asked = await absorb_tensions(
+        pool, candidates, tension_confirm_fn, budget=effective_budget, now=now
+    )
+    if tensions_asked:
+        result["tensions_asked"] = tensions_asked
+        effective_budget -= tensions_asked
+        if not candidates:
+            return result
     weights = await compute_category_budget_weights(
         pool,
         [candidate["category"] for candidate in candidates],
@@ -2247,8 +2986,20 @@ async def delivery_cycle(
         category: decision["reason"] for category, decision in weights.items()
     }
 
+    # bu-s11n0s.15 S3: under the owner's outcome_shaping=shape a measured verdict steers this
+    # routine cycle. Never the urgent-only sub-cycle, never the urgent band.
+    from . import shaping
+
+    plan = shaping.ShapingPlan()
+    if not urgent_only and settings.get("outcome_shaping") == shaping.MODE_SHAPE:
+        plan = await shaping.plan_shaping(pool, candidates, settings, now=now)
+        result["category_budget_reasons"].update(plan.category_reasons())
+
     def _selection_key(candidate: dict[str, Any]) -> tuple[float, int, datetime, datetime]:
         weight = float(weights.get(candidate["category"], {"weight": 1.0})["weight"])
+        shaped = plan.by_candidate.get(str(candidate["id"]))
+        if shaped is not None and shaped.weight is not None:
+            weight = shaped.weight
         deadline = candidate["expires_at"]
         expires_before_next = deadline <= now + _NEXT_REGULAR_CYCLE
         return (
@@ -2259,9 +3010,15 @@ async def delivery_cycle(
         )
 
     candidates.sort(key=_selection_key)
-    selected = candidates[:effective_budget]
+    # A digest-only class never takes a slot and never goes out standalone: it rides a
+    # delivery that is already going out, and otherwise stays pending (a natural holdout).
+    standalone = [c for c in candidates if not _is_digest_only(plan, c)]
+    selected = standalone[:effective_budget]
+    riders = [c for c in candidates if _is_digest_only(plan, c)] if selected else []
+    counted_ids = [str(c["id"]) for c in selected]
+    selected = selected + riders
     selected_ids = [str(c["id"]) for c in selected]
-    unselected_ids = [str(c["id"]) for c in candidates[effective_budget:]]
+    unselected_ids = [str(c["id"]) for c in candidates if str(c["id"]) not in set(selected_ids)]
     if unselected_ids:
         await pool.execute(
             """
@@ -2329,6 +3086,12 @@ async def delivery_cycle(
     if fold_lines:
         delivery_message = "\n\n".join([delivery_message, *(line for _, line in fold_lines)])
 
+    # bu-s11n0s.15 S4: a class change is told once, riding this delivery with the existing
+    # useful (keep) and mute (quiet) doors on one of the class's delivered candidates.
+    notices = shaping.build_notices(plan, selected, now=now)
+    if notices:
+        delivery_message = "\n\n".join([delivery_message, *(n.text for n in notices)])
+
     result["delivery_message"] = delivery_message
 
     # Compute delivery channel: majority vote from candidates that specify one.
@@ -2363,6 +3126,17 @@ async def delivery_cycle(
             for insight_id in selected_ids
         ],
     }
+    if notices:
+        notify_metadata["shaping_notices"] = [
+            {
+                "insight_id": n.insight_id,
+                "category": n.category,
+                "verdict": n.verdict,
+                "keep": f"/api/switchboard/insights/{n.insight_id}/useful",
+                "quiet": f"/api/switchboard/insights/{n.insight_id}/mute",
+            }
+            for n in notices
+        ]
 
     try:
         final_policy = await get_approvals_policy_quiet_hours(pool)
@@ -2409,7 +3183,7 @@ async def delivery_cycle(
                     "metadata = COALESCE(metadata, '{}'::jsonb) || "
                     "jsonb_build_object('withdrawn_at', $2::text, "
                     "'withdrawn_reason', 'premise_false') "
-                    "WHERE id = $1 AND status = 'pending'",
+                    "WHERE id = $1 AND status = 'pending' AND claim_id IS NULL",
                     candidate["id"],
                     dispatch_now.isoformat(),
                 )
@@ -2435,6 +3209,25 @@ async def delivery_cycle(
                 stamp = _stamp_unverified(candidate)["message"]
                 delivery_message += "\n\nUnverified Finance report: " + stamp
                 result["delivery_message"] = delivery_message
+
+    # bu-jv1moa.8: claim every selected candidate or none before the transport.
+    # An overlapping cycle that selected the same row loses here and sends
+    # nothing; the routine cycle also re-counts timed sends under the claim
+    # lock so a timed send that landed since step 5 cannot be overspent.
+    async def _timed_budget_check(conn: asyncpg.Connection) -> str | None:
+        spare = configured_budget - await sends_today(conn, now=now, lane="timed")
+        return "budget_raced" if len(counted_ids) > spare else None
+
+    claim_id, claim_refusal = await claim_for_delivery(
+        pool,
+        selected_ids,
+        now=dispatch_now,
+        budget_check=None if urgent_only else _timed_budget_check,
+    )
+    if claim_id is None:
+        result.update(skipped=True, reason=claim_refusal, delivery_message=None)
+        return result
+    await mark_attempt_started(pool, claim_id, dispatch_now)
 
     # notify_fn is guaranteed non-None here (None case returns early above)
     deliver_success = True
@@ -2480,17 +3273,32 @@ async def delivery_cycle(
                     """
                     UPDATE insight_candidates
                     SET status = 'delivered', delivered_at = $1, delivery_attempt_count = 0
-                    WHERE id = ANY($2::uuid[])
+                    WHERE id = ANY($2::uuid[]) AND claim_id = $3 AND status = 'pending'
                     """,
                     delivered_at,
                     selected_ids,
+                    claim_id,
                 )
 
                 # Step 8: Record cooldowns
                 await record_cooldowns(conn, selected, now=now)
 
                 # Step 9: Record engagement
-                await record_engagement_rows(conn, selected, delivered_at=delivered_at)
+                # bu-s11n0s.15 S5: deliveries the outcome signal covers have no proxy row.
+                await record_engagement_rows(
+                    conn,
+                    [c for c in selected if not plan.proxy_retired(c)],
+                    delivered_at=delivered_at,
+                )
+                # A rider took no slot: stamp it so the daily send count skips it.
+                if riders:
+                    await conn.execute(
+                        "UPDATE insight_candidates SET metadata = "
+                        "COALESCE(metadata, '{}'::jsonb) || '{\"digest_fold\": true}'::jsonb "
+                        "WHERE id = ANY($1::uuid[]) AND claim_id = $2",
+                        [str(c["id"]) for c in riders],
+                        claim_id,
+                    )
 
                 # bu-q7vx1q.5: persist where each candidate landed (so a later
                 # premise resolution can amend it in place) and retire the
@@ -2510,6 +3318,8 @@ async def delivery_cycle(
                                     standalone=deliver_count == 1,
                                     digest_line_index=None if deliver_count == 1 else line_index,
                                     delivered_at=delivered_at,
+                                    line_text=_c["message"],
+                                    delivery_text=delivery_message,
                                 ),
                             )
                         if fold_lines:
@@ -2526,6 +3336,7 @@ async def delivery_cycle(
                     )
 
         result["delivered"] = selected_ids
+        await shaping.record_notices(pool, notices, now=now)
 
         # Attention ledger: one row per delivered candidate. Deliberately
         # outside the bookkeeping transaction above — record_attention_event
@@ -2551,17 +3362,20 @@ async def delivery_cycle(
             )
     else:
         if terminal_metadata := terminal_telegram_metadata(notify_result):
-            await settle_terminal_insights(selected_ids, terminal_metadata)
+            await settle_terminal_insights(selected_ids, terminal_metadata, claim_id)
             result.update(terminal_metadata)
-        # Delivery failed — increment attempt counter; filter candidates that have
-        # reached the 3-consecutive-failure threshold
+        # Delivery failed — increment attempt counter and release this cycle's
+        # claim so a later cycle can retry; filter candidates that have reached
+        # the 3-consecutive-failure threshold
         await pool.execute(
             """
             UPDATE insight_candidates
-            SET delivery_attempt_count = delivery_attempt_count + 1
-            WHERE id = ANY($1::uuid[])
+            SET delivery_attempt_count = delivery_attempt_count + 1,
+                claim_id = NULL, claimed_at = NULL, attempt_started_at = NULL
+            WHERE id = ANY($1::uuid[]) AND claim_id = $2
             """,
             selected_ids,
+            claim_id,
         )
         # Filter candidates that have now failed 3 or more times; record the
         # delivery failure in metadata so callers can discriminate this path.
@@ -2575,6 +3389,7 @@ async def delivery_cycle(
                                'failed_attempts', delivery_attempt_count
                            )
             WHERE id = ANY($1::uuid[]) AND delivery_attempt_count >= 3
+              AND status = 'pending' AND claim_id IS NULL
             """,
             selected_ids,
         )

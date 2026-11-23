@@ -333,8 +333,11 @@ def _active_calendar_row(
     timezone: str = "UTC",
     all_day: bool = False,
     metadata: object = None,
+    event_type: str | None = None,
+    time_role: str = "owner",
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
+        "time_role": time_role,
         "title": title,
         "starts_at": starts_at,
         "ends_at": ends_at,
@@ -342,6 +345,216 @@ def _active_calendar_row(
         "all_day": all_day,
         "metadata": metadata,
     }
+    if event_type is not None:
+        row["event_type"] = event_type
+    return row
+
+
+async def _run_calendar(rows: list[dict[str, object]]) -> tuple[dict, AsyncMock, AsyncMock]:
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=rows)
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        result = await run_calendar_context_producer(pool)
+    return result, set_context_mock, clear_context_mock
+
+
+_NOW = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+
+
+async def test_a_source_read_failure_raises_before_any_write():
+    """bu-s11n0s.4 AC C: an unavailable calendar is not absence; nothing is set or cleared."""
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=asyncpg.PostgresConnectionError("down"))
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+        pytest.raises(asyncpg.PostgresConnectionError),
+    ):
+        await run_calendar_context_producer(pool)
+    set_context_mock.assert_not_awaited()
+    clear_context_mock.assert_not_awaited()
+
+
+async def test_typed_focus_time_asserts_focused_whatever_its_title():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Writing",  # no focus marker in the title
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                event_type="focusTime",
+            )
+        ]
+    )
+    assert result["signal"] == "focused"
+    assert set_context.await_args.args[1] == "focused"
+
+
+async def test_a_working_location_event_is_never_a_meeting():
+    location = _active_calendar_row(
+        title="Office",
+        starts_at=_NOW - timedelta(hours=1),
+        ends_at=_NOW + timedelta(hours=7),
+        event_type="workingLocation",
+    )
+    result, set_context, _ = await _run_calendar([location])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"]}
+    set_context.assert_not_awaited()
+
+    # A real meeting during the working day still asserts.
+    meeting = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, _, _ = await _run_calendar([location, meeting])
+    assert result["signal"] == "meeting"
+
+
+def _ooo_row(*, all_day: bool = False) -> dict[str, object]:
+    return _active_calendar_row(
+        title="Vacation",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(days=2),
+        all_day=all_day,
+        event_type="outOfOffice",
+    )
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_an_active_out_of_office_alone_clears_meeting_and_focused(all_day: bool):
+    result, set_context, clear_context = await _run_calendar([_ooo_row(all_day=all_day)])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
+    assert {call.args[2] for call in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+@pytest.mark.parametrize("all_day", [False, True])
+async def test_an_attended_meeting_keeps_meeting_during_out_of_office(all_day: bool):
+    # People take calls while out of office: the meeting the owner attends is the
+    # stronger, owner-authored signal, so out-of-office does not clear it.
+    attended = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+        metadata=_self_attendee("response_status", "accepted"),
+    )
+    result, set_context, clear_context = await _run_calendar([_ooo_row(all_day=all_day), attended])
+    assert result == {
+        "signal": "meeting",
+        "value": "busy",
+        "cleared": ["focused"],
+        "out_of_office": True,
+    }
+    assert set_context.await_args.args[1] == "meeting"
+    assert set_context.await_args.kwargs["expires_at"] == attended["ends_at"]
+    assert [call.args[2] for call in clear_context.await_args_list] == ["focused"]
+
+
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        {"title": "Writing", "event_type": "focusTime"},
+        {"title": "Focus: deep work"},
+    ],
+    ids=["typed-focus-time", "focus-title"],
+)
+async def test_out_of_office_suppresses_focused(blocker: dict[str, str]):
+    focus = _active_calendar_row(
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        **blocker,
+    )
+    result, set_context, _ = await _run_calendar([focus, _ooo_row()])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
+
+
+async def test_out_of_office_keeps_a_meeting_overlapped_by_a_later_focus_block():
+    focus = _active_calendar_row(
+        title="Writing",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        event_type="focusTime",
+    )
+    meeting = _active_calendar_row(
+        title="Client call",
+        starts_at=_NOW - timedelta(minutes=20),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, set_context, _ = await _run_calendar([focus, meeting, _ooo_row()])
+    assert result["signal"] == "meeting"
+    assert set_context.await_args.kwargs["expires_at"] == meeting["ends_at"]
+
+
+async def test_out_of_office_does_not_keep_a_declined_meeting():
+    declined = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+        metadata=_self_attendee("response_status", "declined"),
+    )
+    result, set_context, _ = await _run_calendar([_ooo_row(), declined])
+    assert result == {"signal": None, "cleared": ["meeting", "focused"], "out_of_office": True}
+    set_context.assert_not_awaited()
+
+
+async def test_a_generated_out_of_office_does_not_clear_a_meeting():
+    ooo = _active_calendar_row(
+        title="BUTLER: hold",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(hours=2),
+        event_type="outOfOffice",
+        metadata={"butler_generated": True},
+    )
+    meeting = _active_calendar_row(
+        title="Standup",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=10),
+    )
+    result, _, _ = await _run_calendar([ooo, meeting])
+    assert result["signal"] == "meeting"
+
+
+async def test_a_generated_out_of_office_does_not_suppress_focus():
+    # A meeting survives a real out-of-office too, so only a focus block tells a
+    # butler-generated out-of-office apart from a human one.
+    ooo = _active_calendar_row(
+        title="BUTLER: hold",
+        starts_at=_NOW - timedelta(hours=2),
+        ends_at=_NOW + timedelta(hours=2),
+        event_type="outOfOffice",
+        metadata={"butler_generated": True},
+    )
+    focus = _active_calendar_row(
+        title="Writing",
+        starts_at=_NOW - timedelta(minutes=5),
+        ends_at=_NOW + timedelta(minutes=55),
+        event_type="focusTime",
+    )
+    result, set_context, _ = await _run_calendar([focus, ooo])
+    assert result == {"signal": "focused", "value": "focused", "cleared": ["meeting"]}
+    assert set_context.await_args.args[1] == "focused"
+
+
+async def test_the_calendar_query_reads_the_type_and_all_day_out_of_office():
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        await run_calendar_context_producer(pool)
+    sql = " ".join(pool.fetch.await_args_list[0].args[0].split())
+    assert "event_type" in sql
+    assert "ce.all_day = false OR ce.event_type = 'outOfOffice'" in sql
 
 
 async def test_calendar_context_producer_skips_explicit_butler_generated_event_but_keeps_human_event():
@@ -375,7 +588,22 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     assert result["signal"] == "meeting"
     assert result["value"] == "busy"
     assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
-    pool.fetch.assert_awaited_once()
+    assert pool.fetch.await_count == 2  # the owner read, then the household count
+
+
+async def test_a_failed_household_count_read_keeps_the_owner_signal():
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    owner = _active_calendar_row(
+        title="Standup", starts_at=now - timedelta(minutes=5), ends_at=now + timedelta(minutes=20)
+    )
+    pool = MagicMock()
+    pool.fetch = AsyncMock(side_effect=[[owner], RuntimeError("household read failed")])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        result = await run_calendar_context_producer(pool)
+    assert result["signal"] == "meeting" and "household_events" not in result
 
 
 async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_meeting():
@@ -813,6 +1041,11 @@ async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
     )
 
 
+async def _db_now(pool: asyncpg.Pool) -> datetime:
+    """The database instant the producer's own ``now()`` rows are measured against."""
+    return await pool.fetchval("SELECT clock_timestamp()")
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
@@ -822,8 +1055,8 @@ class TestContextProducersIntegration:
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
             source_id = await pool.fetchval(
-                "INSERT INTO calendar_sources (source_key, source_kind) "
-                "VALUES ('test-src', 'provider') RETURNING id"
+                "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                "VALUES ('test-src', 'provider', 'owner') RETURNING id"
             )
             # An event happening right now.
             await pool.execute(
@@ -879,6 +1112,28 @@ class TestContextProducersIntegration:
             )
             assert metadata == {"source": "calendar"}
 
+            # bu-s11n0s.4 AC C: the broker reads the real bus and holds for the real meeting.
+            from butlers.tools.switchboard.insight.broker import (
+                get_suppressing_context_signal,
+            )
+
+            assert await get_suppressing_context_signal(pool, now=await _db_now(pool)) == "meeting"
+
+            # An unreadable calendar is not absence: the run fails and the meeting row is
+            # untouched, read back on its own query (AC C).
+            meeting_row = (
+                "SELECT value, expires_at, superseded_at FROM public.user_context "
+                "WHERE signal_type = 'meeting' AND set_by_butler = 'general'"
+            )
+            before = tuple(await pool.fetchrow(meeting_row))
+            await pool.execute("ALTER TABLE calendar_events RENAME TO calendar_events_offline")
+            try:
+                with pytest.raises(asyncpg.UndefinedTableError):
+                    await run_calendar_context_producer(pool)
+            finally:
+                await pool.execute("ALTER TABLE calendar_events_offline RENAME TO calendar_events")
+            assert tuple(await pool.fetchrow(meeting_row)) == before
+
             # Attended event ends: the still-live declined/free rows do not hold meeting.
             await pool.execute(
                 "UPDATE calendar_events SET ends_at = now() - interval '1 minute' "
@@ -892,6 +1147,62 @@ class TestContextProducersIntegration:
                 "AND expires_at > now()"
             )
             assert active == 0
+
+            # An out-of-office-only calendar holds no insight under meeting (AC C).
+            await pool.execute(
+                """
+                INSERT INTO calendar_events
+                    (source_id, source_butler, origin_ref, title, timezone,
+                     starts_at, ends_at, status, event_type)
+                VALUES ($1, 'general', 'ooo', 'Out of office', 'UTC',
+                        now() - interval '1 hour', now() + interval '3 hours',
+                        'confirmed', 'outOfOffice')
+                """,
+                source_id,
+            )
+            result3 = await run_calendar_context_producer(pool)
+            assert result3["signal"] is None and result3["out_of_office"] is True
+            assert await get_suppressing_context_signal(pool, now=await _db_now(pool)) is None
+        finally:
+            await pool.close()
+
+    async def test_calendar_producer_ignores_another_persons_calendar(self, core_db_url):
+        """bu-5ii4gj.1: a partner's and a holiday calendar's events are not the owner's time."""
+        pool = await _pool(core_db_url)
+        try:
+            await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
+            sources = {
+                role: await pool.fetchval(
+                    "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                    "VALUES ($1, 'provider', $2) RETURNING id",
+                    f"src-{role}",
+                    role,
+                )
+                for role in ("owner", "unclassified", "holidays")
+            }
+
+            async def event(role: str, ref: str, metadata: dict | None = None) -> None:
+                await pool.execute(
+                    """
+                    INSERT INTO calendar_events
+                        (source_id, source_butler, origin_ref, title, timezone,
+                         starts_at, ends_at, status, metadata)
+                    VALUES ($1, 'general', $2, 'Appointment', 'UTC',
+                            now() - interval '5 minutes', now() + interval '25 minutes',
+                            'confirmed', $3::jsonb)
+                    """,
+                    sources[role],
+                    ref,
+                    metadata or {},
+                )
+
+            await event("unclassified", "partner")
+            await event("holidays", "holiday", {"attendees": [{"self": True}]})
+            assert (await run_calendar_context_producer(pool))["signal"] is None
+
+            # The same partner event, with the owner invited, is the owner's time.
+            await event("unclassified", "invited", {"attendees": [{"self": True}]})
+            assert (await run_calendar_context_producer(pool))["signal"] == "meeting"
         finally:
             await pool.close()
 
@@ -900,8 +1211,8 @@ class TestContextProducersIntegration:
         try:
             await pool.execute("TRUNCATE calendar_events, calendar_sources CASCADE")
             source_id = await pool.fetchval(
-                "INSERT INTO calendar_sources (source_key, source_kind) "
-                "VALUES ('test-src2', 'provider') RETURNING id"
+                "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+                "VALUES ('test-src2', 'provider', 'owner') RETURNING id"
             )
             await pool.execute(
                 """
@@ -1302,3 +1613,166 @@ class TestContextProducersIntegration:
             assert await get_suppressing_context_signal(pool) is None
         finally:
             await pool.close()
+
+
+# -- source roles: whose time is this (bu-5ii4gj.1, REQ-context-bus-018) --------------------------
+
+_SELF_ATTENDEE = {"attendees": [{"self": True, "response_status": "accepted"}]}
+
+
+async def test_another_persons_meeting_sets_no_meeting_context():
+    result, set_context, clear_context = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Partner dentist",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="unclassified",
+            ),
+            _active_calendar_row(
+                title="Family planning",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="household_member",
+            ),
+        ]
+    )
+    assert result["signal"] is None
+    set_context.assert_not_awaited()
+    assert {c.args[2] for c in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_an_invited_event_on_another_calendar_still_sets_meeting_context():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Joint review",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="other_person",
+                metadata=_SELF_ATTENDEE,
+            )
+        ]
+    )
+    assert result["signal"] == "meeting"
+    set_context.assert_awaited_once()
+
+
+async def test_holiday_and_birthday_sources_never_set_context():
+    result, _, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="National day",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role=role,
+                metadata=_SELF_ATTENDEE,
+            )
+            for role in ("holidays", "birthdays")
+        ]
+    )
+    assert result["signal"] is None
+
+
+async def test_a_colleagues_out_of_office_does_not_suppress_the_owners_focus():
+    result, set_context, _ = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Away",
+                starts_at=_NOW - timedelta(hours=1),
+                ends_at=_NOW + timedelta(hours=8),
+                event_type="outOfOffice",
+                time_role="unclassified",
+            ),
+            _active_calendar_row(
+                title="Deep work",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                event_type="focusTime",
+            ),
+        ]
+    )
+    assert result["signal"] == "focused"
+    assert "out_of_office" not in result
+    set_context.assert_awaited_once()
+
+
+async def test_the_calendar_query_joins_the_source_role():
+    pool = MagicMock()
+    pool.fetch = AsyncMock(return_value=[])
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=AsyncMock()),
+        patch("butlers.jobs.context_producers.clear_context", new=AsyncMock()),
+    ):
+        await run_calendar_context_producer(pool)
+    sql = pool.fetch.await_args.args[0]
+    assert "JOIN calendar_sources cs ON cs.id = ce.source_id" in sql
+    assert "cs.time_role" in sql
+
+
+# -- household context: other people's live events are reported, never a signal (REQ-context-bus-019)
+
+
+async def test_a_household_event_sets_no_signal_but_is_reported():
+    result, set_context, clear_context = await _run_calendar(
+        [
+            _active_calendar_row(
+                title="Synthetic private appointment",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="household_member",
+            ),
+            _active_calendar_row(
+                title="Unclassified",
+                starts_at=_NOW - timedelta(minutes=5),
+                ends_at=_NOW + timedelta(minutes=55),
+                time_role="unclassified",
+            ),
+        ]
+    )
+    assert result["signal"] is None
+    assert result["household_events"] == 1  # unclassified counts as nothing
+    set_context.assert_not_awaited()
+    assert "Synthetic private appointment" not in repr(result)
+    assert {c.args[2] for c in clear_context.await_args_list} == {"meeting", "focused"}
+
+
+async def test_no_household_key_when_there_is_none():
+    result, _, _ = await _run_calendar([])
+    assert "household_events" not in result
+
+
+async def test_a_tentative_household_event_counts_as_context_but_never_as_owner_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative partner event",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    time_role="household_member",
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["household_events"] == 1 and result["signal"] is None
+    set_context.assert_not_awaited()
+
+
+async def test_a_tentative_owner_event_still_sets_no_signal():
+    result, set_context, _ = await _run_calendar(
+        [
+            {
+                **_active_calendar_row(
+                    title="Tentative owner meeting",
+                    starts_at=_NOW - timedelta(minutes=5),
+                    ends_at=_NOW + timedelta(minutes=55),
+                    metadata=_SELF_ATTENDEE,
+                ),
+                "status": "tentative",
+            }
+        ]
+    )
+    assert result["signal"] is None
+    set_context.assert_not_awaited()

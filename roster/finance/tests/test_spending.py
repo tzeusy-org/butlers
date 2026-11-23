@@ -18,38 +18,14 @@ pytestmark = [
 ]
 
 # ---------------------------------------------------------------------------
-# Schema helpers
+# Fixtures
 # ---------------------------------------------------------------------------
-
-CREATE_TRANSACTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS transactions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id        UUID,
-    source_message_id TEXT,
-    posted_at         TIMESTAMPTZ NOT NULL,
-    merchant          TEXT NOT NULL,
-    description       TEXT,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    category          TEXT NOT NULL,
-    payment_method    TEXT,
-    receipt_url       TEXT,
-    external_ref      TEXT,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    deleted_at        TIMESTAMPTZ,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with the finance transactions table."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(CREATE_TRANSACTIONS_SQL)
-        yield p
+async def finance_pool(db):
+    """A private clone migrated with the core and finance chains."""
+    return await db("core", "finance")
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +49,17 @@ async def _insert_tx(
 ) -> None:
     if posted_at is None:
         posted_at = datetime.now(UTC)
+    # The real schema keys transactions to categories(name) and accounts(id).
+    await pool.execute(
+        "INSERT INTO categories (name, display_name) VALUES ($1, $1) ON CONFLICT DO NOTHING",
+        category,
+    )
+    if account_id is not None:
+        await pool.execute(
+            "INSERT INTO accounts (id, institution, type) VALUES ($1::uuid, 'Test Bank', 'checking')"
+            " ON CONFLICT DO NOTHING",
+            account_id,
+        )
     # metadata is passed as a Python dict — the pool's JSONB codec
     # (src/butlers/db.py:register_jsonb_codec) encodes it to JSONB. Passing a
     # JSON *string* would be double-encoded into a JSON scalar string and break
@@ -108,11 +95,11 @@ def _this_month_mid() -> datetime:
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_empty(pool):
+async def test_spending_summary_empty(finance_pool):
     """Returns zero total and empty groups when no transactions exist."""
     from butlers.tools.finance.spending import spending_summary
 
-    result = await spending_summary(pool)
+    result = await spending_summary(finance_pool)
 
     assert result["total_spend"] == "0"
     assert result["start_date"] <= result["end_date"]
@@ -121,24 +108,24 @@ async def test_spending_summary_empty(pool):
         assert int(g["count"]) == 0
 
 
-async def test_spending_summary_excludes_credit_direction(pool):
+async def test_spending_summary_excludes_credit_direction(finance_pool):
     """Credit-direction entries must NOT count toward the spend total."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
     await _insert_tx(
-        pool, merchant="Refund Co", amount="100.00", direction="credit", posted_at=posted
+        finance_pool, merchant="Refund Co", amount="100.00", direction="credit", posted_at=posted
     )
     await _insert_tx(
-        pool, merchant="Coffee Shop", amount="5.00", direction="debit", posted_at=posted
+        finance_pool, merchant="Coffee Shop", amount="5.00", direction="debit", posted_at=posted
     )
 
-    result = await spending_summary(pool)
+    result = await spending_summary(finance_pool)
 
     assert Decimal(result["total_spend"]) == Decimal("5.00")
 
 
-async def test_spending_summary_explicit_date_range(pool):
+async def test_spending_summary_explicit_date_range(finance_pool):
     """Transactions outside the specified date range are excluded."""
     from butlers.tools.finance.spending import spending_summary
 
@@ -146,12 +133,12 @@ async def test_spending_summary_explicit_date_range(pool):
     in_range = today - timedelta(days=5)
     out_of_range = today - timedelta(days=40)
 
-    await _insert_tx(pool, amount="100.00", direction="debit", posted_at=in_range)
-    await _insert_tx(pool, amount="999.00", direction="debit", posted_at=out_of_range)
+    await _insert_tx(finance_pool, amount="100.00", direction="debit", posted_at=in_range)
+    await _insert_tx(finance_pool, amount="999.00", direction="debit", posted_at=out_of_range)
 
     start = (today - timedelta(days=10)).date()
     end = today.date()
-    result = await spending_summary(pool, start_date=start, end_date=end)
+    result = await spending_summary(finance_pool, start_date=start, end_date=end)
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
 
@@ -161,22 +148,22 @@ async def test_spending_summary_explicit_date_range(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_group_by_category(pool):
+async def test_spending_summary_group_by_category(finance_pool):
     """group_by=category returns one bucket per category, sorted by amount desc."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
     await _insert_tx(
-        pool, merchant="Whole Foods", amount="80.00", category="groceries", posted_at=posted
+        finance_pool, merchant="Whole Foods", amount="80.00", category="groceries", posted_at=posted
     )
     await _insert_tx(
-        pool, merchant="Blue Bottle", amount="20.00", category="dining", posted_at=posted
+        finance_pool, merchant="Blue Bottle", amount="20.00", category="dining", posted_at=posted
     )
     await _insert_tx(
-        pool, merchant="Safeway", amount="50.00", category="groceries", posted_at=posted
+        finance_pool, merchant="Safeway", amount="50.00", category="groceries", posted_at=posted
     )
 
-    result = await spending_summary(pool, group_by="category")
+    result = await spending_summary(finance_pool, group_by="category")
 
     assert Decimal(result["total_spend"]) == Decimal("150.00")
     keys = [g["key"] for g in result["groups"]]
@@ -200,16 +187,16 @@ async def test_spending_summary_group_by_category(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_group_by_merchant(pool):
+async def test_spending_summary_group_by_merchant(finance_pool):
     """group_by=merchant aggregates by merchant name."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, merchant="Netflix", amount="15.00", posted_at=posted)
-    await _insert_tx(pool, merchant="Netflix", amount="15.00", posted_at=posted)
-    await _insert_tx(pool, merchant="Spotify", amount="10.00", posted_at=posted)
+    await _insert_tx(finance_pool, merchant="Netflix", amount="15.00", posted_at=posted)
+    await _insert_tx(finance_pool, merchant="Netflix", amount="15.00", posted_at=posted)
+    await _insert_tx(finance_pool, merchant="Spotify", amount="10.00", posted_at=posted)
 
-    result = await spending_summary(pool, group_by="merchant")
+    result = await spending_summary(finance_pool, group_by="merchant")
 
     netflix = next(g for g in result["groups"] if g["key"] == "Netflix")
     assert Decimal(netflix["amount"]) == Decimal("30.00")
@@ -224,7 +211,7 @@ async def test_spending_summary_group_by_merchant(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_group_by_week(pool):
+async def test_spending_summary_group_by_week(finance_pool):
     """group_by=week returns ISO week buckets (YYYY-Www format)."""
     from butlers.tools.finance.spending import spending_summary
 
@@ -236,10 +223,10 @@ async def test_spending_summary_group_by_week(pool):
     start = (today - timedelta(days=21)).date()
     end = today.date()
 
-    await _insert_tx(pool, amount="30.00", posted_at=week1)
-    await _insert_tx(pool, amount="50.00", posted_at=week2)
+    await _insert_tx(finance_pool, amount="30.00", posted_at=week1)
+    await _insert_tx(finance_pool, amount="50.00", posted_at=week2)
 
-    result = await spending_summary(pool, start_date=start, end_date=end, group_by="week")
+    result = await spending_summary(finance_pool, start_date=start, end_date=end, group_by="week")
 
     assert len(result["groups"]) >= 2
     # Keys should look like "2026-W07"
@@ -252,7 +239,7 @@ async def test_spending_summary_group_by_week(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_group_by_month(pool):
+async def test_spending_summary_group_by_month(finance_pool):
     """group_by=month returns YYYY-MM buckets."""
     from butlers.tools.finance.spending import spending_summary
 
@@ -264,10 +251,10 @@ async def test_spending_summary_group_by_month(pool):
     start = last_month_dt.date().replace(day=1)
     end = today.date()
 
-    await _insert_tx(pool, amount="100.00", posted_at=this_month)
-    await _insert_tx(pool, amount="200.00", posted_at=last_month_dt)
+    await _insert_tx(finance_pool, amount="100.00", posted_at=this_month)
+    await _insert_tx(finance_pool, amount="200.00", posted_at=last_month_dt)
 
-    result = await spending_summary(pool, start_date=start, end_date=end, group_by="month")
+    result = await spending_summary(finance_pool, start_date=start, end_date=end, group_by="month")
 
     assert len(result["groups"]) >= 2
     for g in result["groups"]:
@@ -281,20 +268,20 @@ async def test_spending_summary_group_by_month(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_category_filter(pool):
+async def test_spending_summary_category_filter(finance_pool):
     """category_filter restricts results to the named category."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
-    await _insert_tx(pool, amount="50.00", category="dining", posted_at=posted)
+    await _insert_tx(finance_pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(finance_pool, amount="50.00", category="dining", posted_at=posted)
 
-    result = await spending_summary(pool, category_filter="groceries")
+    result = await spending_summary(finance_pool, category_filter="groceries")
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
 
 
-async def test_spending_summary_category_filter_matches_inferred_category_overlay(pool):
+async def test_spending_summary_category_filter_matches_inferred_category_overlay(finance_pool):
     """category_filter matches the effective (overlay-aware) category, not the raw one.
 
     A row whose raw category is benign but whose ``inferred_category`` overlay
@@ -308,7 +295,7 @@ async def test_spending_summary_category_filter_matches_inferred_category_overla
     posted = _this_month_mid()
     # Raw category "general" but overlay says "groceries" — must be included.
     await _insert_tx(
-        pool,
+        finance_pool,
         amount="100.00",
         category="general",
         metadata={"inferred_category": "groceries"},
@@ -316,14 +303,14 @@ async def test_spending_summary_category_filter_matches_inferred_category_overla
     )
     # Raw category "groceries" but overlay overrides it to "dining" — must be excluded.
     await _insert_tx(
-        pool,
+        finance_pool,
         amount="50.00",
         category="groceries",
         metadata={"inferred_category": "dining"},
         posted_at=posted,
     )
 
-    result = await spending_summary(pool, category_filter="groceries")
+    result = await spending_summary(finance_pool, category_filter="groceries")
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
 
@@ -333,7 +320,7 @@ async def test_spending_summary_category_filter_matches_inferred_category_overla
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_account_id_filter(pool):
+async def test_spending_summary_account_id_filter(finance_pool):
     """account_id filter restricts results to a specific account."""
     import uuid
 
@@ -343,11 +330,11 @@ async def test_spending_summary_account_id_filter(pool):
     other_acct = str(uuid.uuid4())
     posted = _this_month_mid()
 
-    await _insert_tx(pool, amount="75.00", account_id=acct, posted_at=posted)
-    await _insert_tx(pool, amount="25.00", account_id=other_acct, posted_at=posted)
-    await _insert_tx(pool, amount="10.00", account_id=None, posted_at=posted)
+    await _insert_tx(finance_pool, amount="75.00", account_id=acct, posted_at=posted)
+    await _insert_tx(finance_pool, amount="25.00", account_id=other_acct, posted_at=posted)
+    await _insert_tx(finance_pool, amount="10.00", account_id=None, posted_at=posted)
 
-    result = await spending_summary(pool, account_id=acct)
+    result = await spending_summary(finance_pool, account_id=acct)
 
     assert Decimal(result["total_spend"]) == Decimal("75.00")
 
@@ -357,12 +344,12 @@ async def test_spending_summary_account_id_filter(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_invalid_group_by(pool):
+async def test_spending_summary_invalid_group_by(finance_pool):
     """Invalid group_by value raises ValueError."""
     from butlers.tools.finance.spending import spending_summary
 
     with pytest.raises(ValueError, match="Unsupported group_by"):
-        await spending_summary(pool, group_by="invalid_mode")
+        await spending_summary(finance_pool, group_by="invalid_mode")
 
 
 # ---------------------------------------------------------------------------
@@ -370,16 +357,16 @@ async def test_spending_summary_invalid_group_by(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_accepts_string_dates(pool):
+async def test_spending_summary_accepts_string_dates(finance_pool):
     """start_date and end_date can be ISO-8601 strings."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="42.00", posted_at=posted)
+    await _insert_tx(finance_pool, amount="42.00", posted_at=posted)
 
     today = date.today()
     result = await spending_summary(
-        pool,
+        finance_pool,
         start_date=today.replace(day=1).isoformat(),
         end_date=today.isoformat(),
     )
@@ -393,11 +380,11 @@ async def test_spending_summary_accepts_string_dates(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_return_shape(pool):
+async def test_spending_summary_return_shape(finance_pool):
     """spending_summary always returns a dict with the expected top-level keys."""
     from butlers.tools.finance.spending import spending_summary
 
-    result = await spending_summary(pool, group_by="category")
+    result = await spending_summary(finance_pool, group_by="category")
 
     assert set(result.keys()) == {
         "start_date",
@@ -421,7 +408,7 @@ async def test_spending_summary_return_shape(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_spending_summary_excludes_transfer_and_uncategorized(pool):
+async def test_spending_summary_excludes_transfer_and_uncategorized(finance_pool):
     """transfer and uncategorized categories must NOT count toward the spend total.
 
     Parity with the dashboard `get_spending_summary`: these are not real spend
@@ -431,11 +418,11 @@ async def test_spending_summary_excludes_transfer_and_uncategorized(pool):
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
-    await _insert_tx(pool, amount="500.00", category="transfer", posted_at=posted)
-    await _insert_tx(pool, amount="42.00", category="uncategorized", posted_at=posted)
+    await _insert_tx(finance_pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(finance_pool, amount="500.00", category="transfer", posted_at=posted)
+    await _insert_tx(finance_pool, amount="42.00", category="uncategorized", posted_at=posted)
 
-    result = await spending_summary(pool, group_by="category")
+    result = await spending_summary(finance_pool, group_by="category")
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
     keys = [g["key"] for g in result["groups"]]
@@ -444,7 +431,7 @@ async def test_spending_summary_excludes_transfer_and_uncategorized(pool):
     assert "groceries" in keys
 
 
-async def test_spending_summary_excludes_inferred_transfer_overlay(pool):
+async def test_spending_summary_excludes_inferred_transfer_overlay(finance_pool):
     """Exclusion is keyed off the effective (overlay-aware) category.
 
     A row whose raw category is benign but whose ``inferred_category`` overlay is
@@ -454,35 +441,35 @@ async def test_spending_summary_excludes_inferred_transfer_overlay(pool):
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(finance_pool, amount="100.00", category="groceries", posted_at=posted)
     await _insert_tx(
-        pool,
+        finance_pool,
         amount="300.00",
         category="general",
         metadata={"inferred_category": "transfer"},
         posted_at=posted,
     )
 
-    result = await spending_summary(pool)
+    result = await spending_summary(finance_pool)
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
 
 
-async def test_spending_summary_excludes_soft_deleted(pool):
+async def test_spending_summary_excludes_soft_deleted(finance_pool):
     """Soft-deleted transactions (deleted_at IS NOT NULL) must not inflate totals/groups."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="100.00", category="groceries", posted_at=posted)
+    await _insert_tx(finance_pool, amount="100.00", category="groceries", posted_at=posted)
     await _insert_tx(
-        pool,
+        finance_pool,
         amount="250.00",
         category="groceries",
         posted_at=posted,
         deleted_at=posted,
     )
 
-    result = await spending_summary(pool, group_by="category")
+    result = await spending_summary(finance_pool, group_by="category")
 
     assert Decimal(result["total_spend"]) == Decimal("100.00")
     grocery_group = next(g for g in result["groups"] if g["key"] == "groceries")
@@ -490,15 +477,15 @@ async def test_spending_summary_excludes_soft_deleted(pool):
     assert grocery_group["count"] == 1
 
 
-async def test_spending_summary_keeps_mixed_currencies_separate(pool):
+async def test_spending_summary_keeps_mixed_currencies_separate(finance_pool):
     """Mixed currencies expose honest buckets and mark legacy totals degraded."""
     from butlers.tools.finance.spending import spending_summary
 
     posted = _this_month_mid()
-    await _insert_tx(pool, amount="100.00", currency="USD", posted_at=posted)
-    await _insert_tx(pool, amount="80.00", currency="EUR", posted_at=posted)
+    await _insert_tx(finance_pool, amount="100.00", currency="USD", posted_at=posted)
+    await _insert_tx(finance_pool, amount="80.00", currency="EUR", posted_at=posted)
 
-    result = await spending_summary(pool, group_by="category")
+    result = await spending_summary(finance_pool, group_by="category")
 
     assert result["currency"] is None
     assert result["legacy_aggregate_degraded"] is True

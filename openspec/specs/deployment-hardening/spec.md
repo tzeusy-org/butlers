@@ -175,6 +175,110 @@ artifact that is undersized or does not decompress SHALL NOT be published.
 - **THEN** the run exits non-zero and reports the failure on its error stream,
   and the backup directory retains only previously published artifacts
 
+### Requirement: Opt-In Kubernetes Private-Network Egress Allowlist
+
+The Kubernetes chart SHALL provide an opt-in `egressPolicy` that mirrors the compose
+egress firewall: private and link-local ranges (10/8, 172.16/12, 192.168/16,
+100.64/10, 169.254/16) are denied to pods, explicitly allowlisted CIDRs, DNS and
+in-cluster traffic are admitted, and the public internet remains reachable. The
+policy SHALL be one NetworkPolicy per release, because NetworkPolicies are additive.
+It SHALL be disabled by default, leaving rendered manifests unchanged, and enabling it
+SHALL NOT admit any host beyond the compose firewall's allowlist.
+
+#### Scenario: Default render is unchanged
+- **WHEN** the chart renders with `egressPolicy.enabled` unset
+- **THEN** the rendered manifests are identical to a chart without the option
+
+#### Scenario: Enabled policy excludes private ranges
+- **WHEN** the chart renders with `egressPolicy.enabled=true` and an allowlist
+- **THEN** exactly one egress policy selects every pod, excludes the five private
+  ranges from the public rule, and admits each allowlisted CIDR and DNS
+
+#### Scenario: Missing allowlist refuses
+- **WHEN** `egressPolicy.enabled=true` with no allowlist and no explicit opt-out
+- **THEN** rendering fails with a message naming `egressPolicy.allowedCidrs`
+
+### Requirement: Declared Per-Workload Egress Profiles
+
+The repository SHALL declare each chart workload's egress in one reviewed file,
+`deploy/egress-profiles.toml` (RFC 0038 S7): exact chart peers and ports, site-located
+peers whose port the profile owns, and exact public `hostname:port` entries reachable
+only through the shared egress gateway on the workload's own gateway port. Egress SHALL
+widen only by a reviewed change to that file; no runtime widening path exists. The
+parser SHALL refuse IP literals, wildcards, private, cluster and tailnet names, unknown
+keys, a gateway port shared by two workloads, and an internal peer that is the gateway
+or not a declared workload. The chart's opt-in
+`egressProfiles.enabled` SHALL replace the tracker-egress policy with default-deny
+egress for every pod plus exactly one allow policy per workload, and SHALL be disabled
+by default.
+
+#### Scenario: Every pod has exactly one egress owner
+- **WHEN** the chart renders with `egressProfiles.enabled=true`
+- **THEN** every pod is selected by the default-deny egress policy and by exactly one
+  allow policy, its own workload's, and no tracker-egress policy renders
+
+#### Scenario: A rendered workload without a usable profile refuses
+- **WHEN** an enabled workload has no profile, has a held profile, or names a required
+  site peer the deployment does not locate
+- **THEN** rendering fails naming that workload or site
+
+#### Scenario: Profiles cannot coexist with the open egress rule
+- **WHEN** `egressProfiles.enabled=true` and `egressPolicy.enabled=true`
+- **THEN** rendering fails, because the additive public rule would stay open
+
+#### Scenario: Direct private and public destinations are denied
+- **WHEN** the chart renders with profiles enabled
+- **THEN** no pod's egress union admits the tracker, link-local metadata, or any
+  private or public address other than its declared site `/32`s, and a workload reaches
+  the gateway only on its own port
+
+#### Scenario: Profiles need the tracker addresses
+- **WHEN** `egressProfiles.enabled=true` with no `trackerEgress.deniedCidrs`
+- **THEN** rendering fails, so no site `/32` can name an unknown tracker address
+
+#### Scenario: Stale rendering fails
+- **WHEN** `deploy/egress-profiles.toml` changes without re-rendering
+  `deploy/helm/butlers/files/egress-profiles.json`
+- **THEN** the profile tests fail and name `make egress-profiles`
+
+### Requirement: Gateway request-aware secure transport
+
+The selected shared gateway SHALL execute explicit HTTPS requests and WSS
+handshakes on the profiled workload listener. Both routes SHALL bind the approved
+origin hostname/port to outbound Host and verified TLS SNI, validate the entire
+public IPv4 resolution set before dialing numeric addresses, and refuse every
+300..399 before exposing origin response metadata or content. No CONNECT,
+arbitrary upgraded byte stream, direct fallback or model-supplied identity is
+permitted. Existing HTTP/SSE behavior SHALL remain unchanged.
+
+#### Scenario: A valid profiled WebSocket retains its logical origin and protocol
+- **WHEN** a profiled workload uses the explicit WSS route with a valid GET
+  handshake, original key and offered subprotocols
+- **THEN** the gateway validates the origin101 Upgrade, Connection, Accept and
+  selected subprotocol before exposing101, and relays valid RFC6455 frame bytes
+  with masking, fragmentation, UTF-8, control and finite message/byte validation
+- **AND** no compression extension is negotiated and no generic TCP route opens
+
+#### Scenario: WebSocket refusals do not expose redirect or invalid handshake content
+- **WHEN** the origin returns any300..399, an invalid101, or an unoffered
+  subprotocol or extension
+- **THEN** the gateway refuses before exposing101, Location or origin content
+  and never dials a redirect destination
+
+#### Scenario: WebSocket lifetime retains bounded cleanup and admission
+- **WHEN** either side closes, cancels, sends an invalid frame, or exceeds an
+  inactivity, total-time, message or byte limit
+- **THEN** both directions and owned writers settle before admission releases,
+  with finite close time and content-free audit causes
+- **AND** activity in either direction keeps a healthy quiet reader alive,
+  payload reads stay bounded, and no HTTP error is injected after101
+
+#### Scenario: Ordinary provider responses retain authentication and retry semantics
+- **WHEN** an origin returns a valid non101, nonredirect response to a WebSocket
+  handshake, including an authentication error or rate limit
+- **THEN** the gateway preserves its status, application headers and bounded
+  streaming body through the HTTP response path without exposing101
+
 ## Source References
 - Non-Negotiable Rule 1 (User-federated: one user, one instance, full
   sovereignty) — protecting the owner's always-on personal-data deployment from

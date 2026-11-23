@@ -493,7 +493,7 @@ async def execute_consolidation(
     # itself (e.g. the deterministic scheduled-job path, which has no access
     # to the module's toml config), fall back to the pool's own
     # current_schema() — the same idiom used by
-    # scheduled_jobs.py::_infer_current_schema and core/scheduler.py — rather
+    # scheduled_jobs.py::_infer_current_schema and core/scheduler/ — rather
     # than silently dropping catalog writes for the whole run.
     if enable_shared_catalog and not source_schema:
         source_schema = await pool.fetchval("SELECT current_schema()")

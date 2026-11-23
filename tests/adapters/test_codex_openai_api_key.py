@@ -21,7 +21,7 @@ from butlers.core.runtimes._codex_auth_sync import (
     _AUTH_SYNC_CACHE,
     _AUTH_SYNC_LOCKS,
 )
-from butlers.core.runtimes.codex import CodexAdapter, _openai_api_key_rejected
+from butlers.core.runtimes.codex import CodexAdapter, _device_code_attempt_rejected
 
 pytestmark = pytest.mark.unit
 
@@ -103,20 +103,18 @@ async def _invoke(adapter: CodexAdapter, recorder: _SpawnRecorder, **env: str) -
         return result
 
 
-async def test_stored_key_runs_on_codex_api_key_without_device_code_auth(codex_home):
-    store = _store(codex_home, openai_key=f"  {_API_KEY}\n")
+async def test_stored_key_is_not_used_while_device_code_auth_works(codex_home):
+    store = _store(codex_home, openai_key=_API_KEY)
     adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
     recorder = _SpawnRecorder([_proc(0)])
 
-    await _invoke(adapter, recorder, OPENAI_API_KEY="inherited", CODEX_ACCESS_TOKEN="inherited")
+    await _invoke(adapter, recorder)
 
     assert recorder.spawns == [
-        {"codex_api_key": _API_KEY, "openai_api_key": None, "auth_json_linked": False}
+        {"codex_api_key": None, "openai_api_key": None, "auth_json_linked": True}
     ]
-    # The device-code authority is neither read nor reconciled.
-    store.load_codex_cli_auth.assert_not_awaited()
-    store.require_system_global_pool.assert_not_called()
-    assert adapter.last_process_info["auth_mode"] == "openai_api_key"
+    store.load_codex_cli_auth.assert_awaited()
+    assert "auth_fallback" not in adapter.last_process_info
 
 
 async def test_no_stored_key_uses_device_code_auth_unchanged(codex_home):
@@ -136,32 +134,44 @@ async def test_no_stored_key_uses_device_code_auth_unchanged(codex_home):
 @pytest.mark.parametrize(
     "stderr",
     [
-        b"Error: 401 Unauthorized: Incorrect API key provided",
-        b"Error: 429 insufficient_quota: You exceeded your current quota",
+        b"Error: Quota exceeded. Check your plan and billing details.",
+        b"Error: 401 Unauthorized: token revoked",
     ],
 )
-async def test_rejected_key_falls_back_to_device_code_auth(codex_home, stderr, caplog):
-    store = _store(codex_home, openai_key=_API_KEY)
+async def test_rejected_device_code_auth_falls_back_to_api_key(codex_home, stderr, caplog):
+    store = _store(codex_home, openai_key=f"  {_API_KEY}\n")
     adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
     recorder = _SpawnRecorder([_proc(1, stderr), _proc(0)])
 
     with caplog.at_level(logging.DEBUG):
-        result_text, _tool_calls, _usage = await _invoke(adapter, recorder)
+        result_text, _tool_calls, _usage = await _invoke(
+            adapter, recorder, OPENAI_API_KEY="inherited", CODEX_ACCESS_TOKEN="inherited"
+        )
 
     assert result_text == "ok"
-    assert recorder.spawns == [
-        {"codex_api_key": _API_KEY, "openai_api_key": None, "auth_json_linked": False},
-        {"codex_api_key": None, "openai_api_key": None, "auth_json_linked": True},
+    assert [(x["codex_api_key"], x["auth_json_linked"]) for x in recorder.spawns] == [
+        (None, True),
+        (_API_KEY, False),
     ]
-    store.record_test_result.assert_awaited_once()
-    key, ok, _message = store.record_test_result.await_args.args
-    assert (key, ok) == ("cli-auth/openai", False)
-    assert adapter.last_process_info["auth_fallback"] == "openai_api_key_rejected"
-    assert adapter.last_process_info["auth_mode"] == "device_code"
+    # The API-key attempt strips every other inherited Codex auth env var.
+    assert recorder.spawns[1]["openai_api_key"] is None
+    assert adapter.last_process_info["auth_fallback"] == "device_code_rejected"
+    assert adapter.last_process_info["auth_mode"] == "openai_api_key"
     assert _API_KEY not in caplog.text
 
 
-async def test_unrelated_failure_with_key_does_not_fall_back(codex_home):
+async def test_rejected_device_code_auth_without_key_propagates(codex_home):
+    store = _store(codex_home, openai_key=None)
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
+    recorder = _SpawnRecorder([_proc(1, b"Error: Quota exceeded.")])
+
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        await _invoke(adapter, recorder)
+
+    assert len(recorder.spawns) == 1
+
+
+async def test_unrelated_device_code_failure_does_not_fall_back(codex_home):
     store = _store(codex_home, openai_key=_API_KEY)
     adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
     recorder = _SpawnRecorder([_proc(1, b"Error: model output could not be parsed")])
@@ -170,21 +180,29 @@ async def test_unrelated_failure_with_key_does_not_fall_back(codex_home):
         await _invoke(adapter, recorder)
 
     assert len(recorder.spawns) == 1
-    store.load_codex_cli_auth.assert_not_awaited()
-    store.record_test_result.assert_not_awaited()
 
 
-async def test_key_lookup_failure_uses_device_code_auth_without_logging_detail(codex_home, caplog):
+async def test_api_key_failure_after_fallback_propagates(codex_home):
+    store = _store(codex_home, openai_key=_API_KEY)
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
+    recorder = _SpawnRecorder([_proc(1, b"Error: Quota exceeded."), _proc(1, b"Error: boom")])
+
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        await _invoke(adapter, recorder)
+
+    assert len(recorder.spawns) == 2
+
+
+async def test_key_lookup_failure_leaves_device_code_failure_unchanged(codex_home, caplog):
     store = _store(codex_home, openai_key=None)
     store.load = AsyncMock(side_effect=RuntimeError(f"bind {_API_KEY}"))
     adapter = CodexAdapter(codex_binary="/usr/bin/codex", credential_store=store, butler_name="qa")
-    recorder = _SpawnRecorder([_proc(0)])
+    recorder = _SpawnRecorder([_proc(1, b"Error: Quota exceeded.")])
 
-    with caplog.at_level(logging.DEBUG):
+    with caplog.at_level(logging.DEBUG), pytest.raises(RuntimeError, match="exited with code 1"):
         await _invoke(adapter, recorder)
 
-    assert recorder.spawns[0]["codex_api_key"] is None
-    assert recorder.spawns[0]["auth_json_linked"] is True
+    assert len(recorder.spawns) == 1
     assert _API_KEY not in caplog.text
 
 
@@ -194,6 +212,8 @@ async def test_key_lookup_failure_uses_device_code_auth_without_logging_detail(c
         ({"is_pre_tool_call": True, "exit_code": 1, "error_detail": "401 Unauthorized"}, True),
         ({"is_pre_tool_call": True, "exit_code": 1, "stderr": "Incorrect API key"}, True),
         ({"is_pre_tool_call": True, "exit_code": 1, "error_detail": "insufficient_quota"}, True),
+        ({"is_pre_tool_call": True, "exit_code": 1, "stderr": "Quota exceeded. Check"}, True),
+        ({"is_pre_tool_call": True, "exit_code": None, "authority_unavailable": True}, True),
         # Timeouts and cancellations say nothing about the key.
         ({"is_pre_tool_call": True, "exit_code": -1, "stderr": "401 Unauthorized"}, False),
         ({"is_pre_tool_call": False, "exit_code": 1, "error_detail": "401 Unauthorized"}, False),
@@ -201,5 +221,5 @@ async def test_key_lookup_failure_uses_device_code_auth_without_logging_detail(c
         (None, False),
     ],
 )
-def test_openai_api_key_rejected_classifier(process_info, expected):
-    assert _openai_api_key_rejected(process_info) is expected
+def test_device_code_attempt_rejected_classifier(process_info, expected):
+    assert _device_code_attempt_rejected(process_info) is expected

@@ -62,12 +62,10 @@ That one broad result is the merge queue's `merge_group` run, which validates
 the exact tree about to land. Every pull request and every push to `main`
 runs the same complete pipeline; nothing is skipped by path, so the one
 required check, `alls-green`, means the same thing on every event. The
-suite also has a size budget: `scripts/check_test_budget.py` fails
-`smoke` when a lane collects more tests than
-`scripts/test-budget-baseline.json` allows, so a change that grows the suite
-past its headroom condenses tests in the same PR or raises the budget with a
-stated net test delta and reason. Tests are production code with a run-time
-cost on every merge; more of them is not free.
+suite has no hard test-count cap: the owner decided on 2026-11-03 that test
+growth is governed by CI duration targets (see the Five-Minute Routine-Lane
+Target below), not by a collected-test budget. Tests are production code with a
+run-time cost on every merge; more of them is not free.
 
 Every event runs all five unit and six integration groups beside fresh lane collection for
 totals and budgets. There is no change classifier, scoped subset or affected-test lane in CI:
@@ -161,7 +159,9 @@ after stable measurements. Each reduction needs scoped before/after timing and
 an account of the public behavior or contract that still protects each removed
 case. Preserve architecture, wire, privacy, authorization, migration, retry,
 and idempotency coverage. Test counts, mocks, or similar-looking cases alone
-are not grounds for deletion. A missed target keeps the phase open with its
+are not grounds for deletion. As of 2026-11-03 there is no test-count cap, so
+lane duration is the only growth pressure; it is a target today, with no
+enforced duration gate beyond job `timeout-minutes`. A missed target keeps the phase open with its
 limiting domains recorded in the owning Beads task.
 
 The graduated commands and planner behavior live in
@@ -195,7 +195,7 @@ Matching names, smaller counts and deleted production paths are not survivors
 on their own; the reviewer checks what the survivor executes. A mock-call
 assertion (`assert_not_called`, `call_count`) often encodes a real contract such
 as idempotency, delivery cadence or a no-send boundary, so treat it as protected
-until shown otherwise. This rule does not change the per-lane test budget.
+until shown otherwise. Deletion stays a review decision, not a count target.
 
 ## Evidence Expectations
 

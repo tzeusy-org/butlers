@@ -17,7 +17,7 @@ from butlers.core.goal_admission import (
     Obligation,
     SourceRef,
 )
-from butlers.tools.switchboard.ingestion.goal_input import scoped_reply_ref
+from butlers.core.reply_scope import scoped_reply_ref
 from tests.polling import poll_until
 from tests.switchboard.accepted_source_fixtures import (
     ObservedSource,
@@ -302,10 +302,15 @@ async def test_reply_binding_preserves_goal_authority(ledger):
     assert await runtime.execute("DELETE FROM switchboard.goal_inbox") == "DELETE 0"
     with pytest.raises(asyncpg.PostgresError):
         await runtime.execute("UPDATE switchboard.goal_inbox SET delivery_ref='forged'")
-    assert (
-        dict(await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", original.goal_id))
-        == before
+    # Authority is unchanged; only the S1 reporting union takes the reply's label.
+    after = dict(
+        await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", original.goal_id)
     )
+    union = ("updated_at", "label_instr", "label_data", "label_sens")
+    assert {k: v for k, v in after.items() if k not in union} == {
+        k: v for k, v in before.items() if k not in union
+    }
+    assert all(set(after[k]) >= set(before[k]) for k in union[1:])
     assert (
         dict(
             await owner.fetchrow(
@@ -356,7 +361,7 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         )
         == "delivery-1"
     )
-    # D11 has no settling -> running edge, so a settling goal cannot consume an
+    # A waiting (settle) goal has no waiting -> running edge, so it cannot consume an
     # inbox row: a reply to its live prompt becomes a new owner goal instead.
     settling = await admit(runtime)
     await effect(
@@ -369,7 +374,7 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         expiry=expiry,
     )
     await owner.execute(
-        "UPDATE switchboard.goals SET status='settling' WHERE id=$1", settling.goal_id
+        "UPDATE switchboard.goals SET status='waiting' WHERE id=$1", settling.goal_id
     )
     after_settling = await admit(runtime, replace(facts, reply_delivery="settling-1"))
     assert after_settling.result == "admitted" and after_settling.goal_id != settling.goal_id
@@ -386,7 +391,8 @@ async def test_reply_binding_preserves_goal_authority(ledger):
     )
     assert await owner.fetchval("SELECT count(*) FROM switchboard.goal_inbox") == 1
     # A forwarded owner reply that joins an unexposed live goal raises its
-    # exposure and nothing else; later invocations must start exposed.
+    # exposure and nothing else. The reply's exposure travels on its inbox row
+    # (S1): a replacement lead inherits it only by consuming that row.
     quiet = await admit(runtime, Evidence("message", "owner", owner=True))
     await effect(
         owner,
@@ -420,12 +426,15 @@ async def test_reply_binding_preserves_goal_authority(ledger):
         )
         == quiet_budget
     )
-    with pytest.raises(asyncpg.PostgresError, match="exposure"):
-        await owner.execute(
-            "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'returned','[]','digest',1,1)",
-            uuid4(),
-            quiet.goal_id,
-        )
+    inbox = await owner.fetchrow(
+        "SELECT label_instr, label_data FROM switchboard.goal_inbox WHERE decision_id=$1",
+        forwarded.decision_id,
+    )
+    assert "world" in inbox["label_data"]
+    lead = await owner.fetchrow(
+        "SELECT exposed FROM switchboard.invocations WHERE goal_id=$1", quiet.goal_id
+    )
+    assert lead["exposed"] is False  # a running lead is exposed by reading the reply
     await accepted_reply_sequences(owner, runtime)
 
 
@@ -708,6 +717,20 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     )
     # thread_id binds once; exposure is per invocation and only increases.
     thread = uuid4()
+    other_thread = uuid4()
+    for registered in (thread, other_thread):
+        await owner.execute(
+            "INSERT INTO switchboard.owner_threads (id,owner_entity_id,channel,conversation_key) "
+            "VALUES ($1,$2,'telegram',$3)",
+            registered,
+            uuid4(),
+            str(registered),
+        )
+    # sw_063: the thread is a real registry row, not an arbitrary UUID.
+    with pytest.raises(asyncpg.ForeignKeyViolationError):
+        await owner.execute(
+            "UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", uuid4(), a.goal_id
+        )
     await owner.execute("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", thread, a.goal_id)
     owner_goal = await admit(runtime, Evidence("message", "owner", owner=True))
     clean_lead, _ = await effect(owner, owner_goal.goal_id)
@@ -716,14 +739,9 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
     )
     async with owner.acquire() as conn:
         for query, *values in [
-            ("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", uuid4(), a.goal_id),
+            ("UPDATE switchboard.goals SET thread_id=$1 WHERE id=$2", other_thread, a.goal_id),
             ("UPDATE switchboard.goals SET thread_id=NULL WHERE id=$1", a.goal_id),
-            ("UPDATE switchboard.invocations SET exposed=false WHERE id=$1", lead),
-            (
-                "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'returned','[]','digest',1,1)",
-                uuid4(),
-                a.goal_id,
-            ),
+            ("UPDATE switchboard.invocations SET exposed=false WHERE id=$1", child),
         ]:
             with pytest.raises(asyncpg.PostgresError):
                 async with conn.transaction():
@@ -732,6 +750,25 @@ async def test_schema_rejects_cross_goal_and_mutable_authority(ledger):
         await owner.fetchval("SELECT thread_id FROM switchboard.goals WHERE id=$1", a.goal_id)
         == thread
     )
+    # S1 (REQ-capability-authorization-019): a replacement lead inherits its
+    # predecessor chain, not the goal's union, so an exposed sibling child does
+    # not contaminate it. (sw_047 started every invocation from the union.)
+    replacement = uuid4()
+    await owner.execute(
+        "INSERT INTO switchboard.invocations (id,goal_id,depth,role,lead_epoch,status,grant_snapshot,grant_digest,max_turns,max_tokens) VALUES ($1,$2,0,'lead',1,'returned','[]','digest',1,1)",
+        replacement,
+        a.goal_id,
+    )
+    labels = {
+        row["id"]: (row["exposed"], row["label_instr"], row["label_data"])
+        for row in await owner.fetch(
+            "SELECT id, exposed, label_instr, label_data FROM switchboard.invocations "
+            "WHERE goal_id=$1",
+            a.goal_id,
+        )
+    }
+    assert labels[child][0] is True
+    assert labels[replacement] == labels[lead]
     await runtime.execute("UPDATE switchboard.invocations SET exposed=true WHERE id=$1", clean_lead)
     assert await owner.fetchval(
         "SELECT exposed FROM switchboard.goals WHERE id=$1", owner_goal.goal_id
@@ -816,9 +853,12 @@ async def accepted_reply_sequences(owner, runtime):
         after = dict(
             await owner.fetchrow("SELECT * FROM switchboard.goals WHERE id=$1", prompt.goal_id)
         )
-        assert {k: v for k, v in after.items() if k != "updated_at"} == {
-            k: v for k, v in {**before, "exposed": True}.items() if k != "updated_at"
+        # Only exposure and its S1 reporting union move; authority does not.
+        union = ("updated_at", "label_instr", "label_data", "label_sens")
+        assert {k: v for k, v in after.items() if k not in union} == {
+            k: v for k, v in {**before, "exposed": True}.items() if k not in union
         }
+        assert "world" in after["label_data"]
         assert (
             dict(
                 await owner.fetchrow(
@@ -888,6 +928,9 @@ async def accepted_reply_sequences(owner, runtime):
                 recipient_channel="telegram_bot",
                 locator="100:" + transition,
             )
+            # A recorded prompt expiry never changes (sw_066), so the prompt that lapses while
+            # admission waits is one whose short expiry runs out during the wait.
+            lapsing = await owner.fetchval("SELECT clock_timestamp() + interval '2 seconds'")
             _, eid = await effect(
                 owner,
                 target.goal_id,
@@ -895,7 +938,7 @@ async def accepted_reply_sequences(owner, runtime):
                 entity=entity,
                 channel="telegram_bot",
                 accepts=True,
-                expiry=expiry,
+                expiry=lapsing if transition == "expire" else expiry,
             )
             accepted = await accept(owner, reference="100:" + transition)
             task = None
@@ -921,9 +964,14 @@ async def accepted_reply_sequences(owner, runtime):
                             target.goal_id,
                         )
                     else:
-                        await holder.execute(
-                            "UPDATE switchboard.effects SET prompt_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1",
-                            eid,
+                        await asyncio.sleep(
+                            max(
+                                0.0,
+                                (
+                                    lapsing - await owner.fetchval("SELECT clock_timestamp()")
+                                ).total_seconds(),
+                            )
+                            + 0.1
                         )
                 result, _ = await asyncio.wait_for(task, 5)
                 assert result.result == "admitted" and result.goal_id != target.goal_id
@@ -931,7 +979,10 @@ async def accepted_reply_sequences(owner, runtime):
                     "SELECT * FROM switchboard.goals WHERE id=$1", result.goal_id
                 )
                 assert row["origin"] == "owner" and row["caused_by_goal"] is None
-                assert row["exposed"] == (transition == "stop")
+                # S1: new owner intent inherits the answered effect's label, which
+                # the stop's goal-level exposure does not change (sw_047 read the
+                # producing goal's union instead).
+                assert row["exposed"] is False
                 assert (
                     await owner.fetchval(
                         "SELECT delivery_ref FROM switchboard.admission_decisions WHERE id=$1",

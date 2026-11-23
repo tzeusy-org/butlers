@@ -42,7 +42,7 @@ groups = ["core", "entity"]
 enable_ingress_dedupe = true
 
 [modules.switchboard]
-groups = ["routing", "lifecycle"]
+groups = ["routing", "lifecycle", "identity"]
 
 [modules.approvals]
 groups = ["actions"]
@@ -52,6 +52,10 @@ default_risk_tier = "medium"
 
 [modules.approvals.gated_tools.connector_disconnect]
 risk_tier = "high"
+
+# The pre-cutover unknown-sender Ignore card (bu-p7glz9): parked at identity ingress.
+[modules.approvals.gated_tools.identity_ignore_unknown_sender]
+risk_tier = "low"
 
 [modules.insight_broker]
 
@@ -100,6 +104,17 @@ name = "insight-urgent-subcycle"
 cron = "30 * * * *"
 dispatch_mode = "job"
 job_name = "insight_urgent_subcycle"
+
+# Insight outcome sweep (bu-s11n0s.15 S1) -- observe-only: enrolls terminal premised insight
+# candidates with what reached the owner, then records once whether each premise resolved, when
+# and how precisely. Never changes delivery. Daily at 05:52 UTC, before the 06:15 delivery
+# window, off the eligibility (*/5), security-question (odd minutes) and :53 domain-event ticks.
+[[butler.schedule]]
+name = "insight-outcome-sweep"
+cron = "52 5 * * *"
+timezone = "Etc/UTC"
+dispatch_mode = "job"
+job_name = "insight_outcome_sweep"
 
 # Commitment escalation tick (bu-n1evl, RFC 0026 §6-§9) — advances the L0-L3
 # escalation clock for commitment-class owner_conditions, shortens the grace of
@@ -170,5 +185,15 @@ cron = "10 4 * * *"
 timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
+
+# Security question cycle (bu-s11n0s.1 S5c, REQ-endpoint-custody-holds-008) -- presents the one
+# "was this you?" question per authenticated account-security event (never re-sent), then records
+# the canonical case and recovery door for each answered "no". Every 2 minutes, off the :03-step
+# domain-event sweep.
+[[butler.schedule]]
+name = "security-question-cycle"
+cron = "1-59/2 * * * *"
+dispatch_mode = "job"
+job_name = "security_question_cycle"
 
 # RFC 0015: core always registers the error relay; no module opt-in is required.

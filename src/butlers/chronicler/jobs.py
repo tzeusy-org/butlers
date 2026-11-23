@@ -33,6 +33,7 @@ from butlers.chronicler.adapters import (
     ReadingInferredAdapter,
     SpotifySessionAdapter,
     SteamPlayAdapter,
+    SteamStatusAdapter,
 )
 from butlers.chronicler.adapters.owntracks_place_cluster import parse_place_references
 from butlers.chronicler.adapters.owntracks_ssid import SSID_PLACE_STATE_KEY, parse_ssid_places
@@ -277,6 +278,11 @@ async def run_project_owntracks_place_cluster(
         job_args,
         supported_fields=("batch_limit", "min_dwell_minutes", "max_gap_minutes"),
     )
+    adapter = _owntracks_place_cluster_adapter(options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+def _owntracks_place_cluster_adapter(options: dict[str, int]) -> OwnTracksPlaceClusterAdapter:
     raw_references = os.environ.get("OWNTRACKS_PLACE_REFERENCES", "")
     try:
         reference_points = parse_place_references(raw_references)
@@ -287,8 +293,7 @@ async def run_project_owntracks_place_cluster(
             exc_info=True,
         )
         reference_points = ()
-    adapter = OwnTracksPlaceClusterAdapter(reference_points=reference_points, **options)
-    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+    return OwnTracksPlaceClusterAdapter(reference_points=reference_points, **options)
 
 
 async def run_project_owntracks_ssid(
@@ -301,6 +306,13 @@ async def run_project_owntracks_ssid(
         job_args,
         supported_fields=("batch_limit", "max_gap_minutes"),
     )
+    adapter = await _owntracks_ssid_adapter(db_pool, options)
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def _owntracks_ssid_adapter(
+    db_pool: asyncpg.Pool, options: dict[str, int]
+) -> OwnTracksSsidPresenceAdapter:
     raw_mapping = await state_get(db_pool, SSID_PLACE_STATE_KEY)
     try:
         ssid_places = parse_ssid_places(raw_mapping)
@@ -311,8 +323,22 @@ async def run_project_owntracks_ssid(
             exc_info=True,
         )
         ssid_places = {}
-    adapter = OwnTracksSsidPresenceAdapter(ssid_places=ssid_places, **options)
-    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+    return OwnTracksSsidPresenceAdapter(ssid_places=ssid_places, **options)
+
+
+async def owntracks_coverage_revisions(db_pool: asyncpg.Pool) -> dict[str, str]:
+    """Each covered OwnTracks adapter's current config revision, as its scheduled job builds it.
+
+    The schedules pass no ``job_args``, so each adapter is built from the same environment and
+    state its next run reads. Location retention passes these to grant preparation, which
+    refuses them unless they equal each adapter's last recorded run (bu-s11n0s.75).
+    """
+    adapters = (
+        OwnTracksPointAdapter(),
+        _owntracks_place_cluster_adapter({}),
+        await _owntracks_ssid_adapter(db_pool, {}),
+    )
+    return {adapter.source_name: adapter.coverage_revision for adapter in adapters}
 
 
 async def run_project_activitywatch(
@@ -355,6 +381,17 @@ async def run_project_steam(
     )
     adapter = SteamPlayAdapter(**options)
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
+async def run_project_steam_status(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Re-project timed Steam sessions, including still-open sessions."""
+    options = _parse_job_args(
+        "chronicler_project_steam_status", job_args, supported_fields=("batch_limit",)
+    )
+    return await _run_adapter(db_pool=db_pool, adapter=SteamStatusAdapter(**options))
 
 
 async def run_project_meals(
@@ -536,6 +573,29 @@ async def run_project_occupation_inferred(
     return await _run_adapter(db_pool=db_pool, adapter=adapter)
 
 
+async def run_project_situation_inferred(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Derive situational blocks from place stays and anchors (bu-r3fmja)."""
+    # Imported here, not from the adapters package: the situational adapter
+    # depends on butlers.chronicler.anchors, which imports from that package.
+    from butlers.chronicler.adapters.situation import (
+        DEFAULT_LOOKBACK_DAYS,
+        SituationInferredAdapter,
+    )
+
+    options = _parse_job_args(
+        "chronicler_project_situation_inferred",
+        job_args,
+        supported_fields=("lookback_days",),
+    )
+    adapter = SituationInferredAdapter(
+        lookback_days=options.get("lookback_days", DEFAULT_LOOKBACK_DAYS)
+    )
+    return await _run_adapter(db_pool=db_pool, adapter=adapter)
+
+
 async def run_project_comms(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -588,6 +648,26 @@ async def run_routines_mine(
     return await mine_routines(db_pool, weeks=weeks, timezone=timezone)
 
 
+async def run_rebuild_daily_rollups(
+    db_pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bounded old-date correction, independent of the trailing7-day materializer."""
+    from butlers.chronicler.history_repair import run_rebuild
+    from butlers.core.general_settings import load_configured_general_timezone
+
+    args = job_args or {}
+    unknown = set(args) - {"timezone", "max_days"}
+    if unknown:
+        raise ValueError(f"Unsupported repair arguments: {sorted(unknown)}")
+    return await run_rebuild(
+        db_pool,
+        timezone=args.get("timezone", "Asia/Singapore"),
+        situation_timezone=await load_configured_general_timezone(db_pool),
+        max_days=args.get("max_days", 32),
+    )
+
+
 async def run_rollup_daily(
     db_pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -604,7 +684,12 @@ async def run_rollup_daily(
     re-processes the trailing ``lookback_days`` window and upserts
     idempotently on ``(local_date, lane)`` / ``(local_date, flag_type)``.
     """
-    from butlers.chronicler.flags import evaluate_and_write_daily_flags
+    from butlers.chronicler.flags import (
+        correct_retired_feeder_dark,
+        evaluate_and_write_daily_flags,
+        freeze_day_availability,
+        load_day_availability,
+    )
     from butlers.chronicler.rollups import (
         DEFAULT_LOOKBACK_DAYS,
         DEFAULT_TIMEZONE,
@@ -635,17 +720,51 @@ async def run_rollup_daily(
                 )
             timezone = raw_timezone
 
-    result = await materialize_daily_rollups(
-        db_pool, timezone=timezone, lookback_days=lookback_days
-    )
+    from butlers.chronicler.history_repair import _pending_retention_scopes, try_lock
 
-    flags_by_day: dict[str, Any] = {}
-    for day_str in result.get("days_processed", []):
-        flags_by_day[day_str] = await evaluate_and_write_daily_flags(
-            db_pool, local_date=date.fromisoformat(day_str), timezone=timezone
-        )
-    result["flags"] = flags_by_day
-    return result
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            if not await try_lock(conn):
+                return {"status": "busy", "days_processed": []}
+            ctl = await conn.fetchrow(
+                "SELECT * FROM chronicler.daily_repair_control WHERE singleton"
+            )
+            if ctl is None:
+                raise RuntimeError("daily repair state missing")
+            if ctl["blocked_reason"] or ctl["timezone"] != timezone:
+                return {"status": "blocked", "days_processed": []}
+            if ctl["replay_ack"] < ctl["replay_epoch"] or await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM chronicler.daily_repair_days "
+                "WHERE totals_pending OR outlier_pending)"
+            ):
+                return {"status": "waiting_repair", "days_processed": []}
+            today = datetime.now(UTC).astimezone(ZoneInfo(timezone)).date()
+            if await _pending_retention_scopes(
+                conn,
+                start_date=today - timedelta(days=lookback_days),
+                end_date=today - timedelta(days=1),
+            ):
+                return {"status": "waiting_repair", "days_processed": []}
+            # All day writes and flag reconciliation use this actual connection.
+            result = await materialize_daily_rollups(
+                conn, timezone=timezone, lookback_days=lookback_days
+            )
+            now = datetime.now(UTC)
+            flags_by_day: dict[str, Any] = {}
+            for day_str in result.get("days_processed", []):
+                day = date.fromisoformat(day_str)
+                await freeze_day_availability(conn, local_date=day, timezone=timezone, now=now)
+                availability = await load_day_availability(conn, local_date=day, timezone=timezone)
+                if availability is None:
+                    # Never recomputed from the current state: that would erase past outages.
+                    flags_by_day[day_str] = {"status": "historical_health_unknown"}
+                else:
+                    flags_by_day[day_str] = await evaluate_and_write_daily_flags(
+                        conn, local_date=day, timezone=timezone, availability=availability
+                    )
+            result["retired_flag_correction"] = await correct_retired_feeder_dark(conn)
+            result["flags"] = flags_by_day
+            return result
 
 
 async def run_narrate_daily(
@@ -723,8 +842,10 @@ __all__ = [
     "run_project_owntracks_ssid",
     "run_project_reading_inferred",
     "run_project_sessions",
+    "run_project_situation_inferred",
     "run_project_spotify",
     "run_project_steam",
+    "run_project_steam_status",
     "run_rollup_daily",
     "run_routines_mine",
 ]

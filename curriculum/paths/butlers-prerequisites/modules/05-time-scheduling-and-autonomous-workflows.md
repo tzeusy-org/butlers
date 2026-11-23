@@ -28,7 +28,7 @@ Autonomous systems should make dispatch idempotent where possible. A scheduler t
 ### Where It Appears In The Repo
 
 - `docs/runtime/scheduler-execution.md`
-- `src/butlers/core/scheduler.py`
+- `src/butlers/core/scheduler/`
 - `src/butlers/background.py`
 - `roster/*/butler.toml`
 - `tests/core/test_core_scheduler.py`

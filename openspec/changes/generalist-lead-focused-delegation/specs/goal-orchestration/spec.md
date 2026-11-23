@@ -2,8 +2,9 @@
 
 One accountable generalist lead fulfills each goal across domain-owned
 capabilities, directly or with optional focused children at depth one. Every
-reasoning session in the system is an invocation of an admitted goal. The
-design is RFC 0038; authorization is specified in `capability-authorization`.
+reasoning session in the system runs within an admitted goal, as a lead or
+child invocation or solely as its bounded D20 research subcall. The design is
+RFC 0038; authorization is specified in `capability-authorization`.
 
 ## ADDED Requirements
 
@@ -152,8 +153,18 @@ Scope: v1-mandatory
 - **THEN** its durable owner can initiate the appropriate goal with relevant context and the obligation is not lost because no agent was running
 
 ### Requirement: Goals are the only path to a reasoning session
-Every reasoning session SHALL be a lead or child invocation of an admitted goal,
-launched by the goal runner. Owner requests, third-party events, domain
+Every reasoning session SHALL run within an admitted goal, launched only by
+the goal runner. Lead and child sessions SHALL remain ordinary goal invocations
+with their existing admission, MCP, token, grant, eligibility, depth-one and
+deny-all sandbox requirements. The sole additional reasoning path within an
+already admitted goal SHALL be RFC 0038 D20 research: only after the broker
+accepts `web_research` from an authorized lead or child may the runner launch
+that bounded subcall on the separate research host, under the calling goal's
+existing authority, exposure and budget accounting. Research SHALL receive no
+invocation token, grant, MCP configuration, capability or delegation tool,
+SHALL add no hierarchy depth, and SHALL NOT admit a goal or spawn another
+reasoning session. It SHALL NOT be a lead, child or D18 outside-goal function.
+Owner requests, third-party events, domain
 obligations and staffer work SHALL all enter through goal admission. No domain
 butler, staffer, module or scheduled job SHALL spawn a reasoning session by any
 other path, and no model-classification routing step SHALL precede admission
@@ -165,7 +176,7 @@ them SHALL receive capabilities; a dashboard fast answer's allowlisted reads
 SHALL be made by deterministic code through the broker.
 
 ID: REQ-goal-orchestration-008
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D18 and Hard cutover; later owner decision bu-u5euwb.21
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D2, D3, D7, D16, D18, D20 and Hard cutover; later owner decision bu-u5euwb.21
 Scope: v1-mandatory
 
 #### Scenario: A domain schedule needs reasoning
@@ -181,17 +192,6 @@ Scope: v1-mandatory
 - **THEN** the unchanged message is admitted as an owner goal
 - **AND** nothing the fast answer produced enters that goal's admission, origin, ceiling or exposure
 
-## Source References
-
-- Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
-- Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
-- Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
-- `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
-- RFC 0038 (goal runtime and capability authorization)
-- RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)
-
-## ADDED Requirements
-
 ### Requirement: Waiting goals wake through one fenced epoch intent
 The ledger and runner SHALL implement S2's thread/plan/wait-envelope/inbox/epoch/wake-intent schemas and S4 evaluator interface. Conditional fire, wake consumption, labelled inbox and durable intent SHALL commit atomically; every wake SHALL narrow authority and retain finite horizon/budget. Waiting SHALL release capacity without erasing obligations or effects.
 The lifecycle/admission owner SHALL implement S2.1's discriminated inbox/decision schema, kind-specific nullability and same-goal/source FKs, and atomic one-time consumed_at/consumed_epoch tuple with immutable legacy_consumed provenance. S2.2's generation rearm SHALL retain the same approved envelope, cumulative wake count/deadline, exclusive prior-fire cursor, same-or-narrower grants and accumulated labels. A genuinely changed envelope SHALL use its original approval rules; no reset, fake reply effect or duplicate re-fire is permitted.
@@ -203,6 +203,10 @@ Scope: v1-mandatory
 #### Scenario: Already satisfied registration cannot lose a wake
 - **WHEN** an envelope condition is true before its subscription is installed
 - **THEN** registration evaluates the current snapshot and commits one unique successor intent
+
+#### Scenario: A fire cannot narrow the envelope label
+- **WHEN** a trusted condition fires for a waiting goal
+- **THEN** the intent the runner consumes carries a label that covers the envelope's registered label snapshot, and the epoch and inbox row join it, so the wake never launders or drops accumulated labels
 
 #### Scenario: Crash between fire and launch preserves one successor
 - **WHEN** a worker crashes after the fire transaction, then another replays it
@@ -325,3 +329,34 @@ Scope: v1-mandatory
 #### Scenario: A held typed or cited rule is encountered
 - **WHEN** a worker can represent typed values or citations
 - **THEN** representation confers no steering/authority relaxation and the held decision remains for its named M7 gate
+### Requirement: The monthly spend ceiling bounds goals and reserves the owner's share
+Goal admission SHALL reserve each new goal's `max_spend` in a fleet month pool capped at the owner's monthly ceiling (`public.spend_ceiling`), and a goal of any origin but owner SHALL also reserve in a background lane capped at the ceiling less an owner reserve (default 20%, owner-set). The reservation SHALL be taken inside the admission transaction under row locks, keyed by goal, so two goals racing for the last unit commit exactly one and a duplicate admission or recovery epoch reuses the one reservation. Reading the ceiling or the pools MUST fail closed: an unreadable spend state refuses admission of every origin with the reason `spend_state_unreadable`, which gives an owner message a deterministic reply and refuses background work. The runner SHALL move priced spend from reserved to spent in the same transaction as the goal budget and SHALL open no invocation of any origin once the fleet pool is spent (reason `ceiling_reached`). A goal's end SHALL release its unspent reservation, except that a goal with any unpriced usage (tokens with no priced spend, even after priced calls) keeps its whole reservation charged. With no ceiling configured nothing is reserved. Turning the lanes switch off drops the owner reserve and the background lane but keeps the fleet pool. A model SHALL NOT be able to change a ceiling or a reserve.
+
+ID: REQ-goal-orchestration-013
+Source: RFC 0038 D10 and D16; bu-jv1moa.1; docs/redesigns/2026-10-15-dots-superset-pursuit.md
+Scope: v1-mandatory
+
+#### Scenario: Background work stops at the lane cap
+- **WHEN** background goals have reserved the ceiling less the owner reserve
+- **THEN** the next obligation, third-party or staffer admission is refused as `lane_exhausted` and an owner admission still succeeds from the reserve
+
+#### Scenario: Two goals race for the last unit
+- **WHEN** two distinct goals are admitted concurrently for the last unit of the fleet pool
+- **THEN** exactly one reservation commits and the pool never overshoots
+
+#### Scenario: The spend state cannot be read
+- **WHEN** the ceiling or a pool read fails
+- **THEN** admission of every origin is refused as `spend_state_unreadable`, the owner's refused message is remembered for a retry, and no goal exists
+
+#### Scenario: The fleet pool is spent
+- **WHEN** month-to-date spend has reached the ceiling
+- **THEN** the runner opens no invocation of any origin and records `ceiling_reached`
+
+## Source References
+
+- Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
+- Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
+- Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
+- `about/heart-and-soul/vision.md`, What Butlers Is; `about/heart-and-soul/architecture.md`, One lead, focused children, depth one
+- RFC 0038 (goal runtime and capability authorization, including the bounded D20 research subcall within an already admitted goal)
+- RFCs 0009, 0011 and 0026 (situational context, proactive delivery, commitments)

@@ -9,7 +9,6 @@ import asyncpg
 import pytest
 
 from butlers.roster_imports import roster_module
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.integration import test_general_capture_ledger as capture_fixtures
 
 implementation = roster_module("general", "tools/capture_service")
@@ -28,15 +27,11 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")
 
 
 @pytest.fixture
-def capture_db_url(postgres_container):
+def capture_db_url(fresh_db):
     # Each service case needs a fresh namespace: irreversible private custody
     # makes all names unavailable while legacy global uniqueness remains.
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        ["core", "general"],
-        schemas={"general": "general"},
-        revisions={"core": "core_287"},
+    return fresh_db(
+        "core", "general", schemas={"general": "general"}, revisions={"core": "core_287"}
     )
 
 

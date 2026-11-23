@@ -20,19 +20,10 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def switchboard_pool(db):
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
 def _email(auth_results: str | None) -> dict:
@@ -96,9 +87,9 @@ async def _stored(pool, envelope: dict) -> str | None:
         (None, "unverified"),
     ],
 )
-async def test_an_email_ingest_stores_its_verdict(pool, auth_results, expected):
-    assert await _stored(pool, _email(auth_results)) == expected
+async def test_an_email_ingest_stores_its_verdict(switchboard_pool, auth_results, expected):
+    assert await _stored(switchboard_pool, _email(auth_results)) == expected
 
 
-async def test_a_telegram_ingest_stores_null(pool):
-    assert await _stored(pool, _telegram()) is None
+async def test_a_telegram_ingest_stores_null(switchboard_pool):
+    assert await _stored(switchboard_pool, _telegram()) is None

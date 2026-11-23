@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import ast
+import asyncio
 import ipaddress
 import re
 import uuid
@@ -21,6 +22,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 
+import asyncpg
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
@@ -31,7 +33,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
-from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
+from butlers.api.routers.audit import AuditTableNotAvailableError, append
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -432,16 +434,8 @@ def test_audit_log_entry_from_record_full():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def prometheus_clean(monkeypatch):
-    """Reset the audit_log_appended_total counter between tests."""
-    # Access the underlying _metrics dict to reset sample values; in unit tests
-    # we just read the current count before and after to verify increment.
-    yield
-
-
 async def test_append_inserts_row_and_returns_id():
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(return_value=7)
 
     row_id = await append(pool, "owner", "model_priority_change")
@@ -465,7 +459,7 @@ async def test_append_binds_target_note_ip_request_id_at_positions_3_through_6()
     swap that would silently corrupt append-only rows.
     """
     rid = uuid.uuid4()
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(return_value=11)
 
     await append(
@@ -498,7 +492,7 @@ async def test_append_persists_metadata_result_error():
     bu-qki26, bu-aaacv — see tests/relationship/test_jsonb_codec.py). result
     and error are passed through as plain TEXT positional args.
     """
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(return_value=123)
 
     row_id = await append(
@@ -529,7 +523,7 @@ async def test_append_coerces_non_json_safe_metadata_values_to_strings():
     """UUID/datetime values nested in metadata are coerced to strings (via a
     json.dumps/loads round-trip) before binding, same as before -- only the
     OUTER representation (dict, not a JSON string) changed."""
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(return_value=1)
     rid = uuid.uuid4()
 
@@ -553,7 +547,7 @@ async def test_append_without_new_fields_passes_nulls():
     metadata defaults to None (→ SQL NULL, no JSON serialisation) and
     result/error default to None, so legacy callers are unaffected.
     """
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(return_value=5)
 
     row_id = await append(pool, "owner", "setting_change")
@@ -592,19 +586,42 @@ def test_audit_log_entry_new_fields_default_none():
     assert populated.error == "boom"
 
 
-async def test_append_increments_prometheus_counter():
-    pool = AsyncMock()
-    pool.fetchval = AsyncMock(return_value=1)
+async def test_append_adds_to_otel_counter_with_action_attribute():
+    from opentelemetry import metrics
+    from opentelemetry.metrics import _internal as metrics_internal
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+    from opentelemetry.util._once import Once
 
-    before = audit_log_appended_total.labels(action="test_counter_increment")._value.get()
-    await append(pool, "owner", "test_counter_increment")
-    after = audit_log_appended_total.labels(action="test_counter_increment")._value.get()
-    assert after == before + 1
+    reader = InMemoryMetricReader()
+    previous = metrics_internal._METER_PROVIDER
+    metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+    metrics_internal._METER_PROVIDER = None
+    metrics.set_meter_provider(MeterProvider(metric_readers=[reader]))
+    try:
+        pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
+        pool.fetchval = AsyncMock(return_value=1)
+        await append(pool, "owner", "test_counter_increment")
+
+        points = [
+            (m.name, dp)
+            for rm in reader.get_metrics_data().resource_metrics
+            for sm in rm.scope_metrics
+            for m in sm.metrics
+            for dp in m.data.data_points
+        ]
+    finally:
+        metrics_internal._METER_PROVIDER_SET_ONCE = Once()
+        metrics_internal._METER_PROVIDER = previous
+
+    assert [(n, dict(dp.attributes), dp.value) for n, dp in points] == [
+        ("butlers.audit.log.appended", {"action": "test_counter_increment"}, 1)
+    ]
 
 
 async def test_append_raises_audit_table_not_available_error_on_undefined_table():
     """append() MUST raise AuditTableNotAvailableError, not the raw asyncpg error."""
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     pool.fetchval = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
 
     with pytest.raises(AuditTableNotAvailableError):
@@ -614,6 +631,7 @@ async def test_append_raises_audit_table_not_available_error_on_undefined_table(
 async def test_append_accepts_connection_for_atomicity():
     """append() works with an asyncpg connection, enabling same-transaction writes."""
     conn = AsyncMock()
+    conn.is_in_transaction = MagicMock(return_value=False)
     conn.fetchval = AsyncMock(return_value=42)
 
     row_id = await append(conn, "owner", "model_priority_change")
@@ -636,14 +654,14 @@ def _make_audit_app(rows: list[dict], total: int | None = None) -> tuple:
         m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
         return m
 
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     mock_pool.fetchval = AsyncMock(return_value=total)
     mock_pool.fetch = AsyncMock(return_value=[_make_record(r) for r in rows])
 
     # The read path queries the canonical public.audit_log via
     # credential_shared_pool() only (bu-j26e8 removed the legacy UNION arm).  A
     # spare switchboard-pool stub is kept wired for any non-read code paths.
-    sw_pool = AsyncMock()
+    sw_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     sw_pool.fetchval = AsyncMock(return_value=0)
     sw_pool.fetch = AsyncMock(return_value=[])
 
@@ -873,7 +891,7 @@ def test_list_audit_log_offset_reflected_in_meta():
 
 def test_list_audit_log_table_missing_returns_503():
     """UndefinedTableError on count query surfaces as HTTP 503."""
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     mock_pool.fetchval = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -893,7 +911,7 @@ def test_list_audit_log_table_missing_returns_503():
 
 def _make_audit_app_single(row: dict | None) -> tuple:
     """Wire a FastAPI app with mocked DatabaseManager for single-row reads."""
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
 
     def _make_record(r: dict) -> MagicMock:
         m = MagicMock()
@@ -931,7 +949,7 @@ def test_get_audit_log_entry_by_id_not_found():
 
 def test_get_audit_log_entry_table_missing_returns_503():
     """UndefinedTableError on fetchrow surfaces as HTTP 503, not 404."""
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     mock_pool.fetchrow = AsyncMock(side_effect=UndefinedTableError("relation does not exist"))
 
     mock_db = MagicMock(spec=DatabaseManager)
@@ -1473,3 +1491,464 @@ def test_runtime_writer_and_append_only_survive_bootstrap(audit_database, role):
             )
     finally:
         engine.dispose()
+
+
+class _AuditConnection:
+    """Software protocol fixture; native cases below prove SQL durability."""
+
+    def __init__(self):
+        self.depth = 0
+        self.commit_error = None
+        self.probe_error = None
+        self.inserts = 0
+        self.commits = 0
+        self.rollbacks = 0
+
+    def is_in_transaction(self):
+        return self.depth > 0
+
+    def transaction(self, **kwargs):
+        connection = self
+
+        class Transaction:
+            async def start(self):
+                connection.depth += 1
+
+            async def commit(self):
+                if connection.commit_error is not None:
+                    raise connection.commit_error
+                connection.depth -= 1
+                connection.commits += 1
+
+            async def rollback(self):
+                connection.depth -= 1
+                connection.rollbacks += 1
+
+            async def __aenter__(self):
+                await self.start()
+                return self
+
+            async def __aexit__(self, kind, value, traceback):
+                if kind is None:
+                    await self.commit()
+                else:
+                    await self.rollback()
+
+        return Transaction()
+
+    async def fetchval(self, sql, *args):
+        self.inserts += 1
+        return self.inserts
+
+    async def execute(self, sql, *args):
+        assert sql == "SELECT 1"
+        if self.probe_error is not None:
+            raise self.probe_error
+        return "SELECT 1"
+
+
+async def test_append_counter_waits_for_owner_and_discards_rollback(monkeypatch):
+    from butlers.core import audit
+    from butlers.core.audit_transaction import audit_transaction
+
+    connection = _AuditConnection()
+    recorded = []
+    monkeypatch.setattr(audit, "_record_appended", recorded.append)
+    # A successful implicit transaction remains the positive companion.
+    assert (
+        await audit.append(
+            connection, "owner", "request-derived-private", metric_action="committed"
+        )
+        == 1
+    )
+    assert recorded == ["committed"]
+    recorded.clear()
+    with pytest.raises(ValueError, match="rollback"):
+        async with audit_transaction(connection):
+            assert await audit.append(connection, "owner", "pending") == 2
+            assert recorded == [], "uncommitted row must not increment the counter"
+            raise ValueError("rollback")
+    assert connection.rollbacks == 1
+    assert recorded == []
+
+
+@pytest.fixture
+def audit_counter(monkeypatch):
+    """An isolated real OTel reader; no process-global provider replacement."""
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    from butlers.core import audit
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    counter = provider.get_meter("butlers").create_counter("butlers.audit.log.appended")
+    monkeypatch.setattr(
+        audit, "_record_appended", lambda action: counter.add(1, {"action": action})
+    )
+
+    def values():
+        data = reader.get_metrics_data()
+        return (
+            {
+                point.attributes["action"]: point.value
+                for resource in data.resource_metrics
+                if data is not None
+                for scope in resource.scope_metrics
+                for metric in scope.metrics
+                for point in metric.data.data_points
+            }
+            if data is not None
+            else {}
+        )
+
+    try:
+        yield values
+    finally:
+        provider.shutdown()
+
+
+async def test_audit_scope_refuses_unmanaged_or_inherited_owner_before_insert(monkeypatch):
+    from types import SimpleNamespace
+
+    from butlers.core import audit
+    from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
+
+    for state in (None, lambda: None, AsyncMock(return_value=False)):
+        malformed = SimpleNamespace(is_in_transaction=state, fetchval=AsyncMock())
+        with pytest.raises(AuditTransactionError):
+            await audit.append(malformed, "owner", "invalid-state")
+        malformed.fetchval.assert_not_awaited()
+    connection = _AuditConnection()
+    recorded = []
+    monkeypatch.setattr(audit, "_record_appended", recorded.append)
+    async with connection.transaction():
+        with pytest.raises(AuditTransactionError):
+            await audit.append(connection, "owner", "unmanaged")
+        with pytest.raises(AuditTransactionError):
+            async with audit_transaction(connection):
+                pytest.fail("unmanaged outer transaction was accepted")
+    async with audit_transaction(connection):
+
+        async def inherited():
+            with pytest.raises(AuditTransactionError):
+                await audit.append(connection, "owner", "inherited")
+            assert connection.inserts == 0
+            with pytest.raises(AuditTransactionError):
+                async with audit_transaction(connection):
+                    pytest.fail("inherited owner was accepted")
+
+        await asyncio.create_task(inherited())
+        assert connection.inserts == 0
+        await audit.append(connection, "owner", "request-path", metric_action="owned")
+        assert recorded == []
+    assert recorded == ["owned"]
+    # Same connection after release gets a fresh implicit transaction, not a sealed frame.
+    await audit.append(connection, "owner", "reused")
+    assert recorded == ["owned", "reused"]
+
+
+async def test_audit_scope_probe_commit_cancellation_and_recorder_failure(monkeypatch):
+    from butlers.core import audit
+    from butlers.core.audit_transaction import (
+        AuditMetricRecordingError,
+        _frames,
+        audit_transaction,
+    )
+
+    for stage in ("body", "probe", "commit", "recorder"):
+        connection = _AuditConnection()
+        recorded = []
+
+        def record(action, *, stage=stage, recorded=recorded):
+            if stage == "recorder":
+                raise ValueError("synthetic private recorder error")
+            recorded.append(action)
+
+        monkeypatch.setattr(audit, "_record_appended", record)
+        expected = asyncio.CancelledError if stage == "body" else RuntimeError
+        if stage == "probe":
+            connection.probe_error = RuntimeError("synthetic aborted transaction")
+        if stage == "commit":
+            connection.commit_error = RuntimeError("synthetic ambiguous commit")
+        if stage == "recorder":
+            expected = AuditMetricRecordingError
+        with pytest.raises(expected) as refused:
+            async with audit_transaction(connection):
+                await audit.append(connection, "owner", "pending")
+                assert recorded == []
+                if stage == "body":
+                    raise asyncio.CancelledError
+        assert recorded == []
+        assert _frames.get() == ()
+        assert connection.commits == (1 if stage == "recorder" else 0)
+        assert connection.rollbacks == (1 if stage in {"body", "probe"} else 0)
+        if stage == "recorder":
+            assert str(refused.value) == "Committed audit metric recording failed"
+        # No closed/inherited frame survives even an ambiguous commit. Fixture cleanup
+        # models pool disposal here; this does not assert SQL rollback of an unknown commit.
+        connection.depth = 0
+        connection.commit_error = connection.probe_error = None
+        monkeypatch.setattr(audit, "_record_appended", recorded.append)
+        async with audit_transaction(connection):
+            await audit.append(connection, "owner", "next")
+        assert recorded == ["next"]
+    # An implicit successful INSERT is committed too; recorder errors remain
+    # content-blind and must never trigger a SQL retry or rollback.
+    implicit = _AuditConnection()
+
+    def broken_recorder(action):
+        raise ValueError("synthetic private recorder error")
+
+    monkeypatch.setattr(audit, "_record_appended", broken_recorder)
+    with pytest.raises(AuditMetricRecordingError) as implicit_failure:
+        await audit.append(implicit, "owner", "implicit-recording-failure")
+    assert str(implicit_failure.value) == "Committed audit metric recording failed"
+    assert implicit.inserts == 1
+    assert implicit.rollbacks == 0
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audit_commit_metrics_and_real_permission_owner(db, audit_counter, monkeypatch):
+    from butlers.api.routers import permissions
+    from butlers.core import audit
+    from butlers.core.audit_transaction import audit_transaction
+
+    pool = await db("core", "switchboard")
+    async with pool.acquire() as connection:
+        async with audit_transaction(connection):
+            row_id = await audit.append(connection, "owner", "committed", result="error")
+            assert type(row_id) is int
+            assert audit_counter() == {}
+            async with pool.acquire() as observer:
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM public.audit_log WHERE id=$1", row_id
+                    )
+                    == 0
+                )
+        async with pool.acquire() as observer:
+            assert (
+                await observer.fetchval("SELECT result FROM public.audit_log WHERE id=$1", row_id)
+                == "error"
+            )
+    assert audit_counter() == {"committed": 1}
+    await audit.append(
+        pool, "owner", "request-derived-private-path", metric_action="POST /api/route/{id}"
+    )
+    async with pool.acquire() as connection:
+        await audit.append(connection, "owner", "implicit-connection")
+    assert audit_counter() == {"committed": 1, "POST /api/route/{id}": 1, "implicit-connection": 1}
+    await pool.execute(
+        "INSERT INTO butler_registry(name,endpoint_url) VALUES('chronicler','http://synthetic.test') ON CONFLICT(name) DO NOTHING"
+    )
+    manager = MagicMock(spec=DatabaseManager)
+    manager.pool.return_value = pool
+    monkeypatch.setattr(permissions, "dispatch_event", lambda *args: None)
+    response = await permissions.set_permission(
+        "chronicler",
+        "spawn",
+        permissions.PermissionUpdate(granted=True, reason="audit commit proof"),
+        db=manager,
+    )
+    assert response.data.granted is True
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval(
+                "SELECT granted FROM public.permissions WHERE butler='chronicler' AND permission='spawn'"
+            )
+            is True
+        )
+        assert (
+            await observer.fetchval(
+                "SELECT count(*) FROM public.audit_log WHERE action='permission.set'"
+            )
+            == 1
+        )
+    assert audit_counter()["permission.set"] == 1
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.parametrize("outer_rollback", [False, True])
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audit_nested_savepoints_merge_or_discard(db, audit_counter, outer_rollback):
+    from butlers.core import audit
+    from butlers.core.audit_transaction import audit_transaction
+
+    pool = await db("core")
+    ids = []
+
+    async def write():
+        async with pool.acquire() as connection, audit_transaction(connection):
+            ids.append(await audit.append(connection, "owner", "outer"))
+            async with audit_transaction(connection):
+                ids.append(await audit.append(connection, "owner", "released"))
+                assert audit_counter() == {}
+            with pytest.raises(ValueError, match="child"):
+                async with audit_transaction(connection):
+                    ids.append(await audit.append(connection, "owner", "discarded"))
+                    raise ValueError("child")
+            assert audit_counter() == {}
+            if outer_rollback:
+                raise ValueError("outer")
+
+    if outer_rollback:
+        with pytest.raises(ValueError, match="outer"):
+            await write()
+    else:
+        await write()
+    async with pool.acquire() as observer:
+        rows = await observer.fetch(
+            "SELECT action FROM public.audit_log WHERE id=ANY($1::bigint[]) ORDER BY id", ids
+        )
+    expected = [] if outer_rollback else ["outer", "released"]
+    assert [row["action"] for row in rows] == expected
+    assert audit_counter() == ({name: 1 for name in expected})
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audit_native_failed_transaction_and_missing_storage(db, audit_counter):
+    import asyncpg
+
+    from butlers.core import audit
+    from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
+
+    pool = await db("core")
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            with pytest.raises(AuditTransactionError):
+                await audit.append(connection, "owner", "unmanaged")
+        with pytest.raises(asyncpg.InFailedSQLTransactionError):
+            async with audit_transaction(connection):
+                row_id = await audit.append(connection, "owner", "aborted")
+                try:
+                    await connection.execute("SELECT 1/0")
+                except asyncpg.DivisionByZeroError:
+                    pass
+        async with pool.acquire() as observer:
+            assert (
+                await observer.fetchval("SELECT count(*) FROM public.audit_log WHERE id=$1", row_id)
+                == 0
+            )
+        # A deferred constraint fails at the genuine COMMIT, after SELECT 1
+        # succeeds. The scope must not infer that a healthy probe is commit proof.
+        missing_entity_id = uuid.uuid4()
+        assert not await connection.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM public.entities WHERE id=$1)", missing_entity_id
+        )
+        await connection.execute(
+            "ALTER TABLE public.audit_log ADD CONSTRAINT audit_commit_failure_test "
+            "FOREIGN KEY (request_id) REFERENCES public.entities(id) "
+            "DEFERRABLE INITIALLY DEFERRED"
+        )
+        try:
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                async with audit_transaction(connection):
+                    commit_row_id = await audit.append(
+                        connection, "owner", "commit-failed", request_id=missing_entity_id
+                    )
+            async with pool.acquire() as observer:
+                assert (
+                    await observer.fetchval(
+                        "SELECT count(*) FROM public.audit_log WHERE id=$1", commit_row_id
+                    )
+                    == 0
+                )
+            assert audit_counter() == {}
+        finally:
+            await connection.execute(
+                "ALTER TABLE public.audit_log DROP CONSTRAINT audit_commit_failure_test"
+            )
+        with pytest.raises(audit.AuditTableNotAvailableError):
+            async with audit_transaction(connection):
+                await connection.execute(
+                    "ALTER TABLE public.audit_log RENAME TO unavailable_audit_test"
+                )
+                await audit.append(connection, "owner", "unavailable")
+        assert (
+            await connection.fetchval("SELECT to_regclass('public.audit_log') IS NOT NULL") is True
+        )
+    assert audit_counter() == {}
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audit_concurrent_owners_and_cancelled_task(db, audit_counter):
+    from butlers.core import audit
+    from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
+
+    pool = await db("core", max_size=3)
+    committed = asyncio.Event()
+    pending = asyncio.Event()
+    release = asyncio.Event()
+    ids = {}
+
+    async def writer(action, ready):
+        async with pool.acquire() as connection, audit_transaction(connection):
+            ids[action] = await audit.append(connection, "owner", action)
+
+            async def inherited():
+                with pytest.raises(AuditTransactionError):
+                    await audit.append(connection, "owner", "inherited")
+
+            await asyncio.create_task(inherited())
+            ready.set()
+            await release.wait()
+
+    tasks = [
+        asyncio.create_task(writer("commit", committed)),
+        asyncio.create_task(writer("cancel", pending)),
+    ]
+    try:
+        await asyncio.wait_for(asyncio.gather(committed.wait(), pending.wait()), timeout=10)
+        assert audit_counter() == {}
+        tasks[1].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await tasks[1]
+        release.set()
+        await tasks[0]
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    async with pool.acquire() as observer:
+        rows = await observer.fetch(
+            "SELECT action FROM public.audit_log WHERE id=ANY($1::bigint[])", list(ids.values())
+        )
+    assert [row["action"] for row in rows] == ["commit"]
+    assert audit_counter() == {"commit": 1}
+
+
+@pytest.mark.integration
+@pytest.mark.db
+@pytest.mark.asyncio(loop_scope="session")
+async def test_audit_stepup_owning_transaction_waits_for_outer_commit(db, audit_counter):
+    from butlers.core import audit
+    from butlers.core.audit_transaction import audit_transaction
+    from butlers.modules.approvals.executor import _approval_write_transaction
+
+    pool = await db("core")
+    async with _approval_write_transaction(pool, audit_owned=True) as connection:
+        row_id = await audit.append(connection, "owner", "stepup-owner")
+        async with audit_transaction(connection):
+            await audit.append(connection, "owner", "stepup-savepoint")
+        assert audit_counter() == {}
+        async with pool.acquire() as observer:
+            assert (
+                await observer.fetchval("SELECT count(*) FROM public.audit_log WHERE id=$1", row_id)
+                == 0
+            )
+    assert audit_counter() == {"stepup-owner": 1, "stepup-savepoint": 1}
+    async with pool.acquire() as observer:
+        assert (
+            await observer.fetchval("SELECT count(*) FROM public.audit_log WHERE id=$1", row_id)
+            == 1
+        )

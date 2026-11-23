@@ -24,18 +24,33 @@
  * row's own peak (not comparable across rows); pass the roster-wide peak as
  * `maxValue` to make bar heights comparable across connectors.
  *
+ * An optional `listening` series (bu-s11n0s.5) hatches each `deaf` slot (no
+ * heartbeat recorded) so "not listening" differs in shape from a measured
+ * zero, and the aria-label names the deaf hours ("not listening 3h").
+ *
  * Spec: (ingestion dispatch redesign, graduated) ingestion-connectors-a.jsx §Sparkline
  */
 
+import type { ListeningState } from '@/api/types'
+import { describeNotListening } from '@/lib/bucket-series'
+import { useHatchPatternId } from '@/hooks/use-hatch-pattern-id'
+import { NotListeningCell, NotListeningPattern } from './NotListeningHatch'
+
 interface SparklineProps {
-  /** Array of 24 hourly counts (oldest first, most recent last). */
-  data: number[]
+  /**
+   * Array of 24 hourly counts (oldest first, most recent last). `null` marks a
+   * slot no source reported; an empty array means the whole series is
+   * unreported (bu-s11n0s.5.1).
+   */
+  data: (number | null)[]
   /**
    * Optional DISTINCT quiet second series (bu-scyro) — e.g. filtered/skip-routed
    * volume. Rendered as a thin muted tick below each primary bar, never summed
    * into `data`. Absent or all-zero renders no overlay at all.
    */
-  secondaryData?: number[]
+  secondaryData?: (number | null)[]
+  /** Optional per-slot listening state aligned with `data`; `deaf` slots are hatched. */
+  listening?: (ListeningState | null)[]
   /**
    * Override the normalization peak. Defaults to this row's own
    * `Math.max(...data, 1)` — pass a shared value (e.g. the roster-wide peak)
@@ -49,15 +64,26 @@ interface SparklineProps {
 }
 
 /** Build the aria-label numeric fallback: 24h total + peak hour (+ filtered total). */
-function describeSpark(bars: number[], secondaryBars?: number[]): string {
-  const total = bars.reduce((sum, v) => sum + v, 0)
-  const filteredTotal = secondaryBars?.reduce((sum, v) => sum + v, 0) ?? 0
+function describeSpark(
+  bars: (number | null)[],
+  secondaryBars?: (number | null)[],
+  listening?: (ListeningState | null)[],
+): string {
+  const reported = bars.filter((v): v is number => v !== null)
+  if (reported.length === 0) return '24h activity: not reported'
+  const total = reported.reduce((sum, v) => sum + v, 0)
+  const filteredTotal = secondaryBars?.reduce<number>((sum, v) => sum + (v ?? 0), 0) ?? 0
   const filteredSuffix = filteredTotal > 0 ? ` (${filteredTotal} filtered)` : ''
-  if (total === 0) return `24h activity: no events${filteredSuffix}`
-  const peakIndex = bars.reduce((best, v, i) => (v > bars[best] ? i : best), 0)
+  const notListening = describeNotListening(listening)
+  const listeningSuffix = notListening ? `, ${notListening}` : ''
+  const unreported = bars.length - reported.length
+  const unreportedSuffix = unreported > 0 ? `, ${unreported}h not reported` : ''
+  const suffix = `${filteredSuffix}${listeningSuffix}${unreportedSuffix}`
+  if (total === 0) return `24h activity: no events${suffix}`
+  const peakIndex = bars.reduce<number>((best, v, i) => ((v ?? 0) > (bars[best] ?? 0) ? i : best), 0)
   const hoursAgo = bars.length - 1 - peakIndex
   const peakWhen = hoursAgo === 0 ? 'in the last hour' : `${hoursAgo}h ago`
-  return `24h activity: ${total} events total, peak ${peakWhen}${filteredSuffix}`
+  return `24h activity: ${total} events total, peak ${peakWhen}${suffix}`
 }
 
 /**
@@ -70,14 +96,19 @@ function describeSpark(bars: number[], secondaryBars?: number[]): string {
 export function Sparkline({
   data,
   secondaryData,
+  listening,
   maxValue,
   height = 28,
   className,
 }: SparklineProps) {
-  const bars = data.length > 0 ? data : Array(24).fill(0)
-  const peak = maxValue ?? Math.max(...bars, 1)
+  const patternId = useHatchPatternId()
+  const hasDeaf = listening?.includes('deaf') ?? false
+  // An empty series is unreported (bu-s11n0s.5.1): draw the 24-slot frame with
+  // no bars and say so, never a row of measured zeros.
+  const bars = data.length === 0 ? Array<number | null>(24).fill(null) : data
+  const peak = maxValue ?? Math.max(...bars.map((v) => v ?? 0), 1)
   const secondaryBars = secondaryData && secondaryData.length > 0 ? secondaryData : undefined
-  const secondaryPeak = secondaryBars ? Math.max(...secondaryBars, 1) : 1
+  const secondaryPeak = secondaryBars ? Math.max(...secondaryBars.map((v) => v ?? 0), 1) : 1
   // Quiet overlay caps at a small fraction of the row height so it never
   // competes visually with the primary series.
   const secondaryMaxHeight = height * 0.3
@@ -91,27 +122,35 @@ export function Sparkline({
       viewBox={`0 0 ${totalWidth} ${height}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={describeSpark(bars, secondaryBars)}
+      aria-label={describeSpark(bars, secondaryBars, listening)}
       className={className}
       style={{ width: '100%', height }}
     >
+      {hasDeaf && <NotListeningPattern id={patternId} />}
       {bars.map((v, i) => {
+        if (v === null) return <g key={i} data-slot="unreported" />
         const barH = Math.max(1, (v / peak) * height)
         const x = i * (barWidth + barGap)
         const y = height - barH
         const isEmpty = v === 0
         const secondaryV = secondaryBars?.[i] ?? 0
         const secondaryH = secondaryV > 0 ? Math.max(1, (secondaryV / secondaryPeak) * secondaryMaxHeight) : 0
+        const isDeaf = listening?.[i] === 'deaf'
         return (
-          <g key={i}>
-            <rect
-              x={x}
-              y={y}
-              width={barWidth}
-              height={barH}
-              rx={0.5}
-              className={isEmpty ? 'fill-border' : 'fill-foreground/60'}
-            />
+          <g key={i} data-slot={isDeaf ? 'deaf' : undefined}>
+            {isDeaf && (
+              <NotListeningCell x={x} width={barWidth} height={height} patternId={patternId} />
+            )}
+            {(!isDeaf || !isEmpty) && (
+              <rect
+                x={x}
+                y={y}
+                width={barWidth}
+                height={barH}
+                rx={0.5}
+                className={isEmpty ? 'fill-border' : 'fill-foreground/60'}
+              />
+            )}
             {secondaryH > 0 && (
               <rect
                 aria-hidden="true"

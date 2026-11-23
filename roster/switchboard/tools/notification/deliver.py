@@ -19,6 +19,14 @@ from butlers.core.approval_delivery_transport import (
     TrustedRecoveryContext,
 )
 from butlers.core.approval_review import review_from_notify_refusal
+from butlers.core.approved_delivery import (
+    APPROVED_NOTIFY_CONTEXT_KEY,
+    ApprovedNotifyAttestation,
+    notify_request_digest,
+)
+from butlers.core.service_plane.messenger_delivery import (
+    AUTH_UNAVAILABLE as DELIVERY_AUTH_UNAVAILABLE,
+)
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.telegram_api import terminal_telegram_metadata
 from butlers.tools.switchboard.contracts import (
@@ -29,7 +37,10 @@ from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
 )
-from butlers.tools.switchboard.notification.self_links import resolve_self_links
+from butlers.tools.switchboard.notification.self_links import (
+    resolve_request_links,
+    resolve_self_links,
+)
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
@@ -42,6 +53,7 @@ from butlers.tools.switchboard.routing.contracts import (
 from butlers.tools.switchboard.routing.route import route
 from butlers.tools.switchboard.transport import (
     PROVIDER_REJECTED,
+    RECIPIENT_UNAVAILABLE,
     TRANSPORT_CONNECTION_LOST,
     TransportResult,
     transport_result_from_envelope,
@@ -303,6 +315,7 @@ async def _deliver_via_notify_request(
     metadata: dict[str, Any] | None,
     call_fn: Any | None,
     session_id: str | None = None,
+    approved_attestation: ApprovedNotifyAttestation | None = None,
 ) -> dict[str, Any]:
     if notify_request.recovery is not None:
         raise RuntimeError("approval recovery cannot enter generic notification delivery")
@@ -322,6 +335,10 @@ async def _deliver_via_notify_request(
         logged_request["delivery"]["attachments"] = redact_attachment_content(
             logged_request["delivery"]["attachments"]
         )
+    for logged_action in logged_request.get("actions") or ():
+        if logged_action.get("provenance") == "vendor_door":
+            # The log keeps the door reference, never a URL carrying account slots.
+            logged_action.pop("url", None)
     log_metadata["notify_request"] = logged_request
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
@@ -345,12 +362,27 @@ async def _deliver_via_notify_request(
     )
     parse_route_envelope(route_payload)
 
+    internal_context: dict[str, Any] | None = None
+    if approved_attestation is not None:
+        # Attest exactly the envelope Messenger will receive: the source-verified
+        # request after this Switchboard's own sender facts (inert rendering,
+        # self-link resolution). Messenger re-digests what arrives.
+        forwarded = route_payload["input"]["context"]["notify_request"]
+        internal_context = {
+            APPROVED_NOTIFY_CONTEXT_KEY: ApprovedNotifyAttestation(
+                issuer=approved_attestation.issuer,
+                action_id=approved_attestation.action_id,
+                notify_digest=notify_request_digest(forwarded),
+            ).as_internal_dict()
+        }
+
     route_result = await route(
         pool,
         target_butler=MESSENGER_BUTLER_NAME,
         tool_name="route.execute",
         args=route_payload,
         source_butler=source_butler,
+        internal_context=internal_context,
         call_fn=call_fn,
     )
 
@@ -435,15 +467,25 @@ async def _deliver_via_notify_request(
             and isinstance(route_response.get("error"), dict)
             and error_class in {"validation_error", "delivery_error", "policy_denied"}
         )
-        failure_transport = nested_transport or (
-            PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+        # Messenger could not verify Switchboard's workload token right now
+        # (RFC 0038 D7): refused before acceptance, so the send is retryable.
+        auth_unavailable = (
+            isinstance(route_error, dict)
+            and route_error.get("message") == DELIVERY_AUTH_UNAVAILABLE
+            and route_error.get("retryable") is True
         )
+        if auth_unavailable:
+            failure_transport = RECIPIENT_UNAVAILABLE
+        else:
+            failure_transport = nested_transport or (
+                PROVIDER_REJECTED if explicit_application_rejection else TRANSPORT_CONNECTION_LOST
+            )
         return {
             "notification_id": notification_id,
             "status": "failed",
             "error": error_msg,
             "error_class": error_class,
-            "retryable": False,
+            "retryable": auth_unavailable,
             **terminal_telegram_metadata(route_result),
             **_transport_fragment(failure_transport),
         }
@@ -692,6 +734,7 @@ async def deliver(
     trusted_source: str | None = None,
     verified_context: TrustedRecoveryContext | None = None,
     content_requires_inert_links: bool = False,
+    approved_attestation: ApprovedNotifyAttestation | None = None,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -719,6 +762,11 @@ async def deliver(
         ``messenger`` via ``route.execute``.
     call_fn:
         Optional callable for testing; forwarded to :func:`route`.
+    approved_attestation:
+        Set only by the registered tool after the authenticated source verified
+        its single-use approved-notify proof. It must name this source and
+        travel over the protected Messenger ``call_fn``; otherwise delivery is
+        refused rather than downgraded.
 
     Returns
     -------
@@ -783,14 +831,17 @@ async def deliver(
 
             # The input envelope is a tool argument. Only deterministic, internal
             # sender facts can supply this field at the Switchboard boundary.
-            envelope_payload = {
-                **envelope_payload,
-                "render_links_inert": (
-                    delivery_content_requires_inert_links() or content_requires_inert_links is True
-                ),
-            }
+            server_inert = (
+                delivery_content_requires_inert_links() or content_requires_inert_links is True
+            )
+            # Validate the producer's envelope as sent (it cannot set the flag), then apply the
+            # server's inert fact to the parsed request: a door action is refused under inert
+            # links at construction, and an exposed session must degrade it, not fail it.
+            envelope_payload = {**envelope_payload, "render_links_inert": False}
             try:
-                parsed_notify = parse_notify_request(envelope_payload)
+                parsed_notify = parse_notify_request(envelope_payload).model_copy(
+                    update={"render_links_inert": server_inert}
+                )
             except ValidationError as exc:
                 error_msg = (
                     "Invalid approval recovery request."
@@ -809,6 +860,17 @@ async def deliver(
                 span.set_status(trace.StatusCode.ERROR, error_msg)
                 return {"error": error_msg, "status": "failed"}
 
+            if approved_attestation is not None and (
+                approved_attestation.issuer != source_butler
+                or parsed_notify.origin_butler != approved_attestation.issuer
+                or call_fn is None
+            ):
+                return {
+                    "status": "failed",
+                    "error": "Approved notification authority rejected.",
+                    "retryable": False,
+                }
+
             request_context = parsed_notify.request_context or _default_notify_request_context(
                 source_butler
             )
@@ -817,12 +879,17 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=resolve_self_links(parsed_notify),
+                notify_request=await resolve_request_links(
+                    parsed_notify,
+                    pool,
+                    supports_buttons=parsed_notify.delivery.channel == "telegram",
+                ),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,
                 call_fn=call_fn,
                 session_id=session_id,
+                approved_attestation=approved_attestation,
             )
 
         if channel not in SUPPORTED_CHANNELS:

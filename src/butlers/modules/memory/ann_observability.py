@@ -280,6 +280,7 @@ async def _topk_ids(
             await conn.execute("SET LOCAL enable_bitmapscan = off")
         else:
             await conn.execute("SET LOCAL enable_seqscan = off")
+            await conn.execute("SET LOCAL enable_bitmapscan = off")
 
         rows = await conn.fetch(
             f"""
@@ -312,6 +313,7 @@ async def _hnsw_plan_selected(
         await conn.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'")
         await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_MS}ms'")
         await conn.execute("SET LOCAL enable_seqscan = off")
+        await conn.execute("SET LOCAL enable_bitmapscan = off")
         plan = await conn.fetchval(
             f"""
             EXPLAIN (FORMAT JSON, COSTS FALSE)

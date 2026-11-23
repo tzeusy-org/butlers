@@ -1141,6 +1141,69 @@ class TestDeliverPostSendBookkeeping:
         assert result["transport"]["outcome"] == "rejected"
         assert result["transport"]["retryable"] is False
 
+    @staticmethod
+    async def _deliver_route_error(error: dict[str, Any]) -> dict[str, Any]:
+        route_result = {
+            "result": {
+                "schema_version": "route_response.v1",
+                "status": "error",
+                "error": error,
+            },
+            "transport": {"outcome": "confirmed", "retryable": False},
+        }
+        with (
+            patch(
+                "butlers.tools.switchboard.notification.deliver.route",
+                new=AsyncMock(return_value=route_result),
+            ),
+            patch(
+                "butlers.tools.switchboard.notification.deliver.log_notification",
+                new=AsyncMock(return_value="notif-1"),
+            ),
+        ):
+            return await deliver(
+                _mock_pool(), notify_request=_notify_envelope(), source_butler="health"
+            )
+
+    async def test_messenger_auth_unavailable_is_not_attempted_and_retryable(self) -> None:
+        """Messenger could not verify the delivery token now (RFC 0038 D7)."""
+        result = await self._deliver_route_error(
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": True,
+            }
+        )
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is True
+        assert result["transport"]["outcome"] == "not_attempted"
+        assert result["transport"]["retryable"] is True
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            {
+                "class": "validation_error",
+                "message": "messenger_delivery_caller_refused",
+                "retryable": False,
+            },
+            {
+                "class": "target_unavailable",
+                "message": "messenger_delivery_auth_unavailable",
+                "retryable": False,
+            },
+            {"class": "target_unavailable", "message": "other", "retryable": True},
+        ],
+        ids=["caller-refused", "auth-unavailable-not-retryable", "other-retryable-route-error"],
+    )
+    async def test_other_messenger_route_errors_stay_terminal(self, error: dict[str, Any]) -> None:
+        result = await self._deliver_route_error(error)
+
+        assert result["status"] == "failed"
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] != "not_attempted"
+
 
 class TestCallButlerToolExceptionTypes:
     """The MCP hop must raise types the classifier can tell apart."""
@@ -1205,6 +1268,41 @@ class TestCallButlerToolExceptionTypes:
                 await route_mod._call_tool_with_router_client("http://x/mcp/", "t", {})
 
         assert not isinstance(excinfo.value, TransportNotAttempted)
+
+
+class TestServerUnresponsiveIsNeverResent:
+    """bu-dhloi1.147: cancelling the client does not stop the server's handler, so a target that
+    stalled and then recovers would run ``route.execute`` twice if route reconnected and resent."""
+
+    async def test_a_stalled_target_gets_one_send_not_a_reconnect_and_resend(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        route_mod = sys.modules["butlers.tools.switchboard.routing.route"]
+        client = MagicMock()
+        client.call_tool = AsyncMock(side_effect=ServerUnresponsive("missed 3 pings"))
+        get_client = AsyncMock(return_value=client)
+
+        with patch.object(route_mod, "_get_cached_router_client", new=get_client):
+            with pytest.raises(ServerUnresponsive):
+                await route_mod._call_tool_with_router_client("http://x/mcp/", "route.execute", {})
+
+        assert client.call_tool.await_count == 1
+        assert get_client.await_count == 1  # no reconnect either
+
+    async def test_the_route_envelope_is_not_retryable_and_the_outcome_is_uncertain(self) -> None:
+        from butlers.mcp_liveness import ServerUnresponsive
+
+        pool = _mock_pool()
+
+        async def call_fn(_url: str, _tool: str, _args: dict[str, Any]) -> Any:
+            raise ServerUnresponsive("missed 3 pings")
+
+        with _resolves_target():
+            result = await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+        assert result["retryable"] is False
+        assert result["transport"]["outcome"] == "uncertain"
+        assert result["transport"]["retryable"] is False
 
 
 class TestNoEventLoopStarvation:

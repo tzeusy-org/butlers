@@ -71,7 +71,12 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
-from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import (
+    CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
+    QA_BREAKER_WHERE_SQL,
+)
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
@@ -81,6 +86,14 @@ from butlers.core.qa.patrol_status import (
     VALID_PATROL_STATUSES,
     is_valid_patrol_status,
     require_patrol_status,
+)
+from butlers.core.qa.remediation_liveness import (
+    STREAK_SQL as _LOOP_STREAK_SQL,
+)
+from butlers.core.qa.remediation_liveness import (
+    active_loop_conditions,
+    evaluate_reset,
+    record_reset_refusal,
 )
 from butlers.core.qa.repo_whitelist import parse_repo_url
 from butlers.core.qa.severity import (
@@ -167,7 +180,7 @@ def _get_credentials_status_fn():
 
     Override via ``app.dependency_overrides[_get_credentials_status_fn]`` to
     inject a callable that returns a ``dict`` describing the QA credential
-    status (e.g., whether ``BUTLERS_QA_GH_TOKEN`` is set).
+    status (e.g., whether ``BUTLERS_QA_GH_READ_TOKEN`` is set).
 
     The callable must be an async function with no required arguments and
     must return a dict with at least ``{"gh_token_present": bool}``.
@@ -221,20 +234,21 @@ async def _resolve_github_token(db: DatabaseManager) -> str | None:
 
     Resolution order (first hit wins):
 
-    1. CredentialStore ``BUTLERS_QA_GH_TOKEN`` (the QA subsystem's canonical
-       token, used for PR creation).
+    1. CredentialStore ``BUTLERS_QA_GH_READ_TOKEN`` (the read-only polling token).
+       The write-scoped ``BUTLERS_QA_GH_TOKEN`` is never resolved (bu-ejow5p.1).
     2. Conventional ``GITHUB_TOKEN`` / ``GH_TOKEN`` from the environment
-       (ops provisions either via the daemon env).
+       (ops provisions either via the daemon env).  Owner-approved scope keeps this
+       fallback; an env token is not visible to the credential-store presence check.
 
-    Returns ``None`` when no token can be found — the PR panel then degrades
+    Returns ``None`` when no token can be found - the PR panel then degrades
     gracefully to the honest "unavailable" state.
     """
     try:
-        from butlers.core.qa.dispatch import QA_GH_TOKEN_KEY
+        from butlers.core.qa.dispatch import QA_GH_READ_TOKEN_KEY
         from butlers.credential_store import CredentialStore
 
         pool = db.credential_shared_pool()
-        token = await CredentialStore(pool).resolve(QA_GH_TOKEN_KEY)
+        token = await CredentialStore(pool).resolve(QA_GH_READ_TOKEN_KEY)
         if token:
             return token
     except Exception:
@@ -261,6 +275,7 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
     swallows such failures and reports the status as "unknown" (all ``None``).
     """
     from butlers.core.qa.dispatch import (
+        QA_GH_READ_TOKEN_KEY,
         QA_GH_TOKEN_KEY,
         QA_GIT_AUTHOR_EMAIL_KEY,
         QA_GIT_AUTHOR_NAME_KEY,
@@ -269,7 +284,10 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
 
     store = CredentialStore(db.credential_shared_pool())
     return {
-        "gh_token_present": await store.has(QA_GH_TOKEN_KEY),
+        # The read-only polling key; the write key is only checked for presence so a
+        # leftover can be reported as action-needed (it is never resolved).
+        "gh_token_present": await store.has(QA_GH_READ_TOKEN_KEY),
+        "gh_write_token_present": await store.has(QA_GH_TOKEN_KEY),
         "git_author_name_present": await store.has(QA_GIT_AUTHOR_NAME_KEY),
         "git_author_email_present": await store.has(QA_GIT_AUTHOR_EMAIL_KEY),
     }
@@ -317,6 +335,10 @@ async def _row_to_pr_summary_live(
     meta = await client.fetch(owner, repo, number, token=token)
     return summary.model_copy(
         update={
+            # A successful live lifecycle observation supersedes the local
+            # positive mapping; an unavailable observation cannot erase it.
+            "state": meta.state if meta.state is not None else summary.state,
+            "merged_at": meta.merged_at if meta.state is not None else summary.merged_at,
             "ci_status": meta.ci_status,
             "additions": meta.additions,
             "deletions": meta.deletions,
@@ -494,12 +516,11 @@ class QaPrSummary(BaseModel):
     """Pull request summary embedded in a QA case dossier."""
 
     number: int
-    state: Literal["drafted", "open", "merged", "closed"]
+    state: Literal["drafted", "open", "merged", "closed"] | None = None
     title: str
     branch: str
-    # CI status and diff stats are not tracked locally (no GitHub fetch path
-    # exists yet — see bu-cnvg7.3). ``None`` means "unavailable", which the UI
-    # renders honestly instead of asserting a "unknown" / "+0/-0" placeholder.
+    # Lifecycle may be unknown even when PR identity is known. CI status and
+    # diff stats are optional live observations, not persisted attempt facts.
     ci_status: Literal["passing", "failing", "pending", "unknown"] | None = None
     additions: int | None = None
     deletions: int | None = None
@@ -573,7 +594,7 @@ class QaCircuitBreaker(BaseModel):
     # Optional (default mirrors _CIRCUIT_BREAKER_THRESHOLD) so existing
     # fixtures/tests that construct this without a threshold keep working;
     # the real endpoint always sets it explicitly.
-    threshold: int = 5
+    threshold: int = QA_BREAKER_THRESHOLD
 
 
 class QaCredentialsStatus(BaseModel):
@@ -585,8 +606,15 @@ class QaCredentialsStatus(BaseModel):
     so the dashboard can distinguish "unknown" from "missing".
     """
 
+    gh_write_token_present: bool | None = None
+    """Whether a write-scoped ``BUTLERS_QA_GH_TOKEN`` is still in the credential store.
+
+    ``True`` is an action-needed condition: the daemon refuses and never loads it, but it
+    is reachable by investigators in the same pod until deleted and rotated.
+    """
+
     gh_token_present: bool | None = None
-    """Whether ``BUTLERS_QA_GH_TOKEN`` is set in the credential store.
+    """Whether the read-only ``BUTLERS_QA_GH_READ_TOKEN`` is set in the credential store.
 
     ``None`` means the status could not be determined (e.g., no daemon
     wired in).  ``True`` means the token is present; ``False`` means it
@@ -611,10 +639,30 @@ class QaCredentialsStatus(BaseModel):
     """
 
 
+class QaLoopCondition(BaseModel):
+    """One active remediation-loop liveness condition (REQ-qa-remediation-liveness-001)."""
+
+    source: str
+    summary: str | None = None
+    cause: str | None = None
+    first_detected_at: datetime | None = None
+
+
 class QaSummary(BaseModel):
     """QA staffer status summary for the dashboard."""
 
     staffer_status: str = "unknown"
+    loop_conditions: list[QaLoopCondition] = Field(
+        default_factory=list,
+        description=(
+            "Active remediation-loop liveness conditions. A non-empty list means "
+            "staffer_status is never 'healthy'."
+        ),
+    )
+    loop_conditions_known: bool = Field(
+        default=True,
+        description="False when the condition ledger could not be read; never read as none.",
+    )
     last_patrol_at: datetime | None = None
     next_patrol_at: datetime | None = None
     last_patrol: QaPatrolSummary | None = None
@@ -850,6 +898,16 @@ class CircuitBreakerResetResponse(BaseModel):
 
     reset: bool
     message: str
+    refusal_reason: str | None = None
+
+
+class CircuitBreakerResetRequest(BaseModel):
+    """Body of a manual breaker reset: the cause it claims to address."""
+
+    cause_ref: str | None = Field(
+        default=None,
+        description="'<cause_code>:<reference>', for example 'publisher_unconfigured:PR-1234'.",
+    )
 
 
 class QaRepoConfig(BaseModel):
@@ -1098,7 +1156,7 @@ def _finding_from_case_row(row: Any) -> QaFinding | None:
 
 
 def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed"] | None:
-    """Map healing status into the compact case-list PR state."""
+    """Preserve positive local PR states; a terminal attempt says nothing about its PR."""
     status = row["status"]
     if status == "pr_merged":
         return "merged"
@@ -1106,8 +1164,6 @@ def _pr_state_for_case(row: Any) -> Literal["drafted", "open", "merged", "closed
         return "open"
     if status == "drafted":
         return "drafted"
-    if row.get("pr_url") and status in {"failed", "timeout", "unfixable", "anonymization_failed"}:
-        return "closed"
     return None
 
 
@@ -1191,7 +1247,7 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
     branch = row.get("branch_name")
     pr_state = _pr_state_for_case(row)
 
-    if not pr_url or pr_number is None or not branch or pr_state is None:
+    if not pr_url or pr_number is None or not branch:
         return None
 
     return QaPrSummary(
@@ -1207,7 +1263,9 @@ def _row_to_pr_summary(row: Any) -> QaPrSummary | None:
         additions=None,
         deletions=None,
         opened_at=row["created_at"],
-        merged_at=row.get("closed_at") if pr_state == "merged" else None,
+        # Attempt closure is not a GitHub merge timestamp. Only the live
+        # provider observation may populate that field.
+        merged_at=None,
         url=pr_url,
     )
 
@@ -1229,7 +1287,7 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 # (the canonical definition). Threshold matches QaDispatchConfig default.
 # ---------------------------------------------------------------------------
 
-_CIRCUIT_BREAKER_THRESHOLD = 5
+_CIRCUIT_BREAKER_THRESHOLD = QA_BREAKER_THRESHOLD
 # Only real launched QA investigations (healing_session_id IS NOT NULL) that
 # closed AFTER the latest manual reset count toward the breaker. Consulting
 # ``public.breaker_resets`` (rather than a forged clean-patrol sentinel) is what
@@ -1237,16 +1295,7 @@ _CIRCUIT_BREAKER_THRESHOLD = 5
 # attempt/patrol history stays visible in summary + all-time stats. Kept
 # byte-identical to the dispatch-admission filter in
 # ``butlers.core.qa.dispatch._is_circuit_breaker_tripped``.
-_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = """
-FROM public.healing_attempts
-WHERE qa_patrol_id IS NOT NULL
-  AND closed_at IS NOT NULL
-  AND healing_session_id IS NOT NULL
-  AND closed_at > COALESCE(
-        (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-        '-infinity'::timestamptz
-      )
-"""
+_QA_CIRCUIT_BREAKER_WHERE_CLAUSE = QA_BREAKER_WHERE_SQL
 
 
 async def _fetch_recent_circuit_breaker_rows(
@@ -1257,7 +1306,8 @@ async def _fetch_recent_circuit_breaker_rows(
 ) -> list[asyncpg.Record]:
     """Fetch recent QA breaker rows using the same filter as dispatch admission control."""
 
-    select_cols = "id, status, closed_at" if include_ids else "status"
+    status_col = f"{QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status"
+    select_cols = f"id, {status_col}, closed_at" if include_ids else status_col
     return await pool.fetch(
         f"""
         SELECT {select_cols}
@@ -1757,6 +1807,20 @@ async def get_qa_summary(
     else:
         staffer_status = "healthy"
 
+    # Remediation-loop liveness conditions (REQ-qa-dashboard-801). A condition
+    # downgrades "healthy"; an unreadable ledger is unknown, never none.
+    try:
+        loop_rows = await active_loop_conditions(pool)
+    except Exception:
+        logger.warning("get_qa_summary: loop conditions unreadable (non-fatal)", exc_info=True)
+        loop_rows = None
+    loop_conditions = [QaLoopCondition(**row) for row in (loop_rows or [])]
+    if staffer_status == "healthy":
+        if loop_rows is None:
+            staffer_status = "unknown"
+        elif loop_conditions:
+            staffer_status = "degraded"
+
     # Credentials status — populated when daemon wires credentials_status_fn
     credentials_status = QaCredentialsStatus()
     if credentials_status_fn is not None:
@@ -1776,14 +1840,21 @@ async def get_qa_summary(
 
             if parsed_creds is not None:
                 provisioning_hint: str | None = None
-                if parsed_creds.gh_token_present is False:
+                if parsed_creds.gh_write_token_present is True:
                     provisioning_hint = (
-                        "BUTLERS_QA_GH_TOKEN is missing. "
-                        "Provision via: butler secrets set BUTLERS_QA_GH_TOKEN <token> "
-                        "(requires 'repo' scope)"
+                        "A write-scoped BUTLERS_QA_GH_TOKEN is still in the secrets store. "
+                        "It is refused and never loaded; delete it and rotate the token "
+                        "(investigator containment is not enforced: same pod, root)"
+                    )
+                elif parsed_creds.gh_token_present is False:
+                    provisioning_hint = (
+                        "BUTLERS_QA_GH_READ_TOKEN is missing; PR status stays unknown. "
+                        "Provision a fine-grained read-only token via: "
+                        "butler secrets set BUTLERS_QA_GH_READ_TOKEN <token>"
                     )
                 credentials_status = QaCredentialsStatus(
                     gh_token_present=parsed_creds.gh_token_present,
+                    gh_write_token_present=parsed_creds.gh_write_token_present,
                     git_author_name_present=parsed_creds.git_author_name_present,
                     git_author_email_present=parsed_creds.git_author_email_present,
                     provisioning_hint=provisioning_hint,
@@ -1825,6 +1896,8 @@ async def get_qa_summary(
 
     summary = QaSummary(
         staffer_status=staffer_status,
+        loop_conditions=loop_conditions,
+        loop_conditions_known=loop_rows is not None,
         last_patrol_at=last_patrol_at,
         next_patrol_at=None,  # Requires scheduler integration; not available via DB
         last_patrol=last_patrol,
@@ -3425,9 +3498,15 @@ async def get_circuit_breaker_status(
 async def reset_circuit_breaker(
     *,
     db: Db,
+    body: CircuitBreakerResetRequest | None = Body(default=None),
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
     """Reset the QA circuit breaker by recording an auditable reset marker.
+
+    The reset must name the cause it addresses (``cause_ref``). While the streak's dominant
+    cause is structural (for example no publisher), the reset must name that cause, and a
+    reference that already bought a reset followed by the same structural failure is refused
+    (REQ-qa-remediation-liveness-003).
 
     Writes one ``public.breaker_resets`` row (who/when/why). The dispatch
     admission gate and every dashboard breaker query only count investigation
@@ -3457,12 +3536,38 @@ async def reset_circuit_breaker(
             meta=ApiMeta(),
         )
 
+    streak = await pool.fetch(_LOOP_STREAK_SQL, _CIRCUIT_BREAKER_THRESHOLD)
+    decision = await evaluate_reset(
+        pool,
+        body.cause_ref if body is not None else None,
+        [row["error_detail"] for row in streak],
+    )
+    if not decision.allowed:
+        logger.warning("QA circuit breaker reset refused (reason=%s)", decision.reason)
+        await record_reset_refusal(pool, decision, reset_by="dashboard")
+        return ApiResponse(
+            data=CircuitBreakerResetResponse(
+                reset=False,
+                message=(
+                    "Reset refused: name the cause it addresses as '<cause_code>:<reference>' "
+                    "and resolve any structural cause first."
+                ),
+                refusal_reason=decision.reason,
+            ),
+            meta=ApiMeta(),
+        )
+
     await pool.execute(
         """
-        INSERT INTO public.breaker_resets (breaker, reset_by, reason)
-        VALUES ('qa', 'dashboard', $1)
+        INSERT INTO public.breaker_resets
+            (breaker, reset_by, reason, cause_code, cause_ref, refusal_reason)
+        VALUES ('qa', 'dashboard', $1, $2, $3, $4)
         """,
         "Manual reset via QA dashboard",
+        decision.cause_code,
+        decision.cause_ref,
+        # 'unprobed' marks a reset accepted with no live probe of its cause (outcome stays 'reset').
+        decision.reason if decision.unprobed else None,
     )
 
     # The cached briefing can otherwise retain the pre-reset urgent verdict for

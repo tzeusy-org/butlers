@@ -12,19 +12,27 @@ from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
 
+from butlers.audio_authorship import usable_key
 from butlers.core.fact_authority import FactWriteContext, dashboard_origin_digest
-from butlers.core.goal_admission import Evidence, EvidenceRefused, SourceRef, digest
+from butlers.core.goal_admission import (
+    MAX_ATTACHMENT_REFS,
+    Evidence,
+    EvidenceRefused,
+    SourceRef,
+    digest,
+    valid_trigger_thread,
+)
+from butlers.core.reply_scope import scoped_reply_ref
+from butlers.core.resource_pairs import lazy_attachment_refs
 from butlers.identity import resolve_owner_channel_via_definer
 from butlers.tools.switchboard.connector.heartbeat import (
     VALID_CONNECTOR_TYPES,
     registered_channel_kind,
 )
 from butlers.tools.switchboard.ingestion.feed_admission import DeterministicFeeds
-from butlers.tools.switchboard.ingestion.goal_input import (
-    GoalInput,
-    prepare_goal_input,
-    scoped_reply_ref,
-)
+from butlers.tools.switchboard.ingestion.goal_input import GoalInput, prepare_goal_input
+
+from .audio_admission import owner_speech_verified, speech_derived
 
 
 class ClosedGoalProfile(Enum):
@@ -61,6 +69,27 @@ def _connector(channel, provider):
     raise EvidenceRefused("accepted_source_identity_invalid")
 
 
+_GMAIL_ENDPOINT_PREFIX = "gmail:user:"
+
+
+def gmail_trigger_thread(connector, endpoint, context) -> tuple[str, str] | None:
+    """The admitting Gmail ``(account, thread_id)`` from the verified stored envelope, or None.
+
+    The account is the connector's endpoint identity (``gmail:user:<address>``), the thread its
+    ``external_conversation_id``. Anything else, or an id the exact rule refuses, binds no thread:
+    that only narrows, since an exposed goal then parks every mailbox change.
+    """
+    if connector != "gmail" or not isinstance(endpoint, str):
+        return None
+    if not endpoint.startswith(_GMAIL_ENDPOINT_PREFIX):
+        return None
+    trigger = (
+        endpoint[len(_GMAIL_ENDPOINT_PREFIX) :].strip().lower(),
+        context.get("external_conversation_id"),
+    )
+    return trigger if valid_trigger_thread(trigger) else None
+
+
 async def _live_owner(connection, expected=None):
     rows = await connection.fetch(
         "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles) "
@@ -73,10 +102,19 @@ async def _live_owner(connection, expected=None):
 
 
 class AcceptedSourceEvidence:
-    def __init__(self, *, profile: ClosedGoalProfile, feeds: DeterministicFeeds | None = None):
+    def __init__(
+        self,
+        *,
+        profile: ClosedGoalProfile,
+        feeds: DeterministicFeeds | None = None,
+        audio_key: str | bytes | None = None,
+    ):
+        """``audio_key`` is the server-held ``AUDIO_AUTHORSHIP_KEY`` from the trusted
+        constructor; without it no transcript can verify as owner speech."""
         if profile is not ClosedGoalProfile.HARNESS:
             raise EvidenceRefused("goal_profile_unavailable")
         self.feeds = feeds
+        self.audio_key = usable_key(audio_key)
 
     async def _dashboard_owner(self, connection, raw, text):
         metadata = (raw.get("payload") or {}).get("raw") or {}
@@ -173,8 +211,23 @@ class AcceptedSourceEvidence:
                     # verdict are not authenticated owner-principal evidence (mail
                     # import can supply those headers). No owner stamp exists here.
                     entity = None
+        # A transcript is the owner's input only when its producer's keyed binding verifies
+        # against this row (REQ-audio-authorship-001/002). Otherwise the owner stays the
+        # enclosing sender, but the whole transcript is fenced as data and the goal starts
+        # exposed, as for forwarded material.
+        unverified_speech = (
+            entity is not None
+            and speech_derived(src.get("provider"), payload, text)
+            and not owner_speech_verified(
+                key=self.audio_key, context=context, raw=raw, payload=payload, text=text
+            )
+        )
         prepared = prepare_goal_input(
-            source.id, bound_digest, retained, reference, owner=entity is not None
+            source.id,
+            bound_digest,
+            retained,
+            reference,
+            owner=entity is not None and not unverified_speech,
         )
         if kind == "feed":
             if self.feeds is None:
@@ -195,11 +248,16 @@ class AcceptedSourceEvidence:
             "message",
             endpoint,
             owner=entity is not None,
-            outside_content=prepared.marked or referenced_exposed,
+            outside_content=prepared.marked or referenced_exposed or unverified_speech,
             reply_delivery=delivery,
             owner_entity=entity,
             owner_channel=channel,
             prepared_input=prepared,
+            # The request's own lazy refs scope a pair-bound capability's grant (bu-jv1moa.64).
+            # More than the cap keeps the first sorted few, which only narrows the goal.
+            attachment_refs=lazy_attachment_refs(row["attachments"])[:MAX_ATTACHMENT_REFS],
+            # The admitting thread an exposed goal may change without approval (bu-kqme7f.10).
+            trigger_thread=gmail_trigger_thread(connector, endpoint, context),
         )
 
     async def _reply(self, connection, context, raw, reference, entity):

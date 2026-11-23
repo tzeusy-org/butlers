@@ -41,15 +41,42 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
 
+The dashboard-api migrations initContainer first runs `db prepare-chronicler-memory` against
+Chronicler's explicit `memory_schema`, then runs ordinary migrations. `butlers-up` already waits for
+the dashboard API health endpoint, so the private-schema prerequisite completes before daemon
+startup without changing the normal core → domain → modules order. On a database whose
+`chronicler_mem` version table already records memory revisions the prerequisite runs only the memory
+chain: core migrations write `public.*` and belong to the ordinary core run, so they are never
+replayed through the private schema. A fresh database still gets core, then memory.
+
+Dev source temporarily selects one cohosted `butlers-up` including Switchboard,
+with five shared session slots (`butlersControl.enabled=false`, owner decision
+2026-11-04). Explicit `true` still renders the separate control/domain pair at
+1+4; production defaults remain unsplit. The accepted RFC 0023 approval authority
+requires cohosting, but its admission/worker flags remain separately gated and
+default-off. For this live dev database, use the
+[exclusive cohosting and approval rollout runbook](approval-delivery-dev-rollout.md):
+build first, verify backup and bootstrap/migration compatibility, stop both old
+runtime roles and confirm their pods are gone, then run the standard pinned-tag
+deployment. A source render does not prove this transition has happened.
+
 ### Google Health target startup gate
 
 Google Health's `waitForHealthRoutes: true` adds `wait-for-health-routes` after its
 existing `oauth-gate` and Switchboard `wait-for-butlers-up` init containers. It
 uses the application image's `scripts/wait_for_butler_routes.py` to poll
-`http://butlers-up:41103/internal/control-plane/identity`. Health stays on
-`butlers-up` when `butlersControl.enabled` splits Switchboard into
-`butlers-control`; the existing Switchboard gate follows that split as before.
-Other connectors retain their existing startup gates.
+`http://butlers-up:41103/internal/control-plane/identity` by default. Health
+stays on `butlers-up` when `butlersControl.enabled` splits Switchboard into
+`butlers-control`. The existing Switchboard gate follows that split, and other
+connectors retain their startup gates.
+
+In the split deployment with service-plane authentication, setting
+`servicePlaneAuth.healthTLS.enabled: true` changes the Google Health probe to
+`https://butlers-up:41103/internal/control-plane/identity`. The init container
+verifies the Health certificate and the `butlers-up` DNS name over TLS 1.3
+using the CA mounted at `/var/run/butlers-health-ca/ca.crt` from the configured
+Health CA ConfigMap. Missing or invalid trust material or a certificate that
+fails verification keeps polling stopped.
 
 HTTP 200 alone cannot release polling. The response must identify schema
 `butler.control.v1` and butler `health`, have an exact integer positive
@@ -101,7 +128,10 @@ resource or credential action is part of source retirement.
 
 ## Ingress
 
-The host's `tailscale serve` mappings stay the public entry point, so the dashboard URL, OAuth
+The host's `tailscale serve` mappings stay the tailnet entry point for the dashboard and API
+(the only internet-reachable Butlers workload is the planned RFC 0039 public MCP server, through
+the owner's gateway; its setup, including the second database `butlers_public`, is
+[Public MCP Read Surface](public-mcp-read-surface.md)), so the dashboard URL, OAuth
 redirect URIs, the OwnTracks webhook URL and enrolled passkeys (RP ID `butlers.example.ts.net`)
 do not change. Only the local targets move from the compose ports to the NodePorts:
 
@@ -113,10 +143,64 @@ tailscale serve --bg --set-path /owntracks-dev   http://localhost:32086/owntrack
 
 NodePorts listen on every node address, unlike compose's `127.0.0.1` bindings. The
 `butlers-host-ingress` NetworkPolicy therefore admits only the node itself and pods in the
-namespace. Host-originated connections reach pods from the `cni0` address `10.42.0.1`. That
-address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers`; it plays the
-role the Docker bridge gateway played under compose. The NodePort Services use
-`externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
+namespace. Host-originated connections reach pods on the same node from the `cni0` address
+`10.42.0.1`, and pods on another node from the host's `flannel.1` address `10.42.0.0`
+(`hostIngress.extraSourceCidrs`). Both are allowed sources and both belong in
+`dashboardAuth.trustedProxyPeers`; they play the role the Docker bridge gateway played under
+compose. The NodePort Services use `externalTrafficPolicy: Local`, so remote clients keep their
+own source IP and are refused.
+
+The pods behind `tailscale serve` (frontend, dashboard API, OwnTracks) must run on the serve
+host's node. A `Local` NodePort answers only on a node that hosts the pod, so
+`localhost:<nodePort>` returns 502 when the pod is elsewhere. Pointing serve at a Service
+ClusterIP does not help: kube-proxy would route to the remote pod through the flannel VXLAN
+tunnel, and on a cluster whose flannel underlay is `tailscale0` that hop cannot work from
+`tailscaled`. Its sockets carry fwmark `0x80000`, the VXLAN outer packet inherits the mark, and
+the `0x80000` policy rule looks the underlay address up in the main table, which has no `100.x`
+route (those live in Tailscale's table 52). The tunnel packet leaves by the LAN default route
+and is lost, while an unmarked `curl` to the same ClusterIP works, which makes the failure
+easy to misread. Set `hostServedNodeSelector` in the gitignored `values.local.yaml`
+(`kubernetes.io/hostname: <serve-host-node>`); it renders as a `nodeSelector` on exactly those
+three pods and is empty in committed values.
+
+`serviceClusterIPs` (also gitignored-local) can still fix the frontend and dashboard API
+Service addresses if a serve route targets them, so the route survives a Service recreate.
+
+Every other pod is covered too. `butlers-default-deny-ingress` selects all pods, and allowed
+ingress is the union of the policies selecting a pod, so a deny cannot subtract an allow.
+
+| Policy | Destination | Source and port |
+| --- | --- | --- |
+| `butlers-namespace-ingress` | Every pod without a narrower policy | Pods in the namespace, any port |
+| `butlers-daemon-ingress` | `butlers-up` (every daemon MCP port) | Dashboard API, `butlers-control` and `butlers-up` on every daemon port; connectors on Switchboard's 41100 when it is cohosted; connectors with `waitForHealthRoutes` on Health's 41103 |
+| `butlers-host-ingress` | Dashboard API, frontend, OwnTracks | Node and namespace pods; metrics port from the scraper namespace |
+| `butlers-metrics-ingress` | Other connectors with a metrics sidecar | Scraper namespace, metrics port only |
+| `butlers-control-ingress` | `butlers-control` | Namespace pods on 41100; session-host and control health on 41199 |
+| `butlers-session-host-ingress` | `session-host` (only when `sessionHost.enabled`) | `butlers-control` on `sessionHost.port` (41198), mTLS-pinned |
+
+The scraper namespace is `connectorMetrics.sourceNamespace` (default `lgtm`). It is matched on the
+immutable `kubernetes.io/metadata.name`; the chart refuses an empty value and the public MCP
+namespaces. If connector targets disappear after a deploy, the scraper runs somewhere else: set the
+value to its namespace. Rolling this back reopens unauthenticated daemon MCP ports to the cluster.
+This is rendered intent. Run `kubectl -n butlers-<env> get pods` after deploying to confirm probes
+still pass, `butlers-up` first because its `httpGet` probes take every daemon down if they fail; a
+Helm render does not prove CNI enforcement. Kubernetes exempts traffic from a pod's own node, which
+is what lets kubelet probes through. The same exemption lets host processes and `hostNetwork` pods
+reach daemon ports, so these policies do not limit anything already running on the node.
+
+Daemon MCP endpoints have no caller authentication, and `trigger` (like `route.execute`) starts
+a real session, so `butlers-daemon-ingress` is the only in-cluster boundary in front of them. It
+stops a namespace pod with no MCP client of a daemon (frontend, CronJobs, an ad-hoc debug pod)
+and limits a compromised connector to Switchboard's ingest port. It does not stop:
+
+- `kubectl port-forward` or `kubectl exec`: the kubelet connects inside the pod's network
+  namespace, where no NetworkPolicy applies. Whoever holds `pods/portforward` or `pods/exec` in
+  the namespace can call any daemon tool; keep those verbs to operators.
+- Processes on the node and `hostNetwork` pods (the node exemption above).
+- The allowed callers themselves. The dashboard API enforces owner auth on its own routes, but a
+  compromise of it, `butlers-control` or a daemon reaches every daemon port.
+- LLM sessions spawned inside `butlers-up`, which reach every daemon over loopback. RFC 0038's
+  session host and broker-signed assertions replace that boundary.
 
 ## Notification metadata repair evidence
 
@@ -150,7 +234,15 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
-`make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
+Before anything is released, `make deploy-*` runs `scripts/k8s/prepull-images.sh`. It renders
+the release with the same Helm arguments and pulls every image onto each node that hosts the
+release's pods today. It does this with one short-lived pod per node: `nodeName`-pinned, one no-op
+container per image, deleted afterwards. Every workload uses the `Recreate` strategy, so without
+this the old pods stop first and the namespace is down for the whole pull of a large new image. A
+failed or timed-out pull (`PREPULL_TIMEOUT`, default 5400 s) stops the deploy while the old pods
+still serve. A namespace with no release pods skips the step.
+
+`make deploy-*` then runs through `scripts/k8s/record-deploy.sh`, so each release appends one
 `public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
 rollouts have finished **and** semantic readiness has been sustained, `failed` when `helm upgrade`,
 a rollout, or the readiness wait fails.
@@ -193,18 +285,59 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
 starts. Migrations only *check* the privileged bootstrap
 ([reviewed-bootstrap.md](../data_and_storage/reviewed-bootstrap.md)); they never create it. So on
-dev `deploy-*` first runs `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh dev <tag>`). That target
+dev `deploy-*` first passes the read-only topology guard, then runs `bootstrap-dev`
+(`scripts/k8s/bootstrap-db.sh dev <tag>`). The same guard rechecks live state immediately before
+Helm in `record-deploy.sh`, including direct wrapper calls. Its exact Helm render determines the
+desired topology; live Deployment commands/selectors, observed generations/counters and all
+release runtime pods determine the current topology. Unknown or inconsistent state refuses even
+a same-topology rollout. Admission recognizes the exact installed-only role commands and the
+previous live images' exact `uv sync --dev && exec uv run butlers ...` commands so an image
+upgrade can retain its topology. Extra command arguments and mixed roles still refuse.
+Split/cohost changes require both roles at desired/observed zero and no
+old or terminating pods. A stopped leftover control object does not block a same-cohost release.
+The host needs `uv sync --dev` in this checkout; the guard never installs dependencies, scales
+roles, deletes pods or writes the DB. Hold competing automation throughout: API reads are not an
+atomic lock. See the [exclusive replacement runbook](approval-delivery-dev-rollout.md).
+The bootstrap target
 reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
 
 - It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
   `kubectl exec`, so no superuser password is involved.
 - It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
+- This rerun also applies the public MCP projection's `init-db.sql` grants (RFC 0039 owner
+  act 9) where the CNPG projection roles and `butlers_public` exist.
 
-Without this step, a tag whose migrations need a newer bootstrap surface fails in the
+Without the bootstrap step, a tag whose migrations need a newer bootstrap surface fails in the
 `migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
 (bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
-reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
-pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
+reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`.
+
+`deploy-*` also runs the public MCP projection's owner step (RFC 0039 owner act 10, owner
+decision OD20) as a second command after `record-deploy.sh`, whatever that returned, and exits
+with the first non-zero status. On dev the `migrations` initContainer runs `butlers public-mcp
+reconcile` after Alembic (`publicMcp.reconcile`, true only in `values.dev.yaml`). It cannot run in `bootstrap-dev`: the step needs the
+publication that `butlers public-mcp reconcile` writes in the `migrations` initContainer. A
+release can fail after reconcile (a later rollout or the readiness wait), so the step still runs
+then; when the migrations did not reconcile, its guard refuses and changes nothing.
+`scripts/k8s/public-mcp-owner-step.sh dev <tag>` requires the `dashboard-api` pod running exactly
+`<tag>`, renders `butlers public-mcp owner-sql` from the git tree of `<tag>` in this checkout
+(never from the privileged pod), refuses any psql meta-command outside a short allowlist, and only
+then pipes it to `psql` as the same CNPG local superuser. It runs on every deploy and changes nothing when the manifest is unchanged.
+The public chart `deploy/helm/butlers-public-mcp` (`bu-y66o00.6`, task 2.4) is upgraded by the
+same target at the same tag after the step succeeds, through `scripts/k8s/public-mcp-chart-deploy.sh`
+(release `butlers-public-mcp`, recorded in `butlers-dev`; the chart creates `butlers-public-dev`).
+It is guarded by `PUBLIC_MCP_CHART_dev := off` until go-live, because the TAG must contain the
+server entrypoint, and it never runs when the step was switched off or failed. If the step fails, the target prints `public-mcp owner step FAILED` and exits non-zero;
+nothing rolls back, and the release and its deployments row stand. After a manifest change the
+public server refuses with `projection_apply_pending` until a rerun succeeds; with an unchanged
+manifest it keeps serving and only the marker reports the failure. `PUBLIC_MCP_OWNER_STEP_dev :=
+off` in `deploy/helm/butlers/makefile`, set in a reviewed change, switches the step off (and with it the
+public chart) for a teardown.
+Prod stays manual. See [Public MCP Read Surface](public-mcp-read-surface.md).
+
+The new topology guard is dev-only. `dashboard-api`, `butlers-up` and the connectors use the
+Recreate strategy, which serializes each Deployment's replacement but cannot order two different
+runtime roles. The image installs dependencies before copying `src/`, so a commit that touches
 only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
 unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
 the multi-GB dependency layer and takes about 12 minutes.
@@ -392,7 +525,7 @@ and effectiveness have not been re-verified by recording this decision.
 
 | Control | Configured behavior | Limit |
 | --- | --- | --- |
-| Host ingress restriction | With `hostIngress.restrict: true` (the shared default), the [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
+| Host ingress restriction | The [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
 | NodePort source preservation | The dashboard NodePort Service uses `externalTrafficPolicy: Local`, preserving client source IPs for the configured ingress/proxy checks. Tailscale Serve is the documented HTTPS entry point. | Source preservation and the intended proxy path do not prove the live firewall, Serve configuration, or protection of every node address. Network membership does not identify the owner. |
 | Dashboard owner authentication | The [dev overlay](../../deploy/helm/butlers/values.dev.yaml) enables the chart's canonical origin, RP ID and trusted-proxy configuration. The [owner-authentication boundary](../identity_and_secrets/dashboard-owner-auth.md) independently checks dashboard request authority. | The [prod overlay](../../deploy/helm/butlers/values.prod.yaml) has `dashboardAuth.enabled: false` and does not supply that browser configuration. Do not infer live enrollment, working proxy attribution, or prod passkey protection from the chart; optional API-key provisioning is separate. |
 | Declared mounts | The dashboard template declares its PVC and Secret mounts, with backups and the runtime-probe signing-key mount read-only. It declares no Docker socket or `hostPath` mount. | Read-only mounts and application authentication do not contain a privileged container compromise or protect the host from an escape. They do not replace the CLI sandbox's existing isolation and credential-handling requirements. |
@@ -434,10 +567,86 @@ selected by that decision. Any later posture change needs its own authorization
 and current compatibility evidence; this documentation update authorizes no
 re-probe, kernel change, provisioning or rollout.
 
-### Egress gap
+### Egress policy (opt-in)
 
-The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet.
-It only ran when the launcher had passwordless sudo. The host-ingress policy
-above does not supply that parity; the separate tracker-egress policy does not
-provide the general private-network allowlist either. Egress parity remains
-tracked in `bu-viat6h.6`.
+`egressPolicy.enabled` (default `false`) gives pods the egress shape of
+`scripts/egress-firewall.sh`. It folds into the one `<release>-tracker-egress`
+NetworkPolicy, because NetworkPolicies are additive and a second policy selecting
+the same pods could not narrow it. With the flag off, rendered manifests are
+byte-identical to the previous chart.
+
+When enabled, every pod may reach:
+
+- in-cluster pods (`namespaceSelector: {}`) and DNS (kube-system, port 53);
+- each CIDR in `egressPolicy.allowedCidrs`;
+- the public internet (`0.0.0.0/0`), except the tracker CIDRs
+  (`trackerEgress.deniedCidrs`, when that deny is on) and `egressPolicy.privateCidrs`
+  (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16).
+
+To allow a LAN or tailnet host (telemetry, Postgres, ollama, storage, Home
+Assistant), add its `/32` to `allowedCidrs`. Never commit real addresses:
+`scripts/k8s/site-helm-args.sh` maps the compose input `ALLOWED_TAILNET_HOSTS`
+(space-separated IPs) onto `egressPolicy.allowedCidrs`. Rendering with the flag on
+and an empty allowlist fails unless `egressPolicy.allowNoAllowlist=true`. A pod
+that must reach a private address that is not a pod, such as the node-hosted
+Kubernetes API, needs that address allowlisted too.
+
+Allowlisting a CIDR that is also in `trackerEgress.deniedCidrs` is refused (exact
+match only; overlap by containment is the operator's responsibility). Hosts named by
+`BUTLERS_OTLP_ENDPOINT`, `LIVE_LISTENER_TRANSCRIPTION_URL`, `database.host` and the
+tracker are not added automatically: list any that are private addresses. In
+production the policy keeps the name `<release>-tracker-egress` even with
+`trackerEgress.enabled=false`.
+
+Its successor is the per-workload [egress profiles](egress-profiles.md)
+(`egressProfiles.enabled`, default off), which replace this policy and refuse to render
+beside it.
+
+Rollback: set `egressPolicy.enabled=false` and `helm upgrade`. This confines a
+compromised pod from the LAN and tailnet; it does not change ingress. Pods are
+IPv4-only on k3s, so the IPv4 ranges are complete.
+
+Verify that the cluster enforces egress policy before trusting it. k3s embeds the
+kube-router network-policy controller unless it was started with
+`--disable-network-policy`. From a pod, a connection to a non-allowlisted private
+address must time out while an allowlisted host, a public host and DNS succeed.
+
+Dev enables the policy (`values.dev.yaml`, owner decision 2026-11-08, `bu-viat6h.11`).
+A dev deploy therefore needs `ALLOWED_TAILNET_HOSTS` (IPv4 addresses of every private or
+tailnet destination dev pods use) or it refuses to render. `scripts/k8s/deploy-dev.sh`
+builds it when it is unset (`scripts/k8s/egress-allowlist.sh`, `bu-viat6h.12`): it
+resolves `<service>.$TAILNET_NAME` with `getent ahostsv4` at deploy time, dedupes, and
+prints service names and a count, never addresses. The service list lives in that
+script (`BUTLERS_EGRESS_SERVICES`): the compose firewall's set minus the compose-only
+Postgres hosts (dev Postgres is in-cluster), plus the transcription host: `otel`,
+`ollama`, `tzehouse-synology`, `homeassistant`, `v-on-shenton` (the Home Assistant host
+the connector actually dials), `wyoming-faster-whisper`. It needs `TAILNET_NAME` from the
+site env and fails closed if any service does not resolve. An explicitly exported
+`ALLOWED_TAILNET_HOSTS` wins and skips resolution. The Dolt tracker host stays denied.
+Fast rollback: `helm -n butlers-dev rollback butlers` to the previous revision; with the
+flag off, the tracker-egress policy renders as before.
+Durable rollback: set `egressPolicy.enabled: false` in `values.dev.yaml`. Each allowlist
+entry is a `/32` with no port restriction, matching the compose firewall.
+Production stays off; no prod rollout is implied.
+
+Smoke evidence (2026-11-08, disposable `butlers-rehearsal` namespace on this k3s,
+recorded on `bu-viat6h.6`): a deny-all egress control blocked every probe, so the CNI
+enforces egress policy. With the chart policy, a node-hosted private address was
+blocked, DNS resolved and a public host was reachable; allowlisting that address made
+it reachable. A Service in another namespace (`postgres-dev-rw.postgres-dev:5432`) and
+kube-dns stayed reachable through the `namespaceSelector: {}` rule.
+
+### Closed application build inputs
+
+`scripts/k8s/build-push.sh` consumes the same explicit immutable base and closed
+Python artifact input as the application Dockerfile. Set `BUTLERS_BASE_IMAGE` to
+the coordinated full `registry/repository@sha256` reference and
+`BUTLERS_PYTHON_ARTIFACTS` to its verified context directory containing
+`provenance.json`, and `BUTLERS_GO_ARTIFACTS` to the closed Go module context
+(also with `provenance.json`). `scripts/runtime_clis/produce_image_contexts.py`
+produces both as `python/default` and `go` under its output. Missing inputs refuse before image build or publication. Both
+Kubernetes environments retain the shared application's production dependency
+profile; Compose hotreload selects the separate development profile. Building the
+base is a separate source/artifact operation described in
+[the runtime input contract](../../deploy/runtime-clis/README.md). This input
+contract does not authorize deployment or enable egress enforcement.

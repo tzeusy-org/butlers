@@ -176,6 +176,7 @@ class PublishedCatalogProvider:
                 # never that explicit or inherited recipients are the owner.
                 owner_default=_owner_notify_eligible(item, registration.domain),
                 presentable=item.grantable,
+                resource_pair=item.resource_pair,
             )
             for registration in snapshot.registrations
             for item in registration.catalog.descriptors

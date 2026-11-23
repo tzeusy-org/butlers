@@ -19,6 +19,7 @@ import RootLayout from './layouts/RootLayout.tsx'
 import NotFoundPage from './pages/NotFoundPage.tsx'
 import { getShellCapability } from './lib/shell-capability'
 import {
+  ChroniclesEpisodeRedirect,
   ColumnsToPlexRedirect,
   ConnectorDetailRedirect,
   HopToPlexRedirect,
@@ -52,6 +53,10 @@ const RuleDetailPage = shellPage('/memory/rules/:ruleId')
 const EpisodeDetailPage = shellPage('/memory/episodes/:episodeId')
 const SettingsConsolePage = shellPage('/settings')
 const SettingsPermissionsPage = shellPage('/settings/permissions')
+const SettingsProjectionsPage = shellPage('/settings/projections')
+const SettingsReachPage = shellPage('/settings/reach')
+const SettingsPublicMcpPage = shellPage('/settings/public-mcp')
+const SettingsLocationRetentionPage = shellPage('/settings/location-retention')
 const SettingsModelsPage = shellPage('/settings/models')
 const AuditLogPage = shellPage('/audit-log')
 const HealthOverviewPage = shellPage('/health')
@@ -62,6 +67,11 @@ const SymptomsPage = shellPage('/health/symptoms')
 const MealsPage = shellPage('/health/meals')
 const ResearchPage = shellPage('/health/research')
 const ApprovalsPage = shellPage('/approvals')
+const DecisionSetPage = shellPage('/decision-sets/:setId')
+const CustodyPage = shellPage('/custody')
+const CustodyCasePage = shellPage('/custody/:episodeId')
+const SecurityQuestionsPage = shellPage('/security')
+const SecurityQuestionPage = shellPage('/security/:eventId')
 const SecretsPage = shellPage('/secrets')
 const EducationPage = shellPage('/education')
 const EntitiesIndexPage = shellPage('/entities/index')
@@ -103,6 +113,11 @@ export const routes: RouteObject[] = [
         { path: '/audit-log', element: routeElement(<AuditLogPage />) },
         { path: '/approvals', element: routeElement(<ApprovalsPage />) },
         { path: '/approvals/:id', element: routeElement(<ApprovalsPage />) },
+        { path: '/decision-sets/:setId', element: routeElement(<DecisionSetPage />) },
+        { path: '/custody', element: routeElement(<CustodyPage />) },
+        { path: '/custody/:episodeId', element: routeElement(<CustodyCasePage />) },
+        { path: '/security', element: routeElement(<SecurityQuestionsPage />) },
+        { path: '/security/:eventId', element: routeElement(<SecurityQuestionPage />) },
         {
           path: '/calendar',
           element: routeElement(<CalendarWorkspacePage />),
@@ -149,6 +164,10 @@ export const routes: RouteObject[] = [
         { path: '/settings', element: routeElement(<SettingsConsolePage />) },
         { path: '/settings/spend', element: <Navigate to="/spend" replace /> },
         { path: '/settings/permissions', element: routeElement(<SettingsPermissionsPage />) },
+        { path: '/settings/projections', element: routeElement(<SettingsProjectionsPage />) },
+        { path: '/settings/reach', element: routeElement(<SettingsReachPage />) },
+        { path: '/settings/public-mcp', element: routeElement(<SettingsPublicMcpPage />) },
+        { path: '/settings/location-retention', element: routeElement(<SettingsLocationRetentionPage />) },
         { path: '/settings/models', element: routeElement(<SettingsModelsPage />) },
         { path: '/secrets', element: routeElement(<SecretsPage />) },
         { path: '/education', element: routeElement(<EducationPage />) },
@@ -166,6 +185,7 @@ export const routes: RouteObject[] = [
           path: '/chronicles',
           element: routeElement(<ChroniclesPage />),
         },
+        { path: '/chronicles/episodes/:episodeId', element: <ChroniclesEpisodeRedirect /> },
         // QA Staffer routes
         { path: '/qa', element: routeElement(<QaOverviewPage />) },
         { path: '/qa/patrols/:patrolId', element: routeElement(<QaPatrolDetailPage />) },

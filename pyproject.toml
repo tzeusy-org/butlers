@@ -23,7 +23,9 @@ dependencies = [
     "vobject>=0.9.9",
     "fastapi",
     "uvicorn",
+    "h11==0.16.0",
     "httpx",
+    "httpcore>=1.0.9,<1.1",
     "aiohttp>=3.9",
     "sentence-transformers",
     "torch==2.12.0",
@@ -79,6 +81,8 @@ dev = [
     "import-linter>=2.15",
     "pytest-split>=0.11.0",
     "pyright==1.1.414",
+    # Evaluates the chart's ValidatingAdmissionPolicy CEL in tests (bu-ejow5p.11).
+    "cel-python==0.5.0",
 ]
 
 [project.scripts]
@@ -88,6 +92,7 @@ google-drive-connector = "butlers.connectors.google_drive:main"
 steam-connector = "butlers.connectors.steam:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
 butlers = "butlers.cli:cli"
+butlers-public-mcp = "butlers.mcp_public.server:main"
 
 [tool.ruff]
 target-version = "py312"
@@ -150,6 +155,7 @@ pythonpath = ["."]
 #   root logger and never shut down, so they cannot leak into later tests.
 addopts = "--import-mode=importlib -p tests.quarantine -p tests.log_isolation -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
+    "real_gate_state: Run the real permission, quota and ceiling gates; opts out of the readable-state autouse fixture (bu-svqpzo.3)",
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",
     "integration: Integration tests — require Docker (testcontainers)",
@@ -258,6 +264,13 @@ name = "modules do not import the spawner"
 type = "forbidden"
 source_modules = ["butlers.modules"]
 forbidden_modules = ["butlers.core.spawner"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "modules, jobs and chronicler do not import connectors"
+type = "forbidden"
+source_modules = ["butlers.modules", "butlers.jobs", "butlers.chronicler"]
+forbidden_modules = ["butlers.connectors"]
 allow_indirect_imports = true
 
 [tool.pyright]

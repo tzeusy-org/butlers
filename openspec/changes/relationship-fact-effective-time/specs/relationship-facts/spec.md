@@ -394,8 +394,6 @@ relationship butler's schema role.
 - owner-handle bootstrap in `src/butlers/owner_bootstrap.py`;
 - subject/object collision, cardinality, and repoint updates in
   `roster/relationship/tools/entity_merge.py::merge_entity_pair`;
-- legacy subject/object repoint updates in
-  `roster/relationship/tools/contacts.py::contact_merge`;
 - contact delete, verify, value update, and entity-forget mutations in
   `roster/relationship/api/router.py`;
 - hard-delete FK cascades from Google and Steam companion-entity deletion; and
@@ -423,17 +421,20 @@ relationship butler's schema role.
   defines period-aware policy for this single-valued predicate.
 - Entity merge SHALL lock and plan every affected occurrence before any mutation, repoint each safe
   row without changing its packet, and update its graph projection in the same transaction. It SHALL
-  NOT apply SPO-only or predicate-only confidence collapse. The one carve-out is unknown-default
-  rows: when every row that shares a projected final occurrence key is an unknown default (no
-  temporal packet), merge MAY keep the legacy same-key dedup, superseding the duplicates within the
-  merge transaction. A collision in the projected final occurrence key that involves any
+  NOT apply SPO-only or predicate-only confidence collapse to a temporal-bearing row. There are two
+  carve-outs for unknown-default rows (no temporal packet). When every row that shares a projected
+  final occurrence key is an unknown default, merge MAY keep the legacy same-key dedup, superseding
+  the duplicates within the merge transaction. When every active row of a single-cardinality
+  predicate on both entities is an unknown default, merge MAY keep the legacy winner selection
+  (verified, then higher confidence, then the target), superseding the others within the merge
+  transaction and moving no evidence between them. A single-cardinality predicate with any
+  temporal-bearing row SHALL NOT run winner selection: its rows are repointed until `bu-4ss0u`
+  defines period-aware policy. A collision in the projected final occurrence key that involves any
   temporal-bearing row SHALL fail `temporal_occurrence_collision` before any entity, contact, fact,
   evidence, or projection write.
-- Legacy `contact_merge` SHALL preflight before its first contact/entity/fact write. If an affected
-  row is temporal-bearing, multiple occurrences share an SPO, or the projected merge collides, it
-  SHALL fail `temporal_mutator_unsupported`; its current best-effort/swallowed direct updates SHALL
-  run only for the proven all-unknown/default singleton set until replaced by the compatible merge
-  service.
+- `contact_merge` SHALL move linked-entity facts only through the compatible merge service, called
+  in its own transaction before its first contact write, and SHALL have no direct fact write of its
+  own. The merge service's occurrence rules and refusals therefore apply to it unchanged.
 - Entity forget SHALL intentionally retract every matched occurrence without altering its packet and
   SHALL remove every corresponding projection in the same transaction. Explicit Google/Steam
   companion-entity hard delete SHALL retain its destructive all-version FK cascade and SHALL remove
@@ -585,16 +586,37 @@ Scope: v1-mandatory
   while its projection is updated in the same transaction
 - **AND** the merge MUST NOT supersede rows merely because their post-merge SPO or predicate matches,
   except that unknown-default rows sharing the same projected final occurrence key MAY keep the
-  legacy same-key dedup
+  legacy same-key dedup, and a single-cardinality predicate whose active rows on both entities are
+  all unknown defaults MAY keep the legacy winner selection
 - **AND** any final occurrence-key collision involving a temporal-bearing row MUST fail before any
   entity, contact, fact, evidence, or projection write
 
-#### Scenario: Legacy contact merge is fenced before partial mutation
+#### Scenario: Merge selects one winner among unknown-default single values
 
-- **WHEN** `contact_merge` would touch a temporal-bearing row, an SPO with multiple occurrences, or a
-  projected occurrence collision
-- **THEN** it MUST fail `temporal_mutator_unsupported` before its first contact/entity/fact write
-- **AND** its best-effort direct repoint blocks MUST NOT swallow a temporal-safety failure
+- **WHEN** an entity merge finds different values of a single-cardinality predicate on the two
+  entities and every active row of that predicate on both is an unknown default
+- **THEN** the verified row, then the higher-confidence row, then the target's row MAY stay active
+- **AND** the other rows MUST be superseded in the merge transaction
+- **AND** evidence MUST NOT move between the rows
+
+#### Scenario: Merge repoints single values when any row is temporal-bearing
+
+- **WHEN** an entity merge finds different values of a single-cardinality predicate on the two
+  entities and any active row of that predicate on either is temporal-bearing
+- **THEN** the merge MUST NOT run winner selection on that predicate
+- **AND** each row with no final occurrence-key collision MUST be repointed to the kept entity and
+  stay active with its id, packet, and evidence
+- **AND** the rules for final occurrence-key collisions MUST still apply unchanged
+
+#### Scenario: Contact merge inherits the merge service's occurrence rules
+
+- **WHEN** `contact_merge` merges two contacts whose linked entities differ
+- **THEN** every non-colliding occurrence MUST move with its packet, evidence and graph projection
+  intact
+- **AND** unknown-default rows sharing the same projected final occurrence key MAY keep the legacy
+  same-key dedup
+- **AND** a final occurrence-key collision involving a temporal-bearing row MUST fail
+  `temporal_occurrence_collision` before any contact, entity, fact, evidence, or projection write
 
 #### Scenario: Ambiguous contact lifecycle selector writes nothing
 

@@ -16,14 +16,11 @@ import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import asyncpg
 import pytest
 
 from butlers.config import ButlerConfig
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner, SpawnerResult
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip integration tests if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -136,41 +133,20 @@ class TestSpawnerResultSessionId:
 # so the event loop is shared across the whole session, avoiding asyncpg loop mismatch.
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with sessions table cleared between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE sessions CASCADE")
-    yield p
-    await p.close()
-
-
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestSessionsActive:
     """Integration tests for sessions_active() query."""
 
-    async def test_newly_created_session_is_active(self, pool):
+    async def test_newly_created_session_is_active(self, db_pool):
         """A session created via session_create has completed_at IS NULL and appears in active."""
         from butlers.core.sessions import session_create, sessions_active
 
         sid = await session_create(
-            pool, prompt="active test", trigger_source="tick", request_id=str(uuid.uuid4())
+            db_pool, prompt="active test", trigger_source="tick", request_id=str(uuid.uuid4())
         )
-        active = await sessions_active(pool)
+        active = await sessions_active(db_pool)
 
         active_ids = [s["id"] for s in active]
         assert sid in active_ids
@@ -179,70 +155,72 @@ class TestSessionsActive:
         match = next(s for s in active if s["id"] == sid)
         assert match["completed_at"] is None
 
-    async def test_completed_session_not_in_active(self, pool):
+    async def test_completed_session_not_in_active(self, db_pool):
         """After session_complete, the session no longer appears in active list."""
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
         sid = await session_create(
-            pool, prompt="will complete", trigger_source="tick", request_id=str(uuid.uuid4())
+            db_pool, prompt="will complete", trigger_source="tick", request_id=str(uuid.uuid4())
         )
 
         # Before completion, should be active
-        active_before = await sessions_active(pool)
+        active_before = await sessions_active(db_pool)
         assert sid in [s["id"] for s in active_before]
 
         # Complete the session
         await session_complete(
-            pool, sid, output="done", tool_calls=[], duration_ms=100, success=True
+            db_pool, sid, output="done", tool_calls=[], duration_ms=100, success=True
         )
 
         # After completion, should not be active
-        active_after = await sessions_active(pool)
+        active_after = await sessions_active(db_pool)
         assert sid not in [s["id"] for s in active_after]
 
-    async def test_active_returns_empty_when_none_active(self, pool):
+    async def test_active_returns_empty_when_none_active(self, db_pool):
         """sessions_active returns empty list when all sessions are completed."""
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
         sid = await session_create(
-            pool, prompt="complete me", trigger_source="external", request_id=str(uuid.uuid4())
+            db_pool, prompt="complete me", trigger_source="external", request_id=str(uuid.uuid4())
         )
-        await session_complete(pool, sid, output="ok", tool_calls=[], duration_ms=50, success=True)
+        await session_complete(
+            db_pool, sid, output="ok", tool_calls=[], duration_ms=50, success=True
+        )
 
         # Create and complete another
         sid2 = await session_create(
-            pool, prompt="also complete", trigger_source="external", request_id=str(uuid.uuid4())
+            db_pool, prompt="also complete", trigger_source="external", request_id=str(uuid.uuid4())
         )
         await session_complete(
-            pool, sid2, output="ok too", tool_calls=[], duration_ms=30, success=True
+            db_pool, sid2, output="ok too", tool_calls=[], duration_ms=30, success=True
         )
 
-        active = await sessions_active(pool)
+        active = await sessions_active(db_pool)
         # Filter to only the sessions we created (there may be leftovers from other tests)
         our_active = [s for s in active if s["id"] in (sid, sid2)]
         assert len(our_active) == 0
 
-    async def test_active_mixed_states(self, pool):
+    async def test_active_mixed_states(self, db_pool):
         """Only incomplete sessions appear in sessions_active, completed ones do not."""
         from butlers.core.sessions import session_complete, session_create, sessions_active
 
         # Create 3 sessions
         active_sid = await session_create(
-            pool, prompt="still running", trigger_source="tick", request_id=str(uuid.uuid4())
+            db_pool, prompt="still running", trigger_source="tick", request_id=str(uuid.uuid4())
         )
         done_sid = await session_create(
-            pool, prompt="finished", trigger_source="external", request_id=str(uuid.uuid4())
+            db_pool, prompt="finished", trigger_source="external", request_id=str(uuid.uuid4())
         )
         failed_sid = await session_create(
-            pool, prompt="crashed", trigger_source="trigger", request_id=str(uuid.uuid4())
+            db_pool, prompt="crashed", trigger_source="trigger", request_id=str(uuid.uuid4())
         )
 
         # Complete 2 of them
         await session_complete(
-            pool, done_sid, output="done", tool_calls=[], duration_ms=100, success=True
+            db_pool, done_sid, output="done", tool_calls=[], duration_ms=100, success=True
         )
         await session_complete(
-            pool,
+            db_pool,
             failed_sid,
             output=None,
             tool_calls=[],
@@ -251,14 +229,14 @@ class TestSessionsActive:
             error="crash",
         )
 
-        active = await sessions_active(pool)
+        active = await sessions_active(db_pool)
         active_ids = [s["id"] for s in active]
 
         assert active_sid in active_ids
         assert done_sid not in active_ids
         assert failed_sid not in active_ids
 
-    async def test_active_sessions_ordered_by_started_at_desc(self, pool):
+    async def test_active_sessions_ordered_by_started_at_desc(self, db_pool):
         """Active sessions are returned most-recent-first."""
         import asyncio
 
@@ -267,12 +245,12 @@ class TestSessionsActive:
         sids = []
         for i in range(3):
             sid = await session_create(
-                pool, prompt=f"order-{i}", trigger_source="tick", request_id=str(uuid.uuid4())
+                db_pool, prompt=f"order-{i}", trigger_source="tick", request_id=str(uuid.uuid4())
             )
             sids.append(sid)
             await asyncio.sleep(0.01)  # Ensure distinct started_at
 
-        active = await sessions_active(pool)
+        active = await sessions_active(db_pool)
         active_ids = [s["id"] for s in active]
 
         # Filter to our sessions
@@ -281,18 +259,18 @@ class TestSessionsActive:
         assert our_order.index(sids[2]) < our_order.index(sids[1])
         assert our_order.index(sids[1]) < our_order.index(sids[0])
 
-    async def test_active_session_has_expected_fields(self, pool):
+    async def test_active_session_has_expected_fields(self, db_pool):
         """Active session records contain all expected fields."""
         from butlers.core.sessions import session_create, sessions_active
 
         sid = await session_create(
-            pool,
+            db_pool,
             prompt="fields test",
             trigger_source="tick",
             trace_id="trace-42",
             request_id=str(uuid.uuid4()),
         )
-        active = await sessions_active(pool)
+        active = await sessions_active(db_pool)
         match = next(s for s in active if s["id"] == sid)
 
         expected_keys = {

@@ -36,6 +36,9 @@ Environment variables:
 - CONNECTOR_INGESTION_TIER (optional, default "metadata"): "metadata" or "full"
 - CONNECTOR_HEALTH_PORT (optional, default 40083): HTTP server port
 - CONNECTOR_HEARTBEAT_INTERVAL_S (optional, default 120)
+- OWNTRACKS_RAW_RETENTION_ENABLED (optional, default off): only ``true`` starts the raw-fix
+  expiry worker (``owntracks_retention``), which executes Chronicler's ready grants
+- OWNTRACKS_RAW_RETENTION_INTERVAL_S (optional, default 3600, min 60)
 - BUTLER_SHARED_DB_NAME (optional; shared butler DB used for connector state
   and credentials, defaults to 'butlers')
 
@@ -55,6 +58,7 @@ import base64
 import binascii
 import hmac
 import logging
+import math
 import os
 import re
 import signal
@@ -64,17 +68,24 @@ from datetime import UTC, date, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
+import asyncpg.exceptions
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
+from butlers.connectors.filtered_event_buffer import (
+    REPLAY_UNAVAILABLE_KEY,
+    FilteredEventBuffer,
+    drain_replay_pending,
+)
 from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
@@ -108,6 +119,9 @@ _DEFAULT_HEARTBEAT_INTERVAL_S = 120
 _DEFAULT_RETENTION_DAYS = 30
 _MIN_RETENTION_DAYS = 1
 _RETENTION_PURGE_INTERVAL_S = 6 * 60 * 60  # 6 hours
+# How long the webhook waits for a point to be ingested or parked before telling
+# the phone to resend it. Well under the OwnTracks app's request timeout.
+_WEBHOOK_PROCESS_TIMEOUT_S = 10.0
 
 # Public aliases for use by standalone OwnTracksRetentionConfig / OwnTracksRetention
 DEFAULT_RETENTION_DAYS = _DEFAULT_RETENTION_DAYS
@@ -624,6 +638,34 @@ def build_location_normalized_text(
     return text
 
 
+#: Why a policy-blocked event's filtered_events row cannot be replayed (bu-s11n0s.7).
+POLICY_FILTERED_NOT_REPLAYABLE = "a policy-blocked OwnTracks event keeps no coordinates"
+
+
+def build_filtered_location_text(payload: dict[str, Any]) -> str:
+    """Text for a policy-blocked location fix: region names only, never coordinates.
+
+    The fix has no ``owntracks_points`` row, so raw retention cannot reach this copy; it keeps
+    nothing a retention horizon would have to forget.
+    """
+    text = "Location update (blocked by policy; coordinates not kept)"
+    inregions = payload.get("inregions")
+    if inregions and isinstance(inregions, list):
+        text += f" (in: {', '.join(str(r) for r in inregions)})"
+    return text
+
+
+def build_filtered_event_text(payload_type: str, payload: dict[str, Any]) -> str:
+    """Coordinate-free text for any policy-blocked OwnTracks event (names, never lat/lon)."""
+    if payload_type == "location":
+        return build_filtered_location_text(payload)
+    if payload_type == "transition":
+        return build_transition_normalized_text(payload)
+    if payload_type == "waypoints":
+        return build_waypoints_normalized_text(payload)
+    return f"OwnTracks {payload_type} event"
+
+
 def build_transition_normalized_text(payload: dict[str, Any]) -> str:
     """Build human-readable normalized text for a transition event."""
     event = payload.get("event", "")
@@ -789,6 +831,73 @@ def build_waypoints_envelope(
 _LOCATION_EVIDENCE_TABLE = "connectors.owntracks_points"
 
 
+class LocationPointRejected(Exception):
+    """A location point that can never be stored: invalid or refused as data.
+
+    Carries a reason category only, never content. The caller acknowledges the point without
+    ingesting it, because a resend would be rejected identically and OwnTracks resends in
+    order, so one bad point would otherwise stall every later one (bu-uhbhzq.4).
+    """
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
+def _strip_nul(value: Any) -> Any:
+    """Return ``value`` with NUL characters removed from every string, key and element.
+
+    PostgreSQL text and jsonb cannot hold U+0000; a phone can send one in a free-text field.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        cleaned = {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+        unchanged = all(
+            k is ck and value[k] is cv
+            for (k, cv), ck in zip(cleaned.items(), value.keys(), strict=True)
+        )
+        return value if unchanged else cleaned
+    if isinstance(value, list):
+        cleaned_list = [_strip_nul(v) for v in value]
+        same = all(a is b for a, b in zip(cleaned_list, value, strict=True))
+        return value if same else cleaned_list
+    return value
+
+
+def location_point_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate and cast the numeric fields of a location payload.
+
+    Raises ``LocationPointRejected`` (category ``malformed_numeric`` or ``out_of_range``).
+    """
+    tst, lat, lon, acc = (
+        body.get("tst"),
+        body.get("lat", 0.0),
+        body.get("lon", 0.0),
+        body.get("acc"),
+    )
+    for raw in (tst, lat, lon, acc):
+        if isinstance(raw, bool):
+            raise LocationPointRejected("malformed_numeric")
+    try:
+        tst_i = int(tst)  # type: ignore[arg-type]
+        lat_f, lon_f = float(lat), float(lon)
+        acc_f = float(acc) if acc is not None else None
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise LocationPointRejected("malformed_numeric") from exc
+    if not all(math.isfinite(v) for v in (lat_f, lon_f) if v is not None) or (
+        acc_f is not None and not math.isfinite(acc_f)
+    ):
+        raise LocationPointRejected("malformed_numeric")
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lon_f <= 180.0):
+        raise LocationPointRejected("out_of_range")
+    try:
+        datetime.fromtimestamp(tst_i, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LocationPointRejected("out_of_range") from exc
+    return {"tst": tst_i, "lat": lat_f, "lon": lon_f, "accuracy": acc_f}
+
+
 async def persist_location_point(
     pool: asyncpg.Pool,
     *,
@@ -808,8 +917,11 @@ async def persist_location_point(
     This table is the Chronicler-readable evidence surface for
     ``owntracks.points`` (RFC 0014 §D9).  The connector writes here
     directly (connector_writer role) on every accepted location event.
-    Errors are caught and logged; failure to persist does NOT abort the
-    ingest submission path.
+    The caller commits this row before it submits, checkpoints or
+    acknowledges (bu-uhbhzq.4). NUL characters are stripped from text first.
+    A point the server refuses as data (SQLSTATE class 22) raises
+    ``LocationPointRejected``; any other error, including a client-side encode error,
+    propagates, so the webhook answers 503. A scrub failure raises ``EvidenceNotCommitted`` (503).
 
     Args:
         pool: asyncpg connection pool (connector_writer role).
@@ -825,16 +937,37 @@ async def persist_location_point(
         True if a new row was inserted; False if a duplicate was skipped.
     """
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
-    ts = datetime.fromtimestamp(tst, tz=UTC)
+    try:
+        ts = datetime.fromtimestamp(tst, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LocationPointRejected("out_of_range") from exc
+    raw_payload = _strip_nul(raw_payload)
+    trigger = _strip_nul(trigger)
     try:
         raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
     except Exception:
-        logger.warning("owntracks: bearer scrub failed; evidence write skipped")
-        return False
+        # Not a duplicate: nothing was written, so the point must not be acknowledged. Content
+        # blind, with no chained cause (the original text can echo the payload): the webhook
+        # answers 503, nothing is submitted or checkpointed, and the phone resends.
+        logger.warning("owntracks: bearer scrub failed; evidence not committed")
+        raise EvidenceNotCommitted("scrub_failed") from None
 
-    result = await pool.fetchval(
-        f"""
-        INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+    try:
+        result = await pool.fetchval(
+            f"""
+            INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+                idempotency_key,
+                ts,
+                lat,
+                lon,
+                accuracy,
+                trigger,
+                endpoint_identity,
+                raw_payload
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING id
+            """,
             idempotency_key,
             ts,
             lat,
@@ -842,20 +975,16 @@ async def persist_location_point(
             accuracy,
             trigger,
             endpoint_identity,
-            raw_payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING id
-        """,
-        idempotency_key,
-        ts,
-        lat,
-        lon,
-        accuracy,
-        trigger,
-        endpoint_identity,
-        raw_payload,
-    )
+            raw_payload,
+        )
+    except asyncpg.exceptions.PostgresError as exc:
+        # Only a server-side class 22 (data exception) is the point's fault: a resend would
+        # fail the same way. A client-side encode error (empty ``__dict__``, no server
+        # fields) is a code or codec bug, and every other error (connection, serialization,
+        # missing table, privilege) is transient or operator-fixable: both propagate (503).
+        if str(vars(exc).get("sqlstate", "")).startswith("22"):
+            raise LocationPointRejected("data_rejected") from exc
+        raise
     return result is not None
 
 
@@ -961,6 +1090,13 @@ class OwnTracksConnector:
         self._health_error: str | None = None
         self._last_ingest_ok: bool | None = None
 
+        # A point whose ingest fails is not acknowledged, so the phone keeps it
+        # and sends it again, until its attempts are spent and it is parked as a
+        # replayable error row (bu-dhloi1.224). Keyed by idempotency key.
+        self._ingest_retry = IngestRetryBudget()
+        # One background flush + replay drain per device (endpoint identity).
+        self._flush_drain_tasks: dict[str, asyncio.Task[None]] = {}
+
         # Health server
         self._health_server: uvicorn.Server | None = None
         self._health_thread: Thread | None = None
@@ -979,6 +1115,10 @@ class OwnTracksConnector:
 
     async def start(self) -> None:
         """Full startup sequence followed by the main webhook server loop."""
+        if self._db_pool is None:
+            # Evidence before acknowledgement (bu-uhbhzq.4): with no pool every point would
+            # answer 503 forever, so refuse to start instead of serving a dead webhook.
+            raise EvidenceNotCommitted("no_pool")
         logger.info("OwnTracksConnector starting")
         self._running = True
         self._main_loop = asyncio.get_running_loop()
@@ -1074,6 +1214,15 @@ class OwnTracksConnector:
         # Stop retention purge task
         if self._retention is not None:
             await self._retention.stop()
+
+        # Stop background flush/drain tasks; a cancelled drain releases its
+        # claims, and the flush below persists what they had not.
+        background = [t for t in self._flush_drain_tasks.values() if not t.done()]
+        for task in background:
+            task.cancel()
+        if background:
+            await asyncio.gather(*background, return_exceptions=True)
+        self._flush_drain_tasks.clear()
 
         # Flush every device's filtered event buffer and send its final
         # heartbeat (bu-86zll: each resolved device has its own independent
@@ -1281,8 +1430,8 @@ class OwnTracksConnector:
         # create) its dedicated state bundle -- captured as a local variable
         # and threaded through the rest of this method instead of read back
         # off `self`. This is deliberate: `_process_webhook_event` coroutines
-        # are dispatched fire-and-forget per webhook POST (see
-        # `_dispatch_event_to_main_loop`), so multiple devices' events can be
+        # run on the main loop once per webhook POST (see
+        # `_process_on_main_loop`), so multiple devices' events can be
         # interleaved on the event loop. Reading a shared `self._endpoint_*`
         # attribute *after* an `await` (e.g. post-ingest, before the
         # checkpoint save) could observe a different device's identity than
@@ -1337,6 +1486,20 @@ class OwnTracksConnector:
             if payload_type == "transition":
                 external_event_id = f"{tst}:transition:{body.get('event', 'unknown')}"
 
+            # A blocked event never reaches owntracks_points, so no retention grant can name
+            # it: its row keeps no coordinates and cannot be replayed (bu-s11n0s.7).
+            stored = FilteredEventBuffer.full_payload(
+                channel=_DESCRIPTOR.channel,
+                provider=_DESCRIPTOR.provider,
+                endpoint_identity=device.endpoint_identity,
+                external_event_id=external_event_id,
+                external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
+                observed_at=observed_at,
+                sender_identity=device.endpoint_identity,
+                raw=None,
+                normalized_text=build_filtered_event_text(payload_type, body),
+            )
+            stored[REPLAY_UNAVAILABLE_KEY] = POLICY_FILTERED_NOT_REPLAYABLE
             device.filtered_event_buffer.record(
                 external_message_id=external_event_id,
                 source_channel=_DESCRIPTOR.channel,
@@ -1347,18 +1510,38 @@ class OwnTracksConnector:
                     action=decision.action,
                     rule_type=decision.matched_rule_type or "unknown",
                 ),
-                full_payload=FilteredEventBuffer.full_payload(
-                    channel=_DESCRIPTOR.channel,
-                    provider=_DESCRIPTOR.provider,
-                    endpoint_identity=device.endpoint_identity,
-                    external_event_id=external_event_id,
-                    external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
-                    observed_at=observed_at,
-                    sender_identity=device.endpoint_identity,
-                    raw=body,
-                ),
+                full_payload=stored,
             )
             return
+
+        # Commit the durable location evidence (RFC 0014 §D9) BEFORE the submit, the
+        # checkpoint and the acknowledgement. A write failure propagates: the webhook
+        # answers 503, nothing is submitted, and the phone keeps the point. A submit
+        # failure below keeps the row; it is evidence, not a replay queue (bu-uhbhzq.4).
+        if payload_type == "location":
+            try:
+                fields = location_point_fields(body)
+                if self._db_pool is None:
+                    raise EvidenceNotCommitted("no_pool")
+                await persist_location_point(
+                    self._db_pool,
+                    endpoint_identity=device.endpoint_identity,
+                    trigger=body.get("t") or None,
+                    raw_payload=body,
+                    **fields,
+                )
+            except LocationPointRejected as rejected:
+                # Content-blind: the reason category only. Acknowledged, not ingested.
+                device.metrics.record_error(
+                    f"point_rejected_{rejected.category}", "persist_location"
+                )
+                logger.warning(
+                    "OwnTracksConnector: location point rejected; acknowledged, not ingested "
+                    "(reason=%s endpoint=%s)",
+                    rejected.category,
+                    device.endpoint_identity,
+                )
+                return
 
         # Build envelope based on payload type
         envelope: dict[str, Any]
@@ -1401,11 +1584,19 @@ class OwnTracksConnector:
                 },
             )
 
+        # Transitions and waypoints have no points table: they go to the generic evidence
+        # journal, before the submit (bu-uhbhzq.4). A failed write raises (503, nothing
+        # submitted); location points were committed to owntracks_points above.
+        if payload_type != "location":
+            await commit_envelope(self._db_pool, envelope)
+
         # Submit to Switchboard
+        retry_key = str(envelope["control"]["idempotency_key"])
         start_t = time.perf_counter()
         status = "success"
         try:
             await self._mcp_client.call_tool("ingest", envelope)
+            self._ingest_retry.succeeded(retry_key)
             self._last_ingest_ok = True
             self._health_error = None
             logger.debug(
@@ -1417,8 +1608,35 @@ class OwnTracksConnector:
             status = "error"
             self._last_ingest_ok = False
             self._health_error = str(exc)
-            logger.warning("OwnTracksConnector: failed to submit %s event: %s", payload_type, exc)
-            raise
+            if not self._ingest_retry.failed(retry_key):
+                # Unacknowledged: the phone keeps the point and sends it again.
+                logger.warning(
+                    "OwnTracksConnector: failed to submit %s event; the device will resend it: %s",
+                    payload_type,
+                    exc,
+                )
+                raise
+            # Attempts spent: park the exact envelope (idempotency key included)
+            # as a replayable error row. The row is the only copy once the
+            # point is acknowledged, so park() writes it at once and raises
+            # (ParkNotDurableError -> 503, the phone keeps the point) unless
+            # it was committed. Error detail is the class only: transport
+            # text can echo content.
+            await device.filtered_event_buffer.park(
+                self._db_pool,
+                external_message_id=str(envelope["event"]["external_event_id"]),
+                source_channel=_DESCRIPTOR.channel,
+                sender_identity=device.endpoint_identity,
+                subject_or_preview=f"OwnTracks {payload_type} event",
+                error_detail=type(exc).__name__,
+                full_payload=FilteredEventBuffer.stored_envelope(envelope),
+            )
+            logger.warning(
+                "OwnTracksConnector: failed to submit %s event; attempts spent, parked "
+                "for replay: %s",
+                payload_type,
+                exc,
+            )
         finally:
             latency = time.perf_counter() - start_t
             device.metrics.record_ingest_submission(status=status, latency=latency)
@@ -1427,44 +1645,64 @@ class OwnTracksConnector:
         if tst is not None:
             await self._save_checkpoint(device, int(tst))
 
-        # Persist durable location evidence for Chronicler (RFC 0014 §D9)
-        if payload_type == "location" and self._db_pool is not None and tst is not None:
-            try:
-                await persist_location_point(
-                    self._db_pool,
-                    endpoint_identity=device.endpoint_identity,
-                    tst=int(tst),
-                    lat=float(body.get("lat", 0.0)),
-                    lon=float(body.get("lon", 0.0)),
-                    accuracy=float(body["acc"]) if body.get("acc") is not None else None,
-                    trigger=body.get("t") or None,
-                    raw_payload=body,
-                )
-            except Exception:
-                logger.warning(
-                    "OwnTracksConnector: failed to persist location evidence (non-fatal)",
-                    exc_info=True,
-                )
-
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
-        if self._db_pool is not None:
-            try:
-                await device.filtered_event_buffer.flush(self._db_pool)
-            except Exception:
-                logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
-            try:
-                await drain_replay_pending(
-                    pool=self._db_pool,
-                    connector_type=_CONNECTOR_TYPE,
-                    endpoint_identity=device.endpoint_identity,
-                    submit_fn=self._submit_envelope,
-                    drain_logger=logger,
-                )
-            except Exception:
-                logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
+        # in the background: the webhook waits on this method, and a slow drain
+        # must not turn an already-handled point into a 503 (bu-dhloi1.224).
+        self._schedule_flush_and_drain(device)
+
+    def _schedule_flush_and_drain(self, device: _OwnTracksDeviceState) -> None:
+        """Start one background flush + replay drain per device, if none is running."""
+        if self._db_pool is None:
+            return
+        running = self._flush_drain_tasks.get(device.endpoint_identity)
+        if running is not None and not running.done():
+            return
+        self._flush_drain_tasks[device.endpoint_identity] = asyncio.create_task(
+            self._flush_and_drain(device)
+        )
+
+    async def _flush_and_drain(self, device: _OwnTracksDeviceState) -> None:
+        if self._db_pool is None:
+            return
+        try:
+            await device.filtered_event_buffer.flush(self._db_pool)
+        except Exception:
+            logger.warning("OwnTracksConnector: filtered event flush failed", exc_info=True)
+        try:
+            await drain_replay_pending(
+                pool=self._db_pool,
+                connector_type=_CONNECTOR_TYPE,
+                endpoint_identity=device.endpoint_identity,
+                submit_fn=self._submit_envelope,
+                drain_logger=logger,
+            )
+        except Exception:
+            logger.warning("OwnTracksConnector: replay queue drain failed", exc_info=True)
 
     async def _submit_envelope(self, envelope: dict[str, Any]) -> None:
-        """Submit an ingest.v1 envelope to the Switchboard (for replay drain)."""
+        """Replay drain submit: confirm or write the evidence row, then send.
+
+        A location replays only if its ``owntracks_points`` row exists (found by idempotency
+        key): the dedicated table keeps its own retention, so no generic journal copy is made,
+        and a missing row is not replayable. A transition or waypoint set journals the stored
+        envelope idempotently first (a legacy row parked before evidence-first has none). A
+        failed check or write raises, so the drain records the failure and nothing is sent
+        (bu-uhbhzq.4).
+        """
+        key = str((envelope.get("control") or {}).get("idempotency_key") or "")
+        if key.endswith(":location"):
+            if self._db_pool is None:
+                raise EvidenceNotCommitted("no_pool")
+            try:
+                found = await self._db_pool.fetchval(
+                    f"SELECT 1 FROM {_LOCATION_EVIDENCE_TABLE} WHERE idempotency_key = $1", key
+                )
+            except Exception as exc:
+                raise EvidenceNotCommitted(type(exc).__name__) from None
+            if not found:
+                raise EvidenceNotCommitted("replay_evidence_missing")
+        else:
+            await commit_envelope(self._db_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     # ------------------------------------------------------------------
@@ -1553,35 +1791,51 @@ class OwnTracksConnector:
     # FastAPI application builder (webhook + health + metrics)
     # ------------------------------------------------------------------
 
-    def _dispatch_event_to_main_loop(self, body: dict[str, Any]) -> None:
-        """Schedule ``_process_webhook_event`` on the connector's main loop.
+    async def _process_on_main_loop(self, body: dict[str, Any]) -> bool:
+        """Run ``_process_webhook_event`` on the connector's main loop; True once done.
 
         The webhook handler runs inside uvicorn's thread-local event loop, but
         the asyncpg pool and MCP client were created on the main loop and must
         only be touched from there. ``asyncio.run_coroutine_threadsafe`` hops
-        the coroutine across loops; we do not await its future, so the HTTP
-        response returns immediately. Exceptions are logged via a callback.
+        the coroutine across loops, and this waits for it up to
+        ``_WEBHOOK_PROCESS_TIMEOUT_S`` without cancelling it.
+
+        False means the point is neither ingested nor parked yet (no main loop,
+        a failure with attempts left, or still running): the webhook must not
+        acknowledge it, so the phone keeps it and sends it again (bu-dhloi1.224).
+        A resend of a point that did land is deduplicated by its idempotency key.
         """
         loop = self._main_loop
         if loop is None or loop.is_closed():
             logger.warning(
-                "OwnTracksConnector: main loop unavailable, dropping event (type=%r)",
+                "OwnTracksConnector: main loop unavailable; not acknowledging event (type=%r)",
                 body.get("_type"),
             )
-            return
+            return False
 
         future = asyncio.run_coroutine_threadsafe(self._process_webhook_event(body), loop)
-
-        def _log_if_failed(f: Any) -> None:
-            try:
-                f.result()
-            except Exception:
-                logger.exception(
-                    "OwnTracksConnector: background event processing failed (type=%r)",
-                    body.get("_type"),
-                )
-
-        future.add_done_callback(_log_if_failed)
+        # asyncio.wait never cancels what it waits on, so a slow ingest finishes.
+        done, _ = await asyncio.wait(
+            {asyncio.wrap_future(future)}, timeout=_WEBHOOK_PROCESS_TIMEOUT_S
+        )
+        if not done:
+            logger.warning(
+                "OwnTracksConnector: event processing still running after %ss; not "
+                "acknowledging it yet (type=%r)",
+                _WEBHOOK_PROCESS_TIMEOUT_S,
+                body.get("_type"),
+            )
+            return False
+        exc = done.pop().exception()
+        if exc is not None:
+            logger.warning(
+                "OwnTracksConnector: event processing failed; not acknowledging it "
+                "(type=%r error_class=%s)",
+                body.get("_type"),
+                type(exc).__name__,
+            )
+            return False
+        return True
 
     def _build_app(self) -> FastAPI:
         """Build the FastAPI application serving webhook, health, and metrics."""
@@ -1606,11 +1860,15 @@ class OwnTracksConnector:
                     detail={"error": "Missing required field: _type"},
                 )
 
-            # Dispatch processing to the main event loop (where asyncpg/MCP live)
-            # and return immediately. Awaiting inline from uvicorn's thread loop
-            # deadlocks asyncpg with "Lock bound to a different event loop", and
-            # OwnTracks mobile clients drop slow responses as SocketTimeoutException.
-            self._dispatch_event_to_main_loop(body)
+            # Process on the main event loop (where asyncpg/MCP live): running it
+            # inline on uvicorn's thread loop deadlocks asyncpg with "Lock bound to
+            # a different event loop". Wait (bounded, so the phone does not time
+            # out) and acknowledge only a point that is ingested or parked; any
+            # other answer keeps it in the phone's queue for a resend (bu-dhloi1.224).
+            if not await self._process_on_main_loop(body):
+                return JSONResponse(
+                    status_code=503, content={"error": "Not ingested yet; send it again"}
+                )
 
             # OwnTracks protocol requires 200 with empty JSON array on success
             return JSONResponse(content=[])
@@ -1802,8 +2060,8 @@ async def run_owntracks_connector() -> None:
         pool_kwargs["setup"] = connector_setup_role
         # Register the JSONB codec so dict payloads encode for jsonb columns
         # (e.g. owntracks_points.raw_payload). Without this, every evidence
-        # INSERT raises a DataError that persist_location_point swallows,
-        # silently dropping all location points. Mirrors steam/home_assistant.
+        # INSERT raises a DataError; the webhook now answers 503 on it (bu-uhbhzq.4),
+        # so the phone keeps every point. Mirrors steam/home_assistant.
         pool_kwargs["init"] = register_jsonb_codec
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)
@@ -1816,9 +2074,12 @@ async def run_owntracks_connector() -> None:
                 raise
         logger.info("OwnTracksConnector: DB pool connected to %s", shared_db_name)
     except Exception:
-        logger.warning(
-            "OwnTracksConnector: failed to create DB pool; running without DB", exc_info=True
-        )
+        logger.error("OwnTracksConnector: failed to create DB pool", exc_info=True)
+    if db_pool is None:
+        # No pool means no evidence journal, and a point is acknowledged only after its
+        # evidence is committed (bu-uhbhzq.4): refuse to start.
+        logger.error("OwnTracksConnector: startup aborted: a database pool is required")
+        raise SystemExit(1)
 
     # Resolve webhook token (fail-closed)
     cred_store: CredentialStore | None = None
@@ -1843,9 +2104,20 @@ async def run_owntracks_connector() -> None:
         cursor_pool=db_pool,
     )
 
+    # Raw-fix expiry (bu-s11n0s.7): off unless OWNTRACKS_RAW_RETENTION_ENABLED=true.
+    from butlers.connectors.owntracks_retention import (
+        RetentionWorkerConfig,
+        start_retention_worker,
+    )
+
+    retention_task = start_retention_worker(
+        RetentionWorkerConfig.from_env(), db_pool, switchboard_url=config.switchboard_mcp_url
+    )
     try:
         await connector.start()
     finally:
+        if retention_task is not None:
+            retention_task.cancel()
         if db_pool is not None:
             await db_pool.close()
 

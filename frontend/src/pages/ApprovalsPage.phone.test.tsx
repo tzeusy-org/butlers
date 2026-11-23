@@ -73,6 +73,10 @@ vi.mock("@/api/index.ts", () => ({
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
   getUnroutableAttention: vi.fn(),
+  // Standing-reply drafts panel (bu-jv1moa.42): an empty, healthy list.
+  listReplyTemplateDrafts: vi.fn(() =>
+    Promise.resolve({ items: [], next_cursor: null, limit: 50 }),
+  ),
   retryUnroutableAttention: vi.fn(),
   getApprovalDetail: vi.fn(),
   approveApproval: vi.fn(),

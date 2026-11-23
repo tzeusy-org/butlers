@@ -24,6 +24,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from butlers.core.goal_lineage import current_lineage
 from butlers.core.owner import fetch_owner_entity_id
 from butlers.core.tool_call_capture import (
     current_runtime_session_locator_is_unbound,
@@ -60,6 +61,14 @@ SYSTEM_PARTITION = "system"
 NON_OWNER_PARTITION = "non_owner"
 PARTITIONS: tuple[str, ...] = (OWNER_PARTITION, SYSTEM_PARTITION, NON_OWNER_PARTITION)
 
+#: A fact is held while it is an attributed report from a non-owner source: third-party
+#: or mixed authority, no owner vouch, still live.  NULL (legacy) and ``system`` are not
+#: held; they are noise rather than a stranger's claim waiting on the owner.
+HELD_FACT_SQL = (
+    "(content_authority IN ('third_party', 'mixed') AND endorsed_at IS NULL"
+    " AND validity IN ('active', 'fading'))"
+)
+
 _DASHBOARD_CHANNEL = "dashboard"
 
 
@@ -69,6 +78,40 @@ class ContentAuthority:
 
     authority: str
     entity_id: uuid.UUID | None = None
+    #: Closed custody reason, today only ``endpoint_held`` (REQ-endpoint-custody-holds-005):
+    #: the sender is the owner entity but its source endpoint was held or unreadable. It is
+    #: stored as provenance (``metadata.custody_reason``), never as a sixth authority value.
+    reason: str | None = None
+
+
+ENDPOINT_HELD = "endpoint_held"
+CUSTODY_REASON_KEY = "custody_reason"
+
+
+def with_custody_provenance(meta: Any, authority: ContentAuthority | None) -> Any:
+    """``meta`` plus ``custody_reason`` when ``authority`` carries one; same type back.
+
+    Accepts the dict or JSON-string metadata the writers pass; anything else is returned
+    unchanged so a writer never fails on provenance alone.
+    """
+    reason = getattr(authority, "reason", None)
+    if reason is None:
+        return meta
+    if isinstance(meta, str):
+        import json
+
+        try:
+            loaded = json.loads(meta) if meta else {}
+        except ValueError:
+            return meta
+        if not isinstance(loaded, dict):
+            return meta
+        return json.dumps({**loaded, CUSTODY_REASON_KEY: reason})
+    if meta is None:
+        return {CUSTODY_REASON_KEY: reason}
+    if isinstance(meta, Mapping):
+        return {**meta, CUSTODY_REASON_KEY: reason}
+    return meta
 
 
 class AuthorityStampError(RuntimeError):
@@ -126,6 +169,15 @@ def catalog_attribution(authority: str | None) -> str | None:
     return "from a third party"
 
 
+def is_fact_held(authority: str | None, endorsed_at: Any, validity: str | None) -> bool:
+    """True when a live fact is a non-owner report the owner has not vouched for."""
+    return (
+        authority in (THIRD_PARTY, MIXED)
+        and endorsed_at is None
+        and validity in ("active", "fading")
+    )
+
+
 def _parse_uuid(value: object) -> uuid.UUID | None:
     if not isinstance(value, str) or not value.strip():
         return None
@@ -146,6 +198,10 @@ def classify_routing_context(
     sender = _parse_uuid(routing_context.get("source_entity_id"))
     if sender is not None:
         if owner_entity_id is not None and sender == owner_entity_id:
+            # A held or unreadable owner endpoint keeps attribution, not authority
+            # (REQ-endpoint-custody-holds-005). Only server-side custody reads set the key.
+            if routing_context.get("source_custody") == ENDPOINT_HELD:
+                return ContentAuthority(THIRD_PARTY, sender, ENDPOINT_HELD)
             return ContentAuthority(OWNER, sender)
         return ContentAuthority(THIRD_PARTY, sender)
 
@@ -167,7 +223,19 @@ async def resolve_content_authority(
 
     ``routing_context=None`` reads the current runtime session's context; callers
     outside that task (the Spawner's episode hook) pass the context explicitly.
+
+    A broker-forwarded call (RFC 0038 D7) derives authority from its verified
+    goal lineage only, never from a spawner-derived session: exposed or
+    third-party lineage is ``third_party``, unexposed owner lineage is
+    ``owner``, obligation and staffer lineage is ``system``.
     """
+    lineage = current_lineage()
+    if lineage is not None:
+        if lineage.exposed or lineage.origin == "third_party":
+            return ContentAuthority(THIRD_PARTY)
+        if lineage.origin == "owner":
+            return ContentAuthority(OWNER, await fetch_owner_entity_id(pool))
+        return ContentAuthority(SYSTEM)
     if routing_context is None:
         routing_context = get_current_runtime_session_routing_context()
         if not routing_context and current_runtime_session_locator_is_unbound():
@@ -177,7 +245,50 @@ async def resolve_content_authority(
     if not routing_context:
         return ContentAuthority(SYSTEM)
     owner_entity_id = await fetch_owner_entity_id(pool)
-    return classify_routing_context(routing_context, owner_entity_id)
+    authority = classify_routing_context(routing_context, owner_entity_id)
+    if authority.authority == OWNER:
+        # REQ-endpoint-custody-holds-005 write-time recheck: a hold that committed after
+        # ingress demotes this write too. Fails closed (no endpoint, unreadable custody).
+        from butlers.core.custody_ingress import routing_context_custody_reason
+
+        if await routing_context_custody_reason(pool, routing_context) is not None:
+            return ContentAuthority(THIRD_PARTY, authority.entity_id, ENDPOINT_HELD)
+    return authority
+
+
+def successor_authority(
+    writer: ContentAuthority,
+    source_authority: str | None,
+    source_entity_id: uuid.UUID | None,
+) -> ContentAuthority:
+    """The authority of a row that keeps a stored row's text, written by ``writer``.
+
+    A successor must not read better than its source (REQ-module-memory-013):
+
+    * owner-class over owner-class: the writer's class;
+    * owner-class or ``system`` over ``third_party``, ``mixed`` or NULL: ``mixed``;
+    * owner-class over ``system``: ``system``;
+    * ``system`` over ``system`` or owner-class: ``system``.
+
+    Every result but owner over owner reads as unclean (RFC 0038 D6). A NULL source gives
+    ``mixed`` under either writer rather than ``system``, since a ``system`` fact renders
+    unlabelled and a routine edit must not remove the only warning on legacy text that may be a
+    stranger's (RFC 0038 S1: unknown provenance does not improve).
+
+    This differs from ``combine_authorities``, where ``owner`` with ``system`` evidence is
+    ``mixed``: consolidation restates several rows in new words and cannot say whose a claim
+    is. A successor has one ``system`` source, whose class is known and is kept, so an owner's
+    dose on a dashboard-created medication is not labelled as a third party's.
+    """
+    if not (is_owner_class(writer.authority) or writer.authority == SYSTEM):
+        return writer
+    if source_authority in (THIRD_PARTY, MIXED):
+        return ContentAuthority(MIXED, source_entity_id)
+    if source_authority is None:
+        return ContentAuthority(MIXED)
+    if writer.authority == SYSTEM or is_owner_class(source_authority):
+        return writer
+    return ContentAuthority(SYSTEM)
 
 
 def combine_authorities(authorities: Iterable[str | None]) -> str:

@@ -12,6 +12,7 @@ this module.  The same pattern is used in :mod:`butlers.lifecycle`.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 import asyncpg
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
@@ -40,8 +40,10 @@ from butlers.core.route_observability import (
     safe_runtime_failure_class,
 )
 from butlers.core.routing_context import _routing_ctx_var
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.core.spawner import SESSION_CANCELLED_ERROR
 from butlers.core.telemetry import tag_butler_span
+from butlers.mcp_liveness import LivenessClient as MCPClient
 from butlers.mcp_patches import apply_streamable_http_client_disconnect_patch
 from butlers.routing_guidance import (
     _build_route_runtime_context,
@@ -88,6 +90,11 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
                 sender_name = participants.get(first)
     elif sender_identity not in ("unknown", ""):
         source_id = str(sender_identity)
+        # The connector's own sender label (e.g. Gmail's From: display name) names
+        # an unknown sender in the owner notice; a blank or non-text value is dropped.
+        display_name = ref.sender.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            sender_name = display_name.strip()
 
     source_sender_identity = source_id or sender_identity
     request_context: dict[str, Any] = {
@@ -199,7 +206,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         """Deliver one entity-review notice through the normal notify boundary.
 
         This callback is deliberately deterministic and narrow: identity ingress
-        has already constructed a content-free review message, and this seam
+        has already constructed the body-free owner notice, and this seam
         only resolves the configured owner Telegram recipient before sending a
         ``notify.v1`` envelope through Switchboard → Messenger.  It must raise
         for every unsent result so identity injection can log the failed attempt
@@ -236,6 +243,9 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
 
     from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
+    from butlers.roster_imports import roster_module
+
+    _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
 
     daemon._fact_source_registry = FactSourceContextRegistry(pool)
     register_source_registry(daemon._fact_source_registry)
@@ -248,6 +258,8 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         classification_timeout_s=classification_timeout_s,
         enable_identity_resolution=True,
         notify_owner_fn=_notify_owner_about_unknown_sender,
+        # The owner's one-tap Ignore card for the same sender (bu-p7glz9).
+        unknown_sender_card_fn=functools.partial(_unknown_sender_cards.park_ignore_card, pool),
         # daemon.mcp is not yet assigned a real FastMCP instance at this
         # point in startup (see butlers.lifecycle.run_startup: _wire_pipelines
         # runs at step 10b, daemon.mcp = FastMCP(...) at step 12) — a provider
@@ -470,6 +482,16 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         sender_entity_id = parsed.request_context.source_sender_entity_id
         if isinstance(sender_entity_id, str) and sender_entity_id.strip():
             recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
+            if parsed.request_context.source_sender_custody == "endpoint_held":
+                recovered_routing_context["source_custody"] = "endpoint_held"
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            recovered_endpoint = source_endpoint_record(
+                parsed.request_context.source_channel,
+                parsed.request_context.source_sender_identity,
+            )
+            if recovered_endpoint is not None:
+                recovered_routing_context[SOURCE_ENDPOINT_KEY] = recovered_endpoint
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):
@@ -784,14 +806,18 @@ async def switchboard_heartbeat_loop(daemon: Any) -> None:
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-                    except Exception:
+                    except (Exception, asyncio.CancelledError) as exc:
+                        # fastmcp re-raises a cancelled session's CancelledError into
+                        # a caller nobody cancelled; that is a dead connection too.
+                        raise_if_task_cancelled(exc)
                         logger.warning(
                             "Switchboard heartbeat: connection dead, reconnecting",
                             exc_info=True,
                         )
                         await disconnect_switchboard(daemon)
                         await connect_switchboard(daemon)
-            except Exception:
+            except (Exception, asyncio.CancelledError) as exc:
+                raise_if_task_cancelled(exc)
                 logger.warning("Switchboard heartbeat: unexpected error", exc_info=True)
     except asyncio.CancelledError:
         return

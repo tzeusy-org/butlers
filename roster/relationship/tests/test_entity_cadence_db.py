@@ -16,8 +16,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _THIS_FILE = Path(__file__).resolve()
 
@@ -28,25 +26,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    connection_pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
-    )
-    yield connection_pool
-    await connection_pool.close()
+async def rel_pool(db) -> asyncpg.Pool:
+    return await db("core", "memory", "relationship")
 
 
-async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool) -> None:
+async def test_cadence_counts_only_stable_interaction_events(rel_pool: asyncpg.Pool) -> None:
+    pool = rel_pool
     entity_id = await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) "
         "VALUES ('Cadence test person', 'person') RETURNING id"

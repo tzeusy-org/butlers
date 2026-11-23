@@ -27,10 +27,9 @@ The ButlerDaemon manages the lifecycle of a butler:
 On startup failure, already-initialized modules get on_shutdown() called.
 
 Graceful shutdown: (a) stops advertising route acceptance, (b) stops the MCP server,
-(c) stops accepting new triggers,
-(d) drains in-flight runtime sessions up to a configurable timeout,
+(c) cancels scheduler loop (waits for in-progress tick() to finish),
+(d) stops accepting new triggers, drains in-flight runtime sessions up to a configurable timeout,
 (e) cancels switchboard heartbeat, (f) closes Switchboard MCP client,
-(g) cancels scheduler loop (waits for in-progress tick() to finish),
 (h) cancels liveness reporter loop, (i) shuts down modules in reverse topological order,
 (j) closes DB pool.
 """
@@ -43,11 +42,14 @@ import json
 import logging
 import os
 import socket
+import ssl
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from ipaddress import IPv4Address
 from pathlib import Path
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 from urllib.parse import quote, quote_plus
 
 import asyncpg
@@ -67,7 +69,7 @@ from butlers.config import (
 )
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity
-from butlers.core.scheduler import tick as _tick
+from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
@@ -79,6 +81,7 @@ from butlers.core.tool_catalog import (
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
+    declared_approval_mode,
     validate_tool_metadata,
 )
 from butlers.core.utils import generate_uuid7_string
@@ -208,6 +211,38 @@ class LocalSwitchboardClient:
             return await client.call_tool(name, arguments)
 
 
+class _SplitServiceServer(uvicorn.Server):
+    """Serve Service TLS and private runtime HTTP with one ASGI lifespan."""
+
+    async def startup(self, sockets: list[socket.socket] | None = None) -> None:
+        await super().startup(sockets=sockets)
+        if not self.started:
+            return
+
+        self.started = False
+        config = self.config
+        loop = asyncio.get_running_loop()
+        protocol_factory = cast(Callable[..., asyncio.Protocol], config.http_protocol_class)
+
+        def protocol() -> asyncio.Protocol:
+            return protocol_factory(
+                config=config,
+                server_state=self.server_state,
+                app_state=self.lifespan.state,
+                _loop=loop,
+            )
+
+        try:
+            local = await loop.create_server(
+                protocol, host="127.0.0.1", port=config.port, backlog=config.backlog
+            )
+        except BaseException:
+            await self.shutdown(sockets=sockets)
+            raise
+        self.servers.append(local)
+        self.started = True
+
+
 class ButlerDaemon:
     """Central orchestrator for a single butler instance."""
 
@@ -219,11 +254,22 @@ class ButlerDaemon:
         butler_name: str | None = None,
         db: Database | None = None,
         control_profile: str | None = None,
+        service_tls_dir: Path | None = None,
+        service_tls_bind: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
         if config_dir is not None and butler_name is not None:
             raise ValueError("Cannot provide both config_dir and butler_name")
+        configured_name = config_dir.name if config_dir is not None else butler_name
+        if service_tls_dir is not None and control_profile is None and configured_name != "health":
+            raise ValueError("Switchboard service TLS requires a control profile")
+        if (service_tls_dir is None) != (service_tls_bind is None):
+            raise ValueError("Service TLS requires both material and a pod IP bind")
+        if service_tls_bind is not None:
+            address = IPv4Address(service_tls_bind)
+            if address.is_loopback or address.is_unspecified or address.is_multicast:
+                raise ValueError("Service TLS requires a non-loopback IPv4 pod IP")
 
         # If butler_name is provided, derive config_dir from roster/
         if butler_name is not None:
@@ -232,6 +278,8 @@ class ButlerDaemon:
             self.config_dir = config_dir  # type: ignore
 
         self._control_profile = control_profile
+        self._service_tls_dir = service_tls_dir
+        self._service_tls_bind = service_tls_bind
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -254,6 +302,8 @@ class ButlerDaemon:
         self._started_at: float | None = None
         self._accepting_connections = False
         self._shutting_down = False
+        # Set by `butlers up` to this daemon's share of the process shutdown budget.
+        self._shutdown_budget_s: float | None = None
         self._boot_instance_id = uuid.UUID(generate_uuid7_string())
         self._boot_epoch: int | None = None
         self._boot_registration_task: asyncio.Task | None = None
@@ -267,6 +317,9 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
+        # RFC 0038 M6 goal runtime (GoalRuntime). Dark: set only by trusted
+        # control-plane construction; started when its switch is on.
+        self.goal_runtime: Any = None
         # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
@@ -280,6 +333,9 @@ class ButlerDaemon:
         # RFC 0023 recovery remains dormant until the authenticated Messenger
         # boundary supplies this narrow runtime in a later rollout slice.
         self._approval_delivery_runtime: Any | None = None
+        # The trusted cohost installs this authenticated hop beside that runtime;
+        # an approved notify carries its single-use proof over it (RFC 0038 D13).
+        self._approved_notify_dispatch: Any | None = None
         self._approval_delivery_task: asyncio.Task | None = None
         self._approval_delivery_stop: asyncio.Event | None = None
         self.blob_store: S3BlobStore | None = None
@@ -573,6 +629,14 @@ class ButlerDaemon:
         """
         from butlers.core.fact_authority import FactReceiverContextRegistry
 
+        assert self.config is not None and self.mcp is not None
+        service_tls = self._service_listener_tls()
+        if service_tls is not None and self.config.name == "health":
+            from butlers.core.service_plane.health_peer_admission import (
+                HealthMedicationPeerAdmission,
+            )
+
+            self.mcp.add_middleware(HealthMedicationPeerAdmission())
         self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
         if self.config.name in {"finance", "switchboard"}:
             from butlers.config import list_butlers
@@ -604,30 +668,40 @@ class ButlerDaemon:
             butler_name=self.config.name,
             approval_push_runtime=self._approval_push_runtime,
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
+            dashboard_call_route=self._build_dashboard_call_route(),
             identity_provider=self._identity_facts,
             route_preflight=self._build_route_preflight(),
             fact_source_registry=getattr(self, "_fact_source_registry", None),
             fact_receiver_registry=self._fact_receiver_registry,
             finance_warning_control_owner=self._finance_warning_control_owner,
+            service_relay_route=self._build_service_relay_route(),
         )
+        service_host = self._service_tls_bind or "0.0.0.0"
         config = uvicorn.Config(
             app,
-            host="0.0.0.0",
+            host=service_host,
             port=self.config.port,
             log_level="warning",
             log_config=None,
             timeout_graceful_shutdown=self.config.shutdown_timeout_s,
         )
+        if service_tls is not None:
+            config.ssl_context_factory = lambda _config, _default: service_tls
         # Pre-create the socket with SO_REUSEADDR so that a previously bound socket
         # in TIME_WAIT (e.g. after SIGKILL) does not block re-binding.  Raising the
         # OSError here (before the asyncio task is running) gives callers a clear,
         # catchable error instead of uvicorn's sys.exit(1).
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind(("0.0.0.0", self.config.port))
-        sock.listen(config.backlog)
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((service_host, self.config.port))
+            sock.listen(config.backlog)
+        except BaseException:
+            sock.close()
+            raise
         self._mcp_socket = sock
-        self._server = uvicorn.Server(config)
+        server_type = _SplitServiceServer if service_tls is not None else uvicorn.Server
+        self._server = server_type(config)
         self._server_task = asyncio.create_task(self._server.serve(sockets=[sock]))
         deadline = time.monotonic() + _MCP_SERVER_START_TIMEOUT_S
         try:
@@ -640,21 +714,17 @@ class ButlerDaemon:
                         f"MCP server task exited before startup completed for {self.config.name}"
                     )
                 if time.monotonic() >= deadline:
-                    self._server.should_exit = True
-                    self._server_task.cancel()
-                    try:
-                        await self._server_task
-                    except asyncio.CancelledError:
-                        pass
                     raise TimeoutError(
                         "MCP server did not become ready within "
                         f"{_MCP_SERVER_START_TIMEOUT_S:.1f}s for {self.config.name}"
                     )
                 await asyncio.sleep(_MCP_SERVER_START_POLL_INTERVAL_S)
         except BaseException:
-            # On any failure path (timeout, server-task exit, cancellation),
-            # release the pre-bound socket and clear startup state so callers
-            # can retry without leaking the listening port.
+            # Stop the server before releasing startup state and its sockets.
+            if not self._server_task.done():
+                self._server.should_exit = True
+                self._server_task.cancel()
+                await asyncio.gather(self._server_task, return_exceptions=True)
             self._server_task = None
             self._server = None
             if self._mcp_socket is not None:
@@ -724,6 +794,27 @@ class ButlerDaemon:
             credential_store=self._credential_store,
         )
 
+    def _build_dashboard_call_route(self) -> Any | None:
+        """RFC 0038 D7 dashboard service calls, on Switchboard's service listener only."""
+        config = self.config
+        if (
+            config is None
+            or config.name != "switchboard"
+            or self.db is None
+            or self.db.pool is None
+        ):
+            return None
+
+        from butlers.core.service_plane.dashboard_route import (
+            build_switchboard_dashboard_call_route,
+        )
+
+        # No broker signer reaches Switchboard yet: forward unsigned, as itself,
+        # until the broker cutover (bu-jnhxc5) wires the signer and drops this.
+        return build_switchboard_dashboard_call_route(
+            self.db.pool, unsigned_until_broker_cutover=True
+        )
+
     def _build_route_preflight(self) -> Any | None:
         """Mount the effect-free route canary only on Switchboard's backend port."""
         if self.config.name != "switchboard" or self.db is None or self.db.pool is None:
@@ -734,6 +825,42 @@ class ButlerDaemon:
 
         return RoutePreflight(self.db.pool, list_butlers(self.config_dir.parent))
 
+    def _service_listener_tls(self) -> ssl.SSLContext | None:
+        directory = self._service_tls_dir
+        if directory is None:
+            return None
+        config = self.config
+        if self._control_profile is not None:
+            if config is None or (config.name, config.port) != ("switchboard", 41100):
+                raise ValueError(
+                    "Service TLS is configured outside the Switchboard service listener"
+                )
+        elif config is None or (config.name, config.port) != ("health", 41103):
+            raise ValueError("Service TLS is configured outside the Health service listener")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        try:
+            context.load_cert_chain(
+                directory / "tls.crt", directory / "tls.key", password=lambda: b""
+            )
+        except OSError:
+            raise RuntimeError(
+                f"{config.name.capitalize()} service TLS material is unavailable or invalid"
+            ) from None
+        return context
+
+    def _build_service_relay_route(self) -> Any | None:
+        """RFC 0038 D7 named relays, on Switchboard's service listener only."""
+        config, config_dir, db = self.config, self.config_dir, self.db
+        if config is None or config.name != "switchboard" or config_dir is None:
+            return None
+        if db is None or db.pool is None:
+            return None
+
+        from butlers.core.service_plane.wiring import build_switchboard_relay_route
+
+        return build_switchboard_relay_route(db.pool, config_dir.parent)
+
     @classmethod
     def _build_mcp_http_app(
         cls,
@@ -742,11 +869,13 @@ class ButlerDaemon:
         butler_name: str,
         approval_push_runtime: Any | None = None,
         runtime_probe_coordinator: Any | None = None,
+        dashboard_call_route: Any | None = None,
         identity_provider: Any | None = None,
         route_preflight: Any | None = None,
         fact_source_registry: Any | None = None,
         fact_receiver_registry: Any | None = None,
         finance_warning_control_owner: Any | None = None,
+        service_relay_route: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -826,6 +955,12 @@ class ButlerDaemon:
                 if not cls._attach_route_via_public_api(streamable_app, control_route):
                     streamable_app.routes.append(control_route)
 
+        # RFC 0038 D7 dashboard service calls: never an MCP tool; 404 until
+        # BUTLERS_SERVICE_PLANE_AUTH is on. Only Switchboard builds the route.
+        if dashboard_call_route is not None:
+            if not cls._attach_route_via_public_api(streamable_app, dashboard_call_route):
+                streamable_app.routes.append(dashboard_call_route)
+
         if fact_source_registry is not None:
             for source_route in (
                 fact_source_registry.route(),
@@ -837,6 +972,12 @@ class ButlerDaemon:
             receiver_route = fact_receiver_registry.route()
             if not cls._attach_route_via_public_api(streamable_app, receiver_route):
                 streamable_app.routes.append(receiver_route)
+
+        # RFC 0038 D7 named relays: service listener only, never an MCP tool.
+        # The route refuses everything (404) until BUTLERS_SERVICE_PLANE_AUTH is on.
+        if butler_name == "switchboard" and service_relay_route is not None:
+            if not cls._attach_route_via_public_api(streamable_app, service_relay_route):
+                streamable_app.routes.append(service_relay_route)
 
         if butler_name == "switchboard" and finance_warning_control_owner is not None:
             control_route = finance_warning_control_owner.route()
@@ -932,6 +1073,40 @@ class ButlerDaemon:
 
         return None
 
+    async def _resolve_telegram_username_recipient(
+        self, username: str
+    ) -> tuple[str, str | None] | None:
+        """Resolve a Telegram ``@username`` to the numeric chat id the Bot API needs.
+
+        The Bot API cannot message a private user by username, so a notify to one
+        must name the numeric chat id before it parks for approval (bu-dhloi1.177).
+        The owner resolves through the schema-safe owner definer plus the owner's
+        chat id; any other contact through ``relationship.entity_facts``. Returns
+        ``(chat_id, contact_name)``, or ``None`` when the username is unknown, ambiguous
+        or maps to no numeric id. Only ``telegram:``-prefixed handles can match.
+        """
+        from butlers.identity import (
+            resolve_entity_telegram_chat_id,
+            resolve_telegram_username_contact,
+        )
+
+        pool = self.db.pool if self.db is not None else None
+        if pool is None:
+            return None
+        contact = await resolve_telegram_username_contact(pool, username)
+        if contact is None or contact.entity_id is None:
+            return None
+        if "owner" in contact.roles:
+            chat_id = await resolve_owner_entity_info(
+                pool, _DEFAULT_TELEGRAM_CHAT_CONTACT_INFO_TYPE
+            )
+        else:
+            chat_id = await resolve_entity_telegram_chat_id(pool, contact.entity_id)
+        chat_id = chat_id.strip() if isinstance(chat_id, str) else ""
+        if not (chat_id.isascii() and chat_id.isdigit()):
+            return None
+        return chat_id, contact.name
+
     # Maps notify channel names to the entity_facts predicate used for delivery.
     # Channels that collapse to ``has-handle`` (e.g. ``telegram``) require an
     # additional object-value filter to avoid cross-platform ambiguity — see
@@ -980,6 +1155,10 @@ class ButlerDaemon:
         used downstream by the email guard (``check_email_recipient``) for
         context validation — only the context-aware *ordering* during resolution
         is dropped.
+
+        Email addresses carrying an active ``undeliverable-email`` fact are skipped. When the
+        entity has addresses and every one is dead, raises ``NoLiveEmailAddressError`` (notify
+        surfaces ``no_live_address`` rather than parking or sending).
 
         Returns the identifier value on success, ``None`` if:
         - No DB pool is available.
@@ -1040,21 +1219,50 @@ class ButlerDaemon:
                         return numeric or None
                     return None
                 else:
+                    # An email address carrying an active ``undeliverable-email`` fact (a bound,
+                    # authenticated permanent bounce) is skipped, so another live address wins.
+                    dead_filter = ""
+                    if channel == "email":
+                        dead_filter = """
+                          AND NOT EXISTS (
+                              SELECT 1 FROM relationship.entity_facts dead
+                              WHERE dead.subject = ef.subject
+                                AND dead.predicate = 'undeliverable-email'
+                                AND dead.object_kind = 'literal'
+                                AND dead.validity = 'active'
+                                AND lower(btrim(dead.object)) = lower(btrim(ef.object))
+                          )"""
                     row = await conn.fetchrow(
-                        """
+                        f"""
                         SELECT ef.object
                         FROM relationship.entity_facts ef
                         WHERE ef.subject    = $1
                           AND ef.predicate  = $2
                           AND ef.object_kind = 'literal'
-                          AND ef.validity   = 'active'
+                          AND ef.validity   = 'active'{dead_filter}
                         ORDER BY ef."primary" DESC NULLS LAST, ef.created_at ASC
                         LIMIT 1
-                        """,
+                        """,  # noqa: S608 - dead_filter is a constant fragment, never user input
                         entity_id,
                         predicate,
                     )
                     if row is None:
+                        if channel == "email" and await conn.fetchrow(
+                            """
+                            SELECT 1 AS present
+                            FROM relationship.entity_facts ef
+                            WHERE ef.subject = $1
+                              AND ef.predicate = $2
+                              AND ef.object_kind = 'literal'
+                              AND ef.validity = 'active'
+                            LIMIT 1
+                            """,
+                            entity_id,
+                            predicate,
+                        ):
+                            from butlers.entity_facts_channels import NoLiveEmailAddressError
+
+                            raise NoLiveEmailAddressError(str(entity_id))
                         return None
                     value = row["object"]
                     if not value:
@@ -1168,7 +1376,16 @@ class ButlerDaemon:
                 if memory_engine is not None and memory_pool is not None:
                     from butlers.chronicler.writeback import build_chronicler_fact_writer
 
-                    store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
+                    memory_schema = (memory_module._config.memory_schema or "").strip()
+                    if memory_schema:
+                        store_fact_fn = build_chronicler_fact_writer(
+                            memory_pool, memory_engine, memory_schema=memory_schema
+                        )
+                    else:
+                        logger.warning(
+                            "Chronicler fact write-back disabled because its memory module "
+                            "does not configure an explicit private memory_schema"
+                        )
 
             from butlers.chronicler.day_close_continuation import DayCloseContinuation
             from butlers.chronicler.day_close_refresh import held_refresh_service
@@ -1375,6 +1592,7 @@ class ButlerDaemon:
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
         from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
+        from butlers.core_tools._temporal import TEMPORAL_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1449,7 +1667,9 @@ class ButlerDaemon:
         register_all_core_tools(ctx, mcp, _core_tool)
         # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
         # hides them from today's classify-and-route sessions.
-        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
+        self._goal_runtime_dark_tools = (
+            GOAL_RUNTIME_DARK_TOOLS | TEMPORAL_DARK_TOOLS
+        ) & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
@@ -1536,6 +1756,14 @@ class ButlerDaemon:
                         f"tool presentation metadata conflicts with central inventory for "
                         f"{tool_name!r}: {', '.join(mismatches)}"
                     )
+            try:
+                approval_mode = declared_approval_mode(presentation.approval_policy)
+                if presentation.approval_policy != {"mode": approval_mode}:
+                    raise ToolCatalogError("declarations may supply only approval_policy.mode")
+            except ToolCatalogError as exc:
+                raise ToolCatalogError(
+                    f"invalid approval_policy declaration for {tool_name!r}: {exc}"
+                ) from exc
             resolved[tool_name] = ToolMeta(
                 arg_sensitivities=dict(sensitivity.arg_sensitivities),
                 canonical_name=presentation.canonical_name,
@@ -1550,7 +1778,9 @@ class ButlerDaemon:
                     if field_name not in {"owner_domain", "approval_policy"}
                 },
                 owner_domain=self.config.name,
-                approval_policy={},
+                approval_policy={"mode": approval_mode},
+                content_params=presentation.content_params,
+                resource_pair=presentation.resource_pair,
                 read_stores=presentation.read_stores,
                 write_stores=presentation.write_stores,
                 unknown_output_source=presentation.unknown_output_source,
@@ -1559,16 +1789,36 @@ class ButlerDaemon:
             if policy is not None:
                 gate = policy.gated_tools.get(tool_name)
                 resolved[tool_name].approval_policy = {
+                    "mode": approval_mode,
                     "enabled": policy.enabled,
                     "configured_gate": gate is not None,
                     "expiry_hours": policy.get_effective_expiry(tool_name),
                     "risk_tier": policy.get_effective_risk_tier(tool_name).value,
                     "rule_precedence": policy.rule_precedence,
                 }
+                if tool_name in {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                    "calendar_delete_event",
+                    "calendar_update_event_instance",
+                    "calendar_delete_event_instance",
+                    "drive_write_file",
+                    "drive_create_folder",
+                    "drive_move_file",
+                } and (policy.enabled or presentation.module_name in policy.domain_producers):
+                    # Descriptive configuration, never evidence of an owner
+                    # decision or a generic gate for unrelated capabilities.
+                    resolved[tool_name].approval_policy = {
+                        **(resolved[tool_name].approval_policy or {}),
+                        "domain_producer": True,
+                    }
             # Explicit new declarations cannot silently contradict the inventory.
             for field_name in AUTHORIZATION_FIELDS:
                 supplied = getattr(sensitivity, field_name, None)
-                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                canonical = getattr(resolved[tool_name], field_name)
+                if field_name == "approval_policy" and supplied is not None:
+                    canonical = {"mode": approval_mode}
+                if supplied is not None and supplied != canonical:
                     raise ToolCatalogError(
                         f"tool authorization metadata conflicts with central inventory for "
                         f"{tool_name!r}: {field_name}"
@@ -1828,6 +2078,15 @@ class ButlerDaemon:
                     owning relationship runtime and never mutate the stored
                     action name.
                     """
+                    if tool_name == "notify":
+                        # notify() would re-check the recipient and re-park the
+                        # approved call; send its stored envelope instead, with
+                        # this daemon's single-use proof when the cohost has one.
+                        from butlers.modules.approvals.approved_notify import (
+                            deliver_approved_notify,
+                        )
+
+                        return await deliver_approved_notify(self, tool_args)
                     executable_name = _aliases.get(tool_name, tool_name)
                     original_fn = _originals.get(executable_name) or _originals.get(tool_name)
                     if original_fn is None:
@@ -1987,15 +2246,10 @@ class ButlerDaemon:
     async def _warn_if_approval_callback_secret_missing(self) -> None:
         """Log loudly, once at startup, when APPROVAL_CALLBACK_SECRET is unresolvable.
 
-        Without this Tier 1 secret, ``emit_approval_push`` structurally cannot
-        dispatch a single-action push: it resolves 'failed' before every
-        attempt (see ``notifications.py::_callback_secret``). That was
-        previously visible only as a per-push ``logger.warning`` an operator
-        would have to be looking at the right log line to see. This makes the
-        degraded state loud and startup-time visible instead -- a clear
-        operator-facing signal, not a silent per-push warning. This never
-        raises: a missing secret degrades approval pushes, it must not take
-        the daemon down (dashboard-only fallback remains available).
+        Durable delivery needs this Tier 1 secret to sign single-action callbacks.
+        Report missing configuration at startup without enabling admission or
+        worker startup. This never raises: unavailable callbacks must not take
+        the daemon down, and the dashboard review door remains available.
         """
         if self._credential_store is None:
             return
@@ -2026,29 +2280,31 @@ class ButlerDaemon:
             )
 
     def _wire_calendar_approval_enqueuer(self) -> None:
-        """Wire calendar overlap-approval enqueuer when both modules are loaded.
+        """Wire calendar and Drive domain gates to their owning approval queue.
 
-        When both the ``calendar`` and ``approvals`` modules are active on this
-        butler, connects the calendar module's overlap-override gate to the
-        approvals pending-action queue via a lightweight enqueue callback.
+        Enabling this callback does not install unrelated tool gates or grant
+        standing rules. Both consumers retain exact stored-call replay checks.
         """
         approvals_raw = self.config.modules.get("approvals")
         approval_config = parse_approval_config(approvals_raw)
-        if approval_config is None or not approval_config.enabled:
+        if approval_config is None:
+            return
+        approvals = next((m for m in self._active_modules if m.name == "approvals"), None)
+        if (
+            approvals is None
+            or not callable(getattr(approvals, "_tool_executor", None))
+            or getattr(self.db, "pool", None) is None
+        ):
             return
 
-        calendar_mod = None
-        for mod in self._active_modules:
-            if mod.name == "calendar":
-                calendar_mod = mod
-                break
-
-        if calendar_mod is None:
-            return
-
-        # Only wire if the calendar module exposes the setter.
-        set_enqueuer = getattr(calendar_mod, "set_approval_enqueuer", None)
-        if not callable(set_enqueuer):
+        setters = [
+            getattr(mod, "set_approval_enqueuer", None)
+            for mod in self._active_modules
+            if mod.name in {"calendar", "google_drive"}
+            and (approval_config.enabled or mod.name in approval_config.domain_producers)
+            and callable(getattr(mod, "set_approval_enqueuer", None))
+        ]
+        if not setters:
             return
 
         pool = self.db.pool
@@ -2061,7 +2317,7 @@ class ButlerDaemon:
             tool_args: dict[str, Any],
             agent_summary: str,
         ) -> str:
-            """Insert a pending_actions row for a calendar overlap override."""
+            """Park the owning domain's exact requested call without delivery here."""
             import uuid as _uuid
             from datetime import UTC as _UTC
             from datetime import datetime as _dt
@@ -2101,9 +2357,17 @@ class ButlerDaemon:
             await record_approval_event(
                 pool,
                 ApprovalEventType.ACTION_QUEUED,
-                actor="system:calendar_overlap_gate",
+                actor=(
+                    "system:calendar_overlap_gate"
+                    if tool_name.startswith("calendar_")
+                    else "system:drive_party_gate"
+                ),
                 action_id=action_id,
-                reason="calendar overlap override requires approval",
+                reason=(
+                    "calendar overlap override requires approval"
+                    if tool_name.startswith("calendar_")
+                    else "Drive destination audience requires approval"
+                ),
                 metadata={"tool_name": tool_name},
                 occurred_at=now,
             )
@@ -2115,7 +2379,9 @@ class ButlerDaemon:
             )
             return str(action_id)
 
-        set_enqueuer(_enqueue_overlap_action)
+        for set_enqueuer in setters:
+            if callable(set_enqueuer):
+                set_enqueuer(_enqueue_overlap_action)
         logger.info("Wired calendar overlap-approval enqueuer via approvals module")
 
     def _wire_module_runtime(self) -> None:
@@ -2180,10 +2446,10 @@ class ButlerDaemon:
         1. Stop MCP server
         2. Stop durable buffer (drain queue, cancel workers)
         2b. Cancel in-flight route_inbox background tasks
+        2c. Cancel internal scheduler loop (wait for in-progress tick() to finish)
         3. Stop accepting new triggers and drain in-flight runtime sessions
         4. Cancel switchboard heartbeat
         5. Close Switchboard MCP client
-        5b. Cancel internal scheduler loop (wait for in-progress tick() to finish)
         6. Module on_shutdown in reverse topological order
         7. Close DB pool
 

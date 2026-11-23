@@ -231,6 +231,13 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
     }
     const mount = (client: QueryClient, path = "/") => render(<MemoryRouter initialEntries={[path]}><QueryClientProvider client={client}><Surface /></QueryClientProvider></MemoryRouter>);
     const view = mount(fixture.client);
+    // The visible transcript bubble, not the sr-only live region: once the
+    // running turn has been idle for IDLE_FLUSH_MS (real timers), the
+    // LiveAnnouncer legitimately mirrors the partial answer into a <span>
+    // there, so an unscoped getByText would find two matches on a slow run.
+    const visiblePartialAnswer = () => screen.getByText("Unfinished partial answer", {
+      ignore: 'script, style, [data-testid="chat-reply-live-region"] *',
+    });
     try {
 
       const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
@@ -241,7 +248,7 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
       const stop = screen.getByRole("button", { name: "Stop this turn" });
       expect(stop.hasAttribute("disabled")).toBe(false);
       expect(screen.getByText("Original saved message")).toBeTruthy();
-      expect(screen.getByText("Unfinished partial answer")).toBeTruthy();
+      expect(visiblePartialAnswer()).toBeTruthy();
       expect(fixture.turn.mock.lastCall?.[0]).toMatchObject({ butlerName: "switchboard", activeConversationId: "conv-1" });
       expect(fixture.draft.mock.lastCall?.[1]).toEqual(["switchboard", "conv-1"]);
       const baseline = [fixture.send.mock.calls.length, fixture.stop.mock.calls.length, fixture.detach.mock.calls.length, fixture.reset.mock.calls.length];
@@ -256,7 +263,7 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
         expect(screen.getByRole("button", { name: "Stop this turn" })).toBe(stop);
         expect(stop.hasAttribute("disabled")).toBe(false);
         expect(screen.getByText("Original saved message")).toBeTruthy();
-        expect(screen.getByText("Unfinished partial answer")).toBeTruthy();
+        expect(visiblePartialAnswer()).toBeTruthy();
         expect(screen.getByTestId("archive-route").textContent).toBe("/");
         expect(fixture.turn.mock.lastCall?.[0]).toMatchObject({ butlerName: "switchboard", activeConversationId: "conv-1" });
         expect(fixture.draft.mock.lastCall?.[1]).toEqual(["switchboard", "conv-1"]);

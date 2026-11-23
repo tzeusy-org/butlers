@@ -519,7 +519,7 @@ meaning.
 ### Requirement: Shared Discretion Layer
 Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
 
-The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
+The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.core.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
 
 ID: REQ-connector-base-spec-007
 Source: bu-1wwjrb; [Observed] `src/butlers/connectors/discretion.py` evaluator log sites
@@ -528,7 +528,7 @@ Scope: v1-mandatory
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
 - **THEN** it imports `DiscretionEvaluator` from `butlers.connectors.discretion` (shared module, not connector-specific)
-- **AND** it imports `DiscretionDispatcher` from `butlers.connectors.discretion_dispatcher`
+- **AND** it imports `DiscretionDispatcher` from `butlers.core.discretion_dispatcher`
 - **AND** it creates a `DiscretionDispatcher(pool=db_pool)` and injects it into each `DiscretionEvaluator`
 
 #### Scenario: Discretion model resolution via catalog

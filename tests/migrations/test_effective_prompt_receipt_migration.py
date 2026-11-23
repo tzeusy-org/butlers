@@ -15,7 +15,7 @@ from sqlalchemy.exc import DBAPIError
 
 from alembic import command
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import create_migration_db, migration_db_name
+from butlers.testing.migration import create_migration_db, load_migration, migration_db_name
 
 pytestmark = [pytest.mark.integration, pytest.mark.db]
 
@@ -37,14 +37,6 @@ _ATTEMPT_USAGE_MIGRATION_PATH = (
 _PREFLIGHT_PATH = Path(__file__).resolve().parents[2] / "src/butlers/migration_preflight.py"
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_236", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def _load_path(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
@@ -54,7 +46,7 @@ def _load_path(name: str, path: Path):
 
 
 def test_prompt_receipt_migrations_extend_the_live_core_head() -> None:
-    receipt = _load_migration()
+    receipt = load_migration(_MIGRATION_PATH, "core_236")
     purpose_spec = importlib.util.spec_from_file_location("core_237", _PURPOSE_MIGRATION_PATH)
     assert purpose_spec is not None and purpose_spec.loader is not None
     purpose = importlib.util.module_from_spec(purpose_spec)
@@ -167,7 +159,7 @@ def test_attempt_usage_migration_is_partition_safe_closed_and_reversible(
 
 async def _run_migration(pool, direction: str) -> None:
     statements: list[str] = []
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_236")
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = statements.append
     with (

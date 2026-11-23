@@ -89,7 +89,7 @@ def _app_with_pool(
     pool_raises=None,
     fetchrow_side_effect=None,
 ):
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
     if fetchrow_side_effect is not None:
         mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
@@ -105,6 +105,17 @@ def _app_with_pool(
             __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=None)
         )
     )
+    mock_conn.is_in_transaction = MagicMock(return_value=False)
+
+    async def enter_transaction():
+        mock_conn.is_in_transaction.return_value = True
+
+    async def leave_transaction(*exc):
+        mock_conn.is_in_transaction.return_value = False
+        return False
+
+    mock_conn.transaction.return_value.__aenter__.side_effect = enter_transaction
+    mock_conn.transaction.return_value.__aexit__.side_effect = leave_transaction
     mock_conn.fetchrow = mock_pool.fetchrow
     mock_conn.fetchval = AsyncMock(
         side_effect=lambda sql, *args: (
@@ -629,9 +640,14 @@ async def test_verify_all_rejects_concurrent_arrival_while_run_is_in_flight(app,
         base_url="http://test",
         headers={"X-API-Key": "owner-key"},
     ) as client:
+        # FastAPI builds every route's dependency/validation state on the first request through
+        # an app. That one-off cost (seconds on a loaded runner) must not count against the wait
+        # below, so pay it here with a request that matches no handler.
+        await client.get("/api/settings/models/verify-all")
         first_task = asyncio.create_task(client.post("/api/settings/models/verify-all"))
         try:
-            await asyncio.wait_for(started.wait(), timeout=1)
+            # A hang guard, not a latency assertion: the handler blocks on `release`.
+            await asyncio.wait_for(started.wait(), timeout=30)
             concurrent = await client.post("/api/settings/models/verify-all")
         finally:
             release.set()
@@ -976,11 +992,11 @@ async def test_model_attempts_returns_real_rows(app):
     """Private runtime failures stay content-blind through dispatch evidence and its API."""
     from datetime import UTC, datetime
 
-    from butlers.connectors.discretion_dispatcher import (
+    from butlers.core.discretion_dispatcher import (
         PURPOSE_LANE_PRIVATE_CONTENT,
         DiscretionDispatcher,
     )
-    from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
+    from butlers.core.model_routing import CeilingStatus, QuotaStatus, SpendRoutingResult
 
     entry_id = uuid.uuid4()
     attempt_ts = datetime(2026, 5, 24, 10, 0, 0, tzinfo=UTC)
@@ -1023,6 +1039,10 @@ async def test_model_attempts_returns_real_rows(app):
                     limit_30d=None,
                 )
             ),
+        ),
+        patch(
+            "butlers.core.model_call.check_monthly_ceiling",
+            AsyncMock(return_value=CeilingStatus(allowed=True, mtd_usd=0.0, ceiling_usd=None)),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch(
@@ -1462,6 +1482,7 @@ class _OverrideStore:
 
             yield SimpleNamespace(
                 transaction=self.transaction,
+                is_in_transaction=lambda: self.in_transaction,
                 fetchrow=self.fetchrow,
                 execute=self.execute,
                 fetchval=self._append_audit,
@@ -1510,6 +1531,9 @@ class _OverrideStore:
         return [dict(row) for row in self.rows.values() if row["id"] in args[0]]
 
     async def execute(self, sql, *args):
+        if sql == "SELECT 1":
+            assert self.in_transaction
+            return "SELECT 1"
         assert self.in_transaction and "DELETE FROM public.butler_model_overrides" in sql
         if self.fail == "mutation":
             raise RuntimeError("synthetic mutation failure")

@@ -177,7 +177,7 @@ async def test_current_evaluator_has_no_model_or_locator_authority(caplog):
 
     # Drive actual tick's final claim. The recorder models publication only;
     # PostgreSQL role, digest and rollback semantics have a separate real owner.
-    from butlers.core.scheduler import tick
+    from butlers.core.scheduler.dispatch import tick
     from tests.core.test_scheduler_dispatch_idempotency import _ClaimTrackingPool, _make_due_task
 
     now = datetime.now(UTC)
@@ -218,7 +218,7 @@ async def test_current_evaluator_has_no_model_or_locator_authority(caplog):
         assert (await evaluate_interruption(final_pool, gate="quiet_hours")).interrupts
         return {"status": "ok"}
 
-    with patch("butlers.core.scheduler._next_run", return_value=now + timedelta(days=1)):
+    with patch("butlers.core.scheduler.dispatch._next_run", return_value=now + timedelta(days=1)):
         assert await tick(final_pool, dispatch, stagger_key="general") == 1
     assert len(seen) == 1 and _current_origin.get() is None
     assert (await evaluate_interruption(final_pool, gate="context", origin=seen[0])).interrupts

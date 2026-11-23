@@ -664,6 +664,7 @@ describe("QaOverviewPage -- patrol pulse strip", () => {
     ["clean", "clean", "bg-[var(--green)]"],
     ["findings_dispatched", "findings dispatched", "bg-[var(--amber)]"],
     ["suppressed", "findings suppressed", "bg-[var(--amber)]"],
+    ["halted", "dispatch halted", "bg-[var(--amber)]"],
     ["error", "patrol error", "bg-destructive"],
     ["running", "patrol running", "bg-muted-foreground"],
     ["skipped_overlap", "patrol skipped due to overlap", "bg-muted-foreground"],

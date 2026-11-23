@@ -16,8 +16,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db, get_mcp_manager
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
@@ -29,28 +27,13 @@ pytestmark = [
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    database = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def rel_pool(db) -> asyncpg.Pool:
+    database = await db("core", "memory", "relationship")
     await database.execute("TRUNCATE TABLE relationship.entity_facts CASCADE")
     await database.execute("TRUNCATE TABLE public.facts CASCADE")
     await database.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield database
-    await database.close()
+    return database
 
 
 def _mcp_manager() -> MagicMock:
@@ -65,9 +48,9 @@ def _mcp_manager() -> MagicMock:
 
 
 @pytest.fixture
-def activity_app(pool: asyncpg.Pool) -> FastAPI:
+def activity_app(rel_pool: asyncpg.Pool) -> FastAPI:
     db = MagicMock(spec=DatabaseManager)
-    db.pool.return_value = pool
+    db.pool.return_value = rel_pool
     app = create_app()
     for name, _module in app.state.butler_routers:
         if name == "relationship":
@@ -99,10 +82,10 @@ async def _seed_entities(pool: asyncpg.Pool) -> tuple[UUID, UUID]:
 
 
 async def test_direct_writes_and_identity_values_round_trip_through_activity(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     activity_app: FastAPI,
 ) -> None:
-    _, entity_id = await _seed_entities(pool)
+    _, entity_id = await _seed_entities(rel_pool)
     base = f"/api/relationship/entities/{entity_id}"
     occurred_at = datetime.now(UTC) - timedelta(hours=1)
 
@@ -134,20 +117,20 @@ async def test_direct_writes_and_identity_values_round_trip_through_activity(
     from butlers.tools.relationship.gifts import gift_update_status
     from butlers.tools.relationship.loans import loan_create, loan_settle
 
-    successor = await gift_update_status(pool, UUID(gift.json()["id"]), "purchased")
+    successor = await gift_update_status(rel_pool, UUID(gift.json()["id"]), "purchased")
     loan = await loan_create(
-        pool,
+        rel_pool,
         contact_id=entity_id,
         amount=Decimal("12.50"),
         direction="lent",
         description="Exact loan summary",
         currency="SGD",
     )
-    loan_successor = await loan_settle(pool, UUID(str(loan["id"])))
+    loan_successor = await loan_settle(rel_pool, UUID(str(loan["id"])))
     from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
 
     asserted = await relationship_assert_fact(
-        pool,
+        rel_pool,
         entity_id,
         "has-email",
         "exact.identity@example.test",
@@ -191,17 +174,17 @@ async def test_direct_writes_and_identity_values_round_trip_through_activity(
 
 
 async def test_activity_preserves_cross_store_collisions_and_bins_before_pagination(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     activity_app: FastAPI,
 ) -> None:
-    _, entity_id = await _seed_entities(pool)
-    other_entity = await pool.fetchval(
+    _, entity_id = await _seed_entities(rel_pool)
+    other_entity = await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type) "
         "VALUES ('Reverse Activity Source', 'person') RETURNING id"
     )
     collision_id = uuid4()
     now = datetime.now(UTC)
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO public.facts "
         "(id, subject, predicate, content, validity, scope, entity_id, valid_at) "
         "VALUES ($1, 'collision', 'contact_note', 'Narrative collision', "
@@ -212,7 +195,7 @@ async def test_activity_preserves_cross_store_collisions_and_bins_before_paginat
         entity_id,
         now,
     )
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO relationship.entity_facts "
         "(id, subject, predicate, object, object_kind, src, validity, observed_at) "
         "VALUES ($1, $4, 'member-of', $2::uuid::text, 'entity', "
@@ -246,12 +229,12 @@ async def test_activity_preserves_cross_store_collisions_and_bins_before_paginat
 
 
 async def test_activity_materializes_more_than_500_rows_per_local_store(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
     activity_app: FastAPI,
 ) -> None:
-    _, entity_id = await _seed_entities(pool)
+    _, entity_id = await _seed_entities(rel_pool)
     now = datetime.now(UTC)
-    narrative_rows = await pool.fetch(
+    narrative_rows = await rel_pool.fetch(
         "INSERT INTO public.facts "
         "(subject, predicate, content, validity, scope, entity_id, valid_at) "
         "SELECT 'bulk-narrative-' || value, 'contact_note', "
@@ -260,7 +243,7 @@ async def test_activity_materializes_more_than_500_rows_per_local_store(
         entity_id,
         now,
     )
-    identity_rows = await pool.fetch(
+    identity_rows = await rel_pool.fetch(
         "INSERT INTO relationship.entity_facts "
         "(subject, predicate, object, object_kind, src, validity, observed_at) "
         "SELECT $1, 'bulk-identity', 'Identity ' || value, 'literal', "

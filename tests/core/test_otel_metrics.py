@@ -57,19 +57,42 @@ def _collect_metrics(reader: InMemoryMetricReader) -> dict[str, Any]:
     return result
 
 
-def test_domain_event_failed_permanent_counter_uses_only_bounded_labels() -> None:
-    """Terminal domain-event failures have one low-cardinality counter contract."""
-    record = getattr(_metrics_mod, "record_domain_event_delivery_failed_permanent", None)
-    assert callable(record), "domain-event failed_permanent metric recorder is required"
+def test_domain_event_failed_permanent_counter_uses_only_bounded_labels(monkeypatch) -> None:
+    """Terminal domain-event failures have one low-cardinality, per-emitter counter.
+
+    Each daemon primes the routes it can emit at zero, so increase() sees the first
+    failure, and two emitters of one route never share a cumulative series.
+    """
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _domain_events
+
+    record = _metrics_mod.record_domain_event_delivery_failed_permanent
+    contracts = [
+        SimpleNamespace(publisher="travel", permitted_subscribers=("finance", "travel")),
+        SimpleNamespace(publisher="health", permitted_subscribers=("finance",)),
+    ]
+    monkeypatch.setattr(
+        _domain_events,
+        "get_contract_registry",
+        lambda: SimpleNamespace(contracts=lambda: iter(contracts)),
+    )
 
     _provider, reader = _make_in_memory_provider()
     try:
+        # A butler primes only its own routes, never a self-route; the daemon
+        # that schedules the sweep also primes every publisher's routes.
+        prime = _domain_events.prime_failed_permanent_delivery_series
+        assert prime("travel", runs_reconciliation_sweep=False) == 1
+        assert prime("switchboard", runs_reconciliation_sweep=True) == 2
         record(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
         )
         record(
+            emitter_butler="switchboard",
             source_butler="travel",
             destination_butler="finance",
             reason="attempts_exhausted",
@@ -78,20 +101,29 @@ def test_domain_event_failed_permanent_counter_uses_only_bounded_labels() -> Non
         data = _collect_metrics(reader)
         data_points = data["butlers.domain_event.delivery_failed_permanent_total"]
         observed = {
-            (data_point.attributes["source_butler"], data_point.attributes["reason"])
+            (
+                data_point.attributes["emitter_butler"],
+                data_point.attributes["source_butler"],
+                data_point.attributes["destination_butler"],
+                data_point.attributes["reason"],
+            ): data_point.value
             for data_point in data_points
         }
-        assert observed == {("travel", "non_retryable"), ("travel", "attempts_exhausted")}
-        for data_point in data_points:
-            assert dict(data_point.attributes) == {
-                "source_butler": "travel",
-                "destination_butler": "finance",
-                "reason": data_point.attributes["reason"],
-            }
-            assert data_point.value == 1
+        assert observed == {
+            ("travel", "travel", "finance", "non_retryable"): 1,
+            ("travel", "travel", "finance", "attempts_exhausted"): 0,
+            ("switchboard", "travel", "finance", "non_retryable"): 0,
+            ("switchboard", "travel", "finance", "attempts_exhausted"): 1,
+            ("switchboard", "health", "finance", "non_retryable"): 0,
+            ("switchboard", "health", "finance", "attempts_exhausted"): 0,
+        }
+        assert {frozenset(data_point.attributes) for data_point in data_points} == {
+            frozenset({"emitter_butler", "source_butler", "destination_butler", "reason"})
+        }
 
         with pytest.raises(ValueError, match="unsupported failed-permanent reason"):
             record(
+                emitter_butler="travel",
                 source_butler="travel",
                 destination_butler="finance",
                 reason="RuntimeError: arbitrary exception text",

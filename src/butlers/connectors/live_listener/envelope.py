@@ -22,7 +22,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.ingestion_bearer_scrub import scrub_message_text
 

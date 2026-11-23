@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from butlers.api.deps import get_db
+from butlers.testing.db_manager import db_manager
 from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
@@ -91,21 +92,10 @@ class _Pool:
         return self.edges[: args[1]] if "LIMIT $2" in query else self.edges
 
 
-class _DB:
-    butler_names = ["switchboard"]
-
-    def __init__(self, pool: _Pool, *, missing_switchboard: bool = False) -> None:
-        self._pool = pool
-        self._missing = missing_switchboard
-
-    def pool(self, name: str):
-        if self._missing or name != "switchboard":
-            raise KeyError(name)
-        return self._pool
-
-
-async def _get(app, pool: _Pool, entity: uuid.UUID = _ENTITY, **kwargs: Any) -> httpx.Response:
-    db = _DB(pool, **kwargs)
+async def _get(
+    app, pool: _Pool, entity: uuid.UUID = _ENTITY, *, missing_switchboard: bool = False
+) -> httpx.Response:
+    db = db_manager({} if missing_switchboard else {"switchboard": pool})
     app.dependency_overrides[get_db] = lambda: db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -194,7 +184,7 @@ async def test_a_missing_switchboard_pool_is_unavailable(app):
 async def test_the_receipt_limit_is_reported_and_counts_stay_true(app):
     edges = [_edge(subject=_ENTITY, obj=_FRIEND, predicate=f"p{i}") for i in range(3)]
     pool = _Pool(edges=edges)
-    db = _DB(pool)
+    db = db_manager({"switchboard": pool})
     app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(

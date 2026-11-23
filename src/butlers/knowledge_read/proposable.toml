@@ -1,0 +1,16 @@
+# The predicates an outside client may propose through propose_fact (RFC 0039 D13, v1).
+#
+# A literal allowlist, never derived from the Relationship registry at run time: widening it is a
+# reviewed change to this file. Relational-kind predicates whose object is an entity only; not the
+# family-gated set (family-of, partner-of, parent-of, child-of), no contact-kind predicate (they
+# feed identity resolution and owner routing) and no override-kind predicate. Order is the order
+# the tool schema lists them.
+predicates = [
+    "knows",
+    "colleague-of",
+    "friend-of",
+    "co-attended",
+    "visited",
+    "works-at",
+    "member-of",
+]

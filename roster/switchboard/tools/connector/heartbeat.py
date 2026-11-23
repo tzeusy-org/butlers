@@ -25,9 +25,13 @@ from uuid import UUID, uuid4
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from butlers.connectors.catalog import canonical_connector_types
+from butlers.connector_catalog import canonical_connector_types
 from butlers.core.goal_admission import EvidenceRefused
-from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.core.known_contact_state import (
+    CLASSIFICATION_KEY,
+    CLASSIFYING_CONNECTOR_TYPES,
+    parse_check,
+)
 from butlers.ingestion_spans import (
     CHANNEL_KIND_CAPABILITY,
     CHANNEL_KIND_MESSAGE,
@@ -437,7 +441,7 @@ async def _persist_registry(
             -- one place a registry row becomes a runtime instance; a row
             -- created earlier by a checkpoint or settings write is
             -- promoted here on the process's first check-in
-            -- (butlers.connectors.registry_roles).
+            -- (butlers.core.connector_registry_roles).
             operational_role = 'runtime_instance'
         """,
         connector_type,
@@ -575,7 +579,7 @@ async def heartbeat(
             previous = await _get_previous_snapshot(
                 connection, connector_type, endpoint_identity, for_update=True
             )
-            if connector_type == "gmail":
+            if connector_type in CLASSIFYING_CONNECTOR_TYPES:
                 capabilities, classification_ack, admitted = _classification_admission(
                     envelope, previous
                 )
@@ -598,9 +602,9 @@ async def heartbeat(
             logger.warning("Connector channel kind changed outcome=drift")
     except Exception as exc:
         # New classification diagnostics never include input or DB error tails.
-        if connector_type == "gmail":
-            logger.error("Gmail classification persistence outcome=failed")
-            raise RuntimeError("Failed to persist Gmail heartbeat") from None
+        if connector_type in CLASSIFYING_CONNECTOR_TYPES:
+            logger.error("Connector classification persistence outcome=failed")
+            raise RuntimeError("Failed to persist classified heartbeat") from None
         logger.error("Failed to persist connector heartbeat", exc_info=True)
         raise RuntimeError(f"Failed to persist connector heartbeat: {exc}") from exc
     deltas = _compute_counter_deltas(counters, previous, instance_id)

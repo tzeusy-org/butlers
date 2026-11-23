@@ -40,7 +40,6 @@ from butlers.api.owner_time_bounds import owner_zoneinfo, resolve_owner_time_bou
 from butlers.core.audit import (
     AuditTableNotAvailableError,
     append,
-    audit_log_appended_total,
     on_error_row,
 )
 from butlers.core.credential_keys import normalize_key_param
@@ -419,7 +418,6 @@ __all__ = [
     "AuditLogEntry",
     "AuditTableNotAvailableError",
     "append",
-    "audit_log_appended_total",
     "log_audit_entry",
     "router",
 ]

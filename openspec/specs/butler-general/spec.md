@@ -71,3 +71,36 @@ The EOD briefing message SHALL follow a structured multi-domain format when spec
 #### Scenario: Calendar-only fallback
 - **WHEN** no specialist contributions have `has_updates=true`
 - **THEN** the briefing renders the calendar timeline only, matching the existing format
+
+### Requirement: Owner Projects
+General SHALL hold owner projects: owner-authored, time-bounded charters that group goals, obligations and links; a project grants no authority. A project is a Project, Responsibility or Decision with a title, a horizon at most 180 days ahead, and state `draft`, `closed` or `expired`. Its charter (title, horizon, objective of at most 1000 characters, done condition, and typed constraints: an optional descriptive budget `{amount, currency}` and up to 10 `must_keep` entries) is stored as insert-only versions with the authenticated owner actor. Only the owner's verified dashboard session writes projects, through `/api/general/projects`; owner control without a dashboard session (an API key, connector callback or runtime session) may read but never write, no MCP tool reaches the project tables, and no draft-to-charter promotion path exists. Authoring or viewing a project creates no scheduled task, goal, research call, wake or parked effect.
+
+#### Scenario: Create is replay-safe and deduplicated
+- **WHEN** the owner creates a project with an `idempotency_key`
+- **THEN** charter version 1 is written and the project is a `draft`
+- **AND** replaying the same key and request returns the same project (`meta.outcome = "replayed"`), while the same key with a different request returns 409 `IDEMPOTENCY_KEY_REUSED`
+- **AND** a create whose normalized title (case and whitespace folded) and horizon match an existing draft returns that draft (`meta.outcome = "deduplicated"`) instead of a twin; nothing from that request is stored, so the Projects tab says so, keeps the form text, and offers to open the existing draft
+
+#### Scenario: Charter edits use compare-and-swap
+- **WHEN** the owner edits a draft's charter with `expected_version`
+- **THEN** version `expected_version + 1` is inserted and earlier versions are never modified (UPDATE, DELETE and TRUNCATE of versions are refused)
+- **AND** a changed edit from a stale version returns 409 `VERSION_CONFLICT`, so two concurrent edits from one version commit exactly one successor
+- **AND** an edit identical to the current charter writes nothing and succeeds (`meta.outcome = "unchanged"`)
+
+#### Scenario: Close and expiry are terminal
+- **WHEN** the owner closes a draft at its current version, or a draft's horizon passes
+- **THEN** the project reads as `closed` or `expired` (expiry takes effect exactly at the horizon on every read, and the next write persists it)
+- **AND** a closed or expired project is frozen: charter edits, close and link changes return 409 `PROJECT_NOT_DRAFT`
+- **AND** the freeze holds in the database too: inserting a charter version or inserting or deleting a link for a closed, expired or past-horizon project is refused whatever the caller
+
+#### Scenario: Typed links reference records without copying them
+- **WHEN** the owner links a record to a draft
+- **THEN** the link stores only its kind (`deadline`, `owner_condition`, `trip`, `drive_file` or `calendar_event`) and an opaque record id (a canonical UUID for owner conditions, trips and calendar events, `<butler>:<canonical UUID>` for a deadline, a bare Drive file id for a Drive file), never a URL or record content, at most 50 per project
+- **AND** adding an existing link is a no-op, and removing a link or closing the project never changes the referenced record
+
+#### Scenario: The projects page resolves links through canonical readers
+- **WHEN** the owner opens a project on the General butler's Projects tab
+- **THEN** each link group resolves through that record's own owner-authorized reader (trips through the Travel trip reader, calendar events through the calendar workspace entry reader, owner conditions through the owner condition ledger, deadlines through the owning butler's owner-only deadline reader, Drive files through General's owner-only Drive file reader), never General cross-schema SQL
+- **AND** a failing reader marks only its own group unavailable while the project and other groups stay visible, and an unknown or deleted record reads as not found
+- **AND** the deadline reader never returns the task prompt, and the Drive file reader returns only the file's name, type and modified time (no link, owners, sharing or content) through General's own Drive module, with Drive legitimately absent (no Drive module or no connected account) answered as a calm not-connected state rather than a degraded reader, and any genuine Drive failure answered as a content-blind unavailable
+- **AND** record text renders as inert data, and the page has no Arm or Run control

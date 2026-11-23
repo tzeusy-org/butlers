@@ -1,7 +1,7 @@
 ## 1. Implementation
 
-- [ ] 1.1 <!-- Work within the approved proposal and delta specs. -->
+- [ ] 1.1 <!-- Implement within the proposal; update affected canonical requirements when needed. -->
 
 ## 2. Verification
 
-- [ ] 2.1 <!-- Name behavior checks and required review/approval evidence. -->
+- [ ] 2.1 <!-- Name behavior checks, review, and delivery evidence. -->

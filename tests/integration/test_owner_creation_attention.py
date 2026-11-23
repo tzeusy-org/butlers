@@ -34,29 +34,26 @@ from butlers.core.owner_creation import (
     _pending,
     argument_digest,
 )
-from butlers.core.scheduler import schedule_create, schedule_toggle, schedule_update, tick
+from butlers.core.scheduler.crud import schedule_create
+from butlers.core.scheduler.dispatch import tick
+from butlers.core.scheduler.update import schedule_toggle, schedule_update
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._scheduling import register_scheduling_tools
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.owner_auth_fixtures import ORIGIN, RP
 from tests.integration.test_dashboard_stepup import authority as authority
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-        schemas={"core": "general", "approvals": "general"},
-    )
+@pytest.fixture
+def authority_db_url(fresh_db) -> str:
+    """The general-schema database shared by the imported ``authority`` and ``attention_env``."""
+    return fresh_db("core", "approvals", schemas={"core": "general", "approvals": "general"})
 
 
 @pytest.fixture
-async def attention_env(authority, migrated_db_url):
+async def attention_env(authority, authority_db_url):
     migration, service, key, handle, session, admin = authority
 
     async def initialize(connection):
@@ -65,7 +62,7 @@ async def attention_env(authority, migrated_db_url):
 
     application_name = "attention_owner_" + uuid4().hex
     domain = await asyncpg.create_pool(
-        migrated_db_url,
+        authority_db_url,
         min_size=1,
         max_size=3,
         init=initialize,
@@ -74,7 +71,7 @@ async def attention_env(authority, migrated_db_url):
     try:
         assert await domain.fetchval("SELECT current_user") == "butler_general_rw"
         assert not await domain.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")
-        for table in ("tickets", "stamps", "candidate_causes", "final_claims"):
+        for table in ("tickets", "stamps", "candidate_causes", "final_claims", "reach_proposals"):
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await domain.fetchval(f"SELECT count(*) FROM dashboard_attention.{table}")
         authority_value = await service.authorize(
@@ -530,7 +527,7 @@ async def test_actual_clause_authoring_scope_current_revoke_and_immutable_creati
     due = now - timedelta(seconds=1)
     final_name = "final_" + uuid4().hex
     async with browser(env) as (client, _, headers):
-        with patch("butlers.core.scheduler._next_run", return_value=due):
+        with patch("butlers.core.scheduler.crud._next_run", return_value=due):
             response = await client.post(
                 "/api/butlers/general/schedules",
                 json={
@@ -639,7 +636,7 @@ async def test_actual_clause_authoring_scope_current_revoke_and_immutable_creati
         seen.append(origin)
         return {"status": "ok"}
 
-    with patch("butlers.core.scheduler._next_run", return_value=now + timedelta(days=1)):
+    with patch("butlers.core.scheduler.dispatch._next_run", return_value=now + timedelta(days=1)):
         assert await tick(env.domain, final_dispatch, stagger_key="general") == 1
     assert len(seen) == 1 and _current_origin.get() is None
     cached = seen[0]
@@ -810,8 +807,163 @@ async def test_broker_uses_real_owner_clause_not_rank_and_rechecks_revoke_and_pa
         sent.assert_not_awaited()
 
 
+_OLD_DIGEST_ARRAY = (
+    "ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref']"
+)
+_LANE_COLUMNS = ("lane", "deliver_after", "claim_id", "claimed_at", "attempt_started_at")
+
+
+def _attention_digest_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_DIGEST_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_DIGEST_REFRESH_END", start)]
+
+
+async def test_lane_and_claim_columns_never_cost_a_candidate_its_origin(attention_env):
+    """bu-jv1moa.8 N1: core_334's columns stay out of the remembered definition digest."""
+    import json
+
+    from butlers.tools.switchboard.insight.broker import (
+        create_insight_tables,
+        propose_insight_candidate,
+    )
+
+    env = attention_env
+    pool = env.migration
+    await create_insight_tables(pool)
+    now = datetime(2026, 1, 15, 12, tzinfo=UTC)
+    origin = AttentionOrigin(entity_id=uuid4())
+    token = _current_origin.set(origin)
+    try:
+        key = f"general:attention:{uuid4().hex}:lane"
+        result = await propose_insight_candidate(
+            pool,
+            origin_butler="general",
+            priority=95,
+            category="synthetic",
+            dedup_key=key,
+            message="Synthetic lane candidate",
+            expires_at=now + timedelta(days=1),
+            now=now,
+        )
+    finally:
+        _current_origin.reset(token)
+    assert result["status"] == "accepted"
+    candidate = await pool.fetchval("SELECT id FROM insight_candidates WHERE dedup_key=$1", key)
+
+    async def origin_of() -> object:
+        raw = await pool.fetchval("SELECT dashboard_attention.candidate_origin($1)", candidate)
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    # Remembered before core_334: the digest a pre-334 row had, without the five columns.
+    pre_334 = "-".join(["to_jsonb(c)", _OLD_DIGEST_ARRAY, f"ARRAY{list(_LANE_COLUMNS)!r}"])
+    await env.admin.execute(
+        "UPDATE dashboard_attention.candidate_causes SET definition_digest = "
+        f"(SELECT encode(sha256(convert_to(({pre_334})::text,'UTF8')),'hex') "
+        "FROM public.insight_candidates c WHERE c.id=$1) WHERE candidate_id=$1",
+        candidate,
+    )
+    remembered_before = await origin_of()
+    # A claim held by a delivery worker does not change the definition either.
+    await pool.execute(
+        "UPDATE insight_candidates SET claim_id=gen_random_uuid(), claimed_at=$2, "
+        "attempt_started_at=$2 WHERE id=$1",
+        candidate,
+        now,
+    )
+    claimed = await origin_of()
+
+    # The bootstrap refresh rewrites an installed pre-fix pair in place.
+    for signature in ("remember(uuid,jsonb)", "candidate_origin(uuid)"):
+        definition = await env.admin.fetchval(
+            "SELECT pg_get_functiondef($1::regprocedure)", f"dashboard_attention.{signature}"
+        )
+        new_array = definition[definition.index("ARRAY['status'") :].split("]", 1)[0] + "]"
+        await env.admin.execute(definition.replace(new_array, _OLD_DIGEST_ARRAY))
+    before_refresh = await origin_of()
+    await env.admin.execute(_attention_digest_refresh_block())
+    await env.admin.execute(_attention_digest_refresh_block())  # idempotent
+
+    assert remembered_before == claimed == origin.record()
+    assert before_refresh is None
+    assert await origin_of() == origin.record()
+
+
+def _attention_api_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_API_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_API_REFRESH_END", start)]
+
+
+async def test_clause_list_is_a_session_read_of_the_unrevoked_clauses_and_refresh_installs_it(
+    attention_env,
+):
+    """bu-s11n0s.8 S3a: ``clause_list`` needs the session, not the CSRF; the refresh is in place."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    kept = await env.service.attention_call(
+        "clause_create", env.authority, csrf, entity_id=str(uuid4()), scope="always"
+    )
+    revoked = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="quiet_hours_only"
+    )
+    await env.service.attention_call("clause_revoke", env.authority, csrf, id=revoked["id"])
+
+    async def listed(token: str) -> list[dict]:
+        return (await env.service.attention_call("clause_list", env.authority, token))["clauses"]
+
+    rows = await listed("")  # a read: no CSRF proof is needed
+    assert [row["id"] for row in rows] == [kept["id"]]
+    assert set(rows[0]) == {
+        "id",
+        "entity_id",
+        "sender_domain",
+        "channel",
+        "security_kind",
+        "scope",
+        "expires_at",
+        "created_at",
+    }
+    for write in ("clause_create", "clause_revoke"):
+        with pytest.raises(AuthError) as denied:
+            await env.service.attention_call(
+                write, env.authority, "", scope="always", id=kept["id"]
+            )
+        assert denied.value.code == "FORBIDDEN"
+
+    # An installed pre-S3a api is rewritten in place, idempotently, keeping owner and grants.
+    definition = await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.api(text,jsonb)'::regprocedure)"
+    )
+    owner_before = await env.admin.fetchval(
+        "SELECT proowner::regrole::text FROM pg_proc "
+        "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
+    )
+    old = definition.replace(
+        "IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS",
+        "IF NOT EXISTS",
+    )
+    old = old[: old.index("ELSIF action='clause_list'")] + (
+        'END IF;\n  RETURN \'{"error":"INVALID_REQUEST"}\';\n END\n$function$\n'
+    )
+    await env.admin.execute(old)
+    with pytest.raises(AuthError):
+        await listed("")
+    await env.admin.execute(_attention_api_refresh_block())
+    await env.admin.execute(_attention_api_refresh_block())  # idempotent
+    assert [row["id"] for row in await listed("")] == [kept["id"]]
+    assert owner_before == await env.admin.fetchval(
+        "SELECT proowner::regrole::text FROM pg_proc "
+        "WHERE oid='dashboard_attention.api(text,jsonb)'::regprocedure"
+    )
+
+
 async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal(
-    postgres_container,
+    postgres_container, fresh_db
 ):
     from urllib.parse import urlparse
 
@@ -824,14 +976,8 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         migration_bootstrap_db_url,
     )
 
-    name = migration_db_name()
-    url = await asyncio.to_thread(
-        create_migrated_test_db,
-        postgres_container,
-        name,
-        chains=["core"],
-        revisions={"core": "core_277"},
-    )
+    url = await asyncio.to_thread(fresh_db, "core", revisions={"core": "core_277"})
+    name = urlparse(url).path.lstrip("/")
     config = _build_alembic_config(url, chains=["core"])
     bootstrap_url = migration_bootstrap_db_url(postgres_container, name)
     admin = await asyncpg.connect(bootstrap_url.replace("postgresql+psycopg2", "postgresql"))
@@ -961,3 +1107,349 @@ async def test_core_only_migration_replay_rollback_and_hostile_catalogue_refusal
         assert refused.value.diag.message_primary == "untrusted attention function catalog"
     finally:
         await admin.close()
+
+
+async def test_owner_channel_functions_list_and_revoke_without_a_session_and_never_grant(
+    attention_env,
+):
+    """bu-s11n0s.8 S3c-1: the Telegram owner channel can list and revoke, never create."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    kept = await env.service.attention_call(
+        "clause_create", env.authority, csrf, entity_id=str(uuid4()), scope="always"
+    )
+    dropped = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="quiet_hours_only"
+    )
+
+    listed = await env.service.owner_channel_clauses()
+    assert {row["id"] for row in listed} == {kept["id"], dropped["id"]}
+    assert set(listed[0]) == {
+        "id",
+        "sender_domain",
+        "channel",
+        "security_kind",
+        "scope",
+        "expires_at",
+    }
+
+    await env.service.owner_channel_revoke(dropped["id"])
+    assert [row["id"] for row in await env.service.owner_channel_clauses()] == [kept["id"]]
+    for unknown_or_repeat in (str(uuid4()), dropped["id"]):
+        with pytest.raises(AuthError) as refused:
+            await env.service.owner_channel_revoke(unknown_or_repeat)
+        assert refused.value.code == "INVALID_REQUEST"
+
+    # The same unauthenticated shape reaches no granting or session-bound api() action.
+    for action in ("clause_create", "clause_revoke", "clause_revoke_owner", "clause_list", "issue"):
+        with pytest.raises(AuthError) as denied:
+            await env.service._capability_call(
+                "SELECT dashboard_attention.api($1,$2::jsonb)", action, {"scope": "always"}
+            )
+        assert denied.value.code == "UNAUTHORIZED"
+    assert [row["id"] for row in await env.service.owner_channel_clauses()] == [kept["id"]]
+
+    # Only the API runtime role (beside the owner) may execute either function.
+    grantees = await env.admin.fetch(
+        "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
+        "FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x "
+        "WHERE p.pronamespace='dashboard_attention'::regnamespace "
+        "AND p.proname IN ('owner_channel_list','owner_channel_revoke')"
+    )
+    assert {row["g"] for row in grantees} == {"dashboard_attention_owner", "dashboard_auth_api"}
+
+
+def _attention_proposal_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_PROPOSAL_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_PROPOSAL_REFRESH_END", start)]
+
+
+async def test_a_telegram_proposal_is_pending_until_the_cookie_session_confirms_it(attention_env):
+    """bu-s11n0s.8 S3c-2: the owner channel proposes; only api() with session+CSRF grants."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+
+    async def clauses() -> list[dict]:
+        return (await env.service.attention_call("clause_list", env.authority, ""))["clauses"]
+
+    async def pending() -> list[dict]:
+        return (await env.service.attention_call("proposal_list", env.authority, ""))["proposals"]
+
+    proposed = await env.service.owner_channel_propose(
+        {"sender_domain": "Bank.Example", "channel": "email", "scope": "always"}
+    )
+    # The proposal creates no clause, and repeating it is the same proposal.
+    assert await clauses() == []
+    assert (
+        await env.service.owner_channel_propose(
+            {"sender_domain": "bank.example", "channel": "email", "scope": "always"}
+        )
+        == proposed
+    )
+    rows = await pending()
+    assert [row["id"] for row in rows] == [proposed]
+    assert rows[0]["sender_domain"] == "bank.example" and rows[0]["scope"] == "always"
+    window = datetime.fromisoformat(rows[0]["expires_at"]) - datetime.fromisoformat(
+        rows[0]["created_at"]
+    )
+    assert window == timedelta(hours=24)
+
+    # Confirm needs the cookie session AND the CSRF proof; the read does not.
+    with pytest.raises(AuthError) as no_csrf:
+        await env.service.attention_call("proposal_confirm", env.authority, "", id=proposed)
+    assert no_csrf.value.code == "FORBIDDEN"
+    assert await clauses() == []
+
+    confirmed = await env.service.attention_call(
+        "proposal_confirm", env.authority, csrf, id=proposed
+    )
+    assert [row["id"] for row in await clauses()] == [confirmed["id"]]
+    assert await pending() == []
+    # Double confirm and a dismissal after consumption are refused; no second clause appears.
+    for action in ("proposal_confirm", "proposal_dismiss"):
+        with pytest.raises(AuthError) as repeated:
+            await env.service.attention_call(action, env.authority, csrf, id=proposed)
+        assert repeated.value.code == "INVALID_REQUEST"
+    assert len(await clauses()) == 1
+
+
+async def test_an_expired_or_dismissed_proposal_cannot_be_confirmed(attention_env):
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    stale = await env.service.owner_channel_propose({"channel": "telegram"})
+    await env.admin.execute(
+        "UPDATE dashboard_attention.reach_proposals SET expires_at=clock_timestamp()-interval '1 second' "
+        "WHERE id=$1::uuid",
+        stale,
+    )
+    assert (await env.service.attention_call("proposal_list", env.authority, ""))["proposals"] == []
+    with pytest.raises(AuthError) as expired:
+        await env.service.attention_call("proposal_confirm", env.authority, csrf, id=stale)
+    assert expired.value.code == "INVALID_REQUEST"
+
+    dismissed = await env.service.owner_channel_propose({"security_kind": "new_sign_in"})
+    await env.service.attention_call("proposal_dismiss", env.authority, csrf, id=dismissed)
+    with pytest.raises(AuthError):
+        await env.service.attention_call("proposal_confirm", env.authority, csrf, id=dismissed)
+    assert (await env.service.attention_call("clause_list", env.authority, ""))["clauses"] == []
+
+
+async def test_proposals_validate_matchers_and_cap_pending_at_ten(attention_env):
+    env = attention_env
+    for bad in (
+        {},
+        {"scope": "always"},
+        {"channel": "sms"},
+        {"security_kind": "nope"},
+        {"sender_domain": "-bad.example"},
+        {"sender_domain": "a" * 300},
+        {"channel": "email", "scope": "forever"},
+        {"channel": "email", "text": "free text"},
+        {"channel": 7},
+    ):
+        with pytest.raises(AuthError) as invalid:
+            await env.service.owner_channel_propose(bad)
+        assert invalid.value.code == "INVALID_REQUEST", bad
+    for index in range(10):
+        await env.service.owner_channel_propose({"sender_domain": f"s{index}.example"})
+    with pytest.raises(AuthError) as limited:
+        await env.service.owner_channel_propose({"sender_domain": "eleventh.example"})
+    assert limited.value.code == "RATE_LIMITED"
+    # An identical live proposal is still the same proposal, not a new one.
+    await env.service.owner_channel_propose({"sender_domain": "s0.example"})
+
+
+async def test_the_proposal_function_is_api_role_only_and_the_table_is_owner_plus_dump_select(
+    attention_env,
+):
+    env = attention_env
+    grantees = await env.admin.fetch(
+        "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
+        "FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x "
+        "WHERE p.pronamespace='dashboard_attention'::regnamespace "
+        "AND p.proname = 'owner_channel_propose'"
+    )
+    assert {row["g"] for row in grantees} == {"dashboard_attention_owner", "dashboard_auth_api"}
+    table_grantees = await env.admin.fetch(
+        "SELECT DISTINCT pg_get_userbyid(x.grantee) AS g, x.privilege_type AS p "
+        "FROM pg_class c CROSS JOIN LATERAL "
+        "aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) x "
+        "WHERE c.oid='dashboard_attention.reach_proposals'::regclass"
+    )
+    migration_role = await env.admin.fetchval(
+        "SELECT migration_role::text FROM dashboard_attention.bootstrap_configuration"
+    )
+    owner_rows = {r["p"] for r in table_grantees if r["g"] == "dashboard_attention_owner"}
+    others = {(r["g"], r["p"]) for r in table_grantees if r["g"] != "dashboard_attention_owner"}
+    assert owner_rows
+    # Only the migration role may read it (so pg_dump works); no runtime role has any privilege.
+    assert others == {(migration_role, "SELECT")}
+    # The connector-facing unauthenticated shape cannot reach the new actions through api().
+    for action in ("proposal_list", "proposal_confirm", "proposal_dismiss"):
+        with pytest.raises(AuthError) as denied:
+            await env.service._capability_call(
+                "SELECT dashboard_attention.api($1,$2::jsonb)", action, {"id": str(uuid4())}
+            )
+        assert denied.value.code == "UNAUTHORIZED"
+
+
+async def test_installed_api_is_rewritten_in_place_to_gain_the_proposal_actions(attention_env):
+    env = attention_env
+    definition = await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.api(text,jsonb)'::regprocedure)"
+    )
+    old = definition.replace(
+        "IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS",
+        "IF action<>'clause_list' AND NOT EXISTS",
+    ).replace(" pr dashboard_attention.reach_proposals%ROWTYPE;", "")
+    old = old[: old.index("ELSIF action='proposal_list'")] + (
+        'END IF;\n  RETURN \'{"error":"INVALID_REQUEST"}\';\n END\n$function$\n'
+    )
+    await env.admin.execute(old)
+    with pytest.raises(AuthError):
+        await env.service.attention_call("proposal_list", env.authority, "")
+    await env.admin.execute(_attention_proposal_refresh_block())
+    await env.admin.execute(_attention_proposal_refresh_block())  # idempotent
+    assert (await env.service.attention_call("proposal_list", env.authority, ""))["proposals"] == []
+
+
+def _attention_decay_refresh_block() -> str:
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "scripts/init-db.sql").read_text()
+    start = source.index("-- ATTENTION_DECAY_REFRESH_BEGIN")
+    return source[start : source.index("-- ATTENTION_DECAY_REFRESH_END", start)]
+
+
+async def _decay(env, ask=(), dormant=()) -> dict:
+    import json
+
+    raw = await env.admin.fetchval(
+        "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
+        json.dumps({"ask": list(ask), "dormant": list(dormant)}),
+    )
+    out = json.loads(raw)
+    if isinstance(out.get("asked"), list):
+        out["asked"] = [item["id"] for item in out["asked"]]
+    return out
+
+
+async def _matches(env, channel: str) -> bool:
+    import json
+
+    raw = await env.admin.fetchval(
+        "SELECT dashboard_attention.evaluate($1::text::jsonb)::text",
+        json.dumps({"gate": "quiet_hours", "channel": channel}),
+    )
+    return json.loads(raw).get("cause") == "owner_clause"
+
+
+async def test_decay_only_narrows_and_the_session_alone_keeps_or_revives(attention_env):
+    """bu-s11n0s.8 S4: thresholds live in the definer; dormant is skipped, listed and revivable."""
+    env = attention_env
+    csrf = env.session.data["csrf_token"]
+    clause = await env.service.attention_call(
+        "clause_create", env.authority, csrf, channel="email", scope="always"
+    )
+    cid = clause["id"]
+    assert await _matches(env, "email")
+
+    # A fresh clause can be neither asked nor dormant, whatever the caller says.
+    assert await _decay(env, ask=[cid], dormant=[cid]) == {"asked": [], "dormant": []}
+    assert await _decay(env, ask=["not-a-uuid"]) == {"error": "INVALID_REQUEST"}
+
+    await env.admin.execute(
+        "UPDATE public.break_through_clauses SET created_at = clock_timestamp() - interval '40 days' "
+        "WHERE id = $1::uuid",
+        cid,
+    )
+    assert await _decay(env, dormant=[cid]) == {"asked": [], "dormant": []}  # not 90 days old
+    assert await _decay(env, ask=[cid]) == {"asked": [cid], "dormant": []}
+    assert await _decay(env, ask=[cid]) == {"asked": [], "dormant": []}  # asked once only
+    assert await _matches(env, "email")  # asking changes nothing about evaluation
+    read = await env.service.attention_call("decay_state", env.authority, "")
+    assert [(d["clause_id"], d["state"]) for d in read["decay"]] == [(cid, "asked")]
+
+    await env.admin.execute(
+        "UPDATE public.break_through_clauses SET created_at = clock_timestamp() - interval '100 days' "
+        "WHERE id = $1::uuid",
+        cid,
+    )
+    assert await _decay(env, dormant=[cid]) == {"asked": [], "dormant": [cid]}
+    assert not await _matches(env, "email")  # dormant: not evaluated
+    listed = await env.service.attention_call("clause_list", env.authority, "")
+    assert [row["id"] for row in listed["clauses"]] == [cid]  # but still listed
+
+    # Keep/revive is the cookie session with CSRF; the proof is required and nothing else works.
+    with pytest.raises(AuthError) as no_csrf:
+        await env.service.attention_call("clause_keep", env.authority, "", id=cid)
+    assert no_csrf.value.code == "FORBIDDEN"
+    assert await _decay(env, ask=[cid]) == {"asked": [], "dormant": []}
+    await env.service.attention_call("clause_keep", env.authority, csrf, id=cid)
+    assert await _matches(env, "email")  # revived
+    # A kept clause is not re-asked or re-dormanted until its clock runs out again.
+    assert await _decay(env, ask=[cid], dormant=[cid]) == {"asked": [], "dormant": []}
+    with pytest.raises(AuthError) as repeat:
+        await env.service.attention_call("clause_keep", env.authority, csrf, id=cid)
+    assert repeat.value.code == "INVALID_REQUEST"
+
+
+async def test_decay_functions_are_switchboard_only_and_installed_evaluate_is_rewritten(
+    attention_env,
+):
+    env = attention_env
+    grantees = await env.admin.fetch(
+        "SELECT DISTINCT CASE WHEN x.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS g "
+        "FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) x "
+        "WHERE p.pronamespace='dashboard_attention'::regnamespace "
+        "AND p.proname IN ('decay_clauses','decay_apply')"
+    )
+    # The sweep runs as the Switchboard role: a missing grant would make it fail silently.
+    assert {r["g"] for r in grantees} == {"dashboard_attention_owner", "butler_switchboard_rw"}
+    assert await env.admin.fetchval(
+        "SELECT NOT has_function_privilege('dashboard_auth_api',"
+        "'dashboard_attention.decay_apply(jsonb)','EXECUTE')"
+    )
+
+    # An installed pre-S4 evaluate is rewritten in place, idempotently.
+    definition = await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.evaluate(jsonb)'::regprocedure)"
+    )
+    marker = "\n   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d\n    WHERE d.clause_id=public.break_through_clauses.id AND d.state='dormant')"
+    assert marker in definition
+    await env.admin.execute(definition.replace(marker, ""))
+    await env.admin.execute(_attention_decay_refresh_block())
+    await env.admin.execute(_attention_decay_refresh_block())
+    assert marker in await env.admin.fetchval(
+        "SELECT pg_get_functiondef('dashboard_attention.evaluate(jsonb)'::regprocedure)"
+    )
+
+
+async def test_the_switchboard_role_can_call_both_decay_functions(attention_env):
+    """The sweep's own role: SET ROLE butler_switchboard_rw, then read and apply."""
+    env = attention_env
+    clause = await env.service.attention_call(
+        "clause_create",
+        env.authority,
+        env.session.data["csrf_token"],
+        channel="email",
+        scope="always",
+    )
+    async with env.admin.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        listed = await conn.fetchval("SELECT dashboard_attention.decay_clauses()::text")
+        applied = await conn.fetchval(
+            "SELECT dashboard_attention.decay_apply($1::text::jsonb)::text",
+            '{"ask": [], "dormant": []}',
+        )
+        # ...and it has no way to widen anything: no direct table access, no api() grant.
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            async with conn.transaction():
+                await conn.fetchval("SELECT count(*) FROM dashboard_attention.clause_decay")
+    import json
+
+    assert [c["id"] for c in json.loads(listed)["clauses"]] == [clause["id"]]
+    assert json.loads(applied) == {"asked": [], "dormant": []}

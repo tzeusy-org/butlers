@@ -16,10 +16,13 @@ from typing import Annotated, Any, Literal
 from pydantic import Field
 
 from butlers.config import ButlerType
+from butlers.conversation_identity import telegram_conversation_id
 from butlers.core.attention_ledger import get_suppressing_context, record_attention_event
+from butlers.core.custody_egress import OwnerDefaultTarget, choose_owner_default_target
 from butlers.core.entity_posture import EGRESS_BLOCKED_POSTURES, fetch_entity_posture
-from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
-from butlers.core.scheduler import schedule_create as _schedule_create
+from butlers.core.permissions import NOTIFY_PERMISSION, check_permission, denial_message
+from butlers.core.reply_scope import MAX_AWAITS_REPLY_SECONDS, MIN_AWAITS_REPLY_SECONDS
+from butlers.core.scheduler.crud import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import (
@@ -27,6 +30,7 @@ from butlers.core_tools._base import (
     NotifyRequestContextInput,
     ToolContext,
 )
+from butlers.entity_facts_channels import NoLiveEmailAddressError
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +39,140 @@ _NO_TELEGRAM_CHAT_CONFIGURED_ERROR = (
     "telegram_chat_id entity_info entry on the owner entity via the dashboard"
 )
 
+
+def _reply_delivery(
+    result: Any, channel: str | None, awaits_reply_seconds: int | None
+) -> dict[str, Any]:
+    """The additive ``delivery`` block of a delivered prompt, or nothing.
+
+    Present only when the call asked for an answer (``awaits_reply_seconds``) and Messenger
+    reported where the message landed. It is the domain's claim: the capability broker derives
+    the reply ref from it and from the owner entity and channel it recorded itself, and clamps
+    the expiry to the window the call named. Without the ask, or without a report, the result
+    is exactly what it was before.
+    """
+    if awaits_reply_seconds is None or (channel or "telegram") != "telegram":
+        return {}
+    receipt = result.get("result") if isinstance(result, dict) else None
+    sent = receipt.get("delivery") if isinstance(receipt, dict) else None
+    if not isinstance(sent, dict):
+        return {}
+    locator, endpoint = sent.get("locator"), sent.get("endpoint")
+    chat = locator.partition(":")[0] if isinstance(locator, str) else ""
+    if not chat or not isinstance(endpoint, str) or not endpoint:
+        return {}
+    return {
+        "delivery": {
+            "transport": "telegram",
+            "endpoint": endpoint,
+            "conversation": telegram_conversation_id(chat),
+            "locator": locator,
+            "prompt_expires_at": (
+                datetime.now(UTC) + timedelta(seconds=awaits_reply_seconds)
+            ).isoformat(),
+        }
+    }
+
+
+async def _owner_default_custody_target(
+    daemon: Any, request_context: Any
+) -> OwnerDefaultTarget | None:
+    """Apply endpoint custody to an owner-default notice (REQ-endpoint-custody-holds-007).
+
+    Returns ``None`` to keep today's Telegram default: no database, no configured Telegram
+    target (the existing missing-chat error stays), or a Telegram target that is provably
+    unheld. Otherwise returns the owner's unheld email, or the refusal reason when no
+    supported owner target is provably unheld.
+    """
+    pool = daemon.db.pool if getattr(daemon, "db", None) is not None else None
+    if pool is None:
+        return None
+    chat_id = await daemon._resolve_default_notify_recipient(
+        channel="telegram", intent="send", recipient=None, request_context=request_context
+    )
+    if not chat_id:
+        return None
+    from butlers.credential_store import resolve_owner_entity_info
+
+    try:
+        owner_email = await resolve_owner_entity_info(pool, "email")
+    except Exception:
+        logger.warning("Owner email lookup failed during custody fallback", exc_info=True)
+        owner_email = None
+    choice = await choose_owner_default_target(
+        pool, telegram_chat_id=chat_id, owner_email=owner_email
+    )
+    if choice.channel == "telegram":
+        return None
+    return choice
+
+
 _REQUEST_CONTEXT_KEYS_HINT = (
     "Pass request_context as a JSON object (not a string) with keys "
     "request_id, source_channel, source_endpoint_identity, "
     "source_sender_identity (plus source_thread_identity for telegram "
     "reply/react)."
 )
+
+
+async def _wake_hold_provenance(
+    pool: Any,
+    *,
+    routine_owner_default: bool,
+    channel: str,
+    policy: dict[str, Any] | None,
+    policy_deliver_at: datetime | None,
+    deferred_at: datetime,
+    deliver_at: datetime,
+    notify_request: dict[str, Any],
+) -> Any:
+    """Wake-recovery provenance for a newly parked owner-attention quiet-hours hold, or None.
+
+    Eligible only for a routine owner-default send (no explicit recipient or entity, no
+    requested high priority), when the Owner Attention Policy quiet-hours decision is part of
+    the hold (not a context-only hold) and the envelope's recipient is the owner's own Telegram
+    chat, resolved now rather than inferred later. Anything not provable fails closed to None: the
+    hold is still parked and releases at its stored ``deliver_at`` as before, it is simply not
+    wake-recovery eligible (strict-owner-telegram-wake-recovery, core-notify spec).
+    """
+    if (
+        not routine_owner_default
+        or channel != "telegram"
+        or policy is None
+        or policy_deliver_at is None
+    ):
+        return None
+    try:
+        from butlers.core.approvals_policy import policy_quiet_hours_window_start
+        from butlers.core.temporal.delivery_db import WakeHoldProvenance, envelope_digest
+        from butlers.credential_store import resolve_owner_entity_info
+
+        window_start = policy_quiet_hours_window_start(policy, now=deferred_at)
+        recipient = notify_request.get("delivery", {}).get("recipient")
+        owner_chat_id = await resolve_owner_entity_info(pool, "telegram_chat_id")
+        if window_start is None or not recipient or owner_chat_id != recipient:
+            return None
+        return WakeHoldProvenance(
+            policy_window_key=(
+                f"{window_start.astimezone(UTC).isoformat()}/"
+                f"{policy_deliver_at.astimezone(UTC).isoformat()}"
+            ),
+            timezone=str(policy.get("timezone") or "UTC"),
+            target={
+                "provider": "telegram",
+                "chat_id": recipient,
+                "thread_id": None,
+                "recipient_endpoint": f"telegram:{recipient}",
+            },
+            envelope_digest=envelope_digest(notify_request),
+            original_deliver_at=deliver_at,
+        )
+    except Exception:
+        logger.warning(
+            "notify() could not derive wake-recovery provenance; parking without it",
+            exc_info=True,
+        )
+        return None
 
 
 def _coerce_request_context(value: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -338,6 +470,15 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 str | None,
                 Field(description="Optional confirm timeout value; must match an offered value."),
             ] = None,
+            awaits_reply_seconds: Annotated[
+                int | None,
+                Field(
+                    description=(
+                        "Marks a Telegram send/reply as a prompt the owner may answer by "
+                        "replying to it, for 30-86400 seconds. Omit for an ordinary message."
+                    )
+                ),
+            ] = None,
             emoji: Annotated[
                 str | None,
                 Field(description="Required when intent=react."),
@@ -457,6 +598,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             - `options` (list): required for `confirm`, 2-4 unique `{value,label}` choices
             - `timeout_seconds` (integer): confirm expiry, 30-86400 seconds (default 600)
             - `on_timeout_value` (string): optional offered value applied on expiry
+            - `awaits_reply_seconds` (integer): 30-86400, telegram `send`/`reply` only. Marks the
+              message as a prompt: the owner's reply to that exact message, within the window,
+              answers a goal that waits on it (`goal__wait_owner`). The window is recorded with
+              the delivery and the broker never extends it. Omit for an ordinary message.
             - `emoji` (string): required when `intent="react"`
             - `_why` (string): required for a non-owner recipient that enters approval gating;
               owner-directed notifications may omit it
@@ -518,17 +663,12 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # send owner-facing notifications. A cell flipped to granted=false
             # blocks notify() outright (an authorization decision). Mirrors the
             # spawn gate: consult the matrix at the decision point, return an
-            # observable denial. check_permission fails open, so a DB error never
-            # wedges delivery.
+            # observable denial. check_permission fails closed: an unreadable store
+            # refuses the notification (bu-svqpzo.3).
             _perm_pool = daemon.db.pool if daemon.db is not None else None
             _notify_perm = await check_permission(_perm_pool, butler_name, NOTIFY_PERMISSION)
             if not _notify_perm.allowed:
-                _perm_msg = (
-                    f"Permission denied: butler '{butler_name}' is not granted "
-                    f"'{NOTIFY_PERMISSION}'"
-                )
-                if _notify_perm.reason:
-                    _perm_msg += f" (reason: {_notify_perm.reason})"
+                _perm_msg = denial_message(_notify_perm, butler_name, NOTIFY_PERMISSION)
                 logger.warning(
                     "notify() blocked by permissions matrix for butler=%s: %s",
                     butler_name,
@@ -546,8 +686,30 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             #     a channel always being present.
             # The forced channel is never overridden, so preference is consulted
             # only here, before any channel-dependent validation runs.
+            # Endpoint custody (REQ-endpoint-custody-holds-007): an owner-default notice whose
+            # Telegram target is held or unreadable takes the owner's unheld email instead, or
+            # is refused with a durable ledger row. A forced channel or recipient never retargets;
+            # Messenger's adapter fence refuses those itself.
+            _custody_default_email: str | None = None
+            _custody_default_refusal: str | None = None
+            _custody_default_targets: tuple[tuple[str, str], ...] = ()
             if channel is None:
                 resolved_channel: str | None = None
+                if (
+                    entity_id is None
+                    and recipient is None
+                    and intent in {"send", "insight"}
+                    and not attachments
+                    and awaits_reply_seconds is None
+                ):
+                    _custody_default = await _owner_default_custody_target(daemon, request_context)
+                    if _custody_default is not None:
+                        if _custody_default.refusal is not None:
+                            _custody_default_refusal = _custody_default.refusal
+                            _custody_default_targets = _custody_default.held_targets
+                        elif _custody_default.channel == "email":
+                            resolved_channel = "email"
+                            _custody_default_email = _custody_default.recipient
                 if entity_id is not None:
                     _resolve_pool = daemon.db.pool if daemon.db is not None else None
                     if _resolve_pool is not None:
@@ -600,6 +762,28 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     "status": "error",
                     "error": "Unsupported notify intent. Supported intents: send, reply, react, insight, confirm",  # noqa: E501
                 }
+
+            if awaits_reply_seconds is not None:
+                if (
+                    type(awaits_reply_seconds) is not int
+                    or not MIN_AWAITS_REPLY_SECONDS
+                    <= awaits_reply_seconds
+                    <= MAX_AWAITS_REPLY_SECONDS
+                ):
+                    return {
+                        "status": "error",
+                        "code": "awaits_reply_validation",
+                        "error": (
+                            f"awaits_reply_seconds must be between {MIN_AWAITS_REPLY_SECONDS} "
+                            f"and {MAX_AWAITS_REPLY_SECONDS}"
+                        ),
+                    }
+                if intent not in {"send", "reply"} or (channel or "telegram") != "telegram":
+                    return {
+                        "status": "error",
+                        "code": "awaits_reply_validation",
+                        "error": "awaits_reply_seconds applies to telegram send or reply only",
+                    }
 
             confirm_options = None
             if intent == "confirm":
@@ -744,11 +928,37 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 )
                 if posture_refusal is not None:
                     return posture_refusal
-                entity_identifier = await daemon._resolve_entity_channel_identifier(
-                    entity_id=entity_id,
-                    channel=channel,
-                    msg_context=msg_context,
-                )
+                try:
+                    entity_identifier = await daemon._resolve_entity_channel_identifier(
+                        entity_id=entity_id,
+                        channel=channel,
+                        msg_context=msg_context,
+                    )
+                except NoLiveEmailAddressError:
+                    # Every address bounced permanently: nothing is parked or sent, and the
+                    # owner is told why instead of a silent "missing identifier" card.
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason="no_live_address",
+                        metadata={"entity_id": str(entity_id), "retryable": False},
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "code": "no_live_address",
+                        "error": (
+                            f"No live email address for entity {entity_id}: every address on "
+                            "file bounced permanently. Nothing was queued, parked or sent. "
+                            "Ask the owner for a new address."
+                        ),
+                        "retryable": False,
+                    }
                 if entity_identifier is None:
                     # No matching entity_facts triple — validate the dossier, then park only when
                     # this butler has a durable approval-parking implementation.
@@ -929,12 +1139,104 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     }
                 resolved_recipient = entity_identifier
             else:
+                if _custody_default_refusal == "endpoint_held":
+                    # Every owner target is held: park the generic notice (REQ-007); it flushes
+                    # once on release (REQ-010). No provider is attempted now.
+                    from butlers.core.custody_park import park_owner_default_notice
+
+                    _parked_id = await park_owner_default_notice(
+                        _notify_pool,
+                        butler_name=butler_name,
+                        intent=intent,
+                        priority=priority,
+                        message=message,
+                        targets=_custody_default_targets,
+                        now=datetime.now(UTC),
+                    )
+                    if _parked_id is not None:
+                        await record_attention_event(
+                            _notify_pool,
+                            origin_butler=butler_name,
+                            source="notify",
+                            outcome="deferred",
+                            channel=channel,
+                            intent=intent,
+                            priority=priority,
+                            reason="endpoint_held",
+                            notification_ref=_parked_id,
+                            metadata={"retryable": False},
+                            session_id=_ledger_session_id,
+                        )
+                        return {
+                            "status": "deferred",
+                            "code": "endpoint_held",
+                            "notification_id": _parked_id,
+                            "channel": channel,
+                            "priority": priority,
+                        }
+                if _custody_default_refusal is not None:
+                    # No supported owner target is provably unheld: nothing is parked for
+                    # approval and no provider is attempted; the ledger row is the record.
+                    await record_attention_event(
+                        _notify_pool,
+                        origin_butler=butler_name,
+                        source="notify",
+                        outcome="failed",
+                        channel=channel,
+                        intent=intent,
+                        priority=priority,
+                        reason=_custody_default_refusal,
+                        metadata={"retryable": _custody_default_refusal != "endpoint_held"},
+                        session_id=_ledger_session_id,
+                    )
+                    return {
+                        "status": "error",
+                        "code": _custody_default_refusal,
+                        "error": (
+                            "No owner channel can take this notice: every configured owner "
+                            "target is under a custody hold or its custody could not be read. "
+                            "Nothing was sent."
+                        ),
+                        "retryable": _custody_default_refusal != "endpoint_held",
+                    }
                 resolved_recipient = await daemon._resolve_default_notify_recipient(
                     channel=channel,
                     intent="send" if intent == "confirm" else intent,
-                    recipient=recipient,
+                    recipient=recipient or _custody_default_email,
                     request_context=request_context,
                 )
+
+            # The Bot API cannot message a private user by @username. Resolve it to a
+            # numeric chat id before anything parks, so the approval card, rule match
+            # and executed send all name one deliverable target (bu-dhloi1.177).
+            _target_label = repr(resolved_recipient)
+            if (
+                channel == "telegram"
+                and intent in {"send", "insight", "confirm"}
+                and resolved_recipient is not None
+                and resolved_recipient.startswith("@")
+            ):
+                _username = resolved_recipient
+                _resolved = await daemon._resolve_telegram_username_recipient(_username)
+                if _resolved is not None:
+                    resolved_recipient, _contact_name = _resolved
+                    # Card text only: the gated recipient stays the bare numeric id.
+                    _target_label = (
+                        f"{_username} ({_contact_name or 'unnamed contact'}) "
+                        f"[chat id {resolved_recipient}]"
+                    )
+                else:
+                    resolved_recipient = None
+                if resolved_recipient is None:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"Telegram recipient {_username!r} does not resolve to a numeric "
+                            "chat id: the Bot API cannot message a user by @username. Use a "
+                            "known contact (entity_id) or the numeric chat id."
+                        ),
+                        "retryable": False,
+                    }
 
             if (
                 channel == "telegram"
@@ -950,6 +1252,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # cannot avoid owner attention policy by spelling out the recipient.
             # Independent non-owner approval decisions remain unchanged.
             _attention_owner_target = entity_id is None and recipient is None
+            # Wake-recovery provenance is for routine owner-default holds only: an explicit
+            # owner address/entity or a requested (even if downgraded) high priority parks
+            # without it (strict-owner-telegram-wake-recovery, core-notify).
+            _routine_owner_default = _attention_owner_target and not _untrusted_high
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
@@ -1058,7 +1364,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         park_tool_args=_notify_args,
                         park_summary=(
                             f"notify() rejected: {channel} message to "
-                            f"{resolved_recipient!r}. Message: {message!r}"
+                            f"{_target_label}. Message: {message!r}"
                         ),
                         session_id=get_current_runtime_session_id(),
                         butler_name=butler_name,
@@ -1319,6 +1625,16 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         _reason_parts.append(f"context_bus:{_context_suppression.signal_type}")
                     _defer_reason = "+".join(_reason_parts)
 
+                    _wake_provenance = await _wake_hold_provenance(
+                        _notify_pool,
+                        routine_owner_default=_routine_owner_default,
+                        channel=channel,
+                        policy=_policy,
+                        policy_deliver_at=_policy_deliver_at,
+                        deferred_at=_deferred_at,
+                        deliver_at=_deliver_at,
+                        notify_request=notify_request,
+                    )
                     try:
                         _notif_id = await _insert_deferred_notification(
                             _notify_pool,
@@ -1329,6 +1645,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                             envelope=notify_request,
                             deliver_at=_deliver_at,
                             deferred_at=_deferred_at,
+                            **({"wake_provenance": _wake_provenance} if _wake_provenance else {}),
                         )
                     except Exception as _defer_exc:
                         # Once a routine owner-default notification has been
@@ -1574,7 +1891,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         else None,
                         session_id=_ledger_session_id,
                     )
-                    return {"status": "ok", "result": result}
+                    return {
+                        "status": "ok",
+                        "result": result,
+                        **_reply_delivery(result, channel, awaits_reply_seconds),
+                    }
                 except Exception as exc:
                     logger.warning(
                         "notify() direct deliver failed for switchboard: %s",
@@ -1626,7 +1947,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                     ),
                     session_id=_ledger_session_id,
                 )
-                return {"status": "ok", "result": data}
+                return {
+                    "status": "ok",
+                    "result": data,
+                    **_reply_delivery(data, channel, awaits_reply_seconds),
+                }
             except TimeoutError:
                 logger.warning(
                     "notify() timed out after %ds for butler %s",

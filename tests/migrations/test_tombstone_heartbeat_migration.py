@@ -15,11 +15,12 @@ Issue: bu-6t63s
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -34,15 +35,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "007_tombstone_heartbeat_episodes.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("chronicler_007", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +97,7 @@ def _collect_downgrade_calls() -> list[str]:
     Loaded once and shared across TestDowngradeSQLShape tests — eliminates
     repeated module loads and import-time races under pytest-xdist.
     """
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "chronicler_007")
     calls_collected: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = calls_collected.append
@@ -121,7 +113,7 @@ def migration_mod():
     Shared across TestMigrationFileAndChain and TestExclusionConstantsImport to
     avoid repeated importlib loads for cheap attribute reads.
     """
-    return _load_migration()
+    return load_migration(_MIGRATION_PATH, "chronicler_007")
 
 
 @pytest.fixture(scope="module")
@@ -172,75 +164,20 @@ class TestTombstoneHeartbeatMigrationIntegration:
     """
 
     @pytest.fixture
-    async def episodes_pool(self, provisioned_postgres_pool):
-        """Provision a fresh DB with the chronicler schema up to chronicler_006."""
-        async with provisioned_postgres_pool() as pool:
-            # Create the minimal chronicles schema in-band for the integration test.
-            # We need source_adapter_state and episodes tables with tombstone columns.
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS source_adapter_state (
-                    source_name TEXT PRIMARY KEY,
-                    chronicler_compatibility TEXT NOT NULL DEFAULT 'supported',
-                    read_surface TEXT,
-                    boundary_semantics TEXT,
-                    optional_schema BOOLEAN NOT NULL DEFAULT false,
-                    active BOOLEAN NOT NULL DEFAULT false,
-                    inactive_reason TEXT,
-                    schema_version INTEGER NOT NULL DEFAULT 1,
-                    registered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS point_events (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name),
-                    source_ref TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    occurred_at TIMESTAMPTZ NOT NULL,
-                    precision TEXT NOT NULL DEFAULT 'exact',
-                    title TEXT,
-                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    privacy TEXT NOT NULL DEFAULT 'normal',
-                    retention_days INTEGER,
-                    tombstone_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    UNIQUE (source_name, source_ref)
-                )
-            """)
-            await pool.execute("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    source_name TEXT NOT NULL
-                        REFERENCES source_adapter_state(source_name),
-                    source_ref TEXT NOT NULL,
-                    episode_type TEXT NOT NULL,
-                    start_at TIMESTAMPTZ NOT NULL,
-                    end_at TIMESTAMPTZ,
-                    precision TEXT NOT NULL DEFAULT 'exact',
-                    title TEXT,
-                    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    privacy TEXT NOT NULL DEFAULT 'normal',
-                    retention_days INTEGER,
-                    tombstone_at TIMESTAMPTZ,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    UNIQUE (source_name, source_ref)
-                )
-            """)
-            # Register the source adapter
-            await pool.execute("""
-                INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
-                VALUES ('core.sessions', 'supported')
-                ON CONFLICT DO NOTHING
-            """)
-            yield pool
+    async def episodes_pool(self, db):
+        """The real chronicler schema as chronicler_007's predecessor left it."""
+        pool = await db("chronicler", revisions={"chronicler": "chronicler_006"})
+        # Register the source adapter
+        await pool.execute("""
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('core.sessions', 'supported')
+            ON CONFLICT DO NOTHING
+        """)
+        return pool
 
     async def _run_upgrade(self, pool) -> None:
         """Execute upgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_007")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -257,7 +194,7 @@ class TestTombstoneHeartbeatMigrationIntegration:
 
     async def _run_downgrade(self, pool) -> None:
         """Execute downgrade() SQL against the pool using op.execute shim."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "chronicler_007")
         sqls: list[str] = []
         mock_op = MagicMock()
         mock_op.execute.side_effect = lambda sql: sqls.append(sql)

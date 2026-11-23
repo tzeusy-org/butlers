@@ -113,6 +113,8 @@ export function ScheduleTable({
   if (!isLoading && schedules.length === 0) {
     return <EmptyScheduleState />;
   }
+  // A superseded deadline names its replacement by the replacing row's name.
+  const namesById = new Map(schedules.map((s) => [s.id, s.name]));
 
   return (
     <Table>
@@ -136,6 +138,9 @@ export function ScheduleTable({
         ) : (
           schedules.map((schedule) => {
             const dispatchMode = resolveDispatchMode(schedule);
+            const supersededBy = schedule.superseded_by
+              ? (namesById.get(schedule.superseded_by) ?? schedule.superseded_by)
+              : null;
             const promptText = schedule.prompt?.trim() ?? "";
             const jobArgsPreview = formatJobArgsPreview(schedule.job_args);
 
@@ -184,7 +189,11 @@ export function ScheduleTable({
                 <TableCell>
                   <Tip
                     content={
-                      schedule.enabled ? "Click to disable" : "Click to enable"
+                      schedule.enabled
+                        ? "Click to disable"
+                        : supersededBy
+                          ? "Replaced by a newer document's deadline. Click to enable"
+                          : "Click to enable"
                     }
                   >
                     <button
@@ -197,11 +206,18 @@ export function ScheduleTable({
                         <Badge className="bg-[var(--green)] text-white hover:bg-[var(--green)]/90">
                           On
                         </Badge>
+                      ) : supersededBy ? (
+                        <Badge variant="outline">Superseded</Badge>
                       ) : (
                         <Badge variant="secondary">Off</Badge>
                       )}
                     </button>
                   </Tip>
+                  {supersededBy && !schedule.enabled ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      by {supersededBy}
+                    </p>
+                  ) : null}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {schedule.source}

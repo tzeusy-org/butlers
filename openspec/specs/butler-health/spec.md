@@ -94,6 +94,9 @@ The health butler SHALL store measurements, symptoms, medication doses, medicati
 - **WHEN** `medication_log_dose` is called
 - **THEN** it MUST internally call `store_fact` with `predicate='took_dose'`, `valid_at=taken_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={medication_id, skipped, notes}`
 - **AND** `medication_history` MUST query facts with `predicate='took_dose'`
+- **AND** a medication's course MUST be every `medication` fact of its subject, across all validities, created after the subject's latest retraction before it and up to and including the first retraction at or after it; an edit (which supersedes the fact with a new id) continues the course, and a delete ends it so a re-add starts a new course
+- **AND** every dose read for one medication (`medication_history`, `trend_report` adherence, the adherence-dip insight scan, and the dashboard `GET /medications/{id}/doses`) MUST match doses whose `medication_id` is any fact of the medication's course; dose records MUST NOT be rewritten
+- **AND** the expected-dose denominator (`trend_report` and `GET /medications/{id}/adherence`) MUST cap the window at the course start (its earliest fact's `created_at`), not the current fact's `created_at`, so adherence never exceeds 100% after an edit
 
 #### Scenario: Medication property fact wrappers
 - **WHEN** `medication_add` is called
@@ -350,6 +353,20 @@ provider SHALL be rejected with a labeled rejection metric and no fact written.
   "home_assistant"` plus a well-formed `wellness_measurement` payload
 - **AND** Google Health envelopes SHALL continue to validate against the
   owner's health-scoped Google accounts unchanged
+
+#### Scenario: Implausible weight held as unconfirmed
+
+- **WHEN** a `home_assistant` wellness envelope carries a `weight` reading in kilograms and the owner has at least 3 active `measurement_weight` facts in the 30 days before its `valid_at`
+- **AND** the reading deviates from the median of those facts by more than 15%
+- **THEN** the Health butler SHALL store it as a fact with `validity = 'candidate'` and `metadata.held` naming the reason and baseline, so it is not asserted and no active-only reader (series, projection, briefs) sees it
+- **AND** SHALL increment `health_wellness_ingest_total` with outcome `held_implausible` and return status `held_implausible`
+- **AND** a reading within the threshold, or with fewer than 3 baseline readings, SHALL be stored `active` as before
+
+#### Scenario: Implausible weights already asserted are retracted
+
+- **WHEN** migration `health_009` runs
+- **THEN** each active Home Assistant sourced `measurement_weight` fact deviating by more than 15% from the median of the other active weight facts within 15 days either side (at least 3) SHALL become `retracted`
+- **AND** facts from other sources or predicates SHALL be untouched and a rerun SHALL retract nothing further
 
 ### Requirement: Cross-provider measurement idempotency
 

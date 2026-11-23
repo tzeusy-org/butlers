@@ -66,14 +66,8 @@ def test_build_approval_request_is_templated_and_carries_signed_actions() -> Non
     }
 
 
-def test_burst_modes_hold_the_first_three_then_emit_one_digest() -> None:
-    """The fourth park creates the only digest; later parks stay collapsed."""
-    from butlers.modules.approvals.notifications import select_approval_push_mode
-
-    assert select_approval_push_mode(park_count=1, digest_already_emitted=False) == "single"
-    assert select_approval_push_mode(park_count=3, digest_already_emitted=False) == "single"
-    assert select_approval_push_mode(park_count=4, digest_already_emitted=False) == "burst_digest"
-    assert select_approval_push_mode(park_count=5, digest_already_emitted=True) == "collapsed"
+def test_approval_digest_uses_dashboard_reference_without_external_url() -> None:
+    """The durable digest uses a server-resolved dashboard door, never a supplied URL."""
     from butlers.modules.approvals.notifications import build_approval_digest_envelope
 
     digest = build_approval_digest_envelope(

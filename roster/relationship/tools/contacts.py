@@ -22,15 +22,9 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
-
-from butlers.tools.relationship.fact_temporal import (
-    MUTATOR_UNSUPPORTED,
-    TemporalError,
-    temporal_bearing_sql,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -260,7 +254,7 @@ async def _ensure_entity(
         result = await entity_create(
             pool,
             canonical_name,
-            entity_type,
+            cast(Any, entity_type),  # validated at runtime by entity_create (ValueError)
             aliases=aliases,
         )
         return result["entity_id"]
@@ -778,74 +772,129 @@ async def contact_archive(pool: asyncpg.Pool, contact_id: uuid.UUID) -> dict[str
     return _parse_contact(refreshed if refreshed is not None else row)
 
 
-async def _fence_legacy_fact_repoint(
-    conn: asyncpg.Pool | asyncpg.Connection,
-    source_entity_id: uuid.UUID,
-    target_entity_id: uuid.UUID,
-) -> None:
-    """Refuse a legacy merge whose entity_facts re-pointing could lose an occurrence.
-
-    ``contact_merge``'s best-effort blocks below collapse SPO collisions by
-    confidence and swallow database errors, which is only safe for unknown
-    default-occurrence rows. Before any contact, entity or fact write, fail
-    ``temporal_mutator_unsupported`` if an affected row -- an active fact either
-    entity is the subject or entity-object of -- carries effective time, or if
-    one triple already has several active occurrences. The audited merge service
-    (``entity_merge.merge_entity_pair``) is the occurrence-preserving path.
-    """
-    source_text = str(source_entity_id)
-    target_text = str(target_entity_id)
-    unsafe = await conn.fetchval(
-        f"""
-        WITH affected AS (
-            SELECT ef.subject, ef.predicate, ef.object,
-                   {temporal_bearing_sql("ef")} AS temporal
-            FROM relationship.entity_facts ef
-            WHERE ef.validity = 'active'
-              AND (
-                ef.subject = ANY($1::uuid[])
-                OR (ef.object_kind = 'entity' AND ef.object = ANY($2::text[]))
-              )
-        )
-        SELECT EXISTS (SELECT 1 FROM affected WHERE temporal)
-            OR EXISTS (
-                SELECT 1 FROM affected
-                GROUP BY subject, predicate, object
-                HAVING count(*) > 1
-            )
-        """,
-        [source_entity_id, target_entity_id],
-        [source_text, target_text],
-    )
-    if unsafe:
-        raise TemporalError(
-            MUTATOR_UNSUPPORTED,
-            "these entities carry effective-time or repeated fact occurrences that the "
-            "legacy contact merge cannot move safely; merge the entities through the "
-            "entity merge service instead.",
-        )
-
-
-# Tables that reference contacts: re-pointed source -> target. Optional per
-# schema variant; a missing table or column is skipped inside a savepoint so it
-# never aborts the merge transaction.
+# Tables that reference contacts: re-pointed source -> target. A missing table or
+# column is skipped inside a savepoint so it never aborts the merge transaction, so
+# a wrong name fails silently here; test_contact_merge_atomicity.py checks this list
+# against the schema at head.
 _CONTACT_CHILD_TABLES = (
-    ("notes", "contact_id"),
-    ("interactions", "contact_id"),
-    ("dates", "contact_id"),
+    ("important_dates", "contact_id"),
     ("relationships", "contact_a"),
     ("relationships", "contact_b"),
-    ("gifts", "contact_id"),
-    ("loans", "contact_id"),
     ("group_members", "contact_id"),
     ("contact_labels", "contact_id"),
-    ("contact_info", "contact_id"),
     ("addresses", "contact_id"),
-    ("facts", "contact_id"),
     ("tasks", "contact_id"),
     ("life_events", "contact_id"),
-    ("stay_in_touch", "contact_id"),
 )
+
+# Child tables unique on (key, contact_id): a source row the target already has is
+# dropped first, or re-pointing it would refuse the whole merge.
+_CONTACT_CHILD_UNIQUE_KEYS = {"group_members": "group_id", "contact_labels": "label_id"}
+
+# A date both contacts hold, by ``date_add``'s duplicate key: readers list every row, so
+# it must merge to one. The target first takes a year only the source knows. A source
+# row then goes only if its year adds nothing, so two known years stay as a real conflict.
+_FILL_SHARED_DATE_YEAR_SQL = """
+    UPDATE important_dates t
+    SET year = s.year
+    FROM (
+        SELECT label, month, day, min(year) AS year
+        FROM important_dates
+        WHERE contact_id = $2 AND year IS NOT NULL
+        GROUP BY label, month, day
+    ) s
+    WHERE t.contact_id = $1
+      AND t.year IS NULL
+      AND t.label = s.label AND t.month = s.month AND t.day = s.day
+"""
+_DROP_SHARED_DATES_SQL = """
+    DELETE FROM important_dates s
+    WHERE s.contact_id = $2
+      AND EXISTS (
+          SELECT 1 FROM important_dates t
+          WHERE t.contact_id = $1
+            AND t.label = s.label AND t.month = s.month AND t.day = s.day
+            AND (s.year IS NULL OR t.year = s.year)
+      )
+"""
+
+
+async def _merge_priority_contact(
+    conn: asyncpg.Connection,
+    source_id: uuid.UUID,
+    target_id: uuid.UUID,
+    source_entity_id: Any,
+    target_entity_id: Any,
+) -> None:
+    """Move the source's ``public.priority_contacts`` entry onto the target (bu-dhloi1.135).
+
+    The table keys a row by ``contact_id``, which holds an entity id for rows written since
+    core_131 and the legacy contact id before, and anchors it by ``entity_id``; consumers join
+    by ``entity_id``. Nothing in the entity merge or the rebind touches this table, so a source
+    row is any row keyed by the source contact, or by or anchored to the source entity when the
+    contacts have different entities (a sibling contact's legacy key and a leftover from before
+    this fix included). A priority entry is a flag: if the target already holds one the source's
+    are dropped, so a target that was a priority contact stays one and the source's entry is
+    absorbed; otherwise the oldest source row becomes the target's, keyed like a new row, so
+    the target gains the entry. The cascade audit trigger was retired in core_205, and no audit
+    row is written for a flag that moves with the person it names.
+    """
+    source_keys = [source_id]
+    target_keys = [target_id]
+    if target_entity_id is not None:
+        target_keys.append(target_entity_id)
+    moved_entity = (
+        source_entity_id
+        if source_entity_id is not None and source_entity_id != target_entity_id
+        else None
+    )
+    if moved_entity is not None:
+        source_keys.append(moved_entity)
+    # A source row, by key or by anchor; the same test selects, holds back and moves.
+    is_source = "(pc.contact_id = ANY($1::uuid[]) OR ($4::uuid IS NOT NULL AND pc.entity_id = $4))"
+    args = (source_keys, target_keys, target_entity_id, moved_entity)
+    try:
+        async with conn.transaction():
+            # Drop every source row when the target already holds an entry, else all but the
+            # oldest; then the survivor, if any, becomes the target's.
+            await conn.execute(
+                f"""
+                DELETE FROM public.priority_contacts pc
+                WHERE {is_source}
+                  AND (
+                    EXISTS (
+                        SELECT 1 FROM public.priority_contacts t
+                        WHERE NOT (t.contact_id = ANY($1::uuid[])
+                                   OR ($4::uuid IS NOT NULL AND t.entity_id = $4))
+                          AND (t.contact_id = ANY($2::uuid[])
+                               OR ($3::uuid IS NOT NULL AND t.entity_id = $3))
+                    )
+                    OR pc.contact_id <> (
+                        SELECT o.contact_id FROM public.priority_contacts o
+                        WHERE o.contact_id = ANY($1::uuid[])
+                           OR ($4::uuid IS NOT NULL AND o.entity_id = $4)
+                        ORDER BY o.added_at, o.contact_id LIMIT 1
+                    )
+                  )
+                """,  # noqa: S608
+                *args,
+            )
+            await conn.execute(
+                f"UPDATE public.priority_contacts pc SET contact_id = $5, entity_id = $3 "  # noqa: S608
+                f"WHERE {is_source} AND $2::uuid[] IS NOT NULL",  # $2 is only the delete's
+                *args,
+                target_entity_id if target_entity_id is not None else target_id,
+            )
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+        pass  # not present in this schema variant
+
+
+def _removed_entity_refusal(contact_id: uuid.UUID) -> str:
+    return (
+        f"Contact {contact_id} cannot be merged because its entity has been removed "
+        "(deleted, forgotten or merged away). Nothing was changed, and the removed entity "
+        "stays removed."
+    )
 
 
 async def _execute_if_present(conn: asyncpg.Connection, query: str, *args: Any) -> None:
@@ -857,155 +906,45 @@ async def _execute_if_present(conn: asyncpg.Connection, query: str, *args: Any) 
         pass  # not present in this schema variant
 
 
-async def _lock_merge_rows(
-    conn: asyncpg.Connection, source_entity_id: uuid.UUID, target_entity_id: uuid.UUID
-) -> None:
-    """Lock both entity rows, then every affected active fact row, in id order.
-
-    Same order as ``entity_merge.merge_entity_pair``. The entity locks also block
-    a concurrent fact INSERT/UPDATE naming either entity as subject (its FK takes
-    KEY SHARE on the entity row); the fact locks hold every row this merge may
-    rewrite, so the fence re-run on them sees exactly what will be written.
-    """
-    await conn.execute(
-        "SELECT 1 FROM public.entities WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
-        [source_entity_id, target_entity_id],
-    )
-    await conn.execute(
-        """
-        SELECT 1 FROM relationship.entity_facts ef
-        WHERE ef.validity = 'active'
-          AND (
-            ef.subject = ANY($1::uuid[])
-            OR (ef.object_kind = 'entity' AND ef.object = ANY($2::text[]))
-          )
-        ORDER BY ef.id
-        FOR UPDATE
-        """,
-        [source_entity_id, target_entity_id],
-        [str(source_entity_id), str(target_entity_id)],
-    )
-
-
-async def _repoint_entity_facts(
-    conn: asyncpg.Connection, source_entity_id: uuid.UUID, target_entity_id: uuid.UUID
-) -> None:
-    """Re-point relationship.entity_facts from the source entity to the target.
-
-    Only reached for the fenced all-unknown-default singleton set. The memory
-    ``entity_merge`` cannot reach this table's column layout (subject/object vs
-    entity_id), so the relationship pool rewrites it here (bu-9z7nd, bu-igcxb).
-    An exact SPO collision keeps the higher-confidence row and supersedes the
-    other, mirroring the merge service's legacy dedup.
-    """
-    # Subject side.
-    src_ef_rows = await conn.fetch(
-        "SELECT id, predicate, object, conf FROM relationship.entity_facts "
-        "WHERE subject = $1 AND validity = 'active'",
-        source_entity_id,
-    )
-    for ef in src_ef_rows:
-        conflict = await conn.fetchrow(
-            "SELECT id, conf FROM relationship.entity_facts "
-            "WHERE subject = $1 AND predicate = $2 "
-            "AND object = $3 AND validity = 'active'",
-            target_entity_id,
-            ef["predicate"],
-            ef["object"],
-        )
-        if conflict is not None and ef["conf"] <= conflict["conf"]:
-            # Target wins: supersede the source row.
-            await conn.execute(
-                "UPDATE relationship.entity_facts "
-                "SET validity = 'superseded', updated_at = now() WHERE id = $1",
-                ef["id"],
-            )
-            continue
-        if conflict is not None:
-            # Source wins: supersede the target row, then re-point the source.
-            await conn.execute(
-                "UPDATE relationship.entity_facts "
-                "SET validity = 'superseded', updated_at = now() WHERE id = $1",
-                conflict["id"],
-            )
-        await conn.execute(
-            "UPDATE relationship.entity_facts SET subject = $1, updated_at = now() WHERE id = $2",
-            target_entity_id,
-            ef["id"],
-        )
-
-    # Object side: relational predicates (knows, family-of, ...) naming the
-    # source entity as their object.
-    src_obj_str = str(source_entity_id)
-    tgt_obj_str = str(target_entity_id)
-    obj_ef_rows = await conn.fetch(
-        "SELECT id, subject, predicate, conf FROM relationship.entity_facts "
-        "WHERE object = $1 AND object_kind = 'entity' AND validity = 'active'",
-        src_obj_str,
-    )
-    for obj_ef in obj_ef_rows:
-        obj_conflict = await conn.fetchrow(
-            "SELECT id, conf FROM relationship.entity_facts "
-            "WHERE subject = $1 AND predicate = $2 "
-            "AND object = $3 AND validity = 'active'",
-            obj_ef["subject"],
-            obj_ef["predicate"],
-            tgt_obj_str,
-        )
-        if obj_conflict is not None and obj_ef["conf"] <= obj_conflict["conf"]:
-            await conn.execute(
-                "UPDATE relationship.entity_facts "
-                "SET validity = 'superseded', updated_at = now() WHERE id = $1",
-                obj_ef["id"],
-            )
-            continue
-        if obj_conflict is not None:
-            await conn.execute(
-                "UPDATE relationship.entity_facts "
-                "SET validity = 'superseded', updated_at = now() WHERE id = $1",
-                obj_conflict["id"],
-            )
-        await conn.execute(
-            "UPDATE relationship.entity_facts SET object = $1, updated_at = now() WHERE id = $2",
-            tgt_obj_str,
-            obj_ef["id"],
-        )
-
-
 async def contact_merge(
     pool: asyncpg.Pool,
     source_id: uuid.UUID,
     target_id: uuid.UUID,
-    memory_pool: asyncpg.Pool | None = None,
-    chronicler_pool: asyncpg.Pool | None = None,
 ) -> dict[str, Any]:
     """Merge source contact into target contact.
 
-    The target contact survives; the source is collapsed away. All related child
-    records (notes, interactions, reminders, etc.) are re-pointed to the target,
-    the source ``contact_entity_map`` row is removed, the surviving entity's
-    profile is reconciled with the source profile, and the source entity's
-    ``relationship.entity_facts`` are re-pointed to the target entity.
+    The target contact survives; the source is collapsed away. The child records in
+    ``_CONTACT_CHILD_TABLES`` are re-pointed to the target, apart from a group, label
+    or date the target already holds, the source priority-contact entry is moved or
+    dropped by :func:`_merge_priority_contact`, the source ``contact_entity_map`` row is removed,
+    and the surviving entity's profile is reconciled with the source profile.
 
-    Every relationship-schema write happens in ONE transaction that first locks
-    both entity rows and every affected fact row, then re-runs the effective-time
-    fence under those locks (bu-p2bjsf): the merge either commits whole or writes
-    nothing.
+    Every write happens in ONE transaction: the merge either commits whole or
+    writes nothing. When the contacts have different linked entities, that
+    transaction starts with the merge authority (bu-dhloi1.51). It is the only
+    writer of the entities' facts, so its locks, its refusals, its graph edge repair
+    and its audit row all cover them. Two contacts of one entity collapse without
+    touching it.
 
-    After that commit, when both contacts have linked entities, the source
-    entity is merged into the target through the best-effort ``entity_merge``
-    compatibility call and a ``merge_reviews`` audit row is written.
-    ``chronicler_pool`` is accepted for wire compatibility with that call.
+    After that commit the merge's rebind receipt settles. That is best-effort: the
+    identity is already durable, and the rebind ledger recovers a missed settlement.
 
     Returns:
         The updated target contact dict.
 
     Raises:
-        ValueError: If source or target contact not found, or IDs are identical.
-        TemporalError: ``temporal_mutator_unsupported`` -- raised before the
-            first write -- when the linked entities' facts are not the plain
-            unknown-default singleton set its legacy re-pointing can move.
+        ValueError: If source or target contact not found, IDs are identical, or
+            either contact's entity has been removed. Nothing is written.
+        EntityMergeError: the merge authority refused the entities for another
+            reason (for example two occurrences would collide). Nothing is written.
     """
+    from .entity_merge import (
+        SourceEntityTombstonedError,
+        TargetEntityTombstonedError,
+        merge_entity_pair_in_transaction,
+        settle_entity_merge,
+    )
+
     if source_id == target_id:
         raise ValueError("source_id and target_id must be different.")
 
@@ -1028,39 +967,43 @@ async def contact_merge(
     src_profile = src_profile if isinstance(src_profile, dict) else {}
     entities = (
         (uuid.UUID(str(src_entity_id)), uuid.UUID(str(tgt_entity_id)))
-        if src_entity_id is not None and tgt_entity_id is not None
+        if src_entity_id is not None
+        and tgt_entity_id is not None
+        and str(src_entity_id) != str(tgt_entity_id)
         else None
     )
+    merge = None
 
-    # (a) Unlocked fast refusal; the authoritative check re-runs under locks.
-    if entities is not None:
-        await _fence_legacy_fact_repoint(pool, *entities)
-
-    # (b) Merge-review evidence, captured before any write so the snapshot is
-    # the pre-merge state (spec: relationship-merge-review). Best-effort.
-    merge_evidence = None
-    if entities is not None:
-        from butlers.tools.relationship.merge_review import compute_merge_evidence
-
-        try:
-            merge_evidence = await compute_merge_evidence(pool, *entities)
-        except Exception:
-            logger.warning(
-                "contact_merge: failed to compute merge-review evidence "
-                "(source=%s target=%s) — audit row will be skipped",
-                src_entity_id,
-                tgt_entity_id,
-                exc_info=True,
-            )
-
-    # (c) One transaction for every relationship-schema write. A TemporalError or
-    # any database error rolls the whole merge back.
+    # One transaction for every write. A refused entity merge or any database
+    # error rolls the whole merge back.
     async with pool.acquire() as conn:
         async with conn.transaction():
+            # First, so its entity, candidate and fact locks and its refusals come
+            # before any contact write.
             if entities is not None:
-                await _lock_merge_rows(conn, *entities)
-                await _fence_legacy_fact_repoint(conn, *entities)
+                try:
+                    merge = await merge_entity_pair_in_transaction(
+                        cast(asyncpg.Connection, conn),
+                        source_entity_id=entities[0],
+                        target_entity_id=entities[1],
+                    )
+                except SourceEntityTombstonedError as exc:
+                    raise ValueError(_removed_entity_refusal(source_id)) from exc
+                except TargetEntityTombstonedError as exc:
+                    raise ValueError(_removed_entity_refusal(target_id)) from exc
 
+            for table, key in _CONTACT_CHILD_UNIQUE_KEYS.items():
+                await _execute_if_present(
+                    cast(asyncpg.Connection, conn),
+                    f"DELETE FROM {table} s WHERE s.contact_id = $2 AND EXISTS ("  # noqa: S608
+                    f"SELECT 1 FROM {table} t WHERE t.contact_id = $1 AND t.{key} = s.{key})",
+                    target_id,
+                    source_id,
+                )
+            for statement in (_FILL_SHARED_DATE_YEAR_SQL, _DROP_SHARED_DATES_SQL):
+                await _execute_if_present(
+                    cast(asyncpg.Connection, conn), statement, target_id, source_id
+                )
             for table, fk_col in _CONTACT_CHILD_TABLES:
                 await _execute_if_present(
                     conn,
@@ -1068,6 +1011,14 @@ async def contact_merge(
                     target_id,
                     source_id,
                 )
+
+            await _merge_priority_contact(
+                cast(asyncpg.Connection, conn),
+                source_id,
+                target_id,
+                uuid.UUID(str(src_entity_id)) if src_entity_id is not None else None,
+                uuid.UUID(str(tgt_entity_id)) if tgt_entity_id is not None else None,
+            )
 
             # Collapse the source contact onto the surviving entity: remove the
             # now-redundant source bridge row (children already re-pointed above).
@@ -1094,46 +1045,26 @@ async def contact_merge(
                     src_profile,
                 )
 
-            if entities is not None:
-                await _repoint_entity_facts(conn, *entities)
-
-    # (d) After commit: the memory entity merge (another schema, best-effort) and
-    # the merge_reviews audit row, written regardless of entry path.
-    if entities is not None:
-        from butlers.modules.memory.tools.entities import entity_merge
-        from butlers.tools.relationship.merge_review import write_merge_review
-
+    # After commit: settle the rebind receipt (the ledger row committed above
+    # recovers a failure).
+    if merge is not None:
         try:
-            await entity_merge(
-                memory_pool or pool,
-                str(src_entity_id),
-                str(tgt_entity_id),
-                chronicler_pool=chronicler_pool,
-            )
+            settled = await settle_entity_merge(pool, merge)
         except Exception:
             logger.exception(
-                "entity_merge failed for source=%s target=%s; continuing",
+                "contact_merge: settling the committed entity merge failed "
+                "(source=%s target=%s); the rebind ledger recovers it",
                 src_entity_id,
                 tgt_entity_id,
             )
-
-        if merge_evidence is not None:
-            try:
-                await write_merge_review(
-                    pool,
-                    entity_a=entities[0],
-                    entity_b=entities[1],
-                    shared_facts=merge_evidence["shared"],
-                    divergent_facts=merge_evidence["divergent"],
-                    outcome="merged",
-                )
-            except Exception:
+        else:
+            if settled.failed_schemas:
                 logger.warning(
-                    "contact_merge: failed to write merge_reviews audit row "
-                    "(source=%s target=%s) — merge already committed",
+                    "contact_merge: entity rebind failed for schemas %s "
+                    "(source=%s target=%s); that daemon retries its failed receipt",
+                    ", ".join(settled.failed_schemas),
                     src_entity_id,
                     tgt_entity_id,
-                    exc_info=True,
                 )
 
     # Fetch the updated target

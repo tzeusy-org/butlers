@@ -765,6 +765,7 @@ class TestFanOutEvent:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="health",
             reason="non_retryable",
@@ -821,6 +822,7 @@ class TestFanOutEvent:
         assert repeat["deliveries"][0]["status"] == "failed_permanent"
         observed_status_mock.assert_awaited_once_with(pool, "d-attempts")
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="attempts_exhausted",
@@ -906,6 +908,7 @@ class TestFanOutEvent:
         assert result["deliveries"][0]["status"] == "failed_permanent"
         mark_failed_mock.assert_awaited_once()
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
@@ -966,6 +969,7 @@ class TestFanOutEvent:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="travel",
             source_butler="travel",
             destination_butler="finance",
             reason="non_retryable",
@@ -1490,6 +1494,7 @@ class TestRunDomainEventReconciliationSweep:
             max_attempts=_domain_events._MAX_DELIVERY_RETRY_ATTEMPTS,
         )
         metric_record_mock.assert_called_once_with(
+            emitter_butler="switchboard",
             source_butler="travel",
             destination_butler="health",
             reason="attempts_exhausted",

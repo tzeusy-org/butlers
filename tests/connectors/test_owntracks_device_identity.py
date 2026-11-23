@@ -8,8 +8,8 @@ same connector process, this meant:
 
 - whichever device most recently resolved "owned" the shared heartbeat, so
   sibling devices could go silent for weeks with zero registry row (bu-e16to)
-- because webhook events are dispatched fire-and-forget onto the main loop
-  (see ``_dispatch_event_to_main_loop``), two devices' events could interleave
+- because each webhook event is processed on the main loop concurrently with
+  others (see ``_process_on_main_loop``), two devices' events could interleave
   such that a *slower* event finished processing under a *different* device's
   identity than the one it actually belonged to -- corrupting that device's
   checkpoint cursor (``cursor_store`` writes straight into
@@ -33,6 +33,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.connectors.owntracks import OwnTracksConnector, OwnTracksConnectorConfig
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 pytestmark = pytest.mark.unit
 
@@ -119,6 +120,15 @@ class _FakeCursorPool:
         return _FakeAcquireContext(self.store, self.registered_identities)
 
 
+@pytest.fixture(autouse=True)
+def _journal_writes_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests are about device identity, not evidence (its own tests cover the journal)."""
+    from butlers.connectors import owntracks
+
+    monkeypatch.setattr(owntracks, "persist_location_point", AsyncMock(return_value=True))
+    monkeypatch.setattr(owntracks, "commit_envelope", AsyncMock(return_value=True))
+
+
 def _make_connector(
     *,
     cursor_pool: _FakeCursorPool | None = None,
@@ -127,8 +137,7 @@ def _make_connector(
 ) -> OwnTracksConnector:
     """Build an OwnTracksConnector with a mocked MCP client (no real network I/O).
 
-    ``db_pool=None`` keeps IngestionPolicyEvaluator fail-open (no DB fetch
-    attempted) so tests don't need to stub `.fetch()`. ``cursor_pool`` is a
+    The fake ``db_pool`` returns no policy rows, so IngestionPolicyEvaluator stays fail-open. ``cursor_pool`` is a
     ``_FakeCursorPool`` when the test needs real checkpoint persistence.
     """
     config = OwnTracksConnectorConfig(
@@ -138,7 +147,7 @@ def _make_connector(
     connector = OwnTracksConnector(
         config=config,
         webhook_token="test-token",
-        db_pool=None,
+        db_pool=FilteredEventsPool(),  # empty policy rows keep the evaluator fail-open
         cursor_pool=cursor_pool,
     )
     connector._mcp_client = AsyncMock()

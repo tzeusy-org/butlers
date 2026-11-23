@@ -76,6 +76,10 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   // Grants/permissions and model-routing config are sensitive-adjacent: the
   // route alone is useful grounding, but query params/resource detail are not.
   "/settings/permissions": { policy: "none", summary: "Permissions" },
+  "/settings/projections": { policy: "none", summary: "Projections" },
+  "/settings/reach": { policy: "none", summary: "Reach" },
+  "/settings/public-mcp": { policy: "none", summary: "Public MCP" },
+  "/settings/location-retention": { policy: "none", summary: "Location retention" },
   "/settings/models": { policy: "ref-only", summary: "Models" },
 
   "/entities/index": SNAPSHOT("Entities index"),
@@ -96,6 +100,11 @@ export const PAGE_CONTEXT_REGISTRY: Record<string, PageContextDescriptor> = {
   "/memory/rules/:ruleId": SNAPSHOT("Rule detail"),
   "/memory/episodes/:episodeId": SNAPSHOT("Episode detail"),
   "/approvals/:id": SNAPSHOT("Approval detail"),
+  "/decision-sets/:setId": SNAPSHOT("Decision set"),
+  "/custody": SNAPSHOT("Endpoint holds"),
+  "/custody/:episodeId": SNAPSHOT("Custody case"),
+  "/security": SNAPSHOT("Security questions"),
+  "/security/:eventId": SNAPSHOT("Security question"),
   "/ingestion/connectors/:connectorType/:endpointIdentity": SNAPSHOT("Connector detail"),
   "/qa/patrols/:patrolId": SNAPSHOT("QA patrol detail"),
   "/qa/investigations/:attemptId": SNAPSHOT("QA investigation detail"),

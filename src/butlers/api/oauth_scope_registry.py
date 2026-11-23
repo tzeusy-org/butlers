@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-from butlers.connectors.catalog import (
+from butlers.connector_catalog import (
     UNSUPPORTED_AUTH,
     auth_applicability,
     oauth_scope_manifests,

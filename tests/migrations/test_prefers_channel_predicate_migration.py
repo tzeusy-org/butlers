@@ -16,12 +16,13 @@ Spec: openspec/changes/entity-keyed-preferred-channel/specs/relationship-facts/s
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -39,16 +40,8 @@ _REGISTRY_PATH = (
 )
 
 
-def _load_migration(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_sqls(fn_name: str) -> list[str]:
-    mod = _load_migration(_MIGRATION_PATH, "rel_022")
+    mod = load_migration(_MIGRATION_PATH, "rel_022")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -82,26 +75,15 @@ class TestDowngradeSQLShape:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+async def rel_021_pool(db):
+    """Core plus relationship at rel_022's predecessor (registry with cardinality)."""
+    rels = {"relationship": "relationship"}
+    return await db("core", "relationship", schemas=rels, revisions={"relationship": "rel_021"})
+
+
 async def _provision_registry(pool) -> None:
-    """Create the registry table (with cardinality) and seed rel_014 rows."""
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    # schema-standin-exempt: a deliberately minimal registry fixture for the
-    # rel_022 insert/downgrade assertions, rather than a current-head parity
-    # copy; cardinality is included because this test exercises that column.
-    await pool.execute(
-        """
-        CREATE TABLE IF NOT EXISTS relationship.entity_predicate_registry (
-            predicate   TEXT        NOT NULL PRIMARY KEY,
-            kind        TEXT        NOT NULL CHECK (kind IN ('contact', 'relational', 'override')),
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            description TEXT,
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            cardinality TEXT        NOT NULL DEFAULT 'multi'
-                            CHECK (cardinality IN ('single', 'multi'))
-        )
-        """
-    )
-    # Seed a couple of sibling rows to prove downgrade leaves them intact.
+    """Ensure sibling registry rows exist to prove downgrade leaves them intact."""
     await pool.execute(
         """
         INSERT INTO relationship.entity_predicate_registry
@@ -125,81 +107,80 @@ def _run(pool, sqls: list[str]):
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_seed_row_present_after_upgrade(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run(pool, _collect_sqls("upgrade"))
+async def test_seed_row_present_after_upgrade(rel_021_pool) -> None:
+    pool = rel_021_pool
+    await _provision_registry(pool)
+    await _run(pool, _collect_sqls("upgrade"))
 
-        row = await pool.fetchrow(
-            """
-            SELECT kind, object_kind, cardinality
-            FROM relationship.entity_predicate_registry
-            WHERE predicate = 'prefers-channel'
-            """
-        )
-        assert row is not None, "prefers-channel must be seeded after upgrade"
-        assert row["kind"] == "override"
-        assert row["object_kind"] == "literal"
-        assert row["cardinality"] == "single"
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_idempotent(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run(pool, _collect_sqls("upgrade"))
-        await _run(pool, _collect_sqls("upgrade"))
-
-        count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_predicate_registry "
-            "WHERE predicate = 'prefers-channel'"
-        )
-        assert count == 1, "Re-running upgrade must not duplicate the prefers-channel row"
+    row = await pool.fetchrow(
+        """
+        SELECT kind, object_kind, cardinality
+        FROM relationship.entity_predicate_registry
+        WHERE predicate = 'prefers-channel'
+        """
+    )
+    assert row is not None, "prefers-channel must be seeded after upgrade"
+    assert row["kind"] == "override"
+    assert row["object_kind"] == "literal"
+    assert row["cardinality"] == "single"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_fixes_cardinality_on_preexisting_row(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_idempotent(rel_021_pool) -> None:
+    pool = rel_021_pool
+    await _provision_registry(pool)
+    await _run(pool, _collect_sqls("upgrade"))
+    await _run(pool, _collect_sqls("upgrade"))
+
+    count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_predicate_registry "
+        "WHERE predicate = 'prefers-channel'"
+    )
+    assert count == 1, "Re-running upgrade must not duplicate the prefers-channel row"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_upgrade_fixes_cardinality_on_preexisting_row(rel_021_pool) -> None:
     """If the row pre-exists at cardinality='multi', upgrade() corrects it to 'single'."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await pool.execute(
-            """
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description, cardinality)
-            VALUES ('prefers-channel', 'override', 'literal', 'stale', 'multi')
-            """
-        )
-        await _run(pool, _collect_sqls("upgrade"))
+    pool = rel_021_pool
+    await _provision_registry(pool)
+    await pool.execute(
+        """
+        INSERT INTO relationship.entity_predicate_registry
+            (predicate, kind, object_kind, description, cardinality)
+        VALUES ('prefers-channel', 'override', 'literal', 'stale', 'multi')
+        """
+    )
+    await _run(pool, _collect_sqls("upgrade"))
 
-        cardinality = await pool.fetchval(
-            "SELECT cardinality FROM relationship.entity_predicate_registry "
-            "WHERE predicate = 'prefers-channel'"
-        )
-        assert cardinality == "single"
+    cardinality = await pool.fetchval(
+        "SELECT cardinality FROM relationship.entity_predicate_registry "
+        "WHERE predicate = 'prefers-channel'"
+    )
+    assert cardinality == "single"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_removes_only_prefers_channel(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await _provision_registry(pool)
-        await _run(pool, _collect_sqls("upgrade"))
-        await _run(pool, _collect_sqls("downgrade"))
+async def test_downgrade_removes_only_prefers_channel(rel_021_pool) -> None:
+    pool = rel_021_pool
+    await _provision_registry(pool)
+    await _run(pool, _collect_sqls("upgrade"))
+    await _run(pool, _collect_sqls("downgrade"))
 
-        gone = await pool.fetchval(
-            "SELECT 1 FROM relationship.entity_predicate_registry "
-            "WHERE predicate = 'prefers-channel'"
-        )
-        assert gone is None, "prefers-channel must be absent after downgrade"
+    gone = await pool.fetchval(
+        "SELECT 1 FROM relationship.entity_predicate_registry WHERE predicate = 'prefers-channel'"
+    )
+    assert gone is None, "prefers-channel must be absent after downgrade"
 
-        # Sibling rows survive, and the table itself survives.
-        survivors = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_predicate_registry "
-            "WHERE predicate IN ('has-email', 'has-birthday')"
-        )
-        assert survivors == 2, "Downgrade must not touch sibling registry rows"
+    # Sibling rows survive, and the table itself survives.
+    survivors = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_predicate_registry "
+        "WHERE predicate IN ('has-email', 'has-birthday')"
+    )
+    assert survivors == 2, "Downgrade must not touch sibling registry rows"

@@ -240,7 +240,7 @@ class TestLexiconAgreement:
         assert kinds <= COMMITMENT_KINDS
 
     def test_req_commitment_lifecycle_007_every_marker_clears_the_surfacing_floor(self) -> None:
-        """REQ-007 auto-creates explicit statements only, at confidence >= 0.8."""
+        """REQ-commitment-lifecycle-007 auto-creates explicit statements only, at confidence >= 0.8."""
         assert all(confidence >= 0.8 for _pattern, _kind, confidence in _MARKERS)
 
     def test_req_commitment_lifecycle_007_direction_is_a_ledger_direction(self) -> None:

@@ -1,0 +1,75 @@
+{
+  "schema": "butlers.native-package-inputs/v1",
+  "target": {
+    "python": "3.12.13",
+    "platform": "linux-amd64",
+    "libc": "glibc2.41"
+  },
+  "node": {
+    "version": "v22.23.4",
+    "npm": "10.9.9",
+    "sha256": "94efd062ed066c1a0b332e18249859c905e920eeada5df55d24c99b919629a90"
+  },
+  "archives": [
+    {
+      "id": "claude-wrapper",
+      "name": "@anthropic-ai/claude-code",
+      "version": "2.1.309",
+      "url": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.309.tgz",
+      "integrity": "sha512-+lBYZRuXOJpiKJcRv/CK7gF+5UFNWyJE7hSxkgGUKDZOWgANl9MAabfTkrJk183Tp3B0Nv4xF/DU1t0BaKXOPw==",
+      "sha256": "507309e76aa5e13e5f95a8964dcbaad1ff447eb004f6d6ecd67e4c55e937e03e",
+      "size": 29083,
+      "maximum_bytes": 29083,
+      "destination": "claude"
+    },
+    {
+      "id": "claude-platform",
+      "name": "@anthropic-ai/claude-code-linux-x64",
+      "version": "2.1.309",
+      "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.309.tgz",
+      "integrity": "sha512-36D6kMC0fWdWLwBA8XYaJTSTXEWvw0Kc3WQYqterieKDtplIfUsE5jurZAYilhzOeF+uNL9SNn4DkwhQmUrRMg==",
+      "sha256": "e960c4437f6f99648437784db43e04ad5f12711aecd710864f96876f94c2fc1a",
+      "size": 132508222,
+      "maximum_bytes": 132508222,
+      "destination": "claude/node_modules/@anthropic-ai/claude-code-linux-x64"
+    },
+    {
+      "id": "codex-wrapper",
+      "name": "@openai/codex",
+      "version": "0.170.0",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.170.0.tgz",
+      "integrity": "sha512-dwoughgqjiik++CFaNkjQ5y6pJO6LUzu5P1z8Hy4LUeJ+aIYcX/QO1P5rOQnHmBG4agOM7Y+hc4LtVo/a4GFiw==",
+      "sha256": "d050bdcc0015ed5680c84e227e4aeca17fbfdd5ef1a3401f46bd73deaf983720",
+      "size": 4992,
+      "maximum_bytes": 4992,
+      "destination": "codex"
+    },
+    {
+      "id": "codex-platform",
+      "name": "@openai/codex",
+      "version": "0.170.0-linux-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.170.0-linux-x64.tgz",
+      "integrity": "sha512-6cCZJaZL17tiTAvhd1Pirt8vsV1dP8CfG94+IHygUO4m24oYLQrIInJJLyKzcMv/uUonbu1dF2JmcXhA/s5bsg==",
+      "sha256": "67c4bccce8e6c3a2b9ae0e586750e0efac7e0b8cd85e6b4734ad474317d2cc32",
+      "size": 168279228,
+      "maximum_bytes": 168279228,
+      "destination": "codex/node_modules/@openai/codex-linux-x64"
+    }
+  ],
+  "claude": {
+    "version": "2.1.309",
+    "native_path": "node_modules/@anthropic-ai/claude-code-linux-x64/claude",
+    "installed_path": "bin/claude.exe",
+    "native_sha256": "4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658",
+    "tree_sha256": "c430cd45c2ba69db759b141419c822d3d72e316f7802e69cf6787e812e627b57"
+  },
+  "codex": {
+    "version": "0.170.0",
+    "main_path": "node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+    "binary_sha256": "4b42c0febe80a136dc32757f70cde09ac3888996d9eaf9e0639a0ea19044deab",
+    "source_tree_sha256": "c24962aecdd7d639b4df8323b4f151be1fa790e5df8dfbdcf99241dc0a724b47",
+    "series_sha256": "f5a4343a0a27f7f864f9abcf2aca54dae77ce5b4cdd5e4a80b1a3e6681fb5d85",
+    "tree_sha256": "cd0cb462da5375d7eefee3b43bab18f083352618ea58a044755712ec4d3c7b3f"
+  },
+  "scope": "Complete original Linux/amd64 target packages and wrapper declarations. Claude remains unmodified; only the Codex main executable is replaced. Other original platform assets and optional target declarations remain intact. Build/native/image parity requires separate execution."
+}

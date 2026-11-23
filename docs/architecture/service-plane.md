@@ -1,0 +1,306 @@
+# Service plane: named relays and authenticated callers
+
+RFC 0038 D7 retires the generic `route` proxy. Traffic between trusted daemons
+that does not belong to a goal stays on the **service plane**: the control
+plane's service listener (`butlers-control`, port 41100), never the session
+listener (41199). This page describes what replaces `route` and how callers are
+authenticated. Everything here is dark until the cutover switch is turned on.
+
+Requirement: `REQ-butler-switchboard-008`
+(`openspec/changes/generalist-lead-focused-delegation/specs/butler-switchboard/spec.md`).
+
+## What replaces each route caller
+
+`src/butlers/core/service_plane/inventory.py` lists every production call
+site that reaches another butler through `route`, each with one disposition.
+`tests/contracts/test_service_plane_inventory.py` scans production code with
+the AST and fails if a call site is missing from the inventory, or if the
+inventory names a site that no longer calls `route`. The scan follows aliases:
+an `import ... as`, an assignment, `partial(route, ...)`, `call_fn=route`, and
+`call_tool(name="route")` all count. Files that the deletion inventory's
+section 1.1 removes whole are skipped. A new caller is classified there first.
+
+| Disposition | Meaning |
+| --- | --- |
+| `named_relay` | Moves to a named relay (below). |
+| `messenger_delivery` | Switchboard `deliver()` to Messenger. Messenger authenticates Switchboard as the caller. |
+| `dashboard_call` | An owner action. It goes through the service listener, authenticated by the signed dashboard control client. |
+| `control_plane_internal` | Switchboard's own deterministic code calling one fixed domain tool in process, under that call's own authentication. There is no daemon-to-daemon hop to authenticate, and it must not become a generic proxy. |
+| `removed` | Dies at the switch with the lane or module that owns it. |
+
+## Named relays
+
+A relay (`src/butlers/core/service_plane/relays.py`) forwards to exactly one
+`(butler, tool)` target with a fixed argument schema that forbids extra
+fields. `relay_call` refuses, before contacting the target, when:
+
+- the caller is not authenticated (`caller_unauthenticated`);
+- the authenticated caller is not on the relay's allowlist (`caller_not_allowed`);
+- the target tool is LLM-presentable, or is missing from the presentation
+  inventory (`target_llm_presentable`);
+- a local relay (below) names any target other than Switchboard alone
+  (`target_not_allowed`);
+- the arguments fail the schema (`args_invalid`).
+
+The caller is a `ServiceCaller(workload, daemon)`. The workload is the
+authenticated sending process. The daemon name narrows the allowlist inside
+that workload but is never authority on its own. A body field such as
+`source_butler` is never read as the caller. A refusal never falls back to the
+generic proxy.
+
+### Served relays
+
+Switchboard serves `POST /internal/service-plane/relay/{name}` (body
+`{"args": {...}}`) beside `/health` on its service listener
+(`src/butlers/core/service_plane/endpoint.py`, wired in
+`service_plane/wiring.py`). It is not an MCP tool, and the control plane's
+session listener does not serve it. It dispatches through Switchboard's own
+`route()`, so registry, staleness, quarantine and routing-log behaviour are
+unchanged; the relay decides only who may reach which target with what.
+The relay's tool call (`relay_call_fn`) differs from `route()`'s default in two
+ways: it drops the `trace_context` carrier `route()` adds while a span is
+active, because relay targets are strict service twins that refuse an
+unexpected keyword; and a target error result is a refused, non-retryable call,
+never a delivered one.
+Callers use `service_plane/client.py`, presenting their workload's
+relay-audience token and their daemon name. While the switch is off the route
+answers 404 to everything and callers keep the legacy route path.
+
+Only a `403` refusal (the relay's judgement of caller, target or arguments) is
+a permanent answer (`client.refusal_is_permanent`). A `404` (`not_found` while
+Switchboard's switch is off, `unknown_relay` from a Switchboard that predates
+the relay during a rolling deploy) and a `400` are treated like any other
+failure: retryable unavailability. QA reports these as `qa_unavailable`, the
+domain-event fan-out as a retryable dispatch, Travel as `health_unavailable`.
+So is a `503 auth_unavailable`: Switchboard could not verify the caller right
+now (no verifier outside a pod, or the issuer key set unreachable, see "Key
+set" below). The caller is not admitted, and a JWKS outage never turns a
+delivery into a permanent failure.
+
+| Relay | Target | Allowed callers | Notes |
+| --- | --- | --- | --- |
+| `qa.report_finding` | QA `report_finding` | every roster daemon on `butlers-up` except Switchboard | `source_butler` is set from the caller; stale QA still receives (`allow_stale`). |
+| `domain_event.receive` | a subscriber's `receive_domain_event` | publishers of a domain-event contract on `butlers-up` | The caller must publish the event type's contract and the target must be one of its `permitted_subscribers`; `source_butler` is set from the caller. |
+| `medication.travel_snapshot` | Health `medication_travel_snapshot_service` | `(butlers-up, travel)` only | No arguments. The target is a service-only twin (`presentable=False`) of the LLM-facing `medication_travel_snapshot`; a 403 refusal reaches Travel as `permission_denied`, anything else as retryable `health_unavailable`. |
+| `contacts.resolve_channel` | Relationship `contacts_resolve_channel` | butlers declaring `[modules.contacts]` in `butler.toml`, on `butlers-up` | `channel_type`, `channel_value`, `request_id` (UUID). The Contacts module's owner lookup; any refusal or failure is `ContactsOwnerUnavailable`. |
+| `contacts.report_channel` | Relationship `contacts_report_channel` | as above | `subject` (UUID), `channel_type`, `channel_value`, `primary`. Provenance is fixed by the target (third party); the schema admits no authority field. |
+| `fleet_case.open`, `fleet_case.close`, `fleet_case.propose_posture`, `fleet_case.record_link` | Switchboard `open_case_service`, `close_case_service`, `propose_case_posture_service`, `record_case_link_service` | every roster daemon on `butlers-up` except Switchboard | The fleet-case writes RLS reserves to Switchboard. Each schema is exactly its tool's arguments. The twins are registered on Switchboard only and run Switchboard's own write; a 403 refusal is a permanent error, anything else retryable. |
+| `owner_chat.spans` | Switchboard's own owner-chat projection (local, no MCP tool) | `(butlers-up, relationship)` only | `after_received_at` (aware timestamp) and `after_inbox_id` (UUID), both or neither; nothing else. Served only when Switchboard wires its reader. Returns one page of the owner's own spans from one-to-one user-client chats in `switchboard.message_inbox`, the next cursor and `more` (REQ-butler-switchboard-011; `roster/switchboard/tools/owner_chat/projection.py`). A database failure is an error, never an empty page. |
+| `location_retention.grants_ready` | Chronicler `location_retention_grants_ready_service` | `(connector-owntracks, owntracks)` only | No arguments. The one caller that is a connector workload, not a `butlers-up` daemon (bu-s11n0s.7 S4b-3b). Returns nothing unless the owner has raw expiry on (`location_retention_policy.enforced`, bu-s11n0s.75); otherwise only ready, unsettled raw-expiry grants: grant id, cutoff, and each raw row's id, logical key and v1 digest. The connector deletes nothing on any refusal, failure or malformed reply. Unreachable until the connector holds a relay-audience workload token (S4b-3c); the chart sets `OWNTRACKS_RAW_RETENTION_ENABLED=true`; see [OwnTracks](../connectors/owntracks.md). |
+| `location_retention.forget_copies` | Switchboard's own inbox forgetter (local, no MCP tool) | `(butlers-up, chronicler)` only | `grant_id` (UUID) and `logical_source_keys` (1 to 500 distinct `owntracks:` keys, each at most 256 characters); nothing else. Served only when Switchboard wires its forgetter (bu-s11n0s.7 S4c-3, dark). Switchboard withholds the location in its `message_inbox` copies that policy alone handled, tombstones the keys and returns only the count-only receipt (`outcome`, `items`, `forgotten`, `already_forgotten`, `absent`, `blocked`; `roster/switchboard/tools/location_retention.py`). Chronicler records it and makes the grant ready only when it is `complete`; any refusal or failure records nothing and fails the retention run. See [OwnTracks](../connectors/owntracks.md). |
+| `memory.catalog_fetch` | the pointer owner's `memory_get_service` | every roster daemon on `butlers-up` except Switchboard | `source_schema`, `source_table` (`facts` or `rules`), `source_id` (UUID): only the catalog pointer. The relay's `prepare` reads Switchboard's own live, visible `public.memory_catalog` row and takes the owner and memory type from it; the owner must host the Memory module (`[modules.memory]`), else `target_not_allowed`. A pointer not in the catalog is `catalog_pointer_not_found` (the caller answers `not_found`). The caller's held sensitivity ceiling withholds before the call; the owner's twin applies its own. Switchboard itself keeps the in-process route. |
+
+A relay target must be declared `presentable=False`, so a target that LLM
+sessions also use gets a service-only twin on its owning butler; the
+LLM-facing tool is never relay-reachable. Relationship's `contacts_ingress`
+tools were already service-only, so the contacts relays need no twin. A
+relay's `prepare` is async, so it may read before it picks a target (the
+memory catalog relay does).
+
+A local relay (`RelayEndpoint.local`) is a fixed read Switchboard answers
+itself from its own schema, with the validated arguments, instead of
+dispatching through `route()`. It has no MCP tool, so it is never declared in
+the presentation inventory and no model session or direct MCP client can reach
+it; its only target is Switchboard. `owner_chat.spans` is the one local relay.
+
+Every `named_relay` row in the route-caller inventory
+(`src/butlers/core/service_plane/inventory.py`) now has its relay. The calendar
+response fence gets no relay: bu-qozovd.1 slice 3 deletes it before the switch (the
+owner made Relationship the sole invite-response owner), and the switch
+depends on that slice.
+
+## How callers are authenticated
+
+Decision (bu-2c1g7v, RFC 0038 "Details settled during the dark build"): two
+mechanisms, and no new private key.
+
+| Hop | Mechanism |
+| --- | --- |
+| Dashboard API to the control plane | The signed dashboard control client (`RUNTIME_PROBE_CONTROL_SIGNING_KEY`, already approved), under its own audience (`switchboard.service_call.v1`; see "Dashboard tool calls"). |
+| butlers-up daemons to a named relay; Switchboard to Messenger delivery | A projected Kubernetes ServiceAccount token, verified offline against the cluster issuer's JWKS (`src/butlers/core/service_plane/workload_identity.py`). |
+
+**The authenticated principal is the workload, not the daemon.** The domain
+daemons share the `butlers-up` process (RFC 0038, "Switchboard moves out of the
+shared `butlers-up` process"), so no credential inside it can tell one daemon
+from another. A projected token names the pod's ServiceAccount; the daemon name
+travels beside it in `x-butlers-workload-daemon` and only narrows an allowlist
+of `(workload, daemon)` pairs. `REQ-butler-switchboard-008` still says "the
+calling daemon's service identity". The code implements the workload reading,
+dark, pending owner approval of the matching amendment in PR #5713 (it narrows
+the spec text, so it does not adopt by conformance review).
+
+A token verifies only when all of these hold:
+
+- RS256 signature under a `kid` from the issuer JWKS (no `none`, no HMAC);
+- `iss` is the configured issuer and `aud` is exactly `[<this audience>]`;
+- `exp` is in the future, `iat`/`nbf` are not ahead by more than 30 s, and the
+  validity window is at most one hour (the chart requests 600 s);
+- `kubernetes.io.namespace` is this namespace, the token is bound to a pod, and
+  `sub` names the same ServiceAccount as the claim;
+- the ServiceAccount is a known workload (`butlers-control`, `butlers-up`,
+  `dashboard-api`, `connector-owntracks`). The namespace `default` account, which
+  every pod without its own runs as, is never one.
+
+Each use has its own audience: `butlers.service-relay.v1` for relays and
+`butlers.messenger-delivery.v1` for Messenger delivery. Neither is a broker call
+assertion (Ed25519 JWS under `X-Butlers-Assertion`, `aud` equal to a domain):
+the two verifiers share no header, key, algorithm or audience, so one can never
+be replayed as the other.
+
+**Key set.** Each verifier reads `https://kubernetes.default.svc/openid/v1/jwks`
+with its pod's own API token. Kubernetes binds the
+`system:service-account-issuer-discovery` ClusterRole to every authenticated
+ServiceAccount by default; on the dev k3s cluster, an unprivileged
+ServiceAccount read the discovery document (issuer
+`https://kubernetes.default.svc.cluster.local`) and a one-key RS256 JWKS. The set
+is cached for 5 minutes; a failed refresh serves the last set for up to an hour,
+after which the key set is unavailable. A token whose `kid` is not in the cached
+set (the issuer may have rotated its key) forces one refresh, at most once per
+30 s, before it is judged. The verifier keeps two outcomes apart: a token that
+does not verify (including a `kid` still unknown after a fresh set) is refused
+for good, while a key set that cannot be read right now is retryable, never an
+admission. The relay route answers the latter `503 auth_unavailable`; Messenger
+answers a delivery with a retryable `target_unavailable` route error
+(`messenger_delivery_auth_unavailable`, transport `not_attempted`), which
+Switchboard's `deliver()` reports as retryable rather than failed for good. TokenReview is not used: it needs a
+cluster-scoped `create` grant and a round trip per call, and offline
+verification needs neither.
+
+**Messenger delivery.** notify.v1 delivery shares the `route.execute` tool name.
+Today Messenger checks `request_context.source_endpoint_identity`, a string in
+the request body. With the switch on, Messenger admits a delivery only from
+`(butlers-control, switchboard)` with the delivery audience
+(`src/butlers/core/service_plane/messenger_delivery.py`), and Switchboard's
+`route()` attaches the token mounted at
+`/var/run/secrets/butlers/workload/butlers.messenger-delivery.v1`.
+
+**Deployment.** `servicePlaneAuth.enabled` in the Helm chart (default `false`,
+requires `butlersControl.enabled`) gives `butlers-control`, `butlers-up` and
+`connector-owntracks` their own ServiceAccounts, sets `BUTLERS_SERVICE_PLANE_AUTH=1`
+(on the first two), and mounts one token per workload: the delivery token into
+`butlers-control`, the relay token into `butlers-up` and into the OwnTracks
+connector, which calls only `location_retention.grants_ready` (bu-s11n0s.7). No other
+connector gets an account or a token, and `connector-owntracks` holds no RBAC grant.
+Each workload holds only the audience it presents. Butlers holds no private key for
+this: the API server signs and the kubelet rotates.
+
+**Reachability.** This adds one site edge per verifying workload and no new chart-peer edge:
+
+| Hop | Under egress profiles |
+| --- | --- |
+| `butlers-control` to Messenger in `butlers-up` (delivery, token in a header) | Unchanged: the existing `butlers-control` → `butlers-up` 41101-41112 peer. |
+| `butlers-up` domain daemons to Switchboard's relay endpoint (`/internal/service-plane/relay/<name>` on 41100) | Unchanged: the existing `butlers-up` → `butlers-control` 41100 peer. The domain-event relay targets the daemon's configured `switchboard_url` (its Switchboard client's URL), the same as the QA relay; the reconciliation sweep inside Switchboard stays in process. |
+| `connector-owntracks` to Switchboard's relay endpoint (`location_retention.grants_ready`) | Unchanged: the existing `connector-owntracks` → `butlers-control` 41100 peer (its ingest edge). Switchboard reaches Chronicler over its existing `butlers-control` → `butlers-up` peer. No connector reaches Chronicler's MCP server. |
+| `butlers-up` (Messenger) and `butlers-control` (Switchboard, verifying relay callers) to the API server, for the JWKS | New `kube-apiserver` site on both profiles, port 6443, optional. The API server is not a chart peer (on k3s it listens on the node), so the deployment locates it with `egressProfiles.sites.kube-apiserver` (a /32). NetworkPolicy matches the endpoint after the `kubernetes.default` Service is translated, hence 6443, not 443. The chart refuses `servicePlaneAuth.enabled` under egress profiles without that site, because every verification would refuse. |
+
+The issuer string (`servicePlaneAuth.issuer`, `DEFAULT_ISSUER`) is compared
+against the token's `iss`; it is never dialed. Both are reviewed as references
+in `scripts/egress-profile-coverage.json`.
+
+## Dashboard tool calls
+
+With the switch on, a dashboard call to a model-reachable tool reaches the
+butler only through Switchboard. The dashboard's one MCP client,
+`DashboardButlerClient` (`src/butlers/api/deps.py`), overrides
+`call_tool_mcp`, so every `call_tool` site passes through it. For each call it
+applies one rule, shared with Switchboard
+(`routes_through_control_plane` in `src/butlers/core/service_plane/dashboard_call.py`):
+
+| Tool | Path |
+| --- | --- |
+| Declared LLM-presentable, or not declared at all | Switchboard's service listener, under a signed service-call capability. |
+| Declared `presentable=False` (lifecycle, ingest, dispatch, status) | Direct to the butler, unchanged. |
+| `schedule_create` carrying exactly the owner-creation claim | Direct. The target verifies and consumes that single-use owner capability in its own transaction. Any other request meta on a model-reachable tool is refused. |
+
+`src/butlers/api/tool_call_inventory.py` lists every dashboard call site with
+its class (`control_plane`, `service_direct`, `runtime_classified`,
+`owner_capability`). `tests/contracts/test_dashboard_tool_call_inventory.py`
+scans the dashboard source and fails on an unlisted site, a stale entry, a
+class that disagrees with the tool's declaration, a `task=` call (it would skip
+the override), or any second MCP client. The generic `/api/butlers/{name}/mcp/call`
+proxy is `runtime_classified`: every model-reachable tool it reaches takes the
+capability path.
+
+**The capability.** The dashboard client
+(`src/butlers/core/service_plane/dashboard_client.py`) signs a compact EdDSA
+JWS with the runtime-probe control signer, reached only through
+`activated_signer_snapshot()`, under the audience `switchboard.service_call.v1`.
+The payload is exactly `aud`, `caller` (`dashboard`), `butler`, `tool`,
+`args_digest` (SHA-256 over the RFC 8785 encoding of the arguments, domain
+separated), `iat`, `exp` (at most 60 s later) and a 256-bit `nonce`. The codec
+lives with the runtime-probe capability
+(`src/butlers/core/runtime_probe_control/service_call.py`) and shares its
+verifier core; neither audience verifies as the other, and Switchboard reaches
+the deployment keyring only through that package.
+
+**The route.** `POST /internal/service-plane/dashboard-call` on Switchboard's
+service listener (`src/butlers/core/service_plane/dashboard_route.py`) takes the
+capability in one `Authorization: Bearer` header (no cookie, no query string)
+and the body `{"butler", "tool", "args"}`. Before the target is contacted it
+refuses: switch off (`404`), a badly carried capability (`401`), a malformed
+body (`400`), no verifier keyring (`503 auth_unavailable`), a capability that
+does not verify or is bound to another butler, tool or argument digest (`401`),
+a service-only tool (`403 not_presentable`), and a consumed nonce (`409
+replay`). The nonce is consumed through the same durable receipt table as
+runtime probes, under its own audience (core_327 widens the table's audience
+check). Then Switchboard's own `route()` calls the target as
+`source_butler="dashboard"` and returns the target's whole MCP result, so
+FastMCP raises `ToolError` for a tool error exactly as on a direct call. A
+target `route()` cannot reach is `503 target_unavailable`, with `retryable`
+true only when the failure proves nothing was sent. A dashboard call is never
+resent once it may have reached the target: a reset or timeout after the
+request went out is that `503` with `retryable: false`, not a second call, so
+a dashboard write is never duplicated. A failure that proves nothing was
+sent still reconnects once. Every other `route()` caller keeps the existing
+reconnect-and-resend policy. The dashboard maps every refusal, and a missing signer, to
+`ButlerUnreachableError`; it never falls back to a direct call.
+
+The switch reaches the dashboard through the same chart value:
+`servicePlaneAuth.enabled` sets `BUTLERS_SERVICE_PLANE_AUTH=1` on `dashboard-api`
+too.
+
+## Limits
+
+- **No per-daemon separation inside `butlers-up`.** Any daemon in that process
+  can present any daemon name. A relay allowlist narrows by name, but only the
+  workload is authenticated, until domain daemons are split into separate
+  processes.
+- **Domain LLM sessions in `butlers-up` can act as any domain daemon.** The
+  domain daemons spawn their LLM CLIs inside the `butlers-up` container, which
+  mounts the relay token. A session that can read files or run commands can
+  read it and call any relay as any daemon name in the allowlist. That is still narrower than today: the service listener (41100)
+  now accepts any caller that can reach it, with no authentication at all.
+  The owner question in #5713 weighs this.
+- **Switchboard's own LLM sessions can read the delivery token.** Today they
+  run inside `butlers-control`, in the same container that mounts it. Until
+  sessions move to the session host (`bu-kiuh8v`), a Switchboard session that
+  can read files or run commands can present the token as Switchboard to
+  Messenger.
+- **Namespace admins can mint these tokens.** Anyone who can create pods,
+  create ServiceAccount tokens (`serviceaccounts/token`), or exec into a pod in
+  the namespace can obtain a valid token for these workloads. These permissions
+  are already equivalent to reading the workloads' secrets, and they stay with
+  the owner.
+- **No deployment forwards a routed dashboard call with an assertion yet.**
+  Given the broker's assertion signer, Switchboard forwards each call with a
+  dashboard assertion (principal `dashboard`, origin `owner`, goal null). No
+  deployment provides that signer: it is provisioned with the broker at
+  cutover. Until then the daemon passes the explicit
+  `unsigned_until_broker_cutover=True` opt-in, so Switchboard forwards the
+  call through `route()` as itself, and a domain that verifies assertions
+  refuses it. With neither a signer nor the opt-in, the route refuses every
+  call `503 auth_unavailable` (retryable) before consuming its nonce, and
+  nothing reaches a target. The opt-in is removed at cutover (bu-jnhxc5).
+- **The dashboard still holds a direct connection.** `get_client` opens the
+  butler's MCP session as before, and service-only tools use it. A routed call
+  does not send anything over it.
+- **Replay inside the token's window.** A token is a bearer credential for up
+  to its 600 s lifetime and is not bound to a request. The service listener is
+  plain HTTP inside the cluster, so a token seen on the pod network can be
+  replayed until it expires. This code never logs a token.
+
+## The switch
+
+`BUTLERS_SERVICE_PLANE_AUTH` (Tier 0, exactly `"1"` to enable, default off)
+gates every check on this page. While it is off nothing reads a token header, a
+token file or the key set, and the legacy paths run unchanged.

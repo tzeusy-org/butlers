@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
@@ -21,9 +20,9 @@ from pydantic import BaseModel
 from butlers.config import load_config
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
-from butlers.daemon import ButlerDaemon
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.daemon import write_butler_config
 
 pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
@@ -175,137 +174,6 @@ def _make_registry(*module_classes: type[Module]) -> ModuleRegistry:
     return registry
 
 
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
-
-
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
-
-
-def _patch_infra():
-    """Return a dict of patches for all infrastructure dependencies."""
-    mock_conn = AsyncMock()
-    # asyncpg uses synchronous factories for both asynchronous contexts.
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
-    transaction.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock()
-    # Support `async with pool.acquire() as conn:` pattern
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-
-    async def fetchval(query, *_args):
-        return 1 if "public.register_butler_boot" in query else None
-
-    mock_pool.fetchval = AsyncMock(side_effect=fetchval)
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    # Separate mock for the audit DB (switchboard schema) so that its close()
-    # does not interfere with call-order assertions on the main DB's close().
-    mock_audit_db = MagicMock()
-    mock_audit_db.provision = AsyncMock()
-    mock_audit_db.connect = AsyncMock(return_value=mock_pool)
-    mock_audit_db.close = AsyncMock()
-    mock_audit_db.pool = mock_pool
-
-    _db_call_count = 0
-
-    def _db_from_env_factory(db_name: str) -> MagicMock:
-        nonlocal _db_call_count
-        _db_call_count += 1
-        # First call is the main butler DB; second is the audit pool
-        if _db_call_count == 1:
-            return mock_db
-        return mock_audit_db
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    return {
-        "db_from_env": patch(
-            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
-        ),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter",
-            return_value=type(
-                "MockAdapter",
-                (),
-                {
-                    "binary_name": "claude",
-                    "__init__": lambda self, **kwargs: None,
-                },
-            )(),
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_audit_db": mock_audit_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Config tests
-# ---------------------------------------------------------------------------
-
-
 class TestShutdownTimeoutConfig:
     """Verify shutdown_timeout_s is parsed from butler.toml."""
 
@@ -416,144 +284,72 @@ class TestSpawnerDraining:
 # ---------------------------------------------------------------------------
 
 
-class TestDaemonGracefulShutdown:
-    """Test the daemon's graceful shutdown sequence."""
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_real_boot_and_shutdown_run_in_order(booted_daemon, tmp_path: Path) -> None:
+    """One real boot covers the startup-failure and shutdown concerns (bu-rvgzmf.2).
 
-    async def _start_daemon(self, butler_dir: Path, patches: dict, registry=None) -> ButlerDaemon:
-        """Start a daemon with all infra patched, return the daemon."""
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            kwargs = {"registry": registry} if registry is not None else {}
-            daemon = ButlerDaemon(butler_dir, **kwargs)
-            await daemon.start()
-        return daemon
+    Startup: a failing module is marked failed at startup, its dependant cascade-fails
+    and never starts, the healthy module starts; an unregistered butler never
+    advertises acceptance and keeps retrying registration. Shutdown: stop_accepting,
+    drain (with the configured timeout), module shutdown, then the pool closes;
+    failed modules are not shut down.
+    """
+    config_dir = write_butler_config(
+        tmp_path,
+        "general",
+        extra_toml=(
+            "[butler.shutdown]\ntimeout_s = 15.0\n\n"
+            "[modules.stub_ok]\n\n[modules.stub_failing]\n\n[modules.stub_after]\n"
+        ),
+    )
+    registry = _make_registry(StubModuleOk, StubModuleFailing, StubModuleAfterFailing)
+    booted = await booted_daemon(config_dir, registry=registry)
+    daemon = booted.daemon
+    modules = {m.name: m for m in daemon._modules}
 
-    async def test_shutdown_sequence(self, tmp_path: Path) -> None:
-        """shutdown(): accepting_connections=False; stop_accepting + drain called with configured timeout;
-        order is stop_accepting → drain → module_shutdown → db_close."""
-        # Basic: accepting flag + drain/stop_accepting
-        patches = _patch_infra()
-        daemon = await self._start_daemon(_make_butler_toml(tmp_path), patches)
-        assert daemon._accepting_connections is True
-        await daemon.shutdown()
-        assert daemon._accepting_connections is False
-        patches["mock_spawner"].stop_accepting.assert_called_once()
-        patches["mock_spawner"].drain.assert_awaited_once()
+    assert modules["stub_ok"].started is True
+    assert daemon._module_statuses["stub_ok"].status == "active"
+    assert daemon._module_statuses["stub_failing"].status == "failed"
+    assert daemon._module_statuses["stub_failing"].phase == "startup"
+    assert daemon._module_statuses["stub_after"].status == "cascade_failed"
+    assert modules["stub_after"].started is False
+    assert daemon._boot_epoch is None
+    assert daemon._accepting_connections is False
+    assert isinstance(daemon._boot_registration_task, asyncio.Task)
 
-        # Configured timeout forwarded to drain()
-        subdir = tmp_path / "t2"
-        subdir.mkdir()
-        patches2 = _patch_infra()
-        daemon2 = await self._start_daemon(
-            _make_butler_toml(subdir, shutdown_timeout_s=15.0), patches2
-        )
-        await daemon2.shutdown()
-        patches2["mock_spawner"].drain.assert_awaited_once_with(timeout=15.0)
+    call_order: list[str] = []
+    spawner, db = daemon.spawner, daemon.db
+    real_stop, real_drain, real_close = spawner.stop_accepting, spawner.drain, db.close
+    drain_timeouts: list[float] = []
 
-    async def test_failed_boot_registration_never_advertises_acceptance(
-        self, tmp_path: Path
-    ) -> None:
-        patches = _patch_infra()
-        patches["mock_db"].pool.fetchval.side_effect = RuntimeError("registration unavailable")
-        daemon = await self._start_daemon(_make_butler_toml(tmp_path), patches)
-        try:
-            assert daemon._boot_epoch is None
-            assert daemon._accepting_connections is False
-            assert daemon._boot_registration_task is not None
-        finally:
-            await daemon.shutdown()
-        assert daemon._boot_registration_task is None
+    def stop_accepting() -> None:
+        call_order.append("stop_accepting")
+        real_stop()
 
-        # Correct shutdown order
-        registry = _make_registry(StubModuleOk)
-        patches3 = _patch_infra()
-        call_order: list[str] = []
-        patches3["mock_spawner"].stop_accepting = MagicMock(
-            side_effect=lambda: call_order.append("stop_accepting")
-        )
-        patches3["mock_spawner"].drain = AsyncMock(
-            side_effect=lambda **kw: call_order.append("drain")
-        )
-        subdir3 = tmp_path / "t3"
-        subdir3.mkdir()
-        butler_dir3 = _make_butler_toml(subdir3, modules={"stub_ok": {}})
-        daemon3 = await self._start_daemon(butler_dir3, patches3, registry=registry)
-        for mod in daemon3._modules:
-            original = mod.on_shutdown
+    async def drain(**kwargs: float) -> None:
+        call_order.append("drain")
+        drain_timeouts.append(kwargs["timeout"])
+        await real_drain(**kwargs)
 
-            async def make_tracker(name, orig=original):
-                call_order.append(f"module_shutdown:{name}")
-                await orig()
+    async def close() -> None:
+        call_order.append("db_close")
+        await real_close()
 
-            mod.on_shutdown = lambda n=mod.name, o=original: make_tracker(n, o)
-        patches3["mock_db"].close = AsyncMock(side_effect=lambda: call_order.append("db_close"))
-        await daemon3.shutdown()
-        assert call_order == ["stop_accepting", "drain", "module_shutdown:stub_ok", "db_close"]
+    real_module_shutdown = modules["stub_ok"].on_shutdown
 
+    async def module_shutdown() -> None:
+        call_order.append("module_shutdown:stub_ok")
+        await real_module_shutdown()
 
-# ---------------------------------------------------------------------------
-# Startup failure cleanup tests
-# ---------------------------------------------------------------------------
+    spawner.stop_accepting, spawner.drain, db.close = stop_accepting, drain, close
+    modules["stub_ok"].on_shutdown = module_shutdown
 
+    await booted.shutdown()
 
-class TestStartupFailureCleanup:
-    """Test that module startup failures are non-fatal and properly recorded."""
-
-    async def _start_daemon(self, butler_dir: Path, registry=None) -> ButlerDaemon:
-        """Start a daemon with all infra patched, return the daemon."""
-        patches = _patch_infra()
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            kwargs = {"registry": registry} if registry is not None else {}
-            daemon = ButlerDaemon(butler_dir, **kwargs)
-            await daemon.start()
-        return daemon
-
-    async def test_module_startup_failure_and_cascade(self, tmp_path: Path) -> None:
-        """Failing module marked failed+startup; active modules unaffected; failed not shutdown;
-        dependent module cascade-fails and never starts."""
-        registry = _make_registry(StubModuleOk, StubModuleFailing, StubModuleAfterFailing)
-        butler_dir = _make_butler_toml(
-            tmp_path, modules={"stub_ok": {}, "stub_failing": {}, "stub_after": {}}
-        )
-        daemon = await self._start_daemon(butler_dir, registry=registry)
-
-        stub_ok = next(m for m in daemon._modules if m.name == "stub_ok")
-        assert stub_ok.started is True
-        assert daemon._module_statuses["stub_failing"].status == "failed"
-        assert daemon._module_statuses["stub_failing"].phase == "startup"
-        assert daemon._module_statuses["stub_ok"].status == "active"
-        assert daemon._module_statuses["stub_after"].status == "cascade_failed"
-        stub_after = next(m for m in daemon._modules if m.name == "stub_after")
-        assert stub_after.started is False
-
-        await daemon.shutdown()
-        assert stub_ok.shutdown_called is True
-        stub_failing = next(m for m in daemon._modules if m.name == "stub_failing")
-        assert stub_failing.shutdown_called is False
+    assert call_order == ["stop_accepting", "drain", "module_shutdown:stub_ok", "db_close"]
+    assert drain_timeouts == [15.0]
+    assert daemon._accepting_connections is False
+    assert daemon._boot_registration_task is None
+    assert modules["stub_ok"].shutdown_called is True
+    assert modules["stub_failing"].shutdown_called is False

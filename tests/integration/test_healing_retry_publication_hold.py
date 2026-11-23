@@ -24,7 +24,6 @@ from butlers.core.qa.publication.state import (
     record_outcome,
     record_reconciliation,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = [
@@ -38,9 +37,10 @@ _PAYLOAD = request_digest({"title": "Fix", "labels": ["qa"]})
 _PR = "pr-7"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+def core_url(fresh_db) -> str:
+    """One clone shared by the API pool and the QA-role pool of a test."""
+    return fresh_db("core")
 
 
 async def _set_qa_role(connection: asyncpg.Connection) -> None:
@@ -48,8 +48,8 @@ async def _set_qa_role(connection: asyncpg.Connection) -> None:
 
 
 @pytest.fixture
-async def api_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=4)
+async def api_pool(core_url: str):
+    pool = await asyncpg.create_pool(core_url, min_size=1, max_size=4)
     try:
         yield pool
     finally:
@@ -57,8 +57,8 @@ async def api_pool(migrated_db_url: str):
 
 
 @pytest.fixture
-async def qa_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=4, setup=_set_qa_role)
+async def qa_pool(core_url: str):
+    pool = await asyncpg.create_pool(core_url, min_size=1, max_size=4, setup=_set_qa_role)
     try:
         yield pool
     finally:

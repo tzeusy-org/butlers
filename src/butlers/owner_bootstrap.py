@@ -10,6 +10,8 @@ import logging
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_insert
+
 logger = logging.getLogger(__name__)
 
 
@@ -164,11 +166,14 @@ async def _seed_owner_telegram_handle(
         # Insert-only, unknown-default: any active occurrence of this triple
         # (default or an explicit effective period) already satisfies the seed,
         # so never add a default sibling beside it or replace its packet.
+        taint = taint_insert(3)  # empty: bootstrap never runs under an exposed goal
         await conn.execute(
-            """
+            f"""
             INSERT INTO relationship.entity_facts
-                (subject, predicate, object, object_kind, src, "primary", verified, validity)
+                (subject, predicate, object, object_kind, src, "primary", verified, validity
+                 {taint.columns})
             SELECT $1, 'has-handle', $2, 'literal', 'owner-bootstrap', true, true, 'active'
+                   {taint.placeholders}
             WHERE NOT EXISTS (
                 SELECT 1 FROM relationship.entity_facts
                 WHERE subject = $1
@@ -180,6 +185,7 @@ async def _seed_owner_telegram_handle(
             """,
             owner_entity_id,
             handle,
+            *taint.values,
         )
     except Exception:  # noqa: BLE001
         logger.warning("Owner Telegram handle seed skipped (non-fatal)", exc_info=True)

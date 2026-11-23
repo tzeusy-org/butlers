@@ -24,6 +24,9 @@ def _request(method: str, path: str) -> Request:
         ("GET", f"/api/approvals/{_ID}"),
         ("POST", f"/api/approvals/{_ID}/approve"),
         ("POST", f"/api/approvals/{_ID}/deny"),
+        ("POST", "/api/owner-delivery/actions"),
+        ("GET", "/api/owner-delivery/retractions"),
+        ("POST", f"/api/owner-delivery/retractions/{_ID}"),
     ],
 )
 def test_callback_routes_are_admitted(method, path) -> None:
@@ -44,6 +47,13 @@ def test_callback_routes_are_admitted(method, path) -> None:
         ("POST", f"/api/decisions/prompts/{_ID}/choose/extra"),
         ("GET", "/api/approvals"),
         ("POST", f"/api/approvals/{_ID}/execute"),
+        ("GET", "/api/owner-delivery/actions"),
+        ("POST", "/api/owner-delivery/retractions"),
+        ("GET", f"/api/owner-delivery/retractions/{_ID}"),
+        ("POST", "/api/owner-delivery/retractions/not-a-uuid"),
+        ("POST", f"/api/owner-delivery/retractions/{_ID}/extra"),
+        ("POST", "/api/owner-delivery/actions/extra"),
+        ("POST", "/api/owner-delivery"),
     ],
 )
 def test_everything_else_is_refused(method, path) -> None:

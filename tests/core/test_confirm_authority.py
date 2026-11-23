@@ -154,3 +154,31 @@ async def test_closed_sink_rejects_unregistered_prompt_and_application_options()
         with pytest.raises(RecoveryAuthorityError):
             await registration.apply(confirm_id, "source-owned-ref", "work")
         apply.assert_awaited_once()
+
+
+async def test_relationships_candidate_source_registers_its_closed_sink():
+    """REQ-commitment-lifecycle-013: one sink, track/done/ignore only, no timeout value."""
+    from butlers.core.confirm_authority import (
+        COMMITMENT_CANDIDATE_SOURCE,
+        relationship_confirm_sources,
+    )
+
+    pool = Mock()
+    sources = relationship_confirm_sources(pool)
+    assert set(sources) == {COMMITMENT_CANDIDATE_SOURCE}
+    source = sources[COMMITMENT_CANDIDATE_SOURCE]
+    assert source.sink_name == COMMITMENT_CANDIDATE_SOURCE
+    assert source.values == frozenset({"track", "done", "ignore"})
+
+    service = ConfirmService(pool, secret="synthetic-confirm-test", sinks={})
+    with TemporaryDirectory(prefix="cf-") as directory:
+        topology = ConfirmAuthorityTopology(
+            service, sources=sources, socket_directory=Path(directory)
+        )
+        async with asyncio.timeout(10), topology:
+            registration = service._sinks[COMMITMENT_CANDIDATE_SOURCE]
+            assert registration.producer == COMMITMENT_CANDIDATE_SOURCE
+            assert registration.values == source.values
+            with pytest.raises(ToolError, match="confirm_option_unregistered"):
+                await registration.apply(uuid4(), str(uuid4()), "resolve")
+            pool.acquire.assert_not_called()

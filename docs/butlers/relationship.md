@@ -61,30 +61,57 @@ change; the wire rules live in `roster/relationship/tools/fact_temporal.py`.
   occurrences or refuses first. Until then, rollback is: drain the transition writer, restore
   the old one, optionally downgrade `rel_035` (facts and rel_034 evidence, coverage and approval
   context survive). The downgrade refuses once the legacy index is gone or any temporal value
-  exists; after cutover, recovery rolls forward. The proof and enforcement that cutover must
-  require (signed receipt, lifecycle fence, gated rel036) are drafted in the
-  [effective-time cutover packet](../operations/relationship-effective-time-cutover.md).
+  exists; after cutover, recovery rolls forward. The cutover is a plain hard cutover: every
+  database client is stopped and G refuses while any other client is connected, as drafted in
+  the [effective-time cutover notes](../operations/relationship-effective-time-cutover.md).
 - **Mutator fences.** Entity merge locks and plans every affected fact first, repoints rows with
   their packets and evidence intact, and refuses `temporal_occurrence_collision` before any write
-  rather than collapse an occurrence that carries effective time. Legacy `contact_merge`,
-  hash-addressed contact routes, SPO retraction and `prefers-channel` refuse
-  (`temporal_mutator_unsupported` / `temporal_occurrence_ambiguous`) whenever they would have to
-  choose between occurrences or drop a packet. `contact_merge` does every Relationship write in
-  one transaction that locks both entity rows and every affected fact, re-runs its fence under
-  those locks, and commits whole or writes nothing; the memory entity merge runs only after that
-  commit. A contact value edit re-locks its hash-selected row before retracting it and refuses
+  rather than collapse an occurrence that carries effective time. An exact collision between
+  unknown defaults keeps the source's row only if it alone is verified, and otherwise the target's,
+  whatever the confidence of either; the survivor receives the other row's evidence. Hash-addressed
+  contact routes, SPO retraction and `prefers-channel` refuse (`temporal_mutator_unsupported` /
+  `temporal_occurrence_ambiguous`) whenever they would have to choose between occurrences or drop a
+  packet. `contact_merge` does every write in one transaction that starts with the entity merge
+  authority, the only writer of the entities' facts. It therefore has the authority's locks,
+  refusals, graph edge repair and audit row, its facts never move without the source's
+  `merged_into`, and a refused entity merge refuses the contact merge. A forget and a memory
+  entity delete both remove the entity's `contact_entity_map` row in their own transaction, so that
+  contact reads as not found. A contact still bridged to a removed entity (a delete from before that
+  unlink, or a merged-away entity) gets a `ValueError` naming it, and nothing moves. It re-points the contact's `important_dates`, `relationships`,
+  `group_members`, `contact_labels`, `addresses`, `tasks` and `life_events`, dropping a group or
+  label row the target already has. A date both contacts hold under one label, month and day merges
+  to one row keeping any known year; two different known years stay as two rows. Only the rebind
+  settlement
+  runs after commit. The rebind ledger recovers a missed settlement, because each daemon's idle sweep
+  settles pending receipts and retries failed ones. `contact_merge` logs a failed receipt only for
+  Relationship's own schema, the one it settles itself; every other schema is still `pending` when
+  it returns. Two contacts of one entity collapse without touching it. A contact value edit re-locks its hash-selected row before retracting it and refuses
   `contact_fact_changed` (409) if the row was retracted or re-valued meanwhile. Entity forget
-  retracts every occurrence as-is and removes their graph edges; Google/Steam hard deletes keep
-  their all-version cascade.
+  retracts every occurrence as-is and removes their graph edges, and a forgotten or deleted entity
+  cannot then be merged on either side. Forget and `DELETE /api/memory/entities/{id}` hold the entity
+  row `FOR UPDATE` until their marker commits, so a merge or rebind either finishes first and has
+  its references retired too, or waits and refuses. The memory delete retires facts across pools
+  before its marker, so a crash can leave retired facts on an unmarked entity, which a retry
+  completes; Google/Steam hard deletes keep their all-version cascade. The email enrichment reap
+  takes the same lock per placeholder, skipping any another transaction holds for its next run, and
+  repeats its no-references check under that lock. The route runs one delete
+  at a time per process, because each holds a pool connection while its fan-out takes others.
+  A memory `store_fact` property write takes its entities `FOR KEY SHARE`, in ascending id order,
+  before its first fact lock, and a Dunbar tier pin (tool or route) does the same before retracting
+  the old override, so either racing a forget or delete waits instead of deadlocking.
 - **Lock order.** Every `entity_facts` write locks `public.entities` rows before fact rows,
   each set in ascending id order. Both merges take their entities `FOR UPDATE` first; the central
   writer (and the contact value edit that calls it) takes the subject and any entity object
   `FOR KEY SHARE` (`_lock_fact_entities`) before its first fact lock, so a correction racing a
   merge waits instead of deadlocking. A caller that makes several writer calls in one transaction
   (`promote_entity`'s `initial_facts`) takes all of their entities in one ascending batch
-  (`_lock_fact_entities_batch`) before the first, so the order holds across calls too.
-  Retract/verify-only paths write no FK column and take no entity lock. A write that waits out
-  a merge still lands on the tombstoned source; whether the writer refuses or follows
+  (`_lock_fact_entities_batch`) before the first, so the order holds across calls too, and likewise
+  takes the union of their identity slots once, after the entities. `loan_settle` takes the loan's
+  entity before the loan row, because its successor insert needs that entity's foreign key, and
+  refuses while that entity has `merged_into` set, because a merge moves `facts` after its commit
+  and would miss a successor written during that move.
+  Retract/verify-only paths write no FK column and take no entity lock. Any other write that waits
+  out a merge still lands on the tombstoned source; whether those writers refuse or follow
   `merged_into` is open (bu-gm93xc).
 
 ## Meeting debrief
@@ -115,6 +142,212 @@ never an empty list). A reply from the card is sent as `"<number>: <text>"` to t
 pinned dashboard conversation, so it reaches the `meeting-debrief` skill without classification.
 Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
 endpoint custody.
+
+## Meeting card
+
+Twenty minutes before a meeting with at least one other, non-declined attendee, the zero-LLM
+`meeting_card_push` job queues one card on the insight broker's timed lane (bu-jv1moa.9; openspec
+change `add-meeting-card`). It sends nothing itself, so quiet hours, `dnd`/`sleeping` holds and the
+daily cap are the broker's. `meeting` and `focused` do not hold it (the card declares `passes_context`, honored only for this producer); `dnd` and `sleeping` do. It is dark: `MEETING_CARD_LIVE`
+is off and no schedule exists, so activation is one owner-approved change.
+
+The card is a fixed template read from the prep envelope `calendar/prep/<event_id>`: title and
+time, location, each named attendee with the date they last met, "You owe" and "Waiting on"
+commitments, and a link to the dashboard Calendar page. A missing envelope, or one stamped for a
+different start, gives "No prep context yet." Dedup is `(event_id, start)`; a moved or cancelled meeting's pending
+card is withdrawn through the broker and a moved meeting earns one new card. The meeting selection and exclusions are the debrief's. A non-`active` person
+is never named; the meeting is still carded without them. An address that resolves to the owner does
+not count as a guest. Invite and person text is stripped of markup and defanged, and a location never
+renders as a link (a URL shows only its defanged host).
+
+Not built: the "Debrief later" button (no signed tap sink fits a timed insight), leave-by timing
+(needs travel legs, bu-jv1moa.7), the last message topic (the Relationship role cannot read the
+messenger prep envelope), and a per-event dashboard link (the Calendar page has none).
+
+## Owner anchor-address geocoding
+
+Chronicler needs to know where the owner's home and work are; Relationship owns the address
+facts, so it converts them (bu-r3fmja.3; openspec change `chronicler-situational-inference`).
+The deterministic hourly `relationship_geocode_owner_addresses` job (no session, no model;
+`roster/relationship/tools/owner_address_geocoding.py`) geocodes **only** the owner's anchor
+addresses:
+active literal `has-address` facts on
+
+1. the owner entity (`'owner' = ANY(public.entities.roles)`);
+2. an entity the owner has an active `works-at` edge to;
+3. a `place` entity the owner has an active `rental-location` or `lives-at` edge to.
+
+No contact's address and no location trail is ever sent to a geocoder. Merged or deleted
+entities are skipped.
+
+**Registering a work address.** Tell Relationship "I work at Acme; Acme's address is 1 Example
+Way, Singapore 012345". That records an owner `works-at` edge to the Acme organization entity
+and a `has-address` fact on Acme (not on the owner). The next run geocodes it.
+
+**Providers.**
+
+- Singapore addresses (the text names Singapore, ends in country code `SG`, or carries a 6-digit
+  postal code and names no other country) go to OneMap search
+  (`https://www.onemap.gov.sg/api/common/elastic/search`, first result's `LATITUDE`/`LONGITUDE`,
+  confidence 0.9). An empty OneMap result falls back to Nominatim.
+- Everything else goes to Nominatim (`https://nominatim.openstreetmap.org/search?format=json&limit=1`,
+  confidence 0.7) with the fixed User-Agent `butlers-relationship-geocoder/1.0` and at least one
+  second between requests.
+- OneMap credentials are optional. To search with a bearer token from OneMap's `getToken`
+  endpoint, open `/secrets` in the dashboard, choose **Add credential**, then **System secret**,
+  and add keys `ONEMAP_EMAIL` and `ONEMAP_PASSWORD` with target `relationship`. Without them, or
+  when the token request fails, search runs unauthenticated. They are resolved through
+  `CredentialStore` from the database only, never from the environment.
+- Outbound HTTPS needs no extra declaration: butler pods already have public egress (only
+  private ranges are fenced).
+
+**`relationship.address_geocodes`** (rel_038) holds one row per anchor `has-address` fact:
+`fact_id` (PK, FK to `entity_facts`, cascades on delete), `address_sha256` (SHA-256 of the
+stripped fact text), `status` (`resolved` / `not_found` / `failed`), `lat NUMERIC(7,5)` and
+`lon NUMERIC(8,5)` (present exactly when resolved), `provider` (`onemap` / `nominatim`),
+`confidence`, `attempts`, `geocoded_at` and `next_attempt_at`. A geocode is current only when its
+`address_sha256` matches the fact's text; Chronicler must ignore stale or unresolved rows.
+Beyond Relationship, only `butler_chronicler_rw` can read it (SELECT only).
+
+**When a fact is geocoded.** A fact is due when it has no row, its text hash changed, or a
+`not_found`/`failed` retry is due. HTTP 429/5xx, other non-2xx responses, timeouts and malformed
+bodies are `failed`; an empty result is `not_found`. Both back off 1 h, 6 h, 24 h, then doubling
+up to 7 days. A run handles at most 20 facts (new or changed text first), is serialised by an
+advisory lock, and deletes the rows of facts that are no longer anchors (for example after the
+owner leaves a job). A `resolved` row is never re-queried until its text changes.
+
+**Privacy.** The job never logs or returns address text or coordinates: log lines carry fact
+ids, statuses and providers, httpx's own request log line is suppressed for these calls (its URL
+contains the address), and the job returns counts only.
+
+## Automated email evidence
+
+Auto-replies and bounces become Relationship facts without a session (bu-s11n0s.14 slice S2b,
+REQ-relationship-facts-013). The Gmail connector binds each one to mail the owner sent and checks
+Gmail's authentication verdict ([Gmail ingestion policy](../connectors/gmail-ingestion-policy.md));
+Switchboard stores the result in `raw_payload.control.automated_evidence` on a metadata-only inbox
+row. The deterministic hourly `automated_evidence_sync` job reads those rows from
+`switchboard.message_inbox` in `roster/relationship/jobs/relationship_jobs.py`, beside
+`interaction_sync` and with the same grant. The claim rules and writes live in
+`roster/relationship/tools/automated_evidence_facts.py` and go through
+`relationship_assert_fact()` with `src='automated_evidence_sync'`:
+
+| Predicate | Object | Written when |
+| --- | --- | --- |
+| `away-until` | return date, `YYYY-MM-DD` | the auto-reply answered owner mail, its sender was a recipient and is authenticated, and the date is 0 to 180 days after receipt |
+| `undeliverable-email` | the failed address | an authenticated DSN for owner mail reports the address `failed` with a `5.x.x` status |
+
+- Both are `kind='state'`, multi-valued literals (`rel_044`). Each distinct return date is its own
+  row; the most recently observed active `away-until` row is current. The effective-time packet
+  is not used while its cutover fence stands.
+- The job re-checks every evidence flag, so a backscatter DSN writes nothing even if a malformed
+  row lists recipients.
+- An address writes a fact only when it resolves to exactly one live, non-owner entity through the
+  shared channel resolver. Ambiguous, unknown and owner addresses are counted and skipped; nothing
+  parks for approval.
+- Replay is a no-op (the writer reports `unchanged`), so each run re-reads an hour before its
+  checkpoint (`automated_evidence_sync.last_scan_at`, at most 30 days back). A resolution or write
+  error leaves the checkpoint where it was.
+- Each fact cites `switchboard.message_inbox:<id>` as evidence and copies no message text.
+
+Two consumers read these facts, with no session and no cross-butler read:
+
+- **Reconnect deferral.** The weekly `relationship-maintenance` job leaves out an overdue contact
+  whose most recently observed `away-until` date is today or later (today in the owner's
+  timezone). The contact is reconsidered by the first run after that date, so the nudge lands on
+  the return date plus one day at the earliest. A past date never defers. If every overdue contact
+  is away the job sends nothing, not even the all-clear. Code: `tools/away_until.py`,
+  `tools/reminders.py::run_relationship_maintenance`.
+- **Dead-address avoidance.** `notify(entity_id=..., channel="email")` skips an address carrying an
+  active `undeliverable-email` fact (`ButlerDaemon._resolve_entity_channel_identifier`) and uses
+  another live one. When every address is dead it returns `no_live_address` and neither sends nor
+  parks an approval.
+
+Revival: the same `automated_evidence_sync` run asks `switchboard.message_inbox` (the same table and
+grant it already reads) for the newest inbound email from each dead address, stripped and
+lower-cased as the fact was keyed, and retracts the `undeliverable-email` fact when that message
+arrived after the fact's `observed_at`, citing the inbox row. An address with such a message is not
+re-marked from an older bounce, and a message older than the newest bounce read in the same run
+clears nothing. Only marks this job wrote (`src='automated_evidence_sync'`) are cleared, so an
+owner- or tool-asserted mark survives. After the first run, the inbox read reaches back only to the
+last fully successful revival pass (minus the one-hour overlap). The message's authenticity is not
+checked here.
+
+Not built (follow-ups): the owner's door to replace a dead address.
+
+## Owner-chat commitment candidates
+
+Promises the owner makes in their own one-to-one WhatsApp and Telegram chats become
+**candidates**, which the owner answers on a signed confirm card (bu-jv1moa.11; openspec change
+`add-owner-chat-commitment-candidates`, REQ-commitment-lifecycle-011 to -017). A candidate is
+not a commitment. Only the owner's Track tap creates one. The routed extraction path
+(REQ-commitment-lifecycle-007) is unchanged.
+
+**Dark.** `COMMITMENT_CANDIDATES_LIVE` in `roster/relationship/tools/commitment_candidates.py`
+is `False` until the signed-confirm composition is installed (bu-atc3xi). The job
+`commitment_candidate_scan` is registered but has no schedule in `butler.toml`. While dark a
+run reads no spans and writes no cursor; lapse and purge still run.
+
+**Producing a candidate.** The deterministic, model-free job reads pages from Switchboard's
+`owner_chat.spans` relay as `relationship` (see `docs/architecture/service-plane.md`). The
+relay returns only the owner's own unforwarded messages from private chats, with the single
+counterparty identity. For each one the job:
+
+1. skips a message whose `source_key` (SHA-256 of channel, endpoint, chat, provider message id
+   and direction) already has a row or tombstone;
+2. resolves the counterparty with `resolve_contact_by_channel`. It must be a live entity that
+   is neither the owner nor unidentified;
+3. runs `detect_commitment` with `now` set to the message's event time in the owner's timezone,
+   so relative deadlines anchor to the message, not to processing time;
+4. refuses an action longer than 120 characters (it is never truncated), and stores the
+   detector marker only as a fixed category (`first_person_will`, `first_person_going_to`,
+   `first_person_obligation`, `relay_told`, `relay_promised`), never the matched text, which in
+   the relay forms ("I told <name> I'll") carries a third party's name. A form with no category
+   is refused; rel_042 CHECKs both;
+5. writes nothing when an active commitment or a live candidate already has the fingerprint.
+
+The cursor (`state` key `commitment_candidates:cursor`, the projection's
+`(received_at, inbox_id)`) is written only after a page's candidates commit. A replay, a crash
+before the cursor write, or two concurrent runs therefore converge on one candidate per message.
+Any relay or database failure stops the run without moving the cursor.
+
+**`relationship.commitment_candidates`** (rel_042) stores the detected action, deadline, kind,
+confidence, marker category, fingerprint, counterparty entity, channel, the evidence reference
+(`ingestion_event_id`, `provider_message_id`) and the `untrusted_origin` taint. It never stores
+the message text. Its states are `pending`, `carded`, `tracked`, `done`, `ignored`, `superseded`
+and `lapsed`. A CHECK makes every terminal row a content-free tombstone: source key, state,
+timestamps, `confirm_id`, and the commitment fingerprint only when tracked.
+`relationship.commitment_candidate_receipts` (keyed by `confirm_id`) is for the sink.
+
+**Card.** After reducing, a live scan runs the card step
+(`roster/relationship/tools/commitment_candidate_cards.py`) when the switch passes it, even if
+the relay was unavailable. Under a row lock it gives each pending candidate one card snapshot,
+unless the candidate is within 30 seconds of lapse (lapsed), its fingerprint is already active
+(superseded), the counterparty's posture is not `active` (deferred, stays pending) or the owner
+has no numeric Telegram chat (stays pending). The snapshot fixes the prompt: "To:" name,
+optional "Due:", the quoted action, the owner recipient and a timeout of at most 24 hours and
+never past the lapse. The confirm is requested outside the lock with the candidate id as key,
+so a repeated step returns the same confirm; the candidate becomes `carded` with its
+`confirm_id`. An unanswered card expires and is never re-sent.
+
+**Sink.** `relationship.commitment_candidate` (registered by `relationship_confirm_sources` in
+`src/butlers/core/confirm_authority.py`) accepts `track`, `done` and `ignore` only. `prepare`
+rebuilds the prompt from the snapshot and refuses a pending candidate whose posture or owner
+recipient changed since. `apply_disposition` runs in one transaction: a stored receipt for the
+`confirm_id` is returned unchanged; otherwise it locks the candidate (first terminal wins, a
+later tap gets `already_<state>`), calls `create_commitment` on Track only when the fingerprint
+is not already active (the routed commitment keeps its own evidence), tombstones the row and
+writes the receipt. Track evidence records `source=owner_chat_candidate`, the channel, the
+ingestion event and provider message ids, the marker, the candidate and confirm ids, and
+`applied_at` (the sink's application time; the transport keeps the answer time).
+
+**Lapse and retention.** A live candidate lapses silently at `event_time + 14 days`; nothing is
+sent to the owner. Tombstones are deleted once their event is more than 14 days old. The
+projection never returns older events, so a deleted tombstone cannot be re-proposed.
+
+**Known gap.** Single-message envelopes (Telegram backfill, ingest retry, chat-id fallback)
+carry no per-entry authorship facts. Owner messages that arrive that way never become
+candidates.
 
 ## Entity life-graph reads
 
@@ -150,6 +383,15 @@ unified activity timeline. Each preview row opens `/chronicles?date=<owner-local
 Meeting Prep attendee names link to `/entities/{entity_id}` with the full current Calendar query
 appended verbatim; an attendee without a nonblank id stays plain text.
 
+## Care duties
+
+The owner declares recurring duties for dependents (a school pickup, a parent's medication, a pet's worming) and who is assumed to carry each one. Spec: `openspec/specs/relationship-care-duties/spec.md`; manifesto: "Duty of Care".
+
+- `relationship.care_duties` (`rel_045`): the declaration. Calendar-anchored duties carry an RFC 5545 `rrule`; completion-anchored ones carry `interval_days`. A CHECK keeps the two shapes apart. `retired_at` retires without deleting.
+- `relationship.care_occurrences`: one row per `(duty_id, occurrence_start)` holding the owner's carer and an `assumed` or `confirmed` state. Other states are reserved for the coverage job.
+- Owner-gated dashboard routes under `/api/relationship/care`: `GET /duties`, `GET /occurrences`, `POST /duties`, `PUT /duties/{id}/carrier`, `PUT /duties/{id}/occurrences`, `POST /duties/{id}/retire`. Logic lives in `roster/relationship/tools/care_duties.py`, which imports nothing that can contact anyone. No model-reachable tool writes these tables.
+- Dependents (including `animal` entities) and carers are entities, never users. Nothing here messages a carer, and the listing never claims an occurrence is covered or uncovered: the coverage job (S2) is deferred past the cutover.
+
 ## Implementation Notes
 
 ### Meeting debrief answer transactions
@@ -182,8 +424,9 @@ gate remain required; source inspection and collection alone are not runtime pro
   flood approvals. Cardinality cannot be read from `entity_predicate_registry`, which covers only
   the `entity_facts` store.
 - `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
-  grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
-  privileges).
+  grants `butler_relationship_rw` `USAGE` on schema `switchboard`, and migration `core_339` (with
+  `sw_079` on a fresh database) grants it `SELECT` on `switchboard.message_inbox` alone, with no
+  schema-wide read or default privilege.
 - Calendar interaction sync reads `relationship.calendar_events` explicitly through the
   Relationship role. It consumes the local Calendar module projection, including its attendee
   metadata, rather than falling back to a public or another butler's projection.
@@ -240,3 +483,34 @@ The contact card shows reported channels awaiting adoption, protected exact Adop
 controls and receipt-based recovery after an uncertain response. Narrative facts retain their
 existing behavior. Entity merge locks candidate identity slots and all active facts before the
 first write; moving a candidate does not activate it or rewrite its reporter.
+
+### External MCP fact proposals
+
+`tools/external_fact_proposals.park_external_fact_proposal(conn, *, proposal_id, subject,
+predicate, object_entity_id, client_label, evidence_url, received_at)` is the importer's single
+park call for a validated outside proposal (RFC 0039 D13, REQ-relationship-facts-011). In one
+transaction, joined to the caller's when `conn` is inside one, it parks the
+`relationship_assert_fact` action through the approvals module's `park_external_proposal` (no
+push, no standing rule; see [Approvals](../modules/approvals.md#external-mcp-fact-proposals)). It
+then writes `relationship.fact_approval_context` with `src = 'external_mcp:<proposal_id>'`, the
+proposal's receipt time as `observed_at` and a frozen `third_party` report. A repeated call
+returns the existing action as a duplicate and writes no second context row. The stored arguments
+are built here from typed parameters and never carry provenance.
+
+Approval and replay follow the ordinary approved-write rules unchanged. `record_admitted_approval`
+checks the approver's authority, not the frozen report's, so an owner decision passes for a
+third-party report. The replay keeps the frozen authority and adds only the owner confirmation. The
+fact is written `content_authority = 'third_party'`, `src = 'external_mcp:<id>'`,
+`assert_origin = 'approved'`, `confirmation_source = 'approved_action'`, with `confirmed_at` set.
+An owner edit of the object keeps both. Stored arguments that carry `src`, `content_authority` or
+`observed_at` fail at the registered tool's signature before any row is written.
+
+The caller is the `public_mcp_proposal_import` job (`tools/public_mcp_proposal_import.py`,
+scheduled every 5 minutes, `dispatch_mode = "job"`, no model). It copies the `butlers_public`
+inbox into `relationship.external_fact_proposals` (copy, commit, then delete), validates each
+`imported` row in the REQ-public-mcp-proposals-004 order, parks the valid ones through the call
+above in the same transaction that records `state = 'parked'` and `pending_action_id`, reconciles
+parked actions to `applied`, `owner_rejected`, `expired` or `apply_failed`, and clears `note` and
+`evidence_url` 30 days after a terminal decision. It parks nothing while `mcp_surface.controls`
+disables `proposals` or `all` on the primary. Credential, pass order, rate-limit definitions and
+metrics: [Public MCP runbook § 9](../operations/public-mcp-read-surface.md#9-proposal-importer).

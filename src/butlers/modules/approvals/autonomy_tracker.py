@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from butlers.core.state import state_get, state_set
+from butlers.modules.approvals.external_proposals import is_external_proposal_key
 from butlers.modules.base import ToolMeta
 
 if TYPE_CHECKING:
@@ -107,6 +108,19 @@ def compute_fingerprint(
     payload = {"tool_name": tool_name, "tool_args": fingerprinted_args(tool_args, tool_meta)}
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def counts_toward_promotion(action: Any) -> bool:
+    """Whether a manual approval may become autonomy evidence.
+
+    Approvals of effects requested by an exposed invocation never count (RFC 0038
+    D13). Neither do approvals of external MCP proposals: outside clients must not
+    steer approval policy for internal writes, so such an approval records no
+    history and feeds no promotion suggestion (RFC 0039 D13, REQ-module-approvals-010).
+    """
+    if is_external_proposal_key(getattr(action, "deduplication_key", None)):
+        return False
+    return getattr(action, "goal_exposed", None) is not True
 
 
 async def record_approval(pool: Any, action: Any, *, tool_meta: ToolMeta | None = None) -> None:

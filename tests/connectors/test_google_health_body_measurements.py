@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.connectors import google_health as gh
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 pytestmark = pytest.mark.unit
 
@@ -289,6 +290,7 @@ def _harness_with_buffer(polls: int):
     body = {"dataPoints": [_weight_point(sample=_SAMPLE), _weight_point(sample=_LATER)]}
     connector, acct, state, _api = _poll_harness([body] * polls)
     connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    connector._shared_pool = FilteredEventsPool()  # a quarantine receipt is committed to it
     return connector, acct, state
 
 
@@ -311,11 +313,36 @@ async def test_repeated_rejection_quarantines_the_envelope_with_a_receipt() -> N
     keys = _keys(connector._submit_envelope)
     assert len(set(keys[:limit])) == 1 and keys[limit].endswith(f":{_LATER}")
     connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
-    (receipt,) = connector._filtered_event_buffer._rows
+    (receipt,) = connector._shared_pool.written
     assert receipt[3] == keys[0]  # external_message_id
     assert receipt[7] == "poison_quarantine" and receipt[8] == "error"
     assert receipt[9]["control"]["idempotency_key"] == keys[0]  # replayable envelope
     assert state.rejected_key is None and state.rejected_count == 0
+
+
+async def test_unwritten_quarantine_receipt_holds_the_checkpoint_and_retries() -> None:
+    """The receipt is the only copy once the sample is consumed (bu-dhloi1.274)."""
+    limit = gh._POISON_REJECTION_LIMIT
+    connector, acct, state = _harness_with_buffer(limit + 1)
+    pool = connector._shared_pool
+    pool.fail_writes = True
+    # The first sample is rejected on every attempt; the later one is accepted.
+    connector._submit_envelope = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_outcomes(*["REJECTED"] * (limit + 1), "HANDLED")
+    )
+
+    for _ in range(limit):
+        with pytest.raises(gh.GoogleHealthPollIncompleteError):
+            await connector._poll_resource(acct, state)
+    # Rejected `limit` times, but the receipt was not written: the sample is not consumed.
+    connector._save_cursor.assert_not_awaited()
+    assert pool.written == [] and state.rejected_count == limit - 1
+
+    pool.fail_writes = False
+    await connector._poll_resource(acct, state)
+    connector._save_cursor.assert_awaited_once()
+    (receipt,) = pool.written
+    assert receipt[7] == "poison_quarantine" and receipt[8] == "error"
 
 
 @pytest.mark.parametrize("case", ["transport-failures-never-count", "handled-attempt-resets"])

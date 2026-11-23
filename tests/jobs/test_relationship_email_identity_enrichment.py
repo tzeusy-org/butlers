@@ -3,7 +3,9 @@
 Covers the heuristic gating (bulk/noreply, insufficient evidence), the
 idempotency guards (already-linked, already-pending, already-proposed-entity),
 and the two proposal shapes (link to an existing entity vs. create a new one),
-all against a mocked pool.
+all against the strict kit pool scripted per candidate. The real SQL (sender scan,
+has-email lookup, name match, entity INSERT, park, orphan reap) runs on real
+Postgres in tests/integration/test_email_identity_enrichment_db.py.
 """
 
 from __future__ import annotations
@@ -15,10 +17,13 @@ from datetime import UTC, datetime, timedelta
 from importlib import import_module
 from types import ModuleType
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import records
 
 _MODULE_KEY = "butlers.jobs._roster.relationship_jobs"
 
@@ -61,99 +66,110 @@ def _recurring_sender_rows(addresses: list[str]) -> list[dict[str, Any]]:
     ]
 
 
-class _FakePool:
-    """Routes fetch/fetchval/execute calls by SQL shape (mirrors the job's real queries)."""
+# Per eligible candidate, the job's reads after the sender scan and has-email lookup:
+# fetchval pending-proposal check, fetchval proposed-entity check, then (under the
+# cap) fetch name match and, with no match, fetchval placeholder-entity INSERT. Each
+# outcome below scripts one candidate's answers; SQL text is never inspected.
+_PENDING = "pending"
+_PROPOSED = "proposed"
+_CREATE = "create"
+_CAPPED = "capped"
+
+
+class EnrichmentRun:
+    """A strict kit pool scripted for one enrichment run, plus what it wrote."""
 
     def __init__(
         self,
-        *,
         sender_rows: list[dict[str, Any]],
-        has_email_addresses: set[str] | None = None,
-        name_match_ids: dict[str, uuid.UUID] | None = None,
-        already_pending_addresses: set[str] | None = None,
-        already_proposed_addresses: set[str] | None = None,
+        *,
+        linked: set[str],
+        outcomes: list[str | uuid.UUID],
     ) -> None:
-        self._sender_rows = sender_rows
-        self._has_email_addresses = has_email_addresses or set()
-        self._name_match_ids = name_match_ids or {}
-        self._already_pending = already_pending_addresses or set()
-        self._already_proposed = already_proposed_addresses or set()
-        self.inserted_actions: list[dict[str, Any]] = []
-        self.created_entities: list[tuple[str, str]] = []
+        fetch: list[Any] = [records(sender_rows)]
+        if sender_rows:
+            fetch.append(records({"object": address} for address in sorted(linked)))
+        fetchval: list[Any] = []
+        for outcome in outcomes:
+            if outcome == _PENDING:
+                fetchval.append(uuid.uuid4())
+                continue
+            fetchval.append(None)
+            if outcome == _PROPOSED:
+                fetchval.append(uuid.uuid4())
+                continue
+            fetchval.append(None)
+            if outcome == _CAPPED:
+                continue
+            if isinstance(outcome, uuid.UUID):  # links to this existing entity
+                fetch.append(records([{"id": outcome}]))
+            else:
+                fetch.append(records([]))
+                fetchval.append(uuid.uuid4())
+        self.pool = fake_pool(
+            fetch=AsyncMock(side_effect=fetch),
+            fetchval=AsyncMock(side_effect=fetchval),
+            execute=AsyncMock(return_value="INSERT 0 1"),
+        )
 
-    async def fetch(self, query: str, *args: Any) -> list[dict[str, Any]]:
-        if "FROM public.ingestion_events" in query:
-            return self._sender_rows
-        if "FROM relationship.entity_facts" in query and "object = ANY" in query:
-            wanted = set(args[0])
-            return [{"object": a} for a in wanted if a in self._has_email_addresses]
-        if "FROM public.entities" in query and "ILIKE" in query:
-            display_name = args[0]
-            eid = self._name_match_ids.get(display_name)
-            return [{"id": eid}] if eid is not None else []
-        raise AssertionError(f"unexpected fetch: {query}")
+    @property
+    def created_entities(self) -> list[tuple[str, str]]:
+        """``(display_name, address)`` of each placeholder-entity INSERT (two bound args)."""
+        return [
+            (call.args[1], call.args[2])
+            for call in self.pool.fetchval.await_args_list
+            if len(call.args) == 3
+        ]
 
-    async def fetchval(self, query: str, *args: Any) -> Any:
-        # Order matters: the INSERT statement's jsonb_build_object(...) also
-        # contains the literal substring 'proposed_from_address' as a key, so
-        # the INSERT check must be tried before the SELECT-by-that-column check.
-        if "INSERT INTO public.entities" in query:
-            display_name, address = args[0], args[1]
-            self.created_entities.append((display_name, address))
-            return uuid.uuid4()
-        if "SELECT id FROM pending_actions" in query and "predicate" in query:
-            address = args[0]
-            return uuid.uuid4() if address in self._already_pending else None
-        if "SELECT id FROM public.entities" in query and "proposed_from_address" in query:
-            address = args[0]
-            return uuid.uuid4() if address in self._already_proposed else None
-        raise AssertionError(f"unexpected fetchval: {query}")
-
-    async def execute(self, query: str, *args: Any) -> str:
-        if "INSERT INTO pending_actions" in query:
-            # Column order matches modules.approvals.park.park_pending_action's
-            # INSERT (id, tool_name, tool_args, agent_summary, session_id,
-            # status[literal], requested_at, expires_at, why, evidence,
-            # blast_radius, reversibility) -- status is a SQL literal, not a
-            # bound param, so args[7]/[8] are why/evidence (bu-g27ib).
-            self.inserted_actions.append(
-                {
-                    "tool_name": args[1],
-                    "tool_args": args[2],
-                    "why": args[7],
-                    "evidence": args[8],
-                }
-            )
-            return "INSERT 0 1"
-        raise AssertionError(f"unexpected execute: {query}")
+    @property
+    def inserted_actions(self) -> list[dict[str, Any]]:
+        """Each parked pending action, from ``record_pending_action``'s INSERT args."""
+        return [
+            {"tool_name": call.args[2], "tool_args": call.args[3]}
+            for call in self.pool.execute.await_args_list
+        ]
 
 
-@pytest.fixture(autouse=True)
-def _register_real_approval_hooks(monkeypatch: pytest.MonkeyPatch):
-    """Register a narrow park recorder for each unit-test FakePool."""
+@pytest.fixture
+def enrichment_run():
+    """Build an :class:`EnrichmentRun` with the narrow park recorder registered on it."""
     import butlers.core.approvals_hooks as _hooks
     from butlers.modules.approvals.email_guard import (
         check_email_recipient,
         check_recipient,
     )
 
-    original_init = _FakePool.__init__
     registrations = []
 
-    def _init_with_approval_hooks(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
+    def _build(
+        sender_rows: list[dict[str, Any]],
+        *,
+        linked: set[str] | None = None,
+        outcomes: list[str | uuid.UUID] | None = None,
+    ) -> EnrichmentRun:
+        run = EnrichmentRun(sender_rows, linked=linked or set(), outcomes=outcomes or [])
         runtime = _hooks.register_approval_hooks(
-            self,
+            run.pool,
             email_guard=check_email_recipient,
             recipient_guard=check_recipient,
             park_pending_action=record_pending_action,
         )
-        registrations.append((self, runtime))
+        registrations.append((run.pool, runtime))
+        return run
 
-    monkeypatch.setattr(_FakePool, "__init__", _init_with_approval_hooks)
-    yield
+    yield _build
     for pool, runtime in reversed(registrations):
         _hooks.unregister_approval_hooks(pool, runtime)
+
+
+@pytest.fixture(autouse=True)
+def _no_orphan_reap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The orphan reap is real-Postgres-covered in tests/integration; skip it here."""
+
+    async def no_orphans(_pool: Any) -> int:
+        return 0
+
+    monkeypatch.setattr(_get_rjobs(), "archive_rejected_identity_enrichment_orphans", no_orphans)
 
 
 @pytest.fixture(autouse=True)
@@ -178,11 +194,11 @@ def _patch_insight_and_state(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, 
 
 
 @pytest.mark.asyncio
-async def test_no_senders_is_a_noop() -> None:
+async def test_no_senders_is_a_noop(enrichment_run) -> None:
     rjobs = _get_rjobs()
-    pool = _FakePool(sender_rows=[])
+    run = enrichment_run(sender_rows=[])
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["senders_scanned"] == 0
     assert result["created_new"] == 0
@@ -190,9 +206,9 @@ async def test_no_senders_is_a_noop() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bulk_address_is_filtered_out() -> None:
+async def test_bulk_address_is_filtered_out(enrichment_run) -> None:
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("noreply@example.com", thread_id="t1", day_offset=0),
             _event_row("noreply@example.com", thread_id="t2", day_offset=1),
@@ -200,70 +216,72 @@ async def test_bulk_address_is_filtered_out() -> None:
         ]
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["filtered_bulk"] == 1
     assert result["created_new"] == 0
-    assert pool.inserted_actions == []
+    assert run.inserted_actions == []
 
 
 @pytest.mark.asyncio
-async def test_insufficient_thread_evidence_is_skipped() -> None:
+async def test_insufficient_thread_evidence_is_skipped(enrichment_run) -> None:
     rjobs = _get_rjobs()
     # Only 1 distinct thread, below the 3-thread minimum.
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t1", day_offset=1),
         ]
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["insufficient_evidence"] == 1
-    assert pool.inserted_actions == []
+    assert run.inserted_actions == []
 
 
 @pytest.mark.asyncio
-async def test_already_linked_address_is_skipped() -> None:
+async def test_already_linked_address_is_skipped(enrichment_run) -> None:
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
             _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
         ],
-        has_email_addresses={"john.doe@example.com"},
+        linked={"john.doe@example.com"},
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["already_linked"] == 1
-    assert pool.inserted_actions == []
+    assert run.inserted_actions == []
 
 
 @pytest.mark.asyncio
 async def test_creates_new_entity_and_proposes_link_when_no_match(
+    enrichment_run,
     _patch_insight_and_state: list[dict[str, Any]],
 ) -> None:
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
             _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
-        ]
+        ],
+        outcomes=[_CREATE],
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["created_new"] == 1
     assert result["linked_existing"] == 0
-    assert len(pool.created_entities) == 1
-    assert pool.created_entities[0] == ("John Doe", "john.doe@example.com")
+    assert len(run.created_entities) == 1
+    assert run.created_entities[0] == ("John Doe", "john.doe@example.com")
 
-    assert len(pool.inserted_actions) == 1
-    action = pool.inserted_actions[0]
+    assert len(run.inserted_actions) == 1
+    action = run.inserted_actions[0]
     assert action["tool_name"] == "relationship_assert_fact"
     assert action["tool_args"]["predicate"] == "has-email"
     assert action["tool_args"]["object"] == "john.doe@example.com"
@@ -275,11 +293,12 @@ async def test_creates_new_entity_and_proposes_link_when_no_match(
 
 @pytest.mark.asyncio
 async def test_prefers_stored_display_name_over_local_part(
+    enrichment_run,
     _patch_insight_and_state: list[dict[str, Any]],
 ) -> None:
     """When a stored From: display name exists, the proposed entity uses it (bu-vs9cr)."""
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row(
                 "hsbc.bank.singapore@example.com",
@@ -289,146 +308,139 @@ async def test_prefers_stored_display_name_over_local_part(
             ),
             _event_row("hsbc.bank.singapore@example.com", thread_id="t2", day_offset=1),
             _event_row("hsbc.bank.singapore@example.com", thread_id="t3", day_offset=2),
-        ]
+        ],
+        outcomes=[_CREATE],
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["created_new"] == 1
     # Real stored name is used, NOT the local-part guess "Hsbc Bank Singapore".
-    assert pool.created_entities[0] == ("Alice Tan", "hsbc.bank.singapore@example.com")
+    assert run.created_entities[0] == ("Alice Tan", "hsbc.bank.singapore@example.com")
 
 
 @pytest.mark.asyncio
 async def test_falls_back_to_local_part_when_no_stored_name(
+    enrichment_run,
     _patch_insight_and_state: list[dict[str, Any]],
 ) -> None:
     """Legacy rows with no stored name still derive the name from the local-part."""
     rjobs = _get_rjobs()
-    pool = _FakePool(
-        sender_rows=[
-            _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
-            _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
-            _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
-        ]
-    )
-
-    result = await rjobs.run_email_identity_enrichment(pool)
-
-    assert result["created_new"] == 1
-    assert pool.created_entities[0] == ("John Doe", "john.doe@example.com")
-
-
-@pytest.mark.asyncio
-async def test_links_to_existing_entity_when_name_matches() -> None:
-    rjobs = _get_rjobs()
-    existing_id = uuid.uuid4()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
             _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
         ],
-        name_match_ids={"John Doe": existing_id},
+        outcomes=[_CREATE],
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
+
+    assert result["created_new"] == 1
+    assert run.created_entities[0] == ("John Doe", "john.doe@example.com")
+
+
+@pytest.mark.asyncio
+async def test_links_to_existing_entity_when_name_matches(enrichment_run) -> None:
+    rjobs = _get_rjobs()
+    existing_id = uuid.uuid4()
+    run = enrichment_run(
+        sender_rows=[
+            _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
+            _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
+            _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
+        ],
+        outcomes=[existing_id],
+    )
+
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["linked_existing"] == 1
     assert result["created_new"] == 0
-    assert pool.created_entities == []
+    assert run.created_entities == []
 
-    action = pool.inserted_actions[0]
+    action = run.inserted_actions[0]
     assert action["tool_args"]["subject"] == str(existing_id)
 
 
 @pytest.mark.asyncio
-async def test_already_pending_proposal_is_not_duplicated() -> None:
+async def test_already_pending_proposal_is_not_duplicated(enrichment_run) -> None:
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
             _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
         ],
-        already_pending_addresses={"john.doe@example.com"},
+        outcomes=[_PENDING],
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["already_pending"] == 1
-    assert pool.inserted_actions == []
-    assert pool.created_entities == []
+    assert run.inserted_actions == []
+    assert run.created_entities == []
 
 
 @pytest.mark.asyncio
-async def test_already_proposed_entity_is_not_recreated() -> None:
+async def test_already_proposed_entity_is_not_recreated(enrichment_run) -> None:
     """A previously created-then-rejected proposal must not spawn a duplicate entity."""
     rjobs = _get_rjobs()
-    pool = _FakePool(
+    run = enrichment_run(
         sender_rows=[
             _event_row("john.doe@example.com", thread_id="t1", day_offset=0),
             _event_row("john.doe@example.com", thread_id="t2", day_offset=1),
             _event_row("john.doe@example.com", thread_id="t3", day_offset=2),
         ],
-        already_proposed_addresses={"john.doe@example.com"},
+        outcomes=[_PROPOSED],
     )
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["already_proposed"] == 1
-    assert pool.inserted_actions == []
-    assert pool.created_entities == []
+    assert run.inserted_actions == []
+    assert run.created_entities == []
 
 
 @pytest.mark.asyncio
 async def test_proposes_exactly_the_per_run_cap_without_truncation(
+    enrichment_run,
     _patch_insight_and_state: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exactly a full run is complete; only a surplus candidate marks truncation."""
     rjobs = _get_rjobs()
-
-    async def no_orphans(_pool: Any) -> int:
-        return 0
-
-    monkeypatch.setattr(rjobs, "archive_rejected_identity_enrichment_orphans", no_orphans)
     addresses = [f"person{index}@example.com" for index in range(10)]
-    pool = _FakePool(sender_rows=_recurring_sender_rows(addresses))
+    run = enrichment_run(_recurring_sender_rows(addresses), outcomes=[_CREATE] * 10)
 
-    result = await rjobs.run_email_identity_enrichment(pool)
+    result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["created_new"] == 10
     assert result["linked_existing"] == 0
     assert result["proposal_cap_truncated"] is False
     assert result["truncated"] is False
-    assert [action["tool_args"]["object"] for action in pool.inserted_actions] == addresses
+    assert [action["tool_args"]["object"] for action in run.inserted_actions] == addresses
     assert len(_patch_insight_and_state) == 10
 
 
 @pytest.mark.asyncio
 async def test_stops_at_per_run_proposal_cap_and_reports_truncation(
+    enrichment_run,
     _patch_insight_and_state: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A surplus eligible sender is neither proposed nor silently discarded."""
     rjobs = _get_rjobs()
-
-    async def no_orphans(_pool: Any) -> int:
-        return 0
-
-    monkeypatch.setattr(rjobs, "archive_rejected_identity_enrichment_orphans", no_orphans)
     addresses = [f"person{index}@example.com" for index in range(11)]
-    pool = _FakePool(sender_rows=_recurring_sender_rows(addresses))
+    run = enrichment_run(_recurring_sender_rows(addresses), outcomes=[_CREATE] * 10 + [_CAPPED])
 
     with caplog.at_level(logging.WARNING, logger=rjobs.__name__):
-        result = await rjobs.run_email_identity_enrichment(pool)
+        result = await rjobs.run_email_identity_enrichment(run.pool)
 
     assert result["created_new"] == 10
     assert result["linked_existing"] == 0
     assert result["proposal_cap_truncated"] is True
     assert result["truncated"] is True
-    assert [action["tool_args"]["object"] for action in pool.inserted_actions] == addresses[:10]
+    assert [action["tool_args"]["object"] for action in run.inserted_actions] == addresses[:10]
     assert len(_patch_insight_and_state) == 10
     assert "proposal cap=10 reached" in caplog.text

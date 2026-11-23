@@ -11,7 +11,9 @@ tool (``roster/relationship/tools/meeting_debrief.py``); nothing is created with
 Selection (REQ-butler-relationship "Meeting debrief job")
 ---------------------------------------------------------
 An occurrence is debriefed when it has ended inside the lookback window, is not cancelled,
-not all-day, not butler-generated, not transparent (free time), the owner did not decline
+not all-day, not an out-of-office or working-location status event
+(``calendar_provenance.STATUS_EVENT_TYPES``), not butler-generated, not transparent
+(free time), the owner did not decline
 it, and at least one *other* person remains after removing the owner's own entry, room
 resources, declined guests and anyone whose posture is not ``active``. Recurring series
 are debriefed per occurrence: the unique key is ``(event_id, occurrence_start)``.
@@ -41,11 +43,8 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.temporal.calendar_provenance import (
-    is_explicit_butler_generated,
-    is_owner_attending,
-    is_transparent,
-)
+from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
+from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
 from butlers.jobs.briefing import SGT
 
 logger = logging.getLogger(__name__)
@@ -88,21 +87,25 @@ InsightProposer = Callable[..., Awaitable[dict[str, Any]]]
 
 _OCCURRENCE_SQL = """
     SELECT ce.id AS event_id, ce.title AS title, ce.starts_at AS starts_at,
-           ce.ends_at AS ends_at, ce.metadata AS metadata
+           ce.ends_at AS ends_at, ce.metadata AS metadata, cs.time_role AS time_role
     FROM calendar_events ce
+    JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NULL
       AND ce.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ce.ends_at <= $2
       AND ce.ends_at > $1
     UNION ALL
-    SELECT ce.id, ce.title, ci.starts_at, ci.ends_at, ce.metadata || ci.metadata
+    SELECT ce.id, ce.title, ci.starts_at, ci.ends_at, ce.metadata || ci.metadata, cs.time_role
     FROM calendar_event_instances ci
     JOIN calendar_events ce ON ce.id = ci.event_id
+    JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NOT NULL
       AND ce.status <> 'cancelled'
       AND ci.status <> 'cancelled'
       AND ce.all_day = false
+      AND ce.event_type NOT IN ('outOfOffice', 'workingLocation')
       AND ci.ends_at <= $2
       AND ci.ends_at > $1
     ORDER BY ends_at
@@ -221,10 +224,10 @@ async def _record_new_debriefs(pool: asyncpg.Pool, now: datetime) -> tuple[int, 
     emails: set[str] = set()
     for row in rows:
         meta = _decode_metadata(row["metadata"])
-        if (
-            is_explicit_butler_generated(meta)
-            or is_transparent(meta)
-            or not is_owner_attending(meta)
+        # Only a meeting in the owner's own time is asked about, never one on another person's
+        # calendar the owner was not invited to (REQ-module-calendar-035).
+        if is_explicit_butler_generated(meta) or not counts_as_owner_time(
+            row.get("time_role"), meta
         ):
             continue
         others = _other_attendees(meta)

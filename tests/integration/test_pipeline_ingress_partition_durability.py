@@ -1,7 +1,7 @@
 """Partition provisioning in the ingress-dedupe path must survive a rollback.
 
-``switchboard_message_inbox_ensure_partition()`` performs DDL
-(``CREATE TABLE IF NOT EXISTS ... PARTITION OF message_inbox``).  PostgreSQL
+``switchboard_message_inbox_ensure_partition()`` performs DDL (it creates a
+``message_inbox`` partition ``IF NOT EXISTS``).  PostgreSQL
 allows DDL inside a transaction, but rolling that transaction back also drops
 any table created within it.  So the call has to run on an auto-commit pool
 connection, outside the advisory-lock dedupe transaction — otherwise a later
@@ -28,19 +28,8 @@ docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
+    pytest.mark.asyncio(loop_scope="session"),
 ]
-
-
-@pytest.fixture(scope="module")
-def switchboard_dsn(postgres_container):
-    """Create a trusted core + Switchboard migration database."""
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
 
 
 class _FailingInsertConnection:
@@ -103,38 +92,34 @@ async def _unused_dispatch(*_args: Any, **_kwargs: Any) -> None:  # pragma: no c
 
 
 @pytest.mark.pg_clock
-async def test_ensure_partition_survives_dedupe_transaction_rollback(switchboard_dsn):
+async def test_ensure_partition_survives_dedupe_transaction_rollback(db):
     """A rollback of the dedupe transaction must not destroy the new partition."""
-    pool = await asyncpg.create_pool(switchboard_dsn)
-    try:
-        # ``_accept_ingress`` stamps received_at with datetime.now(UTC), so the
-        # partition under test is the current month's — which the migration
-        # already created.  Drop it so the pipeline has to provision it.
-        partition_name = await pool.fetchval(
-            "SELECT switchboard_message_inbox_ensure_partition(now())"
+    # A trusted core + Switchboard migration database.
+    pool = await db("core", "switchboard", max_size=10)
+    # ``_accept_ingress`` stamps received_at with datetime.now(UTC), so the
+    # partition under test is the current month's — which the migration
+    # already created.  Drop it so the pipeline has to provision it.
+    partition_name = await pool.fetchval("SELECT switchboard_message_inbox_ensure_partition(now())")
+    quoted_partition = '"' + partition_name.replace('"', '""') + '"'
+    await pool.execute(f"DROP TABLE {quoted_partition}")
+    assert await pool.fetchval(_PARTITION_ATTACHED_SQL, partition_name) is False
+
+    pipeline = MessagePipeline(
+        _FailingInsertPool(pool),
+        _unused_dispatch,
+        enable_ingress_dedupe=True,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated message_inbox insert failure"):
+        await pipeline._accept_ingress(
+            message_text="partition durability probe",
+            args={"chat_id": "chat-x0wkl", "message_id": "msg-x0wkl"},
+            source_metadata={"channel": "telegram_bot", "identity": "bot-x0wkl"},
+            source="telegram_bot",
+            chat_id="chat-x0wkl",
         )
-        quoted_partition = '"' + partition_name.replace('"', '""') + '"'
-        await pool.execute(f"DROP TABLE {quoted_partition}")
-        assert await pool.fetchval(_PARTITION_ATTACHED_SQL, partition_name) is False
 
-        pipeline = MessagePipeline(
-            _FailingInsertPool(pool),
-            _unused_dispatch,
-            enable_ingress_dedupe=True,
-        )
-
-        with pytest.raises(RuntimeError, match="simulated message_inbox insert failure"):
-            await pipeline._accept_ingress(
-                message_text="partition durability probe",
-                args={"chat_id": "chat-x0wkl", "message_id": "msg-x0wkl"},
-                source_metadata={"channel": "telegram_bot", "identity": "bot-x0wkl"},
-                source="telegram_bot",
-                chat_id="chat-x0wkl",
-            )
-
-        # Read back on a *separate* pool acquisition: proving durability, not
-        # intra-transaction visibility.
-        async with pool.acquire() as verify_conn:
-            assert await verify_conn.fetchval(_PARTITION_ATTACHED_SQL, partition_name) is True
-    finally:
-        await pool.close()
+    # Read back on a *separate* pool acquisition: proving durability, not
+    # intra-transaction visibility.
+    async with pool.acquire() as verify_conn:
+        assert await verify_conn.fetchval(_PARTITION_ATTACHED_SQL, partition_name) is True

@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act as archiveAct, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useLocation, MemoryRouter, Route, Routes } from "react-router";
+import { Link, useLocation, MemoryRouter, Route, Routes } from "react-router";
 import { useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 
@@ -119,6 +119,54 @@ function renderPage(initialEntry: string) {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+describe("ChatPage — route moves between two conversations (bu-p5umi2.6)", () => {
+  it("settles on the second conversation without ping-ponging, send gated until its owner resolves", async () => {
+    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversationById).mockImplementation(((id: string | null) => ({
+      data: id ? makeConversation({ id, butler_name: id === "conv-b" ? "health" : "switchboard" }) : undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    })) as AnyMock);
+    vi.mocked(useConversationMessages).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(usePricingMap).mockReturnValue({ data: null } as AnyMock);
+    mockTurn([]);
+    const locations: string[] = [];
+    function Spy() {
+      const loc = useLocation();
+      locations.push(loc.pathname);
+      return <Link to="/chat/conv-b">go-b</Link>;
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/chat/conv-a"]}>
+        <Spy />
+        <Routes>
+          <Route path="/chat/:conversationId" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>,
+      { wrapper: QueryWrapper },
+    );
+    locations.length = 0;
+
+    fireEvent.click(screen.getByText("go-b"));
+
+    await waitFor(() => expect(locations.at(-1)).toBe("/chat/conv-b"));
+    // One navigation, no bounce back to A.
+    expect(locations.filter((p) => p === "/chat/conv-a")).toHaveLength(0);
+    expect(locations.length).toBeLessThan(5);
+    expect(vi.mocked(useConversationById).mock.calls.at(-1)).toEqual(["conv-b"]);
+    const turnArgs = vi.mocked(useConversationTurn).mock.calls.at(-1)![0];
+    expect(turnArgs.activeConversationId).toBe("conv-b");
+    expect(turnArgs.butlerName).toBe("health");
+  });
 });
 
 describe("ChatPage — route resolution (bu-0ynlk.11)", () => {

@@ -37,6 +37,10 @@ groups = ["response"]
 [modules.calendar.conflicts]
 policy = "suggest"
 
+# The owner's own Gmail: search, read, archive, label. Registers no tool until the RFC 0038
+# switch turns the goal runtime on (docs/modules/gmail.md).
+[modules.gmail]
+
 [modules.telegram]
 
 [modules.telegram.user]

@@ -24,6 +24,8 @@ from butlers.chronicler.adapters.google_health import (
     GoogleHealthSleepAdapter,
 )
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 # ---------------------------------------------------------------------------
 # Shared test constants
@@ -40,17 +42,6 @@ _SOURCE_REF = f"health.facts:sleep_session:{_IKEY}"
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _NullCtx:
     async def __aenter__(self) -> None:
         return None
@@ -59,7 +50,7 @@ class _NullCtx:
         pass
 
 
-def _make_row(
+def _sleep_row(
     *,
     row_id: str = "fact-uuid-001",
     idempotency_key: str = _IKEY,
@@ -86,16 +77,12 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -104,7 +91,7 @@ def _pool_table_exists_no_rows() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -115,7 +102,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=None)  # carryover fetch returns None
     conn.execute = AsyncMock()
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -139,7 +126,7 @@ async def test_sleep_crossing_batch_boundary_single_episode() -> None:
         return episode
 
     # ----- Batch 1: open episode (no end_time) -----
-    row1 = _make_row(valid_at=_NOW)  # no end_time → open
+    row1 = _sleep_row(valid_at=_NOW)  # no end_time → open
     pool1 = _pool_returning(row1)
     cp1 = _chronicler_pool()
     saved_carryovers: list[dict] = []
@@ -165,7 +152,7 @@ async def test_sleep_crossing_batch_boundary_single_episode() -> None:
 
     # ----- Batch 2: same session, now has end_time -----
     session_end = _NOW + timedelta(hours=7)
-    row2 = _make_row(
+    row2 = _sleep_row(
         row_id="fact-uuid-002",
         valid_at=_NOW,
         created_at=_NOW + timedelta(hours=7),
@@ -223,7 +210,7 @@ async def test_batch2_episode_has_correct_end_at_after_stitching() -> None:
         upserted_batch2.append(episode)
         return episode
 
-    row = _make_row(end_time=session_end, duration_ms=8 * 3_600_000)
+    row = _sleep_row(end_time=session_end, duration_ms=8 * 3_600_000)
     pool = _pool_returning(row)
     cp = _chronicler_pool()
 
@@ -262,7 +249,7 @@ async def test_sleep_within_batch_no_carryover_written() -> None:
         return episode
 
     session_end = _NOW + timedelta(hours=7)
-    row = _make_row(end_time=session_end, duration_ms=7 * 3_600_000)
+    row = _sleep_row(end_time=session_end, duration_ms=7 * 3_600_000)
     pool = _pool_returning(row)
     cp = _chronicler_pool()
 
@@ -315,7 +302,7 @@ async def test_all_null_valid_at_does_not_erase_carryover() -> None:
     must NOT be called.  Same invariant as empty batch.
     """
     adapter = GoogleHealthSleepAdapter()
-    row = _make_row(valid_at=None)  # type: ignore[arg-type]
+    row = _sleep_row(valid_at=None)  # type: ignore[arg-type]
     pool = _pool_returning(row)
     cp = _chronicler_pool()
 
@@ -363,7 +350,7 @@ async def test_different_session_carryover_not_reused() -> None:
         }
     }
 
-    row = _make_row(
+    row = _sleep_row(
         row_id="fact-uuid-new",
         idempotency_key="google_health:sleep:new-session:session",
         session_id="new-session",
@@ -415,7 +402,7 @@ async def test_carryover_matched_by_session_id_reuses_source_ref() -> None:
 
     # Row has a DIFFERENT idempotency_key but the SAME session_id.
     session_end = _NOW + timedelta(hours=7)
-    row = _make_row(
+    row = _sleep_row(
         row_id="fact-uuid-002",
         idempotency_key="google_health:sleep:different-ikey:session",
         session_id=_SESSION_ID,  # same session_id!
@@ -468,7 +455,7 @@ async def test_carryover_matched_by_temporal_proximity() -> None:
     # Row starts 5 minutes after the carryover start_at — well within the gap.
     close_start = _NOW + timedelta(minutes=5)
     session_end = close_start + timedelta(hours=7)
-    row = _make_row(
+    row = _sleep_row(
         row_id="fact-uuid-close",
         valid_at=close_start,
         created_at=close_start + timedelta(hours=7),
@@ -515,7 +502,7 @@ async def test_carryover_not_matched_outside_temporal_gap() -> None:
     far_start = _NOW + timedelta(hours=2)
     session_end = far_start + timedelta(hours=7)
     new_ikey = "google_health:sleep:far-session:session"
-    row = _make_row(
+    row = _sleep_row(
         row_id="fact-uuid-far",
         idempotency_key=new_ikey,
         valid_at=far_start,
@@ -567,7 +554,7 @@ async def test_corrupt_carryover_is_discarded() -> None:
     }
 
     session_end = _NOW + timedelta(hours=7)
-    row = _make_row(end_time=session_end, duration_ms=7 * 3_600_000)
+    row = _sleep_row(end_time=session_end, duration_ms=7 * 3_600_000)
     pool = _pool_returning(row)
     cp = _chronicler_pool()
 

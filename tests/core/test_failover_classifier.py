@@ -808,6 +808,42 @@ class TestEmptyRuntimeResponsesEligible:
         assert "empty_runtime_response" in dec.reason
 
 
+class TestStaleResumeHandleEligible:
+    """A rejected ``--resume`` handle is a pre-work handle fault (bu-089bjy).
+
+    Live 2026-11-18: the Claude CLI exited 1 with "No conversation found with
+    session ID <id>" for every second conversational turn. Classified as an
+    unknown error it was terminal and counted against the model breaker; it must
+    instead be eligible so the spawner's resume branch evicts the handle and
+    retries the same candidate cold under the non-breaker ``resume_failure``.
+    """
+
+    _MSG = (
+        "Claude CLI exited with code 1: No conversation found with session ID: "
+        "163fca0a-59fe-4ab6-848f-5dd3f31d3426"
+    )
+
+    def test_no_conversation_found_is_eligible(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": True})
+        )
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("stale_resume_handle")
+
+    def test_tool_work_still_suppresses(self) -> None:
+        """Gate 6a wins: adapter-reported tool work is never retried."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), process_info={"is_pre_tool_call": False})
+        )
+        assert _suppressed(dec), dec.reason
+
+    def test_captured_tool_calls_still_suppress(self) -> None:
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(self._MSG), tool_calls=[{"name": "notify"}])
+        )
+        assert _suppressed(dec), dec.reason
+
+
 # ---------------------------------------------------------------------------
 # AC-1c: Rate-limit errors ARE eligible
 # ---------------------------------------------------------------------------
@@ -1282,7 +1318,7 @@ class TestMarkerBucketDisjointness:
             if name.endswith("_MARKERS") and isinstance(getattr(_fc, name), tuple)
         }
 
-    def test_expected_eight_marker_buckets_present(self) -> None:
+    def test_expected_nine_marker_buckets_present(self) -> None:
         """Guards against a bucket being renamed/dropped out of the invariant."""
         assert set(self._marker_buckets()) == {
             "_PROVIDER_AUTH_MARKERS",
@@ -1293,6 +1329,7 @@ class TestMarkerBucketDisjointness:
             "_MCP_DISCOVERY_MARKERS",
             "_RUNTIME_CONFIG_MARKERS",
             "_GUARDRAIL_MARKERS",
+            "_STALE_RESUME_MARKERS",
         }
 
     def test_no_pairwise_substring_overlap_across_buckets(self) -> None:
@@ -1317,3 +1354,24 @@ class TestMarkerBucketDisjointness:
             for marker in bucket:
                 assert marker == marker.lower(), f"{name}: {marker!r} is not lowercase"
                 assert marker == marker.strip(), f"{name}: {marker!r} has surrounding whitespace"
+
+
+class TestExecutorEnvUnfit:
+    """bu-ejow5p.5: a provider auth failure in an executor sandbox is an environment fault."""
+
+    MSG = "Claude CLI exited with code 1: authentication failed: invalid api key"
+
+    def test_auth_failure_in_an_executor_is_executor_env_unfit(self) -> None:
+        ctx = _ctx(RuntimeError(self.MSG))
+        ctx.executor_env = True
+        dec = classify_failover_eligibility(ctx)
+        assert dec.reason.startswith("executor_env_unfit"), dec.reason
+
+    def test_the_same_failure_outside_an_executor_keeps_provider_auth_error(self) -> None:
+        dec = classify_failover_eligibility(_ctx(RuntimeError(self.MSG)))
+        assert dec.reason.startswith("provider_auth_error"), dec.reason
+
+    def test_availability_failures_in_an_executor_are_unchanged(self) -> None:
+        ctx = _ctx(RuntimeError("connection refused: provider unavailable"))
+        ctx.executor_env = True
+        assert classify_failover_eligibility(ctx).reason.startswith("provider_unavailable")

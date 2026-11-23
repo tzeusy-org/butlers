@@ -1,0 +1,250 @@
+"""What ``goal.wait_until`` may wait on: the goal's own ledger (RFC 0038 S2.2, S4).
+
+bu-dhloi1.305 PR1 and PR2b. A lead may end its turn waiting on a closed S4 predicate over its own
+goal:
+
+* ``decision``: the owner's decision on one of its parked approvals;
+* ``effect_settled``: the settlement of one of its effects;
+* ``owner_input``: the owner's reply to one of its live prompts. Wake admission joins that reply
+  to the waiting goal as an unread inbox row, and the feed turns the row into the leaf's event.
+
+Those leaves need no approval, since they read only rows this goal already owns and can wake it
+on nothing another principal controls. ``at`` and ``transition`` are refused here, before
+anything is recorded: clock and perception subscriptions are third-party evidence that wait on
+their own approval path.
+
+The grant and the registration snapshot are derived from the goal's ledger rows, never from the
+model:
+
+* the decisions a leaf may name are the effects that went through approval;
+* the effects it may name are all of the goal's effects;
+* the prompts it may name are the goal's committed owner prompts still accepting input.
+
+Each effect status maps to the S4 value it already shows. A prompt shows input while a reply to
+it sits unread in the goal's inbox, so a reply a lead already read never wakes the goal again.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from uuid import NAMESPACE_URL, uuid5
+
+from butlers.conditions import ConditionEvent, Grant, PredicateError, Snapshot
+from butlers.conditions import predicate as ast
+from butlers.core.goal_labels import Label
+
+#: The most wakes one wait may grant its goal, and how far past admission it may run.
+MAX_WAKES = 6
+HORIZON = timedelta(days=45)
+OWN_TAGS = frozenset({"decision", "effect_settled", "owner_input"})
+
+# An approval effect's status as the owner's decision: past ``parked`` the call was approved,
+# whatever its dispatch did since; the domain's ends are the decision itself. ``refused`` is
+# policy, not a decision.
+_DECIDED = {
+    "approved": "approved",
+    "dispatched": "approved",
+    "committed": "approved",
+    "failed": "approved",
+    "unknown": "approved",
+    "rejected": "rejected",
+    "expired": "expired",
+    "cancelled": "cancelled",
+}
+# An effect's status once it can no longer change (D11): an effect that never ran is cancelled.
+_SETTLED = {
+    "committed": "succeeded",
+    "failed": "failed",
+    "unknown": "unknown",
+    "cancelled": "cancelled",
+    "rejected": "cancelled",
+    "expired": "cancelled",
+    "refused": "cancelled",
+}
+
+
+#: The decision an owner edit records on the stored call. It is neither approval nor refusal of
+#: that call, so no S4 outcome matches it; the edited call is a new effect of its own.
+EDITED = "edited"
+
+
+@dataclass(frozen=True, slots=True)
+class OwnEffect:
+    """One of the goal's effect rows: canonical id, status, whether it parked for approval,
+    whether it is a live owner prompt (committed, to the owner, still accepting input), and
+    whether the owner edited it (recorded ``rejected``, the edit dispatched as a new effect
+    under the same approval)."""
+
+    id: str
+    status: str
+    approval: bool
+    prompt: bool = False
+    edited: bool = False
+    label: Label | None = None  # the effect row's S1 label; None is missing provenance
+
+    @property
+    def decision(self) -> str | None:
+        """The owner's decision this approval effect shows, if any."""
+        if not self.approval:
+            return None
+        return EDITED if self.edited else _DECIDED.get(self.status)
+
+
+@dataclass(frozen=True, slots=True)
+class OwnReply:
+    """An unread owner reply in the goal's inbox: the row id, the prompt it answers, and when."""
+
+    id: str
+    goal_id: str
+    binding: str
+    at: datetime
+    # The inbox row's S1 label: the answered prompt's, the owner's, and any outside content the
+    # reply carried (a forwarded or quoted span exposes it). None is missing provenance.
+    label: Label | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Named:
+    """The ledger rows a predicate names, each checked against the goal before recording."""
+
+    decisions: frozenset[str]
+    effects: frozenset[str]
+    inputs: frozenset[str]
+    goals: frozenset[str]
+
+
+def own_predicate(value: object) -> dict:
+    """The canonical predicate, or ``PredicateError`` when it is not S4 or not goal-own."""
+    canonical = ast.validate(value)
+    for leaf in ast.leaves(canonical):
+        if leaf.tag not in OWN_TAGS:
+            raise PredicateError(f"{leaf.tag} is not a goal-own leaf")
+    return canonical
+
+
+def named(predicate: dict) -> Named:
+    """The decision subjects, effect ids, prompt bindings and goals the predicate names."""
+    leaves = list(ast.leaves(predicate))
+    inputs = [leaf.body for leaf in leaves if leaf.tag == "owner_input"]
+    return Named(
+        decisions=frozenset(leaf.body["subject_id"] for leaf in leaves if leaf.tag == "decision"),
+        effects=frozenset(
+            leaf.body["effect_id"] for leaf in leaves if leaf.tag == "effect_settled"
+        ),
+        inputs=frozenset(body["binding_ref"] for body in inputs),
+        goals=frozenset(body["goal_id"] for body in inputs),
+    )
+
+
+def grant_for(goal_id: str, predicate: dict, effects: Iterable[OwnEffect]) -> Grant:
+    """The server-derived subscription grant: the predicate's sources over this goal's rows."""
+    effects = tuple(effects)
+    return Grant(
+        goal_id=goal_id,
+        sources=ast.sources(predicate),
+        decisions=frozenset(e.id for e in effects if e.approval),
+        effects=frozenset(e.id for e in effects),
+        bindings=frozenset(e.id for e in effects if e.prompt),
+    )
+
+
+def events_for(
+    effects: Iterable[tuple[OwnEffect, datetime]], replies: Iterable[OwnReply] = ()
+) -> list[ConditionEvent]:
+    """The goal's own events, from each effect's current status and its unread replies.
+
+    The same mappings as the registration snapshot. A decision event names the effect id as
+    its ``subject_id``, which is what a ``decision`` leaf binds. Each effect event's id is
+    derived from its source, effect and value, so a redelivered event is the same event; its
+    position is the status change time in microseconds. The facts are monotonic (a decision is
+    made once, a settled effect stays settled), so feeding current state never loses or invents
+    a fire. The one exception is an approval that becomes an edit once ``execute_approved``
+    records it; that flip is a real new fact and may fire (bu-dhloi1.325). A reply's event is
+    its inbox row: one event per row, positioned at its arrival.
+    """
+    events: list[ConditionEvent] = []
+    for effect, changed_at in effects:
+        position = int(changed_at.timestamp() * 1_000_000)
+        if (outcome := effect.decision) is not None:
+            events.append(
+                _event(ast.SOURCE_DECISION, "decision", effect, outcome, position, changed_at)
+            )
+        if (status := _SETTLED.get(effect.status)) is not None:
+            events.append(
+                _event(ast.SOURCE_EFFECT, "effect_settled", effect, status, position, changed_at)
+            )
+    for reply in replies:
+        events.append(
+            ConditionEvent(
+                id=str(uuid5(NAMESPACE_URL, f"butlers:goal-event:{ast.SOURCE_INBOX}:{reply.id}")),
+                source=ast.SOURCE_INBOX,
+                position=int(reply.at.timestamp() * 1_000_000),
+                at=reply.at,
+                tag="owner_input",
+                data={"goal_id": reply.goal_id, "binding_ref": reply.binding},
+                label=reply.label,
+            )
+        )
+    return events
+
+
+def snapshot_label(
+    predicate: dict, effects: Iterable[OwnEffect], replies: Iterable[OwnReply] = ()
+) -> Label | None:
+    """The S1 label of the rows a registration snapshot reads for ``predicate``: every effect
+    it names and every unread reply to a prompt it names. None when any is unlabelled, or none
+    is named (nothing it reads can hold a data leaf)."""
+    refs = named(predicate)
+    names = refs.decisions | refs.effects
+    rows = [e.label for e in effects if e.id in names]
+    rows += [r.label for r in replies if r.binding in refs.inputs and r.goal_id in refs.goals]
+    labels = [label for label in rows if label is not None]
+    if not labels or len(labels) != len(rows):
+        return None
+    joined = labels[0]
+    for label in labels[1:]:
+        joined = joined.join(label)
+    return joined
+
+
+def _event(
+    source: str, tag: str, effect: OwnEffect, value: str, position: int, at: datetime
+) -> ConditionEvent:
+    effect_id = effect.id
+    data = (
+        {"subject_id": effect_id, "outcome": value}
+        if tag == "decision"
+        else {"effect_id": effect_id, "status": value}
+    )
+    return ConditionEvent(
+        id=str(uuid5(NAMESPACE_URL, f"butlers:goal-event:{source}:{effect_id}:{value}")),
+        source=source,
+        position=position,
+        at=at,
+        tag=tag,
+        data=data,
+        label=effect.label,
+    )
+
+
+def snapshot_for(
+    now: datetime,
+    effects: Iterable[OwnEffect],
+    inputs: Iterable[str] = (),
+    label: Label | None = None,
+) -> Snapshot:
+    """The registration snapshot, read under the goal lock: what each effect already shows, and
+    ``inputs``, the prompts with an unread reply in the goal's inbox. ``label`` is the label of
+    the rows read (``snapshot_label``); None is missing provenance."""
+    decisions: dict[str, str] = {}
+    settled: dict[str, str] = {}
+    for effect in effects:
+        if (outcome := effect.decision) is not None:
+            decisions[effect.id] = outcome
+        if (status := _SETTLED.get(effect.status)) is not None:
+            settled[effect.id] = status
+    return Snapshot(
+        now=now, decisions=decisions, inputs=frozenset(inputs), effects=settled, label=label
+    )

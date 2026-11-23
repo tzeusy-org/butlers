@@ -45,7 +45,7 @@ The finance butler SHALL have bill reminder, spending review, data import, and i
 
 #### Scenario: Skill inventory
 - **WHEN** the finance butler operates
-- **THEN** it SHALL have access to `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive LLM-driven CSV import via script generation), `historical-data-import` (multi-format bank CSV import with format detection, deduplication, and baseline computation), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
+- **THEN** it SHALL have access to `bill-reminder` (bill review, urgency triage, and payment reminder workflow), `spending-review` (spending analysis by category, time period, anomaly detection, and trend analysis), `transaction-csv-extraction` (adaptive CSV import through `import_transactions(storage_ref)` with a dry-run preview and an explicit column map, also used for a historical backfill of several statements with one import per stored statement), which also replaces the retired `historical-data-import` (multi-format bank CSV import with format detection, deduplication, and baseline computation), `budget-review` (interactive budget setting, status checking, and forecast review), `anomaly-triage` (interactive anomaly review and resolution workflow), plus shared skills `butler-memory` and `butler-notifications`
 
 ### Requirement: Finance Data Conventions
 Financial data SHALL use precise numeric types, ISO currency codes, and tiered deduplication on the dedicated transaction table.
@@ -86,7 +86,7 @@ The finance butler runtime instances SHALL follow additional behavioral guidelin
 #### Scenario: Intelligence data sufficiency awareness
 - **WHEN** intelligence tools return `status="insufficient_data"`
 - **THEN** the runtime SHALL inform the user about the minimum data requirements
-- **AND** it SHALL suggest importing historical data using the `historical-data-import` skill if no historical import has been performed
+- **AND** it SHALL suggest importing historical statements through the `transaction-csv-extraction` skill (one upload and one `import_transactions(storage_ref)` call per statement) if no historical import has been performed
 
 ### Requirement: Finance data stored in dedicated tables with SPO mirror
 The finance butler SHALL store transactions and bills in dedicated `finance.*` tables as primary storage, with SPO facts as a secondary fire-and-forget mirror for memory/recall.
@@ -204,6 +204,23 @@ inline match.
 - **AND** auto-settled bills SHALL be proposed as a `bill-reconciled` insight candidate (priority 35, informational)
 - **AND** ambiguous confirm-tier matches SHALL be proposed as a `bill-reconcile-candidate` insight candidate (priority 55) needing owner confirmation
 - **AND** these SHALL be proposed via `propose_insight_candidate()` for delivery through the insight broker, not sent via a direct `notify()` digest
+
+#### Scenario: bill-reconciliation-sweep ages out stale pending bills
+- **WHEN** the `bill-reconciliation-sweep` job runs, after `reconcile_bills`
+- **THEN** a `pending` bill with `amount = 0` whose `due_date` is more than 7 days past SHALL be set to `status='paid'` with `paid_at` left NULL and `metadata.closed_reason='stale_zero_placeholder'` (there is no `closed` status; nothing was owed, so the NULL `paid_at` marks it as not a real settlement)
+- **AND** a `pending` bill with `amount > 0`, `autopay = false` and `predicted = false` whose `due_date` is more than 7 days past SHALL be set to `status='overdue'`
+- **AND** `autopay` bills SHALL remain `pending` and a `$0` bill SHALL never become `overdue`
+- **AND** re-running the sweep SHALL change nothing further
+
+#### Scenario: bill-reconciliation-sweep rolls recurring bills to the next period
+- **WHEN** the `bill-reconciliation-sweep` job runs, after `reconcile_bills` and the stale-bill aging
+- **THEN** for each series of non-predicted `weekly`, `monthly`, `quarterly` or `yearly` bills (keyed by canonical payee identity, `currency`, `frequency`) whose latest bill has `amount > 0` and is `paid`, `overdue`, or an `autopay` bill still `pending` more than 7 days past due, exactly one new `pending` bill SHALL be inserted with the same payee, `payee_key`, `amount`, `currency`, `frequency`, `autopay`, `payment_method` and `account_id`
+- **AND** its `due_date` SHALL be the first period boundary on or after today, advancing from the source `due_date` by whole periods with month-end clamping (a 31st bill returns to the 31st after a short month)
+- **AND** the roll SHALL live in the sweep, not `reconcile_bills`, because bills that pass unpaid (`overdue`, aged-out autopay) are never settled by reconciliation yet still need a next occurrence
+- **AND** `one_time` and `custom` bills, `predicted` rows and `$0` placeholders SHALL NOT roll
+- **AND** re-running the sweep SHALL insert nothing further, and an existing later bill in the series SHALL prevent a roll
+- **AND** canonical payee identity SHALL be the `payee_key` with a trailing parenthesised web domain removed and a trailing `credit card` read as `cc` (after at least one other word), so `payee_key` variants of one real payee form one series; it SHALL NOT merge on a bare name prefix or drop other qualifiers
+- **AND** no bill SHALL be inserted while an equivalent canonical payee in the same currency already has a later non-predicted bill (any frequency, `pending`, `paid` or `overdue`) within one period of the new due date
 
 #### Scenario: Payment recorded before its bill is reconciled by the sweep
 - **WHEN** a debit transaction was recorded before any matching bill existed

@@ -3,6 +3,7 @@
 Owner session only (the central owner-authentication boundary):
     GET    /api/projections              list grants (never tokens or digests)
     POST   /api/projections              mint a grant; the token is returned once
+    POST   /api/projections/{id}/rotate  swap the token in one step; the new token is returned once
     DELETE /api/projections/{id}         revoke a grant
 
 Owner session or a grant scoped to this exact route (``OwnerAuthMiddleware``):
@@ -120,6 +121,14 @@ def _view(grant: ProjectionGrant) -> ProjectionView:
     )
 
 
+def _minted(grant: ProjectionGrant, token: str) -> MintedProjection:
+    return MintedProjection(
+        **_view(grant).model_dump(),
+        token=token,
+        path=f"/api/projections/{grant.id}/{grant.route_scope}",
+    )
+
+
 def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Projection not found")
 
@@ -143,13 +152,18 @@ async def mint_projection(
         route_scope=body.route_scope,
         expected_fetch_interval=timedelta(seconds=body.expected_fetch_interval_seconds),
     )
-    return ApiResponse(
-        data=MintedProjection(
-            **_view(grant).model_dump(),
-            token=token,
-            path=f"/api/projections/{grant.id}/{grant.route_scope}",
-        )
-    )
+    return ApiResponse(data=_minted(grant, token))
+
+
+@router.post("/{projection_id}/rotate", response_model=ApiResponse[MintedProjection])
+async def rotate_projection(
+    projection_id: uuid.UUID,
+    store: ProjectionGrantStore = Depends(get_projection_store),
+) -> ApiResponse[MintedProjection]:
+    rotated = await store.rotate(projection_id)
+    if rotated is None:
+        raise _not_found()
+    return ApiResponse(data=_minted(*rotated))
 
 
 @router.delete("/{projection_id}", response_model=ApiResponse[ProjectionView])

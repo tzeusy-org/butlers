@@ -103,44 +103,16 @@ def test_revision_chain_and_writer_constants_agree() -> None:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """The pre-rel_035 schema: a deployed entity_facts plus the real rel_034 DDL."""
-    async with provisioned_postgres_pool(schema="relationship") as p:
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute("""
-            CREATE TABLE public.entities (
-                id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT NOT NULL DEFAULT ''
-            )
-        """)
-        await p.execute("""
-            CREATE TABLE relationship.entity_facts (
-                id          UUID NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT NOT NULL,
-                object      TEXT NOT NULL,
-                object_kind TEXT NOT NULL,
-                src         TEXT NOT NULL,
-                conf        FLOAT NOT NULL DEFAULT 1.0,
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                weight      INT,
-                verified    BOOL NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT NOT NULL DEFAULT 'active',
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        async with p.acquire() as conn:
-            for statement in _statements("upgrade", _rel_034()):
-                await conn.execute(statement)
-        yield p
+async def rel_pool(db):
+    """The pre-rel_035 schema: the real chains with relationship stopped at rel_034."""
+    return await db(
+        "core",
+        "memory",
+        "relationship",
+        schemas={"relationship": "relationship"},
+        revisions={"relationship": "rel_034"},
+        schema="relationship",
+    )
 
 
 async def _old_write(conn, subject, obj):
@@ -238,10 +210,12 @@ async def _column_exists(conn, table: str, column: str) -> bool:
 
 @_docker
 @_session_loop
-async def test_expand_keeps_the_old_writer_and_reverses_without_losing_facts(pool) -> None:
+async def test_expand_keeps_the_old_writer_and_reverses_without_losing_facts(rel_pool) -> None:
     upgrade, downgrade = _statements("upgrade"), _statements("downgrade")
-    async with pool.acquire() as conn:
-        subject = await conn.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+    async with rel_pool.acquire() as conn:
+        subject = await conn.fetchval(
+            "INSERT INTO public.entities (canonical_name) VALUES (gen_random_uuid()::text) RETURNING id"
+        )
         legacy_id = await _old_write(conn, subject, "legacy@example.test")
         await conn.execute(
             """
@@ -367,12 +341,14 @@ _BOUND_STATES = [
 
 @_docker
 @_session_loop
-async def test_checks_admit_each_bound_state_once(pool) -> None:
+async def test_checks_admit_each_bound_state_once(rel_pool) -> None:
     """One schema, every case: each bound state has exactly one accepted encoding."""
-    async with pool.acquire() as conn:
+    async with rel_pool.acquire() as conn:
         for statement in _statements("upgrade"):
             await conn.execute(statement)
-        subject = await conn.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
+        subject = await conn.fetchval(
+            "INSERT INTO public.entities (canonical_name) VALUES (gen_random_uuid()::text) RETURNING id"
+        )
         outcomes = {}
         for case, packet, _ in _BOUND_STATES:
             try:

@@ -115,6 +115,16 @@ in `.env.dev` / `.env.prod`).  There is no `postgres` service in
 The database is used by all butlers (one database, per-butler schemas plus the
 public schema).
 
+Before manually starting Chronicler against a fresh database, prepare its private memory schema
+explicitly:
+
+```bash
+uv run butlers db prepare-chronicler-memory --dir roster
+```
+
+The Compose migrations service and Helm dashboard-api initContainer run this prerequisite before
+ordinary migrations. Manual daemon startup does not create the private schema implicitly.
+
 **Role membership is required for `SET ROLE` enforcement.** On PostgreSQL 16+,
 the membership also needs the role-membership `SET` option; a plain membership
 row can still fail with `permission denied to set role`. The Alembic

@@ -107,10 +107,9 @@ a one-line reason. Keying on the *pair* is deliberate: keying on the file alone
 would swallow the next duplicate added to a file already on the list, and keying
 on the name alone would license the same collision anywhere in the tree.
 
-There is deliberately **no** ``--update-baseline`` flag, matching
-``check_archived_requirements_landed.py``: a guard that can re-freeze itself is
-one command away from meaning nothing. Entries come out by hand; the gate prints
-which frozen entries have healed.
+There is deliberately **no** ``--update-baseline`` flag: a guard that can
+re-freeze itself is one command away from meaning nothing. Entries come out by
+hand; the gate prints which frozen entries have healed.
 
 The baseline ships empty. All three pre-existing violations were repaired in the
 same change (bu-ayrbg) -- see that bead for what each one turned out to be.

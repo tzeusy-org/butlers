@@ -7,6 +7,10 @@ from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from typing import Any, Literal
 
+from butlers.google_credentials import GOOGLE_TOKEN_URL
+
+GOOGLE_OAUTH_TOKEN_URL = GOOGLE_TOKEN_URL
+
 logger = logging.getLogger("butlers.modules.calendar")
 
 # Type alias for the approval enqueue callback.
@@ -16,7 +20,6 @@ ApprovalEnqueuer = Callable[
     Coroutine[Any, Any, str],
 ]
 
-GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_CALENDAR_API_BASE_URL = "https://www.googleapis.com/calendar/v3"
 
 # Credential store key for the IMMUTABLE Butlers calendar ID (auto-discovered or

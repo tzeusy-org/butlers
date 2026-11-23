@@ -43,14 +43,12 @@ workarounds in approvals.py/pipeline.py are therefore kept (see bead notes).
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -63,13 +61,7 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._notifications import register_notification_tools
 from butlers.daemon import ButlerDaemon
 from butlers.modules.approvals.email_guard import check_email_recipient, check_recipient
-from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    CONNECTOR_REGISTRY,
-    PENDING_ACTIONS,
-)
+from butlers.testing.db_manager import db_manager
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -79,86 +71,20 @@ pytestmark = [
 ]
 
 
-_AUDIT_WRITER_MIGRATION = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_279_audit_writer_integrity.py"
-)
-
-
-async def _install_audit_writer_integrity(pool: Any) -> None:
-    """Apply the real audit writer migration above this fixture's minimal table."""
-    spec = importlib.util.spec_from_file_location("core_279_fixture", _AUDIT_WRITER_MIGRATION)
-    assert spec is not None and spec.loader is not None
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    statements: list[str] = []
-    mock_op = MagicMock()
-    mock_op.execute.side_effect = statements.append
-    with patch.object(migration, "op", mock_op):
-        migration.upgrade()
-    for statement in statements:
-        await pool.execute(statement)
-
-
 @pytest.fixture
-async def pending_actions_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the approvals tables plus a
-    ``connector_registry`` stand-in for the ingestion_connectors endpoints.
+async def pending_actions_pool(db):
+    """The real core, switchboard (``connector_registry``) and approvals chains.
 
-    Every table comes from a shared declaration in
-    :mod:`butlers.testing.schema_standins`, which the parity guard diffs against
-    the real chain.  The hand-written copy this fixture used to carry had
-    stopped at the pre-``approvals_005`` constraint set, so it accepted
-    ``blast_radius``/``reversibility`` values production rejects (bu-3sve7).
+    Core supplies ``public.entities`` (notify() reads the recipient's posture
+    before it resolves an identifier, bu-q7vx1q.8) and the canonical
+    ``public.audit_log`` the rotate-token refusal writes; delivery admission is
+    enabled as production enables it for these writers.
     """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(PENDING_ACTIONS.ddl())
-        await pool.execute(APPROVAL_RULES.ddl())
-        await pool.execute(APPROVAL_EVENTS.ddl())
-        await install_approval_delivery_schema(pool)
-        # connector_registry stand-in for the disconnect/rotate-token endpoints.
-        # Shared declaration, not a local column list: a local one only covers
-        # today's queries and breaks silently when the chain widens (bu-r8opr).
-        await pool.execute(CONNECTOR_REGISTRY.ddl())
-        # notify() reads the recipient's posture from public.entities before it
-        # resolves an identifier (bu-q7vx1q.8); an unreadable posture fails closed,
-        # so this fixture needs the one column that read touches.
-        await pool.execute(
-            "CREATE TABLE IF NOT EXISTS public.entities ("
-            "id UUID PRIMARY KEY, posture TEXT NOT NULL DEFAULT 'active')"
-        )
-        # Token rotation is rejected before a pending action can be created.
-        # Its refusal is an audit event, so provision the canonical table the
-        # route writes in the normal (non-migration-error) path.
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS public.audit_log (
-                id BIGSERIAL PRIMARY KEY,
-                ts TIMESTAMPTZ NOT NULL DEFAULT now(),
-                actor TEXT NOT NULL,
-                action TEXT NOT NULL,
-                target TEXT,
-                note TEXT,
-                ip INET,
-                request_id UUID,
-                metadata JSONB,
-                result TEXT,
-                error TEXT,
-                -- Mirrors core_202, including its vocabulary CHECK. The column
-                -- alone would make this fixture laxer than production: the
-                -- rotate-token refusal below writes a failure_category, and
-                -- without the constraint this round-trip would accept a value
-                -- the real table rejects.
-                failure_category TEXT,
-                CONSTRAINT audit_log_failure_category_vocabulary CHECK (
-                    failure_category IS NULL
-                    OR failure_category IN (
-                        'not_set', 'expired', 'rejected', 'rate_limited',
-                        'provider_error', 'malformed', 'unverified', 'other'
-                    )
-                )
-            )
-        """)
-        await _install_audit_writer_integrity(pool)
-        yield pool
+    pool = await db("core", "switchboard", "approvals")
+    await pool.execute(
+        "UPDATE approval_delivery_rollout SET admission_enabled = true WHERE singleton"
+    )
+    return pool
 
 
 async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
@@ -174,28 +100,6 @@ async def _fetch_latest_tool_args(pool, tool_name: str) -> Any:
         f"pending action for {tool_name!r} committed without its delivery intent"
     )
     return row["tool_args"]
-
-
-class _FakeDbManager:
-    """Duck-typed stand-in for DatabaseManager exposing ``.pool(name)`` and
-    ``.credential_shared_pool()``.
-
-    ``credential_shared_pool`` raises ``KeyError``, mirroring what the real
-    ``DatabaseManager`` does when no shared credential pool is configured
-    (see api/db.py). That makes ``_build_dashboard_approval_push_runtime``
-    degrade to ``None`` (push skipped, KeyError-only per bu-1j5q6) rather
-    than raising -- these tests only assert the jsonb roundtrip of the
-    pending_actions INSERT, not the owner-push path.
-    """
-
-    def __init__(self, pool: Any) -> None:
-        self._pool = pool
-
-    def pool(self, _name: str) -> Any:
-        return self._pool
-
-    def credential_shared_pool(self) -> Any:
-        raise KeyError("Shared credential pool is not configured")
 
 
 class _FakeCalendarModule:
@@ -222,7 +126,18 @@ class TestDaemonCalendarOverlapEnqueuer:
         )
         daemon.db = SimpleNamespace(pool=pool)
         fake_cal = _FakeCalendarModule()
-        daemon._modules = [fake_cal]
+        from butlers.modules.approvals.execution_context import get_approval_execution_context
+        from butlers.modules.approvals.module import ApprovalsModule
+
+        approvals = ApprovalsModule()
+
+        async def approved_transport(tool_name, tool_args):
+            if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is None:
+                raise PermissionError("Exact approved executor context required")
+            raise AssertionError("This roundtrip test parks only; it must never execute a tool")
+
+        approvals.set_tool_executor(approved_transport)
+        daemon._modules = [fake_cal, approvals]
         daemon._module_statuses = {}
         # __new__ bypasses __init__, so the cached park -> push runtime
         # (bu-mda0r) must be set explicitly like every other instance attr.
@@ -352,7 +267,7 @@ class TestIngestionConnectorsWriters:
             "gmail",
             "user@example.com",
         )
-        db = _FakeDbManager(pool)
+        db = db_manager({"switchboard": pool})
         request = SimpleNamespace(client=None)
 
         response = await disconnect_connector("gmail", "user@example.com", request, db=db)
@@ -374,7 +289,7 @@ class TestIngestionConnectorsWriters:
             "gmail",
             "user2@example.com",
         )
-        db = _FakeDbManager(pool)
+        db = db_manager({"switchboard": pool})
         request = SimpleNamespace(client=None)
 
         from fastapi import HTTPException

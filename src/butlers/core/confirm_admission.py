@@ -63,7 +63,7 @@ class ConfirmEvidence:
             outside_content=not is_owner or prepared.marked,
             reply_delivery=row["goal_delivery_ref"] if is_owner else None,
             owner_entity=row["recipient_entity"] if is_owner else None,
-            owner_channel="telegram" if is_owner else None,
+            owner_channel="telegram_bot" if is_owner else None,
             prepared_input=prepared,
         )
 
@@ -84,7 +84,7 @@ class ConfirmAdmission:
             or row["capability"] != "messenger.notify"
             or row["args_digest"] != effect_digest(producer, prompt)
             or row["recipient_entity"] != prompt.recipient.entity_id
-            or row["recipient_channel"] != "telegram"
+            or row["recipient_channel"] != "telegram_bot"
             or not row["prompt_accepts_input"]
         ):
             raise ValueError("verified accepting prompt delivery required")

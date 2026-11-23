@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from urllib.parse import urlparse
 
 import asyncpg
@@ -34,6 +35,7 @@ from butlers.core.approval_delivery_authority import (
     ProtectedApprovalMCP,
     SourceApprovalAdmission,
     approval_companion_mcp,
+    approval_delivery_composition,
 )
 from butlers.core.approval_delivery_transport import RecoveryAuthorityError
 from butlers.core.approval_delivery_worker import ApprovalDeliveryWorker, HandoffResult
@@ -81,7 +83,7 @@ def authority_db_url(postgres_container) -> str:
     for schema, chains in (
         ("relationship", ["core", "memory", "relationship", "approvals"]),
         ("switchboard", ["core", "switchboard"]),
-        ("messenger", ["core", "messenger"]),
+        ("messenger", ["core", "messenger", "approvals"]),
     ):
         for chain in chains:
             command.upgrade(
@@ -110,7 +112,11 @@ async def authority_pools(authority_db_url):
             "relationship.approval_delivery_cohorts, "
             "relationship.approval_delivery_intents, relationship.approval_events, "
             "relationship.pending_actions, switchboard.notifications, "
-            "switchboard.message_inbox, messenger.approval_delivery_handoffs CASCADE"
+            "switchboard.message_inbox, messenger.approval_delivery_handoffs, "
+            "messenger.approval_delivery_attempts, messenger.approval_delivery_cohort_members, "
+            "messenger.approval_delivery_presentations, messenger.approval_delivery_cohorts, "
+            "messenger.approval_delivery_intents, messenger.approval_events, "
+            "messenger.pending_actions CASCADE"
         )
     finally:
         await cleanup.close()
@@ -133,31 +139,37 @@ async def authority_pools(authority_db_url):
             assert await pool.fetchval("SELECT current_user") == f"butler_{schema}_rw"
             for peer in ("relationship", "switchboard", "messenger"):
                 if peer != schema:
-                    legacy_relationship_reader = schema == "relationship" and peer == "switchboard"
+                    inbox_reader = schema in {"relationship", "messenger"} and peer == "switchboard"
                     assert (
                         await pool.fetchval("SELECT has_schema_privilege($1, 'USAGE')", peer)
-                        is legacy_relationship_reader
+                        is inbox_reader
                     )
                     peer_table = {
                         "relationship": "pending_actions",
                         "switchboard": "notifications",
                         "messenger": "approval_delivery_handoffs",
                     }[peer]
-                    if legacy_relationship_reader:
-                        # Existing bootstrap deliberately grants Relationship
-                        # generic Switchboard reads for follow-up jobs. It is
-                        # not approval-source authority or a new grant here.
-                        assert await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}") >= 0
+                    if inbox_reader:
+                        # messenger's core_001 revokes Switchboard access after the
+                        # Switchboard run; core_339's repair restores USAGE and only
+                        # the inbox needed by deterministic follow-up jobs.
+                        # This read is under the actual owning runtime role.
+                        assert (
+                            await pool.fetchval("SELECT count(*) FROM switchboard.message_inbox")
+                            >= 0
+                        )
                         with pytest.raises(asyncpg.InsufficientPrivilegeError):
                             await pool.execute(
                                 "UPDATE switchboard.notifications SET message=message WHERE false"
                             )
-                    else:
-                        with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                            await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}")
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        await pool.fetchval(f"SELECT count(*) FROM {peer}.{peer_table}")
         source = pools["relationship"]
         await source.execute(
             "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=false"
+        )
+        await pools["messenger"].execute(
+            "UPDATE approval_delivery_rollout SET admission_enabled=false, worker_enabled=false"
         )
         await source.execute(
             "UPDATE public.approvals_policy SET quiet_start_hour=NULL, quiet_end_hour=NULL, "
@@ -235,7 +247,7 @@ async def _registered_servers(pools):
         messenger_registration,
         lambda *_args, **_kwargs: messenger_registration.tool(),
     )
-    return switchboard, switchboard_mcp, messenger_mcp, providers
+    return switchboard, switchboard_mcp, messenger_mcp, providers, daemon
 
 
 async def _admit_source_actions(pool, *, ordinal, count=1):
@@ -332,6 +344,7 @@ async def _ordinary_tcp_mcp(registered):
 
 
 _CASES = [
+    "production-composition",
     "accepted",
     "cohort",
     "missing",
@@ -421,7 +434,126 @@ async def test_registered_source_authority_transport(authority_pools, case, capl
         return proof
 
     monkeypatch.setattr(source, "mint", observed_mint)
-    module, switchboard_mcp, messenger_mcp, providers = await _registered_servers(pools)
+    module, switchboard_mcp, messenger_mcp, providers, messenger = await _registered_servers(pools)
+    if case == "production-composition":
+        # Registry routing applies this chart-owned host mapping before the
+        # bound companion is called; it still never opens a TCP delivery path.
+        monkeypatch.setenv("BUTLERS_HOST", "butlers-up.example.test")
+        from butlers.core.approval_callbacks import verify_approval_callback_token
+        from butlers.credential_store import CredentialStore
+        from butlers.modules.approvals.module import ApprovalsModule
+
+        # Actual registered Messenger object, real owning-role stores/resolvers,
+        # and the exact production composition (the host hookup has a unit owner).
+        pool = pools["messenger"]
+        approvals = ApprovalsModule()
+        await approvals.on_startup(None, pool)
+        try:
+            await approvals.register_tools(messenger_mcp, None, pool, "messenger")
+            await pool.execute(
+                "UPDATE approval_delivery_rollout SET admission_enabled=true, worker_enabled=true"
+            )
+            messenger.config.db_schema = "messenger"
+            messenger.config.port = 41102
+            messenger.mcp = messenger_mcp
+            messenger._modules.append(approvals)
+            messenger._module_runtime_states = {
+                "approvals": SimpleNamespace(health="active", enabled=True)
+            }
+            messenger._approval_delivery_runtime = None
+            messenger._approval_delivery_task = None
+            messenger._approval_delivery_stop = None
+            messenger._credential_store = CredentialStore(pool)
+            await messenger._credential_store.store("APPROVAL_CALLBACK_SECRET", "synthetic-secret")
+            # A configured candidate does not grant owner authority: production
+            # composition and Messenger both run the real owning-role verifier.
+            messenger._resolve_default_notify_recipient = AsyncMock(return_value=_RECIPIENT)
+            completed = asyncio.Event()
+            actual_complete = ApprovalDeliveryRepository.complete_handoff
+
+            async def observe_completion(repository, claim, result):
+                committed = await actual_complete(repository, claim, result)
+                if committed and result.classification == "confirmed":
+                    completed.set()
+                return committed
+
+            monkeypatch.setattr(ApprovalDeliveryRepository, "complete_handoff", observe_completion)
+            switchboard = SimpleNamespace(
+                config=SimpleNamespace(name="switchboard"),
+                mcp=switchboard_mcp,
+                _modules=[module],
+                _module_runtime_states={
+                    "switchboard": SimpleNamespace(health="active", enabled=True)
+                },
+            )
+            action_id = uuid.uuid4()
+            requested_at = datetime.now(UTC)
+            call = {"chat_id": "500600700", "text": "Synthetic exact approved call"}
+            await park_pending_action(
+                pool,
+                action_id=action_id,
+                tool_name="telegram_send_message",
+                tool_args=call,
+                agent_summary="Synthetic exact approved call",
+                requested_at=requested_at,
+                expires_at=requested_at + timedelta(hours=2),
+                why="Synthetic owner-requested send.",
+                evidence=[],
+                blast_radius="contact",
+                reversibility="compensable",
+                origin_butler="messenger",
+            )
+            async with (
+                asyncio.timeout(30),
+                approval_delivery_composition([switchboard, messenger]) as production,
+            ):
+                assert production is not None
+                await completed.wait()
+                assert (
+                    await pool.fetchval("SELECT state FROM approval_delivery_presentations")
+                    == "delivered"
+                )
+                assert len(providers["telegram"].calls) == 1
+                assert await pool.fetchval("SELECT count(*) FROM approval_delivery_intents") == 1
+                assert (
+                    await pool.fetchval("SELECT count(*) FROM approval_delivery_presentations") == 1
+                )
+                handoff = await pool.fetchrow("SELECT * FROM approval_delivery_handoffs")
+                assert handoff["issuer"] == handoff["owning_schema"] == "messenger"
+                assert handoff["handoff_class"] == "confirmed"
+                provider_args, provider_kwargs = providers["telegram"].calls[0]
+                assert provider_args[0] == _RECIPIENT
+                assert call["chat_id"] in provider_args[1] and call["text"] in provider_args[1]
+                buttons = provider_kwargs["reply_markup"]["inline_keyboard"]
+                tokens = [
+                    button["callback_data"]
+                    for row in buttons
+                    for button in row
+                    if "callback_data" in button
+                ]
+                assert len(tokens) == 2
+                for token in tokens:
+                    verified = verify_approval_callback_token(
+                        token, requested_at=requested_at, secret="synthetic-secret"
+                    )
+                    assert verified is not None and verified.action_id == action_id
+                    assert (
+                        verify_approval_callback_token(
+                            token, requested_at=requested_at, secret="wrong-secret"
+                        )
+                        is None
+                    )
+                assert (
+                    await pool.fetchval("SELECT status FROM pending_actions WHERE id=$1", action_id)
+                    == "pending"
+                )
+            assert messenger._approval_delivery_runtime is None
+            assert messenger._approval_delivery_task is None
+            assert module._approval_recovery_call is None
+            assert len(providers["telegram"].calls) == 1
+        finally:
+            await approvals.on_shutdown()
+        return
     with tempfile.TemporaryDirectory(prefix="approval-", dir=Path.home()) as folder:
         sockets = Path(folder)
         topology = ApprovalAuthorityTopology(
@@ -875,7 +1007,7 @@ async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_rece
     from butlers.modules.telegram import TelegramModule
 
     pools = authority_pools
-    module, switchboard_mcp, messenger_mcp, providers = await _registered_servers(pools)
+    module, switchboard_mcp, messenger_mcp, providers, _messenger = await _registered_servers(pools)
     native = TelegramModule()
     native._db = SimpleNamespace(pool=pools["messenger"])
     native._butler_name = "messenger"
@@ -924,3 +1056,122 @@ async def test_actual_recovery_ledger_never_replays_native_telegram_unknown_rece
                 )
             assert row["handoff_class"] == "ambiguous"
             assert row["provider_reference"] is None and row["provider_started_at"] is not None
+
+
+_APPROVED_NOTIFY_ARGS = {"intent": "send", "channel": "telegram", "message": "Approved words"}
+
+
+async def _insert_notify_row(
+    pool, *, tool_name="notify", status="approved", result=None, goal=False
+):
+    action_id = uuid.uuid4()
+    goal_columns = ""
+    goal_values = ""
+    goal_args: list = []
+    if goal:
+        goal_columns = ", goal_id, goal_invocation_id, goal_depth, goal_exposed, goal_origin"
+        goal_values = ", $5, $6, 0, false, 'owner'"
+        goal_args = [uuid.uuid4(), uuid.uuid4()]
+    await pool.execute(
+        f"INSERT INTO pending_actions (id, tool_name, tool_args, status, execution_result"
+        f"{goal_columns}) VALUES ($1, $2, $3, $4, ${len(goal_args) + 5}{goal_values})",
+        action_id,
+        tool_name,
+        _APPROVED_NOTIFY_ARGS,
+        status,
+        *goal_args,
+        result,
+    )
+    return action_id
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "approved",
+        "executed",
+        "pending",
+        "rejected",
+        "approved-with-result",
+        "goal",
+        "non-notify",
+        "digest-mismatch",
+        "wrong-schema",
+        "other-schemas-pool",
+        "wrong-role",
+    ],
+)
+async def test_approved_notify_live_row_predicate(authority_pools, authority_db_url, case):
+    """RFC 0038 D13: only a live, approved, unexecuted, goal-free notify row attests.
+
+    This is the security predicate behind the single-use approved-notify proof.
+    It runs under the owning SET ROLE pool against the real migrated schema.
+    """
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    source = authority_pools["relationship"]
+    digest = approval_tool_args_digest(_APPROVED_NOTIFY_ARGS)
+    row = dict(
+        executed={"status": "executed", "result": {"success": True}},
+        pending={"status": "pending"},
+        rejected={"status": "rejected"},
+        **{"approved-with-result": {"result": {"success": False}}},
+        goal={"goal": True},
+        **{"non-notify": {"tool_name": "telegram_send_message"}},
+    ).get(case, {})
+    action_id = await _insert_notify_row(source, **row)
+    pool, schema = source, "relationship"
+    if case == "digest-mismatch":
+        digest = "0" * 64
+    elif case == "wrong-schema":
+        schema = "messenger"
+    elif case == "other-schemas-pool":
+        # The messenger pool has no such row in its own schema: the schema guard answers.
+        pool = authority_pools["messenger"]
+
+    async with AsyncExitStack() as stack:
+        if case == "wrong-role":
+            # Isolates the role predicate: the live row is in the right schema, the digest
+            # matches and the schema guard passes, but the caller is the migration owner,
+            # not the owning ``butler_relationship_rw`` role.
+            pool = await asyncpg.create_pool(
+                authority_db_url,
+                min_size=1,
+                max_size=1,
+                init=register_jsonb_codec,
+                server_settings={"search_path": "relationship,public"},
+            )
+            stack.push_async_callback(pool.close)
+            assert await pool.fetchval("SELECT current_schema()") == "relationship"
+            assert await pool.fetchval("SELECT current_user") != "butler_relationship_rw"
+            assert (
+                await pool.fetchval("SELECT count(*) FROM pending_actions WHERE id = $1", action_id)
+                == 1
+            )
+        stored = await ApprovalDeliveryRepository(pool).approved_notify_args(
+            action_id, owning_schema=schema, args_digest=digest
+        )
+
+    assert stored == (_APPROVED_NOTIFY_ARGS if case == "approved" else None)
+
+
+async def test_approved_notify_read_does_not_wait_on_the_executor_row_lock(authority_pools):
+    """The source verifies while its own executor holds FOR UPDATE on the row."""
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    source = authority_pools["relationship"]
+    action_id = await _insert_notify_row(source)
+    async with source.acquire() as executor, executor.transaction():
+        locked = await executor.fetchrow(
+            "SELECT status FROM pending_actions WHERE id = $1 FOR UPDATE", action_id
+        )
+        assert locked["status"] == "approved"
+        stored = await asyncio.wait_for(
+            ApprovalDeliveryRepository(source).approved_notify_args(
+                action_id,
+                owning_schema="relationship",
+                args_digest=approval_tool_args_digest(_APPROVED_NOTIFY_ARGS),
+            ),
+            timeout=5,
+        )
+    assert stored == _APPROVED_NOTIFY_ARGS

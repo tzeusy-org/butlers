@@ -29,6 +29,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import carrying_forward
 from butlers.tools.relationship._entity_resolve import resolve_contact_entity_id
 
 logger = logging.getLogger(__name__)
@@ -218,8 +219,22 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
     from butlers.modules.memory.storage import store_fact
 
     async with pool.acquire() as conn, conn.transaction():
+        # Lock order: the entity before the loan row. The successor insert takes the entity
+        # for its foreign key, which with the loan row held is a cycle with a forget. A merge
+        # commits first and moves facts afterwards, so a successor written on a merged-away
+        # entity could miss that move for good: refuse until the loan has moved. Past this
+        # check the entity is live and held, so no merge can start moving the row.
+        locked = await conn.fetchrow(
+            "SELECT metadata->>'merged_into' AS merged_into FROM public.entities WHERE id = "
+            "(SELECT entity_id FROM facts WHERE id = $1 AND scope = 'relationship') "
+            "FOR KEY SHARE",
+            loan_id,
+        )
+        if locked is not None and locked["merged_into"] is not None:
+            raise ValueError(f"Loan {loan_id} is moving to a merged contact; retry shortly.")
         row = await conn.fetchrow(
-            "SELECT id, subject, content, metadata, entity_id FROM facts"
+            "SELECT id, subject, content, metadata, entity_id, content_authority,"
+            " authority_entity_id, taint_goal_id, taint_invocation_id FROM facts"
             " WHERE id = $1 AND scope = 'relationship' AND validity = 'active' FOR UPDATE",
             loan_id,
         )
@@ -237,24 +252,27 @@ async def loan_settle(pool: asyncpg.Pool, loan_id: uuid.UUID) -> dict[str, Any]:
         embedding_engine = _get_embedding_engine()
 
         await conn.execute(
-            "UPDATE facts SET validity = 'superseded', invalid_at = $2 WHERE id = $1",
+            "UPDATE facts SET validity = 'superseded', invalid_at = $2, dropped_at "
+            "= CASE WHEN validity IN ('superseded', 'expired') THEN dropped_at "
+            "ELSE $2 END WHERE id = $1",
             loan_id,
             now,
         )
-        new_fact_id = (
-            await store_fact(
-                _BoundConnectionPool(conn),
-                subject=row["subject"],
-                predicate="loan",
-                content=row["content"],
-                embedding_engine=embedding_engine,
-                permanence="stable",
-                scope="relationship",
-                entity_id=row["entity_id"],
-                valid_at=now,
-                metadata=new_metadata,
-            )
-        )["id"]
+        with carrying_forward(row):
+            new_fact_id = (
+                await store_fact(
+                    _BoundConnectionPool(conn),
+                    subject=row["subject"],
+                    predicate="loan",
+                    content=row["content"],
+                    embedding_engine=embedding_engine,
+                    permanence="stable",
+                    scope="relationship",
+                    entity_id=row["entity_id"],
+                    valid_at=now,
+                    metadata=new_metadata,
+                )
+            )["id"]
 
         try:
             from butlers.core.cost_claims import retract_claim

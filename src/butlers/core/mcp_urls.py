@@ -67,8 +67,10 @@ def prefer_ipv4_loopback_url(url: str) -> str:
 def resolve_cross_container_mcp_url(url: str) -> str:
     """Resolve registered loopback endpoints from the caller's container.
 
-    Domains use BUTLERS_HOST. Canonical Switchboard port 41100 instead uses
+    Domains use BUTLERS_HOST. Canonical Switchboard port 41100 uses
     SWITCHBOARD_MCP_URL when configured, including from domain processes.
+    A remote Health connection can use HEALTH_MCP_URL on port 41103. Upgrade a
+    registered HTTP URL when its configured service endpoint requires HTTPS.
     Preserve path, query and raw userinfo; explicit remote hosts stay intact.
     Without cross-container configuration, resolution is a no-op.
     """
@@ -83,6 +85,18 @@ def resolve_cross_container_mcp_url(url: str) -> str:
             target = urlparse(switchboard)
             if not target.hostname or target.scheme not in ("http", "https"):
                 raise ValueError("SWITCHBOARD_MCP_URL must be an absolute HTTP MCP URL")
+    elif parsed.port == 41103 and host and host != "localhost":
+        health = os.environ.get("HEALTH_MCP_URL")
+        if health is not None:
+            target = urlparse(health)
+            if (
+                target.hostname != host.lower()
+                or target.scheme != "https"
+                or target.port != 41103
+                or target.username is not None
+                or target.password is not None
+            ):
+                raise ValueError("HEALTH_MCP_URL must be an HTTPS URL on port 41103")
     if target is None and (not host or host == "localhost"):
         return url
 
@@ -93,6 +107,8 @@ def resolve_cross_container_mcp_url(url: str) -> str:
     destination = (
         target.netloc.rsplit("@", 1)[-1] if target is not None else f"{host}{port_sep}{port}"
     )
+    if target is not None and target.scheme == "https" and parsed.scheme == "http":
+        parsed = parsed._replace(scheme="https")
     return urlunparse(parsed._replace(netloc=f"{userinfo}{sep}{destination}"))
 
 

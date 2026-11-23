@@ -16,11 +16,13 @@ central writer are mocked via unittest.mock.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -183,35 +185,28 @@ class TestContactInfoReadsAllowed:
 # ===========================================================================
 
 
+_CORE_110 = (
+    Path(__file__).resolve().parents[2]
+    / "alembic"
+    / "versions"
+    / "core"
+    / "core_110_contact_info_write_block.py"
+)
+
+
 class TestRevokeMigration:
-    def _load_migration(self):
-        import importlib.util
-        from pathlib import Path
-
-        path = (
-            Path(__file__).resolve().parents[2]
-            / "alembic"
-            / "versions"
-            / "core"
-            / "core_110_contact_info_write_block.py"
-        )
-        spec = importlib.util.spec_from_file_location("core_110_test", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
     def test_revision_chain(self):
-        mod = self._load_migration()
+        mod = load_migration(_CORE_110)
         assert mod.revision == "core_110"
         assert mod.down_revision == "core_109"
 
     def test_targets_contact_info_only_not_contacts(self):
-        mod = self._load_migration()
+        mod = load_migration(_CORE_110)
         # The table FQN constant targets contact_info — NOT public.contacts.
         assert mod._TABLE_FQN == "public.contact_info"
 
     def test_role_coverage_matches_core_065(self):
-        mod = self._load_migration()
+        mod = load_migration(_CORE_110)
         # Every butler runtime role + connector_writer is covered.
         assert "connector_writer" in mod._ALL_ROLES
         assert "butler_relationship_rw" in mod._ALL_ROLES
@@ -220,7 +215,7 @@ class TestRevokeMigration:
 
     def test_upgrade_revokes_and_downgrade_grants(self):
         """upgrade() emits REVOKE statements; downgrade() emits matching GRANTs."""
-        mod = self._load_migration()
+        mod = load_migration(_CORE_110)
         emitted: list[str] = []
 
         def _capture(stmt, *, role_name=None):  # noqa: ARG001

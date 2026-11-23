@@ -12,10 +12,29 @@ from butlers.core.temporal.calendar_provenance import (
     is_explicit_butler_generated,
     is_legacy_all_day_like,
     is_owner_attending,
+    is_status_event,
     is_transparent,
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected"),
+    [
+        ("outOfOffice", True),
+        ("workingLocation", True),
+        # Case-sensitive provider values; anything else is an ordinary event.
+        ("outofoffice", False),
+        ("focusTime", False),
+        ("default", False),
+        ("someFutureType", False),
+        (None, False),
+        (7, False),
+    ],
+)
+def test_only_the_provider_status_types_are_status_events(event_type, expected) -> None:
+    assert is_status_event(event_type) is expected
 
 
 def test_explicit_butler_generated_marker_is_narrow_and_tolerates_malformed_metadata() -> None:

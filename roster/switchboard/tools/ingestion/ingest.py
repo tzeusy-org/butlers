@@ -52,6 +52,7 @@ from butlers.core.account_security_events import (
     publish_security_event,
     sender_authentication_verdict,
 )
+from butlers.core.break_through import spawn_observation as spawn_break_through_observation
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -1024,6 +1025,11 @@ async def ingest_v1(
                 else {}
             ),
             **(
+                {"automated_evidence": envelope.control.automated_evidence.model_dump(mode="json")}
+                if envelope.control.automated_evidence is not None
+                else {}
+            ),
+            **(
                 {"payload_type": envelope.control.payload_type}
                 if envelope.control.payload_type
                 else {}
@@ -1087,6 +1093,11 @@ async def ingest_v1(
     # session can tell the owner a voice note was not transcribed. Metadata, never authority.
     if envelope.payload.transcription is not None:
         raw_payload["payload"]["transcription"] = envelope.payload.transcription.model_dump()
+    # 6e. Keep the producer's keyed transcript binding for goal admission to verify
+    # (REQ-audio-authorship-002). Retained with the accepted row so a duplicate or replay
+    # resolves to this row's decision; nothing on the routing path reads it.
+    if envelope.payload.audio_authorship is not None:
+        raw_payload["payload"]["audio_authorship"] = envelope.payload.audio_authorship.model_dump()
     raw_payload = _strip_null_bytes(raw_payload)
 
     # 7. Ensure partition exists for received_at — committed immediately,
@@ -1314,6 +1325,20 @@ async def ingest_v1(
             )
     except Exception:
         logger.warning("account-security sensor failed (non-fatal)", exc_info=True)
+
+    # Break-through sensor (bu-s11n0s.8): does this message match an owner clause? Independent
+    # of the policy decision above; runs as a background task so ingest never waits for it.
+    spawn_break_through_observation(
+        pool,
+        channel=envelope.source.channel,
+        sender_identity=str(envelope.sender.identity or ""),
+        normalized_text=normalized_text,
+        raw=envelope.payload.raw,
+        source_request_id=str(request_id),
+        thread=event_conversation_identity(envelope.event.model_dump())[0],
+        received_at=received_at,
+        owner_sender_identity=envelope.sender.owner_sender_id,
+    )
 
     # Fan an "ingestion" event onto the multiplexed fleet event bus (bu-86c4c.8,
     # move 5; wired in bu-h8ioq). This is the single choke point where every

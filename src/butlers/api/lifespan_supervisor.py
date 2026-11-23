@@ -26,6 +26,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 from butlers.core.job_health import _CURRENT, JobRecorder
+from butlers.core.scheduler.cancel import task_cancel_requested
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,8 @@ async def _supervise(
     Cancellation (shutdown) is the sole normal termination: it propagates
     immediately without logging a restart and without sleeping, so
     ``task.cancel(); await task`` in the lifespan shutdown path returns
-    promptly.
+    promptly. A ``CancelledError`` with no cancel of this task behind it is a
+    crash like any other, and restarts the loop.
     """
     backoff = initial_backoff_s
     if health is not None:
@@ -65,12 +67,12 @@ async def _supervise(
         token = _CURRENT.set(health)
         try:
             await coro_factory()
-        except asyncio.CancelledError:
-            logger.info("lifespan loop %r cancelled (shutdown); not restarting", name)
-            if health is not None:
-                await health.stopped()
-            raise
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) and task_cancel_requested():
+                logger.info("lifespan loop %r cancelled (shutdown); not restarting", name)
+                if health is not None:
+                    await health.stopped()
+                raise
             if health is not None:
                 await health.tick_failed("loop_crashed")
             logger.exception(

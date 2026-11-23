@@ -75,13 +75,16 @@ export function ActivitySparkline({ entityId }: { entityId: string }) {
 
   const maxCount = Math.max(...bins.map((b) => b.count), 1);
   const activeDays = bins.filter((b) => b.count > 0).length;
+  // A capped Chronicler read undercounts busy entities: say "at least".
+  const lowerBound = data.chronicler_truncated === true;
+  const atLeast = lowerBound ? "at least " : "";
 
   return (
     <div data-testid="activity-sparkline" className="space-y-1.5">
       <div
         className="flex h-7 items-end gap-px"
         role="img"
-        aria-label={`Activity over the last ${bins.length} days: ${total} events across ${activeDays} days`}
+        aria-label={`Activity over the last ${bins.length} days: ${atLeast}${total} events across ${atLeast}${activeDays} days`}
       >
         {bins.map((bin) => {
           const quiet = bin.count === 0;
@@ -104,8 +107,9 @@ export function ActivitySparkline({ entityId }: { entityId: string }) {
         })}
       </div>
       <p className="text-xs tabular-nums text-muted-foreground">
-        {total} {total === 1 ? "event" : "events"} · {activeDays} active{" "}
-        {activeDays === 1 ? "day" : "days"} · last {bins.length} days
+        {atLeast}
+        {total} {total === 1 ? "event" : "events"} · {atLeast}
+        {activeDays} active {activeDays === 1 ? "day" : "days"} · last {bins.length} days
       </p>
     </div>
   );

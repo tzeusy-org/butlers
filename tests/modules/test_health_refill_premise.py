@@ -17,12 +17,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
 from butlers.core.insight_premise import probe_premise
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight import broker, premises
 
 _docker_available = shutil.which("docker") is not None
@@ -55,7 +52,7 @@ class TestRefillProducerBinding:
         pool = MagicMock()
 
         async def fetch(query, *args):
-            if "predicate = 'medication'" in query:
+            if "predicate = 'medication'" in query and "took_dose" not in query:
                 return [med]
             return []
 
@@ -148,40 +145,16 @@ class TestRefillProbeVerdicts:
             assert await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS)) is None
 
 
-@pytest.fixture
-def refill_db_url(postgres_container) -> str:
-    """Migrate a fresh database before entering this case's async fixture loop."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not _docker_available, reason="Docker not available")
 @pytest.mark.integration
 class TestRefillPremiseAgainstPostgres:
     @pytest.fixture
-    async def pool(self, refill_db_url: str):
-        pool = await asyncpg.create_pool(
-            refill_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
-        try:
-            await broker.create_insight_tables(pool)
-            await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
-            await pool.execute(
-                """
-                CREATE TABLE health.facts (
-                    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-                    subject text NOT NULL, predicate text NOT NULL,
-                    scope text NOT NULL DEFAULT 'global',
-                    validity text NOT NULL DEFAULT 'active',
-                    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-                    valid_at timestamptz,
-                    created_at timestamptz NOT NULL DEFAULT clock_timestamp()
-                )
-                """
-            )
-            yield pool
-        finally:
-            await pool.close()
+    async def refill_pool(self, db):
+        """Core + memory (as health.facts) chains, with the Insight tables."""
+        pool = await db("core", "memory", schemas={"memory": "health"})
+        await broker.create_insight_tables(pool)
+        return pool
 
     async def _med(
         self,
@@ -200,16 +173,17 @@ class TestRefillPremiseAgainstPostgres:
             "quantity_updated_at": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
         }
         med_id = await pool.fetchval(
-            "INSERT INTO health.facts (subject, predicate, scope, validity, metadata) "
-            "VALUES ($3, 'medication', 'health', $1, $2::jsonb) RETURNING id",
+            "INSERT INTO health.facts (subject, predicate, content, scope, validity, metadata) "
+            "VALUES ($3, 'medication', $3, 'health', $1, $2::jsonb) RETURNING id",
             validity,
             meta,
             subject,
         )
         for _ in range(doses):
             await pool.execute(
-                "INSERT INTO health.facts (subject, predicate, scope, metadata, valid_at) "
-                "VALUES ('dose', 'took_dose', 'health', jsonb_build_object('medication_id', $1::text), now())",
+                "INSERT INTO health.facts (subject, predicate, content, scope, metadata, valid_at) "
+                "VALUES ('dose', 'took_dose', 'dose', 'health', "
+                "jsonb_build_object('medication_id', $1::text), now())",
                 str(med_id),
             )
         return med_id
@@ -217,29 +191,29 @@ class TestRefillPremiseAgainstPostgres:
     async def _verdict(self, pool):
         return await premises.check_premise(pool, probe_premise(*_PROBE, _ARGS))
 
-    async def test_still_due_then_refilled_paused_or_stopped(self, pool):
-        await self._med(pool, quantity=10, doses=3)
-        assert await self._verdict(pool) is True  # 7 days left, inside 14
+    async def test_still_due_then_refilled_paused_or_stopped(self, refill_pool):
+        await self._med(refill_pool, quantity=10, doses=3)
+        assert await self._verdict(refill_pool) is True  # 7 days left, inside 14
 
-        await pool.execute("UPDATE health.facts SET validity = 'superseded'")
-        await self._med(pool, quantity=90)  # refill supersedes the row
-        assert await self._verdict(pool) is False
+        await refill_pool.execute("UPDATE health.facts SET validity = 'superseded'")
+        await self._med(refill_pool, quantity=90)  # refill supersedes the row
+        assert await self._verdict(refill_pool) is False
 
-        await pool.execute("UPDATE health.facts SET validity = 'superseded'")
-        await self._med(pool, active=False)  # paused
-        assert await self._verdict(pool) is False
+        await refill_pool.execute("UPDATE health.facts SET validity = 'superseded'")
+        await self._med(refill_pool, active=False)  # paused
+        assert await self._verdict(refill_pool) is False
 
-        await pool.execute("UPDATE health.facts SET validity = 'retracted'")
-        assert await self._verdict(pool) is False  # stopped (deleted)
+        await refill_pool.execute("UPDATE health.facts SET validity = 'retracted'")
+        assert await self._verdict(refill_pool) is False  # stopped (deleted)
 
-    async def test_an_unrecorded_medication_is_unknown(self, pool):
-        assert await self._verdict(pool) is None
+    async def test_an_unrecorded_medication_is_unknown(self, refill_pool):
+        assert await self._verdict(refill_pool) is None
 
-    async def test_a_refilled_reminder_is_withdrawn_at_send_and_a_due_one_is_not(self, pool):
-        await self._med(pool, quantity=10)
+    async def test_a_refilled_reminder_is_withdrawn_at_send_and_a_due_one_is_not(self, refill_pool):
+        await self._med(refill_pool, quantity=10)
         lisinopril = {**_ARGS, "subject": "medication:Lisinopril"}
-        await self._med(pool, subject="medication:Lisinopril", quantity=10)
-        await pool.execute(
+        await self._med(refill_pool, subject="medication:Lisinopril", quantity=10)
+        await refill_pool.execute(
             "INSERT INTO insight_settings (id, verbosity) VALUES (1, 'minimal') "
             "ON CONFLICT (id) DO UPDATE SET verbosity = 'minimal'"
         )
@@ -248,7 +222,7 @@ class TestRefillPremiseAgainstPostgres:
             ("m2", "Lisinopril", lisinopril),
         ):
             result = await broker.propose_insight_candidate(
-                pool,
+                refill_pool,
                 origin_butler="health",
                 priority=60,
                 category="medication-refill",
@@ -260,15 +234,15 @@ class TestRefillPremiseAgainstPostgres:
             )
             assert result["status"] == "accepted"
         # Metformin is refilled (its fact is superseded by one with a large supply).
-        await pool.execute(
+        await refill_pool.execute(
             "UPDATE health.facts SET validity = 'superseded' WHERE subject = 'medication:Metformin'"
         )
-        await self._med(pool, quantity=90)
+        await self._med(refill_pool, quantity=90)
         notify = AsyncMock(return_value=_TELEGRAM_SENT)
-        cycle = await broker.delivery_cycle(pool, notify_fn=notify, now=_PINNED_NOW)
+        cycle = await broker.delivery_cycle(refill_pool, notify_fn=notify, now=_PINNED_NOW)
 
         assert cycle["withdrawn"] == 1
-        statuses = dict(await pool.fetch("SELECT dedup_key, status FROM insight_candidates"))
+        statuses = dict(await refill_pool.fetch("SELECT dedup_key, status FROM insight_candidates"))
         assert statuses["health:medication-refill:m1"] == "withdrawn"
         assert statuses["health:medication-refill:m2"] != "withdrawn"
         sent = " ".join(str(c.args[0]) for c in notify.await_args_list)

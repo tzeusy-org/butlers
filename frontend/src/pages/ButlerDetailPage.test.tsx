@@ -499,6 +499,9 @@ describe("ButlerDetailPage — keyboard tab navigation", () => {
     expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "collections" }, { replace: true });
 
     fireEvent.keyDown(window, { key: "8" });
+    expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "projects" }, { replace: true });
+
+    fireEvent.keyDown(window, { key: "9" });
     expect(setSearchParams).toHaveBeenLastCalledWith({ tab: "system" }, { replace: true });
   });
 

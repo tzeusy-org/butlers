@@ -1,0 +1,12 @@
+{
+  "name": "@butlers/selected-egress",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "butlers-egress-undici": "npm:undici@7.24.5"
+  },
+  "engines": {
+    "node": ">=22.23.4"
+  }
+}

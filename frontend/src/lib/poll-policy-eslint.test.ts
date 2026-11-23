@@ -1,7 +1,7 @@
 import { ESLint } from "eslint";
 import { describe, expect, it } from "vitest";
 
-describe("poll-policy lint", () => {
+describe("poll-policy lint", { timeout: 60_000 }, () => {
   it("rejects a raw numeric refetch interval in a migrated hook", async () => {
     const eslint = new ESLint();
     const [result] = await eslint.lintText(

@@ -9,6 +9,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_update
 from butlers.tools.health import owner_dominance
 from butlers.tools.health._helpers import _get_owner_entity_id, _normalize_end_date, _row_to_dict
 
@@ -229,13 +230,17 @@ async def measurement_update(
         unit = _MEASUREMENT_UNITS.get(mtype, "")
         content = f"{mtype}: {value}{(' ' + unit) if unit else ''}"
 
+    taint = taint_update(6)
     await pool.execute(
-        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5 WHERE id = $1",
+        "UPDATE facts SET predicate = $2, content = $3, metadata = $4, valid_at = $5"
+        f"{taint.assignments}"
+        " WHERE id = $1",
         meas_uuid,
         predicate,
         content,
         new_meta,
         valid_at,
+        *taint.values,
     )
 
     return _fact_to_measurement(

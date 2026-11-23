@@ -13,7 +13,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from butlers.connectors.catalog import (
+from butlers.connector_catalog import (
     CONNECTOR_DESCRIPTORS,
     NON_CONNECTOR_INGRESS_PAIRS,
     canonical_connector_types,
@@ -85,7 +85,7 @@ def test_catalog_preserves_every_existing_accepted_ingress_pair() -> None:
 
 
 def test_discovery_pairs_match_actual_connector_emission_defaults() -> None:
-    from butlers.connectors.catalog import connector_descriptor
+    from butlers.connector_catalog import connector_descriptor
 
     for row in CONNECTOR_DESCRIPTORS:
         path = ROOT / "src" / (row.module.replace(".", "/") + ".py")
@@ -193,7 +193,7 @@ def test_no_new_large_hardcoded_connector_identity_populations() -> None:
 def test_selector_namespaces_retain_all_shared_and_unsupported_alternatives() -> None:
     from typing import get_args
 
-    from butlers.connectors.catalog import resolve_selector
+    from butlers.connector_catalog import resolve_selector
     from butlers.tools.switchboard.contracts import SourceChannel, SourceProvider
 
     for namespace, selectors in (
@@ -236,7 +236,7 @@ def test_selector_namespaces_retain_all_shared_and_unsupported_alternatives() ->
 def test_generated_recovery_projection_matches_catalog_and_refuses_stale_output(tmp_path) -> None:
     import importlib.util
 
-    from butlers.connectors.catalog import public_recovery_capabilities
+    from butlers.connector_catalog import public_recovery_capabilities
 
     path = ROOT / "scripts/render_connector_catalog.py"
     spec = importlib.util.spec_from_file_location("render_connector_catalog", path)
@@ -262,7 +262,7 @@ def test_generated_recovery_projection_matches_catalog_and_refuses_stale_output(
 
 @pytest.mark.parametrize("key", ["telegram", "live-listener", "discord", "internal", "unknown"])
 def test_row_lookup_never_promotes_alias_or_unsupported_identity(key: str) -> None:
-    from butlers.connectors.catalog import connector_descriptor
+    from butlers.connector_catalog import connector_descriptor
 
     with pytest.raises(KeyError):
         connector_descriptor(key)
@@ -273,7 +273,7 @@ def test_row_lookup_never_promotes_alias_or_unsupported_identity(key: str) -> No
 def test_retired_row_cannot_become_runtime_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     from dataclasses import replace
 
-    from butlers.connectors import catalog
+    from butlers import connector_catalog as catalog
 
     row = catalog.CONNECTOR_DESCRIPTORS[0]
     monkeypatch.setattr(catalog, "CONNECTOR_DESCRIPTORS", (replace(row, retired=True),))

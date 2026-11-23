@@ -39,8 +39,6 @@ from typing import Any
 import asyncpg
 import pytest
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -72,33 +70,18 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container: Any) -> str:
-    """Provision a DB with all core migrations applied once for this module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture(scope="module")
-async def seeded_pool(migrated_db_url: str) -> asyncpg.Pool:  # type: ignore[return]
-    """Create an asyncpg pool and seed audit_log with SEED_ROWS rows.
-
-    Seeding runs once per module; individual tests are read-only and do not
-    mutate the table, so no per-test TRUNCATE is needed.
+@pytest.fixture
+async def seeded_pool(db_pool: asyncpg.Pool) -> asyncpg.Pool:
+    """A core-migrated pool with audit_log seeded with SEED_ROWS rows.
 
     The seed uses a single bulk INSERT with VALUES to avoid 100 000
     round-trips.  ``generate_series`` keeps it entirely server-side.
     """
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-
     # Bulk-insert via generate_series: one SQL round-trip for all rows.
     # Rows alternate between the "hot" target value (shared by HOT_FRACTION of
     # all rows) and a unique per-row target, so the planner has realistic
     # statistics to reason about.
-    await pool.execute(f"""
+    await db_pool.execute(f"""
         INSERT INTO public.audit_log (actor, action, target, ts)
         SELECT
             'perf-test-actor',
@@ -110,9 +93,7 @@ async def seeded_pool(migrated_db_url: str) -> asyncpg.Pool:  # type: ignore[ret
             now() - (i * interval '1 second')
         FROM generate_series(1, {SEED_ROWS}) AS i
     """)
-
-    yield pool
-    await pool.close()
+    return db_pool
 
 
 # ---------------------------------------------------------------------------

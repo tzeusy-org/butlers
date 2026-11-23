@@ -79,6 +79,12 @@ dispatch_mode = "job"
 job_name = "interaction_sync"
 
 [[butler.schedule]]
+name = "automated-evidence-sync"
+cron = "15 * * * *"
+dispatch_mode = "job"
+job_name = "automated_evidence_sync"
+
+[[butler.schedule]]
 name = "loan-cost-claim-backfill"
 cron = "35 4 * * *"
 dispatch_mode = "job"
@@ -125,6 +131,24 @@ name = "email-identity-enrichment"
 cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "email_identity_enrichment"
+
+# Owner anchor-address geocoding (bu-r3fmja.3): only the owner's own, works-at and
+# rental-location/lives-at place addresses go to OneMap (Singapore) or Nominatim.
+# Deterministic, no session; Chronicler reads relationship.address_geocodes.
+[[butler.schedule]]
+name = "relationship_geocode_owner_addresses"
+cron = "17 * * * *"
+dispatch_mode = "job"
+job_name = "relationship_geocode_owner_addresses"
+
+# Public MCP proposal importer (RFC 0039 D13, bu-y66o00.8): copies the butlers_public
+# inbox to relationship.external_fact_proposals, validates, parks for owner approval
+# and reconciles outcomes. Deterministic, no session; reads mcp_surface.controls.
+[[butler.schedule]]
+name = "public_mcp_proposal_import"
+cron = "*/5 * * * *"
+dispatch_mode = "job"
+job_name = "public_mcp_proposal_import"
 
 # contact-info-reconciler retired in migration bead 10 (bu-e2ja9 / core_115):
 # public.contact_info is dropped, so the dual-write reconciler has nothing to

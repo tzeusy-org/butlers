@@ -25,6 +25,7 @@ from butlers.core.capture import (
     load_epoch,
     project_receipt,
 )
+from butlers.core.goal_lineage import taint_insert
 
 from .items import item_create_versioned
 from .source_authority import (
@@ -95,11 +96,12 @@ class CaptureService:
                 or authority.source_occurred_at < epoch.not_before
             ):
                 raise CaptureUnavailable("recovery_required")
+            taint = taint_insert(9)
             row = await conn.fetchrow(
-                """INSERT INTO public.captures
+                f"""INSERT INTO public.captures
                     (id, principal_id, source_occurrence, source_occurred_at, service_epoch,
-                     mutation_key, canonical_intake, payload_digest)
-                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                     mutation_key, canonical_intake, payload_digest{taint.columns})
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8{taint.placeholders})
                     ON CONFLICT (principal_id,source_occurrence,mutation_key) DO NOTHING
                     RETURNING *""",
                 uuid.uuid4(),
@@ -110,6 +112,7 @@ class CaptureService:
                 mutation_key,
                 canonical,
                 digest,
+                *taint.values,
             )
             if row is None:
                 row = await conn.fetchrow(

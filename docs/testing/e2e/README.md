@@ -125,7 +125,7 @@ database running.
 | [`test_contracts.py`](../../../tests/e2e/test_contracts.py) | The same idempotency key yields the same `request_id` with the duplicate flag. |
 | [`test_cross_butler.py`](../../../tests/e2e/test_cross_butler.py) | Switchboard routes health and relationship queries to the right butler; unknown or quarantined targets error; `routing_log` records successes and failures; `notify.v1` to an unknown messenger is logged and an `origin_butler` mismatch is rejected. |
 | [`test_health_flow.py`](../../../tests/e2e/test_health_flow.py) | Measurement tools round-trip directly, and a spawner-driven medication prompt writes the expected rows. |
-| [`test_relationship_flow.py`](../../../tests/e2e/test_relationship_flow.py) | Spawner-driven prompts create contacts and notes, and each run is tracked as a session. |
+| [`test_relationship_flow.py`](../../../tests/e2e/test_relationship_flow.py) | Spawner-driven prompts create contacts and notes, and each run is tracked as a session; a free-text meeting debrief reply reaches `meeting_debrief_answer`. |
 | [`test_state.py`](../../../tests/e2e/test_state.py) | The KV store persists across MCP sessions, round-trips every JSON type, isolates butlers, filters by prefix, and overwrites and deletes. |
 | [`test_scheduling.py`](../../../tests/e2e/test_scheduling.py) | `butler.toml` schedules sync to `scheduled_tasks` at startup, schedule CRUD works over MCP, and timer plus external triggers serialize without deadlock. |
 | [`test_approvals.py`](../../../tests/e2e/test_approvals.py) | A gated tool creates a pending approval instead of running, runs once approved, and expires on timeout; non-gated tools bypass the gate; the audit trail records its metadata. |

@@ -147,6 +147,19 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the error is captured in `last_result` as `{"error": "..."}` and the remaining due tasks continue dispatching
 - **AND** the failed task's `next_run_at` is still advanced to the next cron occurrence
 
+#### Scenario: A CancelledError with no cancel of the running task is a dispatch failure
+- **WHEN** a cron or deadline dispatch raises `asyncio.CancelledError` and `Task.cancelling()` is zero for the task running `tick()`
+- **THEN** it is handled as that dispatch's failure and the remaining due tasks continue dispatching
+
+#### Scenario: A real cancel of the running task propagates
+- **WHEN** the task running `tick()` is itself cancelled during a dispatch
+- **THEN** `CancelledError` propagates out of `tick()` and no later due task is dispatched
+
+#### Scenario: Only its own cancel ends the scheduler loop
+- **WHEN** a tick or the work after it ends with `CancelledError` and the scheduler loop's task was not cancelled
+- **THEN** the loop logs an error and runs its next tick
+- **AND** when the loop's own task is cancelled it lets an in-progress tick finish, then ends
+
 #### Scenario: Deadline evaluation runs each tick
 - **WHEN** `tick()` is called
 - **THEN** all enabled `task_type='deadline'` tasks are evaluated for threshold crossing
@@ -393,3 +406,20 @@ arguments, or other schedule runtime payload.
 - **THEN** it returns `SCHEDULE_TOML_MANAGED` for TOML or
   `SCHEDULE_MANAGED` for the other source
 - **AND** it leaves the row unchanged
+
+### Requirement: Administrative Hold Gate Fails Closed
+
+A butler under an administrative hold (paused or quarantined eligibility, or a non-active policy row under the receiver cutover) SHALL NOT dispatch scheduled work: `tick()` SHALL skip its deadline and cron dispatch and leave `next_run_at` unchanged. When the gate is given an eligibility pool and the registry or policy lookup fails, the tick SHALL be gated the same way with the reason `eligibility unavailable: registry lookup failed`, SHALL log at ERROR, and the preserved due work SHALL run once on the first tick after the registry is readable. A caller that supplies no eligibility pool opts that butler out of gating.
+
+ID: REQ-core-scheduler-005
+Source: bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D10
+Scope: v1-mandatory
+
+#### Scenario: Paused butler does not dispatch
+- **WHEN** the butler's eligibility is quarantined or its policy is not active
+- **THEN** the tick dispatches no deadline or cron work and `next_run_at` is unchanged
+
+#### Scenario: Unreadable registry gates the tick
+- **WHEN** the eligibility lookup raises
+- **THEN** the tick dispatches nothing, logs at ERROR, and `next_run_at` stays due
+- **AND** the first tick after the registry is readable dispatches the preserved work once

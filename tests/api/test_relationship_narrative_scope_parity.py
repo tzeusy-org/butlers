@@ -30,9 +30,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -51,28 +48,13 @@ def _relationship_router_module():
     raise AssertionError("relationship router module not discovered")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + memory + relationship chains (flat public topology)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def rel_pool(db) -> asyncpg.Pool:
+    """Core + memory + relationship chains (flat public topology)."""
+    p = await db("core", "memory", "relationship")
     await p.execute("TRUNCATE TABLE public.facts CASCADE")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 async def _make_entity(pool: asyncpg.Pool, name: str) -> uuid.UUID:
@@ -125,7 +107,7 @@ async def _seed_all(pool: asyncpg.Pool, entity_id: uuid.UUID) -> None:
         )
 
 
-async def test_narrative_scope_parity_across_all_four_surfaces(pool):
+async def test_narrative_scope_parity_across_all_four_surfaces(rel_pool):
     """drill / delta / compare / lookup MUST return the identical narrative set."""
     from butlers.tools.relationship.relationship_lookup import _fetch_narrative_facts
 
@@ -134,18 +116,18 @@ async def test_narrative_scope_parity_across_all_four_surfaces(pool):
     _fetch_narrative_delta_facts = router._fetch_narrative_delta_facts
     _fetch_narrative_facts_for_compare = router._fetch_narrative_facts_for_compare
 
-    entity_id = await _make_entity(pool, "Parity Subject")
-    await _seed_all(pool, entity_id)
+    entity_id = await _make_entity(rel_pool, "Parity Subject")
+    await _seed_all(rel_pool, entity_id)
 
     # An epoch marked_at so the delta surface returns everything changed "since".
     marked_at = datetime(2000, 1, 1, tzinfo=UTC)
 
     drill_rows = await _fetch_narrative_drill_facts(
-        pool, entity_id, validity="active", predicate=None, limit=200
+        rel_pool, entity_id, validity="active", predicate=None, limit=200
     )
-    delta_rows = await _fetch_narrative_delta_facts(pool, entity_id, marked_at)
-    compare_rows = await _fetch_narrative_facts_for_compare(pool, entity_id)
-    lookup_rows = await _fetch_narrative_facts(pool, entity_id)
+    delta_rows = await _fetch_narrative_delta_facts(rel_pool, entity_id, marked_at)
+    compare_rows = await _fetch_narrative_facts_for_compare(rel_pool, entity_id)
+    lookup_rows = await _fetch_narrative_facts(rel_pool, entity_id)
 
     drill_preds = {r["predicate"] for r in drill_rows}
     delta_preds = {r["predicate"] for r in delta_rows}
@@ -165,7 +147,7 @@ async def test_narrative_scope_parity_across_all_four_surfaces(pool):
     assert "narr_health" not in drill_preds
 
 
-async def test_default_global_fact_is_visible_in_all_surfaces(pool):
+async def test_default_global_fact_is_visible_in_all_surfaces(rel_pool):
     """Acceptance: a default-scope (global) fact appears in ALL four surfaces."""
     from butlers.tools.relationship.relationship_lookup import _fetch_narrative_facts
 
@@ -174,9 +156,9 @@ async def test_default_global_fact_is_visible_in_all_surfaces(pool):
     _fetch_narrative_delta_facts = router._fetch_narrative_delta_facts
     _fetch_narrative_facts_for_compare = router._fetch_narrative_facts_for_compare
 
-    entity_id = await _make_entity(pool, "Default Scope Subject")
+    entity_id = await _make_entity(rel_pool, "Default Scope Subject")
     await _seed_narrative_fact(
-        pool,
+        rel_pool,
         entity_id=entity_id,
         predicate="works_at",
         content="Acme Corp",
@@ -185,11 +167,11 @@ async def test_default_global_fact_is_visible_in_all_surfaces(pool):
 
     marked_at = datetime(2000, 1, 1, tzinfo=UTC)
     drill = await _fetch_narrative_drill_facts(
-        pool, entity_id, validity="active", predicate=None, limit=200
+        rel_pool, entity_id, validity="active", predicate=None, limit=200
     )
-    delta = await _fetch_narrative_delta_facts(pool, entity_id, marked_at)
-    compare = await _fetch_narrative_facts_for_compare(pool, entity_id)
-    lookup = await _fetch_narrative_facts(pool, entity_id)
+    delta = await _fetch_narrative_delta_facts(rel_pool, entity_id, marked_at)
+    compare = await _fetch_narrative_facts_for_compare(rel_pool, entity_id)
+    lookup = await _fetch_narrative_facts(rel_pool, entity_id)
 
     for rows, surface in (
         (drill, "drill"),

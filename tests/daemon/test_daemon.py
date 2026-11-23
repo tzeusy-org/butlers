@@ -48,10 +48,19 @@ from butlers.mcp_patches import (
     apply_streamable_http_client_disconnect_patch,
     apply_streamable_http_disconnect_patch,
 )
+from butlers.module_state import ModuleStartupStatus
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.daemon import write_butler_config
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
+
+# Heartbeat tests wait for background-task progress that needs a few event-loop iterations
+# (under a millisecond measured). The wait is a hang guard, not a latency assertion: a loaded
+# xdist worker can stall for seconds (bu-dhloi1.319), and a real hang still fails here and, at the
+# latest, at the 300s pytest-timeout.
+_HANG_GUARD_S = 30.0
 
 # ---------------------------------------------------------------------------
 # Test helpers: stub modules
@@ -341,16 +350,28 @@ def _make_fetchrow_side_effect(
     return _fetchrow
 
 
-def _patch_infra(*, core_groups: list[str] | None = None):
-    """Return a dict of patches for all infrastructure dependencies."""
+def _infra(*, core_groups: list[str] | None = None):
+    """A DB-free pool and spawner for tests that run daemon phases on a host."""
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     mock_conn.transaction = MagicMock()
-    mock_conn.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
-    mock_conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction.return_value.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    mock_conn.transaction.return_value.__aexit__ = AsyncMock(side_effect=exit_transaction)
 
     mock_pool = AsyncMock()
     # Acquire and transaction are synchronous factories for async contexts.
@@ -362,86 +383,51 @@ def _patch_infra(*, core_groups: list[str] | None = None):
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect(core_groups=core_groups))
     mock_pool.fetch = AsyncMock(return_value=[])
 
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
     mock_spawner = MagicMock()
     mock_spawner.stop_accepting = MagicMock()
     mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    mock_sock = MagicMock()
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "socket": patch("butlers.daemon.socket.socket", return_value=mock_sock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "create_audit_pool": patch.object(
-            ButlerDaemon, "_create_audit_pool", new_callable=AsyncMock, return_value=None
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-        "mock_adapter_builder": mock_adapter_builder,
-        "mock_adapter": mock_adapter,
-        "mock_sock": mock_sock,
-    }
+    return {"mock_pool": mock_pool, "mock_spawner": mock_spawner}
 
 
-async def _start_daemon(butler_dir: Path, patches: dict, **kwargs) -> ButlerDaemon:
-    """Start a daemon with all standard patches applied."""
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir, **kwargs)
-        await daemon.start()
+async def _host(
+    butler_dir: Path,
+    infra: dict | None = None,
+    *,
+    registry: ModuleRegistry | None = None,
+    start_modules: bool = False,
+) -> ButlerDaemon:
+    """The daemon's own tool and module phases on a DB-free host, with no boot.
+
+    Core tools register as at startup; declared modules are selected, validated
+    and their tools registered (and started, with *start_modules*). Tests whose
+    subject is the boot itself use ``booted_daemon`` instead (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+
+    infra = infra or _infra()
+    daemon = (await host_tools(butler_dir, pool=infra["mock_pool"])).daemon
+    daemon.spawner = infra["mock_spawner"]
+    if registry is not None:
+        daemon._registry = registry
+    state = lifecycle.StartupState()
+    state.pool = infra["mock_pool"]
+    # Core tools follow the runtime config's groups, so resolve it and register
+    # them again, as startup does.
+    await lifecycle._startup_runtime_config(daemon, state)
+    daemon.mcp = RuntimeFastMCP(daemon.config.name)
+    daemon._register_core_tools()
+    await lifecycle._startup_modules(daemon, state)
+    await lifecycle._startup_module_config(daemon, state)
+    if start_modules:
+        await lifecycle._startup_module_startup(daemon, state)
+    await daemon._register_module_tools()
+    for mod in daemon._modules:
+        daemon._module_statuses.setdefault(mod.name, ModuleStartupStatus(status="active"))
     return daemon
+
+
+async def _tool(daemon: ButlerDaemon, name: str):
+    return (await daemon.mcp.get_tool(name)).fn
 
 
 # ---------------------------------------------------------------------------
@@ -449,93 +435,42 @@ async def _start_daemon(butler_dir: Path, patches: dict, **kwargs) -> ButlerDaem
 # ---------------------------------------------------------------------------
 
 
-async def test_startup_sequence(butler_dir: Path) -> None:
-    """Key startup stages execute in documented order; config and started_at are set."""
-    patches = _patch_infra()
-    call_order: list[str] = []
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_startup_sequence(booted_daemon, tmp_path: Path) -> None:
+    """A real boot loads config, wires the runtime-config accessor and records started_at.
 
-    with (
-        patches["db_from_env"] as mock_from_env,
-        patches["run_migrations"] as mock_migrations,
-        patches["validate_credentials"] as mock_validate,
-        patches["validate_module_credentials"] as mock_mod_validate,
-        patches["init_telemetry"] as mock_telemetry,
-        patches["sync_schedules"] as mock_sync,
-        patches["FastMCP"] as mock_fastmcp,
-        patches["Spawner"] as mock_spawner_cls,
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"] as mock_start_server,
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        mock_db = patches["mock_db"]
-        mock_telemetry.side_effect = lambda *a, **kw: call_order.append("init_telemetry")
-        mock_validate.side_effect = lambda *a, **kw: call_order.append("validate_credentials")
-        mock_from_env.side_effect = lambda *a, **kw: (
-            call_order.append("db_from_env"),
-            mock_db,
-        )[-1]
-        mock_db.provision.side_effect = lambda: call_order.append("provision")
-        mock_db.connect.side_effect = lambda: (
-            call_order.append("connect"),
-            patches["mock_pool"],
-        )[-1]
-        mock_migrations.side_effect = lambda *a, **kw: call_order.append(
-            f"run_migrations({kw.get('chain', a[1] if len(a) > 1 else 'core')})"
-        )
+    The documented order is the phase list itself: telemetry and credentials before
+    the database, migrations before module credentials, schedules before the spawner,
+    and the MCP server after core tools.
+    """
+    import butlers.lifecycle as lifecycle
 
-        async def _record_mod_validate(*a: object, **kw: object) -> dict:
-            call_order.append("validate_module_credentials_async")
-            return {}
+    phases = lifecycle.STARTUP_PHASES
+    documented = [
+        lifecycle._startup_telemetry,
+        lifecycle._startup_credentials,
+        lifecycle._startup_database,
+        lifecycle._startup_core_migrations,
+        lifecycle._startup_credential_store,
+        lifecycle._startup_schedules,
+        lifecycle._startup_spawner,
+        lifecycle._startup_core_tools,
+        lifecycle._startup_mcp_server,
+    ]
+    assert [phases.index(phase) for phase in documented] == sorted(
+        phases.index(phase) for phase in documented
+    )
 
-        mock_mod_validate.side_effect = _record_mod_validate
-        mock_sync.side_effect = lambda *a, **kw: call_order.append("sync_schedules")
-        mock_fastmcp.side_effect = lambda *a, **kw: (
-            call_order.append("FastMCP"),
-            MagicMock(),
-        )[-1]
-        mock_spawner_cls.side_effect = lambda **kw: (
-            call_order.append("Spawner"),
-            MagicMock(),
-        )[-1]
-        mock_start_server.side_effect = lambda *a, **kw: call_order.append("start_mcp_server")
+    before = time.monotonic()
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+    after = time.monotonic()
+    daemon = booted.daemon
 
-        daemon = ButlerDaemon(butler_dir)
-        before = time.monotonic()
-        await daemon.start()
-        after = time.monotonic()
-
-    # Config is loaded
-    assert daemon.config is not None
-    assert daemon.config.name == "test-butler"
-    assert daemon.config.port == 9100
+    assert daemon.config.name == "general"
     assert daemon.db.runtime_config_accessor is daemon._runtime_config_accessor
-
-    # started_at is recorded
     assert daemon._started_at is not None
     assert before <= daemon._started_at <= after
-
-    # Order: key milestones in correct sequence
-    expected_order = [
-        "init_telemetry",
-        "validate_credentials",
-        "db_from_env",
-        "provision",
-        "connect",
-        "run_migrations(core)",
-        "validate_module_credentials_async",
-        "sync_schedules",
-        "Spawner",
-        "FastMCP",
-        "start_mcp_server",
-    ]
-    filtered = [c for c in call_order if c in expected_order]
-    pos = 0
-    for expected in expected_order:
-        assert expected in filtered[pos:]
-        pos = filtered.index(expected, pos) + 1
 
 
 # ---------------------------------------------------------------------------
@@ -544,46 +479,14 @@ async def test_startup_sequence(butler_dir: Path) -> None:
 
 
 async def test_all_core_tools_registered(butler_dir: Path) -> None:
-    """All core tools should be registered on FastMCP via @mcp.tool()."""
-    patches = _patch_infra()
-    registered_tools: list[str] = []
-
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            registered_tools.append(declared_name or fn.__name__)
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
-        await daemon.start()
+    """All core tools are registered on the daemon's FastMCP by its own registration."""
+    daemon = await _host(butler_dir, registry=ModuleRegistry())
+    registered_tools = [tool.name for tool in await daemon.mcp.list_tools()]
 
     # A domain butler receives its actual group-gated surface, not a parallel
     # hand-maintained catalog.  The dispatcher inventory test owns exhaustive
-    # coverage; this startup test protects the daemon integration seam.
-    assert len(set(registered_tools)) == 76
+    # coverage; this test protects the daemon integration seam.
+    assert len(set(registered_tools)) == 78
     assert "metric_baseline_get" in registered_tools
     assert {"report_error", "get_healing_status"} <= set(registered_tools)
     assert "retry_healing" not in registered_tools
@@ -604,7 +507,7 @@ async def test_all_core_tools_registered(butler_dir: Path) -> None:
     }.isdisjoint(registered_tools)
 
 
-# REQ-entity-graph-007: mocked lifecycle graph-group allowlist control only.
+# REQ-entity-graph-007: graph-group allowlist control, on the runtime config phase.
 @pytest.mark.parametrize(
     ("core_groups", "graph_enabled"),
     [
@@ -618,40 +521,8 @@ async def test_graph_core_group_registration(
     butler_dir: Path, core_groups: list[str] | None, graph_enabled: bool
 ) -> None:
     """The graph group follows the existing allowlist and always-on gates."""
-    patches = _patch_infra(core_groups=core_groups)
-    registered_tools: list[str] = []
-
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            registered_tools.append(declared_name or fn.__name__)
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=ModuleRegistry())
-        await daemon.start()
+    daemon = await _host(butler_dir, _infra(core_groups=core_groups), registry=ModuleRegistry())
+    registered_tools = {tool.name for tool in await daemon.mcp.list_tools()}
 
     graph_tools = {"entity_graph_walk", "entity_graph_path"}
     assert graph_tools.issubset(registered_tools) is graph_enabled
@@ -661,93 +532,46 @@ async def test_graph_core_group_registration(
 
 
 async def test_module_lifecycle(butler_dir_with_modules: Path, tmp_path, monkeypatch) -> None:
-    """Module tools registered, order is topological, on_startup called, migrations run."""
+    """Module tools registered, order is topological, on_startup called, migrations chosen."""
+    import butlers.lifecycle as lifecycle
+
     registry = _make_registry(StubModuleA, StubModuleB)
-    patches = _patch_infra()
     module_root = tmp_path / "module_chains"
     migrations = module_root / "stub_a" / "migrations"
     migrations.mkdir(parents=True)
     (migrations / "001_stub.py").write_text("# Synthetic module migration directory.\n")
     monkeypatch.setattr("butlers.migrations.MODULES_DIR", module_root)
+    migration_chains: list[str] = []
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"] as mock_migrations,
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir_with_modules, registry=registry)
-        await daemon.start()
+    async def record_migration(_url, chain="core", schema=None):
+        migration_chains.append(chain)
 
-    # Tools registered for all modules
+    monkeypatch.setattr(lifecycle, "run_migrations", record_migration)
+
+    daemon = await _host(butler_dir_with_modules, registry=registry, start_modules=True)
+    statuses, daemon._module_statuses = daemon._module_statuses, {}  # as before step 8
+    state = lifecycle.StartupState()
+    state.db_url = "postgresql://unused"
+    await lifecycle._startup_module_migrations(daemon, state)
+    daemon._module_statuses = statuses
+
     for mod in daemon._modules:
         assert mod.tools_registered, f"Module {mod.name} tools not registered"
-
-    # on_startup called for all modules
-    for mod in daemon._modules:
         assert mod.started, f"Module {mod.name} on_startup not called"
-
-    # Topological order: stub_a before stub_b
     module_names = [m.name for m in daemon._modules]
     assert module_names.index("stub_a") < module_names.index("stub_b")
-
-    # Migrations run for core and stub_a's directory; stub_b has no chain.
-    migration_chains = [
-        c.kwargs.get("chain", c.args[1] if len(c.args) > 1 else None)
-        for c in mock_migrations.call_args_list
-    ]
-    assert "core" in migration_chains
-    assert "stub_a" in migration_chains
+    # stub_a has a migration directory; stub_b has no chain.
+    assert migration_chains == ["stub_a"]
 
 
-async def test_schedule_sync_precedes_enabled_module_startup(tmp_path: Path) -> None:
+async def test_schedule_sync_precedes_enabled_module_startup() -> None:
     """A module observes the post-sync schedule state when its startup hook runs."""
-    call_order: list[str] = []
+    import butlers.lifecycle as lifecycle
 
-    class StartupOrderModule(StubModuleA):
-        name = "startup_order"
-
-        async def on_startup(
-            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-        ) -> None:
-            call_order.append("on_startup")
-            self.started = True
-
-    butler_dir = _make_butler_toml(tmp_path, modules={"startup_order": {}})
-    registry = _make_registry(StartupOrderModule)
-    patches = _patch_infra()
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"] as mock_sync,
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        mock_sync.side_effect = lambda *args, **kwargs: call_order.append("sync_schedules")
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
-
-    assert call_order == ["sync_schedules", "on_startup"]
+    phases = lifecycle.STARTUP_PHASES
+    assert phases.index(lifecycle._startup_schedules) < phases.index(
+        lifecycle._startup_module_startup
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -755,60 +579,28 @@ async def test_schedule_sync_precedes_enabled_module_startup(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
-async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
-    """shutdown() signals uvicorn to exit, awaits server task; reverse-topological module shutdown."""
-    # MCP server shutdown: signals uvicorn and awaits task
-    patches = _patch_infra()
-    daemon = await _start_daemon(butler_dir, patches)
-
-    mock_server = MagicMock()
-    mock_server.should_exit = False
-
-    async def _fake_serve():
-        pass
-
-    mock_task = asyncio.ensure_future(_fake_serve())
-    await mock_task
-
-    daemon._server = mock_server
-    daemon._server_task = mock_task
-
-    await daemon.shutdown()
-
-    assert mock_server.should_exit is True
-    assert mock_task.done()
-    assert daemon._server is None
-    assert daemon._server_task is None
-
-    # Module shutdown: reverse topological order, errors don't abort shutdown
-    registry = _make_registry(StubModuleA, StubModuleB)
-    shutdown_mods_dir = butler_dir.parent / "shutdown_mods"
-    shutdown_mods_dir.mkdir(exist_ok=True)
-    butler_dir_m = _make_butler_toml(shutdown_mods_dir, modules={"stub_a": {}, "stub_b": {}})
-    patches2 = _patch_infra()
-    mock_db2 = patches2["mock_db"]
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_shutdown_stops_mcp_server(booted_daemon, tmp_path: Path) -> None:
+    """A real shutdown stops the MCP server and shuts modules down despite a module error."""
+    config_dir = write_butler_config(
+        tmp_path, "general", extra_toml="[modules.stub_a]\n\n[modules.stub_b]\n"
+    )
+    booted = await booted_daemon(
+        config_dir,
+        registry=_make_registry(StubModuleA, StubModuleB),
+        credentials={"STUB_A_TOKEN": "synthetic-token"},
+    )
+    daemon = booted.daemon
+    assert {name: st.status for name, st in daemon._module_statuses.items()} == {
+        "stub_a": "active",
+        "stub_b": "active",
+    }
+    server, server_task = daemon._server, daemon._server_task
+    assert server is not None and server_task is not None
     shutdown_order: list[str] = []
 
-    with (
-        patches2["db_from_env"],
-        patches2["run_migrations"],
-        patches2["validate_credentials"],
-        patches2["validate_module_credentials"],
-        patches2["init_telemetry"],
-        patches2["sync_schedules"],
-        patches2["FastMCP"],
-        patches2["Spawner"],
-        patches2["build_runtime_adapter"],
-        patches2["shutil_which"],
-        patches2["start_mcp_server"],
-        patches2["connect_switchboard"],
-        patches2["create_audit_pool"],
-        patches2["recover_route_inbox"],
-    ):
-        daemon2 = ButlerDaemon(butler_dir_m, registry=registry)
-        await daemon2.start()
-
-    for mod in daemon2._modules:
+    for mod in daemon._modules:
         original = mod.on_shutdown
         if mod.name == "stub_b":
 
@@ -825,9 +617,14 @@ async def test_shutdown_stops_mcp_server(butler_dir: Path) -> None:
 
             mod.on_shutdown = make_tracker  # type: ignore[method-assign]
 
-    await daemon2.shutdown()
-    assert "stub_b" in shutdown_order
-    mock_db2.close.assert_awaited_once()
+    await booted.shutdown()
+
+    assert server.should_exit is True
+    assert server_task.done()
+    assert daemon._server is None
+    assert daemon._server_task is None
+    # Reverse topological order; stub_b's error does not stop stub_a's shutdown.
+    assert shutdown_order == ["stub_b", "stub_a"]
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +642,6 @@ async def test_start_mcp_server_waits_until_uvicorn_reports_started(butler_dir: 
     daemon.db = MagicMock(pool=AsyncMock())
 
     with (
-        patch.object(ButlerDaemon, "_build_mcp_http_app", return_value=object()),
         patch("butlers.daemon.uvicorn.Config", _FakeUvicornConfig),
         patch("butlers.daemon.uvicorn.Server", _DelayedStartedServer),
         patch("butlers.daemon.socket.socket", _FakeSocket),
@@ -1177,53 +973,18 @@ async def test_streamable_http_client_disconnect_patch_preserves_unrelated_error
 # ---------------------------------------------------------------------------
 
 
-async def _get_status_fn(butler_dir, patches, *, registry=None):
-    """Start daemon and extract the status tool function."""
-    status_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal status_fn
-            if fn.__name__ == "status":
-                status_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=registry or ModuleRegistry())
-        await daemon.start()
-
-    return daemon, status_fn
+async def _get_status_fn(butler_dir, infra=None, *, registry=None):
+    """The daemon's status tool on a host whose readiness phase has completed."""
+    daemon = await _host(butler_dir, infra, registry=registry or ModuleRegistry())
+    daemon._started_at = time.monotonic()  # set by the readiness phase
+    return daemon, await _tool(daemon, "status")
 
 
 async def test_status_tool(butler_dir: Path, butler_dir_with_modules: Path) -> None:
     """status() returns correct info fields; with modules lists their names; health=ok on SELECT 1."""
     # Both fixtures share tmp_path; construct the intended declaration set at each phase.
     _make_butler_toml(butler_dir)
-    # No modules: basic fields + health=ok
-    patches = _patch_infra()
-    patches["mock_pool"].fetchval = AsyncMock(return_value=1)
-    _, status_fn = await _get_status_fn(butler_dir, patches)
-    assert status_fn is not None
+    _, status_fn = await _get_status_fn(butler_dir)
     result = await status_fn()
     assert result["name"] == "test-butler"
     assert result["description"] == "A test butler"
@@ -1231,14 +992,11 @@ async def test_status_tool(butler_dir: Path, butler_dir_with_modules: Path) -> N
     assert result["modules"] == {}
     assert result["health"] == "ok"
     assert isinstance(result["uptime_seconds"], float)
-    patches["mock_pool"].fetchval.assert_awaited_with("SELECT 1")
 
     # With modules: declarations must match the registry supplied to this fixture.
     _make_butler_toml(butler_dir_with_modules, modules={"stub_a": {}, "stub_b": {}})
     registry = _make_registry(StubModuleA, StubModuleB)
-    patches2 = _patch_infra()
-    _, status_fn2 = await _get_status_fn(butler_dir_with_modules, patches2, registry=registry)
-    assert status_fn2 is not None
+    _, status_fn2 = await _get_status_fn(butler_dir_with_modules, registry=registry)
     result2 = await status_fn2()
     assert set(result2["modules"].keys()) == {"stub_a", "stub_b"}
     assert all(v["status"] == "active" for v in result2["modules"].values())
@@ -1246,10 +1004,9 @@ async def test_status_tool(butler_dir: Path, butler_dir_with_modules: Path) -> N
 
 async def test_health_degraded(butler_dir: Path) -> None:
     """status() returns health=degraded when pool raises or DB is None."""
-    patches = _patch_infra()
-    mock_pool = patches["mock_pool"]
-    daemon, status_fn = await _get_status_fn(butler_dir, patches)
-    assert status_fn is not None
+    infra = _infra()
+    mock_pool = infra["mock_pool"]
+    daemon, status_fn = await _get_status_fn(butler_dir, infra)
 
     mock_pool.fetchval = AsyncMock(side_effect=ConnectionRefusedError("refused"))
     result = await status_fn()
@@ -1267,56 +1024,33 @@ async def test_health_degraded(butler_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_startup_failure_propagation(butler_dir: Path) -> None:
-    """Credential failure prevents DB; DB provision failure prevents migrations."""
-    # Credential failure: DB never provisioned
-    patches = _patch_infra()
-    with (
-        patches["db_from_env"] as mock_from_env,
-        patches["run_migrations"],
-        patch(
-            "butlers.lifecycle.validate_credentials",
-            side_effect=CredentialError("missing PG_DSN"),
-        ),
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        with pytest.raises(CredentialError, match="missing PG_DSN"):
-            await daemon.start()
-    mock_from_env.assert_not_called()
+async def test_startup_failure_propagation() -> None:
+    """A fatal phase error propagates and stops every later phase.
 
-    # DB provision failure: migrations not run
-    patches2 = _patch_infra()
-    patches2["mock_db"].provision.side_effect = ConnectionRefusedError("no pg")
-    with (
-        patches2["db_from_env"],
-        patches2["run_migrations"] as mock_migrations,
-        patches2["validate_credentials"],
-        patches2["validate_module_credentials"],
-        patches2["init_telemetry"],
-        patches2["sync_schedules"],
-        patches2["FastMCP"],
-        patches2["Spawner"],
-        patches2["build_runtime_adapter"],
-        patches2["shutil_which"],
-        patches2["start_mcp_server"],
-        patches2["connect_switchboard"],
-        patches2["create_audit_pool"],
-        patches2["recover_route_inbox"],
-    ):
-        daemon2 = ButlerDaemon(butler_dir)
-        with pytest.raises(ConnectionRefusedError):
-            await daemon2.start()
-    mock_migrations.assert_not_awaited()
+    Credentials are validated before the database is provisioned, and the database
+    before migrations run, so a credential failure never reaches the database and a
+    provisioning failure never runs a migration.
+    """
+    import butlers.lifecycle as lifecycle
+
+    phases = lifecycle.STARTUP_PHASES
+    assert phases.index(lifecycle._startup_credentials) < phases.index(lifecycle._startup_database)
+    assert phases.index(lifecycle._startup_database) < phases.index(
+        lifecycle._startup_core_migrations
+    )
+
+    ran: list[str] = []
+
+    async def credentials(_daemon, _state):
+        ran.append("credentials")
+        raise CredentialError("missing PG_DSN")
+
+    async def database(_daemon, _state):
+        ran.append("database")
+
+    with pytest.raises(CredentialError, match="missing PG_DSN"):
+        await lifecycle.run_startup(MagicMock(), [credentials, database])
+    assert ran == ["credentials"]
 
 
 # ---------------------------------------------------------------------------
@@ -1334,64 +1068,38 @@ def _domain_config_directories() -> list[Path]:
 
 
 async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> None:
-    """Client None pre-start; successful connect sets client; shutdown clears it; connect failure non-fatal."""
+    """Client None pre-start; the connect phase sets it; disconnect clears it; failure non-fatal."""
     # Before start: client is always None
     assert ButlerDaemon(butler_dir).switchboard_client is None
 
-    # Successful connect → client set; shutdown → client cleared
-    patches = _patch_infra()
+    # Successful connect -> client set; disconnect -> client cleared
+    daemon = await _host(butler_dir)
+    daemon.config.switchboard_url = "http://switchboard.test/mcp"
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     apply_patch_mock = MagicMock()
     with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
         patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client),
         patch(
             "butlers.switchboard_wiring.apply_streamable_http_client_disconnect_patch",
             apply_patch_mock,
         ),
     ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
+        await daemon._connect_switchboard()
     assert daemon.switchboard_client is mock_client
     apply_patch_mock.assert_called_once_with()
-    await daemon.shutdown()
+    await daemon._disconnect_switchboard()
     assert daemon.switchboard_client is None
 
-    # Connect failure: startup still succeeds, client stays None
-    patches2 = _patch_infra()
+    # Connect failure: the phase does not raise; client stays None
+    daemon2 = await _host(butler_dir)
+    daemon2.config.switchboard_url = "http://switchboard.test/mcp"
     mock_client2 = AsyncMock()
     mock_client2.__aenter__ = AsyncMock(side_effect=RuntimeError("Connection refused"))
-    with (
-        patches2["db_from_env"],
-        patches2["run_migrations"],
-        patches2["validate_credentials"],
-        patches2["validate_module_credentials"],
-        patches2["init_telemetry"],
-        patches2["sync_schedules"],
-        patches2["FastMCP"],
-        patches2["Spawner"],
-        patches2["build_runtime_adapter"],
-        patches2["shutil_which"],
-        patches2["start_mcp_server"],
-        patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client2),
-    ):
-        daemon2 = ButlerDaemon(butler_dir)
-        await daemon2.start()
+    with patch("butlers.switchboard_wiring.MCPClient", return_value=mock_client2):
+        await daemon2._connect_switchboard()
     assert daemon2.switchboard_client is None
-    assert daemon2._started_at is not None
-    await daemon2.shutdown()
 
     # Actual roster configs feed notify, fact admission/recovery and the
     # spawner's source endpoint. Exercise heartbeat reconnect with those same
@@ -1417,7 +1125,7 @@ async def test_switchboard_client_lifecycle(butler_dir: Path, monkeypatch) -> No
         ):
             heartbeat = asyncio.create_task(domain._switchboard_heartbeat_loop())
             try:
-                await asyncio.wait_for(connected.wait(), timeout=1)
+                await asyncio.wait_for(connected.wait(), timeout=_HANG_GUARD_S)
             finally:
                 heartbeat.cancel()
                 await heartbeat
@@ -1451,7 +1159,7 @@ async def test_switchboard_heartbeat_uses_ping_for_liveness_probe(butler_dir: Pa
 
     with patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
+        await asyncio.wait_for(ping_called.wait(), timeout=_HANG_GUARD_S)
         task.cancel()
         await task
 
@@ -1488,8 +1196,8 @@ async def test_switchboard_heartbeat_reconnects_on_stale_ping_error(butler_dir: 
         patch("butlers.switchboard_wiring.connect_switchboard", new=AsyncMock(side_effect=connect)),
     ):
         task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
-        await asyncio.wait_for(ping_called.wait(), timeout=1.0)
-        await asyncio.wait_for(reconnect_done.wait(), timeout=1.0)
+        await asyncio.wait_for(ping_called.wait(), timeout=_HANG_GUARD_S)
+        await asyncio.wait_for(reconnect_done.wait(), timeout=_HANG_GUARD_S)
         task.cancel()
         await task
 
@@ -1497,72 +1205,103 @@ async def test_switchboard_heartbeat_reconnects_on_stale_ping_error(butler_dir: 
     disconnect.assert_awaited_once_with(daemon)
 
 
+async def _raise_stray() -> None:
+    """A ``CancelledError`` with no ``.cancel()`` on the running task."""
+    future = asyncio.get_running_loop().create_future()
+    future.cancel()
+    await future
+
+
+@pytest.mark.parametrize("stage", ["ping", "disconnect", "connect"])
+async def test_a_stray_cancel_does_not_end_the_switchboard_heartbeat(
+    butler_dir: Path, stage: str
+) -> None:
+    """The loop returns on ``CancelledError``, and nothing restarts it (bu-dhloi1.131)."""
+    daemon = ButlerDaemon(butler_dir)
+    pings = 0
+    survived = asyncio.Event()
+
+    class _Client:
+        async def ping(self) -> None:
+            nonlocal pings
+            pings += 1
+            if pings == 1:
+                if stage == "ping":
+                    await _raise_stray()
+                raise RuntimeError("dead")
+            survived.set()
+
+    client = _Client()
+    daemon.switchboard_client = client
+
+    disconnects = 0
+
+    async def disconnect(_: Any) -> None:
+        nonlocal disconnects
+        disconnects += 1
+        if stage == "disconnect":
+            await _raise_stray()
+
+    async def connect(_: Any) -> None:
+        if stage == "connect":
+            await _raise_stray()
+
+    with (
+        patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
+        patch("butlers.switchboard_wiring.connect_switchboard", new=connect),
+    ):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(survived.wait(), timeout=_HANG_GUARD_S)
+        assert not task.done()
+        task.cancel()
+        await asyncio.wait_for(task, timeout=_HANG_GUARD_S)
+
+    assert not task.cancelled()
+    # Whichever step strayed, the dead connection was evicted rather than pinged forever.
+    assert disconnects == 1
+
+
+async def test_a_real_cancel_during_ping_still_ends_the_switchboard_heartbeat(
+    butler_dir: Path,
+) -> None:
+    daemon = ButlerDaemon(butler_dir)
+    pinging = asyncio.Event()
+    disconnect = AsyncMock()
+
+    class _Client:
+        async def ping(self) -> None:
+            pinging.set()
+            await asyncio.Event().wait()
+
+    daemon.switchboard_client = _Client()
+
+    with (
+        patch("butlers.switchboard_wiring._SWITCHBOARD_HEARTBEAT_INTERVAL_S", 0),
+        patch("butlers.switchboard_wiring.disconnect_switchboard", new=disconnect),
+    ):
+        task = asyncio.create_task(daemon._switchboard_heartbeat_loop())
+        await asyncio.wait_for(pinging.wait(), timeout=_HANG_GUARD_S)
+        task.cancel()
+        await asyncio.wait_for(task, timeout=_HANG_GUARD_S)
+
+    disconnect.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # notify() tool
 # ---------------------------------------------------------------------------
 
 
-async def _start_daemon_with_notify(butler_dir: Path, patches: dict):
-    """Start daemon and extract the notify function."""
-    notify_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal notify_fn
-            if fn.__name__ == "notify":
-                notify_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, notify_fn
+async def _start_daemon_with_notify(butler_dir: Path, infra: dict | None = None):
+    """The daemon's notify tool on a DB-free host."""
+    daemon = await _host(butler_dir, infra)
+    return daemon, await _tool(daemon, "notify")
 
 
 async def test_notify_schema_and_channels(butler_dir: Path) -> None:
     """notify schema contract; unsupported channel rejects; no switchboard rejects valid channels."""
-    patches = _patch_infra()
-    runtime_mcp = RuntimeFastMCP("test-butler")
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=runtime_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
+    runtime_mcp = (await _host(butler_dir)).mcp
 
     get_tools = getattr(runtime_mcp, "get_tools", None)
     if callable(get_tools):
@@ -1595,8 +1334,7 @@ async def test_notify_schema_and_channels(butler_dir: Path) -> None:
     assert permits_omission, f"channel must be optional; schema={channel_schema!r}"
 
     # Unsupported channel → error
-    patches2 = _patch_infra()
-    _, notify_fn = await _start_daemon_with_notify(butler_dir, patches2)
+    _, notify_fn = await _start_daemon_with_notify(butler_dir)
     result = await notify_fn(channel="sms", message="Hello")
     assert result["status"] == "error"
     assert "Unsupported channel" in result["error"]
@@ -1615,7 +1353,7 @@ async def test_notify_schema_and_channels(butler_dir: Path) -> None:
 
 async def test_notify_delivery_and_failures(butler_dir: Path) -> None:
     """Delivery payload correct; telegram owner resolution; delivery errors surfaced; connection errors reported."""
-    patches = _patch_infra()
+    patches = _infra()
     daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
     assert notify_fn is not None
 
@@ -1726,7 +1464,7 @@ async def test_manual_chronicler_refresh_suppresses_notify_without_affecting_sch
 ) -> None:
     """Historical regeneration is silent; the normal scheduled close still delivers."""
     butler_dir = _make_butler_toml(tmp_path, butler_name="chronicler")
-    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra())
+    daemon, notify_fn = await _start_daemon_with_notify(butler_dir)
     assert notify_fn is not None
     mock_result = MagicMock(is_error=False, data={"notification_id": "n-1", "status": "sent"})
     daemon.switchboard_client = AsyncMock()
@@ -1770,44 +1508,10 @@ def _route_request_context() -> dict[str, Any]:
     }
 
 
-async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
-    route_execute_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_execute_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route.execute":
-                route_execute_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_execute_fn
+async def _start_daemon_with_route_execute(butler_dir: Path, infra: dict | None = None):
+    """The daemon's route.execute tool on a DB-free host, with its modules registered."""
+    daemon = await _host(butler_dir, infra)
+    return daemon, await _tool(daemon, "route.execute")
 
 
 async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) -> None:
@@ -1821,7 +1525,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     # Missing notify_request → validation_error
     m1 = tmp_path / "m1"
     m1.mkdir()
-    patches = _patch_infra()
+    patches = _infra()
     butler_dir = _make_butler_toml(
         m1, butler_name="messenger", modules={"telegram": {}, "email": {}}
     )
@@ -1840,7 +1544,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     # Success: delivery proceeds; notify_response normalized
     m2 = tmp_path / "m2"
     m2.mkdir()
-    patches2 = _patch_infra()
+    patches2 = _infra()
     butler_dir2 = _make_butler_toml(
         m2, butler_name="messenger", modules={"telegram": {}, "email": {}}
     )
@@ -1929,6 +1633,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     telegram_module._upload_file = AsyncMock()
     with (
         patch("butlers.modules.telegram.require_permission", new=AsyncMock()),
+        patch("butlers.modules.telegram.require_custody_clear", new=AsyncMock()),
         patch("butlers.modules.telegram.write_audit_entry", new=AsyncMock()),
     ):
         foreign = await fn2(
@@ -1959,7 +1664,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     # Missing required recipient → validation_error
     m3 = tmp_path / "m3"
     m3.mkdir()
-    patches3 = _patch_infra()
+    patches3 = _infra()
     butler_dir3 = _make_butler_toml(
         m3, butler_name="messenger", modules={"telegram": {}, "email": {}}
     )
@@ -2018,6 +1723,7 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
         ),
     ],
 )
+@pytest.mark.parametrize("send_tools", [True, False], ids=["send-tools", "no-send-tools"])
 async def test_route_execute_parks_email_actions_with_native_tool_args(
     tmp_path: Path,
     intent: str,
@@ -2025,14 +1731,17 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     notify_context: dict[str, str] | None,
     expected_tool: str,
     expected_args: dict[str, str],
+    send_tools: bool,
 ) -> None:
     """Approved route deliveries must replay with the registered email tool contract."""
     from butlers.modules.approvals.email_guard import EmailGuardDecision
 
     butler_dir = _make_butler_toml(
-        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+        tmp_path,
+        butler_name="messenger",
+        modules={"telegram": {}, "email": {"send_tools": send_tools}},
     )
-    patches = _patch_infra()
+    patches = _infra()
     _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
     assert route_execute_fn is not None
 
@@ -2073,12 +1782,19 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
     call_kwargs = guard.await_args.kwargs
     assert call_kwargs["rule_tool_name"] == expected_tool
     assert call_kwargs["rule_match_args"] == expected_args
-    assert call_kwargs["park_tool_name"] == "route.execute"
-    assert call_kwargs["park_tool_args"] == {
-        "schema_version": "route.v1",
-        "request_context": _route_request_context(),
-        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
-    }
+    # Spec: module-approvals "Pending Actions Store Replayable Executable Commands".
+    # The park is the registered native command, never the routing envelope, so the
+    # card's registered preview applies and approval replays through that tool.
+    if send_tools:
+        assert call_kwargs["park_tool_name"] == expected_tool
+        assert call_kwargs["park_tool_args"] == expected_args
+    else:
+        # Without send_tools this daemon registers no native email tool, so its
+        # approved executor could never replay one: keep the routed envelope.
+        assert call_kwargs["park_tool_name"] == "route.execute"
+        assert call_kwargs["park_tool_args"]["input"]["context"]["notify_request"] == (
+            notify_request
+        )
 
     # Spec: REQ-core-notify-032; only committed typed recipient parks emit a review reference.
     refusal = result["result"]["notify_response"]
@@ -2106,6 +1822,192 @@ async def test_route_execute_parks_email_actions_with_native_tool_args(
         assert "approval_review" not in rejected["result"]["notify_response"]
 
 
+@pytest.mark.parametrize(
+    ("intent", "context", "inert", "expected_tool", "expected_args"),
+    [
+        (
+            "send",
+            None,
+            False,
+            "telegram_send_message",
+            {"chat_id": "9001", "text": "[health] Requested update."},
+        ),
+        (
+            "reply",
+            {
+                "request_id": "018f6f4e-5b3b-7b2d-9c2f-7b7b6b6b6b6b",
+                "source_channel": "telegram_bot",
+                "source_endpoint_identity": "switchboard",
+                "source_sender_identity": "9001",
+                "source_thread_identity": "9001:44",
+            },
+            False,
+            "telegram_reply_to_message",
+            {"chat_id": "9001", "message_id": 44, "text": "[health] Requested update."},
+        ),
+        # Inert-link rendering has no native tool argument, so it keeps the exact
+        # routed envelope (its replay re-enters route.execute with that flag).
+        ("send", None, True, "route.execute", None),
+    ],
+)
+async def test_route_execute_parks_telegram_actions_with_native_tool_args(
+    tmp_path: Path,
+    intent: str,
+    context: dict[str, str] | None,
+    inert: bool,
+    expected_tool: str,
+    expected_args: dict[str, Any] | None,
+) -> None:
+    """A non-owner Telegram park stores the registered tool and its handler args."""
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    _, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, _infra())
+    assert route_execute_fn is not None
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False, reason="parked", action_id=uuid.uuid4(), contact_desc="unknown"
+        )
+    )
+    notify_request: dict[str, Any] = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": intent,
+            "channel": "telegram",
+            "message": "Requested update.",
+            **({"recipient": "9001"} if intent == "send" else {}),
+        },
+    }
+    if context is not None:
+        notify_request["request_context"] = context
+    if inert:
+        notify_request["render_links_inert"] = True
+    route_args = {
+        "schema_version": "route.v1",
+        "request_context": _route_request_context(),
+        "input": {"prompt": "Deliver.", "context": {"notify_request": notify_request}},
+    }
+
+    with patch("butlers.core.approvals_hooks.check_recipient", new=guard):
+        result = await route_execute_fn(**route_args)
+
+    assert result["status"] == "error"
+    call_kwargs = guard.await_args.kwargs
+    assert call_kwargs["park_tool_name"] == expected_tool
+    assert call_kwargs["park_tool_args"] == (route_args if expected_args is None else expected_args)
+
+
+@pytest.mark.parametrize(
+    ("principal", "issuer", "tamper", "delivers"),
+    [
+        # RFC 0038 D13 positive: Switchboard's protected hop attests this exact send.
+        ("switchboard", "health", None, True),
+        # A bare flag (no kernel-admitted Switchboard principal) is an inert field.
+        (None, "health", None, False),
+        # Any changed byte in the routed envelope is outside the attestation.
+        ("switchboard", "health", "digest", False),
+        # An attestation for another source cannot cover this source's send.
+        ("switchboard", "relationship", None, False),
+        # A malformed attestation is ignored, never partially honoured.
+        ("switchboard", "health", "malformed", False),
+    ],
+    ids=["verified", "bare-flag", "digest-mismatch", "foreign-issuer", "malformed"],
+)
+async def test_route_execute_honours_only_an_authenticated_approved_notify_attestation(
+    tmp_path: Path, principal: str | None, issuer: str, tamper: str | None, delivers: bool
+) -> None:
+    """An owner-approved notify is delivered once, never parked a second time.
+
+    The shared approval matcher is the one authority: it honours Switchboard's
+    attestation only when it arrived on the kernel-admitted hop and covers the
+    exact routed ``notify_request``. Everything else parks as before.
+    """
+    import copy
+
+    import butlers.core.approvals_hooks as approval_hooks
+    from butlers.core.approved_delivery import notify_request_digest
+    from butlers.modules.approvals.email_guard import EmailGuardDecision
+    from butlers.modules.approvals.execution_context import get_approval_execution_context
+
+    butler_dir = _make_butler_toml(
+        tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
+    )
+    patches = _infra()
+    daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
+    assert route_execute_fn is not None
+    telegram_module = next(module for module in daemon._modules if module.name == "telegram")
+    telegram_module._send_message = AsyncMock(return_value={"result": {"message_id": 321}})
+    guard = AsyncMock(
+        return_value=EmailGuardDecision(
+            allowed=False, reason="parked", action_id=uuid.uuid4(), contact_desc="unknown"
+        )
+    )
+    notify_request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "health",
+        "delivery": {
+            "intent": "send",
+            "channel": "telegram",
+            "message": "Approved words.",
+            "recipient": "900800700",
+        },
+    }
+    attested = copy.deepcopy(notify_request)
+    if tamper == "digest":
+        attested["delivery"]["message"] = "Different words."
+    attestation: Any = {
+        "issuer": issuer,
+        "action_id": str(uuid.uuid4()),
+        "notify_digest": notify_request_digest(attested),
+    }
+    if tamper == "malformed":
+        attestation = {**attestation, "extra": "field"}
+
+    def approved_execution_matches(*, tool_name: str, tool_args: dict[str, Any]) -> bool:
+        return get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None
+
+    hook_pool = patches["mock_pool"]
+    hook_runtime = approval_hooks.register_approval_hooks(
+        hook_pool,
+        email_guard=AsyncMock(),
+        recipient_guard=guard,
+        park_pending_action=AsyncMock(),
+        approved_execution_matches=approved_execution_matches,
+    )
+    try:
+        with patch(
+            "butlers.core_tools._routing.protected_approval_principal",
+            new=lambda *, audience: (
+                principal if audience == "messenger:approval-recovery" else None
+            ),
+        ):
+            result = await route_execute_fn(
+                schema_version="route.v1",
+                request_context=_route_request_context(),
+                input={
+                    "prompt": "Deliver.",
+                    "context": {
+                        "notify_request": notify_request,
+                        "_trusted_approved_notify": attestation,
+                    },
+                },
+            )
+    finally:
+        approval_hooks.unregister_approval_hooks(hook_pool, hook_runtime)
+
+    if delivers:
+        assert result["status"] == "ok", result
+        guard.assert_not_awaited()
+        telegram_module._send_message.assert_awaited_once()
+    else:
+        assert result["status"] == "error"
+        guard.assert_awaited_once()
+        telegram_module._send_message.assert_not_awaited()
+
+
 async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path) -> None:
     """Messenger receives and rechecks dossier metadata from a deferred envelope."""
     import butlers.core.approvals_hooks as approval_hooks
@@ -2114,7 +2016,7 @@ async def test_route_execute_revalidates_notify_decision_dossier(tmp_path: Path)
     butler_dir = _make_butler_toml(
         tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
     )
-    patches = _patch_infra()
+    patches = _infra()
     daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
     assert route_execute_fn is not None
     telegram_module = next(module for module in daemon._modules if module.name == "telegram")
@@ -2236,7 +2138,7 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
     butler_dir = _make_butler_toml(
         tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}
     )
-    patches = _patch_infra()
+    patches = _infra()
     daemon, route_execute_fn = await _start_daemon_with_route_execute(butler_dir, patches)
     assert route_execute_fn is not None
     telegram_module = next(module for module in daemon._modules if module.name == "telegram")
@@ -2307,57 +2209,40 @@ async def test_route_execute_rejects_non_owner_missing_decision_dossier(tmp_path
 # ---------------------------------------------------------------------------
 
 
-async def test_non_fatal_module_failures(tmp_path: Path) -> None:
-    """Failed modules marked failed/cascade_failed; on_startup failures degrade health/tools."""
-    # Credentials failure: stub_a fails, stub_b cascade_fails; butler still starts
+async def test_non_fatal_module_failures(tmp_path: Path, monkeypatch) -> None:
+    """Failed modules marked failed/cascade_failed; on_startup failures degrade health/tools.
+
+    The daemon's own credential, startup and registration phases run on a DB-free
+    host; the boot-level isolation is covered by the real boots in
+    ``tests/daemon/test_graceful_shutdown.py`` and ``tests/smoke`` (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+
+    # Credentials failure: stub_a's token is nowhere, so it fails; stub_b cascade-fails.
+    monkeypatch.delenv("STUB_A_TOKEN", raising=False)
     butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}, "stub_b": {}})
-    registry = _make_registry(StubModuleA, StubModuleB)
-    patches = _patch_infra()
-    status_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal status_fn
-            if fn.__name__ == "status":
-                status_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={"stub_a": ["STUB_A_TOKEN"]},
-        ),
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
+    infra = _infra()
+    daemon = (await host_tools(butler_dir, pool=infra["mock_pool"])).daemon
+    daemon._registry = _make_registry(StubModuleA, StubModuleB)
+    state = lifecycle.StartupState()
+    state.pool = infra["mock_pool"]
+    for phase in (
+        lifecycle._startup_modules,
+        lifecycle._startup_module_config,
+        lifecycle._startup_credentials,
+        lifecycle._startup_credential_store,
+        lifecycle._startup_module_startup,
     ):
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
+        await phase(daemon, state)
+    await daemon._register_module_tools()
+    daemon._started_at = time.monotonic()
 
-    assert daemon._started_at is not None
     assert daemon._module_statuses["stub_a"].status == "failed"
     assert daemon._module_statuses["stub_a"].phase == "credentials"
     assert daemon._module_statuses["stub_b"].status == "cascade_failed"
     assert "stub_a" in daemon._module_statuses["stub_b"].error
     # status() reports phase+error for failed, cascade_failed for dependents
-    assert status_fn is not None
-    result = await status_fn()
+    result = await (await _tool(daemon, "status"))()
     stub_a_info = result["modules"]["stub_a"]
     assert stub_a_info["status"] == "failed"
     assert stub_a_info["phase"] == "credentials"
@@ -2368,42 +2253,11 @@ async def test_non_fatal_module_failures(tmp_path: Path) -> None:
     fail_subdir = tmp_path / "fail"
     fail_subdir.mkdir()
     butler_dir2 = _make_butler_toml(fail_subdir, modules={"stub_fail": {}, "stub_a": {}})
-    registry2 = _make_registry(StubModuleFailStartup, StubModuleA)
-    patches2 = _patch_infra()
-    status_fn2 = None
-    mock_mcp2 = MagicMock()
+    daemon2 = await _host(
+        butler_dir2, registry=_make_registry(StubModuleFailStartup, StubModuleA), start_modules=True
+    )
+    daemon2._started_at = time.monotonic()
 
-    def tool_decorator2(*_decorator_args, **_decorator_kwargs):
-        def decorator(fn):
-            nonlocal status_fn2
-            if fn.__name__ == "status":
-                status_fn2 = fn
-            return fn
-
-        return decorator
-
-    mock_mcp2.tool = tool_decorator2
-
-    with (
-        patches2["db_from_env"],
-        patches2["run_migrations"],
-        patches2["validate_credentials"],
-        patches2["validate_module_credentials"],
-        patches2["init_telemetry"],
-        patches2["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp2),
-        patches2["Spawner"],
-        patches2["build_runtime_adapter"],
-        patches2["shutil_which"],
-        patches2["start_mcp_server"],
-        patches2["connect_switchboard"],
-        patches2["create_audit_pool"],
-        patches2["recover_route_inbox"],
-    ):
-        daemon2 = ButlerDaemon(butler_dir2, registry=registry2)
-        await daemon2.start()
-
-    assert daemon2._started_at is not None
     assert daemon2._module_statuses["stub_fail"].status == "failed"
     assert daemon2._module_statuses["stub_fail"].phase == "startup"
     assert daemon2._module_statuses["stub_a"].status == "active"
@@ -2411,8 +2265,7 @@ async def test_non_fatal_module_failures(tmp_path: Path) -> None:
     active_mod = next(m for m in daemon2._modules if m.name == "stub_a")
     assert not fail_mod.tools_registered
     assert active_mod.tools_registered
-    assert status_fn2 is not None
-    r2 = await status_fn2()
+    r2 = await (await _tool(daemon2, "status"))()
     assert r2["health"] == "degraded"
     assert r2["modules"]["stub_fail"]["status"] == "failed"
     assert r2["modules"]["stub_a"]["status"] == "active"
@@ -2460,33 +2313,28 @@ def _make_staffer_toml(tmp_path: Path, *, with_briefing_schedule: bool = True) -
     return tmp_path
 
 
-async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None:
+async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path, monkeypatch) -> None:
     """Staffer excludes daily_briefing_contribution from schedules; liveness payload includes type='staffer'."""
-    # Part 1: schedule filtering
+    import butlers.lifecycle as lifecycle
+
+    # Part 1: the schedules phase filters the staffer's briefing job
     butler_dir = _make_staffer_toml(tmp_path, with_briefing_schedule=True)
-    patches = _patch_infra()
+    daemon = await _host(butler_dir)
+    synced: list = []
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"] as mock_sync,
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["create_audit_pool"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
+    async def record_sync(_pool, schedules, *args, **kwargs):
+        synced.append(schedules)
 
-    mock_sync.assert_awaited_once()
-    schedules_arg = mock_sync.call_args[0][1]
+    monkeypatch.setattr(lifecycle, "sync_schedules", record_sync)
+    from types import SimpleNamespace
+
+    state = lifecycle.StartupState()
+    state.pool = daemon.db.pool
+    # No shared pool: the phase falls back to its default timezone and no quiet policy.
+    state.credential_store = SimpleNamespace(shared_pool=None)
+    await lifecycle._startup_schedules(daemon, state)
+
+    (schedules_arg,) = synced
     job_names = [s.job_name for s in schedules_arg]
     assert "daily_briefing_contribution" not in job_names
     assert "some_other_job" in job_names
@@ -2494,35 +2342,8 @@ async def test_staffer_briefing_exclusion_and_type_field(tmp_path: Path) -> None
     # Part 2: liveness payload type field
     sub = tmp_path / "t2"
     sub.mkdir()
-    butler_dir2 = _make_staffer_toml(sub, with_briefing_schedule=False)
-    patches2 = _patch_infra()
-
-    with (
-        patches2["db_from_env"],
-        patches2["run_migrations"],
-        patches2["validate_credentials"],
-        patches2["validate_module_credentials"],
-        patches2["init_telemetry"],
-        patches2["sync_schedules"],
-        patches2["FastMCP"],
-        patches2["Spawner"],
-        patches2["build_runtime_adapter"],
-        patches2["shutil_which"],
-        patches2["start_mcp_server"],
-        patches2["connect_switchboard"],
-        patches2["create_audit_pool"],
-        patches2["recover_route_inbox"],
-    ):
-        daemon2 = ButlerDaemon(butler_dir2)
-        await daemon2.start()
-
+    daemon2 = await _host(_make_staffer_toml(sub, with_briefing_schedule=False))
     try:
-        daemon2._liveness_reporter_task.cancel()
-        try:
-            await daemon2._liveness_reporter_task
-        except asyncio.CancelledError:
-            pass
-
         posted_payloads: list[dict] = []
 
         class _FakeResp:
@@ -2576,9 +2397,10 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
     )
     monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.require_custody_clear", AsyncMock())
     monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
     butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
-    daemon, execute = await _start_daemon_with_route_execute(butler_dir, _patch_infra())
+    daemon, execute = await _start_daemon_with_route_execute(butler_dir)
     telegram = next(m for m in daemon._modules if m.name == "telegram")
     requests = []
 
@@ -2628,6 +2450,66 @@ async def test_registered_messenger_preserves_native_telegram_partial_outcome(
         assert "message_ids" not in result["error"]
         assert "message_ids" not in result["result"]["notify_response"]["error"]
     assert len(requests) == (2 if known_prefix else 1)
+
+
+@pytest.mark.parametrize(
+    ("reason", "error_class", "retryable"),
+    [
+        ("endpoint_held", "validation_error", False),
+        ("eligibility_unknown", "target_unavailable", True),
+    ],
+)
+async def test_route_execute_maps_custody_refusals_before_provider(
+    tmp_path, monkeypatch, reason, error_class, retryable
+):
+    """REQ-endpoint-custody-holds-007: the real route closure reports each fence refusal."""
+    from types import SimpleNamespace
+
+    from butlers.core.custody_egress import CustodyEgressRefused
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration",
+        AsyncMock(return_value=SimpleNamespace(roles=["owner"])),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr(
+        "butlers.modules.telegram.require_custody_clear",
+        AsyncMock(side_effect=CustodyEgressRefused(reason)),
+    )
+    monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
+    butler_dir = _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}})
+    daemon, execute = await _start_daemon_with_route_execute(butler_dir)
+    telegram = next(m for m in daemon._modules if m.name == "telegram")
+    post = AsyncMock()
+    monkeypatch.setattr(telegram, "_get_client", lambda: SimpleNamespace(post=post))
+    monkeypatch.setattr(telegram, "_base_url", lambda: "https://telegram.test")
+    result = await execute(
+        schema_version="route.v1",
+        request_context=_route_request_context(),
+        input={
+            "prompt": "Deliver.",
+            "context": {
+                "notify_request": {
+                    "schema_version": "notify.v1",
+                    "origin_butler": "health",
+                    "delivery": {
+                        "intent": "send",
+                        "channel": "telegram",
+                        "message": "hello",
+                        "recipient": "12345",
+                    },
+                }
+            },
+        },
+    )
+    post.assert_not_awaited()
+    assert result["status"] == "error"
+    assert result["error"]["class"] == error_class
+    assert result["error"]["retryable"] is retryable
+    assert reason in result["error"]["message"]
+    assert "12345" not in result["error"]["message"]
+    assert result["transport"]["outcome"] == "not_attempted"
+    assert result["result"]["notify_response"]["error"]["class"] == error_class
 
 
 @pytest.mark.asyncio

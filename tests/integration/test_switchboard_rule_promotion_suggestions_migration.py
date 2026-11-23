@@ -26,7 +26,6 @@ migrated Postgres instance (testcontainers):
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import shutil
 import uuid
@@ -39,14 +38,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 
 from alembic import command
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import (
-    create_migrated_test_db,
-    create_migration_db,
-    index_exists,
-    migration_db_name,
-    table_exists,
-)
+from butlers.testing.migration import index_exists, table_exists
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -89,29 +81,18 @@ def _normalize_sql(statement: str) -> str:
     return " ".join(statement.split()).upper()
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def suggestions_url(fresh_db) -> str:
     # Provision the switchboard chain into its own schema (bu-9auxy) to mirror prod's
     # per-butler-schema topology instead of landing switchboard tables in public.
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    return fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
+async def switchboard_pool(db) -> asyncpg.Pool:
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    yield p
-    await p.close()
 
 
 async def _insert_ingestion_rule(pool: asyncpg.Pool, *, priority: int = 100) -> uuid.UUID:
@@ -181,11 +162,11 @@ async def _insert_demotion_suggestion(
 
 
 def test_rule_promotion_suggestions_table_exists_with_expected_columns(
-    migrated_db_url: str,
+    suggestions_url: str,
 ) -> None:
-    assert table_exists(migrated_db_url, "rule_promotion_suggestions", schema="switchboard")
+    assert table_exists(suggestions_url, "rule_promotion_suggestions", schema="switchboard")
 
-    engine = create_engine(migrated_db_url)
+    engine = create_engine(suggestions_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -219,23 +200,23 @@ def test_rule_promotion_suggestions_table_exists_with_expected_columns(
     }
 
 
-def test_expected_indexes_exist(migrated_db_url: str) -> None:
+def test_expected_indexes_exist(suggestions_url: str) -> None:
     assert index_exists(
-        migrated_db_url, "ix_rule_promotion_suggestions_status_created", schema="switchboard"
+        suggestions_url, "ix_rule_promotion_suggestions_status_created", schema="switchboard"
     )
     assert index_exists(
-        migrated_db_url, "ux_rule_promotion_suggestions_pending_promotion", schema="switchboard"
+        suggestions_url, "ux_rule_promotion_suggestions_pending_promotion", schema="switchboard"
     )
     assert index_exists(
-        migrated_db_url, "ux_rule_promotion_suggestions_pending_demotion", schema="switchboard"
+        suggestions_url, "ux_rule_promotion_suggestions_pending_demotion", schema="switchboard"
     )
     assert index_exists(
-        migrated_db_url, "ix_rule_promotion_suggestions_target_rule", schema="switchboard"
+        suggestions_url, "ix_rule_promotion_suggestions_target_rule", schema="switchboard"
     )
 
 
-def test_ingestion_rules_gains_promoted_from_suggestion_id_column(migrated_db_url: str) -> None:
-    engine = create_engine(migrated_db_url)
+def test_ingestion_rules_gains_promoted_from_suggestion_id_column(suggestions_url: str) -> None:
+    engine = create_engine(suggestions_url)
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -247,7 +228,7 @@ def test_ingestion_rules_gains_promoted_from_suggestion_id_column(migrated_db_ur
     engine.dispose()
     assert len(rows) == 1
     assert index_exists(
-        migrated_db_url, "ix_ingestion_rules_promoted_from_suggestion", schema="switchboard"
+        suggestions_url, "ix_ingestion_rules_promoted_from_suggestion", schema="switchboard"
     )
 
 
@@ -257,9 +238,11 @@ def test_ingestion_rules_gains_promoted_from_suggestion_id_column(migrated_db_ur
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_suggestion_kind_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
+async def test_suggestion_kind_check_constraint_rejects_bogus_value(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -271,10 +254,10 @@ async def test_suggestion_kind_check_constraint_rejects_bogus_value(pool: asyncp
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_status_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
-    rule_id = await _insert_ingestion_rule(pool, priority=101)
+async def test_status_check_constraint_rejects_bogus_value(switchboard_pool: asyncpg.Pool) -> None:
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=101)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, target_rule_id, status)
@@ -286,10 +269,10 @@ async def test_status_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_proposed_rule_type_check_constraint_rejects_bogus_value(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -301,9 +284,11 @@ async def test_proposed_rule_type_check_constraint_rejects_bogus_value(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_proposed_rule_type_check_accepts_source_endpoint(pool: asyncpg.Pool) -> None:
+async def test_proposed_rule_type_check_accepts_source_endpoint(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     """The latest schema can persist an exact opaque connector identity proposal."""
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         INSERT INTO rule_promotion_suggestions
             (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -316,11 +301,11 @@ async def test_proposed_rule_type_check_accepts_source_endpoint(pool: asyncpg.Po
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_missing_fields(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A promotion-kind row must carry the full proposed-rule triple."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions (suggestion_kind, sender_key, source_channel)
             VALUES ('promotion', 'user@example.com', 'email')
@@ -330,12 +315,12 @@ async def test_kind_shape_check_rejects_promotion_row_missing_fields(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_with_target_rule_id(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """A promotion-kind row must not carry target_rule_id (that's demotion-only)."""
-    rule_id = await _insert_ingestion_rule(pool, priority=102)
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=102)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -349,21 +334,21 @@ async def test_kind_shape_check_rejects_promotion_row_with_target_rule_id(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_demotion_row_missing_target_rule_id(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             "INSERT INTO rule_promotion_suggestions (suggestion_kind) VALUES ('demotion')"
         )
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_demotion_row_with_proposed_action(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
-    rule_id = await _insert_ingestion_rule(pool, priority=103)
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=103)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, target_rule_id, proposed_action)
@@ -375,12 +360,12 @@ async def test_kind_shape_check_rejects_demotion_row_with_proposed_action(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_demotion_row_with_sender_key(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Demotion scope comes from target_rule_id, not one sampled sender."""
-    rule_id = await _insert_ingestion_rule(pool, priority=106)
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=106)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, target_rule_id, sender_key)
@@ -392,12 +377,12 @@ async def test_kind_shape_check_rejects_demotion_row_with_sender_key(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_demotion_row_with_source_channel(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Demotion scope comes from target_rule_id, not one sampled channel."""
-    rule_id = await _insert_ingestion_rule(pool, priority=107)
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=107)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, target_rule_id, source_channel)
@@ -409,12 +394,12 @@ async def test_kind_shape_check_rejects_demotion_row_with_source_channel(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_with_empty_string_sender_key(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """Empty string is NOT NULL but is just as vacuous as NULL for a required
     identity field — the CHECK must reject it, not just a missing value."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -426,10 +411,10 @@ async def test_kind_shape_check_rejects_promotion_row_with_empty_string_sender_k
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_kind_shape_check_rejects_promotion_row_with_empty_string_proposed_action(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -441,9 +426,9 @@ async def test_kind_shape_check_rejects_promotion_row_with_empty_string_proposed
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_target_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
+async def test_target_rule_id_fk_is_enforced(switchboard_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.ForeignKeyViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions (suggestion_kind, target_rule_id)
             VALUES ('demotion', $1)
@@ -453,9 +438,9 @@ async def test_target_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_created_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
+async def test_created_rule_id_fk_is_enforced(switchboard_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.ForeignKeyViolationError):
-        await pool.execute(
+        await switchboard_pool.execute(
             """
             INSERT INTO rule_promotion_suggestions
                 (suggestion_kind, sender_key, source_channel, proposed_rule_type,
@@ -474,38 +459,43 @@ async def test_created_rule_id_fk_is_enforced(pool: asyncpg.Pool) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_second_pending_promotion_suggestion_for_same_sender_channel_rejected(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
-    await _insert_promotion_suggestion(pool, sender_key="dup@example.com", source_channel="email")
+    await _insert_promotion_suggestion(
+        switchboard_pool, sender_key="dup@example.com", source_channel="email"
+    )
     with pytest.raises(asyncpg.UniqueViolationError):
         await _insert_promotion_suggestion(
-            pool, sender_key="dup@example.com", source_channel="email"
+            switchboard_pool, sender_key="dup@example.com", source_channel="email"
         )
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_second_pending_demotion_suggestion_for_same_rule_rejected(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
-    rule_id = await _insert_ingestion_rule(pool, priority=104)
-    await _insert_demotion_suggestion(pool, target_rule_id=rule_id)
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=104)
+    await _insert_demotion_suggestion(switchboard_pool, target_rule_id=rule_id)
     with pytest.raises(asyncpg.UniqueViolationError):
-        await _insert_demotion_suggestion(pool, target_rule_id=rule_id)
+        await _insert_demotion_suggestion(switchboard_pool, target_rule_id=rule_id)
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_dismissed_promotion_suggestion_does_not_block_new_pending_one(
-    pool: asyncpg.Pool,
+    switchboard_pool: asyncpg.Pool,
 ) -> None:
     """The unique index is partial (WHERE status = 'pending_review') — a
     dismissed suggestion for the same sender/channel must not block a fresh
     pending one from being created."""
     await _insert_promotion_suggestion(
-        pool, sender_key="retry@example.com", source_channel="email", status="dismissed"
+        switchboard_pool, sender_key="retry@example.com", source_channel="email", status="dismissed"
     )
     # Should not raise.
     await _insert_promotion_suggestion(
-        pool, sender_key="retry@example.com", source_channel="email", status="pending_review"
+        switchboard_pool,
+        sender_key="retry@example.com",
+        source_channel="email",
+        status="pending_review",
     )
 
 
@@ -515,13 +505,15 @@ async def test_dismissed_promotion_suggestion_does_not_block_new_pending_one(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_confirming_a_promotion_suggestion_links_created_rule(pool: asyncpg.Pool) -> None:
+async def test_confirming_a_promotion_suggestion_links_created_rule(
+    switchboard_pool: asyncpg.Pool,
+) -> None:
     suggestion_id = await _insert_promotion_suggestion(
-        pool, sender_key="confirm@chase.com", source_channel="email"
+        switchboard_pool, sender_key="confirm@chase.com", source_channel="email"
     )
 
     new_rule_id = uuid.uuid4()
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         INSERT INTO ingestion_rules
             (id, scope, rule_type, condition, action, priority, created_by)
@@ -530,7 +522,7 @@ async def test_confirming_a_promotion_suggestion_links_created_rule(pool: asyncp
         """,
         new_rule_id,
     )
-    await pool.execute(
+    await switchboard_pool.execute(
         """
         UPDATE rule_promotion_suggestions
         SET status = 'confirmed', created_rule_id = $1, decided_at = now(), decided_by = 'owner'
@@ -539,16 +531,18 @@ async def test_confirming_a_promotion_suggestion_links_created_rule(pool: asyncp
         new_rule_id,
         suggestion_id,
     )
-    await pool.execute(
+    await switchboard_pool.execute(
         "UPDATE ingestion_rules SET promoted_from_suggestion_id = $1 WHERE id = $2",
         suggestion_id,
         new_rule_id,
     )
 
-    suggestion_row = await pool.fetchrow(
+    suggestion_row = await switchboard_pool.fetchrow(
         "SELECT * FROM rule_promotion_suggestions WHERE id = $1", suggestion_id
     )
-    rule_row = await pool.fetchrow("SELECT * FROM ingestion_rules WHERE id = $1", new_rule_id)
+    rule_row = await switchboard_pool.fetchrow(
+        "SELECT * FROM ingestion_rules WHERE id = $1", new_rule_id
+    )
 
     assert suggestion_row["status"] == "confirmed"
     assert suggestion_row["created_rule_id"] == new_rule_id
@@ -557,11 +551,11 @@ async def test_confirming_a_promotion_suggestion_links_created_rule(pool: asyncp
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_demotion_suggestion_targets_existing_rule(pool: asyncpg.Pool) -> None:
-    rule_id = await _insert_ingestion_rule(pool, priority=105)
-    suggestion_id = await _insert_demotion_suggestion(pool, target_rule_id=rule_id)
+async def test_demotion_suggestion_targets_existing_rule(switchboard_pool: asyncpg.Pool) -> None:
+    rule_id = await _insert_ingestion_rule(switchboard_pool, priority=105)
+    suggestion_id = await _insert_demotion_suggestion(switchboard_pool, target_rule_id=rule_id)
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT * FROM rule_promotion_suggestions WHERE id = $1", suggestion_id
     )
     assert row["suggestion_kind"] == "demotion"
@@ -610,14 +604,17 @@ def test_upgrade_locks_writers_immediately_before_normalizing_legacy_demotion_ro
     assert cleanup_index < constraint_drop_index
 
 
-def test_upgrade_clears_legacy_demotion_identity_fields(postgres_container) -> None:
+def test_upgrade_clears_legacy_demotion_identity_fields(fresh_db) -> None:
     """The forward migration removes stray sampled identity data before pinning NULL."""
-    from butlers.migrations import _build_alembic_config, run_migrations
+    from butlers.migrations import _build_alembic_config
 
-    db_url = create_migration_db(postgres_container, migration_db_name())
-    asyncio.run(run_migrations(db_url, chain="core"))
+    db_url = fresh_db(
+        "core",
+        "switchboard",
+        schemas={"switchboard": "switchboard"},
+        revisions={"switchboard": "sw_026"},
+    )
     config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
-    command.upgrade(config, "switchboard@sw_026")
 
     rule_id = uuid.uuid4()
     suggestion_id = uuid.uuid4()
@@ -676,16 +673,11 @@ def test_upgrade_clears_legacy_demotion_identity_fields(postgres_container) -> N
 
 
 def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
-    postgres_container,
+    fresh_db,
 ) -> None:
     from butlers.migrations import _build_alembic_config
 
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    db_url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
     config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
     command.downgrade(config, "switchboard@sw_019")
@@ -721,17 +713,12 @@ def test_downgrade_drops_table_indexes_and_ingestion_rules_column(
 
 
 def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
-    postgres_container,
+    fresh_db,
 ) -> None:
     """The source-endpoint migration must refuse to erase a live suggestion."""
     from butlers.migrations import _build_alembic_config
 
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    db_url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
     suggestion_id = uuid.uuid4()
     engine = create_engine(db_url)
     try:

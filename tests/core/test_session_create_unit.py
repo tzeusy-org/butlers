@@ -11,41 +11,25 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
 
-class _FakePool:
-    """Fake asyncpg pool that captures fetchval calls."""
-
-    def __init__(
-        self,
-        *,
-        return_id: uuid.UUID | None = None,
-        fetchval_results: list[Any] | None = None,
-    ) -> None:
-        self._return_id = return_id or uuid.uuid4()
-        self._fetchval_results = list(fetchval_results or [])
-        self.fetchval_calls: list[tuple[str, tuple]] = []
-
-    async def fetchval(self, sql: str, *args: Any) -> uuid.UUID:
-        self.fetchval_calls.append((sql, args))
-        if self._fetchval_results:
-            result = self._fetchval_results.pop(0)
-            if isinstance(result, Exception):
-                raise result
-            return result
-        return self._return_id
+def _insert_args(pool, call: int = 0) -> tuple:
+    """Bound parameters ($1..$12) of the nth sessions INSERT."""
+    return pool.fetchval.await_args_list[call].args[1:]
 
 
 async def test_session_create_validation_and_return() -> None:
     """None request_id raises before DB call; valid call returns pool UUID."""
     from butlers.core.sessions import session_create
 
-    pool = _FakePool()
+    pool = fake_pool()
     with pytest.raises(ValueError, match="request_id is required"):
         await session_create(
             pool,
@@ -53,10 +37,10 @@ async def test_session_create_validation_and_return() -> None:
             trigger_source="tick",
             request_id=None,  # type: ignore[arg-type]
         )
-    assert pool.fetchval_calls == []
+    pool.fetchval.assert_not_awaited()
 
     expected_id = uuid.uuid4()
-    pool2 = _FakePool(return_id=expected_id)
+    pool2 = fake_pool(fetchval=expected_id, execute="SELECT 1")
     effective_prompt = "Synthetic system prompt"
     provenance = [
         {
@@ -76,7 +60,7 @@ async def test_session_create_validation_and_return() -> None:
         prompt_provenance=provenance,
     )
     assert result == expected_id
-    insert_args = pool2.fetchval_calls[0][1]
+    insert_args = _insert_args(pool2)
     assert insert_args[8] == effective_prompt
     assert insert_args[9] == hashlib.sha256(effective_prompt.encode("utf-8")).hexdigest()
     assert insert_args[10] == provenance
@@ -99,11 +83,11 @@ async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pyte
     request_id = str(uuid.uuid4())
     ingestion_event_id = str(uuid.uuid4())
     expected_id = uuid.uuid4()
-    pool = _FakePool(
-        fetchval_results=[
-            _IngestionEventFkViolation("missing ingestion event"),
-            expected_id,
-        ]
+    pool = fake_pool(
+        fetchval=AsyncMock(
+            side_effect=[_IngestionEventFkViolation("missing ingestion event"), expected_id]
+        ),
+        execute="SELECT 1",
     )
 
     result = await sessions.session_create(
@@ -115,11 +99,11 @@ async def test_session_create_drops_stale_ingestion_event_link(monkeypatch: pyte
     )
 
     assert result == expected_id
-    assert len(pool.fetchval_calls) == 2
-    assert pool.fetchval_calls[0][1][4] == request_id
-    assert pool.fetchval_calls[0][1][5] == ingestion_event_id
-    assert pool.fetchval_calls[1][1][4] == request_id
-    assert pool.fetchval_calls[1][1][5] is None
+    assert pool.fetchval.await_count == 2
+    assert _insert_args(pool, 0)[4] == request_id
+    assert _insert_args(pool, 0)[5] == ingestion_event_id
+    assert _insert_args(pool, 1)[4] == request_id
+    assert _insert_args(pool, 1)[5] is None
 
 
 @pytest.mark.parametrize(
@@ -132,8 +116,71 @@ async def test_session_create_invalid_trigger_source_raises(trigger_source: str)
 
     with pytest.raises(ValueError, match="Invalid trigger_source"):
         await session_create(
-            _FakePool(),
+            fake_pool(),
             prompt="Bad trigger",
             trigger_source=trigger_source,
             request_id=str(uuid.uuid4()),
         )
+
+
+async def test_session_complete_persists_live_stage_timings_and_ends_the_clock() -> None:
+    """The row is completed with the session's stage timings, content-free (bu-dhloi1.180)."""
+    from butlers.core import session_timing
+    from butlers.core.sessions import session_complete
+
+    session_timing._reset_for_tests()
+    sid = uuid.uuid4()
+    session_timing.begin(str(sid), origin=0.0, now=lambda: 2.0)
+    session_timing.mark(str(sid), "invoke_start_ms")
+    pool = fake_pool(fetchrow={"id": sid, "model": "m"}, execute="INSERT 0 1")
+
+    await session_complete(
+        pool, sid, output="SECRET-OUTPUT", tool_calls=[], duration_ms=5, success=True
+    )
+
+    params = pool.fetchrow.await_args.args[1:]
+    stage_timings = params[-1]
+    assert stage_timings == {"invoke_start_ms": 2000, "total_ms": 2000}
+    assert "SECRET" not in str(stage_timings)
+    assert session_timing.snapshot(str(sid)) is None
+
+
+async def test_session_complete_without_a_clock_writes_null_not_a_guess() -> None:
+    from butlers.core import session_timing
+    from butlers.core.sessions import session_complete
+
+    session_timing._reset_for_tests()
+    sid = uuid.uuid4()
+    pool = fake_pool(fetchrow={"id": sid, "model": "m"}, execute="INSERT 0 1")
+
+    await session_complete(pool, sid, output=None, tool_calls=[], duration_ms=5, success=False)
+
+    assert pool.fetchrow.await_args.args[-1] is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["api:day_close_refresh:2026-10-14", "api:day_close_refresh:2024-02-29"],
+)
+def test_manual_day_close_refresh_source_is_valid(source: str) -> None:
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    assert _is_valid_trigger_source(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "api:day_close_refresh:",
+        "api:day_close_refresh:not-a-date",
+        "api:day_close_refresh:2026-10-14:x",
+        "api:day_close_refresh:2026-13-40",
+        "api:other:2026-10-14",
+        "api:",
+        "api",
+    ],
+)
+def test_other_api_sources_stay_rejected(source: str) -> None:
+    from butlers.core.sessions import _is_valid_trigger_source
+
+    assert not _is_valid_trigger_source(source)

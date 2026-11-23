@@ -38,6 +38,7 @@ _CHANNEL_METADATA_KEYS = frozenset({"unidentified", "source_channel", "source_va
 _FACT_STORAGE_METADATA_KEYS = frozenset({"unidentified", "source", "source_butler", "source_scope"})
 _SEMANTIC_FK_TABLES = frozenset(
     {
+        ("public", "entity_rebind_log"),
         ("relationship", "entity_facts"),
         ("relationship", "merge_reviews"),
     }

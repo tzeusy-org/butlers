@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 from datetime import timedelta
 from uuid import uuid4
 
+from butlers.core import owner_delivery
 from butlers.core.goal_admission import (
     AdmissionResult,
     AdmissionUnavailable,
     digest,
     encode_grants,
+)
+from butlers.core.goal_labels import Label
+
+logger = logging.getLogger(__name__)
+
+
+#: Refusals that say "not now" rather than "no": capacity and unavailability. Authorization and
+#: owner-law refusals never leave a pending ask, and neither does a sender who is not the owner.
+RETRYABLE_REFUSALS = frozenset(
+    {"quota_exhausted", "limits_unavailable", "spend_state_unreadable", "ceiling_reached"}
 )
 
 
@@ -121,29 +134,37 @@ class GoalLedger:
             "SELECT * FROM switchboard.effects WHERE id=$1 FOR UPDATE", id
         )
 
-    async def increase_exposure(self, goal_id, exposed):
-        await self.connection.execute(
-            "UPDATE switchboard.goals SET exposed=true, updated_at=now() "
-            "WHERE id=$1 AND $2 AND NOT exposed",
-            goal_id,
-            exposed,
-        )
+    async def deliver(self, decision, source, outside_content=False):
+        """A joined reply reaches its goal only through this inbox row.
 
-    async def deliver(self, decision, source):
-        # A joined reply reaches its goal only through this inbox row; the
-        # unique source key keeps one delivery per incoming envelope.
+        The unique source key keeps one delivery per incoming envelope. sw_057
+        labels the row with the owner reply and the effect it answers, and
+        raises the goal's reporting union; outside content carried in the
+        reply itself adds unknown provenance (S1). The row's consumer joins
+        that label, so a running lead is exposed by the reply it reads, not
+        by the goal's union.
+        """
+        columns, placeholders, values = "", "", ()
+        if outside_content:
+            version, instr, data, sens = Label.unknown().to_row()
+            columns = ",label_version,label_instr,label_data,label_sens"
+            placeholders = ",$8,$9,$10,$11"
+            values = (version, instr, data, sens)
+        inbox_id = uuid4()
         await self.connection.execute(
             "INSERT INTO switchboard.goal_inbox "
-            "(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
-            uuid4(),
+            f"(id,goal_id,decision_id,source_key,source_ref,delivery_ref,reply_effect_id{columns}) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7{placeholders})",
+            inbox_id,
             decision.goal_id,
             decision.decision_id,
             source.key,
             source.id,
             self.facts.reply_delivery,
             self.reply_effect,
+            *values,
         )
+        return inbox_id
 
     async def quota_counts(self, origin, source):
         self.origin = origin
@@ -172,12 +193,20 @@ class GoalLedger:
         now,
     ):
         grants = encode_grants(ceiling)
+        # sw_083: the admitting Gmail thread, recorded once from verified evidence (immutable).
+        # Named only when there is one, as deliver() does: an unbound goal leaves both NULL.
+        trigger = getattr(facts, "trigger_thread", None)
+        columns, placeholders, values = "", "", ()
+        if trigger is not None:
+            columns = ",trigger_gmail_account,trigger_gmail_thread"
+            placeholders = ",$16,$17"
+            values = tuple(trigger)
         await self.connection.execute(
             "INSERT INTO switchboard.goals "
             "(id,source_key,source_kind,source_ref,occurrence_key,origin,"
             "admitted_exposed,exposed,ceiling,ceiling_digest,catalog_digest,contract_digest,config_digest,"
-            "caused_by_goal,caused_by_effect,chain_depth) "
-            "VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15) "
+            f"caused_by_goal,caused_by_effect,chain_depth{columns}) "
+            f"VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15{placeholders}) "
             "ON CONFLICT (source_key) DO NOTHING",
             goal_id,
             source.key,
@@ -194,6 +223,7 @@ class GoalLedger:
             facts.caused_by_goal,
             facts.caused_by_effect,
             chain_depth,
+            *values,
         )
         # The unique source key plus transaction lock is final race authority;
         # an unexpected conflict cannot silently allocate a second budget.
@@ -245,3 +275,38 @@ class GoalLedger:
         )
         await self.bind_attempt(attempt_id, source.key, id)
         return AdmissionResult(id, goal_id, result, reason)
+
+    async def remember_refused_owner_ask(self, source, facts, origin, reason):
+        """Keep a retryable refusal of an owner's message as one pending ask (S6).
+
+        A refused admission has no goal row, so this is its only memory. Owner-origin messages
+        only, retryable reasons only, and only while the owner-delivery path is on. The row holds
+        a source reference, never message text; failure here never changes the refusal itself.
+        """
+        if not (
+            source.kind == "message"
+            and origin == "owner"
+            and facts is not None
+            and facts.owner is True
+            and reason in RETRYABLE_REFUSALS
+        ):
+            return
+        try:
+            async with self.connection.transaction():  # a savepoint
+                if not await owner_delivery.rollout_enabled(self.connection):
+                    return
+                await self.connection.execute(
+                    "INSERT INTO switchboard.pending_asks (source_key, cause, original_ask) "
+                    "VALUES ($1, 'admission_refused', ($2::text)::jsonb) "
+                    "ON CONFLICT (source_key) DO NOTHING",
+                    source.key,
+                    json.dumps(
+                        {
+                            "v": 1,
+                            "source": {"kind": source.kind, "id": source.id},
+                            "refusal": reason,
+                        }
+                    ),
+                )
+        except Exception:
+            logger.warning("refused owner ask could not be remembered")

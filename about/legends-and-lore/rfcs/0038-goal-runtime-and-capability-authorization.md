@@ -28,12 +28,15 @@ D19's detailed experience contract remains in the dashboard change.
 
 ## Summary
 
-Every reasoning session in Butlers becomes an invocation of a **goal**. One
-deterministic control plane admits goals, derives their authority, launches a
-lead and optional depth-1 children, and brokers every capability call those
-sessions make. Domain butlers stop spawning reasoning sessions and become
-deterministic capability services that own their data, schedules, obligations,
-policies and effect receipts.
+Every reasoning session in Butlers runs within an admitted **goal**: a lead,
+optional depth-1 children, or the narrowly bounded D20 research subcall. One
+deterministic control plane admits goals, derives their authority, launches the
+lead and children, and brokers every capability call they make. Only its goal
+runner launches D20 research after the broker accepts a call from an authorized
+lead or child; research has no capability or delegation authority. Domain
+butlers stop spawning reasoning sessions and become deterministic capability
+services that own their data, schedules, obligations, policies and effect
+receipts.
 
 Today's "a session can only reach its own butler" is a configuration
 convention, not an enforced boundary (see [Context](#context-todays-boundary)).
@@ -42,7 +45,8 @@ model behavior:
 
 1. **Sandboxed sessions.** A runtime process can reach the broker's session
    listener and its model provider and nothing else: no database, no domain
-   port, no credential, no shell, file or web tool.
+   port, no credential, no shell, file or web tool. D20 adds brokered web
+   research on a separate research host; it gives sessions no web tool.
 2. **Grants derived from origin.** Admission computes an authority ceiling from
    who or what started the goal. A model can narrow its authority; it can never
    enlarge it.
@@ -129,7 +133,8 @@ Non-goals:
 | Goal | A durable unit of intent with one origin, one authority ceiling, one budget and one outcome. |
 | Origin | The verified source of a goal: owner, obligation, third party or staffer. |
 | Cause | The goal and effect whose consequence admitted a later goal, if any. |
-| Invocation | One runtime session acting for a goal, either the lead (depth 0) or a child (depth 1). |
+| Invocation | One grant-bearing runtime session acting for an admitted goal, either the lead (depth 0) or a child (depth 1). Unqualified invocation and goal invocation mean these lead/child sessions. |
+| Research invocation | The tokenless, grantless D20 research subcall within an already admitted calling goal, accepted by the broker and launched only by the runner on the research host. It is neither a lead/child invocation nor a D18 outside-goal model function and has no capability or delegation authority or hierarchy depth. |
 | Capability | A model-reachable MCP tool registered by a domain, with authorization metadata in the catalog. |
 | Grant | The capabilities, resources and approval policy one invocation may use. Stored server-side; never in model context. |
 | Exposure | The fact that untrusted third-party content has entered an invocation's context. Monotonic. |
@@ -152,6 +157,9 @@ flowchart TB
         Lead["Lead · depth 0"]
         Child["Child · depth 1"]
     end
+    subgraph ResearchHost["Separate research host (D20)"]
+        Research["Research subcall · no token, grant or MCP"]
+    end
     subgraph Up["butlers-up (domain daemons)"]
         Domains["Domain capability services, schedules, obligations"]
         Approvals["Approvals (owner decisions)"]
@@ -166,6 +174,8 @@ flowchart TB
     Lead -->|"goal.delegate"| Broker
     Broker -->|"child launch request"| Runner
     Runner -->|"launch"| Child
+    Broker -->|"accepted web_research launch request"| Runner
+    Runner -->|"authenticated D20 launch/result channel"| Research
     Lead -->|"MCP + invocation token"| Broker
     Child -->|"MCP + invocation token"| Broker
     Broker -->|"MCP + signed assertion"| Domains
@@ -174,8 +184,13 @@ flowchart TB
 ```
 
 The control plane is deterministic infrastructure in its own process.
-Reasoning happens only inside the sandboxed lead and child processes on the
-session host.
+Lead and child reasoning runs only in their sandboxed processes on the session
+host. The sole additional reasoning path within an admitted goal is D20's
+broker-accepted, runner-launched research subcall on the separate research host.
+It has no route or MCP connection to the broker, no invocation token or grant,
+and cannot start a goal or another reasoning session. The runner's authenticated
+control channel carries its launch and result; D18's outside-goal model kinds
+remain separate.
 
 ## Decisions
 
@@ -275,6 +290,9 @@ before results are accepted.
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
 MCP servers, and no provider-hosted tools (server-side web search or fetch,
 remote MCP connectors, code execution), which run outside any network policy.
+These tools stay disabled on the session host for every lead and child. D20
+is the only provider-hosted web-search exception, on the separate research
+host through the broker; it grants no exception to this session sandbox.
 Adapters drop today's permission-bypass flags in favor of the runtime's
 deny-all tool settings plus a strict MCP config naming only the broker. The
 adapter must prove all of this per runtime and model tuple, as RFC 0027
@@ -312,7 +330,7 @@ Effect classes and their default under exposure (owner decision 3):
 
 | Class | Examples | Under exposure |
 |---|---|---|
-| `read` | search memory, list transactions, read calendar | allowed |
+| `read` | search memory, list transactions, read calendar, brokered `web_research` | allowed; `web_research` runs cached under exposure (D20) |
 | `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
 | `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | per-event approval for every call, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or that are template-pinned (D13) |
 | `transact` | spend, pay, book | disabled for every goal (owner decision 8) |
@@ -424,7 +442,7 @@ output.
 |---|---|---|
 | `owner` | RFC 0017 owner-channel authorization, or the dashboard's existing owner authentication | all grantable capabilities, subject to each tool's approval policy and the two owner rules in D4 |
 | `obligation` | a schedule, subscription or commitment declared in git, or created at runtime by an `administer` effect | the declared capability set; default owner domain `read` and `record` plus owner `notify`. A runtime-created obligation's set is at most its creator's grant at creation. |
-| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` (owner decision 7); never `transact`, `actuate` or `administer` |
+| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` (owner decision 7); never `transact`, `actuate` or `administer`, and never web research (D20) |
 | `staffer` | a staffer's infrastructure contract (QA triage, Concierge answer) | the capability set declared in that contract |
 
 Rules:
@@ -470,9 +488,19 @@ Rules:
   third-party ceiling. Admission refuses and records a goal that
   would exceed it. A child cannot reach admission directly; this rule bounds
   the indirect path through declared domain reactions.
+- **The public read surface admits no goal.** RFC 0039's server for the
+  owner's outside AI clients is outside the goal runtime. Its requests and its
+  inbox proposals are not ingest envelopes, obligations or admission input.
+  `external_mcp` is a fact-provenance origin on records that surface proposed
+  (D6), not a goal origin, so the table above is unchanged. A later goal that
+  reasons over outside proposals, such as an automatic-approval batch, would
+  be admitted with origin `third_party` and needs its own owner decision first.
 
 Admission writes the goal row, origin, cause, exposure, ceiling digest and
-budget, then hands it to the runner. Duplicate submissions of the same ingest
+budget, then hands it to the runner. When a Gmail message admits the goal, the
+row also records, once and immutably, the account and Gmail thread of that
+message, read by the trusted source reader from the stored envelope; this is
+the thread the D13 Gmail exposure rule binds. Any other source records none. Duplicate submissions of the same ingest
 envelope or obligation occurrence return the existing goal.
 
 Known limit: text an owner pastes without quoting markers is owner input. The
@@ -510,6 +538,17 @@ outcomes, insight candidates and decision memory; `context.search` returns each
 item with its stamp. Owner-authored, untainted records stay trusted, so ordinary
 memory reads do not expose a goal; text that an exposed goal stored from an
 email exposes whichever later goal reads it back.
+
+**Externally proposed facts.** A fact applied from a public read surface
+proposal (RFC 0039 D13) is stored with `content_authority = third_party` and
+origin `external_mcp` in its fact provenance. Both are set server-side when the
+proposal is parked, never from arguments. The owner's approval confirms the
+fact but does not change its authority stamp, so reads return it as stamped
+non-owner-authority content: a goal that reads it becomes exposed, and it never
+becomes steering memory. The approvals module's producer `origin` is not
+widened for it. Once the taint stamp lands (`bu-pkuny2`), the apply also marks
+the fact tainted; once the S1 labels land (`bu-dhloi1.6`), it carries
+principal kind `external` with an opaque registered identity.
 
 While exposed, the broker applies the "under exposure" column of D4 regardless
 of origin. This implements the rule that a session holding untrusted input,
@@ -576,7 +615,9 @@ lead epoch matching:
 2. check the capability is in the grant, resource arguments are within the
    grant's resource scope, and the budget allows another call;
 3. apply the two owner rules (D4), exposure, park-only and the tool's approval
-   policy;
+   policy, including the D13 capability exceptions (the calendar replan
+   exception and the Gmail exposure rule, whose park depends on the call's
+   arguments);
 4. for effects, insert the `effects` row and decrement the budget.
 
 Stop takes the goal row `FOR UPDATE` (D14), so a call either commits before the
@@ -644,6 +685,22 @@ messages someone other than the owner is parked for owner approval unless a
 standing rule matches. Any other model-reachable call without a valid
 assertion is refused. Inventorying the existing direct call sites is a
 dark-build task.
+
+**Outside the broker: the public read surface and non-goal domain jobs.**
+RFC 0039's public read surface is not a session, a service-plane caller or a
+broker client. It reads only its replicated projection and calls no domain
+capability. It never holds or receives a broker assertion. Its Worker-signed
+request assertion has its own type and keyring, and no domain accepts it in
+place of a broker assertion. It calls no domain capability; any future read
+through domain capabilities requires a new owner decision and an amendment to
+RFC 0039 and vision.md Rule 3. A deterministic domain
+job that is not a goal, such as the proposal importer RFC 0039 runs in
+Relationship, may still park pending actions for its own domain's tools after
+the switch, with no goal, invocation, broker grant or assertion. Parking is not
+a model-reachable call: the job runs no model and executes nothing. The
+importer's actions wait for the owner's per-event approval, never a standing
+rule, and never feed standing-rule promotion (D13); the owner's approve call
+reaches the domain through the dashboard service-plane path above.
 
 **Service-plane relays.** Service-to-service traffic that today rides the
 generic `route` tool moves to named endpoints on the control plane's service
@@ -750,8 +807,17 @@ Admission reserves the budget. `goal.delegate` and every call decrement it in
 the D7 transaction, so concurrent children cannot overspend. The runner meters
 model usage from the runtime's usage stream and terminates an invocation that
 exceeds its turns, tokens or spend between tool calls. Unlike today's
-pre-spawn gates, every budget check fails closed. Exhaustion refuses new work
+pre-spawn gates, every budget check fails closed. D20 research calls reserve
+their per-call tokens, spend, search-call and wall-time allowance in the same
+D7 transaction, subject also to the separate research concurrency and daily
+spend caps. Exhaustion refuses new work
 and ends the goal `budget_exhausted` with whatever results and effects exist.
+
+One capability carries its own per-goal call cap, as part of the D13 Gmail
+exposure rule: a goal the rule binds makes at most five `gmail_modify_threads`
+calls. The cap is counted from the goal's own effect rows under the goal lock,
+not from the budget row, and refuses the next call without ending the goal. It
+bounds work only; it grants nothing.
 
 ### D11. State machines
 
@@ -886,11 +952,74 @@ The mode adds nothing to any ceiling. `calendar_respond` declares it
 capabilities whose effects must always be the owner's own act, such as
 confirming an owner checklist revision.
 
+**Calendar replan exception (bu-qlx055 q12 = B).** A goal may move, without a
+park, only an owner-only block that Butlers created. The broker judges the call
+and the calendar domain judges the event. The broker offers the domain a
+conditional dispatch for a call that would otherwise park with standing rules
+allowed: an unexposed goal's `calendar_update_event` that moves one event in
+time and changes nothing else. A park-only grant, `always_per_event`, an owner
+`always_ask` or exposure always parks. At execution the domain checks its
+provider's copy of the event, never the model's arguments. The event must carry
+the marker the server wrote when Butlers created it, and must have no
+attendees. A recurring or all-day event, or a new time that overlaps another
+event, is not a block move. If the check passes, the move commits with an undo
+receipt: the pre-image and the exact inverse move. If it fails, or the event is
+owner-created, unmarked or unreadable, or the overlap check cannot be read, or
+the provider refuses the write because the event changed since the check, the
+domain writes nothing and declines, and the call parks as it would have. Any
+other write error is an error result, never a committed one. Events made before
+the marker existed count as owner-created. `calendar_respond` keeps
+`always_per_event`. The write is bound to the checked event's version, but not
+to the rest of the calendar: an event created in the new slot between the
+overlap check and the write is not caught, and the undo receipt is the remedy.
+
+**Gmail exposure rule (the owner's rule on `bu-kqme7f.5`, reaffirmed
+2026-10-20).** `gmail_modify_threads` changes labels in the owner's own
+mailbox (archive, mark read, star, user labels) and is a `record` capability,
+so D4 would let an exposed goal run it. Injected mail must not archive, mark
+read or relabel other mail, so for this one capability the broker narrows
+that default for every call whose invocation is exposed or whose goal is
+third-party origin. Exposure decides, not origin: an unexposed owner,
+obligation or staffer goal keeps the ordinary `record` disposition. A bound
+call dispatches only when it names exactly the account and the one thread
+whose message admitted the goal (D5) and removes neither `INBOX` nor
+`UNREAD`. Any other target, an `INBOX` or `UNREAD` removal, a malformed call,
+and every call of a goal that no Gmail message admitted park for per-event
+owner approval: no standing rule matches them. A bound goal makes at most five
+such calls (D10); parked, approved and unknown effects count, failed ones and
+parks that ended rejected, expired or cancelled do not, and a replay of a live
+call is refused as a duplicate before it is counted. The rule only narrows: it
+never turns a refusal or a park into a dispatch, and an owner `never` or
+`always_ask` still applies. The owning domain re-checks the part the call alone
+decides and refuses an exposed or third-party `INBOX` or `UNREAD` removal that
+is not the approved call itself.
+
+The owner sees that receipt as one approvals card per goal and block, on the
+existing approvals surfaces; approving it runs the inverse move through the
+approvals executor. The card is parked, in the same transaction that records
+the pre-image, before the write, so every move that might land has one; if it
+cannot be parked, nothing is written. Right after the provider accepts the
+write, the card is bound to the version the move left. A write the provider
+refuses moves a card that attempt opened out of pending as the system, and it
+then says nothing happened; any other failure keeps it. An expired card is
+closed, so a later move parks a new one. The card returns the block to the
+earliest pre-image the goal recorded for it, so a retry after a failed move that
+in fact committed still undoes to where the block started. The undo is bound to
+the move: if the event changed since, or the move never landed, it writes
+nothing and the card records a failed execution, not an executed one.
+
 A Stop-cancelled parked effect takes a new approvals status,
 `cancelled`. At the switch, `pending_actions` created before cutover remain
 executable by the approvals executor and are recorded with goal origin
 `legacy`, a field separate from the approvals module's existing producer
 `origin`.
+
+A pending action parked by a non-goal domain job (D7) carries no goal lineage
+(its goal origin is NULL, distinct from the `legacy` marker above) and is
+never cancelled by a goal's Stop. When the RFC 0039 proposal importer parked
+it, no standing rule matches or approves it, and approving it neither counts
+toward nor creates a standing-rule suggestion, so it executes only on the
+owner's per-event approval.
 
 ### D14. Stop and recovery
 
@@ -930,8 +1059,12 @@ never from text, and exposed writes are tainted.
 
 ### D16. Model selection and escalation
 
-Model choice is per invocation, resolved from `public.model_catalog` by role
-(`lead`, `child`, `monitor`) and, for children, the tier the brief requests.
+Model choice for lead and child goal invocations is resolved from
+`public.model_catalog` by role (`lead`, `child`, `monitor`) and, for children,
+the tier the brief requests. The separate `research` resolution role is only
+for D20's bounded subcall within an already admitted goal, not a lead, child or
+D18 outside-goal function. It has the distinct D20 profile and eligibility
+proof; version 1 supports Codex research only.
 Because D3 to D7 do not depend on model behavior, a fast or small model is a
 quality and cost decision, never a security one. Replay evaluation, not this
 RFC, sets the assignments (owner decision 4). Starting defaults:
@@ -950,9 +1083,11 @@ epoch exactly as recovery does. Escalation never creates a new goal, and the
 ladder is finite. This lets a monitor start on the cheapest model without
 giving it a path to a new root.
 
-A runtime is eligible for goal invocations only if it supports MCP tool calls
-to the broker, proves the D3 sandbox restrictions, and passes the RFC 0027
-conformance gate for the catalog size it will see.
+A runtime is eligible for lead and child goal invocations only if it supports
+MCP tool calls to the broker, proves the D3 sandbox restrictions, and passes
+the RFC 0027 conformance gate for the catalog size it will see. Research
+eligibility is the separate D20 proof, which grants no MCP or broker access and
+cannot substitute for any lead/child eligibility check.
 
 ### D17. Telemetry and audit
 
@@ -961,7 +1096,9 @@ Every span carries `goal_id`, `invocation_id`, `depth` and, for a lead, its
 not session logs, is the record of a goal: admission decision, origin, cause,
 exposure, ceiling digest, grants, delegation tree, budget consumption, effects
 with receipts, approvals and the final outcome. Telemetry stores identifiers and
-digests, never arguments or results.
+digests, never arguments or results. D20 research records in the goal ledger
+add the question, broker-selected mode, event-derived opened URLs, citations,
+usage and outcome; none of those payloads enters telemetry.
 
 ### D18. Model use outside goals
 
@@ -1076,11 +1213,17 @@ synthesis, dashboard quick-add and memory consolidation, becomes an obligation
 or owner goal at the switch rather than a model function. Dashboard fast
 answers are the single named exception.
 
-Any other model use is a goal invocation. Adding a kind to this list requires
-an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
-dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
-pending OpenSpec change that adds a model path must be re-scoped as goals or
-as a named kind here before approval.
+Every other model use SHALL run within an admitted goal: as a lead or child
+invocation, or solely as D20's broker-accepted, runner-launched research
+subcall. Research stays within the calling goal's authority, exposure and
+budget accounting; it is not an additional outside-goal kind, a new admission
+path or a child and receives no invocation token, grant or MCP tools. Adding a
+kind to the outside-goal list requires an RFC amendment.
+`define-dashboard-fast-answer-runtime` is re-scoped to the dashboard
+fast-answer kind above (`bu-u5euwb.28`) before approval. Any other pending
+OpenSpec change that adds a model path must still be re-scoped as goals or as a
+named outside-goal kind here before approval. D20 supplies no exception for
+those paths.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -1091,7 +1234,9 @@ mind (owner decision 11). The direction:
 - **Goals are the unit of activity.** The owner sees goals, not sessions: what
   started each goal, its origin and exposure, the lead and its children, the
   regions it drew on, its effects with receipts, its parked approvals, its
-  budget and its outcome, with Stop on any running goal.
+  budget and its outcome, with Stop on any running goal. It also shows D20
+  web research calls: question, mode, event-derived opened URLs, citations,
+  usage and outcome.
 - **Regions replace butler units.** The Butlers page and butler detail pages
   become region pages. A region page shows its data, standing obligations and
   schedules, capabilities and their effect classes, domain guidance, and the
@@ -1119,11 +1264,256 @@ in-thread failure replies, bug-report filing to QA, the read-only answer lane,
 replay-eligible dead letters, and conversation continuity, which D9's
 no-resume rule makes a goal-level concern.
 
+### D20. Brokered web research
+
+**Adopted amendment (2026-10-20):** the owner adopted the D20 text at PR #4540
+head `bd206499` with P1 = A (cached for exposed callers) and P2 = A
+(third-party goals never research), recorded on `bu-cs33zx` at 14:31Z.
+The owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). No
+runtime or credential use is authorized by this amendment.
+
+**Research host.** Research runs on a separate container (Compose) or pod
+(Kubernetes), apart from the session host, `butlers-up` and `butlers-control`,
+built from the session host's image and launcher with a research profile.
+Its egress reaches only the configured model provider and cluster DNS. It has
+no route to the broker's session listener, any domain port or service listener,
+PostgreSQL, the Kubernetes API, cloud metadata or arbitrary internet hosts.
+Compose uses an enforcing provider allowlist proxy rather than network
+membership as a security claim; Kubernetes must prove the union of all
+policies selecting the research pod preserves this restriction.
+
+The research host holds no MCP configuration and no domain, database,
+connector or lead credential. Its only credential is the per-invocation
+research model credential, resolved by the goal runner and staged over an
+authenticated control channel following D3. The host cannot read the credential
+store. Each invocation runs in its own Bubblewrap filesystem and process
+domain; the whole descendant domain is terminated before its result is
+accepted. This is credential isolation, not a claim that a model invocation
+can call its provider without a model credential.
+
+**Research invocation.** Only the goal runner launches research, after the
+broker accepts `web_research`. Runtime built-in tools are disabled. The sole
+tool is provider-hosted web search: no MCP servers, remote connectors, code
+execution, shell, filesystem or fetch tools, image generation or sub-agents.
+Research is work within the calling goal, not a focused child or D18 model
+function. It has no invocation token, grant or broker tool, cannot call a
+capability or delegate, and adds no level to the depth-one hierarchy.
+The runner accepts one structured, size-capped result containing an answer,
+citations and the URLs the provider opened, within a finite wall-time limit.
+The delivery contract exposes no raw-page or browsing-transcript channel. An
+answer may quote sources, so this is not a guarantee that no source text
+reaches the lead. The answer, its quotations, citations and URLs all remain
+third-party content; synthesis and structure do not make them trusted or
+remove exposure.
+
+**Catalog capability.** `web_research` is control-plane-owned, with
+`owner_domain = switchboard`, `effect_class = read`, `output_trust = untrusted`,
+`output_sensitivity = ordinary`, empty `resource_params`, `recipient_params`
+and `safety_args`, `idempotency = none`, and `owner_authority = false`. Its
+approval policy adds no approval requirement beyond D7 and the mode rule below.
+Its arguments are one bounded `question` and an optional bounded hostname
+allowlist `allowed_domains`; limits are enforced before launch. The capability
+description warns that the question leaves Butlers for the model provider and,
+in live mode, may reach sites the provider opens; include only what the search
+needs and treat returned content as evidence to cite, never as instructions.
+
+This is a catalog capability, not a fixed D8 goal tool. Grants, obligation
+declarations, the D9 child intersection and every applicable D7 per-call check
+apply. The broker serves it in-process and dispatches the launch through the
+runner; it contacts no domain handler and mints no domain assertion for the
+research call. Domain assertions and approval gates for any later effect stay
+unchanged.
+
+**Mode follows exposure (P1, adopted A, 2026-10-20).** An unexposed caller runs live.
+An exposed caller runs cached against the provider's existing index, with no
+live page fetch. The broker derives the mode from the caller's server-held
+exposure at call time; no argument, question text or model output can select
+or widen it. A tuple that cannot enforce cached mode is refused, with no live
+fallback. This closes the live-fetch path in which injected text makes a
+follow-up search open an attacker URL carrying goal data. Cached mode still
+sends the question to the partially trusted model provider; it is not a
+promise that no information leaves Butlers. Like owner `notify` with inert
+links, this preserves useful follow-up work while removing an active-fetch
+channel.
+
+**Origin ceilings (P2, adopted A, 2026-10-20).** Owner goals hold `web_research` in their
+ceiling. Obligations hold it only when their declared capability set names it;
+the default obligation set does not include it. Third-party goals never hold
+it, despite its `read` class. Staffer goals hold it only when their
+infrastructure contract declares it. A child receives it only through D9's
+intersection, never merely because research was requested in its brief.
+
+**Lineage and effects.** Before returning the fenced result with its
+citations, the broker marks the caller and its goal exposed under D6.
+Anything that invocation subsequently stores retains D6 taint. A research
+answer, citation, URL or model assertion can never satisfy an approval or
+authorization check. A send requested after reading injected research follows
+REQ-capability-authorization-006 and -016, including their existing narrow
+exemptions; `transact` stays disabled for every goal.
+
+**Budget and lifecycle.** Inside the D7 transaction the broker reserves a
+per-call research allowance from the goal budget for tokens, spend,
+provider-hosted search calls and wall time, and refuses the call without a
+launch if any reservation does not fit. Concurrent calls cannot reserve the
+same remaining allowance. The runner meters usage from the runtime event
+stream and terminates the research process domain at its reservation. Missing
+or unreadable usage charges the whole reservation. Finite per-call limits, a
+research concurrency cap separate from the session host's, and a daily
+research spend cap bound the fleet; defaults live in `runtime_config` and all
+checks fail closed. A stopped goal starts no further research, and its running
+research domain is terminated under D14. Launch failures, timeout, incomplete
+usage or unavailable audit evidence are recorded honestly; they are not a
+successful cited answer or a reason to reset the budget or replay work.
+
+**Audit and owner surface.** The goal ledger records the call's question,
+selected mode, URLs the provider opened, citations, usage and outcome. Opened
+URLs come from the runtime/provider event stream, never from the model's
+self-report; unavailable evidence remains explicit and cannot establish a
+profile proof. D17 telemetry carries only identifiers and digests, never
+questions, answers or URLs. The D19 goal page shows the research calls and
+these ledger fields under its existing owner-authenticated surface. This adds
+no new dashboard action or approval bypass.
+
+**Eligibility.** Model resolution adds the `research` role. A runtime/model
+tuple is eligible only after its adapter proves the separate research profile:
+exactly one provider-hosted search tool, no runtime built-in tool, no MCP
+server, live and cached modes honored as selected, bounded usage and the
+required event-derived audit evidence. Version 1 supports Codex only. A name,
+installed binary, generic model verification or an asserted tool list is not
+this proof. Unsupported or unproven tuples refuse launch. No model,
+credential, spend cap or deployment is selected by this amendment; the
+separate owner decision `bu-6qaju2.2` is closed (2026-10-15), answer B:
+reuse the existing Codex ChatGPT-subscription login. Closure does not provision
+a credential or satisfy the existing live-research proof and deployment gates.
+
+**Known limits and non-goals.** In live mode the question can reach any site
+the provider opens. The provider sees questions in both modes under the
+partial trust already granted in `security.md`; search results may contain
+injections, mistakes or stale information. Cached mode may miss newly
+published pages. Browser automation, computer use, logged-in browsing, form
+submission, web writes and purchases are excluded. This amendment enables no
+runtime fetch tool or direct public-internet egress from a Butlers research
+container, and grants no new egress to any other Butlers container. Leads and
+children keep their D3 restrictions.
+
+**Release and owner gate.** Build and prove research dark behind the
+program's default-off switch. No ingress, schedule or live dashboard is wired
+by this amendment. The switch release `bu-enbrs2` remains blocked on the broker
+capability `bu-6qaju2.4` and the existing cutover evidence. P1 adopts cached
+under exposure and live otherwise; P2 adopts excluding third-party goals
+(owner adoption 2026-10-20, `bu-cs33zx`). The owner pre-authorized merge
+enqueue on 2026-11-08 (`bu-6qaju2.1`). Adoption does not launch research or
+release the switch.
+
+#### D20 Amendment 1: live citation links, live pinned probes, one approved live search
+
+**Status: adopted (2026-11-22).** The owner said yes to drafting exactly these
+three refinements on `bu-cs33zx` (2026-10-20, 14:31Z, choice A). On 2026-11-22
+(13:17Z, questionnaire items `d20-live-link-sanitising` = C,
+`d20-live-search-trigger` = A and `d20-exact-text-read` = B) the owner chose the
+link and trigger rules below and waived the exact-text read and the separate
+queue approval for this amendment only. It is adopted through independent
+conformance review against those answers (owner rule, 2026-10-21). Everything above in D20 stays
+as adopted; this amendment changes only what (a), (b) and (c) say. It adds no
+credential, key or spend, selects no model, and does not release live research,
+which stays dark until the research host (`bu-6qaju2.3`) and broker
+(`bu-6qaju2.4`) pass their named gates. It does not decide `bu-ilqhh0` (pre-switch
+search mode) or `bu-ob3bbc` question 2 (typed-slot templates), and neither can
+override (c).
+
+**(a) Live links for broker-recorded citations.** Today every URL sent to the
+owner is inert (D4, D6, REQ-capability-authorization-006). This amendment lets
+one class of URL be live: a citation URL the broker itself recorded in the goal
+ledger for a research call.
+
+- When the broker records a research result, it issues a *citation handle* for
+  each recorded citation. A handle is an opaque broker-issued identifier bound
+  to the goal, the research call and the exact recorded URL.
+- Owner-facing delivery code (never the model) renders a link live only when
+  the outgoing message references a handle and the broker resolves it to a
+  ledger entry whose URL matches exactly. The model supplies the handle, not
+  the URL.
+- Every citation link, cached or live, carries the full recorded URL, with no
+  query-string or fragment trimming (owner decision 2026-11-22, option C). Each
+  live link shows its destination host beside it.
+- A URL the model wrote, a URL that differs in any way from the recorded one
+  (scheme, host, path, query, fragment or a redirect target), an opened URL that
+  was not a citation, and any handle that is unknown, belongs to another goal,
+  or whose ledger entry is unavailable, stays inert. Resolution failure
+  degrades to the inert rendering and never blocks the message.
+- Only delivery to the owner can render a live link. Link previews stay off.
+  A goal that is Stopped, or whose ledger entry the owner deletes, resolves
+  none of its handles live afterwards.
+- A handle confers no authority. It is not an approval, a grant or evidence
+  for any check, and the cited page stays third-party content.
+
+**(b) Owner-pinned research probes run live.** A *pinned research probe* is a
+query the owner authored and pinned through an owner-authenticated surface, run
+by deterministic code (for example a web watch) with no model composing or
+altering it. Like D18's deterministic-code model functions, it is not a goal
+invocation.
+
+- The pin fixes the question, the optional hostname allowlist and the cadence.
+  The probe sends exactly the pinned question. It carries no goal, memory,
+  contact or other Butlers data, so there is nothing for injected text to
+  exfiltrate. Editing a pin creates a new probe; no pin is a wildcard or
+  template.
+- The probe runs live. It uses the same research host, profile, broker
+  acceptance, budget reservation, concurrency and daily caps (shared with goal
+  research; no separate budget and no new spend), and refusal
+  rules as D20, and records question, mode, opened URLs, citations, usage and
+  outcome in its own audit record. It holds no grant, token or goal.
+- Its result is third-party content, fenced as D20 requires. Any goal that
+  later reads it becomes exposed under D6; the probe itself confers no
+  authority and does not mark any goal exposed by running.
+- A probe whose pin cannot be read, whose digest does not match, whose budget
+  does not fit, or whose tuple cannot prove the live profile is refused and
+  recorded, with no fallback.
+
+**(c) One approved live search from an exposed goal.** An exposed caller still
+runs cached by default (P1 stays as adopted). The owner may instead approve one
+live search per event.
+
+- An exposed caller may pass a bounded `request_live` flag with its question.
+  The flag selects nothing: it only asks the broker to park the call. The
+  mode is still derived from server-held state, and without an approval the call
+  never runs live.
+- The broker parks the call for per-event owner approval showing the exact
+  question and allowlist, with the D20 warning that the question leaves Butlers
+  and may reach sites the provider opens. The approval pins the question and
+  allowlist by digest, the calling invocation, one call and the live mode.
+- On approval the runner launches that one live search with the pinned question.
+  The approval is single-use and expires after the existing goal-approval
+  lifetime (48 hours): a replay, a changed question or allowlist, a
+  different caller, a different mode or an expired approval is refused and
+  recorded without launching. Approval of one search does not widen any later
+  call.
+- If the owner declines, the approval expires or Stop arrives first, nothing
+  launches live and nothing falls back to a cached run; the caller sees a
+  recorded refusal and may call again without the flag for the cached default.
+- The caller stays exposed. The result is third-party content with the same
+  lineage, taint and budget rules as any research result. Third-party goals
+  never hold `web_research`, so they cannot request this.
+
+**What does not change.** No wildcard or standing research grant exists. The
+approval is not a standing-rule exemption and does not count toward
+standing-rule promotion. D20's research host, egress rules, eligibility proof,
+budget and lifecycle, and its exclusion of third-party goals are unchanged.
+
+**Where it lands.** The requirement is `REQ-capability-authorization-025` in the
+change `openspec/changes/amend-d20-live-research-refinements`, and
+`about/heart-and-soul/security.md` gains a matching paragraph after its Web
+research paragraph.
+
+**Release.** Adoption of this text authorizes no implementation or operational
+step. Live behavior stays behind the research dark-build gates and the default-off
+switch.
+
 ### Details settled during the dark build
 
 Writing the baseline deltas surfaced details this RFC leaves to
 implementation. Each is settled by the dark-build work item that owns it,
-within D1 to D19 and never by weakening the two owner rules of D4:
+within D1 to D20 and never by weakening the two owner rules of D4:
 
 - the mechanism by which service-plane relays and Messenger's delivery
   endpoint authenticate their calling daemon (that they authenticate it, per
@@ -1133,7 +1523,12 @@ within D1 to D19 and never by weakening the two owner rules of D4:
 - the admission budget for high-volume feeds, so a burst of third-party mail
   cannot exhaust goal budgets;
 - how an owner's reply to an outbound prompt (a quiz, a confirmation) joins
-  the goal that sent it rather than starting an unrelated owner goal;
+  the goal that sent it rather than starting an unrelated owner goal. For a
+  Telegram prompt this is settled: the lead marks it with
+  `notify(awaits_reply_seconds)` (30-86400), the broker records the reply ref
+  and a window no longer than that, and a reply to that exact message joins
+  the goal waiting on it (`docs/runtime/goal-runner.md`, owner-answer wait).
+  Other channels, and a reply that does not quote the prompt, remain open;
 - which approvals statuses and dashboard filters gain `cancelled` and goal
   lineage;
 - a taint field on every store D6 lists that lacks one today.
@@ -1168,7 +1563,7 @@ invocation lineage.
 | 0020 Calendar overlay read exception | Remains. |
 | 0021 Decision loop and approvals | Remains, amended: approvals carry goal lineage, exposed approvals do not count toward promotion, owner-decision tools are never grantable, and no standing rule targets or approves an `always_per_event` capability (D4, D6, D13). |
 | 0022 Cross-process event transport | Remains; events from effects carry goal lineage for caused admissions. |
-| 0023 Approval delivery intent recovery | Remains. |
+| 0023 Approval delivery intent recovery | Remains as the transport queue (claims, leases, attempts); its delivery identity and callback tokens map to S6 subjects, presentations and `od1` tokens through `public.owner_delivery_source_map` (bu-dhloi1.13; `docs/api_and_protocols/owner-delivery.md`). |
 | 0024 Messenger correspondence ledger (proposed) | Independent. |
 | 0025 Beads projection exporter (draft) | Independent. |
 | 0026 Commitment lifecycle (draft) | Commitments that need reasoning become obligations (D5). |
@@ -1228,7 +1623,12 @@ All evidence is produced in a dev namespace against the release candidate:
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
    wrong-audience assertions; stale-epoch tokens; direct calls to domain ports
-   and service listeners from the sandbox; provider-hosted tool use; dashboard
+   and service listeners from the session sandbox; provider-hosted tool use
+   outside D20; injected web content instructing a send; exfiltration through a
+   second research call; a research host reaching the session listener, a
+   domain, service listener, PostgreSQL, the Kubernetes API, cloud metadata or
+   arbitrary internet host; and a research profile exposing any tool beyond
+   provider-hosted search; dashboard
    fast answers whose plan or read results attempt a read off the allowlist, a
    fourth read, a tool call or any effect.
 3. Replay evaluation over a fixed set of recorded owner requests and
@@ -1295,6 +1695,7 @@ built.
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
 | 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
+| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); the owner pre-authorized merge enqueue on 2026-11-08 (`bu-6qaju2.1`). Amendment 1 (live citation links, live pinned probes, one approved live search) adopted 2026-11-22 (`bu-6qaju2.6`; see the decisions table). |
 
 ### Author-detail confirmation
 
@@ -1327,9 +1728,13 @@ hard-cutover gates or alter the private-custody boundary.
 | Recorded | Decision | Effect on this RFC |
 |---|---|---|
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A | Commits Butlers to an "always per-event" approval mode that no standing rule can satisfy, matching `bu-qlx055` = A (decision sets, wait envelopes) and `bu-o3638f` = A (standing-rule slots and categories). | D4 `approval_policy` gains the `always_per_event` mode and D13 applies it. Text conforming to the decision is adopted through independent conformance review (owner rule, 2026-10-21). |
+| 2026-10-20T14:33Z, `bu-qlx055` q12 = B | A replan goal moves directly only owner-only blocks Butlers created, with an undo receipt; anything with attendees, or anything the owner created, parks for approval. | D13 gains the calendar replan exception: a conditional dispatch the calendar domain checks against provider state at execution, declining to a park. `calendar_respond` keeps `always_per_event`. Adopted through the same conformance review. |
+| 2026-10-20T14:32Z, owner's Gmail rule on `bu-kqme7f.5` (recorded 2026-10-15; reaffirmed unchanged in the `bu-o3638f` walkthrough) | Under exposed or third-party lineage, `gmail_modify_threads` touches only the triggering thread; removing `INBOX` or `UNREAD` parks for approval; any other target parks for per-event approval; at most five modify calls per goal. | D5 records the admitting Gmail thread on the goal; D7 step 3 and D13 gain the Gmail exposure rule, an argument-conditional per-event park; D10 gains its per-goal call cap. Built by `bu-kqme7f.10`; adopted through the same conformance review. |
 | 2026-10-20T14:46Z, `bu-p5umi2.4` = A (OQ1) | A grant's resource scope binds to the owner's exact selection through a control-plane selection record written only from the owner dashboard, not a General-owned record. | D4 `resource_params` may be selection-bound and D7 adds owner selection records. Adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.21` = C | Names dashboard fast answers as a D18 kind, instead of withdrawing `define-dashboard-fast-answer-runtime` or rewriting it as a goal. Adopted D18 reopens for this one kind only; owner latency work on the goal path (`bu-dhloi1.12`) continues unchanged. | D18 gains the dashboard fast-answer kind as the single exception to its owner-composition rule, and the change is re-scoped to it (`bu-u5euwb.28`). Amendment text: `bu-u5euwb.27`, adopted through the same conformance review. |
 | 2026-10-24T14:30Z, `bu-u5euwb.22` = A | A goal invocation's environment may also hold adapter-owned, non-secret pointers to files staged inside its own sandbox; secrets stay limited to the staged model credential (beside the MCP config D3 already admits). | D3 admits adapter-owned file pointers and `REQ-core-spawner-010` follows. Text only: each adapter still proves D3 eligibility per runtime and model tuple, and runtime activation stays a separate authorization. |
+| 2026-11-04, owner (RFC 0039 OD2 to OD4, OD8) | Accepts the doctrine change for a public read surface: one deterministic MCP server for the owner's outside AI clients over a replicated projection, with `propose_fact` applied only after the owner's approval and no LLM on the request path. | D5 states the surface admits no goal; D6 stamps applied proposals `third_party` with `external_mcp` fact provenance; D7 places the surface outside the broker and lets non-goal domain jobs park; D13 keeps standing rules off the importer's actions. No new decision number and no new goal origin. Adds `REQ-capability-authorization-022` and `-023`, adopted through the same conformance review. |
+| 2026-11-22T13:17Z, `bu-6qaju2.6` (`d20-live-link-sanitising` = C, `d20-live-search-trigger` = A, `d20-exact-text-read` = B) | Every citation link keeps its full recorded address, cached or live, with its destination host shown beside each live link. An exposed goal may mark a search "ask the owner for live"; the owner approves each one, single-use and pinned to the exact question, and a declined, expired or Stopped request runs nothing with no cached fallback. The owner waived the exact-text read and the separate queue approval for this amendment only. | D20 Amendment 1 is adopted through independent conformance review. Adds `REQ-capability-authorization-025`; probes share the D20 caps with no new spend; approval expiry is the existing 48-hour goal-approval lifetime; citation handles go inert after Stop. |
 
 ## Proposed shared switch and M7 interfaces (2026-10-24)
 
@@ -2020,6 +2425,14 @@ release approval or operational authorization.
 
 ## Traceability
 
+Requirement identity reconciliation: historical D20 drafting reference
+`REQ-capability-authorization-017` and published D20 reference
+`REQ-capability-authorization-018` identify the research requirement now numbered
+`REQ-capability-authorization-024`. Original dated records retain those historical
+references. Current requirements 017 and 018 retain their separate always-per-event
+approval-mode and owner-selection meanings, and current requirements 022 and 023
+retain their RFC 0039 public-read-surface meanings.
+
 | Requirement | Decisions |
 |---|---|
 | `goal-orchestration` 001 whole-goal accountability | D1, D11, D12 |
@@ -2030,9 +2443,9 @@ release approval or operational authorization.
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
 | `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover, later owner decision `bu-u5euwb.21` |
-| `capability-authorization` 001 sandbox | D1, D3 |
+| `capability-authorization` 001 sandbox | D1, D3, D20 |
 | `capability-authorization` 002 catalog metadata | D4 |
-| `capability-authorization` 003 origin ceilings | D5 |
+| `capability-authorization` 003 origin ceilings | D5, D20 |
 | `capability-authorization` 004 grants bound calls | D7 |
 | `capability-authorization` 005 delegation narrows | D9, D13 |
 | `capability-authorization` 006 exposure and taint | D4, D6 |
@@ -2048,3 +2461,6 @@ release approval or operational authorization.
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
 | `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
 | `capability-authorization` 018 owner selection records bind selection-bound resource scopes | D4, D5, D7, D9, later owner decision `bu-p5umi2.4` (OQ1) |
+| `capability-authorization` 022 public read surface outside the goal runtime | D5, D7, later owner decision 2026-11-04 (RFC 0039) |
+| `capability-authorization` 023 outside proposals park per event and keep third-party authority | D6, D7, D13, later owner decision 2026-11-04 (RFC 0039) |
+| `capability-authorization` 024 brokered web research | D20; D3 to D7, D9, D10, D16, D17, D19 |

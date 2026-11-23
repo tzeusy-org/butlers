@@ -17,8 +17,8 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     """Register all education MCP tools on *mcp*, using *module* for pool access."""
 
     # Import sub-modules (deferred to avoid import-time side effects)
-    from butlers.core.scheduler import schedule_create as _sched_create
-    from butlers.core.scheduler import schedule_delete as _sched_delete
+    from butlers.core.scheduler.crud import schedule_create as _sched_create
+    from butlers.core.scheduler.crud import schedule_delete as _sched_delete
     from butlers.tools.education import analytics as _analytics
     from butlers.tools.education import curriculum as _curriculum
     from butlers.tools.education import diagnostic as _diagnostic

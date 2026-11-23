@@ -19,6 +19,7 @@ from butlers.core.control_plane_identity import (
     expected_from_roster,
     verify_identity,
 )
+from butlers.core.switchboard_tls import internal_service_http_options
 from butlers.tools.switchboard.registry.registry import (
     ControlPlaneTargetDecision,
     resolve_control_plane_target,
@@ -66,9 +67,7 @@ class RoutePreflight:
                 key=lambda target: target.name,
             )
         )
-        self._client_factory = client_factory or (
-            lambda: httpx.AsyncClient(trust_env=False, timeout=deadline_s)
-        )
+        self._client_factory = client_factory
         self._min_interval_s = min_interval_s
         self._deadline_s = deadline_s
         self._lock = asyncio.Lock()
@@ -131,7 +130,15 @@ class RoutePreflight:
 
                     self._last_get_at = now
                     self._cached_fingerprint = None
-                    async with self._client_factory() as client:
+                    client = (
+                        self._client_factory()
+                        if self._client_factory is not None
+                        else httpx.AsyncClient(
+                            timeout=self._deadline_s,
+                            **internal_service_http_options(expected.url, trust_env=False),
+                        )
+                    )
+                    async with client:
                         payload = await _read_identity(client, expected)
                     verify_identity(
                         payload,

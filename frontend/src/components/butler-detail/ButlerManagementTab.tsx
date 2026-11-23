@@ -403,6 +403,7 @@ function diffLines(a: string, b: string): DiffLine[] {
   const n = aLines.length;
   const m = bLines.length;
   // LCS length table.
+  // eslint-disable-next-line count-bucket/no-zero-fill -- LCS dynamic-programming table, not a chart
   const lcs: number[][] = Array.from({ length: n + 1 }, () => Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) {
     for (let j = m - 1; j >= 0; j--) {
@@ -654,15 +655,17 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
   // Build a 24-slot array indexed by hour-of-day. Each backend `hour_start` is
   // a UTC-anchored instant; it must be slotted in the OWNER timezone so the
   // viewer's host zone never shifts the histogram (bu-8ogli). Slot i is thus
-  // the owner-tz hour i, matching the `${i}:00` tooltip below.
-  const values: number[] = Array(24).fill(0);
+  // the owner-tz hour i, matching the `${i}:00` tooltip below. An hour no
+  // bucket covers stays null and draws as unreported, never as a measured
+  // zero (bu-s11n0s.5.1).
+  const values = Array<number | null>(24).fill(null);
   for (const bucket of buckets) {
     const hourIndex = bucketHourInZone(bucket.hour_start, ownerTz);
     if (hourIndex === null) continue;
     values[hourIndex] = bucket.sessions_count;
   }
 
-  const max = Math.max(...values, 1);
+  const max = Math.max(...values.map((v) => v ?? 0), 1);
 
   return (
     <Section
@@ -680,17 +683,31 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
     >
       {/* Stripe chart */}
       <div className="flex h-6 gap-px">
-        {values.map((v, i) => (
-          <div
-            key={i}
-            className={cn(
-              "flex-1 rounded-[1px]",
-              v === 0 ? "bg-muted" : "bg-foreground/60",
-            )}
-            style={{ opacity: v === 0 ? 0.4 : 0.3 + (v / max) * 0.7 }}
-            title={`${String(i).padStart(2, "0")}:00 · ${v} session${v !== 1 ? "s" : ""}`}
-          />
-        ))}
+        {values.map((v, i) => {
+          const hour = `${String(i).padStart(2, "0")}:00`;
+          if (v === null) {
+            return (
+              <div
+                key={i}
+                data-slot="unreported"
+                className="flex-1 rounded-[1px] border border-dashed border-border"
+                title={`${hour} · not reported`}
+              />
+            );
+          }
+          return (
+            <div
+              key={i}
+              data-slot="measured"
+              className={cn(
+                "flex-1 rounded-[1px]",
+                v === 0 ? "bg-muted" : "bg-foreground/60",
+              )}
+              style={{ opacity: v === 0 ? 0.4 : 0.3 + (v / max) * 0.7 }}
+              title={`${hour} · ${v} session${v !== 1 ? "s" : ""}`}
+            />
+          );
+        })}
       </div>
       <div className="mt-1.5 flex justify-between font-mono text-[9px] tracking-[0.10em] text-muted-foreground">
         <span>00</span>

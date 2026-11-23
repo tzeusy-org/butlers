@@ -43,7 +43,6 @@ from butlers.jobs.deploy_drift import (
     _drift_fingerprint,
     reconcile_drift_conditions,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -51,18 +50,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
-    yield p
-    await p.close()
 
 
 def _drift(
@@ -108,25 +95,25 @@ async def _audit_actions(pool: asyncpg.Pool, fingerprint: str) -> list[tuple[str
 
 class TestLifecycleProgressionAndAuditAttribution:
     async def test_l0_opens_l1_escalates_l2_reescalates_without_new_attempt(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         drift = _drift("finance-l0l1l2")
         fp = _drift_fingerprint(drift)
 
-        opened = await reconcile_drift_conditions(pool, _report((drift,)))
+        opened = await reconcile_drift_conditions(db_pool, _report((drift,)))
         assert opened == [{"fingerprint": fp, "transition": "opened"}]
-        assert await _healing_attempt_count(pool, fp) == 0
+        assert await _healing_attempt_count(db_pool, fp) == 0
 
-        await _force_due(pool, fp)
-        l1 = await reconcile_drift_conditions(pool, _report((drift,)))
+        await _force_due(db_pool, fp)
+        l1 = await reconcile_drift_conditions(db_pool, _report((drift,)))
         assert len(l1) == 1
         assert l1[0]["transition"] == "escalation_due"
         assert l1[0]["escalated"] is True
         assert "healing_attempt_id" in l1[0]
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1
 
-        await _force_due(pool, fp)
-        l2 = await reconcile_drift_conditions(pool, _report((drift,)))
+        await _force_due(db_pool, fp)
+        l2 = await reconcile_drift_conditions(db_pool, _report((drift,)))
         assert len(l2) == 1
         assert l2[0] == {
             "fingerprint": fp,
@@ -134,9 +121,9 @@ class TestLifecycleProgressionAndAuditAttribution:
             "escalation_level": "L2",
         }
         # AC4: L2 re-escalation must NOT create another healing_attempts row.
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1
 
-        actions = await _audit_actions(pool, fp)
+        actions = await _audit_actions(db_pool, fp)
         assert actions == [
             ("migration_drift_first_detected", "detected"),
             ("migration_drift_escalated", "escalated"),
@@ -146,7 +133,7 @@ class TestLifecycleProgressionAndAuditAttribution:
 
 class TestMutableRevisionsRemainEvidence:
     async def test_revision_change_confirms_same_episode_not_a_new_one(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         """spec.md 'Mutable drift revisions remain evidence': the SAME
         episode continues (and its escalation clock is undisturbed) even as
@@ -154,16 +141,16 @@ class TestMutableRevisionsRemainEvidence:
         first = _drift("finance-mutable-evidence", expected_head="core_005", actual="core_003")
         fp = _drift_fingerprint(first)
 
-        opened = await reconcile_drift_conditions(pool, _report((first,)))
+        opened = await reconcile_drift_conditions(db_pool, _report((first,)))
         assert opened[0]["transition"] == "opened"
 
         changed = _drift("finance-mutable-evidence", expected_head="core_006", actual="core_004")
         assert _drift_fingerprint(changed) == fp  # same identity despite different revisions
 
-        confirmed = await reconcile_drift_conditions(pool, _report((changed,)))
+        confirmed = await reconcile_drift_conditions(db_pool, _report((changed,)))
         assert confirmed == [{"fingerprint": fp, "transition": "confirmed"}]
 
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT episode, metadata FROM public.infra_conditions "
             "WHERE source = 'deployment_drift' AND fingerprint = $1",
             fp,
@@ -172,18 +159,20 @@ class TestMutableRevisionsRemainEvidence:
 
 
 class TestDegradedComparisonCannotResolve:
-    async def test_check_error_leaves_active_condition_untouched(self, pool: asyncpg.Pool) -> None:
+    async def test_check_error_leaves_active_condition_untouched(
+        self, db_pool: asyncpg.Pool
+    ) -> None:
         drift = _drift("finance-degraded")
         fp = _drift_fingerprint(drift)
 
-        await reconcile_drift_conditions(pool, _report((drift,)))
+        await reconcile_drift_conditions(db_pool, _report((drift,)))
 
         # A degraded tick that doesn't even mention this fingerprint must
         # leave it exactly as-is.
-        result = await reconcile_drift_conditions(pool, _report((), check_error="pool down"))
+        result = await reconcile_drift_conditions(db_pool, _report((), check_error="pool down"))
         assert result == []
 
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT state FROM public.infra_conditions "
             "WHERE source = 'deployment_drift' AND fingerprint = $1",
             fp,
@@ -194,21 +183,21 @@ class TestDegradedComparisonCannotResolve:
 
 class TestCompleteRecoveryAndRecurrence:
     async def test_resolves_once_then_recurrence_opens_new_episode(
-        self, pool: asyncpg.Pool
+        self, db_pool: asyncpg.Pool
     ) -> None:
         drift = _drift("finance-recur")
         fp = _drift_fingerprint(drift)
 
-        opened = await reconcile_drift_conditions(pool, _report((drift,)))
+        opened = await reconcile_drift_conditions(db_pool, _report((drift,)))
         assert opened[0]["transition"] == "opened"
 
-        resolved = await reconcile_drift_conditions(pool, _report(()))
+        resolved = await reconcile_drift_conditions(db_pool, _report(()))
         assert resolved == [{"fingerprint": fp, "transition": "resolved"}]
 
-        reopened = await reconcile_drift_conditions(pool, _report((drift,)))
+        reopened = await reconcile_drift_conditions(db_pool, _report((drift,)))
         assert reopened == [{"fingerprint": fp, "transition": "reopened"}]
 
-        episodes = await pool.fetch(
+        episodes = await db_pool.fetch(
             "SELECT episode, state FROM public.infra_conditions "
             "WHERE source = 'deployment_drift' AND fingerprint = $1 ORDER BY episode",
             fp,
@@ -217,21 +206,20 @@ class TestCompleteRecoveryAndRecurrence:
 
 
 class TestConcurrentReconciliationRace:
-    async def test_concurrent_ticks_claim_exactly_one_l1_escalation(
-        self, pool: asyncpg.Pool
-    ) -> None:
+    async def test_concurrent_ticks_claim_exactly_one_l1_escalation(self, db) -> None:
+        db_pool = await db("core", min_size=2, max_size=10)  # all 8 ticks run at once
         drift = _drift("finance-race")
         fp = _drift_fingerprint(drift)
 
-        await reconcile_drift_conditions(pool, _report((drift,)))
-        await _force_due(pool, fp)
+        await reconcile_drift_conditions(db_pool, _report((drift,)))
+        await _force_due(db_pool, fp)
 
         batches = await asyncio.gather(
-            *[reconcile_drift_conditions(pool, _report((drift,))) for _ in range(8)]
+            *[reconcile_drift_conditions(db_pool, _report((drift,))) for _ in range(8)]
         )
         flattened = [r for batch in batches for r in batch]
         escalations = [r for r in flattened if r.get("transition") == "escalation_due"]
 
         assert len(escalations) == 1
         assert escalations[0]["escalated"] is True
-        assert await _healing_attempt_count(pool, fp) == 1
+        assert await _healing_attempt_count(db_pool, fp) == 1

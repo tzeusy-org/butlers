@@ -209,8 +209,8 @@ async def net_worth_snapshot(
 ) -> dict[str, Any]:
     """Record a point-in-time account balance snapshot.
 
-    Upserts into ``finance.balance_snapshots`` using the ``(account_id, as_of_date)``
-    unique constraint.  If a snapshot for the same account and date already exists,
+    Upserts into ``finance.balance_snapshots`` on the ``(account_id, as_of_date)``
+    unique index.  If a snapshot for the same account and date already exists,
     the balance is updated.  Credit account balances should be passed as negative
     values to represent debt.
 
@@ -243,11 +243,10 @@ async def net_worth_snapshot(
         """
         INSERT INTO balance_snapshots (account_id, balance, currency, as_of_date, source)
         VALUES ($1::uuid, $2, $3, $4, 'manual')
-        ON CONFLICT ON CONSTRAINT uq_balance_snapshot_account_date
+        ON CONFLICT (account_id, as_of_date)
         DO UPDATE SET
-            balance    = EXCLUDED.balance,
-            currency   = EXCLUDED.currency,
-            updated_at = now()
+            balance  = EXCLUDED.balance,
+            currency = EXCLUDED.currency
         RETURNING *
         """,
         account_id,

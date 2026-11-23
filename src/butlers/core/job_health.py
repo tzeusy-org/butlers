@@ -70,8 +70,12 @@ JOB_SPECS = {
         JobSpec("secrets_staleness", "periodic", 1800),
         JobSpec("migration_drift", "periodic", 3600),
         JobSpec("calendar_sync_deadman", "periodic", 1800),
+        JobSpec("calendar_overcommitment", "periodic", 1800),
+        JobSpec("day_sheet_push", "periodic", 300),
+        JobSpec("backup_facts_snapshot", "periodic", 600),
         JobSpec("external_deadman", "periodic", 600),
         JobSpec("fleet_readiness", "periodic", 30),
+        JobSpec("capability_health", "periodic", 60),
     )
 }
 

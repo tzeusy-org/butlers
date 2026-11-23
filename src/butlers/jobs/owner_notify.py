@@ -12,13 +12,15 @@ parameterised by origin butler:
    ``background.dispatch_scheduled_task`` binds for the handler call, with a bounded timeout.
    No client means ``failed``; there is no direct provider fallback.
 4. Exactly one ``public.attention_ledger`` row per call, whatever the outcome. A failed or
-   uncertain delivery is recorded and never retried here.
+   uncertain delivery is recorded and never retried here; a caller that retries passes a
+   ``dedup_key`` so it can pace itself on its own failed rows.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import asyncpg
@@ -38,14 +40,35 @@ FAILED = "failed"
 NotifyOutcome = Literal["delivered", "suppressed", "failed"]
 
 
-async def send_owner_telegram(
+@dataclass(frozen=True)
+class OwnerNotifyResult:
+    outcome: NotifyOutcome
+    #: True once a provider call began, so a ``failed`` outcome may still have delivered.
+    call_started: bool
+    #: The provider's numeric message id of a delivered send, so the card can be retracted later.
+    provider_ref: str | None = None
+
+
+async def send_owner_telegram_checked(
     pool: asyncpg.Pool,
     *,
     origin_butler: str,
     message: str,
     log_context: str,
-) -> NotifyOutcome:
-    """Send ``message`` to the owner's Telegram chat and return the recorded outcome."""
+    dedup_key: str | None = None,
+    envelope: dict[str, Any] | None = None,
+) -> OwnerNotifyResult:
+    """Send ``message`` to the owner's Telegram chat and return the recorded outcome.
+
+    ``dedup_key`` tags the ledger row, so a caller that retries can find its own attempts.
+    ``call_started`` is False when the outcome was decided before any provider call
+    (suppressed, no recipient, no client): nothing can have been delivered. A ``failed``
+    outcome with ``call_started`` True is ambiguous, because the provider may have delivered.
+
+    ``envelope`` is a prebuilt ``notify.v1`` request (a card with actions) sent in place of
+    ``message``. Its recipient must be the owner's resolved chat: a mismatch is a ``failed``
+    send decided before any provider call.
+    """
 
     async def _record(outcome: str, reason: str | None = None, ref: Any = None) -> None:
         await record_attention_event(
@@ -58,30 +81,37 @@ async def send_owner_telegram(
             priority="medium",
             reason=reason,
             notification_ref=ref,
+            dedup_key=dedup_key,
         )
 
     reason = await check_owner_notify_suppression(pool, log_context=log_context)
     if reason is not None:
         await _record(SUPPRESSED, reason)
-        return SUPPRESSED
+        return OwnerNotifyResult(SUPPRESSED, False)
     recipient = await resolve_owner_telegram_recipient(pool)
     if not recipient:
         await _record(FAILED, "no_recipient_configured")
-        return FAILED
+        return OwnerNotifyResult(FAILED, False)
     client = get_current_switchboard_client()
     if client is None:
         await _record(FAILED, "switchboard_client_unavailable")
-        return FAILED
-    notify_request = {
-        "schema_version": "notify.v1",
-        "origin_butler": origin_butler,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
+        return OwnerNotifyResult(FAILED, False)
+    if envelope is not None:
+        if (envelope.get("delivery") or {}).get("recipient") != recipient:
+            await _record(FAILED, "recipient_mismatch")
+            return OwnerNotifyResult(FAILED, False)
+        notify_request = envelope
+    else:
+        notify_request = {
+            "schema_version": "notify.v1",
+            "origin_butler": origin_butler,
+            "delivery": {
+                "intent": "send",
+                "channel": "telegram",
+                "message": message,
+                "recipient": recipient,
+            },
+        }
     try:
         result = await asyncio.wait_for(
             client.call_tool(
@@ -92,10 +122,34 @@ async def send_owner_telegram(
     except Exception as exc:
         logger.warning("%s: deliver() call failed: %s", log_context, type(exc).__name__)
         await _record(FAILED, f"delivery_error:{type(exc).__name__}")
-        return FAILED
+        return OwnerNotifyResult(FAILED, True)
     data = result.data
     if result.is_error or (isinstance(data, dict) and data.get("status") == "failed"):
         await _record(FAILED, "delivery_error")
-        return FAILED
+        return OwnerNotifyResult(FAILED, True)
     await _record(DELIVERED, ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return DELIVERED
+    # Telegram's message id; the adapter-less ``telegram:<uuid>`` fallback is never a card.
+    delivery_id = data.get("delivery_id") if isinstance(data, dict) else None
+    ref = str(delivery_id) if isinstance(delivery_id, (str, int)) else None
+    return OwnerNotifyResult(
+        DELIVERED, True, ref if ref and ref.isascii() and ref.isdigit() else None
+    )
+
+
+async def send_owner_telegram(
+    pool: asyncpg.Pool,
+    *,
+    origin_butler: str,
+    message: str,
+    log_context: str,
+    dedup_key: str | None = None,
+) -> NotifyOutcome:
+    """Send ``message`` to the owner's Telegram chat and return the recorded outcome."""
+    result = await send_owner_telegram_checked(
+        pool,
+        origin_butler=origin_butler,
+        message=message,
+        log_context=log_context,
+        dedup_key=dedup_key,
+    )
+    return result.outcome

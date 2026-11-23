@@ -188,8 +188,17 @@ async def _exchange(proc: asyncio.subprocess.Process, audio: bytes, max_bytes: i
 
 
 async def _kill(proc: asyncio.subprocess.Process) -> None:
+    """Kill and reap ``proc``, discarding whatever output it left behind.
+
+    ``Process.wait()`` also waits for the pipes to close, and a stdout reader paused at its
+    buffer high-water mark never sees EOF, so stdout is drained first. The process is dead,
+    so what remains is bounded by the reader buffer plus the pipe capacity.
+    """
     with contextlib.suppress(ProcessLookupError):
         proc.kill()
+    if proc.stdout is not None:
+        while await proc.stdout.read(_READ_CHUNK):
+            pass
     await proc.wait()
 
 

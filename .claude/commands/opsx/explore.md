@@ -122,8 +122,8 @@ If the user mentions a change or you detect one is relevant:
 
    | Insight Type | Where to Capture |
    |--------------|------------------|
-   | New requirement discovered | `specs/<capability>/spec.md` |
-   | Requirement changed | `specs/<capability>/spec.md` |
+   | New or changed required behavior | Affected canonical `openspec/specs/<capability>/spec.md`, in the source change |
+   | Retained multi-PR delta requirement | Existing `spec-driven` change's `specs/<capability>/spec.md` |
    | Design decision made | `design.md` |
    | Scope changed | `proposal.md` |
    | New work identified | `tasks.md` |
@@ -131,7 +131,7 @@ If the user mentions a change or you detect one is relevant:
 
    Example offers:
    - "That's a design decision. Capture it in design.md?"
-   - "This is a new requirement. Add it to specs?"
+   - "This changes a maintained requirement. Capture the update in the canonical spec with the change?"
    - "This changes scope. Update the proposal?"
 
 4. **The user decides** - Offer and move on. Don't pressure. Don't auto-capture.

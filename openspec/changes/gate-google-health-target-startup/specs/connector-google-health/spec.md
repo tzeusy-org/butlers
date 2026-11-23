@@ -11,7 +11,8 @@ Scope: v1-mandatory
 #### Scenario: Expected Health identity releases startup
 
 - **WHEN** the existing Google Health initialization gates have completed
-- **THEN** a further gate SHALL poll `http://butlers-up:41103/internal/control-plane/identity` in both split and unsplit control-plane deployments
+- **THEN** a further gate SHALL poll `http://butlers-up:41103/internal/control-plane/identity` in both split and unsplit control-plane deployments when Health service TLS is disabled
+- **AND** when Health service TLS is enabled, it SHALL poll `https://butlers-up:41103/internal/control-plane/identity` with the configured Health CA and service hostname verification
 - **AND** it SHALL release startup only for HTTP 200 containing a JSON object with `schema_version=butler.control.v1`, `butler_name=health`, an exact integer positive `boot_epoch`, and literal boolean `accepting_routes=true`
 - **AND** a transient refusal followed by qualifying readiness SHALL allow startup within the remaining deadline
 
@@ -27,6 +28,7 @@ Scope: v1-mandatory
 - **THEN** the gate SHALL exit nonzero, permitting Kubernetes to retry the init container
 - **AND** the default overall deadline SHALL be 300 seconds, polling interval five seconds, each entire HTTP attempt at most five seconds and the remaining deadline, and each response at most 2 KiB
 - **AND** redirects and environment proxy routing SHALL NOT bypass the configured endpoint
+- **AND** missing or invalid HTTPS trust configuration, an untrusted certificate, or a service hostname mismatch SHALL prevent startup
 
 #### Scenario: Startup observation has no recovery authority
 
@@ -38,3 +40,4 @@ Scope: v1-mandatory
 
 - Non-Negotiable Rules 4 (deterministic infrastructure) and 7 (connector transport ownership).
 - RFC 0008 Internal Observer and Deployment Readiness Boundary; existing daemon identity facts.
+- Owner decision `bu-un8ey6` for verified HTTPS in the opt-in Health TLS mode.

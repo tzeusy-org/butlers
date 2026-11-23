@@ -3,7 +3,8 @@
 ### Requirement: CSV extraction skill definition
 The finance butler MUST have a `transaction-csv-extraction` skill in `roster/finance/.agents/skills/transaction-csv-extraction/SKILL.md` that guides a goal invocation through adaptive CSV import using only the finance `import_transactions` capability. The skill MUST NOT prescribe reading files, writing or executing scripts, or calling HTTP endpoints, because goal invocations have no shell, filesystem, or web fetch.
 
-Source: RFC 0038 D2 and D3
+ID: REQ-csv-extraction-skill-001
+Source: RFC 0038 D2 and D3; finance-data-import "No caller-named local filesystem source"
 Scope: v1-mandatory
 
 #### Scenario: Skill discovery
@@ -12,15 +13,18 @@ Scope: v1-mandatory
 - **AND** the skill MUST have valid frontmatter with `name`, `description`, and `version` fields
 
 #### Scenario: Skill activation trigger
-- **WHEN** a user provides a CSV file path and requests transaction import
+- **WHEN** a user provides a CSV export (as an attachment or dashboard upload) and requests transaction import
 - **THEN** the invocation handling the goal MUST load the `transaction-csv-extraction` skill to guide the workflow
-- **AND** the skill MUST accept a file path and an optional account identifier as inputs
+- **AND** the skill MUST accept a `storage_ref` and an optional account identifier as inputs
+- **AND** when the user offers only a local filesystem path, the skill MUST direct the invocation to ask for an upload instead of reading the path
 
 #### Scenario: Import through the deterministic capability
 - **WHEN** the skill guides an import of a CSV file
-- **THEN** the invocation MUST first call `import_transactions` with `dry_run=true` and review `detected_format`, `error_details`, and `preview`
-- **AND** it MUST then call `import_transactions` without `dry_run`, passing the same `column_map` when one was needed
-- **AND** when the response has `status="unrecognized_format"`, it MUST build an explicit `column_map` from the returned headers or ask the owner for one
+- **THEN** the invocation MUST first call `import_transactions(storage_ref, dry_run=true)` and review `detected_format`, `error_details`, and `preview`
+- **AND** it MUST then call `import_transactions(storage_ref)` without `dry_run`, passing the same `column_map` and `currency` when one was needed
+- **AND** when the response has `status="unrecognized_format"`, it MUST build an explicit `column_map` from the returned `headers` and `missing_columns`, asking the owner only when the headers leave the mapping ambiguous or `headers_truncated` is true
+- **AND** when the dry-run `preview` is empty, it MUST NOT run the import
+- **AND** it MUST attempt at most 3 dry-run previews before reporting failure to the user
 - **AND** when no `column_map` can express the file's sign convention, it MUST report that to the owner instead of importing amounts with the wrong direction
 
 #### Scenario: Result reporting
@@ -33,10 +37,17 @@ Scope: v1-mandatory
 - **THEN** the invocation MUST explain to the user that previously imported rows will appear as "skipped (duplicate)" and this is expected, not data loss
 - **AND** the invocation MUST report only the newly imported count as the meaningful result
 
-### Requirement: Token budget protection
-The skill MUST prevent the LLM from consuming excessive tokens during CSV import. This is a hard constraint, not a suggestion. The only CSV content that may enter an invocation's context MUST be what `import_transactions` returns: detected headers, the dry-run preview, and per-row error details.
+#### Scenario: Historical backfill of several statements
+- **WHEN** the owner wants to import history spanning several statements or accounts
+- **THEN** the invocation MUST obtain one `storage_ref` per statement and MUST NOT offer to discover statements in a local folder
+- **AND** it MUST dry-run every statement before importing any, then import each statement whose preview was correct with its own `import_transactions(storage_ref)` call, holding back and reporting any statement whose preview failed
+- **AND** it MUST report per-statement counts and the totals across statements, relying on `import_transactions` deduplication for rows shared by overlapping statements
 
-Source: RFC 0038 D3
+### Requirement: Token budget protection
+The skill MUST prevent the LLM from consuming excessive tokens during CSV import. This is a hard constraint, not a suggestion. The only CSV content that may enter an invocation's context MUST be what `import_transactions` returns: the dry-run preview and per-row error details.
+
+ID: REQ-csv-extraction-skill-002
+Source: RFC 0038 D3; finance-data-import "No caller-named local filesystem source"
 Scope: v1-mandatory
 
 #### Scenario: Prohibition on full-file context loading
@@ -55,17 +66,3 @@ Scope: v1-mandatory
 - **WHEN** the skill prompt is authored
 - **THEN** the token budget constraints MUST appear in a prominently placed section (e.g., "CRITICAL CONSTRAINTS" or equivalent) near the top of the skill document, before the workflow steps
 - **AND** the constraints MUST be stated in imperative form (MUST NOT, NEVER) not advisory form (should avoid, prefer not to)
-
-## REMOVED Requirements
-
-### Requirement: Script-generation workflow
-**Reason**: RFC 0038 D3 disables runtime built-in tools ("no shell, filesystem, web fetch or local MCP servers"), so no goal invocation can sample a file from disk, write a Python script, execute it, or read its stdout.
-**Migration**: Parsing, format detection, sign and date normalization, deduplication, dry-run preview, and the import summary are performed deterministically by `import_transactions` (`finance-data-import`); the skill now guides calls to that capability, and its result-reporting and re-run guidance moves to `CSV extraction skill definition`.
-
-### Requirement: API connectivity verification
-**Reason**: There is no generated script to run a pre-flight check, and RFC 0038 D3 gives sessions no network path except the capability broker.
-**Migration**: Reachability of the finance butler is the control plane's concern; an unreachable `import_transactions` capability returns a broker error that the invocation reports.
-
-### Requirement: Dashboard API URL discovery
-**Reason**: Sessions cannot reach the dashboard API or read environment variables under RFC 0038 D3, so a base URL is meaningless to them.
-**Migration**: None needed; imports go through the `import_transactions` capability, which the broker lists under its namespaced name.

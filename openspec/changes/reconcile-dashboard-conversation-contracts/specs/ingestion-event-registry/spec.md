@@ -30,9 +30,12 @@ Scope: v1-mandatory
   `source_sender_display_name`, `source_thread_identity`,
   `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`,
   `policy_tier`, `triage_decision`, `triage_target`, and `sender_authentication`
-- **AND** `source_sender_display_name` SHALL be the raw sender display name
-  from `sender.display_name`, or `NULL` when the envelope carried none; unlike
-  `source_sender_identity` it SHALL remain verbatim for identity enrichment
+- **AND** `source_sender_display_name` is the raw sender display name from the
+  envelope's `sender.display_name` (e.g. the email `From:` header's display
+  part), or `NULL` when the envelope carried no display name; unlike
+  `source_sender_identity` it is stored verbatim (not normalized) and is used
+  by identity enrichment to name recurring correspondents from the real display
+  name rather than a guess derived from the address local-part
 - **AND** the row `id` SHALL be returned as `request_id` in
   `IngestAcceptedResponse`
 
@@ -40,8 +43,9 @@ Scope: v1-mandatory
 
 - **WHEN** the Switchboard receives an envelope whose computed dedupe key
   matches an existing `public.ingestion_events` row
-- **THEN** it SHALL insert no new row and return the existing row `id` as
-  `request_id` with `duplicate=true`
+- **THEN** no new row is inserted
+- **AND** the existing row's `id` is returned as `request_id` with
+  `duplicate=true`
 - **AND** after cutover, duplicate dashboard reasoning ingress SHALL return
   the goal already admitted from that envelope rather than create another goal
 
@@ -50,8 +54,8 @@ Scope: v1-mandatory
 - **WHEN** two ingestion events are accepted in sequence
 - **THEN** the second event `id` SHALL be lexicographically greater than the
   first
-- **AND** UUID7 ordering SHALL support recency queries without a separate
-  `received_at` index
+- **AND** UUID7 ordering can substitute for a separate `received_at` index for
+  recency queries
 
 #### Scenario: Dashboard event enters the unified registry
 

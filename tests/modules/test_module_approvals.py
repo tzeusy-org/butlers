@@ -60,6 +60,8 @@ class MockDB:
     """In-memory mock asyncpg pool for approvals tests."""
 
     def __init__(self) -> None:
+        # Stands in for both the butler Database and its pool (``db.pool``).
+        self.pool = self
         self.pending_actions: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_rules: dict[uuid.UUID, dict[str, Any]] = {}
         self.approval_events: list[dict[str, Any]] = []
@@ -83,6 +85,7 @@ class MockDB:
             if kwargs.get("execution_result") is not None
             else None,
             "approval_rule_id": kwargs.get("approval_rule_id"),
+            "goal_id": kwargs.get("goal_id"),
         }
         self.pending_actions[action_id] = row
         return action_id
@@ -279,10 +282,6 @@ class MockDB:
             return "UPDATE 1"
 
         return "OK"
-
-    @property
-    def pool(self):
-        return self
 
 
 @pytest.fixture
@@ -735,6 +734,75 @@ class TestDispatchApprovedActionById:
         event_types = [call["args"][0] for call in mock_db.approval_events]
         assert "action_execution_failed" in event_types
 
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            {
+                "status": "failed",
+                "error": "deadline",
+                "retryable": False,
+                "transport": {"outcome": "uncertain", "retryable": False},
+            },
+            {"error": "partial", "partial_delivery": True, "retryable": False},
+            {"error": "unknown effect", "telegram_effect_uncertain": True, "retryable": False},
+            {"result": {"error": "x", "transport": {"outcome": "uncertain"}}, "error": "wrapped"},
+        ],
+        ids=["transport-uncertain", "partial-delivery", "telegram-uncertain", "nested"],
+    )
+    async def test_uncertain_egress_outcome_is_recorded_not_left_retryable(
+        self, module: ApprovalsModule, mock_db: MockDB, failure: dict
+    ):
+        """A send that may have gone out is executed-with-unknown-outcome: Retry would resend."""
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "1", "text": "hi"},
+            status="approved",
+        )
+        calls: list[str] = []
+
+        async def uncertain_executor(tool_name, tool_args):
+            calls.append(tool_name)
+            return failure
+
+        module.set_tool_executor(uncertain_executor)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["status"] == "executed"
+        assert mock_db.pending_actions[action_id]["status"] == "executed"
+        stored = mock_db.pending_actions[action_id]["execution_result"]
+        assert stored["result"] == {"status": "outcome_unknown", "delivery_confirmed": False}
+        # No provider text or recipient from the failure is persisted.
+        assert "deadline" not in str(stored) and "unknown effect" not in str(stored)
+
+        again = await module._dispatch_approved_action_by_id(str(action_id))
+        assert again["status"] == "executed"
+        assert calls == ["telegram_send_message"]
+
+    async def test_proven_unsent_or_rejected_egress_failure_stays_retryable(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        action_id = mock_db._insert_action(
+            tool_name="telegram_send_message",
+            tool_args={"chat_id": "1", "text": "hi"},
+            status="approved",
+        )
+
+        async def not_attempted(tool_name, tool_args):
+            return {
+                "status": "failed",
+                "error": "recipient unavailable",
+                "retryable": True,
+                "transport": {"outcome": "not_attempted", "retryable": True},
+            }
+
+        module.set_tool_executor(not_attempted)
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert "error" in result
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
     async def test_unsuccessful_executor_result_leaves_action_approved_without_result(
         self, module: ApprovalsModule, mock_db: MockDB
     ):
@@ -792,6 +860,52 @@ class TestDispatchApprovedActionById:
         await module.on_startup(config=None, db=mock_db)
         result = await module._dispatch_approved_action_by_id(action_id)
         assert "error" in result
+
+
+class TestGoalLineageFence:
+    """A goal-parked effect runs only through the capability broker (bu-m1u7zy.6)."""
+
+    @staticmethod
+    async def _never(tool_name, tool_args):  # pragma: no cover - must not run
+        raise AssertionError("the legacy executor must not run a goal effect")
+
+    async def test_approve_records_the_owner_decision_but_never_executes(
+        self, module: ApprovalsModule, mock_db: MockDB, human_actor: dict[str, Any]
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="pending", goal_id=uuid.uuid4())
+
+        result = await module._approve_action(str(action_id), actor=human_actor)
+
+        assert result["execution_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+        assert mock_db.pending_actions[action_id]["execution_result"] is None
+
+    async def test_dispatch_by_id_refuses_a_goal_action(
+        self, module: ApprovalsModule, mock_db: MockDB
+    ):
+        await module.on_startup(config=None, db=mock_db)
+        module.set_tool_executor(self._never)
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        result = await module._dispatch_approved_action_by_id(str(action_id))
+
+        assert result["error_code"] == "goal_effect_requires_broker"
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
+
+    async def test_executor_refuses_a_goal_action(self, mock_db: MockDB):
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        action_id = mock_db._insert_action(status="approved", goal_id=uuid.uuid4())
+
+        async def never(**kwargs):  # pragma: no cover - must not run
+            raise AssertionError("the legacy executor must not run a goal effect")
+
+        result = await execute_approved_action(mock_db, action_id, "test_tool", {}, tool_fn=never)
+
+        assert (result.success, result.code) == (False, "goal_effect_requires_broker")
+        assert mock_db.pending_actions[action_id]["status"] == "approved"
 
 
 # ---------------------------------------------------------------------------

@@ -30,7 +30,6 @@ from __future__ import annotations
 import importlib
 import logging
 from typing import Final
-from urllib.parse import urlparse
 
 from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 from butlers.core.runtime_probe_control.client import RuntimeProbeControlClient
@@ -113,7 +112,7 @@ def switchboard_control_base_url() -> str:
     otherwise ``BUTLERS_HOST``, and loopback inside ``butlers-up`` itself.
     """
     loopback = f"http://localhost:{SWITCHBOARD_CONTROL_PORT}"
-    return f"http://{urlparse(resolve_cross_container_mcp_url(loopback)).netloc}"
+    return resolve_cross_container_mcp_url(loopback)
 
 
 _clients: dict[str, RuntimeProbeControlClient] = {}

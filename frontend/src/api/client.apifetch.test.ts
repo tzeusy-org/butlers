@@ -57,6 +57,14 @@ describe("apiFetch — timeout", () => {
     await getApprovalDetail("action-id", "messenger");
     expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/approvals\/action-id\?review_source=messenger$/);
     mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
+    await getApprovalDetail("action-id", undefined, { statusOnly: true });
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/approvals\/action-id\?present=false$/);
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
+    await getApprovalDetail("action-id", "messenger", { statusOnly: true });
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(
+      /\/approvals\/action-id\?review_source=messenger&present=false$/,
+    );
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
     await getCalendarResponseReceipt("original/id", "messenger", true);
     expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/calendar\/workspace\/responses\/original%2Fid\?source_butler=messenger&inverse=true$/);
     expect(mockFetch.mock.calls.at(-1)?.[1].method ?? "GET").toBe("GET");

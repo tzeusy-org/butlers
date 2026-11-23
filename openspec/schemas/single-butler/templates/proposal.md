@@ -4,27 +4,28 @@
 
 ## What Changes
 
-<!-- Identify every behavior change and mark breaking changes. -->
+<!-- Identify behavior changes and mark breaking changes. -->
 
 ## Workflow Eligibility
 
-<!-- Cite scope evidence for each exclusion. If any boundary changes, use
-     spec-driven and include design.md; a single directory is not proof. -->
+<!-- Cite scope evidence for each exclusion. If any boundary changes, use living-specs
+     with design, or keep spec-driven for a retained local-delta program. -->
 - Cross-butler contract: <!-- unchanged, with evidence -->
 - Schema shared across butlers: <!-- unchanged, with evidence -->
 - Security boundary: <!-- unchanged, with evidence -->
 
-## Capabilities
+## Canonical Contract Impact
 
-### New Capabilities
-- `<capability-path>`: <!-- preserve the project's capability organization -->
+<!-- Name affected openspec/specs/<capability>/spec.md files. Update an affected
+     requirement directly in the same change when required behavior changes. -->
+- <canonical capability spec>: <!-- unchanged, updated, or not applicable -->
 
-### Modified Capabilities
-- `<existing-capability-path>`: <!-- only when required behavior changes -->
+## Local Delta Specs
 
-<!-- With no behavior change, use the existing explicit skip_specs rule;
-     do not invent a delta requirement. -->
+This schema intentionally has no change-local specs. Preserve the generated
+`schema` and `created` fields in `.openspec.yaml` and add `skip_specs: true`.
+Do not create a placeholder `specs/` directory.
 
 ## Impact
 
-<!-- Affected code, APIs, dependencies, systems and any existing design to read. -->
+<!-- Affected code, APIs, dependencies, systems, and existing designs to read. -->

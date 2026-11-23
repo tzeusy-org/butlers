@@ -167,7 +167,10 @@ def test_chart_exposes_only_proxied_metrics_for_connectors_with_a_health_port():
 
     host_ingress = next(d for d in docs if d["metadata"]["name"] == "butlers-host-ingress")
     # The externally reachable rule admits the metrics port and nothing else.
-    assert {"ports": [{"protocol": "TCP", "port": 9464}]} in host_ingress["spec"]["ingress"]
+    assert {
+        "ports": [{"protocol": "TCP", "port": 9464}],
+        "from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "lgtm"}}}],
+    } in host_ingress["spec"]["ingress"]
     assert not any(d["kind"] == "PodMonitor" for d in docs)
 
 

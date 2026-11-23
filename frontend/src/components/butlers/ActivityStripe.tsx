@@ -6,6 +6,8 @@
 // colored by the session count relative to the row maximum:
 //   - empty cells (count = 0):  neutral wash (bg-muted/40)
 //   - filled cells (count > 0): foreground at (0.20 + count/max * 0.55) opacity
+//   - unreported cells (null):  dashed outline, no fill (bu-s11n0s.5.1) — an
+//     hour nobody reported is never drawn as a measured zero
 //
 // Inline style EXEMPTION: the intensity opacity on filled cells is a typed
 // primitive owning one dynamic prop — this is explicitly exempt from the
@@ -17,13 +19,17 @@
 // ---------------------------------------------------------------------------
 
 interface ActivityStripeProps {
-  /** 24 hourly session counts, oldest first (slot 0 = oldest). Length MUST be 24. */
-  counts: number[]
+  /**
+   * 24 hourly session counts, oldest first (slot 0 = oldest). Length MUST be 24.
+   * `null` marks an hour no source reported (bu-s11n0s.5.1).
+   */
+  counts: (number | null)[]
   /**
    * UTC-aligned window end timestamp used to compute the peak-hour label.
    *
-   * The slots produced by `bucketSessionsByHour` are UTC-aligned — slot 0 is
-   * the oldest UTC-hour bucket, slot 23 is the most recent. When `windowEnd`
+   * The slots are UTC-aligned (`hourlySlotStarts` in lib/bucket-series.ts) —
+   * slot 0 is the oldest UTC-hour bucket, slot 23 the one containing the
+   * window end. When `windowEnd`
    * is provided, the peak-hour label is derived from its UTC-hour floor so it
    * is consistent with the bucketing boundary. When omitted, `new Date()` is
    * used as the reference, but the label is still computed from UTC hours, so
@@ -39,9 +45,9 @@ interface ActivityStripeProps {
 /**
  * Horizontal 24-cell stripe showing hourly session density for the past 24 hours.
  *
- * @param counts - 24 hourly session counts, oldest first. Length MUST be 24.
+ * @param counts - 24 hourly session counts, oldest first; null = unreported. Length MUST be 24.
  * @param windowEnd - UTC-aligned window end for peak-hour label computation.
- *   Pass the same `endAt` reference used by `bucketSessionsByHour` for alignment.
+ *   Pass the same `nowMs` reference used by `hourlySlotStarts` for alignment.
  *   Defaults to `new Date()` when omitted.
  * @param className - Optional className forwarded to the container element.
  * @param onBarClick - Optional click handler that makes each slot a keyboard-accessible button.
@@ -54,8 +60,10 @@ export function ActivityStripe({ counts, windowEnd, className, onBarClick }: Act
     console.error(`ActivityStripe: counts.length must be 24, got ${counts.length}`)
   }
 
-  const max = Math.max(...counts, 0)
-  const total = counts.reduce((s, n) => s + n, 0)
+  const reported = counts.filter((count): count is number => count !== null)
+  const unreported = counts.length - reported.length
+  const max = Math.max(...reported, 0)
+  const total = reported.reduce((s, n) => s + n, 0)
 
   // Determine peak hour label (0-23, oldest-first slot index maps to HH:00 UTC).
   // Slot 23 corresponds to utcHourFloor(windowEnd); slot peakIdx is (23 - peakIdx)
@@ -63,17 +71,20 @@ export function ActivityStripe({ counts, windowEnd, className, onBarClick }: Act
   const peakIdx = counts.indexOf(max)
   const referenceDate = windowEnd ?? new Date()
   const slot23UTCHour = referenceDate.getUTCHours()
-  const peakHour = (slot23UTCHour - 23 + peakIdx + 24) % 24
-  const peakLabel = String(peakHour).padStart(2, "0")
+  const slotLabel = (index: number) =>
+    `${String((slot23UTCHour - 23 + index + 24) % 24).padStart(2, "0")}:00 UTC`
 
-  const ariaLabel = `24-hour activity, total ${total} sessions, peak ${max} at ${peakLabel}:00 UTC`
+  const unreportedSuffix = unreported > 0 ? `, ${unreported}h not reported` : ""
+  const ariaLabel = reported.length === 0
+    ? "24-hour activity not reported"
+    : `24-hour activity, total ${total} sessions, peak ${max} at ${slotLabel(peakIdx)}${unreportedSuffix}`
   const interactiveBarClassName = onBarClick
-    ? "min-h-6 min-w-6 shrink-0 cursor-pointer border-0 p-0 transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
+    ? "min-h-6 min-w-6 shrink-0 cursor-pointer p-0 transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-1 focus-visible:outline-focus focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2"
     : ""
 
-  function slotAriaLabel(index: number, count: number): string {
-    const slotHour = (slot23UTCHour - 23 + index + 24) % 24
-    return `${count} session${count === 1 ? "" : "s"}, ${String(slotHour).padStart(2, "0")}:00 UTC`
+  function slotAriaLabel(index: number, count: number | null): string {
+    if (count === null) return `not reported, ${slotLabel(index)}`
+    return `${count} session${count === 1 ? "" : "s"}, ${slotLabel(index)}`
   }
 
   return (
@@ -87,6 +98,22 @@ export function ActivityStripe({ counts, windowEnd, className, onBarClick }: Act
       ].filter(Boolean).join(" ")}
     >
       {counts.map((count, i) => {
+        if (count === null) {
+          const className = "flex-1 rounded-[1px] border border-dashed border-border"
+          if (onBarClick) {
+            return (
+              <button
+                key={i}
+                type="button"
+                data-slot="unreported"
+                onClick={() => onBarClick(i)}
+                aria-label={slotAriaLabel(i, count)}
+                className={`${className} ${interactiveBarClassName}`}
+              />
+            )
+          }
+          return <div key={i} data-slot="unreported" className={className} />
+        }
         const isEmpty = count === 0 || max === 0
         if (isEmpty) {
           if (onBarClick) {
@@ -96,7 +123,7 @@ export function ActivityStripe({ counts, windowEnd, className, onBarClick }: Act
                 type="button"
                 onClick={() => onBarClick(i)}
                 aria-label={slotAriaLabel(i, count)}
-                className={`flex-1 rounded-[1px] bg-muted/40 ${interactiveBarClassName}`}
+                className={`flex-1 rounded-[1px] border-0 bg-muted/40 ${interactiveBarClassName}`}
               />
             )
           }
@@ -116,7 +143,7 @@ export function ActivityStripe({ counts, windowEnd, className, onBarClick }: Act
               type="button"
               onClick={() => onBarClick(i)}
               aria-label={slotAriaLabel(i, count)}
-              className={`flex-1 rounded-[1px] ${interactiveBarClassName}`}
+              className={`flex-1 rounded-[1px] border-0 ${interactiveBarClassName}`}
               style={{ backgroundColor: `color-mix(in oklch, var(--foreground) ${Math.round(intensity * 100)}%, transparent)` }}
             />
           )

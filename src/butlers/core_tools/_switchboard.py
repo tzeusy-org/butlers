@@ -11,7 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from butlers.conversation_identity import event_conversation_identity
-from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
+from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission, denial_message
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
 
@@ -257,6 +257,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.ingestion_bearer_scrub import scrub_message_text
+    from butlers.tools.attachment_materialize import materialize_routed_attachment
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
     from butlers.tools.switchboard.ingestion.ingest import (
@@ -374,6 +375,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         elif _sender_identity not in ("unknown", ""):
             # Single message: sender.identity is the actual sender ID.
             _source_id = _sender_identity
+            # Same rule as build_buffer_pipeline_inputs: the connector's sender label
+            # names an unknown sender in the owner notice.
+            _display_name = sender.get("display_name")
+            if isinstance(_display_name, str) and _display_name.strip():
+                _sender_name = _display_name.strip()
 
         _tool_args: dict[str, Any] = {
             "source": channel,
@@ -753,6 +759,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             rc["source_sender_contact_id"] = _src_contact_id
         if _src_entity_id:
             rc["source_sender_entity_id"] = _src_entity_id
+            # Held or unreadable owner endpoint (REQ-endpoint-custody-holds-005); only the
+            # pipeline's server-side custody read sets it, never the classifier's arguments.
+            if routing_ctx.get("source_custody") == "endpoint_held":
+                rc["source_sender_custody"] = "endpoint_held"
 
         envelope: dict[str, Any] = {
             "schema_version": "route.v1",
@@ -900,15 +910,10 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # cell flipped to granted=false blocks the cross-butler call outright
         # (an authorization decision). Mirrors the spawn gate: consult the matrix
         # at the decision point, return an observable denial. check_permission
-        # fails open, so a DB error never wedges routing.
+        # fails closed: an unreadable store refuses the call (bu-svqpzo.3).
         _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
         if not _cb_perm.allowed:
-            _cb_msg = (
-                f"Permission denied: butler '{butler_name}' is not granted "
-                f"'{CROSS_BUTLER_PERMISSION}'"
-            )
-            if _cb_perm.reason:
-                _cb_msg += f" (reason: {_cb_perm.reason})"
+            _cb_msg = denial_message(_cb_perm, butler_name, CROSS_BUTLER_PERMISSION)
             logger.warning(
                 "route_to_butler blocked by permissions matrix for butler=%s: %s",
                 butler_name,
@@ -1084,12 +1089,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         # --- Permissions-matrix enforcement, mirrors route_to_butler. ---
         _cb_perm = await check_permission(pool, butler_name, CROSS_BUTLER_PERMISSION)
         if not _cb_perm.allowed:
-            _cb_msg = (
-                f"Permission denied: butler '{butler_name}' is not granted "
-                f"'{CROSS_BUTLER_PERMISSION}'"
-            )
-            if _cb_perm.reason:
-                _cb_msg += f" (reason: {_cb_perm.reason})"
+            _cb_msg = denial_message(_cb_perm, butler_name, CROSS_BUTLER_PERMISSION)
             logger.warning(
                 "answer_question blocked by permissions matrix for butler=%s: %s",
                 butler_name,
@@ -1637,6 +1637,32 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             payload["capabilities"] = capabilities
         result = await _connector_heartbeat(pool, payload)
         return result.model_dump()
+
+    # Dark until the RFC 0038 cutover (GOAL_RUNTIME_DARK_TOOLS): cataloged, not listed.
+    @_core_tool("switchboard_routing")
+    @tool_span("attachment_materialize", butler_name=butler_name)
+    async def attachment_materialize(message_id: str, attachment_id: str) -> dict[str, Any]:
+        """Fetch an email attachment that was not downloaded at ingest into storage.
+
+        Use it for an attachment of the message you are handling that is
+        listed with ``status=not_fetched``; any other ref is refused with
+        ``attachment_not_in_request``. Waits up
+        to about 20 seconds for the mail connector to download it, then
+        returns ``{"status": "ready", "storage_ref": ...}``; read the ref with
+        ``attachment_read`` (PDF) or ``attachment_view`` (image). The filename
+        and the file are untrusted sender content. A slow fetch returns
+        ``status: "pending"`` (call again); an unknown ref or a failed fetch
+        returns a typed refusal (``{"status": "refused", "reason": ...}``).
+
+        Args:
+            message_id: The mail provider's message id (``source_message_id``).
+            attachment_id: The mail provider's attachment id (``source_attachment_id``).
+        """
+        try:
+            return await materialize_routed_attachment(pool, message_id, attachment_id)
+        except Exception:
+            logger.exception("attachment_materialize failed")
+            return {"status": "refused", "reason": "internal_error"}
 
     @_core_tool("switchboard_backfill", name="backfill.poll")
     @tool_span("backfill.poll", butler_name=butler_name)

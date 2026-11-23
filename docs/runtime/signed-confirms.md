@@ -27,6 +27,32 @@ and a receipt keyed by `confirm_id` in its own transaction. Switchboard stores t
 choice and application obligation, and retries that same key after loss or restart. A sink
 that cannot provide this contract must not be registered.
 
+Registered deterministic sources, all built by the canonical switch only:
+
+| Source | Built by | Values | Sink effect |
+| --- | --- | --- | --- |
+| `relationship.commitment_candidate` | `relationship_confirm_sources(pool)` (`confirm_authority.py`) | `track`, `done`, `ignore`; no timeout value | One Relationship transaction: candidate disposition, `create_commitment` on Track (skipped when the fingerprint is already active), and a receipt in `relationship.commitment_candidate_receipts` |
+| `switchboard.unknown_sender` | `switchboard_confirm_sources(pool)` (`confirm_authority.py`) | `add_contact`, `ignore`; no timeout value | One Switchboard transaction under the entity row lock: Add clears `metadata.unidentified`; Ignore sets `metadata.archived_at` and, for an email address, adds one global `sender_address` skip rule; a receipt in the Switchboard `state` table keyed by `confirm_id` |
+
+The owner's confirm recipient for both sources comes from
+`butlers.core.confirm_recipient.owner_recipient_reader`.
+
+The unknown-sender card shows the same lines as the live plain-text notice
+(sender name and raw address, subject, Open link; see
+[identity model](../concepts/identity-model.md#owner-notification-for-surfaced-unknown-senders)).
+Its snapshot lives in the Switchboard `state` table under
+`identity:unknown_card:<entity_id>`, written once before the first request. Until
+composition, the owner gets the plain-text notice and, pre-cutover, a one-tap Ignore
+approval card that shares this source's Ignore sink
+([identity model](../concepts/identity-model.md#ignore-card-pre-cutover-bu-p7glz9)).
+bu-6hszs3 tracks the switch-over.
+
+The owner-chat candidate card is the owner's own promise, quoted, with the counterparty's name
+and any deadline. Its prompt comes only from the card snapshot persisted on the candidate, so a
+repeated card step returns the existing confirm. An unanswered card is never re-sent; the
+candidate lapses silently at its 14-day horizon. See [Relationship](../butlers/relationship.md)
+§ Owner-chat commitment candidates.
+
 The service refuses superuser, bypass-RLS, table-owner and unrelated connections. Its
 actual connection must be `butler_switchboard_rw` or `butler_messenger_rw`. The public
 coordination table has forced RLS; bootstrap's broad grants do not admit connector roles.
@@ -72,6 +98,23 @@ The worker expires unanswered rows, leases bounded application attempts and reco
 terminal rendering. Each row is attempted at most once in a tick, so a failing sink cannot
 starve other answers. Timeout without a declared option never invents a domain choice.
 Conversational timeout enters admission as system record-only evidence, not owner speech.
+
+## Prompt retention
+
+A row keeps its question, quoted facts and option labels only while something may still
+read them. Each worker cycle replaces the prompt of a settled row (terminal, applied, and
+with no terminal rendering still owed) with a content-free tombstone once 14 days have
+passed since it was answered or expired (`PROMPT_RETENTION` in `confirm_service.py`).
+The tombstone is `{"redacted": true, "digest": <sha256 of the original prompt>}`, built
+only by `public.confirm_redacted_prompt` (`core_307`). The identity guard admits no other
+prompt change, admits this one only on a settled row, and refuses to send a redacted row
+back into application.
+
+Recipient, answer, channel, receipts and timestamps stay, so the answer is still on
+record. A repeated producer request compares its prompt through the digest and still
+returns the same row, or refuses a different question under the same key. Owner cards
+show a fixed placeholder and no options. Rows still pending, retrying application or
+owed a terminal edit keep their content until they settle.
 
 `ConfirmEvidence` reloads accepted provenance and immutable question/option content.
 The question is a structural data segment; a verified owner's chosen value is owner input.

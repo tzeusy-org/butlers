@@ -24,6 +24,7 @@ from butlers.core.qa.journal import (
 )
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.triage import TriagedFinding
+from butlers.testing.fake_pool import FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -53,13 +54,8 @@ def _make_triaged(*, dedup_reason: str | None = None) -> TriagedFinding:
     )
 
 
-def _make_pool() -> MagicMock:
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=uuid.uuid4())
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(return_value=[])
-    pool.execute = AsyncMock()
-    return pool
+def _qa_pool() -> FakePool:
+    return fake_pool(fetchval=uuid.uuid4(), fetchrow=None, fetch=[], execute=None)
 
 
 @pytest.mark.asyncio
@@ -287,7 +283,11 @@ async def test_flagged_event_emitted_for_novel_finding_after_attempt_claim() -> 
             new_callable=AsyncMock,
             return_value=False,
         ),
-        patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=None),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(
             "butlers.core.qa.dispatch._fetch_patrol_started_at",
@@ -297,7 +297,7 @@ async def test_flagged_event_emitted_for_novel_finding_after_attempt_claim() -> 
         patch("butlers.core.qa.dispatch.record_event", new_callable=AsyncMock) as record,
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=triaged,
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -332,7 +332,7 @@ async def test_flagged_event_not_emitted_for_deduplicated_finding() -> None:
         patch("butlers.core.qa.dispatch.record_event", new_callable=AsyncMock) as record,
     ):
         result = await dispatch_qa_investigation(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             triaged_finding=_make_triaged(dedup_reason="active_investigation"),
             patrol_id=uuid.uuid4(),
             config=QaDispatchConfig(),
@@ -367,7 +367,7 @@ async def test_record_pr_drafted_event_passes_timestamp_to_record_event() -> Non
 async def test_wait_deduplicated_per_patrol_cycle() -> None:
     attempt_id = uuid.uuid4()
     patrol_started_at = datetime(2026, 5, 15, 5, 0, tzinfo=UTC)
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(
         return_value=[
             {
@@ -426,7 +426,7 @@ async def test_wait_deduplicated_per_patrol_cycle() -> None:
 @pytest.mark.asyncio
 async def test_merged_on_pr_merge_transition() -> None:
     attempt_id = uuid.uuid4()
-    pool = _make_pool()
+    pool = _qa_pool()
     pool.fetch = AsyncMock(
         return_value=[
             {
@@ -487,7 +487,7 @@ async def test_escalated_on_unfixable(tmp_path: Path) -> None:
         patch("butlers.core.qa.dispatch.record_escalated_event", new_callable=AsyncMock) as record,
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=attempt_id,
             finding_id=uuid.uuid4(),
@@ -524,7 +524,7 @@ async def test_escalated_on_human_action_failure(tmp_path: Path) -> None:
         patch("butlers.core.qa.dispatch.record_escalated_event", new_callable=AsyncMock) as record,
     ):
         await _run_investigation_session(
-            pool=_make_pool(),
+            pool=_qa_pool(),
             repo_root=tmp_path,
             attempt_id=attempt_id,
             finding_id=uuid.uuid4(),

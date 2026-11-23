@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.core import model_call
+from butlers.core.dispatch_outcomes import _QUALIFYING_BREAKER_OUTCOMES
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_call import (
     AttemptOutcome,
@@ -24,16 +25,20 @@ from butlers.core.model_call import (
     CallSpec,
     Candidate,
     NoModelConfigured,
+    NotInvoked,
     SpendCeilingReached,
     call_model,
     registry_adapters,
 )
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     CeilingStatus,
     Complexity,
     QuotaStatus,
     SpendRoutingResult,
+    SpendRulesUnavailable,
 )
 
 pytestmark = pytest.mark.unit
@@ -50,6 +55,10 @@ _ALLOWED = QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, l
 _EXHAUSTED = QuotaStatus(allowed=False, usage_24h=10, limit_24h=5, usage_30d=0, limit_30d=None)
 _UNDER = CeilingStatus(allowed=True, mtd_usd=1.0, ceiling_usd=10.0)
 _OVER = CeilingStatus(allowed=False, mtd_usd=12.0, ceiling_usd=10.0)
+_CEILING_UNAVAILABLE = CeilingStatus(allowed=False, mtd_usd=0.0, ceiling_usd=None, unavailable=True)
+_QUOTA_UNAVAILABLE = QuotaStatus(
+    allowed=False, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None, unavailable=True
+)
 
 
 class _Sink(AttemptSink):
@@ -256,6 +265,45 @@ async def test_empty_tier_raises_no_model_configured_without_attempting() -> Non
     assert attempt.seen == [] and sink.events == []
 
 
+async def test_an_exact_tier_call_refuses_the_fallthrough_without_attempting() -> None:
+    """RFC 0038 D16: a goal invocation runs on its ladder tier or not at all."""
+    seen: list[dict[str, Any]] = []
+
+    async def resolve(pool, butler, tier, **kwargs):
+        seen.append(kwargs)
+        return (*A, "cheap")  # a resolver that fell through anyway
+
+    sink = _Sink()
+    attempt = _attempts()
+    with (
+        _Catalog(),
+        patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(side_effect=resolve)),
+        pytest.raises(NoModelConfigured, match="fallthrough refused"),
+    ):
+        await _call(_spec(exact_tier=True), attempt, sink)
+
+    assert seen[0]["allow_tier_fallthrough"] is False
+    assert attempt.seen == [] and sink.events == []
+
+
+async def test_an_exact_tier_call_never_follows_a_spend_rule_reroute() -> None:
+    """RFC 0038 D16: an operator rule cannot move a goal invocation off its ladder tier."""
+
+    async def resolve(pool, butler, tier, **kwargs):
+        return (*A, "workhorse")
+
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with (
+        _Catalog(routed=C),  # a catch-all rule naming a model of any tier
+        patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(side_effect=resolve)),
+    ):
+        await _call(_spec(exact_tier=True), attempt, sink)
+
+    assert [c.model_id for c in attempt.seen] == ["model-a"]
+    assert "spend_rule_override" not in str(sink.events[-1][1]["resolution_receipt"])
+
+
 async def test_spend_rule_override_dispatches_the_routed_model_with_its_receipt_reason() -> None:
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))
@@ -267,14 +315,62 @@ async def test_spend_rule_override_dispatches_the_routed_model_with_its_receipt_
     assert sink.events[-1][1]["resolution_receipt"]["winner"]["reason"] == "spend_rule_override"
 
 
-async def test_spend_rule_errors_keep_the_tier_resolved_model() -> None:
+async def test_an_unexpected_rule_evaluation_error_refuses_rather_than_dropping_a_cap() -> None:
+    """Contract changed deliberately (bu-svqpzo.22): this used to keep the tier-resolved model.
+
+    A matched rule's owner-set cap could be lost with it, so any evaluation error refuses.
+    """
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok"))
     with _Catalog() as catalog:
-        catalog.rules.side_effect = RuntimeError("rules table missing")
-        await _call(_spec(), attempt, sink)
+        catalog.rules.side_effect = RuntimeError("rule evaluation blew up")
+        with pytest.raises(SpendRulesUnavailable) as raised:
+            await _call(_spec(), attempt, sink)
 
-    assert attempt.seen[0].model_id == "model-a"
+    assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+async def test_an_unreadable_rule_set_refuses_without_invoking_and_records_why() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
+        with pytest.raises(SpendRulesUnavailable) as raised:
+            await _call(_spec(), attempt, sink)
+
+    assert str(raised.value) == SPEND_RULES_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        SPEND_RULES_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON), RuntimeError("rule evaluation failed")],
+    ids=["unreadable", "unexpected-error"],
+)
+async def test_a_rule_refusal_holds_even_when_the_caller_skips_the_ceiling(error) -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog() as catalog:
+        catalog.rules.side_effect = error
+        with pytest.raises(SpendRulesUnavailable):
+            await _call(_spec(enforce_ceiling=False), attempt, sink)
+
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert row["produce_fleet_halt"] is False
 
 
 # --- spend gate -------------------------------------------------------------------------
@@ -331,22 +427,76 @@ async def test_quota_exhausted_tier_raises_failover_exhausted_without_invoking()
     assert attempt.seen == []
 
 
-async def test_gate_errors_fail_open_as_catalog_token_limits_requires() -> None:
-    """A database error inside either gate check lets the call proceed."""
+@pytest.mark.real_gate_state
+async def test_unreadable_gate_state_refuses_without_invoking_or_raising_a_fleet_halt() -> None:
+    """A database error inside the gate checks refuses the call (bu-svqpzo.3).
+
+    The real ``check_monthly_ceiling`` runs against a pool that cannot answer, so the call is
+    refused as ``ceiling unavailable``: no fleet-halt (the Spend banner means a real breach)
+    and the attempt is never invoked.
+    """
     pool = MagicMock()
     pool.fetchrow = AsyncMock(side_effect=OSError("connection refused"))
     pool.fetch = AsyncMock(side_effect=OSError("connection refused"))
     sink = _Sink()
+    attempt = _attempts()
     with (
         patch(f"{_K}.resolve_model_with_effective_tier", AsyncMock(return_value=(*A, "workhorse"))),
-        patch(f"{_K}.apply_spend_routing_rules", AsyncMock(side_effect=OSError("down"))),
+        patch(
+            f"{_K}.apply_spend_routing_rules",
+            AsyncMock(return_value=SpendRoutingResult(resolved=A)),
+        ),
+        pytest.raises(SpendCeilingReached) as raised,
     ):
-        result = await call_model(
-            pool, _spec(), _attempts(AttemptOutcome("ok")), adapter_for=_adapter_for(), sink=sink
-        )
+        await call_model(pool, _spec(), attempt, adapter_for=_adapter_for(), sink=sink)
 
-    assert result.text == "ok"
-    assert sink.outcomes == ["success"]
+    assert str(raised.value) == CEILING_UNAVAILABLE_REASON
+    assert not str(raised.value).startswith(CEILING_DENIAL_REASON_PREFIX)
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert row["outcome"] == "quota_skip"
+    assert row["failure_reason"] == CEILING_UNAVAILABLE_REASON
+    assert row["produce_fleet_halt"] is False
+
+
+async def test_unavailable_ceiling_refuses_with_its_own_reason_and_no_fleet_halt() -> None:
+    sink = _Sink()
+    attempt = _attempts()
+    with _Catalog(ceilings=[_CEILING_UNAVAILABLE]), pytest.raises(SpendCeilingReached) as raised:
+        await _call(_spec(), attempt, sink)
+
+    assert str(raised.value) == CEILING_UNAVAILABLE_REASON
+    assert attempt.seen == []
+    ((_, row),) = sink.events
+    assert (row["outcome"], row["failure_reason"], row["produce_fleet_halt"]) == (
+        "quota_skip",
+        CEILING_UNAVAILABLE_REASON,
+        False,
+    )
+
+
+async def test_unavailable_quota_is_skipped_and_never_reported_as_exhausted() -> None:
+    sink = _Sink()
+    attempt = _attempts()
+    with _Catalog(quotas=[_QUOTA_UNAVAILABLE]), pytest.raises(RuntimeError) as raised:
+        await _call(_spec(), attempt, sink)
+
+    assert str(raised.value).startswith("same_tier_failover_exhausted: tier=workhorse")
+    assert "Token quota unavailable" in str(raised.value)
+    assert "exhausted: " not in str(raised.value).split("last quota skip:")[-1]
+    assert attempt.seen == []
+    assert sink.outcomes == ["quota_skip"]
+    assert sink.events[0][1]["failure_reason"].startswith("Token quota unavailable")
+
+
+async def test_unavailable_quota_fails_over_to_the_next_same_tier_entry_once_it_reads() -> None:
+    sink = _Sink()
+    attempt = _attempts(AttemptOutcome("ok"))
+    with _Catalog(fallbacks=[B], quotas=[_QUOTA_UNAVAILABLE, _ALLOWED]):
+        await _call(_spec(), attempt, sink)
+
+    assert [c.model_id for c in attempt.seen] == ["model-b"]
+    assert sink.outcomes == ["quota_skip", "success"]
 
 
 # --- failover and D14 -------------------------------------------------------------------
@@ -379,6 +529,44 @@ async def test_ineligible_failure_re_raises_the_original_exception() -> None:
     assert raised.value is failure
     catalog.next.assert_not_awaited()
     sink.metrics.record_failover_suppressed.assert_called_once()
+
+
+class _Refused(NotInvoked):
+    """An attempt refused before any model was invoked (a goal-ledger open, say)."""
+
+
+@pytest.mark.parametrize("redact", [False, True])
+async def test_an_attempt_refused_before_invocation_is_not_a_model_failure(redact) -> None:
+    """bu-dhloi1.208: a refusal that never reached a model must not feed the breaker.
+
+    Only ``runtime_failure`` and ``success`` rows qualify for the breaker and the
+    routing evidence, so the refusal is recorded as ``suppressed``, with no
+    duration, no failover and no runtime-failure signal, and re-raised unchanged.
+    """
+    sink = _Sink()
+    refusal = _Refused("lead_active")
+    with _Catalog(fallbacks=[B]) as catalog, pytest.raises(_Refused) as raised:
+        await _call(_spec(redact_failures=redact), _attempts(refusal), sink)
+
+    assert raised.value is refusal
+    assert sink.outcomes == ["suppressed"]
+    row = sink.events[0][1]
+    assert row["failure_reason"] == "not_invoked:lead_active"
+    assert row["served_identity"]["observation_state"] == "not_invoked"
+    assert "duration_ms" not in row and "error_message" not in row
+    assert sink.failures == []
+    catalog.next.assert_not_awaited()
+    sink.metrics.record_failover_suppressed.assert_not_called()
+    assert "suppressed" not in _QUALIFYING_BREAKER_OUTCOMES
+
+
+async def test_a_not_invoked_reason_is_bounded_to_a_code() -> None:
+    sink = _Sink()
+    with _Catalog(), pytest.raises(_Refused):
+        await _call(_spec(), _attempts(_Refused("x" * 500 + " private\ntext")), sink)
+
+    reason = sink.events[0][1]["failure_reason"]
+    assert reason == "not_invoked:unclassified"
 
 
 async def test_a_capability_call_forbids_the_relaunch() -> None:

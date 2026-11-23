@@ -27,7 +27,7 @@ from typing import Any
 
 import asyncpg
 
-from butlers.tools.finance.bills import _mirror_bill_to_spo
+from butlers.tools.finance.bills import _mirror_bill_to_spo, _payee_key
 
 # --- Spec constants -------------------------------------------------------
 LOOKBACK_DAYS = 45  # days before anchor that a payment can arrive early
@@ -70,6 +70,27 @@ def _normalize_payee(name: str) -> str:
     # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
+
+
+# A trailing parenthesised qualifier that is only a web domain, e.g. "(example.com)".
+_TRAILING_DOMAIN_RE = re.compile(
+    r"\s*\(\s*(?:https?://)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/\S*)?\s*\)\s*$"
+)
+_TRAILING_CREDIT_CARD_RE = re.compile(r"(?<=\S )credit card$")
+
+
+def canonical_payee_key(payee: str) -> str:
+    """Conservative canonical payee identity for grouping recurring bill series.
+
+    Starts from ``bills._payee_key`` and additionally (bu-swkpoo.15) strips a trailing
+    parenthesised web domain and treats a trailing ``credit card`` as ``cc`` (only
+    after at least one other word). It never merges on a bare name prefix, never
+    drops other qualifiers ("(business)"), and is idempotent. Stored ``payee_key``
+    values are left untouched; this is only for comparing identities.
+    """
+    key = _payee_key(payee)
+    key = _payee_key(_TRAILING_DOMAIN_RE.sub("", key))
+    return _TRAILING_CREDIT_CARD_RE.sub("cc", key)
 
 
 def _is_specific_tokens(tokens: set[str]) -> bool:

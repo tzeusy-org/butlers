@@ -12,12 +12,9 @@ from __future__ import annotations
 import shutil
 import uuid
 
-import asyncpg
 import pytest
 
 from butlers.core.task_continuity import fetch_live_carry_forward, record_carry_forward
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -27,43 +24,20 @@ pytestmark = [
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-    )
-    # public.task_continuity has RLS FORCEd with no DELETE policy (matching
-    # public.expected_signals' precedent — an append/upsert-only ledger), and
-    # this pool's login is an ordinary non-superuser role, so a cleanup DELETE
-    # here would silently no-op. Tests use unique task names instead of
-    # relying on row cleanup between tests.
-    yield p
-    await p.close()
-
-
 @_asyncio_session
-async def test_carry_forward_twice_in_one_session_updates_the_same_row(pool) -> None:
+async def test_carry_forward_twice_in_one_session_updates_the_same_row(db_pool) -> None:
     task_name = "dedup-review"
     session_id = uuid.uuid4()
 
     id1 = await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="health",
         task_name=task_name,
         session_id=session_id,
         content="First draft.",
     )
     id2 = await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="health",
         task_name=task_name,
         session_id=session_id,
@@ -72,7 +46,7 @@ async def test_carry_forward_twice_in_one_session_updates_the_same_row(pool) -> 
 
     assert id1 == id2
 
-    rows = await pool.fetch(
+    rows = await db_pool.fetch(
         "SELECT carry_forward FROM public.task_continuity "
         "WHERE butler_name = $1 AND task_name = $2",
         "health",
@@ -83,27 +57,27 @@ async def test_carry_forward_twice_in_one_session_updates_the_same_row(pool) -> 
 
 
 @_asyncio_session
-async def test_new_session_supersedes_previous_live_row(pool) -> None:
+async def test_new_session_supersedes_previous_live_row(db_pool) -> None:
     task_name = "supersession-review"
     session_1 = uuid.uuid4()
     session_2 = uuid.uuid4()
 
     await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="health",
         task_name=task_name,
         session_id=session_1,
         content="Run 1 content.",
     )
     await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="health",
         task_name=task_name,
         session_id=session_2,
         content="Run 2 content.",
     )
 
-    live_rows = await pool.fetch(
+    live_rows = await db_pool.fetch(
         "SELECT session_id, carry_forward FROM public.task_continuity "
         "WHERE butler_name = $1 AND task_name = $2 AND is_live",
         "health",
@@ -113,37 +87,39 @@ async def test_new_session_supersedes_previous_live_row(pool) -> None:
     assert live_rows[0]["session_id"] == session_2
     assert live_rows[0]["carry_forward"] == "Run 2 content."
 
-    all_rows = await pool.fetch(
+    all_rows = await db_pool.fetch(
         "SELECT session_id FROM public.task_continuity WHERE butler_name = $1 AND task_name = $2",
         "health",
         task_name,
     )
     assert {r["session_id"] for r in all_rows} == {session_1, session_2}
 
-    live = await fetch_live_carry_forward(pool, butler_name="health", task_name=task_name)
+    live = await fetch_live_carry_forward(db_pool, butler_name="health", task_name=task_name)
     assert live is not None
     assert live["carry_forward"] == "Run 2 content."
 
 
 @_asyncio_session
-async def test_carry_forward_is_scoped_per_butler_and_task(pool) -> None:
+async def test_carry_forward_is_scoped_per_butler_and_task(db_pool) -> None:
     task_name = "scoped-review"
     await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="health",
         task_name=task_name,
         session_id=uuid.uuid4(),
         content="health content",
     )
     await record_carry_forward(
-        pool,
+        db_pool,
         butler_name="finance",
         task_name=task_name,
         session_id=uuid.uuid4(),
         content="finance content",
     )
 
-    health_live = await fetch_live_carry_forward(pool, butler_name="health", task_name=task_name)
-    finance_live = await fetch_live_carry_forward(pool, butler_name="finance", task_name=task_name)
+    health_live = await fetch_live_carry_forward(db_pool, butler_name="health", task_name=task_name)
+    finance_live = await fetch_live_carry_forward(
+        db_pool, butler_name="finance", task_name=task_name
+    )
     assert health_live["carry_forward"] == "health content"
     assert finance_live["carry_forward"] == "finance content"

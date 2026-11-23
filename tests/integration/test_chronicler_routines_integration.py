@@ -34,8 +34,6 @@ from butlers.chronicler.storage import (
     upsert_episode,
     upsert_mined_routine,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -44,6 +42,16 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
     pytest.mark.asyncio(loop_scope="session"),
 ]
+
+
+@pytest.fixture
+async def chronicler_pool(db, fresh_db) -> asyncpg.Pool:
+    from tests.chronicler._private_memory_setup import open_prepared_chronicler_pool
+
+    pool = await open_prepared_chronicler_pool(db, fresh_db, "chronicler", max_size=5)
+    await seed_source_registry(pool, sources=INITIAL_SOURCES)
+    return pool
+
 
 _TZ = ZoneInfo("Asia/Singapore")
 _ANCHOR_MONDAY = date(2026, 5, 4)
@@ -66,37 +74,15 @@ def _weekdays(start: date, count: int) -> list[date]:
     return out
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the chronicler migration chain (public schema, unscoped)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["chronicler"],
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-    )
-    await p.execute("TRUNCATE TABLE routines CASCADE")
-    await p.execute("TRUNCATE TABLE episodes, point_events CASCADE")
-    await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
-
-
 # ── upsert_mined_routine idempotency ───────────────────────────────────────
 
 
-async def test_upsert_mined_routine_idempotent_on_dow_mask(pool) -> None:
+async def test_upsert_mined_routine_idempotent_on_dow_mask(chronicler_pool) -> None:
     """Re-running the upsert for the same dow_mask updates in place — no
     duplicate row — proving the partial unique index actually works against
     real Postgres."""
     first = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -106,7 +92,7 @@ async def test_upsert_mined_routine_idempotent_on_dow_mask(pool) -> None:
         evidence_summary={"days_observed": 30, "days_supporting": 25},
     )
     second = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 0),
         window_end_local=time(18, 0),
@@ -120,16 +106,16 @@ async def test_upsert_mined_routine_idempotent_on_dow_mask(pool) -> None:
     assert second.window_start_local == time(9, 0)
     assert second.confidence == pytest.approx(1.0)
 
-    count = await pool.fetchval("SELECT COUNT(*) FROM routines")
+    count = await chronicler_pool.fetchval("SELECT COUNT(*) FROM routines")
     assert count == 1
 
 
-async def test_upsert_mined_routine_preserves_owner_edits_on_remine(pool) -> None:
+async def test_upsert_mined_routine_preserves_owner_edits_on_remine(chronicler_pool) -> None:
     """After the owner disables a mined routine and renames its label, the
     next weekly re-mine must refresh stats but never resurrect the row or
     clobber the owner's edits."""
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -140,13 +126,15 @@ async def test_upsert_mined_routine_preserves_owner_edits_on_remine(pool) -> Non
     )
     assert routine.id is not None
 
-    edited = await update_routine(pool, routine.id, enabled=False, label="My actual work hours")
+    edited = await update_routine(
+        chronicler_pool, routine.id, enabled=False, label="My actual work hours"
+    )
     assert edited is not None
     assert edited.enabled is False
     assert edited.label == "My actual work hours"
 
     remined = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 0),
         window_end_local=time(18, 0),
@@ -168,13 +156,13 @@ async def test_upsert_mined_routine_preserves_owner_edits_on_remine(pool) -> Non
 
 
 async def test_remine_reconfirms_stale_mined_routine_without_resurrecting_owner_disable(
-    pool,
+    chronicler_pool,
 ) -> None:
     """A re-detected pattern gets fresh evidence metadata, but a prior owner
     disable remains authoritative rather than being silently resurrected."""
     initial_confirmation = datetime(2026, 6, 1, tzinfo=UTC)
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -185,10 +173,10 @@ async def test_remine_reconfirms_stale_mined_routine_without_resurrecting_owner_
         confirmed_at=initial_confirmation,
     )
     assert routine.last_confirmed_at == initial_confirmation
-    await update_routine(pool, routine.id, enabled=False)
+    await update_routine(chronicler_pool, routine.id, enabled=False)
 
     missed = await record_missing_mined_routines(
-        pool,
+        chronicler_pool,
         detected_dow_masks=[],
         missed_at=datetime(2026, 6, 8, tzinfo=UTC),
         auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
@@ -197,7 +185,7 @@ async def test_remine_reconfirms_stale_mined_routine_without_resurrecting_owner_
 
     reconfirmed_at = datetime(2026, 6, 15, tzinfo=UTC)
     remined = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 0),
         window_end_local=time(18, 0),
@@ -214,14 +202,16 @@ async def test_remine_reconfirms_stale_mined_routine_without_resurrecting_owner_
     assert remined.missed_mine_cycles == 0
 
 
-async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_cycles(pool) -> None:
+async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_cycles(
+    chronicler_pool,
+) -> None:
     """Only mined rows age out, after an explicit three-cycle grace period.
 
     A declared schedule can share its weekday mask, but reconciliation must
     never touch its enabled state or mine-history fields.
     """
     mined = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -231,7 +221,7 @@ async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_c
         evidence_summary={},
         confirmed_at=datetime(2026, 6, 1, tzinfo=UTC),
     )
-    declared = await pool.fetchrow(
+    declared = await chronicler_pool.fetchrow(
         """
         INSERT INTO routines (dow_mask, window_start_local, window_end_local, label, origin)
         VALUES ($1, $2, $3, $4, 'declared')
@@ -246,7 +236,7 @@ async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_c
 
     for cycle in range(1, STALE_MISS_CYCLE_THRESHOLD + 1):
         result = await record_missing_mined_routines(
-            pool,
+            chronicler_pool,
             detected_dow_masks=[],
             missed_at=datetime(2026, 6, 1 + cycle * 7, tzinfo=UTC),
             auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
@@ -254,7 +244,7 @@ async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_c
         assert result.routines_marked_stale == 1
         assert result.routines_auto_disabled == (1 if cycle == STALE_MISS_CYCLE_THRESHOLD else 0)
 
-    all_routines = {routine.id: routine for routine in await list_routines(pool)}
+    all_routines = {routine.id: routine for routine in await list_routines(chronicler_pool)}
     assert all_routines[mined.id].enabled is False
     assert all_routines[mined.id].missed_mine_cycles == STALE_MISS_CYCLE_THRESHOLD
     assert all_routines[mined.id].last_confirmed_at == datetime(2026, 6, 1, tzinfo=UTC)
@@ -267,11 +257,13 @@ async def test_missing_mined_pattern_auto_disables_after_three_evidence_backed_c
     assert declared_routine.last_confirmed_at is None
 
 
-async def test_auto_disabled_mined_pattern_is_not_returned_to_occupation_inference(pool) -> None:
+async def test_auto_disabled_mined_pattern_is_not_returned_to_occupation_inference(
+    chronicler_pool,
+) -> None:
     """Occupation inference consumes the enabled-only routine read, so a
     stale mined pattern cannot keep emitting occupation blocks indefinitely."""
     mined = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000001,
         window_start_local=time(9, 0),
         window_end_local=time(17, 0),
@@ -283,21 +275,23 @@ async def test_auto_disabled_mined_pattern_is_not_returned_to_occupation_inferen
     )
     for cycle in range(1, STALE_MISS_CYCLE_THRESHOLD + 1):
         await record_missing_mined_routines(
-            pool,
+            chronicler_pool,
             detected_dow_masks=[],
             missed_at=datetime(2026, 6, 1 + cycle * 7, tzinfo=UTC),
             auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
         )
 
-    enabled_for_inference = await list_routines(pool, enabled_only=True)
+    enabled_for_inference = await list_routines(chronicler_pool, enabled_only=True)
     assert mined.id not in {routine.id for routine in enabled_for_inference}
 
 
-async def test_miner_does_not_age_existing_routine_when_primary_evidence_is_empty(pool) -> None:
+async def test_miner_does_not_age_existing_routine_when_primary_evidence_is_empty(
+    chronicler_pool,
+) -> None:
     """A dark/empty source window cannot be treated as proof that a pattern
     disappeared, so it leaves mine history and inference eligibility alone."""
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000001,
         window_start_local=time(9, 0),
         window_end_local=time(17, 0),
@@ -309,12 +303,12 @@ async def test_miner_does_not_age_existing_routine_when_primary_evidence_is_empt
     )
 
     result = await mine_routines(
-        pool,
+        chronicler_pool,
         weeks=6,
         timezone="Asia/Singapore",
         now=datetime(2026, 7, 13, tzinfo=UTC),
     )
-    refreshed = await get_routine(pool, routine.id)
+    refreshed = await get_routine(chronicler_pool, routine.id)
 
     assert result["staleness_evaluated"] is False
     assert result["routines_marked_stale"] == 0
@@ -323,10 +317,10 @@ async def test_miner_does_not_age_existing_routine_when_primary_evidence_is_empt
     assert refreshed.missed_mine_cycles == 0
 
 
-async def test_routines_api_exposes_truthful_staleness_metadata_for_review(pool) -> None:
+async def test_routines_api_exposes_truthful_staleness_metadata_for_review(chronicler_pool) -> None:
     confirmed_at = datetime(2026, 6, 1, tzinfo=UTC)
     await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000001,
         window_start_local=time(9, 0),
         window_end_local=time(17, 0),
@@ -337,13 +331,13 @@ async def test_routines_api_exposes_truthful_staleness_metadata_for_review(pool)
         confirmed_at=confirmed_at,
     )
     await record_missing_mined_routines(
-        pool,
+        chronicler_pool,
         detected_dow_masks=[],
         missed_at=datetime(2026, 6, 8, tzinfo=UTC),
         auto_disable_after_misses=STALE_MISS_CYCLE_THRESHOLD,
     )
 
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/chronicler/routines")
 
@@ -354,12 +348,12 @@ async def test_routines_api_exposes_truthful_staleness_metadata_for_review(pool)
     assert row["stale"] is True
 
 
-async def test_declared_origin_not_constrained_by_mined_index(pool) -> None:
+async def test_declared_origin_not_constrained_by_mined_index(chronicler_pool) -> None:
     """A declared row (bu-whhll.11) with the SAME dow_mask as a mined row is
     NOT rejected by the partial unique index — it only applies to
     origin='mined'."""
     await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -368,7 +362,7 @@ async def test_declared_origin_not_constrained_by_mined_index(pool) -> None:
         confidence=0.83,
         evidence_summary={},
     )
-    await pool.execute(
+    await chronicler_pool.execute(
         """
         INSERT INTO routines (dow_mask, window_start_local, window_end_local, label, origin)
         VALUES ($1, $2, $3, $4, 'declared')
@@ -379,13 +373,13 @@ async def test_declared_origin_not_constrained_by_mined_index(pool) -> None:
         "Declared work hours",
     )
 
-    count = await pool.fetchval("SELECT COUNT(*) FROM routines")
+    count = await chronicler_pool.fetchval("SELECT COUNT(*) FROM routines")
     assert count == 2
 
 
-async def test_list_routines_enabled_only_filter(pool) -> None:
+async def test_list_routines_enabled_only_filter(chronicler_pool) -> None:
     enabled_routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000001,
         window_start_local=time(9, 0),
         window_end_local=time(12, 0),
@@ -395,7 +389,7 @@ async def test_list_routines_enabled_only_filter(pool) -> None:
         evidence_summary={},
     )
     disabled_routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000010,
         window_start_local=time(9, 0),
         window_end_local=time(12, 0),
@@ -404,34 +398,34 @@ async def test_list_routines_enabled_only_filter(pool) -> None:
         confidence=1.0,
         evidence_summary={},
     )
-    await update_routine(pool, disabled_routine.id, enabled=False)
+    await update_routine(chronicler_pool, disabled_routine.id, enabled=False)
 
-    all_routines = await list_routines(pool)
+    all_routines = await list_routines(chronicler_pool)
     assert {r.id for r in all_routines} == {enabled_routine.id, disabled_routine.id}
 
-    enabled_only = await list_routines(pool, enabled_only=True)
+    enabled_only = await list_routines(chronicler_pool, enabled_only=True)
     assert {r.id for r in enabled_only} == {enabled_routine.id}
 
 
-async def test_get_routine_missing_returns_none(pool) -> None:
-    assert await get_routine(pool, uuid4()) is None
+async def test_get_routine_missing_returns_none(chronicler_pool) -> None:
+    assert await get_routine(chronicler_pool, uuid4()) is None
 
 
-async def test_update_routine_missing_returns_none(pool) -> None:
-    assert await update_routine(pool, uuid4(), enabled=False) is None
+async def test_update_routine_missing_returns_none(chronicler_pool) -> None:
+    assert await update_routine(chronicler_pool, uuid4(), enabled=False) is None
 
 
 # ── mine_routines end-to-end ────────────────────────────────────────────────
 
 
-async def test_mine_routines_end_to_end_writes_expected_routine(pool) -> None:
+async def test_mine_routines_end_to_end_writes_expected_routine(chronicler_pool) -> None:
     """Insert real activity-layer episodes for a stable Mon-Fri desk-signal
     pattern, run the real mining job, and confirm the expected routine row
     lands via the real query + upsert path (not a mocked pool)."""
     weekdays = _weekdays(_ANCHOR_MONDAY, 6 * 5)
     for i, d in enumerate(weekdays):
         await upsert_episode(
-            pool,
+            chronicler_pool,
             Episode(
                 source_name="spotify.session_summary",
                 source_ref=f"routines-it-{i}",
@@ -448,11 +442,11 @@ async def test_mine_routines_end_to_end_writes_expected_routine(pool) -> None:
     mining_end_date = _ANCHOR_MONDAY + timedelta(days=6 * 7)
     now = _local(mining_end_date, 8, 0)
 
-    result = await mine_routines(pool, weeks=6, timezone="Asia/Singapore", now=now)
+    result = await mine_routines(chronicler_pool, weeks=6, timezone="Asia/Singapore", now=now)
     assert result["candidates_found"] == 1
     assert result["routines_written"] == 1
 
-    routines = await list_routines(pool)
+    routines = await list_routines(chronicler_pool)
     assert len(routines) == 1
     routine = routines[0]
     assert routine.dow_mask == 0b0011111
@@ -464,21 +458,21 @@ async def test_mine_routines_end_to_end_writes_expected_routine(pool) -> None:
     assert routine.enabled is True
 
     # Re-running is idempotent: same row, not a duplicate.
-    result2 = await mine_routines(pool, weeks=6, timezone="Asia/Singapore", now=now)
+    result2 = await mine_routines(chronicler_pool, weeks=6, timezone="Asia/Singapore", now=now)
     assert result2["routines_written"] == 1
-    routines_after = await list_routines(pool)
+    routines_after = await list_routines(chronicler_pool)
     assert len(routines_after) == 1
     assert routines_after[0].id == routine.id
 
 
-async def test_mine_routines_ignores_intent_layer_episodes(pool) -> None:
+async def test_mine_routines_ignores_intent_layer_episodes(chronicler_pool) -> None:
     """A calendar (intent-layer) block matching the same window every weekday
     must not, on its own, produce a mined routine — real-Postgres regression
     for the layer-exclusion guard."""
     weekdays = _weekdays(_ANCHOR_MONDAY, 6 * 5)
     for i, d in enumerate(weekdays):
         await upsert_episode(
-            pool,
+            chronicler_pool,
             Episode(
                 source_name="google_calendar.completed",
                 source_ref=f"routines-intent-it-{i}",
@@ -492,10 +486,10 @@ async def test_mine_routines_ignores_intent_layer_episodes(pool) -> None:
     mining_end_date = _ANCHOR_MONDAY + timedelta(days=6 * 7)
     now = _local(mining_end_date, 8, 0)
 
-    result = await mine_routines(pool, weeks=6, timezone="Asia/Singapore", now=now)
+    result = await mine_routines(chronicler_pool, weeks=6, timezone="Asia/Singapore", now=now)
     assert result["candidates_found"] == 0
     assert result["routines_written"] == 0
-    assert await list_routines(pool) == []
+    assert await list_routines(chronicler_pool) == []
 
 
 # ── HTTP API ─────────────────────────────────────────────────────────────
@@ -514,9 +508,9 @@ def _build_chronicler_api(pool) -> httpx.ASGITransport:
     return httpx.ASGITransport(app=app)
 
 
-async def test_get_routines_api_lists_rows(pool) -> None:
+async def test_get_routines_api_lists_rows(chronicler_pool) -> None:
     await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -526,7 +520,7 @@ async def test_get_routines_api_lists_rows(pool) -> None:
         evidence_summary={"description": "continuous desk signals, no movement, no gaming"},
     )
 
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/api/chronicler/routines")
     assert resp.status_code == 200, resp.text
@@ -539,9 +533,9 @@ async def test_get_routines_api_lists_rows(pool) -> None:
     assert row["enabled"] is True
 
 
-async def test_patch_routine_api_updates_enabled_and_label(pool) -> None:
+async def test_patch_routine_api_updates_enabled_and_label(chronicler_pool) -> None:
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0000001,
         window_start_local=time(9, 0),
         window_end_local=time(12, 0),
@@ -551,7 +545,7 @@ async def test_patch_routine_api_updates_enabled_and_label(pool) -> None:
         evidence_summary={},
     )
 
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.patch(
             f"/api/chronicler/routines/{routine.id}",
@@ -569,8 +563,8 @@ async def test_patch_routine_api_updates_enabled_and_label(pool) -> None:
         assert row["label"] == "Nope, not actually Mondays"
 
 
-async def test_patch_routine_api_404_for_unknown_id(pool) -> None:
-    transport = _build_chronicler_api(pool)
+async def test_patch_routine_api_404_for_unknown_id(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.patch(
             f"/api/chronicler/routines/{uuid4()}",
@@ -582,14 +576,14 @@ async def test_patch_routine_api_404_for_unknown_id(pool) -> None:
 # ── Owner-declared routines (bu-whhll.11) ──────────────────────────────────
 
 
-async def test_create_declared_routine_storage(pool) -> None:
+async def test_create_declared_routine_storage(chronicler_pool) -> None:
     """storage.create_declared_routine writes an origin='declared' row with a
     JSONB dict evidence_summary (the dict-not-json.dumps trap) and no mining
     stats."""
     from butlers.chronicler.storage import create_declared_routine
 
     routine = await create_declared_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -605,8 +599,8 @@ async def test_create_declared_routine_storage(pool) -> None:
     assert routine.evidence_summary == {"origin": "owner-declared"}
 
 
-async def test_post_declared_routine_api_creates_row(pool) -> None:
-    transport = _build_chronicler_api(pool)
+async def test_post_declared_routine_api_creates_row(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/chronicler/routines",
@@ -626,12 +620,12 @@ async def test_post_declared_routine_api_creates_row(pool) -> None:
 
     # The declared row drives inference immediately: it is returned by the
     # enabled-only list the occupation adapter consumes.
-    enabled = await list_routines(pool, enabled_only=True)
+    enabled = await list_routines(chronicler_pool, enabled_only=True)
     assert any(r.id == UUID(body["id"]) for r in enabled)
 
 
-async def test_post_declared_routine_rejects_inverted_window(pool) -> None:
-    transport = _build_chronicler_api(pool)
+async def test_post_declared_routine_rejects_inverted_window(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/chronicler/routines",
@@ -646,8 +640,8 @@ async def test_post_declared_routine_rejects_inverted_window(pool) -> None:
     assert "window_end_local" in resp.text
 
 
-async def test_post_declared_routine_rejects_unknown_timezone(pool) -> None:
-    transport = _build_chronicler_api(pool)
+async def test_post_declared_routine_rejects_unknown_timezone(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/chronicler/routines",
@@ -663,10 +657,10 @@ async def test_post_declared_routine_rejects_unknown_timezone(pool) -> None:
     assert "timezone" in resp.text.lower()
 
 
-async def test_post_declared_routine_rejects_empty_timezone(pool) -> None:
+async def test_post_declared_routine_rejects_empty_timezone(chronicler_pool) -> None:
     # zoneinfo.ZoneInfo("") raises ValueError (not ZoneInfoNotFoundError); the
     # validator must map it to a 400, not let it bubble up as a 500.
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post(
             "/api/chronicler/routines",
@@ -682,17 +676,17 @@ async def test_post_declared_routine_rejects_empty_timezone(pool) -> None:
     assert "timezone" in resp.text.lower()
 
 
-async def test_patch_declared_routine_edits_schedule(pool) -> None:
+async def test_patch_declared_routine_edits_schedule(chronicler_pool) -> None:
     from butlers.chronicler.storage import create_declared_routine
 
     routine = await create_declared_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
         label="Work",
     )
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.patch(
             f"/api/chronicler/routines/{routine.id}",
@@ -711,11 +705,11 @@ async def test_patch_declared_routine_edits_schedule(pool) -> None:
     assert body["label"] == "Work (updated)"
 
 
-async def test_patch_mined_routine_rejects_schedule_edit(pool) -> None:
+async def test_patch_mined_routine_rejects_schedule_edit(chronicler_pool) -> None:
     """The weekly miner owns a mined routine's window — a schedule edit on one
     is a 400 (enable/disable/rename remain allowed)."""
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -724,7 +718,7 @@ async def test_patch_mined_routine_rejects_schedule_edit(pool) -> None:
         confidence=0.83,
         evidence_summary={},
     )
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.patch(
             f"/api/chronicler/routines/{routine.id}",
@@ -743,28 +737,28 @@ async def test_patch_mined_routine_rejects_schedule_edit(pool) -> None:
         assert ok.json()["label"] == "Renamed"
 
 
-async def test_delete_declared_routine_removes_row(pool) -> None:
+async def test_delete_declared_routine_removes_row(chronicler_pool) -> None:
     from butlers.chronicler.storage import create_declared_routine
 
     routine = await create_declared_routine(
-        pool,
+        chronicler_pool,
         dow_mask=1,
         window_start_local=time(9, 0),
         window_end_local=time(17, 0),
         label="Delete me",
     )
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(f"/api/chronicler/routines/{routine.id}")
     assert resp.status_code == 204, resp.text
-    assert await get_routine(pool, routine.id) is None
+    assert await get_routine(chronicler_pool, routine.id) is None
 
 
-async def test_delete_mined_routine_rejected(pool) -> None:
+async def test_delete_mined_routine_rejected(chronicler_pool) -> None:
     """A mined routine cannot be deleted (the miner would recreate it); the
     owner is steered to disable it instead."""
     routine = await upsert_mined_routine(
-        pool,
+        chronicler_pool,
         dow_mask=0b0011111,
         window_start_local=time(9, 30),
         window_end_local=time(19, 30),
@@ -773,17 +767,17 @@ async def test_delete_mined_routine_rejected(pool) -> None:
         confidence=0.83,
         evidence_summary={},
     )
-    transport = _build_chronicler_api(pool)
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(f"/api/chronicler/routines/{routine.id}")
     assert resp.status_code == 400
     assert "declared" in resp.text.lower()
     # Row survives.
-    assert await get_routine(pool, routine.id) is not None
+    assert await get_routine(chronicler_pool, routine.id) is not None
 
 
-async def test_delete_routine_404_for_unknown_id(pool) -> None:
-    transport = _build_chronicler_api(pool)
+async def test_delete_routine_404_for_unknown_id(chronicler_pool) -> None:
+    transport = _build_chronicler_api(chronicler_pool)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.delete(f"/api/chronicler/routines/{uuid4()}")
     assert resp.status_code == 404

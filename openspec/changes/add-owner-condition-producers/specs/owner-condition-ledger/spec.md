@@ -3,27 +3,37 @@
 ### Requirement: Calendar Reconciles Overcommitment Conditions
 
 A supervised loop in the dashboard-api process SHALL scan the owner's forward calendar window
-with the existing `query_calendar_conflicts` read model, unchanged, and reconcile the qualifying
-issues into the owner condition ledger, in-process and best-effort, with `source=
+with the existing `query_calendar_conflicts` read model, its detection unchanged, and reconcile
+the qualifying issues into the owner condition ledger, in-process and best-effort, with `source=
 "calendar:overcommitment"`. Qualifying issues SHALL be `overlap` and `overloaded_day` issues with
 `severity == "warning"`; `back_to_back` issues SHALL NOT qualify. The fingerprint SHALL be
 `compute_fingerprint("calendar:overcommitment", 1, facts)` with facts `{"kind": "overlap",
-"pair_id": <overlap_pair_id>}` for an overlap and `{"kind": "overloaded_day", "date":
-<owner-local YYYY-MM-DD>}` for an overloaded day; severity, event count and hours are evidence,
-never identity. The window SHALL be `[owner-local midnight today, + N days)` with N defaulting to
-7 and bounded 1..90, the cadence SHALL default to 1800 seconds, and both SHALL be read from the
-dashboard-api process environment; the detector thresholds SHALL remain the scan's own defaults.
-The loop is a deterministic job and SHALL NOT invoke a model or create an obligation admission.
+"pair_id": <pair id>}` for an overlap and `{"kind": "overloaded_day", "date": <owner-local
+YYYY-MM-DD>}` for an overloaded day; severity, event count and hours are evidence, never
+identity. The overlap pair id SHALL be the order-independent `overlap_pair_id` UUID5 computed
+over the two entries' provider identities (the `origin_ref` dedup cluster key: `origin_ref` for a
+non-recurring event, `origin_ref` plus start for a recurring occurrence, or the instance id for a
+row without `origin_ref`), not over their instance ids. The window SHALL be `[owner-local
+midnight today, + N days)` with N defaulting to 7 and bounded 1..90, the cadence SHALL default to
+1800 seconds, and both SHALL be read from the dashboard-api process environment; the detector
+thresholds SHALL remain the scan's own defaults. A scan SHALL count as complete only when every
+targeted schema answered (`available`); a tick whose owner timezone, Switchboard pool or dedup
+rules and keep-separate pins could not be read SHALL reconcile nothing. The loop is a
+deterministic job and SHALL NOT invoke a model or create an obligation admission.
 
 ID: REQ-owner-condition-ledger-007
-Source: archived change generalize-owner-condition-ledger task 6.1; bu-60pwv6.23 shaping note; calendar-conflict-overcommitment-radar
+Source: archived change generalize-owner-condition-ledger task 6.1; bu-60pwv6.23 shaping note; calendar-conflict-overcommitment-radar; bu-vcjgo8 task 1.1 and 1.2 findings
 Scope: v1-reserved
 
-`[Unknown]` Whether `calendar_event_instances.id` is stable across a provider resync of the same
-instance, and whether a dedup-store outage, which fails open to the default strategy while
-`available` stays true, can change which copy survives a cluster and so the pair id (verify
-task 1.1). `[Unknown]` Whether a complete scan should also require fresh
-`source_freshness` rows (verify task 1.2).
+`[decision]` (task 1.1) `calendar_event_instances.id` is stable across a resync of one schema's
+copy, but the same provider event is projected into every calendar butler's schema and the
+`origin_ref` dedup keeps the most recently synced copy, so the surviving instance id, and the
+radar's pair id with it, rotates between schemas from scan to scan. Identity therefore uses
+provider identities. A dedup-store outage falls back to the default collapse, which can change
+which events exist, so such a scan is not reconciled. `[decision]` (task 1.2) A stale source keeps
+its rows: it can keep a cancelled conflict observed or miss a new one, but cannot resolve a live
+one. Sync death is its own `calendar_sync_deadman` condition, so freshness is not an extra
+completeness gate.
 
 #### Scenario: A double-booked pair opens a condition
 
@@ -55,6 +65,19 @@ task 1.1). `[Unknown]` Whether a complete scan should also require fresh
 - **THEN** the loop reconciles with `snapshot_complete=false` (or skips reconciliation on a
   total failure) so no active condition resolves by omission
 - **AND** observed issues from the responding schemas still confirm their conditions
+
+#### Scenario: A resync that changes the surviving copy keeps the condition
+
+- **WHEN** two consecutive complete scans report the same double-booking, but a resync between
+  them made another schema's copy of one event the dedup survivor, so its entry id changed
+- **THEN** both scans observe the same pair identity and the condition is confirmed, not
+  resolved and reopened
+
+#### Scenario: An unread dedup store never reconciles
+
+- **WHEN** the dedup rules or keep-separate pins could not be read, so the scan collapsed
+  duplicates with the defaults
+- **THEN** the loop reconciles nothing for that tick and every active condition stays as it was
 
 #### Scenario: A reconciliation failure never breaks the loop
 

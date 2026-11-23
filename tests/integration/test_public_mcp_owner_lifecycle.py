@@ -1,0 +1,2266 @@
+"""Same-instance PG17 execution of the unexposed production owner program.
+
+One genuine topology amortizes full nine-schema migration. Every case restores
+its own state; these tests never replace the renderer, publication, peer path,
+apply worker, source migrations or owning source triggers with stand-ins.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+import uuid
+from dataclasses import replace
+
+import pytest
+from sqlalchemy import Column, Integer, MetaData, text
+from sqlalchemy import Table as SqlTable
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.schema import CreateTable
+
+from butlers.knowledge_read.manifest import (
+    Manifest,
+    ManifestError,
+    decode_applied_manifest,
+    load_manifest,
+    manifest_transition,
+    qualified,
+)
+from butlers.knowledge_read.search_index import SEARCH_COLUMNS
+from butlers.migrations.public_mcp import reconcile_connection
+from butlers.migrations.public_mcp_owner import render_owner_program, subscriber_plan
+from butlers.testing.public_mcp import public_mcp_topology
+
+pytestmark = pytest.mark.integration
+
+
+def _wait(
+    predicate, *, seconds=40, message="owned subscriber did not reach the actual observation"
+):
+    deadline = time.monotonic() + seconds
+    while True:
+        value = predicate()
+        if value:
+            return value
+        assert time.monotonic() < deadline, message
+        time.sleep(0.05)
+
+
+def _scalar(engine, sql, params=None):
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params or {}).scalar_one()
+
+
+def _run(topology, program, *, success=True):
+    result = topology.execute(program)
+    if success:
+        # Output has no source rows or credentials: only psql status and closed errors.
+        assert result.exit_code == 0, result.output.decode(errors="replace")[-4000:]
+    else:
+        assert result.exit_code != 0, "the real psql program must refuse"
+    return result
+
+
+def _reconcile(topology, manifest):
+    with topology.engine.begin() as conn:
+        reconcile_connection(conn, manifest)
+
+
+def _ready(projection, digest):
+    return _scalar(
+        projection,
+        "SELECT COALESCE(bool_and(copy_complete AND digest=:digest),false) FROM mcp_read.manifest_applied",
+        {"digest": digest},
+    )
+
+
+def _apply(topology, projection, manifest):
+    _reconcile(topology, manifest)
+    _run(topology, render_owner_program(manifest))
+    _wait(lambda: _ready(projection, manifest.digest))
+
+
+@pytest.fixture(scope="module")
+def topology():
+    with public_mcp_topology() as actual:
+        yield actual
+
+
+_SUB_COUNT = (
+    "SELECT count(*) FROM pg_subscription WHERE subname='butlers_public_sub' "
+    "AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+)
+
+
+def _drop_slots(admin, where, params=None):
+    """Terminate the holders of, then drop, every slot matching `where`; tolerate none."""
+    with admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.execute(
+            text(
+                "SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots "
+                f"WHERE ({where}) AND active_pid IS NOT NULL"
+            ),
+            params or {},
+        )
+        _wait(
+            lambda: conn.execute(
+                text(
+                    "SELECT NOT EXISTS(SELECT 1 FROM pg_replication_slots "
+                    f"WHERE ({where}) AND active_pid IS NOT NULL)"
+                ),
+                params or {},
+            ).scalar_one(),
+            message="teardown: slot still active",
+        )
+        conn.execute(
+            text(
+                f"SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE ({where})"
+            ),
+            params or {},
+        )
+
+
+def _teardown_subscription(topology, projection):
+    """Drop the owned subscription and its slots, tolerating any being absent.
+
+    A test that fails mid-program leaves them behind, and the next fixture would
+    inherit them (merge-group run 42592731266). DROP SUBSCRIPTION with
+    slot_name=NONE also orphans tablesync slots (pg_<subid>_sync_*) after a
+    mid-copy failure, so those are dropped by the captured subscription oid.
+    """
+    subid = None
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        subid = conn.execute(
+            text(
+                "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' "
+                "AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+            )
+        ).scalar_one_or_none()
+        if subid is not None:
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+            # Tablesync workers hold the drop back until they exit.
+            _wait(
+                lambda: (
+                    not conn.execute(
+                        text(
+                            "SELECT EXISTS(SELECT 1 FROM pg_stat_subscription WHERE subid=:subid AND pid IS NOT NULL)"
+                        ),
+                        {"subid": subid},
+                    ).scalar_one()
+                ),
+                message="teardown: subscription workers did not drain",
+            )
+            conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE)")
+            conn.exec_driver_sql("DROP SUBSCRIPTION butlers_public_sub")
+    _drop_slots(topology.admin, "slot_name='butlers_public_sub'")
+    if subid is not None:
+        _drop_slots(
+            topology.admin,
+            "slot_name LIKE :pattern",
+            {"pattern": f"pg\\_{subid}\\_sync\\_%"},
+        )
+
+
+@pytest.fixture
+def copied(topology):
+    projection = topology.projection_engine()
+    target = load_manifest()
+    try:
+        _apply(topology, projection, target)
+        yield topology, projection, target
+    finally:
+        try:
+            _teardown_subscription(topology, projection)
+        finally:
+            projection.dispose()
+
+
+def _barrier(topology, projection):
+    # This is an actual already-published source row, never an extra publication
+    # member or a synthetic transport barrier. Its committed value names this write.
+    with topology.engine.begin() as conn:
+        changed = conn.execute(
+            text(
+                "UPDATE mcp_surface.controls SET changed_at=GREATEST(clock_timestamp(),changed_at+interval '1 microsecond') WHERE domain='all' RETURNING changed_at"
+            )
+        ).scalar_one()
+    _wait(
+        lambda: _scalar(
+            projection,
+            "SELECT changed_at=:changed FROM mcp_surface.controls WHERE domain='all'",
+            {"changed": changed},
+        )
+    )
+
+
+def test_actual_full_copy_catalog_views_freshness_and_noop(copied):
+    topology, projection, manifest = copied
+    with projection.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT n.nspname||'.'||c.relname,r.srsubstate FROM pg_subscription_rel r JOIN pg_subscription s ON s.oid=r.srsubid JOIN pg_class c ON c.oid=r.srrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE s.subname='butlers_public_sub' ORDER BY 1"
+            )
+        ).all()
+        assert rows == [(t.source, "r") for t in manifest.tables]
+        assert conn.execute(
+            text(
+                "SELECT pg_get_userbyid(subowner),subpasswordrequired,subslotname,subpublications FROM pg_subscription WHERE subname='butlers_public_sub'"
+            )
+        ).one() == ("mcp_subscription_owner", False, "butlers_public_sub", ["butlers_public_v1"])
+        views = dict(
+            conn.execute(
+                text(
+                    "SELECT relname,oid FROM pg_class WHERE relnamespace='mcp_read'::regnamespace AND relkind='v'"
+                )
+            ).all()
+        )
+        assert set(views) == {p.view for p in subscriber_plan(manifest)} | {"manifest_applied"}
+        before = conn.execute(
+            text("SELECT digest,canonical,applied_at,xmin::text FROM mcp_local.manifest_applied")
+        ).one()
+        sub_oid = conn.execute(
+            text("SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'")
+        ).scalar_one()
+    _barrier(topology, projection)
+    # Positive timestamp is required before freshness absence/permission assertions.
+    _wait(lambda: _scalar(projection, "SELECT mcp_read.replication_as_of() IS NOT NULL"))
+    _run(topology, render_owner_program(manifest))
+    with projection.connect() as conn:
+        assert (
+            dict(
+                conn.execute(
+                    text(
+                        "SELECT relname,oid FROM pg_class WHERE relnamespace='mcp_read'::regnamespace AND relkind='v'"
+                    )
+                ).all()
+            )
+            == views
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT digest,canonical,applied_at,xmin::text FROM mcp_local.manifest_applied"
+                )
+            ).one()
+            == before
+        )
+        assert (
+            conn.execute(
+                text("SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'")
+            ).scalar_one()
+            == sub_oid
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname NOT LIKE 'pg_%' AND n.nspname<>'information_schema'"
+                )
+            ).scalar_one()
+            == 2
+        )
+        assert conn.execute(
+            text(
+                "SELECT bool_and(proconfig=ARRAY['search_path=pg_catalog, pg_temp']) FROM pg_proc WHERE oid IN ('mcp_read.replication_as_of()'::regprocedure,'mcp_inbox.cap_proposals()'::regprocedure)"
+            )
+        ).scalar_one()
+        assert not conn.execute(
+            text("SELECT pg_has_role('mcp_projection_owner','pg_read_all_stats','MEMBER')")
+        ).scalar_one()
+        assert (
+            conn.execute(
+                text(
+                    "SELECT has_database_privilege('mcp_public_ro',current_database(),'TEMPORARY')"
+                )
+            ).scalar_one()
+            is False
+        )
+
+
+_EPISODE_INDEXES = (
+    "SELECT c.relname, c.oid, pg_get_userbyid(c.relowner), pg_get_indexdef(c.oid) "
+    "FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid "
+    "WHERE i.indrelid='chronicler.episodes_public'::regclass AND NOT i.indisprimary ORDER BY 1"
+)
+
+
+def test_search_indexes_are_owned_idempotent_rebuilt_and_the_only_admitted_extras(copied):
+    """bu-y66o00.53: the owner step owns exactly the declared search indexes and nothing else.
+
+    A rerun keeps their OIDs. A same-named index with another definition is rebuilt, and a
+    lost one is recreated. Any other index on a subscriber table is refused before mutation,
+    including a declared name on the wrong table or with the wrong access method.
+    """
+    topology, projection, manifest = copied
+    declared = SEARCH_COLUMNS["chronicler.episodes_public"]
+
+    def indexes():
+        with projection.connect() as conn:
+            return conn.execute(text(_EPISODE_INDEXES)).all()
+
+    def run_sql(*statements, role=None):
+        with projection.begin() as conn:
+            if role:
+                conn.exec_driver_sql(f"SET LOCAL ROLE {role}")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    first = indexes()
+    assert {row[0] for row in first} == {c.index for c in declared}
+    assert {row[2] for row in first} == {"mcp_projection_owner"}
+    for column in declared:
+        definition = next(row[3] for row in first if row[0] == column.index)
+        assert "USING gin" in definition
+        assert column.expression.split("(", 1)[0] in definition
+        if column.opclass:
+            assert column.opclass in definition
+
+    program = render_owner_program(manifest)
+    _run(topology, program)
+    assert indexes() == first, "a rerun must keep each index and create no duplicate"
+
+    vector = next(c for c in declared if c.name == "search_vector")
+    title = next(c for c in declared if c.name == "search_title")
+    applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+    try:
+        # Drift under a declared name is admitted by the guard, then rebuilt as declared.
+        run_sql(f"DROP INDEX chronicler.{vector.index}")
+        run_sql(
+            f"CREATE INDEX {vector.index} ON chronicler.episodes_public "
+            "USING gin (to_tsvector('simple'::regconfig, COALESCE(title, '')))",
+            role="mcp_projection_owner",
+        )
+        _run(topology, program)
+        rebuilt = indexes()
+        assert [r[0] for r in rebuilt] == [r[0] for r in first]
+        assert next(r[3] for r in rebuilt if r[0] == vector.index) == next(
+            r[3] for r in first if r[0] == vector.index
+        )
+        # A lost index (a resync or a rebuilt table) is recreated.
+        run_sql(f"DROP INDEX chronicler.{title.index}")
+        _run(topology, program)
+        assert [r[0] for r in indexes()] == [r[0] for r in first]
+
+        applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+        planted = (
+            ("CREATE INDEX mcp_planted ON chronicler.episodes_public (title)", "mcp_planted"),
+            (
+                f"CREATE INDEX {vector.index} ON travel.trips "
+                "USING gin (to_tsvector('english'::regconfig, COALESCE(name, '')))",
+                vector.index,
+            ),
+            (
+                "CREATE UNIQUE INDEX mcp_planted_unique ON chronicler.episodes_public (id, kind)",
+                "mcp_planted_unique",
+            ),
+        )
+        for statement, name in planted:
+            schema = "travel" if "travel." in statement else "chronicler"
+            run_sql(statement, role="mcp_projection_owner")
+            refused = _run(topology, program, success=False)
+            assert b"undeclared relation policy" in refused.output
+            assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == (
+                applied
+            )
+            run_sql(f"DROP INDEX {schema}.{name}")
+        # A declared name with another access method, or as a partial GIN index, is refused.
+        for planted in (
+            f"CREATE INDEX {title.index} ON chronicler.episodes_public (title)",
+            f"CREATE INDEX {title.index} ON chronicler.episodes_public "
+            f"USING gin (({title.expression}) {title.opclass}) WHERE kind IS NOT NULL",
+        ):
+            run_sql(f"DROP INDEX IF EXISTS chronicler.{title.index}")
+            # As the superuser: only it can name mcp_ext.gin_trgm_ops; the table owner owns
+            # the index either way.
+            run_sql(planted)
+            refused = _run(topology, program, success=False)
+            assert b"undeclared relation policy" in refused.output
+        run_sql(f"DROP INDEX chronicler.{title.index}")
+    finally:
+        for name in ("mcp_planted", "mcp_planted_unique"):
+            run_sql(f"DROP INDEX IF EXISTS chronicler.{name}")
+        run_sql(f"DROP INDEX IF EXISTS travel.{vector.index}")
+        _run(topology, program)
+    assert [r[0] for r in indexes()] == [r[0] for r in first]
+
+
+_STAT_GRANTS = """SELECT count(*) FROM pg_depend d
+    JOIN pg_extension x ON x.oid=d.refobjid AND x.extname='pg_stat_statements'
+    LEFT JOIN pg_class c ON d.classid='pg_class'::regclass AND c.oid=d.objid
+    LEFT JOIN pg_proc p ON d.classid='pg_proc'::regclass AND p.oid=d.objid
+    WHERE d.refclassid='pg_extension'::regclass AND d.deptype='e'
+      AND ((c.oid IS NOT NULL AND EXISTS(SELECT 1 FROM aclexplode(c.relacl) a
+                WHERE a.grantee<>c.relowner))
+        OR (p.oid IS NOT NULL AND (p.proacl IS NULL OR EXISTS(
+                SELECT 1 FROM aclexplode(p.proacl) a WHERE a.grantee<>p.proowner))))"""
+
+
+def test_operator_managed_pg_stat_statements_is_admitted_and_locked_down(copied):
+    """bu-y66o00.60: CNPG creates pg_stat_statements in public of every database.
+
+    The owner step admits that superuser-owned extension, revokes each member from everyone
+    but its owner, and stays idempotent once the projection owner holds no privilege on
+    them. Anything else planted in public, or a member granted to another role, is still
+    refused before mutation.
+    """
+    topology, projection, manifest = copied
+    program = render_owner_program(manifest)
+
+    def run_sql(*statements, role=None):
+        with projection.begin() as conn:
+            if role:
+                conn.exec_driver_sql(f"SET LOCAL ROLE {role}")
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    stranger = f"mcp_stranger_{uuid.uuid4().hex[:8]}"
+    try:
+        # As the superuser, the way the operator creates it: the script grants its views to
+        # PUBLIC and leaves its query functions PUBLIC-executable.
+        run_sql("CREATE EXTENSION pg_stat_statements WITH SCHEMA public")
+        assert _scalar(projection, _STAT_GRANTS) > 0
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
+        assert not _scalar(
+            projection,
+            "SELECT has_table_privilege('mcp_public_ro', 'public.pg_stat_statements', 'SELECT')",
+        )
+        assert not _scalar(
+            projection,
+            "SELECT has_function_privilege('mcp_public_ro', "
+            "'public.pg_stat_statements(boolean)', 'EXECUTE')",
+        )
+        # Rerun: the projection owner now holds no privilege on any member, and a REVOKE
+        # from a role without one is an error, so its revoke loops must skip them.
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
+        # A grant to a projection role passes the preflight but is stripped by the lockdown.
+        run_sql(
+            "GRANT SELECT ON public.pg_stat_statements TO mcp_public_ro",
+            "GRANT EXECUTE ON FUNCTION public.pg_stat_statements(boolean) TO mcp_public_ro",
+        )
+        _run(topology, program)
+        assert _scalar(projection, _STAT_GRANTS) == 0
+
+        applied = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+        # A member granted to any other role is refused before mutation.
+        run_sql(f"CREATE ROLE {stranger} NOLOGIN")
+        run_sql(f"GRANT SELECT ON public.pg_stat_statements TO {stranger}")
+        refused = _run(topology, program, success=False)
+        assert b"foreign projection ACL refused" in refused.output
+        run_sql(f"REVOKE ALL ON public.pg_stat_statements FROM {stranger}")
+        # A non-member in public is refused as before, even beside the admitted extension.
+        run_sql("CREATE VIEW public.mcp_planted AS SELECT 1 AS one", role="mcp_projection_owner")
+        refused = _run(topology, program, success=False)
+        assert b"projection public schema object refused" in refused.output
+        run_sql("DROP VIEW public.mcp_planted")
+        run_sql(
+            "CREATE FUNCTION public.mcp_planted() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+            role="mcp_projection_owner",
+        )
+        refused = _run(topology, program, success=False)
+        assert b"projection public schema object refused" in refused.output
+        run_sql("DROP FUNCTION public.mcp_planted()")
+        assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == (applied)
+        _run(topology, program)
+    finally:
+        run_sql("DROP VIEW IF EXISTS public.mcp_planted")
+        run_sql("DROP FUNCTION IF EXISTS public.mcp_planted()")
+        run_sql("DROP EXTENSION IF EXISTS pg_stat_statements")
+        run_sql(f"DROP ROLE IF EXISTS {stranger}")
+
+
+def _states(kind):
+    full = load_manifest()
+    account = next(t for t in full.tables if t.source == "finance.accounts")
+    small = replace(
+        account,
+        columns=tuple(c for c in account.columns if c != "last_four"),
+        types=tuple(p for p in account.types if p[0] != "last_four"),
+        identifiers=tuple(c for c in account.identifiers if c != "last_four"),
+    )
+    narrow = Manifest(tuple(small if t == account else t for t in full.tables))
+    fewer = Manifest(tuple(t for t in full.tables if t != account))
+    if kind == "column-narrow":
+        return full, narrow
+    if kind == "column-widen":
+        return narrow, full
+    if kind == "table-add":
+        return fewer, full
+    if kind == "table-remove":
+        return full, fewer
+    raise AssertionError(kind)
+
+
+@pytest.mark.parametrize("kind", ["column-narrow", "column-widen", "table-add", "table-remove"])
+def test_runtime_and_pure_transition_agree_and_views_keep_oid(copied, kind):
+    topology, projection, full = copied
+    old, target = _states(kind)
+    expected = manifest_transition(
+        decode_applied_manifest(old.canonical), decode_applied_manifest(target.canonical)
+    )
+    try:
+        _apply(topology, projection, old)
+        with projection.connect() as conn:
+            old_views = dict(
+                conn.execute(
+                    text(
+                        "SELECT relname,oid FROM pg_class WHERE relnamespace='mcp_read'::regnamespace AND relkind='v'"
+                    )
+                ).all()
+            )
+        _reconcile(topology, target)
+        # Execute exactly the production validation/classification prefix, before
+        # its first persistent mutation; compare the shared canonical cases.
+        prefix = render_owner_program(target).split("\\if :e_rebuild\n", 1)[0]
+        observed = _run(
+            topology, prefix + "\\echo TRANSITION :e_rebuild :e_narrowing\n"
+        ).output.decode()
+        assert (
+            f"TRANSITION {'t' if expected.rebuild else 'f'} {'t' if expected.narrowing else 'f'}"
+            in observed
+        )
+        _run(topology, render_owner_program(target))
+        _wait(lambda: _ready(projection, target.digest))
+        with projection.connect() as conn:
+            now = dict(
+                conn.execute(
+                    text(
+                        "SELECT relname,oid FROM pg_class WHERE relnamespace='mcp_read'::regnamespace AND relkind='v'"
+                    )
+                ).all()
+            )
+            for name in set(old_views) & set(now):
+                assert now[name] == old_views[name]
+            columns = (
+                conn.execute(
+                    text(
+                        "SELECT attname FROM pg_attribute WHERE attrelid=to_regclass('finance.accounts') AND attnum>0 AND NOT attisdropped ORDER BY attnum"
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert ("last_four" in columns) == any(
+                "last_four" in t.columns for t in target.tables if t.source == "finance.accounts"
+            )
+    finally:
+        _apply(topology, projection, full)
+
+
+@pytest.mark.parametrize("kind", ["type-change", "generated-dependency-removal"])
+def test_view_oid_survives_real_type_and_generated_dependency_changes(copied, kind):
+    topology, projection, full = copied
+    source = "finance.accounts" if kind == "type-change" else "relationship.entity_facts"
+    original = next(table for table in full.tables if table.source == source)
+    if kind == "type-change":
+        changed = replace(
+            original,
+            types=tuple(
+                (name, "text" if name == "last_four" else type_) for name, type_ in original.types
+            ),
+        )
+    else:
+        # Both inputs of the generated object_entity_id go: publishing `object` without
+        # them would name an entity the view could not hide.
+        dropped = {"object", "object_kind"}
+        changed = replace(
+            original,
+            columns=tuple(name for name in original.columns if name not in dropped),
+            types=tuple(pair for pair in original.types if pair[0] not in dropped),
+        )
+    target = Manifest(tuple(changed if table == original else table for table in full.tables))
+    decode_applied_manifest(target.canonical)
+    view = "mcp_read." + source.replace(".", "__")
+    before = _scalar(projection, "SELECT to_regclass(:view)::oid", {"view": view})
+    try:
+        if kind == "type-change":
+            with topology.engine.begin() as conn:
+                # PostgreSQL cannot alter a published column's type. This is
+                # the real source migration boundary, before subscriber repair:
+                # remove only this owned membership, change the source type and
+                # restore the exact target publication atomically.
+                conn.exec_driver_sql(
+                    "ALTER PUBLICATION butlers_public_v1 DROP TABLE finance.accounts"
+                )
+                conn.exec_driver_sql(
+                    "ALTER TABLE finance.accounts ALTER COLUMN last_four TYPE text"
+                )
+                reconcile_connection(conn, target)
+            assert (
+                _scalar(
+                    topology.engine,
+                    "SELECT format_type(atttypid,atttypmod) FROM pg_attribute "
+                    "WHERE attrelid='finance.accounts'::regclass AND attname='last_four'",
+                )
+                == "text"
+            )
+        _apply(topology, projection, target)
+        assert _scalar(projection, "SELECT to_regclass(:view)::oid", {"view": view}) == before
+        with projection.connect() as conn:
+            attrs = dict(
+                conn.execute(
+                    text(
+                        "SELECT attname,format_type(atttypid,atttypmod) FROM pg_attribute "
+                        "WHERE attrelid=to_regclass(:source) AND attnum>0 AND NOT attisdropped"
+                    ),
+                    {"source": source},
+                ).all()
+            )
+        if kind == "type-change":
+            assert attrs["last_four"] == "text"
+        else:
+            assert not {"object", "object_kind", "object_entity_id"} & set(attrs)
+    finally:
+        if kind == "type-change":
+            with topology.engine.begin() as conn:
+                # A failed apply may leave this membership absent. Inspect it
+                # before restoring, so cleanup handles either actual catalog.
+                if conn.execute(
+                    text(
+                        "SELECT EXISTS(SELECT 1 FROM pg_publication_rel r "
+                        "JOIN pg_publication p ON p.oid=r.prpubid "
+                        "WHERE p.pubname='butlers_public_v1' "
+                        "AND r.prrelid='finance.accounts'::regclass)"
+                    )
+                ).scalar_one():
+                    conn.exec_driver_sql(
+                        "ALTER PUBLICATION butlers_public_v1 DROP TABLE finance.accounts"
+                    )
+                conn.exec_driver_sql(
+                    "ALTER TABLE finance.accounts ALTER COLUMN last_four TYPE character(4)"
+                )
+                reconcile_connection(conn, full)
+        _apply(topology, projection, full)
+    assert _scalar(projection, "SELECT to_regclass(:view)::oid", {"view": view}) == before
+    if kind == "generated-dependency-removal":
+        assert (
+            _scalar(
+                projection,
+                "SELECT count(*) FROM pg_attribute WHERE attrelid='relationship.entity_facts'::regclass AND attname='object_entity_id' AND attgenerated='s'",
+            )
+            == 1
+        )
+
+
+def test_malformed_or_inconsistent_applied_state_refuses_before_mutation(copied):
+    topology, projection, manifest = copied
+    with projection.connect() as conn:
+        sub_oid = conn.execute(
+            text("SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'")
+        ).scalar_one()
+    mutations = []
+    # bu-y66o00.71: acronym, concatenated and digit-suffixed names, on a table that may carry marks.
+    credential_marks = {
+        "marks_acronym": "metadata.APIKey",
+        "marks_concatenated": "metadata.accesstoken",
+        "marks_digit": "metadata.cvv2",
+    }
+    for change in ("extra", "private", "filter", "type", "graph", "marks", *credential_marks):
+        obj = json.loads(manifest.canonical)
+        if change == "extra":
+            obj["tables"][0]["ignored"] = True
+        elif change == "private":
+            obj["tables"][0]["source"] = "chronicler.episodes"
+        elif change == "filter":
+            next(t for t in obj["tables"] if t["source"] == "public.entities")["filters"] = []
+        elif change == "type":
+            obj["tables"][0]["types"][0][1] = "jsonb"
+        elif change == "graph":
+            next(t for t in obj["tables"] if t["source"] == "public.entity_graph_edges")[
+                "filters"
+            ] = []
+        elif change == "marks":
+            obj["tables"][0]["json_identifiers"] = ["metadata.password"]
+        elif change in credential_marks:
+            next(t for t in obj["tables"] if t["json_identifiers"])["json_identifiers"].append(
+                credential_marks[change]
+            )
+        mutations.append(json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    mutations += [
+        " " + manifest.canonical,
+        manifest.canonical.replace('"version":1', '"version":1,"version":1'),
+    ]
+    try:
+        for canonical in mutations:
+            with pytest.raises(ManifestError):
+                decode_applied_manifest(canonical)
+            with projection.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE mcp_local.manifest_applied SET canonical=:canonical,digest=encode(sha256(convert_to(:canonical,'UTF8')),'hex')"
+                    ),
+                    {"canonical": canonical},
+                )
+            refused = _run(topology, render_owner_program(manifest), success=False)
+            assert b"applied" in refused.output
+            assert (
+                _scalar(
+                    projection, "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'"
+                )
+                == sub_oid
+            )
+        # A valid declaration with a false digest is independently refused.
+        with projection.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE mcp_local.manifest_applied SET canonical=:canonical,digest=repeat('0',64)"
+                ),
+                {"canonical": manifest.canonical},
+            )
+        refused = _run(topology, render_owner_program(manifest), success=False)
+        assert b"digest inconsistent" in refused.output
+    finally:
+        with projection.begin() as conn:
+            conn.execute(
+                text("UPDATE mcp_local.manifest_applied SET canonical=:canonical,digest=:digest"),
+                {"canonical": manifest.canonical, "digest": manifest.digest},
+            )
+        _apply(topology, projection, manifest)
+
+
+def test_primary_publication_drift_refuses_before_subscriber_mutation(copied):
+    topology, projection, manifest = copied
+    before = _scalar(
+        projection, "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'"
+    )
+    mutations = (
+        "ALTER PUBLICATION butlers_public_v1 SET (publish='insert')",
+        "ALTER PUBLICATION butlers_public_v1 SET TABLE mcp_surface.controls",
+        "ALTER TABLE finance.accounts REPLICA IDENTITY FULL",
+    )
+    for mutation in mutations:
+        try:
+            with topology.engine.begin() as conn:
+                conn.exec_driver_sql(mutation)
+            refused = _run(topology, render_owner_program(manifest), success=False)
+            assert b"public MCP" in refused.output or b"primary source" in refused.output
+            assert (
+                _scalar(
+                    projection, "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'"
+                )
+                == before
+            )
+        finally:
+            with topology.engine.begin() as conn:
+                conn.exec_driver_sql("ALTER TABLE finance.accounts REPLICA IDENTITY DEFAULT")
+                reconcile_connection(conn, manifest)
+    _run(topology, render_owner_program(manifest))
+
+
+def test_view_fields_replicate_exact_values_and_hide_private_neighbors(copied):
+    topology, projection, manifest = copied
+    ids = {}
+    try:
+        with topology.engine.begin() as conn:
+            ids["entity"] = conn.execute(
+                text(
+                    "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Subscriber allowed person','person') RETURNING id"
+                )
+            ).scalar_one()
+            ids["account"] = conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(institution,name,type,currency,last_four) VALUES ('Synthetic institution','Subscriber account','checking','USD','1234') RETURNING id"
+                )
+            ).scalar_one()
+            ids["balance"] = conn.execute(
+                text(
+                    "INSERT INTO finance.balance_snapshots(account_id,balance,currency,as_of_date,source) VALUES (:account,123456789012.34,'USD',CURRENT_DATE,'synthetic') RETURNING id"
+                ),
+                ids,
+            ).scalar_one()
+            ids["category_name"] = "subscriber-" + uuid.uuid4().hex
+            ids["category"] = conn.execute(
+                text(
+                    "INSERT INTO finance.categories(name,display_name) "
+                    "VALUES (:category_name,'Subscriber category') RETURNING id"
+                ),
+                ids,
+            ).scalar_one()
+            ids["transaction"] = conn.execute(
+                text(
+                    "INSERT INTO finance.transactions(account_id,posted_at,merchant,amount,currency,direction,category) "
+                    "VALUES (:account,clock_timestamp(),'Synthetic merchant',12.34,'USD','debit',:category_name) RETURNING id"
+                ),
+                ids,
+            ).scalar_one()
+            ids["fact"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) VALUES ('Subscriber subject','note','allowed neighbor','normal','active') RETURNING id"
+                )
+            ).scalar_one()
+            ids["hidden"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) VALUES ('Subscriber hidden subject','note','synthetic private canary','pii','active') RETURNING id"
+                )
+            ).scalar_one()
+        _barrier(topology, projection)
+        assert (
+            _scalar(
+                projection,
+                "SELECT fields->>'balance' FROM mcp_read.finance__balance_snapshots WHERE source_id=:id",
+                {"id": str(ids["balance"])},
+            )
+            == "123456789012.34"
+        )
+        assert (
+            _scalar(
+                projection,
+                "SELECT fields->>'canonical_name' FROM mcp_read.public__entities WHERE source_id=:id",
+                {"id": str(ids["entity"])},
+            )
+            == "Subscriber allowed person"
+        )
+        assert not _scalar(
+            projection,
+            "SELECT fields ?| ARRAY['deleted','unidentified','placeholder_name'] FROM mcp_read.public__entities WHERE source_id=:id",
+            {"id": str(ids["entity"])},
+        )
+        assert (
+            _scalar(
+                projection, "SELECT count(*) FROM general.facts WHERE id=:id", {"id": ids["fact"]}
+            )
+            == 1
+        )
+        assert (
+            _scalar(
+                projection, "SELECT count(*) FROM general.facts WHERE id=:id", {"id": ids["hidden"]}
+            )
+            == 0
+        )
+        assert (
+            _scalar(
+                projection,
+                "SELECT fields->>'amount' FROM mcp_read.finance__transactions WHERE source_id=:id",
+                {"id": str(ids["transaction"])},
+            )
+            == "12.34"
+        )
+        with topology.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE finance.transactions SET deleted_at=clock_timestamp() WHERE id=:transaction"
+                ),
+                ids,
+            )
+        _barrier(topology, projection)
+        # The mirrored source still contains this soft-deleted row, while its
+        # supported read view hides it. This positions the view predicate itself.
+        assert (
+            _scalar(
+                projection, "SELECT count(*) FROM finance.transactions WHERE id=:transaction", ids
+            )
+            == 1
+        )
+        assert (
+            _scalar(
+                projection,
+                "SELECT count(*) FROM mcp_read.finance__transactions WHERE source_id=:id",
+                {"id": str(ids["transaction"])},
+            )
+            == 0
+        )
+        with topology.engine.begin() as conn:
+            conn.execute(text("UPDATE general.facts SET sensitivity='pii' WHERE id=:fact"), ids)
+            conn.execute(
+                text(
+                    "UPDATE public.entities SET metadata=CAST(:metadata AS jsonb) WHERE id=:entity"
+                ),
+                {"entity": ids["entity"], "metadata": json.dumps({"tombstone": True})},
+            )
+        _barrier(topology, projection)
+        assert _scalar(projection, "SELECT count(*) FROM general.facts WHERE id=:fact", ids) == 0
+        assert (
+            _scalar(projection, "SELECT count(*) FROM public.entities WHERE id=:entity", ids) == 0
+        )
+        with topology.engine.begin() as conn:
+            conn.execute(text("DELETE FROM finance.balance_snapshots WHERE id=:balance"), ids)
+        _barrier(topology, projection)
+        assert (
+            _scalar(
+                projection, "SELECT count(*) FROM finance.balance_snapshots WHERE id=:balance", ids
+            )
+            == 0
+        )
+    finally:
+        with topology.engine.begin() as conn:
+            if "transaction" in ids:
+                conn.execute(text("DELETE FROM finance.transactions WHERE id=:transaction"), ids)
+            if "category" in ids:
+                conn.execute(text("DELETE FROM finance.categories WHERE id=:category"), ids)
+            if "balance" in ids:
+                conn.execute(text("DELETE FROM finance.balance_snapshots WHERE id=:balance"), ids)
+            if "account" in ids:
+                conn.execute(text("DELETE FROM finance.accounts WHERE id=:account"), ids)
+            for key in ("fact", "hidden"):
+                if key in ids:
+                    conn.execute(text("DELETE FROM general.facts WHERE id=:id"), {"id": ids[key]})
+            if "entity" in ids:
+                conn.execute(text("DELETE FROM public.entities WHERE id=:entity"), ids)
+        _barrier(topology, projection)
+
+
+def test_real_privileges_inbox_cap_and_definer_search_path(copied):
+    topology, projection, manifest = copied
+    with projection.connect() as conn:
+        with conn.begin():
+            conn.exec_driver_sql("SET LOCAL ROLE mcp_public_ro")
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM mcp_read.mcp_surface__controls")
+                ).scalar_one()
+                == 8
+            )
+            assert conn.execute(
+                text("SELECT mcp_read.replication_as_of() IS NOT NULL")
+            ).scalar_one()
+            assert conn.execute(
+                text("SELECT copy_complete FROM mcp_read.manifest_applied")
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO mcp_inbox.proposals(proposal_id,sub,cid,idempotency_key,subject_entity_id,predicate,object_entity_id) VALUES (:id,'synthetic-sub','synthetic-cid','key',:subject,'knows',:object)"
+                ),
+                {"id": uuid.uuid4(), "subject": uuid.uuid4(), "object": uuid.uuid4()},
+            )
+            conn.rollback()
+        for statement in (
+            "SELECT * FROM general.facts",
+            "SELECT * FROM mcp_local.manifest_applied",
+            "SELECT * FROM mcp_inbox.proposals",
+            "DELETE FROM mcp_inbox.proposals",
+            "UPDATE mcp_inbox.proposals SET note='changed'",
+            "SELECT mcp_inbox.cap_proposals()",
+        ):
+            transaction = conn.begin()
+            conn.exec_driver_sql("SET LOCAL ROLE mcp_public_ro")
+            with pytest.raises(DBAPIError):
+                conn.exec_driver_sql(statement)
+            transaction.rollback()
+        # Typed privilege canary, never a stand-in database or replicated table.
+        transaction = conn.begin()
+        conn.exec_driver_sql("SET LOCAL ROLE mcp_public_ro")
+        denied = SqlTable("denied", MetaData(), Column("id", Integer), prefixes=["TEMPORARY"])
+        with pytest.raises(DBAPIError):
+            conn.execute(CreateTable(denied))
+        transaction.rollback()
+        with conn.begin():
+            conn.exec_driver_sql(
+                "INSERT INTO mcp_inbox.proposals(proposal_id,sub,cid,idempotency_key,subject_entity_id,predicate,object_entity_id) SELECT gen_random_uuid(),'synthetic-sub','synthetic-cid',n::text,gen_random_uuid(),'knows',gen_random_uuid() FROM generate_series(1,1000) n"
+            )
+            assert (
+                conn.execute(text("SELECT count(*) FROM mcp_inbox.proposals")).scalar_one() == 1000
+            )
+            transaction = conn.begin_nested()
+            with pytest.raises(DBAPIError, match="inbox full"):
+                conn.exec_driver_sql(
+                    "INSERT INTO mcp_inbox.proposals(proposal_id,sub,cid,idempotency_key,subject_entity_id,predicate,object_entity_id) VALUES (gen_random_uuid(),'sub','cid','overflow',gen_random_uuid(),'knows',gen_random_uuid())"
+                )
+            transaction.rollback()
+            conn.exec_driver_sql("SET LOCAL ROLE mcp_proposals_reader")
+            assert (
+                conn.execute(text("SELECT count(*) FROM mcp_inbox.proposals")).scalar_one() == 1000
+            )
+            assert conn.exec_driver_sql("DELETE FROM mcp_inbox.proposals").rowcount == 1000
+            conn.rollback()
+
+
+def test_filtered_families_propagate_real_iud_with_healthy_neighbors(copied):
+    import asyncio
+
+    import asyncpg
+
+    from butlers.chronicler.public_projection import sweep_public_projection
+    from butlers.core.entity_graph_edges import (
+        delete_entity_graph_edge,
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    topology, projection, manifest = copied
+
+    async def exercise():
+        url = topology.engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+        actual = await asyncpg.create_pool(
+            url,
+            min_size=1,
+            max_size=1,
+            command_timeout=15,
+            server_settings={"search_path": "chronicler,public"},
+        )
+        episode = person = other = relation = graph_source = None
+        facts = {}
+        adapter_inserted = False
+        try:
+            person = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Subscriber graph subject','person') RETURNING id"
+            )
+            other = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Subscriber graph object','person') RETURNING id"
+            )
+            # All seven published fact sources, including broad finance/health,
+            # use their actual migrated constraints/shadow triggers.
+            for table in (t for t in manifest.tables if t.source.endswith(".facts")):
+                metadata = (
+                    '{"value":{"pin":1234,"safe":70},"password":"synthetic-private-leaf","allowed":"neighbor"}'
+                    if table.source == "health.facts"
+                    else "{}"
+                )
+                predicate = "measurement_weight" if table.source == "health.facts" else "note"
+                facts[table.source] = await actual.fetchval(
+                    f"INSERT INTO {qualified(table.source)}(subject,predicate,content,sensitivity,validity,metadata) VALUES ($1,$2,'Subscriber fact','normal','active',$3::jsonb) RETURNING id",
+                    str(uuid.uuid4()),
+                    predicate,
+                    metadata,
+                )
+            relation = await actual.fetchval(
+                "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) VALUES ($1,'works-at',$2,'entity','subscriber-control') RETURNING id",
+                person,
+                str(other),
+            )
+            async with actual.acquire() as conn, conn.transaction():
+                graph_source = await conn.fetchval(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) VALUES ($1,'knows','Subscriber graph fact','normal','active') RETURNING id",
+                    str(person),
+                )
+                await project_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=graph_source,
+                    subject_entity_id=person,
+                    predicate="knows",
+                    object_entity_id=other,
+                )
+            adapter_inserted = bool(
+                await actual.fetchval(
+                    "INSERT INTO chronicler.source_adapter_state(source_name,chronicler_compatibility) VALUES ('google_health.measurements','supported') ON CONFLICT DO NOTHING RETURNING true"
+                )
+            )
+            episode = await actual.fetchval(
+                "INSERT INTO chronicler.episodes(source_name,source_ref,episode_type,start_at,end_at,title,privacy,layer) VALUES ('google_health.measurements',$1,'sleep_episode',now()-interval '1 hour',now(),'Subscriber sleep','normal','activity') RETURNING id",
+                str(uuid.uuid4()),
+            )
+            await sweep_public_projection(actual)
+            _barrier(topology, projection)
+            for source, row in facts.items():
+                assert (
+                    _scalar(
+                        projection,
+                        f"SELECT count(*) FROM {qualified(source)} WHERE id=:id",
+                        {"id": row},
+                    )
+                    == 1
+                )
+            assert _scalar(
+                projection,
+                "SELECT fields->>'object_entity_id' FROM mcp_read.relationship__entity_facts WHERE source_id=:id",
+                {"id": str(relation)},
+            ) == str(other)
+            graph = _scalar(
+                projection,
+                "SELECT fields FROM mcp_read.public__entity_graph_edges WHERE fields->>'subject_entity_id'=:id",
+                {"id": str(person)},
+            )
+            assert graph["predicate"] == "knows" and graph["source_domain"] == "knowledge"
+            assert "publish_key" not in graph
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM chronicler.episodes_public WHERE id=:id",
+                    {"id": episode},
+                )
+                == 1
+            )
+            assert _scalar(projection, "SELECT count(*) FROM chronicler.rollups_public") > 0
+            health_id = str(facts["health.facts"])
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM health.measurements_public WHERE id LIKE :prefix AND metric='measurement_weight.safe'",
+                    {"prefix": health_id + "%"},
+                )
+                == 1
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM health.measurements_public WHERE id LIKE :prefix AND metric='measurement_weight.pin'",
+                    {"prefix": health_id + "%"},
+                )
+                == 0
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM health.json_fields_public WHERE row_id=:id AND path='metadata.value.safe'",
+                    {"id": health_id},
+                )
+                == 1
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM health.json_fields_public WHERE row_id=:id AND (path LIKE '%pin%' OR path LIKE '%password%')",
+                    {"id": health_id},
+                )
+                == 0
+            )
+            # Eligibility changes become real subscriber DELETEs; each assertion
+            # follows the committed published control row, not a blind sleep.
+            for source, row in facts.items():
+                await actual.execute(
+                    f"UPDATE {qualified(source)} SET validity='retracted' WHERE id=$1", row
+                )
+            await actual.execute(
+                "UPDATE relationship.entity_facts SET validity='retracted' WHERE id=$1", relation
+            )
+            async with actual.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    "UPDATE general.facts SET sensitivity='pii' WHERE id=$1", graph_source
+                )
+                await withhold_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=graph_source,
+                    subject_entity_id=person,
+                    sensitivity="pii",
+                )
+            await actual.execute(
+                "INSERT INTO chronicler.overrides(target_kind,target_id,corrected_privacy,submitted_by) VALUES ('episode',$1,'restricted','user')",
+                episode,
+            )
+            _barrier(topology, projection)
+            for source, row in facts.items():
+                assert (
+                    _scalar(
+                        projection,
+                        f"SELECT count(*) FROM {qualified(source)} WHERE id=:id",
+                        {"id": row},
+                    )
+                    == 0
+                )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM relationship.entity_facts WHERE id=:id",
+                    {"id": relation},
+                )
+                == 0
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM public.entity_graph_edges WHERE subject_entity_id=:id",
+                    {"id": person},
+                )
+                == 0
+            )
+            counts = _scalar(
+                projection,
+                "SELECT fields FROM mcp_read.public__entity_graph_withheld_counts WHERE fields->>'entity_id'=:id AND fields->>'source_key'='general.facts'",
+                {"id": str(person)},
+            )
+            assert counts["withheld"] == 1
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM chronicler.episodes_public WHERE id=:id",
+                    {"id": episode},
+                )
+                == 0
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM health.measurements_public WHERE id LIKE :prefix",
+                    {"prefix": health_id + "%"},
+                )
+                == 0
+            )
+            # Restore eligibility before DELETE so each deletion is positioned
+            # against a currently present subscriber row, not an already hidden one.
+            for source, row in facts.items():
+                await actual.execute(
+                    f"UPDATE {qualified(source)} SET validity='active' WHERE id=$1", row
+                )
+            await actual.execute(
+                "UPDATE relationship.entity_facts SET validity='active' WHERE id=$1", relation
+            )
+            await actual.execute(
+                "INSERT INTO chronicler.overrides(target_kind,target_id,corrected_privacy,submitted_by) VALUES ('episode',$1,'normal','owner')",
+                episode,
+            )
+            _barrier(topology, projection)
+            for source, row in facts.items():
+                assert (
+                    _scalar(
+                        projection,
+                        f"SELECT count(*) FROM {qualified(source)} WHERE id=:id",
+                        {"id": row},
+                    )
+                    == 1
+                )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM relationship.entity_facts WHERE id=:id",
+                    {"id": relation},
+                )
+                == 1
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM chronicler.episodes_public WHERE id=:id",
+                    {"id": episode},
+                )
+                == 1
+            )
+            for source, row in facts.items():
+                await actual.execute(f"DELETE FROM {qualified(source)} WHERE id=$1", row)
+            await actual.execute("DELETE FROM relationship.entity_facts WHERE id=$1", relation)
+            await actual.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+            # Actual source deletion also removes the still-visible count row.
+            async with actual.acquire() as conn, conn.transaction():
+                await delete_entity_graph_edge(
+                    conn, source_schema="general", source_table="facts", source_id=graph_source
+                )
+            _barrier(topology, projection)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM public.entity_graph_withheld_counts WHERE entity_id=:id AND source_key='general.facts'",
+                    {"id": person},
+                )
+                == 0
+            )
+            for source, row in facts.items():
+                assert (
+                    _scalar(
+                        projection,
+                        f"SELECT count(*) FROM {qualified(source)} WHERE id=:id",
+                        {"id": row},
+                    )
+                    == 0
+                )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM relationship.entity_facts WHERE id=:id",
+                    {"id": relation},
+                )
+                == 0
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM chronicler.episodes_public WHERE id=:id",
+                    {"id": episode},
+                )
+                == 0
+            )
+        finally:
+            if episode:
+                await actual.execute("DELETE FROM chronicler.episodes WHERE id=$1", episode)
+            if relation:
+                await actual.execute("DELETE FROM relationship.entity_facts WHERE id=$1", relation)
+            if graph_source:
+                await actual.execute("DELETE FROM general.facts WHERE id=$1", graph_source)
+            for source, row in facts.items():
+                await actual.execute(f"DELETE FROM {qualified(source)} WHERE id=$1", row)
+            for person_id in (person, other):
+                if person_id:
+                    await actual.execute("DELETE FROM public.entities WHERE id=$1", person_id)
+            if adapter_inserted:
+                await actual.execute(
+                    "DELETE FROM chronicler.source_adapter_state WHERE source_name='google_health.measurements'"
+                )
+            await actual.close()
+            _barrier(topology, projection)
+
+    asyncio.run(exercise())
+
+
+def test_hiding_an_entity_hides_its_facts_edges_and_counts_until_it_returns(copied):
+    """bu-y66o00.16: no view returns a row about an entity the projection no longer holds."""
+    import asyncio
+    from typing import cast
+
+    import asyncpg
+
+    from butlers.core.entity_graph_edges import (
+        project_entity_graph_edge,
+        withhold_entity_graph_edge,
+    )
+
+    topology, projection, _ = copied
+    views = {
+        "fact": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "pointing": "SELECT count(*) FROM mcp_read.general__facts WHERE source_id=:id",
+        "relation": "SELECT count(*) FROM mcp_read.relationship__entity_facts WHERE source_id=:id",
+        "edge": "SELECT count(*) FROM mcp_read.public__entity_graph_edges WHERE fields->>'object_entity_id'=:id",
+        "count": "SELECT count(*) FROM mcp_read.public__entity_graph_withheld_counts WHERE fields->>'entity_id'=:id",
+    }
+
+    def visible(rows):
+        return {name: _scalar(projection, views[name], {"id": rows[name]}) for name in views}
+
+    async def exercise():
+        url = topology.engine.url.set(drivername="postgresql").render_as_string(hide_password=False)
+        actual = await asyncpg.create_pool(url, min_size=1, max_size=1, command_timeout=15)
+        hidden = other = None
+        rows: dict[str, str] = {}
+        try:
+            hidden = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Hidden subject','person') RETURNING id"
+            )
+            other = await actual.fetchval(
+                "INSERT INTO public.entities(canonical_name,entity_type) VALUES ('Visible neighbour','person') RETURNING id"
+            )
+            fact = await actual.fetchval(
+                "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'note','About the hidden subject','normal','active') RETURNING id",
+                hidden,
+            )
+            async with actual.acquire() as proxy, proxy.transaction():
+                conn = cast(asyncpg.Connection, proxy)
+                pointing = await proxy.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,object_entity_id,predicate,content,sensitivity,validity) VALUES ('Visible neighbour',$1,$2,'knows','Knows the hidden subject','normal','active') RETURNING id",
+                    other,
+                    hidden,
+                )
+                await project_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=pointing,
+                    subject_entity_id=other,
+                    predicate="knows",
+                    object_entity_id=hidden,
+                )
+                private = await proxy.fetchval(
+                    "INSERT INTO general.facts(subject,entity_id,predicate,content,sensitivity,validity) VALUES ('Hidden subject',$1,'idea','Private','pii','active') RETURNING id",
+                    hidden,
+                )
+                await withhold_entity_graph_edge(
+                    conn,
+                    source_schema="general",
+                    source_table="facts",
+                    source_id=private,
+                    subject_entity_id=hidden,
+                    sensitivity="pii",
+                )
+            relation = await actual.fetchval(
+                "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) VALUES ($1,'works-at',$2,'entity','hidden-entity-control') RETURNING id",
+                other,
+                str(hidden),
+            )
+            rows = {
+                "fact": str(fact),
+                "pointing": str(pointing),
+                "relation": str(relation),
+                "edge": str(hidden),
+                "count": str(hidden),
+            }
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+
+            # Archive is the reversible hide; forget, delete and unlist set the
+            # same `deleted` flag, so the entity row leaves the projection the same way.
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata||'{\"archived\":true}' WHERE id=$1",
+                hidden,
+            )
+            _barrier(topology, projection)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(hidden)},
+                )
+                == 0
+            )
+            # The rows still replicate; only the views decline them.
+            assert (
+                _scalar(projection, "SELECT count(*) FROM general.facts WHERE id=:id", {"id": fact})
+                == 1
+            )
+            assert visible(rows) == dict.fromkeys(views, 0)
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM mcp_read.public__entities WHERE source_id=:id",
+                    {"id": str(other)},
+                )
+                == 1
+            )
+
+            await actual.execute(
+                "UPDATE public.entities SET metadata=metadata-'archived' WHERE id=$1", hidden
+            )
+            _barrier(topology, projection)
+            assert visible(rows) == dict.fromkeys(views, 1)
+        finally:
+            await actual.execute(
+                "DELETE FROM relationship.entity_facts WHERE src='hidden-entity-control'"
+            )
+            # Facts and edges point both ways between the two, so both go before either entity.
+            entities = [e for e in (hidden, other) if e]
+            await actual.execute(
+                "DELETE FROM public.entity_graph_edges "
+                "WHERE subject_entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute(
+                "DELETE FROM general.facts WHERE entity_id=ANY($1) OR object_entity_id=ANY($1)",
+                entities,
+            )
+            await actual.execute("DELETE FROM public.entities WHERE id=ANY($1)", entities)
+            await actual.close()
+            _barrier(topology, projection)
+
+    asyncio.run(exercise())
+
+
+def test_actual_tcp_principals_and_no_credential_guards(copied):
+    from psycopg2 import OperationalError
+
+    from butlers.testing.public_mcp import _HBA, _IDENT
+
+    topology, projection, manifest = copied
+    reader = topology.reader_engine("mcp_public_ro")
+    importer = topology.reader_engine("mcp_proposals_reader")
+    try:
+        assert _scalar(reader, "SELECT count(*) FROM mcp_read.mcp_surface__controls") == 8
+        assert _scalar(importer, "SELECT count(*) FROM mcp_inbox.proposals") == 0
+        for allowed, role in ((reader, "mcp_public_ro"), (importer, "mcp_proposals_reader")):
+            with allowed.connect() as conn:
+                assert conn.execute(text("SELECT current_user,current_database()")).one() == (
+                    role,
+                    "butlers_public",
+                )
+        for role in ("mcp_public_ro", "mcp_proposals_reader", "butlers_projection_publisher"):
+            for database in ("butlers", "postgres", "template1"):
+                denied = topology.reader_engine(role, database)
+                try:
+                    with pytest.raises(DBAPIError) as refusal:
+                        with denied.connect():
+                            pytest.fail("foreign database connection must be refused")
+                    original = refusal.value.orig
+                    # libpq startup failures can lack a structured SQLSTATE.
+                    # Match only the server's explicit reject for this principal
+                    # and database; wrong passwords/unreachable endpoints and
+                    # unrelated OperationalErrors cannot satisfy this predicate.
+                    # Keep the raw diagnostic in RAM; assertion output is closed.
+                    hba_reject = re.search(
+                        r"(?:^|failed: )FATAL:\s+pg_hba\.conf rejects connection for host "
+                        r'"[^"\r\n]+", user "'
+                        + re.escape(role)
+                        + r'", database "'
+                        + re.escape(database)
+                        + r'", (?:no encryption|SSL encryption)\s*$',
+                        str(original),
+                        re.MULTILINE,
+                    )
+                    facts = {
+                        "same_healthy_tcp_endpoint": (denied.url.host, denied.url.port)
+                        == (reader.url.host, reader.url.port),
+                        "expected_principal": denied.url.username == role,
+                        "expected_database": denied.url.database == database,
+                        "startup_driver_error": isinstance(original, OperationalError),
+                        "sqlstate_available_or_startup_unavailable": original.pgcode
+                        in (None, "28000"),
+                        "explicit_server_hba_reject": hba_reject is not None,
+                    }
+                    assert all(facts.values()), facts
+                finally:
+                    denied.dispose()
+        before = _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+        for mutation, restore in (
+            (
+                "ALTER ROLE butlers_projection_publisher PASSWORD 'synthetic-negative'",
+                "ALTER ROLE butlers_projection_publisher PASSWORD NULL",
+            ),
+            (
+                "GRANT butlers_projection_publisher TO mcp_public_ro",
+                "REVOKE butlers_projection_publisher FROM mcp_public_ro",
+            ),
+        ):
+            try:
+                with topology.admin.begin() as conn:
+                    conn.exec_driver_sql(mutation)
+                refused = _run(topology, render_owner_program(manifest), success=False)
+                assert b"publisher" in refused.output
+                assert (
+                    _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+                    == before
+                )
+            finally:
+                with topology.admin.begin() as conn:
+                    conn.exec_driver_sql(restore)
+        for hba, ident in (
+            (_HBA.replace("peer map=local", "trust"), _IDENT),
+            (_HBA, _IDENT + "local postgres mcp_public_ro\n"),
+            (_HBA.replace("host all butlers_projection_publisher all reject\n", ""), _IDENT),
+        ):
+            with topology.authentication(hba=hba, ident=ident):
+                refused = _run(topology, render_owner_program(manifest), success=False)
+                assert b"public MCP" in refused.output
+                assert (
+                    _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied")
+                    == before
+                )
+        _run(topology, render_owner_program(manifest))
+        assert _scalar(projection, "SELECT applied_at FROM mcp_local.manifest_applied") == before
+    finally:
+        reader.dispose()
+        importer.dispose()
+
+
+# "test_decoding" (task 6.1): the publisher's REPLICATION lets it decode every change in the
+# database through any output plugin (RFC 0039 D9), so a slot under the subscription's name with
+# any plugin but pgoutput must stop the owner step before it reuses or rebuilds anything.
+@pytest.mark.parametrize("fault", ["missing", "physical", "missing-subscription", "test_decoding"])
+def test_missing_slot_rebuilds_stale_data_and_invalid_slot_refuses(copied, fault):
+    topology, projection, manifest = copied
+    stale = uuid.uuid4()
+    unrelated = None
+    unrelated_slot = "mcp_e_survivor_" + uuid.uuid4().hex[:12]
+    unrelated_pid = None
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        before = conn.execute(
+            text(
+                "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+            )
+        ).scalar_one()
+        conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+    _wait(
+        lambda: _scalar(
+            topology.admin,
+            "SELECT active_pid IS NULL FROM pg_replication_slots WHERE slot_name='butlers_public_sub'",
+        )
+    )
+    try:
+        if fault == "missing-subscription":
+            unrelated = topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT")
+            unrelated_pid = unrelated.execute(text("SELECT pg_backend_pid()")).scalar_one()
+            unrelated.execute(
+                text("SELECT pg_create_physical_replication_slot(:slot)"),
+                {"slot": unrelated_slot},
+            )
+            with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub SET (slot_name=NONE)")
+                conn.exec_driver_sql("DROP SUBSCRIPTION butlers_public_sub")
+            assert _scalar(
+                topology.admin,
+                "SELECT slot_type='logical' AND plugin='pgoutput' AND database='butlers' AND wal_status<>'lost' AND active_pid IS NULL FROM pg_replication_slots WHERE slot_name='butlers_public_sub'",
+            )
+            assert (
+                _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied")
+                == manifest.digest
+            )
+            assert (
+                _scalar(
+                    projection,
+                    "SELECT count(*) FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())",
+                )
+                == 0
+            )
+        else:
+            with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+                if fault == "physical":
+                    conn.exec_driver_sql(
+                        "SELECT pg_create_physical_replication_slot('butlers_public_sub')"
+                    )
+                if fault == "test_decoding":
+                    # As the publisher itself: the SQL slot functions check the current
+                    # user's REPLICATION attribute, which only the publisher holds.
+                    conn.exec_driver_sql("SET SESSION AUTHORIZATION butlers_projection_publisher")
+                    try:
+                        assert conn.exec_driver_sql("SELECT current_user").scalar_one() == (
+                            "butlers_projection_publisher"
+                        )
+                        conn.exec_driver_sql(
+                            "SELECT pg_create_logical_replication_slot("
+                            "'butlers_public_sub', 'test_decoding')"
+                        )
+                    finally:
+                        conn.exec_driver_sql("RESET SESSION AUTHORIZATION")
+            assert _scalar(
+                topology.admin,
+                "SELECT count(*) FROM pg_replication_slots WHERE slot_name='butlers_public_sub' "
+                "AND slot_type='logical' AND plugin='test_decoding'",
+            ) == (1 if fault == "test_decoding" else 0)
+        with projection.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(id,institution,type,currency,name) VALUES (:id,'Synthetic stale','checking','USD','must be purged')"
+                ),
+                {"id": stale},
+            )
+        assert (
+            _scalar(
+                topology.engine, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale}
+            )
+            == 0
+        )
+        assert (
+            _scalar(projection, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale})
+            == 1
+        )
+        if fault in ("physical", "test_decoding"):
+            refused = _run(topology, render_owner_program(manifest), success=False)
+            assert b"slot identity refused" in refused.output
+            assert (
+                _scalar(
+                    projection, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale}
+                )
+                == 1
+            )
+            with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+        if fault == "missing-subscription":
+            # Observe the real renderer's decision before destructive statements:
+            # applied/catalog/slot are healthy, but no copy owner remains.
+            prefix = render_owner_program(manifest).split("\\if :e_rebuild\n", 1)[0]
+            classified = _run(topology, prefix + "\\echo RECOVERY :e_rebuild\n")
+            assert b"RECOVERY t" in classified.output
+        _run(topology, render_owner_program(manifest))
+        _wait(lambda: _ready(projection, manifest.digest))
+        assert (
+            _scalar(projection, "SELECT count(*) FROM finance.accounts WHERE id=:id", {"id": stale})
+            == 0
+        )
+        if fault == "missing-subscription":
+            assert (
+                _scalar(
+                    topology.admin,
+                    "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:slot AND slot_type='physical'",
+                    {"slot": unrelated_slot},
+                )
+                == 1
+            )
+            assert (
+                _scalar(
+                    topology.admin,
+                    "SELECT count(*) FROM pg_stat_activity WHERE pid=:pid",
+                    {"pid": unrelated_pid},
+                )
+                == 1
+            )
+            assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 0
+            assert (
+                _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied")
+                == manifest.digest
+            )
+        assert (
+            _scalar(
+                projection,
+                "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())",
+            )
+            != before
+        )
+    finally:
+        if unrelated is not None:
+            try:
+                unrelated.execute(
+                    text("SELECT pg_drop_replication_slot(:slot)"), {"slot": unrelated_slot}
+                )
+            finally:
+                unrelated.close()
+        _apply(topology, projection, manifest)
+
+
+@pytest.mark.parametrize(
+    "boundary", ["capture", "deletion", "drop", "cleanup", "ddl", "before-applied"]
+)
+def test_actual_program_interruption_resumes_with_exact_owned_journal(
+    copied, boundary, record_property
+):
+    topology, projection, full = copied
+    _, target = _states("column-narrow")
+    # A real unrelated primary slot/session must survive every cleanup wave.
+    unrelated = topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT")
+    slot = "mcp_e_unrelated_" + uuid.uuid4().hex[:12]
+    pid = unrelated.execute(text("SELECT pg_backend_pid()")).scalar_one()
+    unrelated.execute(text("SELECT pg_create_physical_replication_slot(:slot)"), {"slot": slot})
+    try:
+        _reconcile(topology, target)
+        program = render_owner_program(target)
+        if boundary == "capture":
+            cut = program.rindex(
+                "DO $mcp$", 0, program.index("DELETE FROM mcp_local.manifest_applied")
+            )
+        elif boundary == "deletion":
+            cut = program.index(
+                "SELECT EXISTS(SELECT 1 FROM pg_subscription",
+                program.index("DELETE FROM mcp_local.manifest_applied"),
+            )
+        elif boundary == "drop":
+            cut = program.index(
+                "SELECT set_config('butlers.e_cleanup_sources'", program.index("DROP SUBSCRIPTION")
+            )
+        elif boundary == "cleanup":
+            cut = program.index(
+                "\\endif\n\\connect butlers\n", program.index("PERFORM pg_drop_replication_slot")
+            )
+        elif boundary == "ddl":
+            cut = program.index("-- PUBLIC_MCP_SUBSCRIBER_DDL_COMPLETE\n")
+        else:
+            cut = program.rindex("SET ROLE mcp_projection_owner;\nBEGIN;")
+        prefix = program[:cut]
+        # Finish an open psql conditional after a positioned deliberate SQL error;
+        # ON_ERROR_STOP aborts before that terminator can execute anything else.
+        interrupted = _run(
+            topology,
+            prefix + "DO $$ BEGIN RAISE EXCEPTION 'positioned owner interruption'; END $$;\n",
+            success=False,
+        )
+        assert b"positioned owner interruption" in interrupted.output
+        if boundary == "capture":
+            assert _scalar(projection, "SELECT count(*) FROM mcp_local.manifest_applied") == 1
+            assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 0
+            assert (
+                _scalar(projection, "SELECT digest FROM mcp_local.manifest_applied") == full.digest
+            )
+            return
+        assert _scalar(projection, "SELECT count(*) FROM mcp_local.manifest_applied") == 0
+        assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 1
+        with projection.connect() as conn:
+            journal = conn.execute(
+                text(
+                    "SELECT database_oid,subscription_name,attempt_id,target_digest,manifests,subscription_oids FROM mcp_local.rebuild_state"
+                )
+            ).one()
+            assert journal.subscription_name == "butlers_public_sub" and journal.attempt_id
+            assert journal.target_digest == target.digest
+            assert target.canonical in journal.manifests and full.canonical in journal.manifests
+            assert journal.subscription_oids
+            assert not conn.execute(
+                text(
+                    "SELECT has_table_privilege('mcp_public_ro','mcp_local.rebuild_state','SELECT') OR has_table_privilege('mcp_proposals_reader','mcp_local.rebuild_state','SELECT')"
+                )
+            ).scalar_one()
+        with projection.connect() as conn:
+            current_oid = conn.execute(
+                text(
+                    "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+                )
+            ).scalar_one_or_none()
+        candidates = list(journal.subscription_oids) + ([current_oid] if current_oid else [])
+        with topology.admin.connect() as conn:
+            real_sync = (
+                conn.execute(
+                    text(
+                        "SELECT slot_name FROM pg_replication_slots WHERE EXISTS(SELECT 1 FROM unnest(CAST(:oids AS oid[])) o WHERE slot_name ~ ('^pg_'||o::text||'_sync_[0-9]+_[0-9]+$'))"
+                    ),
+                    {"oids": candidates},
+                )
+                .scalars()
+                .all()
+            )
+        record_property("actual_owned_sync_slots_before_resume", len(real_sync))
+        # A changed-target retry retains all retired declarations and OIDs; it
+        # must not silently forget the interrupted narrowing attempt.
+        _apply(topology, projection, full)
+        assert _scalar(projection, "SELECT count(*) FROM mcp_local.rebuild_state") == 0
+        for observed_slot in real_sync:
+            assert (
+                _scalar(
+                    topology.admin,
+                    "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:slot",
+                    {"slot": observed_slot},
+                )
+                == 0
+            )
+        assert (
+            _scalar(
+                topology.admin,
+                "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:slot",
+                {"slot": slot},
+            )
+            == 1
+        )
+        assert unrelated.execute(text("SELECT pg_backend_pid()")).scalar_one() == pid
+    finally:
+        unrelated.execute(text("SELECT pg_drop_replication_slot(:slot)"), {"slot": slot})
+        unrelated.close()
+        _apply(topology, projection, full)
+
+
+def test_malformed_foreign_or_conflicting_journal_refuses_without_cleanup(copied):
+    import hashlib
+
+    topology, projection, manifest = copied
+    _, narrow = _states("column-narrow")
+    current_oid = _scalar(
+        projection,
+        "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())",
+    )
+    _reconcile(topology, narrow)
+    program = render_owner_program(narrow)
+    cut = program.index(
+        "SELECT EXISTS(SELECT 1 FROM pg_subscription",
+        program.index("DELETE FROM mcp_local.manifest_applied"),
+    )
+    interrupted = _run(
+        topology,
+        program[:cut] + "DO $$ BEGIN RAISE EXCEPTION 'journal control interruption'; END $$;",
+        success=False,
+    )
+    assert b"journal control interruption" in interrupted.output
+    assert _scalar(projection, "SELECT count(*) FROM mcp_local.manifest_applied") == 0
+    with projection.connect() as conn:
+        original = conn.execute(
+            text(
+                "SELECT database_oid,target_digest,manifests,subscription_oids FROM mcp_local.rebuild_state"
+            )
+        ).one()
+    with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql(
+            "CREATE SUBSCRIPTION mcp_e_foreign CONNECTION 'host=/controller/run dbname=butlers user=postgres' PUBLICATION butlers_public_v1 WITH(connect=false,create_slot=false,enabled=false,slot_name=NONE)"
+        )
+        foreign_oid = conn.execute(
+            text(
+                "SELECT oid FROM pg_subscription WHERE subname='mcp_e_foreign' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())"
+            )
+        ).scalar_one()
+    try:
+        for fault in (
+            "database",
+            "digest",
+            "canonical",
+            "foreign-oid",
+            "acl",
+            "shape",
+            "undeclared-local",
+            "completion",
+        ):
+            try:
+                with projection.begin() as conn:
+                    if fault == "database":
+                        conn.exec_driver_sql(
+                            "UPDATE mcp_local.rebuild_state SET database_oid=(SELECT oid FROM pg_database WHERE datname='postgres')"
+                        )
+                    elif fault == "digest":
+                        conn.exec_driver_sql(
+                            "UPDATE mcp_local.rebuild_state SET target_digest=repeat('0',64)"
+                        )
+                    elif fault == "canonical":
+                        malformed = '{"tables":[],"version":1}'
+                        conn.execute(
+                            text(
+                                "UPDATE mcp_local.rebuild_state SET manifests=ARRAY[CAST(:canonical AS text)],target_digest=:digest"
+                            ),
+                            {
+                                "canonical": malformed,
+                                "digest": hashlib.sha256(malformed.encode()).hexdigest(),
+                            },
+                        )
+                    elif fault == "foreign-oid":
+                        conn.execute(
+                            text(
+                                "UPDATE mcp_local.rebuild_state SET subscription_oids=array_append(subscription_oids,CAST(:oid AS oid))"
+                            ),
+                            {"oid": foreign_oid},
+                        )
+                    elif fault == "acl":
+                        conn.exec_driver_sql(
+                            "GRANT SELECT ON mcp_local.rebuild_state TO mcp_public_ro"
+                        )
+                    elif fault == "undeclared-local":
+                        conn.exec_driver_sql("SET LOCAL ROLE mcp_projection_owner")
+                        conn.exec_driver_sql(
+                            "CREATE VIEW mcp_local.unexpected AS SELECT 1 AS value"
+                        )
+                    elif fault == "shape":
+                        conn.exec_driver_sql(
+                            "ALTER TABLE mcp_local.rebuild_state ADD COLUMN unexpected text"
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                "INSERT INTO mcp_local.manifest_applied(digest,canonical) VALUES (:digest,:canonical)"
+                            ),
+                            {"digest": manifest.digest, "canonical": manifest.canonical},
+                        )
+                refused = _run(topology, render_owner_program(narrow), success=False)
+                assert any(
+                    label in refused.output
+                    for label in (
+                        b"journal",
+                        b"managed table",
+                        b"applied manifest",
+                        b"undeclared local catalog",
+                    )
+                )
+                assert _scalar(projection, "SELECT count(*) FROM mcp_local.manifest_applied") == (
+                    1 if fault == "completion" else 0
+                )
+                assert (
+                    _scalar(
+                        projection,
+                        "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub' AND subdbid=(SELECT oid FROM pg_database WHERE datname=current_database())",
+                    )
+                    == current_oid
+                )
+                assert (
+                    _scalar(
+                        topology.admin,
+                        "SELECT count(*) FROM pg_subscription WHERE oid=:oid",
+                        {"oid": foreign_oid},
+                    )
+                    == 1
+                )
+            finally:
+                with projection.begin() as conn:
+                    if fault == "acl":
+                        conn.exec_driver_sql(
+                            "REVOKE SELECT ON mcp_local.rebuild_state FROM mcp_public_ro"
+                        )
+                    elif fault == "undeclared-local":
+                        conn.exec_driver_sql("SET LOCAL ROLE mcp_projection_owner")
+                        conn.exec_driver_sql("DROP VIEW mcp_local.unexpected")
+                    elif fault == "shape":
+                        conn.exec_driver_sql(
+                            "ALTER TABLE mcp_local.rebuild_state DROP COLUMN unexpected"
+                        )
+                    elif fault == "completion":
+                        conn.exec_driver_sql("DELETE FROM mcp_local.manifest_applied")
+                    conn.execute(
+                        text(
+                            "UPDATE mcp_local.rebuild_state SET database_oid=:db,target_digest=:digest,manifests=CAST(:manifests AS text[]),subscription_oids=CAST(:oids AS oid[])"
+                        ),
+                        {
+                            "db": original.database_oid,
+                            "digest": original.target_digest,
+                            "manifests": original.manifests,
+                            "oids": original.subscription_oids,
+                        },
+                    )
+        _apply(topology, projection, manifest)
+        assert _ready(projection, manifest.digest)
+    finally:
+        with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.exec_driver_sql("DROP SUBSCRIPTION mcp_e_foreign")
+        _apply(topology, projection, manifest)
+
+
+def _canary_hits(projection, needle):
+    """Every projection relation (tables, views) whose rows mention ``needle``; names only."""
+    hits = []
+    with projection.connect() as conn:
+        relations = conn.execute(
+            text(
+                "SELECT n.nspname,c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+                "WHERE c.relkind IN ('r','p','v','m') AND n.nspname NOT LIKE 'pg\\_%' "
+                "AND n.nspname<>'information_schema' ORDER BY 1,2"
+            )
+        ).all()
+        for schema, relation in relations:
+            found = conn.execute(
+                text(f'SELECT count(*) FROM "{schema}"."{relation}" t WHERE t::text LIKE :p'),
+                {"p": f"%{needle}%"},
+            ).scalar_one()
+            if found:
+                hits.append(f"{schema}.{relation}")
+    return hits
+
+
+def _full_resync(topology, projection, manifest):
+    """Drop the slot behind a disabled subscription so the owner step truncates and re-copies."""
+    with projection.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql("ALTER SUBSCRIPTION butlers_public_sub DISABLE")
+    _wait(
+        lambda: _scalar(
+            topology.admin,
+            "SELECT active_pid IS NULL FROM pg_replication_slots WHERE slot_name='butlers_public_sub'",
+        )
+    )
+    with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        conn.exec_driver_sql("SELECT pg_drop_replication_slot('butlers_public_sub')")
+    _run(topology, render_owner_program(manifest))
+    _wait(lambda: _ready(projection, manifest.digest))
+
+
+def test_canaries_in_excluded_sources_are_absent_after_a_full_sync(copied):
+    """Drift check 4 (RFC 0039 D4, D15): fake secrets planted in excluded sources never arrive."""
+    topology, projection, manifest = copied
+    stamp = uuid.uuid4().hex
+    tag = {k: f"{stamp}-{k}" for k in (
+        "secret", "entity_info", "pii_fact", "contact_fact", "api_token", "portal_password",
+        "source_value", "control",
+    )}  # fmt: skip
+    ids = {}
+    try:
+        with topology.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO public.butler_secrets(secret_key,secret_value) VALUES (:k,:v)"),
+                {"k": "canary-" + stamp, "v": tag["secret"]},
+            )
+            ids["entity"] = conn.execute(
+                text(
+                    "INSERT INTO public.entities(canonical_name,entity_type,metadata) "
+                    "VALUES ('Canary person','person',CAST(:m AS jsonb)) RETURNING id"
+                ),
+                {"m": json.dumps({"source_channel": "x", "source_value": tag["source_value"]})},
+            ).scalar_one()
+            conn.execute(
+                text(
+                    "INSERT INTO public.entity_info(entity_id,type,value,secured) "
+                    "VALUES (:e,'canary',:v,true)"
+                ),
+                {"e": ids["entity"], "v": tag["entity_info"]},
+            )
+            ids["pii"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) "
+                    "VALUES ('Canary','note',:c,'pii','active') RETURNING id"
+                ),
+                {"c": tag["pii_fact"]},
+            ).scalar_one()
+            ids["control"] = conn.execute(
+                text(
+                    "INSERT INTO general.facts(subject,predicate,content,sensitivity,validity) "
+                    "VALUES ('Canary control','note',:c,'normal','active') RETURNING id"
+                ),
+                {"c": tag["control"]},
+            ).scalar_one()
+            ids["contact"] = conn.execute(
+                text(
+                    "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+                    "VALUES (:e,'contact_phone',:o,'literal','canary') RETURNING id"
+                ),
+                {"e": ids["entity"], "o": tag["contact_fact"]},
+            ).scalar_one()
+            ids["account"] = conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(institution,name,type,currency) "
+                    "VALUES ('Canary','Canary account','checking','USD') RETURNING id"
+                )
+            ).scalar_one()
+            ids["category"] = "canary-" + stamp
+            conn.execute(
+                text("INSERT INTO finance.categories(name,display_name) VALUES (:n,'Canary')"),
+                {"n": ids["category"]},
+            )
+            ids["transaction"] = conn.execute(
+                text(
+                    "INSERT INTO finance.transactions(account_id,posted_at,merchant,amount,currency,"
+                    "direction,category,metadata) VALUES (:a,clock_timestamp(),'Canary merchant',1,"
+                    "'USD','debit',:c,CAST(:m AS jsonb)) RETURNING id"
+                ),
+                {
+                    "a": ids["account"],
+                    "c": ids["category"],
+                    "m": json.dumps({"api_token": tag["api_token"]}),
+                },
+            ).scalar_one()
+            ids["health"] = conn.execute(
+                text(
+                    "INSERT INTO health.facts(subject,predicate,content,sensitivity,validity,metadata) "
+                    "VALUES ('Canary','measurement_weight','70','normal','active',CAST(:m AS jsonb)) "
+                    "RETURNING id"
+                ),
+                {"m": json.dumps({"portal_password": tag["portal_password"], "value": {"ok": 1}})},
+            ).scalar_one()
+        _full_resync(topology, projection, manifest)
+        # The scan is not vacuous: the one published neighbor is found, by name.
+        assert _canary_hits(projection, tag["control"]) != []
+        assert "general.facts" in _canary_hits(projection, tag["control"])
+        leaked = {
+            label: _canary_hits(projection, value)
+            for label, value in tag.items()
+            if label != "control"
+        }
+        assert {label: hits for label, hits in leaked.items() if hits} == {}
+        # Red 1: the detector names the relation when a canary is in the projection.
+        planted = uuid.uuid4()
+        with projection.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO finance.accounts(id,institution,type,currency,name) "
+                    "VALUES (:i,'Synthetic','checking','USD',:n)"
+                ),
+                {"i": planted, "n": tag["secret"]},
+            )
+        try:
+            assert "finance.accounts" in _canary_hits(projection, tag["secret"])
+        finally:
+            with projection.begin() as conn:
+                conn.execute(text("DELETE FROM finance.accounts WHERE id=:i"), {"i": planted})
+        assert _canary_hits(projection, tag["secret"]) == []
+        # Red 2: a manifest edit that would publish pii facts is refused before any sync.
+        facts = next(t for t in manifest.tables if t.source == "general.facts")
+        widened = replace(
+            facts,
+            filters=tuple(
+                (c, ("normal", "pii") if c == "sensitivity" else v) for c, v in facts.filters
+            ),
+        )
+        bad = replace(manifest, tables=tuple(widened if t is facts else t for t in manifest.tables))
+        with pytest.raises(ManifestError, match="unsafe privacy filter"):
+            _reconcile(topology, bad)
+    finally:
+        with topology.engine.begin() as conn:
+            conn.execute(
+                text("DELETE FROM public.butler_secrets WHERE secret_key=:k"),
+                {"k": "canary-" + stamp},
+            )
+            for sql, key in (
+                ("DELETE FROM health.facts WHERE id=:v", "health"),
+                ("DELETE FROM finance.transactions WHERE id=:v", "transaction"),
+                ("DELETE FROM finance.categories WHERE name=:v", "category"),
+                ("DELETE FROM finance.accounts WHERE id=:v", "account"),
+                ("DELETE FROM relationship.entity_facts WHERE id=:v", "contact"),
+                ("DELETE FROM general.facts WHERE id=:v", "control"),
+                ("DELETE FROM general.facts WHERE id=:v", "pii"),
+                ("DELETE FROM public.entities WHERE id=:v", "entity"),
+            ):
+                if key in ids:
+                    conn.execute(text(sql), {"v": ids[key]})
+        _apply(topology, projection, manifest)
+        _barrier(topology, projection)
+
+
+def test_primary_isolation_grants_stats_connection_limit_and_credential_custody(copied):
+    """Task 1.8, primary half: grants, stats role, connection limit, who holds a password."""
+    from butlers.db_authority.catalog import diff_publisher_catalog, read_public_catalog
+    from butlers.db_authority.grants import PROJECTION_PUBLISHER
+
+    topology, projection, manifest = copied
+    readers = ("mcp_public_ro", "mcp_proposals_reader")
+    acl = (
+        "SELECT d.datname,a.grantee,a.privilege_type FROM pg_database d, "
+        "LATERAL aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a"
+    )
+    with topology.admin.connect() as conn:
+        grants = conn.execute(text(acl)).all()
+        oids = dict(
+            conn.execute(
+                text("SELECT rolname,oid FROM pg_roles WHERE rolname=ANY(:r)"), {"r": list(readers)}
+            ).all()
+        )
+        # CONNECT on the projection is not open to PUBLIC; the readers hold it only there.
+        assert not [
+            g for g in grants if g[0] == "butlers_public" and g[1] == 0 and g[2] == "CONNECT"
+        ]
+        for role, oid in oids.items():
+            assert {d for d, grantee, p in grants if grantee == oid and p == "CONNECT"} <= {
+                "butlers_public"
+            }, role
+            assert not conn.execute(
+                text("SELECT pg_has_role(:r,'pg_read_all_stats','MEMBER')"), {"r": role}
+            ).scalar_one()
+        # Custody: both readers hold a SCRAM verifier and different ones; the publisher none.
+        verifiers = conn.execute(
+            text(
+                "SELECT rolname,rolpassword LIKE 'SCRAM-SHA-256$%' FROM pg_authid WHERE rolname=ANY(:r)"
+            ),
+            {"r": list(readers)},
+        ).all()
+        assert dict(verifiers) == dict.fromkeys(readers, True)
+        assert (
+            conn.execute(
+                text("SELECT count(DISTINCT rolpassword) FROM pg_authid WHERE rolname=ANY(:r)"),
+                {"r": list(readers)},
+            ).scalar_one()
+            == 2
+        )
+        assert conn.execute(
+            text("SELECT rolpassword IS NULL FROM pg_authid WHERE rolname=:p"),
+            {"p": PROJECTION_PUBLISHER},
+        ).scalar_one()
+        assert (
+            conn.execute(
+                text("SELECT rolconnlimit FROM pg_roles WHERE rolname='mcp_public_ro'")
+            ).scalar_one()
+            == 10
+        )
+        # The publisher's table privileges are exactly its declaration.
+        assert (
+            diff_publisher_catalog(
+                read_public_catalog(conn, (PROJECTION_PUBLISHER,)), published=True
+            )
+            == []
+        )
+    # Red: an extra publisher grant is named, then removed.
+    with topology.admin.begin() as conn:
+        conn.exec_driver_sql(f"GRANT SELECT ON public.audit_log TO {PROJECTION_PUBLISHER}")
+    try:
+        with topology.admin.connect() as conn:
+            assert diff_publisher_catalog(
+                read_public_catalog(conn, (PROJECTION_PUBLISHER,)), published=True
+            ) == [f"audit_log {PROJECTION_PUBLISHER}: manifest - catalog SELECT"]
+    finally:
+        with topology.admin.begin() as conn:
+            conn.exec_driver_sql(f"REVOKE SELECT ON public.audit_log FROM {PROJECTION_PUBLISHER}")
+    # The limit is enforced: ten sessions fit, the eleventh is refused.
+    engine = topology.reader_engine("mcp_public_ro")
+    held = []
+    try:
+        for _ in range(10):
+            held.append(engine.connect())
+        with pytest.raises(DBAPIError, match="too many connections for role"):
+            engine.connect()
+    finally:
+        for conn in held:
+            conn.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize("boundary", ["ddl", "before-publish-state"])
+def test_teardown_leaves_no_subscription_or_slot_after_a_mid_program_failure(topology, boundary):
+    projection = topology.projection_engine()
+    manifest = load_manifest()
+    try:
+        _reconcile(topology, manifest)
+        program = render_owner_program(manifest)
+        if boundary == "ddl":
+            cut = program.index("-- PUBLIC_MCP_SUBSCRIBER_DDL_COMPLETE\n")
+        else:
+            cut = program.rindex("SET ROLE mcp_projection_owner;\nBEGIN;")
+        _run(
+            topology,
+            program[:cut] + "DO $$ BEGIN RAISE EXCEPTION 'forced mid-program failure'; END $$;\n",
+            success=False,
+        )
+        slots = "SELECT count(*) FROM pg_replication_slots WHERE slot_name='butlers_public_sub'"
+        assert _scalar(topology.admin, slots) == 1  # the failure really left a slot behind
+        _teardown_subscription(topology, projection)
+        _teardown_subscription(topology, projection)  # tolerates absence
+        assert _scalar(topology.admin, slots) == 0
+        assert _scalar(projection, _SUB_COUNT) == 0
+        # The next fixture starts from nothing and still converges.
+        _apply(topology, projection, manifest)
+        _teardown_subscription(topology, projection)
+    finally:
+        projection.dispose()
+
+
+def test_teardown_drops_orphaned_tablesync_slots(topology):
+    projection = topology.projection_engine()
+    manifest = load_manifest()
+    try:
+        _apply(topology, projection, manifest)
+        subid = _scalar(
+            projection, "SELECT oid FROM pg_subscription WHERE subname='butlers_public_sub'"
+        )
+        orphan = f"pg_{subid}_sync_99999"
+        unrelated = f"pg_{subid + 1}_sync_99999"
+        with topology.admin.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            for name in (orphan, unrelated):
+                conn.execute(
+                    text("SELECT pg_create_logical_replication_slot(:n, 'pgoutput')"), {"n": name}
+                )
+        try:
+            _teardown_subscription(topology, projection)
+            names = "SELECT count(*) FROM pg_replication_slots WHERE slot_name=:n"
+            assert _scalar(topology.admin, names, {"n": orphan}) == 0
+            assert _scalar(topology.admin, names, {"n": unrelated}) == 1
+        finally:
+            _drop_slots(topology.admin, "slot_name=:n", {"n": unrelated})
+    finally:
+        projection.dispose()

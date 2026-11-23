@@ -10,7 +10,6 @@ from __future__ import annotations
 import importlib
 
 import pytest
-from prometheus_client import REGISTRY
 
 from butlers.metrics_registry import (
     get_or_create_counter,
@@ -51,7 +50,6 @@ def test_type_mismatch_still_raises() -> None:
 @pytest.mark.parametrize(
     "module_path",
     [
-        "butlers.api.routers.audit",
         "butlers.connectors.metrics",
         "butlers.api.routers.dashboard_briefing",
         "butlers.api.routers.google_health",
@@ -61,19 +59,13 @@ def test_type_mismatch_still_raises() -> None:
 def test_module_reimport_does_not_raise_duplicate_timeseries(module_path: str) -> None:
     """Reloading a metrics-defining module must not collide in the registry.
 
-    This is the exact failure mode (audit_log_appended_total registered twice)
+    This is the exact failure mode (a module-level counter registered twice)
     that flaked the finance bulk suite under pytest-xdist. The reload is wrapped
     in ``_reload_restoring_attrs`` so it cannot leak rebound module-level objects
     (e.g. ``_get_db_manager``) into later same-worker tests [bu-uhn47].
     """
     module = importlib.import_module(module_path)
     _reload_restoring_attrs(module)  # would raise ValueError before the fix
-
-
-def test_audit_counter_is_present_after_reload() -> None:
-    audit = importlib.import_module("butlers.api.routers.audit")
-    _reload_restoring_attrs(audit)
-    assert REGISTRY._names_to_collectors.get("audit_log_appended") is not None
 
 
 def _reload_restoring_attrs(module: object) -> None:

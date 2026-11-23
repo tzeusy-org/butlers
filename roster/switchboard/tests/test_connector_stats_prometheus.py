@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from butlers.api.routers import ingestion_connectors
+from butlers.testing.db_manager import db_manager
 from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import Record
 
@@ -54,35 +56,12 @@ def _load_router():
 # filtered_events UNION); fetchrow/fetchval stay unconfigured so they refuse.
 
 
-class _FakeDBWithRows:
-    def __init__(self, rows: list[dict]):
-        self._rows = rows
-
-    def pool(self, name: str):
-        return fake_pool(fetch=self._rows)
-
-    @property
-    def butler_names(self) -> list[str]:
-        return []
-
-    async def fan_out_with_status(
-        self, query: str, args: tuple = (), butler_names=None
-    ) -> tuple[dict, list[str]]:
-        return {}, []
+def _db_with_rows(rows: list[Any]):
+    return db_manager({"switchboard": fake_pool(fetch=rows)})
 
 
-class _FakeDB:
-    def pool(self, name: str):
-        return fake_pool(fetch=[])
-
-    @property
-    def butler_names(self) -> list[str]:
-        return []
-
-    async def fan_out_with_status(
-        self, query: str, args: tuple = (), butler_names=None
-    ) -> tuple[dict, list[str]]:
-        return {}, []
+def _db():
+    return _db_with_rows([])
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +76,7 @@ async def test_get_connector_stats_empty_db_returns_empty():
         connector_type="telegram_bot",
         endpoint_identity="bot@123",
         period="24h",
-        db=_FakeDB(),
+        db=_db(),
     )
     # Empty pool → empty series; a no-rows result is not a failure, so the
     # degraded flag stays True (only a genuine query error flips it false).
@@ -140,7 +119,7 @@ async def test_get_connector_stats_websocket_connector_db_sourced():
         connector_type="home_assistant",
         endpoint_identity="ws://homeassistant.local:8123",
         period="24h",
-        db=_FakeDBWithRows(fake_rows),
+        db=_db_with_rows(fake_rows),
     )
 
     assert len(result.data) == 2
@@ -188,7 +167,7 @@ async def test_get_connector_stats_7d_returns_daily_rows():
         connector_type="email",
         endpoint_identity="user@example.com",
         period="7d",
-        db=_FakeDBWithRows(fake_rows),
+        db=_db_with_rows(fake_rows),
     )
 
     assert len(result.data) == 1
@@ -215,7 +194,7 @@ async def test_get_connector_stats_omits_unrendered_legacy_counters():
             connector_type="telegram_bot",
             endpoint_identity="bot@123",
             period=period,
-            db=_FakeDBWithRows(
+            db=_db_with_rows(
                 [
                     {
                         "bucket": datetime(2024, 1, 15, 10, 0, tzinfo=UTC),
@@ -250,24 +229,11 @@ async def test_get_connector_stats_db_failure_degrades_honestly():
         async def fetchval(self, *args, **kwargs):
             raise RuntimeError("not expected")
 
-    class _RaisingDB:
-        def pool(self, name: str):
-            return _RaisingPool()
-
-        @property
-        def butler_names(self) -> list[str]:
-            return []
-
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            return {}, []
-
     result = await ingestion_connectors._connector_stats_from_db(
         connector_type="telegram_bot",
         endpoint_identity="bot@123",
         period="24h",
-        db=_RaisingDB(),
+        db=db_manager({"switchboard": _RaisingPool()}),
     )
 
     assert result.data == []
@@ -296,7 +262,7 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
     # _FakeDB.fan_out_with_status returns empty dict (no butlers / no rows) → empty data list
     result = await mod.get_ingestion_fanout(
         period="24h",
-        db=_FakeDB(),
+        db=_db(),
     )
 
     assert result.data == []
@@ -306,26 +272,24 @@ async def test_get_ingestion_fanout_no_prometheus_url_uses_db_fallback():
 async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available():
     """The bounded metric proves availability; DB rows retain exact provenance."""
 
-    class _FanoutDB(_FakeDB):
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            return {
-                "health": [
-                    {
-                        "connector_type": "telegram_bot",
-                        "endpoint_identity": "bot@123",
-                        "message_count": 20,
-                    }
-                ],
-                "relationship": [
-                    {
-                        "connector_type": "email",
-                        "endpoint_identity": "user@example.com",
-                        "message_count": 5,
-                    }
-                ],
-            }, []
+    db = db_manager({})
+    fanout = {
+        "health": [
+            {
+                "connector_type": "telegram_bot",
+                "endpoint_identity": "bot@123",
+                "message_count": 20,
+            }
+        ],
+        "relationship": [
+            {
+                "connector_type": "email",
+                "endpoint_identity": "user@example.com",
+                "message_count": 5,
+            }
+        ],
+    }
+    db.fan_out_with_status = AsyncMock(return_value=(fanout, []))
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
@@ -337,10 +301,7 @@ async def test_get_ingestion_fanout_returns_db_matrix_when_producer_is_available
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            result = await mod.get_ingestion_fanout(
-                period="24h",
-                db=_FanoutDB(),
-            )
+            result = await mod.get_ingestion_fanout(period="24h", db=db)
 
     assert result.data is not None
     assert len(result.data) == 2
@@ -372,11 +333,8 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
 
-            # _FakeDB.fan_out_with_status returns empty dict → empty data list
-            result = await mod.get_ingestion_fanout(
-                period="24h",
-                db=_FakeDB(),
-            )
+            # No butler sources: the DB fan-out is empty → empty data list
+            result = await mod.get_ingestion_fanout(period="24h", db=db_manager({}))
 
     assert result.data == []
     assert result.meta.aggregates_available is False
@@ -385,17 +343,8 @@ async def test_get_ingestion_fanout_prometheus_error_falls_back_to_db():
 async def test_get_ingestion_fanout_availability_requires_queried_complete_sources():
     """Only a queried, complete DB projection can report a measured empty."""
 
-    class _NoFallbackDB(_FakeDB):
-        def __init__(self) -> None:
-            self.fan_out_calls = 0
-            self.results: dict[str, list[dict]] = {}
-            self.failed: list[str] = []
-
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            self.fan_out_calls += 1
-            return self.results, self.failed
+    db = db_manager({})
+    db.fan_out_with_status = AsyncMock(return_value=({}, []))
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "1"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
@@ -404,11 +353,10 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_empty", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            db = _NoFallbackDB()
             no_targets_result = await mod.get_ingestion_fanout(period="24h", db=db)
-            db.results = {"health": []}
+            db.fan_out_with_status.return_value = ({"health": []}, [])
             measured_empty_result = await mod.get_ingestion_fanout(period="24h", db=db)
-            db.results = {
+            partial = {
                 "health": [
                     {
                         "connector_type": "telegram_bot",
@@ -417,7 +365,7 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
                     }
                 ]
             }
-            db.failed = ["relationship"]
+            db.fan_out_with_status.return_value = (partial, ["relationship"])
             partial_result = await mod.get_ingestion_fanout(period="24h", db=db)
 
     assert no_targets_result.data == []
@@ -428,7 +376,7 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
     assert partial_result.data[0].target_butler == "health"
     assert partial_result.data[0].message_count == 2
     assert partial_result.meta.aggregates_available is False
-    assert db.fan_out_calls == 3
+    assert db.fan_out_with_status.await_count == 3
     assert async_query.await_count == 3
     assert async_query.await_args.args[1].endswith(
         '{outcome="attempted",source="connector",destination_butler!=""})'
@@ -438,11 +386,10 @@ async def test_get_ingestion_fanout_availability_requires_queried_complete_sourc
 async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
     """An unproduced fanout metric must not masquerade as a measured empty route set."""
 
-    class _NoFallbackDB(_FakeDB):
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            raise AssertionError("an absent Prometheus metric must not use DB fallback")
+    db = db_manager({})
+    db.fan_out_with_status = AsyncMock(
+        side_effect=AssertionError("an absent Prometheus metric must not use DB fallback")
+    )
 
     async_query = AsyncMock(return_value=[{"metric": {}, "value": [1740000000, "0"]}])
     with patch("butlers.core.prometheus.async_query", new=async_query):
@@ -451,7 +398,7 @@ async def test_get_ingestion_fanout_degrades_when_metric_family_is_absent():
             spec = importlib.util.spec_from_file_location("_sw_router_ifanout_absent", router_path)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            result = await mod.get_ingestion_fanout(period="24h", db=_NoFallbackDB())
+            result = await mod.get_ingestion_fanout(period="24h", db=db)
 
     assert result.data == []
     assert result.meta.aggregates_available is False
@@ -487,24 +434,11 @@ async def test_connector_stats_db_query_uses_coalesce_and_tz_aware_bucket():
         async def fetchval(self, *args, **kwargs):
             raise RuntimeError("not expected")
 
-    class _CapturingDB:
-        def pool(self, name: str):
-            return _CapturingPool()
-
-        @property
-        def butler_names(self) -> list[str]:
-            return []
-
-        async def fan_out_with_status(
-            self, query: str, args: tuple = (), butler_names=None
-        ) -> tuple[dict, list[str]]:
-            return {}, []
-
     await ingestion_connectors._connector_stats_from_db(
         connector_type="home_assistant",
         endpoint_identity="ws://ha.local:8123",
         period="24h",
-        db=_CapturingDB(),
+        db=db_manager({"switchboard": _CapturingPool()}),
     )
 
     assert len(captured_sql) == 1, "Expected exactly one fetch() call to the pool"

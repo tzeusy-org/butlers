@@ -6,6 +6,10 @@ using the all-MiniLM-L6-v2 model.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from typing import Any
+
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _EMBEDDING_DIM = 384
 
@@ -23,6 +27,9 @@ class EmbeddingEngine:
         self._model_name = model_name
         self._model = SentenceTransformer(model_name)
         self._dim = _EMBEDDING_DIM
+        # ``embed`` runs on worker threads (see ``embed_async``). Fast HF tokenizers raise
+        # "Already borrowed" under concurrent encodes, so encodes on one model take turns.
+        self._encode_lock = threading.Lock()
 
     @property
     def model_name(self) -> str:
@@ -46,7 +53,8 @@ class EmbeddingEngine:
             A list of 384 floats.
         """
         text = self._normalise(text)
-        vec = self._model.encode(text, show_progress_bar=False)
+        with self._encode_lock:
+            vec = self._model.encode(text, show_progress_bar=False)
         return vec.tolist()
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
@@ -62,7 +70,8 @@ class EmbeddingEngine:
         if not texts:
             return []
         normalised = [self._normalise(t) for t in texts]
-        vecs = self._model.encode(normalised, show_progress_bar=False)
+        with self._encode_lock:
+            vecs = self._model.encode(normalised, show_progress_bar=False)
         return [v.tolist() for v in vecs]
 
     # ------------------------------------------------------------------
@@ -75,3 +84,12 @@ class EmbeddingEngine:
         if text is None or not isinstance(text, str) or text.strip() == "":
             return " "
         return text
+
+
+async def embed_async(engine: Any, text: str) -> list[float]:
+    """Embed on a worker thread so the shared event loop never blocks on the model.
+
+    Every butler in ``butlers-up`` shares one loop; a synchronous 13-190 ms encode stalls their
+    MCP calls, schedulers and health checks. The engine serialises its own encodes.
+    """
+    return await asyncio.to_thread(engine.embed, text)

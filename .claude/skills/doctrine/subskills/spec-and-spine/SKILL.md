@@ -76,7 +76,7 @@ rg -n "<keyword>|^### Requirement:|^#### Scenario:" openspec/changes
 ## Decision Rules
 
 - Mainline specs in `openspec/specs/` are canonical unless an active change is intentionally modifying them.
-- Active change specs are authoritative only for the scope of that change until synced or archived.
+- Active change specs are authoritative only for the scope of that change until synced and the completed program is deleted.
 - If code and spec disagree, do not silently treat code as truth. Check for an active change, then either fix code or update the spec explicitly.
 - If a non-trivial behavior has no spec coverage, start with an OpenSpec change before implementation.
 - If the spec is vague, resolve the ambiguity in the spec and scenarios rather than encoding hidden assumptions in code.
@@ -97,9 +97,11 @@ author:
   once per breach window", never "An attention-ledger push notifies the owner
   once per breach window". Mechanisms get replaced and headings cannot follow.
 
-Correcting a heading that is already wrong takes two changes archived in
-order, plus a rebuild of every open MODIFIED block against that requirement.
-The validated procedure, its verified costs, and the exact error strings are in
+For new standalone work, correct a wrong heading in the canonical spec in the
+implementing PR and review the semantic diff. Retained delta programs must preserve
+their existing requirements until delivered; rebuild stale MODIFIED blocks against
+the refreshed baseline through their own reviewed changes. Historical native-CLI
+workarounds, verified costs and exact error strings are in
 [references/renaming-a-baseline-scenario.md](references/renaming-a-baseline-scenario.md).
 Read it before attempting a rename; prevention is much cheaper.
 
@@ -112,13 +114,13 @@ Use the OpenSpec workflow commands (installed and kept current by the `openspec`
 `.claude/commands/opsx/`) for the next step:
 
 - `/opsx:explore`: clarify a new capability before writing the change
-- `/opsx:new`: create a new change with proposal, delta specs and tasks; use the project-local `single-butler` schema when eligible to omit design, or `spec-driven` when design is required or chosen
+- `/opsx:new`: create a new change with an explicit schema; use `single-butler` for eligible work without local delta specs, `living-specs` when design is required without local delta specs, and `spec-driven` local deltas only for new multi-PR programs. Preserve every existing legacy program under its resolved schema unchanged until verified completion. Keep canonical requirements current when observable behavior changes.
 - `/opsx:continue`: continue an in-progress change
 - `/opsx:ff`: fast-forward all artifacts needed to start implementing
 - `/opsx:apply`: implement an approved change
 - `/opsx:verify`: verify code matches the change artifacts
 - `/opsx:sync`: sync finalized delta specs into main specs
-- `/opsx:archive` (`/opsx:bulk-archive`): archive completed change(s)
+- `/opsx:archive` (`/opsx:bulk-archive`): verify whole-program delivery, review canonical updates, then delete only completed change directories; Git retains history and existing archives stay intact
 
 ## Review and Implementation Expectations
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -19,16 +20,8 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_017", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_017")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -81,7 +74,7 @@ def test_upgrade_refreshes_predicate_metadata() -> None:
 
 
 def test_downgrade_is_noop() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_017")
     mock_op = MagicMock()
     with patch.object(mod, "op", mock_op):
         assert mod.downgrade() is None

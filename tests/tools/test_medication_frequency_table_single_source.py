@@ -31,7 +31,7 @@ def test_once_weekly_is_weekly_in_dose_status_today() -> None:
     other_day = dose_status_today(
         frequency="once weekly", schedule=["tuesday"], now_local=MONDAY_NOON, doses_taken=0
     )
-    assert named == DoseStatus(missed=1, due_later=0)
+    assert named == DoseStatus(missed=0, due_later=1)  # weekday named, no clock: due later
     assert other_day == DoseStatus()
 
 

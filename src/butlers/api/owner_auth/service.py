@@ -112,7 +112,17 @@ class OwnerAuthService:
         self, action: str, authority: Authority, csrf: str, **values: Any
     ) -> dict:
         """Closed cookie-only authoring surface, independent of D13 factor kinds."""
-        if action not in {"issue", "clause_create", "clause_revoke"}:
+        if action not in {
+            "issue",
+            "clause_create",
+            "clause_revoke",
+            "clause_list",
+            "proposal_list",
+            "proposal_confirm",
+            "proposal_dismiss",
+            "decay_state",
+            "clause_keep",
+        }:
             raise AuthError("INVALID_REQUEST")
         if authority.method != "cookie" or not authority.session_digest:
             raise AuthError("FORBIDDEN")
@@ -121,6 +131,95 @@ class OwnerAuthService:
             action,
             values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
         )
+
+    async def custody_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Endpoint custody commands (core_347); the definer rechecks session and CSRF at commit."""
+        if action not in {"hold", "release", "replace", "status", "list"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.custody_dashboard($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
+    async def custody_candidates_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """The owner's own channels as masked hints (core_352); the definer rechecks the session."""
+        del csrf  # a read carries no CSRF token
+        if action != "list" or values:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.custody_candidates_dashboard($1,$2::jsonb)",
+            action,
+            {"session_digest": authority.session_digest},
+        )
+
+    async def security_question_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Security questions (core_350); the definer rechecks session and CSRF at commit."""
+        if action not in {"get", "list", "answer"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT public.security_question_dashboard($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
+    async def owner_channel_clauses(self) -> list[dict]:
+        """The unrevoked clauses for the verified Telegram owner channel (read only)."""
+        result = await self._owner_channel_call("SELECT dashboard_attention.owner_channel_list()")
+        clauses = result.get("clauses")
+        return clauses if isinstance(clauses, list) else []
+
+    async def owner_channel_revoke(self, clause_id: str) -> None:
+        """Revoke one clause for the verified Telegram owner channel; never creates or grants.
+
+        Raises ``AuthError("INVALID_REQUEST")`` for an unknown or already-revoked clause.
+        """
+        await self._owner_channel_call(
+            "SELECT dashboard_attention.owner_channel_revoke($1::uuid)", clause_id
+        )
+
+    async def owner_channel_propose(self, matchers: dict[str, str | None]) -> str:
+        """Record a PENDING clause proposal from the verified Telegram owner channel.
+
+        Matchers only, validated again inside the definer. A proposal grants nothing until the
+        owner confirms it on the dashboard; there is no clause-creating path from this channel.
+        Raises ``AuthError("INVALID_REQUEST")`` or ``AuthError("RATE_LIMITED")``.
+        """
+        result = await self._owner_channel_call(
+            "SELECT dashboard_attention.owner_channel_propose($1::jsonb)", matchers
+        )
+        return str(result["id"])
+
+    async def _owner_channel_call(self, sql: str, *args: Any) -> dict:
+        if self.pool is None:
+            raise AuthError()
+        try:
+            with suppress_instrumentation():
+                async with self.pool.acquire() as connection, connection.transaction():
+                    await connection.execute("SET LOCAL ROLE dashboard_auth_api")
+                    raw = await connection.fetchval(sql, *args)
+            result = json.loads(raw) if isinstance(raw, str) else raw
+            if not isinstance(result, dict):
+                raise AuthError()
+        except AuthError:
+            raise
+        except Exception:
+            raise AuthError() from None
+        if "error" in result:
+            raise AuthError(result["error"])
+        return result
 
     async def _stepup_call(self, action: str, **values: Any) -> dict:
         return await self._capability_call(

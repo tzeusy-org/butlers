@@ -18,6 +18,7 @@ from butlers.jobs.atmosphere import (
     parse_reading,
     run_atmosphere_feed_refresh,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -62,13 +63,6 @@ _AIR_QUALITY_PAYLOAD_EUROPEAN = {
         "ragweed_pollen": 3.0,
     }
 }
-
-
-def _make_pool(fetchrow_result=None):
-    pool = AsyncMock()
-    pool.execute = AsyncMock()
-    pool.fetchrow = AsyncMock(return_value=fetchrow_result)
-    return pool
 
 
 def _mock_client(*, air_quality_payload=None, status_code=200):
@@ -131,7 +125,7 @@ def test_parse_home_coordinates(value, expected):
 async def test_not_configured_skips_fetch_and_marks_status(monkeypatch):
     monkeypatch.delenv("ATMOSPHERE_HOME_LAT", raising=False)
     monkeypatch.delenv("ATMOSPHERE_HOME_LON", raising=False)
-    pool = _make_pool()
+    pool = fake_pool(execute=None, fetchrow=None)
 
     with patch("butlers.jobs.atmosphere.resolve_owner_entity_info", AsyncMock(return_value=None)):
         result = await run_atmosphere_feed_refresh(pool)
@@ -151,7 +145,7 @@ async def test_not_configured_skips_fetch_and_marks_status(monkeypatch):
 async def test_successful_fetch_parses_and_stores_reading(monkeypatch):
     monkeypatch.setenv("ATMOSPHERE_HOME_LAT", "40.0")
     monkeypatch.setenv("ATMOSPHERE_HOME_LON", "-74.0")
-    pool = _make_pool()
+    pool = fake_pool(execute=None, fetchrow=None)
     client = _mock_client()
 
     result = await run_atmosphere_feed_refresh(pool, http_client=client)
@@ -174,7 +168,7 @@ async def test_successful_fetch_parses_and_stores_reading(monkeypatch):
 async def test_fetch_failure_records_error_without_crashing(monkeypatch):
     monkeypatch.setenv("ATMOSPHERE_HOME_LAT", "40.0")
     monkeypatch.setenv("ATMOSPHERE_HOME_LON", "-74.0")
-    pool = _make_pool()
+    pool = fake_pool(execute=None, fetchrow=None)
     client = _mock_client(status_code=503)
 
     result = await run_atmosphere_feed_refresh(pool, http_client=client)
@@ -191,7 +185,7 @@ async def test_fetch_failure_records_error_without_crashing(monkeypatch):
 async def test_malformed_env_coordinates_falls_back_to_entity_info(monkeypatch):
     monkeypatch.setenv("ATMOSPHERE_HOME_LAT", "not-a-number")
     monkeypatch.setenv("ATMOSPHERE_HOME_LON", "-74.0")
-    pool = _make_pool()
+    pool = fake_pool(execute=None, fetchrow=None)
 
     with patch("butlers.jobs.atmosphere.resolve_owner_entity_info", AsyncMock(return_value=None)):
         result = await run_atmosphere_feed_refresh(pool)

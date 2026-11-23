@@ -31,7 +31,7 @@ The route inbox tracks four lifecycle states:
 
 ## Scheduled Triggers
 
-The scheduler (`src/butlers/core/scheduler.py`) evaluates cron expressions on every tick and dispatches due tasks through the spawner. Trigger sources follow the pattern `"schedule:<task-name>"` (e.g., `"schedule:daily-digest"`).
+The scheduler (`src/butlers/core/scheduler/dispatch.py`) evaluates cron expressions on every tick and dispatches due tasks through the spawner. Trigger sources follow the pattern `"schedule:<task-name>"` (e.g., `"schedule:daily-digest"`).
 
 ### Tick Loop
 

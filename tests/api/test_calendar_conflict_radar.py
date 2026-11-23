@@ -13,6 +13,7 @@ Covers the two halves the bead's acceptance criteria require:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -23,6 +24,7 @@ import pytest
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
+from butlers.api.read_models.calendar_workspace import query_calendar_conflicts
 from butlers.core.temporal.conflicts import (
     ConflictCandidate,
     detect_conflict_issues,
@@ -143,6 +145,19 @@ def test_overloaded_day_detected():
     assert "7.0 h" in overloaded[0].summary
 
 
+def test_a_no_day_load_candidate_still_overlaps_but_adds_no_hours():
+    """bu-s11n0s.4 AC D: only the overloaded-day sum reads the flag; the default counts."""
+    assert ConflictCandidate("x", "t", _DAY, _DAY, "UTC").counts_toward_day_load is True
+    meetings = [_c(start=_DAY + timedelta(hours=i), minutes=60, entry_id=f"e{i}") for i in range(5)]
+    status = replace(_c(start=_DAY, minutes=8 * 60, entry_id="ooo"), counts_toward_day_load=False)
+    issues = detect_conflict_issues([*meetings, status], overloaded_day_hours=6.0)
+    assert not [i for i in issues if i.kind == "overloaded_day"]
+    assert any(i.kind == "overlap" and "ooo" in {ref.entry_id for ref in i.events} for i in issues)
+    counted = replace(status, counts_toward_day_load=True)
+    issues = detect_conflict_issues([*meetings, counted], overloaded_day_hours=6.0)
+    assert [i for i in issues if i.kind == "overloaded_day"]
+
+
 def test_overloaded_day_under_budget_clean():
     events = [
         _c(start=_DAY + timedelta(hours=2 * i), minutes=60, entry_id=f"e{i}") for i in range(4)
@@ -191,9 +206,15 @@ def _ws_row(
     all_day: bool = False,
     timezone: str = "UTC",
     event_metadata: object | None = None,
+    time_role: str = "owner",
+    subject_entity_id=None,
+    subject_label: str | None = None,
 ) -> dict:
     """A workspace event-instance row (shape ``row_to_workspace`` consumes)."""
     return {
+        "source_time_role": time_role,
+        "source_subject_entity_id": subject_entity_id,
+        "source_subject_label": subject_label,
         "instance_id": entry_id,
         "origin_instance_ref": str(uuid4()),
         "instance_timezone": timezone,
@@ -329,7 +350,42 @@ async def test_conflicts_endpoint_empty_on_clean_window(app):
     assert data["issues"] == []
 
 
-async def test_conflicts_endpoint_attaches_pending_proposal(app):
+async def test_conflicts_proposal_stays_attached_when_resync_rotates_surviving_copy(app):
+    """bu-nd32y3: each calendar schema holds its own copy of a provider event and the
+    origin_ref collapse keeps the freshest, so a resync can make another schema's copy
+    survive. The overlap's pair_id (and the proposal stored under it) must not rotate."""
+    a_general = _ws_row(entry_id="a-general", title="Design review", start=_DAY)
+    a_relationship = _ws_row(entry_id="a-relationship", title="Design review", start=_DAY)
+    for row in (a_general, a_relationship):
+        row["origin_ref"] = "provider-a"
+    b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
+    a_general["instance_updated_at"] = _DAY
+    a_relationship["instance_updated_at"] = _DAY - timedelta(hours=1)
+    proposals: list[dict] = []
+    _, db = _build_app(
+        app,
+        workspace_rows={"general": [a_general, b], "relationship": [a_relationship]},
+        proposal_rows={"general": proposals},
+    )
+    window = {"start": _DAY - timedelta(hours=9), "end": _DAY + timedelta(hours=15)}
+
+    before = await query_calendar_conflicts(db, **window)
+    (overlap,) = [i for i in before.issues if i.kind == "overlap"]
+    assert {e.entry_id for e in overlap.events} == {"a-general", "b"}
+    pid = uuid4()
+    proposals.append(
+        _proposal_row(proposal_id=pid, source_event_id=str(overlap.pair_id), start=_DAY)
+    )
+
+    a_relationship["instance_updated_at"] = _DAY + timedelta(hours=1)  # resync: other copy wins
+    after = await query_calendar_conflicts(db, **window)
+    (overlap,) = [i for i in after.issues if i.kind == "overlap"]
+    assert {e.entry_id for e in overlap.events} == {"a-relationship", "b"}
+    assert overlap.proposal_ids == [str(pid)]
+
+
+async def test_conflicts_endpoint_attaches_proposal_stored_under_legacy_instance_pair_id(app):
+    """Proposals written before bu-nd32y3 carry the instance-based pair id; they still join."""
     a = _ws_row(entry_id="a", title="Design review", start=_DAY)
     b = _ws_row(entry_id="b", title="1:1", start=_DAY + timedelta(minutes=30))
     pair_id = str(overlap_pair_id("a", "b"))
@@ -690,6 +746,73 @@ async def test_conflicts_endpoint_keeps_accepted_tentative_and_other_attendee_de
     assert len([i for i in data["issues"] if i["kind"] == "overlap"]) == 1
 
 
+@pytest.mark.parametrize("event_type", ["outOfOffice", "workingLocation"])
+async def test_an_opaque_status_event_still_conflicts_but_adds_no_day_load(app, event_type):
+    """bu-s11n0s.4 AC D: a status adds zero meeting-hours; overlap/back-to-back are kept."""
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    status = _ws_row(
+        entry_id="b",
+        title="Out of office" if event_type == "outOfOffice" else "Office",
+        start=_DAY + timedelta(minutes=30),
+        minutes=8 * 60,
+    )
+    status["event_type"] = event_type
+    # Back to back with the end of the status block.
+    after = _ws_row(entry_id="c", title="Wrap-up", start=_DAY + timedelta(minutes=30 + 8 * 60 + 5))
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, status, after]})
+
+    data = (await _get(app)).json()["data"]
+
+    kinds = [issue["kind"] for issue in data["issues"]]
+    overlap = next(issue for issue in data["issues"] if issue["kind"] == "overlap")
+    assert {ref["entry_id"] for ref in overlap["events"]} == {"a", "b"}
+    chain = next(issue for issue in data["issues"] if issue["kind"] == "back_to_back")
+    assert {ref["entry_id"] for ref in chain["events"]} >= {"b", "c"}
+    # 3h + 1h of meetings: the status block's 8 hours never make the day overloaded.
+    assert "overloaded_day" not in kinds
+
+
+@pytest.mark.parametrize("event_type", ["default", "someFutureType"])
+async def test_ordinary_and_unknown_types_still_count_toward_day_load(app, event_type):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    other = _ws_row(entry_id="b", title="Workshop", start=_DAY + timedelta(hours=4), minutes=4 * 60)
+    other["event_type"] = event_type
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, other]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert "overloaded_day" in [issue["kind"] for issue in data["issues"]]
+
+
+async def test_a_transparent_working_location_is_neither_busy_nor_day_load(app):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY, minutes=3 * 60)
+    status = _ws_row(
+        entry_id="b",
+        title="Office",
+        start=_DAY + timedelta(minutes=30),
+        minutes=8 * 60,
+        event_metadata={"source_type": "provider_event", "transparency": "transparent"},
+    )
+    status["event_type"] = "workingLocation"
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, status]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues_available"] is True
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_keeps_typed_focus_time_as_busy_time(app):
+    meeting = _ws_row(entry_id="a", title="Design review", start=_DAY)
+    focus = _ws_row(entry_id="b", title="Writing", start=_DAY + timedelta(minutes=30))
+    focus["event_type"] = "focusTime"
+    app, _ = _build_app(app, workspace_rows={"general": [meeting, focus]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert len([i for i in data["issues"] if i["kind"] == "overlap"]) == 1
+
+
 async def test_conflicts_endpoint_rejects_inverted_window(app):
     app, _ = _build_app(app)
     resp = await _get(app, params={"start": "2026-07-02T00:00:00Z", "end": "2026-07-01T00:00:00Z"})
@@ -897,6 +1020,7 @@ async def test_invitations_admit_explicit_provider_truth_and_earned_conflict(app
                         "has_events_body",
                         "has_events_source_butler",
                         "has_events_source_session_id",
+                        "has_events_typed_fields",
                     ),
                     True,
                 )
@@ -1070,3 +1194,176 @@ async def test_invitation_response_capability_belongs_to_physical_entry_owner(ap
     assert (await _get_invitations(app)).json()["data"]["entries"][0][
         "response_configured"
     ] is False
+
+
+# -- source roles: whose time is this (bu-5ii4gj.1, REQ-calendar-conflict-overcommitment-radar-002) --
+
+_SELF = {"self": True, "response_status": "accepted"}
+
+
+async def test_conflicts_endpoint_ignores_another_persons_calendar(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    partner = _ws_row(
+        entry_id="partner",
+        title="Partner appointment",
+        start=_DAY + timedelta(minutes=30),
+        time_role="household_member",
+    )
+    unknown = _ws_row(
+        entry_id="unknown",
+        title="Shared calendar block",
+        start=_DAY + timedelta(minutes=15),
+        minutes=8 * 60,
+        time_role="unclassified",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, partner, unknown]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues_available"] is True
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_counts_an_invited_event_on_another_calendar(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    invited = _ws_row(
+        entry_id="invited",
+        title="Joint review",
+        start=_DAY + timedelta(minutes=30),
+        time_role="other_person",
+        event_metadata={"source_type": "provider_event", "attendees": [_SELF]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, invited]})
+
+    overlaps = [i for i in (await _get(app)).json()["data"]["issues"] if i["kind"] == "overlap"]
+
+    assert len(overlaps) == 1
+    assert {e["entry_id"] for e in overlaps[0]["events"]} == {"mine", "invited"}
+
+
+async def test_conflicts_endpoint_never_counts_holidays_or_birthdays(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    holiday = _ws_row(
+        entry_id="holiday",
+        title="Public holiday",
+        start=_DAY,
+        time_role="holidays",
+        event_metadata={"source_type": "provider_event", "attendees": [_SELF]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, holiday]})
+
+    assert (await _get(app)).json()["data"]["issues"] == []
+
+
+async def test_conflicts_endpoint_reports_how_many_unclassified_calendars_were_skipped(app):
+    """The coverage line: an unclassified source's solo events are left out, and said so."""
+    shared_a = _ws_row(entry_id="a", title="Block A", start=_DAY, time_role="unclassified")
+    shared_b = _ws_row(
+        entry_id="b", title="Block B", start=_DAY + timedelta(hours=3), time_role="unclassified"
+    )
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY + timedelta(hours=5))
+    holiday = _ws_row(
+        entry_id="holiday", title="Holiday", start=_DAY + timedelta(hours=7), time_role="holidays"
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [shared_a, shared_b, mine, holiday]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["unclassified_events"] == 2
+    # Every synthetic row gets its own source id, so two events are two calendars here.
+    assert data["unclassified_sources"] == 2
+    assert data["issues"] == []
+
+
+# -- household context beside the scan (bu-5ii4gj.1 S3, REQ-calendar-conflict-overcommitment-radar-003)
+
+
+async def test_conflicts_endpoint_lists_household_events_as_opaque_context_not_issues(app):
+    subject = uuid4()
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    partner = _ws_row(
+        entry_id="partner",
+        title="Synthetic private appointment",
+        start=_DAY + timedelta(minutes=30),
+        time_role="household_member",
+        subject_entity_id=subject,
+        subject_label="Alex",
+        event_metadata={
+            "source_type": "provider_event",
+            "attendees": [{"email": "guest@example.test"}],
+        },
+    )
+    partner["location"] = "12 Synthetic Road"
+    unknown = _ws_row(
+        entry_id="unknown",
+        title="Unclassified block",
+        start=_DAY + timedelta(minutes=15),
+        time_role="unclassified",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, partner, unknown]})
+
+    response = await _get(app)
+    data = response.json()["data"]
+
+    assert data["issues"] == []  # context never forms a conflict
+    [context] = data["household_context"]
+    assert context["subject_entity_id"] == str(subject) and context["subject_label"] == "Alex"
+    assert set(context) == {
+        "role",
+        "subject_entity_id",
+        "subject_label",
+        "start_at",
+        "end_at",
+        "all_day",
+    }
+    for leaked in ("Synthetic private appointment", "Synthetic Road", "guest@example.test"):
+        assert leaked not in response.text
+    assert data["unclassified_events"] == 1  # the coverage line is unchanged
+
+
+async def test_household_time_endpoint_groups_by_subject_and_leaks_nothing(app):
+    alex, sam = uuid4(), uuid4()
+    rows = [
+        _ws_row(
+            entry_id="a1",
+            title="Synthetic A1",
+            start=_DAY,
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="a2",
+            title="Synthetic A2",
+            start=_DAY + timedelta(hours=3),
+            time_role="household_member",
+            subject_entity_id=alex,
+            subject_label="Alex",
+        ),
+        _ws_row(
+            entry_id="s1",
+            title="Synthetic S1",
+            start=_DAY,
+            time_role="team",
+            subject_entity_id=sam,
+            subject_label="Sam",
+        ),
+        _ws_row(entry_id="mine", title="Owner", start=_DAY),
+        _ws_row(entry_id="u", title="Unclassified", start=_DAY, time_role="unclassified"),
+    ]
+    app, _ = _build_app(app, workspace_rows={"general": rows})
+    start = _DAY - timedelta(hours=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/calendar/workspace/household-time",
+            params={"start": start.isoformat(), "end": (start + timedelta(days=1)).isoformat()},
+        )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["available"] is True
+    by_subject = {g["subject_label"]: len(g["events"]) for g in data["subjects"]}
+    assert by_subject == {"Alex": 2, "Sam": 1}
+    for leaked in ("Synthetic A1", "Synthetic S1", "Owner", "Unclassified"):
+        assert leaked not in response.text

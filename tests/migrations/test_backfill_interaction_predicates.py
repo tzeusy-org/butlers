@@ -9,11 +9,12 @@ Covers (condensed):
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -26,17 +27,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("rel_012", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_sqls(fn_name: str) -> list[str]:
     """Run upgrade()/downgrade() with facts present; return SQL after the to_regclass guard."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "rel_012")
     sqls: list[str] = []
     call_count = [0]
     mock_conn = MagicMock()
@@ -102,7 +95,7 @@ class TestFactsTableGuard:
     """When the facts table does not exist, upgrade/downgrade must be no-ops (guard call only)."""
 
     def _run_with_no_facts(self, fn_name: str) -> int:
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_012")
         mock_conn = MagicMock()
         result = MagicMock()
         result.scalar.return_value = None  # facts table absent

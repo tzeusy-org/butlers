@@ -127,6 +127,13 @@ _DEFAULT_SCHEDULES: tuple[dict[str, Any], ...] = (
         "job_name": "chronicler_rollup_daily",
     },
     {
+        # Every 15 minutes (RFC 0039 D2): adds new episodes to the public projection tables and
+        # repairs drift. Overrides update them in their own transaction. No LLM.
+        "name": "chronicler_public_projection_sweep",
+        "cron": "*/15 * * * *",
+        "job_name": "chronicler_public_projection_sweep",
+    },
+    {
         # Daily, 01:20 (bu-v9y18, telemetry-distillation bead 6): the one
         # optional, bounded LLM call per local day, labeling the already-
         # materialized `daily_rollups`/`daily_rollup_flags` rows for
@@ -184,7 +191,7 @@ class ChroniclerModule(Module):
         """
         if db is None:
             return
-        from butlers.core.scheduler import ensure_module_default_schedule
+        from butlers.core.scheduler.crud import ensure_module_default_schedule
 
         owner_butler = getattr(db, "owner_butler", None) or getattr(db, "schema", None)
         # Legacy per-butler databases use their unqualified public schema.
@@ -469,10 +476,12 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Deterministic ask-side of bu-whhll.12. When the closed day left more than
         two hours of waking time unaccounted, or carries a low-confidence
         ``occupation_block`` the pipeline was never sure about, the owner is
-        worth **one** confirmation prompt. This tool does the whole ask:
+        worth **one** prompt. This tool does the whole ask:
         evaluate → max-one-per-day dedupe (KV state) → quiet-hours /
         delivery-preferences gate → deliver a Telegram inline-button message
-        (✅ Work day / ✏️ Not work / 🚫 Dismiss) whose taps route back to
+        (an occupation block: ✅ Work day / ✏️ Not work / 🚫 Dismiss; otherwise the
+        longest unexplained block with Work / Social / Play / Eat / Rest /
+        Dismiss) whose taps route back to
         :func:`chronicler_resolve_gap_interview`. The 09:00 ``chronicler_gap_interview``
         job-mode schedule calls the same service,
         :func:`butlers.chronicler.gap_interview_job.ask_gap_interview`.
@@ -510,13 +519,15 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         The deterministic answer-side: turns ``confirm`` / ``correct`` /
         ``dismiss`` into a durable ``chronicler.overrides`` row (the first real
         tenant of the corrections machinery) and a reinforce/decay nudge on the
-        matching routine, idempotently. This is the seam the telegram
+        matching routine, and a lane answer (``work`` / ``social`` / ``play`` /
+        ``eat`` / ``rest``) into one owner-attested activity block over the
+        interviewed interval, idempotently. This is the seam the telegram
         inline-button callback (via the ``telegram_bot`` connector) and the
         future decision-loop transport (RFC 0021) both call.
 
         Args:
             interview_id: The id handed out by ``chronicler_gap_interview``.
-            answer: One of ``confirm`` / ``correct`` / ``dismiss``.
+            answer: One of the interview's offered answers.
 
         Returns the apply summary, or ``{"status": "error"|"already_answered"}``.
         """
@@ -530,6 +541,26 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             answer=answer,
             now=datetime.now(UTC),
         )
+
+    # ------------------------------------------------------------------
+    # location_retention_grants_ready_service  — relay-only grant read
+    # ------------------------------------------------------------------
+
+    @mcp.tool()
+    async def location_retention_grants_ready_service() -> dict[str, Any]:
+        """Service-only: the location retention grants the OwnTracks connector may execute.
+
+        The target of the ``location_retention.grants_ready`` named relay (RFC 0038 D7,
+        bu-s11n0s.7 S4b-3b), whose only allowed caller is the OwnTracks connector workload.
+        Declared ``presentable=False``. Returns ``{"grants": [...]}``: for each ready,
+        unsettled grant only its id, cutoff, and each granted raw row's id, logical key and
+        content digest. The caller chooses nothing.
+        """
+        from butlers.chronicler import location_retention_handoff
+
+        async with module._get_pool().acquire() as conn:
+            grants = await location_retention_handoff.ready_grant_payloads(conn)
+        return {"grants": grants}
 
     # ------------------------------------------------------------------
     # chronicler_day_close_bundle  — Tier-2 bounded assembler
@@ -589,6 +620,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             assemble_day_close_bundle,
             partition_day_close_rows,
         )
+        from butlers.chronicler.flags import load_uncaptured_with_streaks
         from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
@@ -663,6 +695,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             rollup_threshold=rollup_threshold,
             max_total_chars=max_total_chars,
         )
+        # Frozen per-day source availability (bu-uhbhzq.2): uncaptured lanes become unknowns,
+        # and their streaks decide what the delivered recap may mention. An unreadable
+        # snapshot adds no lines and never claims an all-clear.
+        try:
+            async with pool.acquire() as availability_conn:
+                uncaptured, uncaptured_streaks = await load_uncaptured_with_streaks(
+                    availability_conn, local_date=day, timezone=timezone
+                )
+        except Exception:
+            uncaptured, uncaptured_streaks = [], {}
+
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
             episodes=[*reconciled_episodes, *sensitive_episodes],
@@ -670,6 +713,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
             timezone=timezone,
             config=cfg,
             dropped_intents=dropped_intents_payload,
+            uncaptured=uncaptured,
+            uncaptured_streaks=uncaptured_streaks,
         )
 
         return {

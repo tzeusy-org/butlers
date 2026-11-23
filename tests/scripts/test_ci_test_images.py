@@ -29,12 +29,16 @@ spec.loader.exec_module(images)
 class ImageProtocol:
     """Explicitly synthetic Docker CLI/store, backed by committed public pins."""
 
-    def __init__(self, *, mirror_exit=0, upstream_exit=0, corrupt=False):
+    def __init__(self, *, mirror_exit=0, upstream_exit=0, corrupt=False, containerd=False):
         self.calls = []
         self.local = {}
         self.mirror_exit = mirror_exit
         self.upstream_exit = upstream_exit
         self.corrupt = corrupt
+        # Docker 29's default containerd image store reports the pulled manifest digest as Id
+        # and carries it as the Descriptor (ubuntu-26.04 runners); the classic store reports
+        # the config digest.
+        self.containerd = containerd
 
     def __call__(self, command, timeout):
         self.calls.append(command)
@@ -57,14 +61,21 @@ class ImageProtocol:
                 pin = next(
                     p for p in images.IMAGES.values() if source.endswith("@" + p["manifest"])
                 )
+                identity = pin["manifest"] if self.containerd else pin["config"]
                 self.local[source] = {
-                    "Id": "sha256:" + "0" * 64 if self.corrupt else pin["config"],
+                    "Id": "sha256:" + "0" * 64 if self.corrupt else identity,
                     "Os": "linux",
                     "Architecture": "amd64",
                     "Config": {
                         "Env": [] if pin["pg_major"] is None else ["PG_MAJOR=" + pin["pg_major"]]
                     },
                 }
+                if self.containerd:
+                    self.local[source]["Descriptor"] = {
+                        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                        "digest": identity,
+                        "size": 1234,
+                    }
         elif operation == "tag":
             self.local[command[4]] = self.local[command[3]].copy()
         else:
@@ -273,6 +284,27 @@ def test_preload_refuses_corrupt_incompatible_unavailable_inputs_and_bounds_fall
     for raw in ("{", "{}", "[]", "[true]", '[{"Id":"wrong","Id":"' + pin["config"] + '"}]'):
         assert not images.matching_image(subprocess.CompletedProcess([], 0, raw), pin)
     assert images.matching_image(subprocess.CompletedProcess([], 0, json.dumps([valid])), pin)
+    # The containerd store's identity is the pinned manifest digest, never "any pull succeeded".
+    stored = {
+        **valid,
+        "Id": pin["manifest"],
+        "Descriptor": {"mediaType": "m", "digest": pin["manifest"], "size": 1},
+    }
+    assert images.matching_image(subprocess.CompletedProcess([], 0, json.dumps([stored])), pin)
+    other = images.IMAGES["owner-browser"]["manifest"]
+    for mutation in [
+        {"Id": other, "Descriptor": {"mediaType": "m", "digest": other, "size": 1}},
+        {"Descriptor": {"mediaType": "m", "digest": other, "size": 1}},
+        {"Descriptor": {"mediaType": "m", "size": 1}},
+        {"Descriptor": pin["manifest"]},
+        {"Id": pin["config"], "Descriptor": {"mediaType": "m", "digest": other, "size": 1}},
+        {"Architecture": "arm64"},
+        {"Config": {"Env": ["PG_MAJOR=16"]}},
+    ]:
+        value = {**stored, **mutation}
+        assert not images.matching_image(
+            subprocess.CompletedProcess([], 0, json.dumps([value])), pin
+        ), mutation
     corrupt_local = ImageProtocol()
     corrupt_local.local[pin["alias"]] = {**valid, "Id": "sha256:" + "0" * 64}
     assert images.prepare(["postgres"], execute=corrupt_local)["complete"] is True
@@ -287,6 +319,23 @@ def test_preload_refuses_corrupt_incompatible_unavailable_inputs_and_bounds_fall
     ticks = iter([0, images.TOTAL_SECONDS])
     with pytest.raises(images.AcquisitionError, match="acquisition-deadline"):
         images.prepare(["postgres"], execute=ImageProtocol(), now=lambda: next(ticks))
+
+
+def test_preload_verifies_under_the_containerd_image_store():
+    """bu-kiuh8v.31: ubuntu-26.04 runners (Docker 29) report the manifest digest as Id."""
+    protocol = ImageProtocol(containerd=True)
+    prepared = images.prepare(["postgres", "ryuk"], execute=protocol)
+    assert [row["state"] for row in prepared["images"]] == ["verified-mirror"] * 2
+    assert [row["state"] for row in images.prepare(["postgres"], execute=protocol)["images"]] == [
+        "compatible-local"
+    ]
+    corrupt = ImageProtocol(containerd=True, corrupt=True)
+    with pytest.raises(images.AcquisitionError) as failure:
+        images.prepare(["postgres"], execute=corrupt)
+    assert json.loads(str(failure.value))["images"][0]["failure_kind"] == (
+        "pulled-content-incompatible"
+    )
+    assert not any(call[2] == "tag" for call in corrupt.calls)
 
 
 def test_preload_timeout_reaps_only_its_owned_process_group(tmp_path):

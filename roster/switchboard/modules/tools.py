@@ -12,11 +12,14 @@ import uuid
 from typing import Any
 
 from butlers.core.approval_delivery_authority import (
+    approved_notify_proof_presented,
     guard_registered_approval_tool,
+    verify_switchboard_approved_notify,
     verify_switchboard_recovery,
 )
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.modules.base import tool_registrar
+from butlers.roster_imports import roster_module
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.routing import correct_route as _correct_route
     from butlers.tools.switchboard.routing import route as _route
 
+    _unknown_sender_cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+
     _tool = tool_registrar(mcp, config)
 
     # =================================================================
@@ -46,6 +51,39 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     async def list_butlers(routable_only: bool = False) -> list[dict[str, Any]]:
         """List registered butlers, optionally filtered by routing eligibility."""
         return await _registry.list_butlers(module._get_pool(), routable_only=routable_only)
+
+    # =================================================================
+    # Vendor-door proposals (bu-jv1moa.40; dark until VENDOR_DOORS_LIVE)
+    # =================================================================
+
+    @_tool("routing")
+    async def propose_vendor_door(event_id: str, kind: str, url_template: str) -> dict[str, Any]:
+        """Propose a vendor page found in the message this session is handling.
+
+        ``kind`` is cancel, manage, return or check_in. ``url_template`` is an https URL copied
+        from the message with each identifier path segment replaced by ``{order_ref}``,
+        ``{booking_ref}`` or ``{account_ref}``; it has no query. It is only a proposal: the owner
+        must confirm it on the dashboard, and nothing opens until then.
+        """
+        from butlers.core.vendor_door_proposer import propose_for_session
+
+        async def _read_inbound_text(conn: Any, event: uuid.UUID) -> str | None:
+            # Only an ingested event binds a door: it must also have its public.ingestion_events
+            # row, which the ingest path writes and outbound deliveries never do.
+            return await conn.fetchval(
+                "SELECT m.normalized_text FROM switchboard.message_inbox AS m "
+                "WHERE m.id = $1 AND EXISTS "
+                "(SELECT 1 FROM public.ingestion_events AS e WHERE e.id = m.id)",
+                event,
+            )
+
+        return await propose_for_session(
+            module._get_pool(),
+            event_id=event_id,
+            kind=kind,
+            url_template=url_template,
+            read_text=_read_inbound_text,
+        )
 
     # =================================================================
     # Connector lifecycle tools
@@ -66,6 +104,31 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             module._get_pool(),
             connector_type,
             endpoint_identity,
+        )
+
+    # =================================================================
+    # Identity tools
+    # =================================================================
+
+    @_tool("identity")
+    async def identity_ignore_unknown_sender(
+        entity_id: str,
+        channel: str,
+        address: str,
+        display_name: str | None,
+    ) -> dict[str, Any]:
+        """Ignore one newly surfaced unknown sender: archive them and skip their email.
+
+        Only the owner's Approve on the unknown-sender Ignore card runs this: the
+        Switchboard approvals gate parks any other invocation, and the handler refuses a
+        call that does not match the card Switchboard parked for that sender.
+        """
+        return await _unknown_sender_cards.ignore_unknown_sender(
+            module._get_pool(),
+            entity_id=entity_id,
+            channel=channel,
+            address=address,
+            display_name=display_name,
         )
 
     # =================================================================
@@ -185,6 +248,37 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         notify_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Deliver a notification through the specified channel."""
+        is_recovery = (
+            isinstance(notify_request, dict) and notify_request.get("recovery") is not None
+        )
+        if not is_recovery and approved_notify_proof_presented():
+            # RFC 0038 D13: an owner-approved notify from its source executor.
+            # The source verifies (and consumes) its own proof; only then does the
+            # protected Messenger hop carry an attestation. Any failure refuses
+            # rather than degrading into an ordinary, re-parkable delivery.
+            attestation = (
+                await verify_switchboard_approved_notify(module, notify_request)
+                if isinstance(notify_request, dict)
+                else None
+            )
+            approved_call = getattr(module, "_approval_recovery_call", None)
+            if (
+                attestation is None
+                or attestation.issuer != source_butler
+                or not callable(approved_call)
+            ):
+                return {
+                    "status": "failed",
+                    "error": "Approved notification authority rejected.",
+                    "retryable": False,
+                }
+            return await _deliver_notification(
+                module._get_pool(),
+                source_butler=source_butler,
+                notify_request=notify_request,
+                approved_attestation=attestation,
+                call_fn=approved_call,
+            )
         verified_context = None
         recovery_call = None
         if isinstance(notify_request, dict) and notify_request.get("recovery") is not None:

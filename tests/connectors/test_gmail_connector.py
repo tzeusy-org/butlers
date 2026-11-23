@@ -14,6 +14,7 @@ Verifies:
 from __future__ import annotations
 
 import base64
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,12 @@ from butlers.connectors.gmail import (
     GmailConnectorConfig,
     GmailConnectorRuntime,
     _classify_source_api_error,
+)
+from butlers.connectors.ingest_retry import IngestRetryBudget
+from tests.connectors.filtered_event_fakes import (
+    FilteredEventsPool,
+    clear_stored_rows,
+    stored_rows,
 )
 
 
@@ -47,7 +54,10 @@ def gmail_config() -> GmailConnectorConfig:
 
 @pytest.fixture
 def gmail_runtime(gmail_config: GmailConnectorConfig) -> GmailConnectorRuntime:
-    return GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    # A swallowed ingest error is parked durably, so it needs a pool to commit to.
+    runtime._db_pool = FilteredEventsPool()  # type: ignore[assignment]
+    return runtime
 
 
 def _make_message(
@@ -565,6 +575,24 @@ def test_classify_source_api_error_transient_5xx_is_not_auth_revocation() -> Non
     assert is_auth_revocation is False
     assert "503" in description or "UNAVAILABLE" in description
 
+    nested = _http_error_with_response(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (
+        False,
+        "code=503, reason=syntheticReason, message=Retry",
+    )
+    request = httpx.Request("GET", "https://gmail.googleapis.com/synthetic")
+    for body in (b"", b"synthetic plain body", b"[]", b'{"error": {}}'):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, "http_error: source failure")
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "timeout: synthetic timeout",
+    )
+
 
 def test_classify_source_api_error_falls_back_for_bare_exception() -> None:
     """A network-level exception with no HTTP response still yields a real description."""
@@ -941,7 +969,9 @@ async def test_known_contact_drop_is_marked_important(
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        next_stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        next_stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][
+            9
+        ]
         next_class = next_stored["drop_context"]["classification"]
         assert next_class["state"] == "loaded" and next_class["generation"] == loaded.generation
         assert next_stored["payload"]["raw"] == {}
@@ -995,7 +1025,7 @@ async def test_submission_error_retains_raw_payload(
     ):
         await gmail_runtime._ingest_single_message("msg123")
 
-    rows = gmail_runtime._filtered_event_buffer._rows
+    rows = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
@@ -1543,8 +1573,13 @@ async def test_source_origin_fetch_and_token_health_preserve_failure_and_reset(
             )
 
     for code in ("invalid_grant", "unauthorized_client"):
-        runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
-        sibling = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+        # Independent failing grants: a successful first case must not seed
+        # this case through the intentionally shared account token cache.
+        case_config = gmail_config.model_copy(
+            update={"gmail_refresh_token": f"synthetic-grant-{code}"}
+        )
+        runtime = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
+        sibling = GmailConnectorRuntime(case_config, cursor_pool=MagicMock())
         runtime._metrics = MagicMock()
         requests = []
 
@@ -1686,7 +1721,7 @@ async def test_forward_marker_starts_a_forwarded_span(
 
     message = _make_message(subject="Fwd: urgent", body_text=body)
     for stage in ("connector", "global", "submission", "label"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         allow = PolicyDecision(action="pass_through")
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
@@ -1720,7 +1755,7 @@ async def test_forward_marker_starts_a_forwarded_span(
                     gmail_runtime._label_filter, exclude_labels=frozenset({"CATEGORY_PROMOTIONS"})
                 )
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         assert stored["sender"]["identity"] == "sender@example.com"
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "forwarded", "start": 0, "end": len("[no text]")}
@@ -1813,7 +1848,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
         for action in ("metadata_only", "pass_through"):
             broken = _make_message(subject=subject)
             broken["payload"]["body"]["data"] = "a"
-            gmail_runtime._filtered_event_buffer._rows.clear()
+            clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
             submitted = AsyncMock()
             with (
                 patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=broken)),
@@ -1844,7 +1879,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
                 parse_ingest_envelope(delivered)
             else:
                 submitted.assert_not_awaited()
-                row = gmail_runtime._filtered_event_buffer._rows[-1]
+                row = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1]
                 assert row[8] == "error"
                 delivered = row[9]
                 _sanitize_replay_payload(delivered)
@@ -1884,7 +1919,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
     assert "ordinary owner text" in plain["payload"]["normalized_text"]
     assert "untrusted_spans" not in plain["payload"]
     for stage in ("connector", "global", "submission"):
-        gmail_runtime._filtered_event_buffer._rows.clear()
+        clear_stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)
         with (
             patch.object(gmail_runtime, "_fetch_message", AsyncMock(return_value=message)),
             patch.object(
@@ -1910,7 +1945,7 @@ async def test_html_citation_metadata_tier_and_replay_keep_provider_quote(gmail_
             ),
         ):
             await gmail_runtime._ingest_single_message("msg123")
-        stored = gmail_runtime._filtered_event_buffer._rows[-1][9]
+        stored = stored_rows(gmail_runtime._filtered_event_buffer, gmail_runtime._db_pool)[-1][9]
         _sanitize_replay_payload(stored)
         assert stored["payload"]["untrusted_spans"] == [
             {"kind": "quoted", "start": 0, "end": len("[no text]")}
@@ -2141,6 +2176,10 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     runtime._fetch_message = AsyncMock(side_effect=RuntimeError("gone"))  # type: ignore[method-assign]
     runtime._mcp_client = MagicMock()
     runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
+    # Park each message on its first failure instead of holding (bu-dhloi1.149); the
+    # park is written durably, so it needs a pool to write to (bu-dhloi1.250).
+    runtime._backfill_ingest_retry = IngestRetryBudget(1)
+    runtime._db_pool = FilteredEventsPool()
 
     await runtime._execute_backfill_job(
         BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31")
@@ -2156,3 +2195,38 @@ async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
     assert reports[-1]["status"] == "completed"
     tokens = [a["progress_token"] for a in reports]
     assert all(tokens) and len(set(tokens)) == 3
+
+
+@pytest.mark.parametrize(
+    ("exc", "level"),
+    [
+        (RuntimeError("endpoint_identity does not match job"), logging.ERROR),
+        (ConnectionError("switchboard unreachable"), logging.WARNING),
+    ],
+    ids=["application-error", "transport-error"],
+)
+async def test_backfill_progress_failure_logs_application_errors_loudly(
+    gmail_config: GmailConnectorConfig,
+    caplog: pytest.LogCaptureFixture,
+    exc: Exception,
+    level: int,
+) -> None:
+    """A rejected progress report is a protocol break, not a blip (bu-02zdve).
+
+    Both failures stay non-fatal so the backfill keeps going, but a tool error
+    (RuntimeError from CachedMCPClient) logs at ERROR so a contract break like
+    the missing identity fields fixed in #5173 cannot stay silent.
+    """
+    runtime = GmailConnectorRuntime(gmail_config, cursor_pool=MagicMock())
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(side_effect=exc)
+
+    with caplog.at_level(logging.WARNING, logger="butlers.connectors.gmail"):
+        status = await runtime._report_backfill_progress(
+            job_id="job-1", rows_processed=1, rows_skipped=0, cost_spent_cents=1
+        )
+
+    assert status == "ack"
+    [record] = [r for r in caplog.records if "backfill.progress" in r.getMessage()]
+    assert record.levelno == level
+    assert "job-1" in record.getMessage() and str(exc) in record.getMessage()

@@ -330,10 +330,16 @@ class DayCloseRefreshService:
         return not self.has_pending
 
     async def settle(self) -> None:
+        # Gathering only done entries completes without yielding (gather of done
+        # futures finishes eagerly, and shield of a done future returns it), so a
+        # done entry waiting on its _settled/discard callback would be re-gathered
+        # forever. Drop each gathered snapshot here; the loop picks up new entries
+        # (bu-dhloi1.237). has_pending re-observes any lease a cancellation left.
         while self.has_pending:
-            await asyncio.shield(
-                asyncio.gather(*tuple(self.pending), *tuple(self.releases), return_exceptions=True)
-            )
+            waiting = (*self.pending, *self.releases)
+            await asyncio.shield(asyncio.gather(*waiting, return_exceptions=True))
+            self.pending.difference_update(waiting)
+            self.releases.difference_update(waiting)
 
 
 def held_refresh_service(daemon: Any, pool: Any) -> DayCloseRefreshService:

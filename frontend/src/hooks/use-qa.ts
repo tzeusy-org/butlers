@@ -209,7 +209,7 @@ export function useQaCircuitBreaker() {
 export function useResetQaCircuitBreaker() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () => resetQaCircuitBreaker(),
+    mutationFn: (causeRef: string) => resetQaCircuitBreaker(causeRef),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["qa-circuit-breaker"] });
       queryClient.invalidateQueries({ queryKey: ["qa-investigations"] });

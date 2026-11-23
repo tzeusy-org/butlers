@@ -19,11 +19,11 @@ Live identifiers and machine-local paths in the structured evidence are replaced
 placeholders; counts, roles, health states, and empty-state semantics are preserved.
 
 **Data:** the full structured output from all 29 lanes is in
-`git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json`. Query one
+`git show 1f3e7f551533:docs/redesigns/2026-08-09-jarvis-pursuit-data.json`. Query one
 lane with:
 
 ```bash
-git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json \
+git show 1f3e7f551533:docs/redesigns/2026-08-09-jarvis-pursuit-data.json \
   | jq '.audits[] | select(.page == "<label>")'
 ```
 
@@ -37,7 +37,7 @@ non-QC `moves`. It then deduplicated and prioritized those candidates into the 1
 below. Recheck the machine-readable denominator with:
 
 ```bash
-git show b23d5b76afab:docs/redesigns/2026-08-09-jarvis-pursuit-data.json | jq -e '
+git show 1f3e7f551533:docs/redesigns/2026-08-09-jarvis-pursuit-data.json | jq -e '
   .synthesis.candidate_move_totals as $totals
   | ([.audits[].candidate_moves[]?.title, .audits[].moves[]?.title] | unique) as $titles
   | ($titles | length) == $totals.distinct_raw_titles

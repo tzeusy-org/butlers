@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SettingsConsolePage from "@/pages/SettingsConsolePage";
@@ -27,6 +27,19 @@ vi.mock("@/hooks/use-settings-console-live", () => ({
 // GET /api/spend/forecast, not GET /spend?period=30d -- the Spend panel's
 // "MTD" label is only true when it prices from the ledger (bu-7o89u.2).
 const DEFAULT_FORECAST = { mtd_usd: 0, ceiling_source_error: false };
+
+const LOCATION_RETENTION = {
+  days: 30,
+  version: 1,
+  updated_at: "2026-11-14T09:00:00Z",
+  min_days: 1,
+  max_days: 30,
+  raw_age_basis: "device timestamp",
+  precision_after_forgetting: "approximately 150 m grid cells",
+  covered_sources: ["owntracks.points"],
+  enforced: false,
+  status: "not_enforced",
+};
 
 function defaultApiFetchImpl(path: string) {
   if (path === "/settings/console") {
@@ -50,6 +63,14 @@ function defaultApiFetchImpl(path: string) {
   }
   if (path === "/spend/forecast") {
     return Promise.resolve({ data: DEFAULT_FORECAST });
+  }
+  if (path === "/settings/public-mcp/summary") {
+    return Promise.resolve({
+      data: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 0 },
+    });
+  }
+  if (path === "/chronicler/location-retention") {
+    return Promise.resolve(LOCATION_RETENTION as never);
   }
   if (path === "/approvals/metrics") {
     return Promise.resolve({ data: { total_pending: 0 }, meta: {} });
@@ -281,5 +302,170 @@ describe("SettingsConsolePage", () => {
     collapse.focus();
     await user.keyboard(" ");
     expect(screen.queryByText("Provider 6 needs auth.")).toBeNull();
+  });
+});
+
+
+function LocationProbe() {
+  return <p data-testid="location">{useLocation().pathname}</p>;
+}
+
+// REQ-dashboard-settings-console-002, "Public MCP panel summary" and "Panel summary load failure".
+describe("SettingsConsolePage Public MCP panel", () => {
+  function renderWithProbe() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SettingsConsolePage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("sits after Secrets and summarizes the disabled domains and the all switch", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.resolve({
+            data: { disabled_domains: 2, total_domains: 7, all_disabled: true, missing_rows: 0 },
+          })
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText("2")).toBeTruthy();
+    expect(within(panel).getByText("of 7 domains disabled")).toBeTruthy();
+    expect(within(panel).getByText("All switch: disabled")).toBeTruthy();
+
+    const labels = screen
+      .getAllByRole("button")
+      .map((el) => el.getAttribute("aria-label"))
+      .filter((label): label is string => label?.startsWith("Go to ") ?? false);
+    expect(labels.indexOf("Go to Public MCP")).toBe(labels.indexOf("Go to Secrets") + 1);
+  });
+
+  it("says so when switch rows are missing instead of showing the safe state", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.resolve({
+            data: { disabled_domains: 0, total_domains: 7, all_disabled: false, missing_rows: 2 },
+          })
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText("2 switch rows missing")).toBeTruthy();
+    expect(within(panel).queryByText("All switch: enabled")).toBeNull();
+  });
+
+  it("navigates to /settings/public-mcp on click and on keyboard activation", async () => {
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    await user.click(panel);
+    expect(screen.getByTestId("location").textContent).toBe("/settings/public-mcp");
+  });
+
+  it("navigates from the keyboard", async () => {
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    panel.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("location").textContent).toBe("/settings/public-mcp");
+  });
+
+  it("fails alone: its summary error leaves the other panels rendering", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/settings/public-mcp/summary"
+        ? Promise.reject(new Error("down"))
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    expect(await within(panel).findByText(/Failed to load\./)).toBeTruthy();
+    expect(within(panel).getByText("Retry →")).toBeTruthy();
+    expect(screen.getByLabelText("Go to Secrets")).toBeTruthy();
+    expect(await within(screen.getByLabelText("Go to Approvals")).findByText("0")).toBeTruthy();
+  });
+
+  it("does not let its Retry navigate", async () => {
+    let calls = 0;
+    apiFetchMock.mockImplementation((path: string) => {
+      if (path === "/settings/public-mcp/summary") {
+        calls += 1;
+        return calls <= 2
+          ? Promise.reject(new Error("down"))
+          : Promise.resolve({
+              data: { disabled_domains: 1, total_domains: 7, all_disabled: false, missing_rows: 0 },
+            });
+      }
+      return defaultApiFetchImpl(path);
+    });
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Public MCP");
+    await userEvent.setup().click(await within(panel).findByText("Retry →"));
+    expect(screen.getByTestId("location").textContent).toBe("/");
+    expect(await within(panel).findByText("of 7 domains disabled")).toBeTruthy();
+  });
+});
+
+// bu-s11n0s.75 (S5b): the raw location expiry switch at a glance.
+describe("SettingsConsolePage Location retention panel", () => {
+  function renderWithProbe() {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <SettingsConsolePage />
+          <LocationProbe />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("says expiry is off and raw fixes are kept", async () => {
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText("Expiry off")).toBeTruthy();
+    expect(within(panel).getByText("30-day horizon; raw fixes kept")).toBeTruthy();
+  });
+
+  it("says expiry is on with its horizon", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/chronicler/location-retention"
+        ? Promise.resolve({
+            ...LOCATION_RETENTION,
+            days: 7,
+            enforced: true,
+            status: "enforcing",
+          } as never)
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText("Expiry on")).toBeTruthy();
+    expect(within(panel).getByText("raw fixes deleted after 7 days")).toBeTruthy();
+  });
+
+  it("fails alone and navigates to its page", async () => {
+    apiFetchMock.mockImplementation((path: string) =>
+      path === "/chronicler/location-retention"
+        ? Promise.reject(new Error("down"))
+        : defaultApiFetchImpl(path),
+    );
+    renderWithProbe();
+    const user = userEvent.setup();
+    const panel = await screen.findByLabelText("Go to Location retention");
+    expect(await within(panel).findByText(/Failed to load\./)).toBeTruthy();
+    expect(screen.getByLabelText("Go to Secrets")).toBeTruthy();
+    await user.click(panel);
+    expect(screen.getByTestId("location").textContent).toBe("/settings/location-retention");
   });
 });

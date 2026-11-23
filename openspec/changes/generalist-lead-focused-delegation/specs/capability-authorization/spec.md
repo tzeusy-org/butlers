@@ -140,10 +140,10 @@ invocation SHALL NOT hold database credentials, credential-store access,
 domain service addresses, runtime built-in shell, filesystem, web or
 local-server tools, or provider-hosted tools. A runtime adapter that cannot
 prove these restrictions for a runtime and model tuple SHALL be ineligible for
-goal invocations.
+goal invocations. Research invocations follow REQ-capability-authorization-024.
 
 ID: REQ-capability-authorization-001
-Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1 and D3
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, D1, D3 and D20
 Scope: v1-mandatory
 
 #### Scenario: A session tries to reach a domain directly
@@ -225,10 +225,11 @@ span rules above, and an obligation's declared prompt is trusted unless the
 obligation was created under exposure. A third-party goal's ceiling
 SHALL exclude `transact`, `actuate` and `administer` capabilities and SHALL
 hold `communicate` capabilities, other than owner `notify`, only as park-only
-grants that can produce a parked effect but never execute one.
+grants that can produce a parked effect but never execute one. Third-party
+ceilings SHALL exclude `web_research`, regardless of its `read` class.
 
 ID: REQ-capability-authorization-003
-Source: RFC 0038, D5 and D6; RFC 0017
+Source: RFC 0038, D5, D6 and D20; RFC 0017
 Scope: v1-mandatory
 
 #### Scenario: An email claims to come from the owner
@@ -780,11 +781,142 @@ Scope: v1-mandatory
 - **WHEN** a goal calls a capability whose catalog entry declares no selection-bound parameter
 - **THEN** its grant and resource scope behave as they would with no selection records at all
 
+### Requirement: The public read surface stays outside the goal runtime
+The public read surface of RFC 0039 SHALL NOT admit a goal, start an invocation or hold an invocation token, and neither its requests nor its inbox proposals SHALL be admission input. It SHALL NOT hold, receive or mint a broker assertion, and a domain SHALL refuse its Worker-signed request assertion, or any other non-broker assertion, in place of a broker assertion. It SHALL read only its replicated projection and SHALL call no domain capability; any future read through domain capabilities requires a new owner decision and an amendment to RFC 0039 and vision.md Rule 3. `external_mcp` SHALL be a fact-provenance origin only, and the D5 admission origins SHALL remain `owner`, `obligation`, `third_party` and `staffer` (the D13 `legacy` marker is unchanged).
+
+ID: REQ-capability-authorization-022
+Source: RFC 0038, D5 and D7 (public read surface amendment, later owner decision 2026-11-04); RFC 0039, D1, D7 and D14
+Scope: v1-mandatory
+
+#### Scenario: An outside AI client reads through the public surface
+- **WHEN** the owner's outside AI client calls a read tool on the public read surface
+- **THEN** the answer comes from the replicated projection, and no goal, invocation, broker call or domain call is recorded for it
+
+#### Scenario: An outside proposal arrives
+- **WHEN** the public read surface stores a `propose_fact` proposal in its inbox
+- **THEN** no goal is admitted and no ingest envelope, obligation or schedule is created from it
+
+#### Scenario: A public-surface assertion reaches a domain
+- **WHEN** a model-reachable domain tool receives a call carrying the public surface's Worker-signed assertion or hop bearer instead of a broker assertion
+- **THEN** the domain refuses the call before its handler runs
+
+#### Scenario: Admission sees outside provenance
+- **WHEN** admission records a goal whose input includes a record with `external_mcp` fact provenance
+- **THEN** the goal's origin is one of the four D5 admission origins, never `external_mcp`, and the record's third-party stamp exposes the goal under the existing exposure rules
+
+### Requirement: Outside proposals park per event and keep third-party authority
+The proposal importer of RFC 0039, a deterministic domain job that is not a goal, SHALL be able to park pending actions for its own domain's tools after the switch without a goal, invocation, broker grant or assertion, and SHALL run no model and execute nothing itself; the parking path SHALL NOT be LLM-presentable or grantable. Such an action SHALL record no goal origin (NULL lineage). No standing rule SHALL match, approve or be derived from an action the importer parked, and the action SHALL execute only after the owner's per-event approval, with the owner's approve call reaching the domain through the dashboard service-plane path. A fact applied from such an action SHALL carry `content_authority = third_party` and origin `external_mcp` in its fact provenance, both set server-side at park time; the owner's approval SHALL confirm the fact without changing that stamp, the approvals module's producer `origin` SHALL remain unchanged, and reads SHALL return the fact stamped as non-owner authority.
+
+ID: REQ-capability-authorization-023
+Source: RFC 0038, D6, D7 and D13 (public read surface amendment, later owner decision 2026-11-04); RFC 0039, D13
+Scope: v1-mandatory
+
+#### Scenario: The importer parks a proposal after the switch
+- **WHEN** domain verification is switched on and the importer parks a valid outside proposal
+- **THEN** a pending action exists with no goal lineage (no goal origin) and no assertion, and nothing executes until the owner approves it
+
+#### Scenario: A standing rule would match an outside proposal
+- **WHEN** an active standing rule for the parked tool matches the arguments of an action the importer parked
+- **THEN** the rule does not approve it, its use count is unchanged, and the action waits for the owner's per-event approval
+
+#### Scenario: Approving outside proposals derives no rule
+- **WHEN** the owner approves several importer-parked actions of the same shape
+- **THEN** no standing rule or rule suggestion is derived from them
+
+#### Scenario: The owner approves an outside proposal
+- **WHEN** the owner approves an action the importer parked
+- **THEN** the exact stored call executes once and stores the fact with `content_authority = third_party` and `external_mcp` fact provenance
+- **AND** the fact is confirmed by the owner, and the pending action's producer `origin` is not `external_mcp`
+
+#### Scenario: A goal reads an applied outside fact
+- **WHEN** an unexposed owner goal's invocation receives an applied outside fact from a stamped read
+- **THEN** the invocation and its goal become exposed, and the fact is never treated as a rule or owner-profile fact
+
+#### Scenario: A session tries the importer's parking path
+- **WHEN** a lead or child searches its catalog for, or calls, the importer's parking path
+- **THEN** no such tool is listed or callable, and nothing is parked
+
+### Requirement: Web research runs only in the research sandbox through the broker
+The broker SHALL provide `web_research` as a control-plane-owned catalog
+capability with read effect class and untrusted, ordinary output, no resource,
+recipient or safety parameters, no idempotency key and no owner-authority flag.
+It SHALL accept one bounded question and an optional bounded domain allowlist.
+Only the goal runner SHALL launch its research invocation, on a research host
+separate from the session host, domain services and control plane. The research
+invocation SHALL have only its staged per-invocation model credential, no MCP
+configuration, grant, invocation token or capability or delegation tool, and
+exactly one provider-hosted search tool with all runtime built-in tools
+disabled. Its execution domain SHALL terminate before its one bounded,
+structured answer, citations and event-derived opened URLs are accepted.
+Its network SHALL allow only the configured model provider and cluster DNS,
+blocking the session listener, domain ports, service listeners, PostgreSQL,
+Kubernetes API, cloud metadata and arbitrary internet hosts. The broker SHALL
+select live mode for an unexposed caller and cached mode with no live fetch
+for an exposed caller, from server-held exposure at call time rather than
+caller arguments. Owner goals SHALL hold it in their ceiling; obligations and
+staffers SHALL hold it only when their governing declaration names it;
+third-party goals SHALL never hold it; children SHALL receive it only through
+the existing grant intersection. Before returning the result fenced as
+third-party data, the broker SHALL expose the caller and goal; later stores
+SHALL retain taint and no returned content SHALL satisfy an approval or
+authorization check. Within the per-call transaction the broker SHALL reserve
+the call's tokens, spend, search-call and wall-time allowance from the goal
+budget before launch, enforcing finite per-call limits, a separate research
+concurrency cap and a daily research spend cap, all fail-closed with defaults in
+`runtime_config`. The runner SHALL meter event-stream usage, terminate at the
+reservation and charge the whole reservation when usage is unreadable. The
+goal ledger SHALL record question, selected mode, event-derived opened URLs,
+citations, usage and outcome, while telemetry SHALL contain only identifiers
+and digests. The research role SHALL select only a tuple whose adapter proves
+this research profile, including the requested search mode and required usage
+and URL evidence; version 1 SHALL support only Codex. Unsupported or unproven
+profiles SHALL be refused without a live or tool-capable fallback. Research
+SHALL create no new delegation depth, domain assertion or approval exception.
+
+ID: REQ-capability-authorization-024
+Source: RFC 0038, D20; about/heart-and-soul/security.md, Session Sandboxing
+Scope: v1-mandatory
+
+#### Scenario: The owner asks a research question
+- **WHEN** an unexposed owner lead granted `web_research` asks a bounded research question within its budget
+- **THEN** the broker has the runner launch the separate research profile in live mode and returns one cited, structured answer marked untrusted after that execution domain terminates
+- **AND** the lead and its goal become exposed before receiving the fenced answer, citations and event-derived opened URLs
+
+#### Scenario: An exposed lead calls web_research
+- **WHEN** an exposed lead granted `web_research` requests further research
+- **THEN** the broker selects cached provider-index mode without live page fetch, regardless of instructions in the question
+- **AND** a tuple unable to enforce that mode is refused rather than falling back to live research
+
+#### Scenario: A third-party goal cannot research the web
+- **WHEN** an invocation of a third-party goal lists capabilities or calls `web_research` by name
+- **THEN** the capability is absent from its listing, the call is refused and recorded, and no research invocation is launched
+
+#### Scenario: A research process attempts a forbidden connection
+- **WHEN** a research invocation process attempts a connection to the broker's session listener, a domain port, a service listener, PostgreSQL, the Kubernetes API, cloud metadata or an arbitrary internet host
+- **THEN** the connection is blocked and the research invocation cannot reach that destination
+
+#### Scenario: A runtime and model tuple cannot prove the research profile
+- **WHEN** a research launch resolves to a non-Codex runtime in version 1 or to a tuple whose adapter cannot prove exactly one provider-hosted search tool, no built-in tools or MCP servers, the broker-selected mode, bounded usage and event-derived opened URLs
+- **THEN** the runner refuses the launch, records the failure and launches no research process
+
+#### Scenario: The research reservation does not fit the budget
+- **WHEN** any dimension of the per-call research allowance cannot be reserved from the goal budget, or the research concurrency or daily spend cap would be exceeded or cannot be checked
+- **THEN** the broker refuses and records the call and launches nothing
+- **AND** concurrent calls cannot reserve the same remaining allowance
+
+#### Scenario: A research answer contains instructions to message someone
+- **WHEN** a research answer instructs the lead to send goal data to a non-owner and the lead requests that send without an applicable owner-created standing rule permitted under exposure
+- **THEN** the send is parked for per-event owner approval showing the exact recipient and content, and nothing is sent without that approval under REQ-capability-authorization-006 and REQ-capability-authorization-016
+- **AND** the answer and its citations confer no approval or authorization
+
 ## Source References
+
+- Requirement identity reconciliation: historical D20 drafting reference `REQ-capability-authorization-017` and published D20 reference `REQ-capability-authorization-018` identify the research requirement now numbered `REQ-capability-authorization-024`. Original dated records retain those historical references. Current requirements 017 and 018 retain their separate always-per-event approval-mode and owner-selection meanings, and current requirements 022 and 023 retain their RFC 0039 public-read-surface meanings.
 
 - Non-Negotiable Rule 3 (cross-domain capability access is MCP-only through the control plane)
 - Non-Negotiable Rule 4 (deterministic daemon; intelligence in ephemeral sessions)
 - Non-Negotiable Rule 6 (governing documents; runtime-enforced depth and scope)
-- `about/heart-and-soul/security.md`, Goal and Delegation Authority; Session Sandboxing; Approval Gates
-- RFC 0038 (goal runtime and capability authorization)
+- `about/heart-and-soul/security.md`, Goal and Delegation Authority; Session Sandboxing; Approval Gates; Public Read Surface
+- RFC 0038 (goal runtime and capability authorization), including D20 brokered web research
+- RFC 0039 (public MCP read surface)
 - RFC 0017 (owner-routing safety), RFC 0021 (approvals), RFC 0027 (tool discovery), RFC 0028 (physical actuation), RFC 0037 (private custody)

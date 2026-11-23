@@ -6,7 +6,7 @@ TBD - created by archiving change computed-ci-shard-partition. Update Purpose af
 ## Requirements
 
 ### Requirement: Fresh collected membership and one inventory
-The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. A dedicated bounded inventory job SHALL start after route and own collection, both budgets and the exact source/run/attempt-bound inventory/assignment artifact. Backend matrix children SHALL depend on route and successful inventory, independently of static guards. Both test budgets SHALL consume this same inventory; collection and envelope failures SHALL be non-passing.
+The CI system SHALL derive both lane populations from one fresh collection of the exact installed pytest corpus and predicates. Advisory weights, diffs, file globs and cached counts MUST NOT establish membership. A dedicated bounded inventory job SHALL start after route and own collection and the exact source/run/attempt-bound inventory/assignment artifact. Backend matrix children SHALL depend on route and successful inventory, independently of static guards. Collection and envelope failures SHALL be non-passing. The CI system SHALL NOT enforce a collected-test count cap (owner decision 2026-11-03); test growth SHALL be governed by CI duration SLAs, namely the five-minute routine-lane target and job timeouts as they exist today, with an enforced duration gate to follow.
 
 ID: REQ-ci-shard-assurance-001
 Source: bu-ly3lv5.6 P1-P3; original complete S1-S5 and ten folded source objects; adopted testing-and-verification

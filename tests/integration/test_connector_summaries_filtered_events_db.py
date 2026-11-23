@@ -33,9 +33,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.testing.schema_standins import CONNECTOR_REGISTRY
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -45,44 +42,24 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
+
+@pytest.fixture
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """public.ingestion_events and connectors.filtered_events (core) beside the real
+    switchboard.connector_registry the summaries route reads through its search path."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+    )
+
+
 SUMMARIES_PATH = "/api/ingestion/connectors/summaries"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — public.ingestion_events + connectors.filtered_events."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.ingestion_events CASCADE")
-    await p.execute("TRUNCATE TABLE connectors.filtered_events CASCADE")
-    # connector_registry lives in the switchboard chain; this test is about
-    # core-chain tables, so it stands the registry up from the one shared
-    # declaration rather than running that whole chain. Hand-copying the column
-    # list here is what made this file break silently on sw_031 (bu-r8opr).
-    await p.execute(CONNECTOR_REGISTRY.ddl())
-    await p.execute("TRUNCATE TABLE connector_registry")
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-def app(pool: asyncpg.Pool) -> FastAPI:
+def app(switchboard_pool: asyncpg.Pool) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = switchboard_pool
 
     application = create_app()
 
@@ -195,18 +172,20 @@ async def _seed_filtered_event(
 
 
 async def test_hourly_filtered_events_reflects_real_filtered_events_rows(
-    app: FastAPI, pool: asyncpg.Pool
+    app: FastAPI, switchboard_pool: asyncpg.Pool
 ) -> None:
     """A 100%-skip-routed connector (zero ingestion_events rows) still surfaces
     its filtered volume via the real UNION ALL query, distinct from hourly_events.
     """
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
-    await _seed_registry(pool, connector_type="home_assistant", endpoint_identity="default")
+    await _seed_registry(
+        switchboard_pool, connector_type="home_assistant", endpoint_identity="default"
+    )
     # Zero ingestion_events rows for home_assistant — entirely skip-routed.
     for _ in range(5):
         await _seed_filtered_event(
-            pool,
+            switchboard_pool,
             received_at=now,
             connector_type="home_assistant",
             endpoint_identity="default",
@@ -223,21 +202,23 @@ async def test_hourly_filtered_events_reflects_real_filtered_events_rows(
 
 
 async def test_hourly_events_and_filtered_events_stay_distinct_same_hour(
-    app: FastAPI, pool: asyncpg.Pool
+    app: FastAPI, switchboard_pool: asyncpg.Pool
 ) -> None:
     """Ingested and filtered counts in the SAME hour never bleed into each other."""
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
 
-    await _seed_registry(pool, connector_type="gmail", endpoint_identity="user@example.com")
+    await _seed_registry(
+        switchboard_pool, connector_type="gmail", endpoint_identity="user@example.com"
+    )
     await _seed_ingestion_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="gmail",
         endpoint_identity="user@example.com",
         sender="alice@example.com",
     )
     await _seed_ingestion_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="gmail",
         endpoint_identity="user@example.com",
@@ -245,7 +226,7 @@ async def test_hourly_events_and_filtered_events_stay_distinct_same_hour(
     )
     for _ in range(3):
         await _seed_filtered_event(
-            pool,
+            switchboard_pool,
             received_at=now,
             connector_type="gmail",
             endpoint_identity="user@example.com",
@@ -265,24 +246,26 @@ async def test_hourly_events_and_filtered_events_stay_distinct_same_hour(
 
 
 async def test_devices_surfaces_sender_seen_only_in_filtered_events(
-    app: FastAPI, pool: asyncpg.Pool
+    app: FastAPI, switchboard_pool: asyncpg.Pool
 ) -> None:
     """A sender/device that NEVER appears in ingestion_events (100% skip-routed)
     still surfaces in the `devices` liveness list via the filtered_events union.
     """
     now = datetime.now(UTC)
 
-    await _seed_registry(pool, connector_type="home_assistant", endpoint_identity="default")
+    await _seed_registry(
+        switchboard_pool, connector_type="home_assistant", endpoint_identity="default"
+    )
     # Two distinct entities, both ONLY in filtered_events — never ingested.
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="home_assistant",
         endpoint_identity="default",
         sender_identity="binary_sensor.front_door",
     )
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=now - timedelta(days=70),
         connector_type="home_assistant",
         endpoint_identity="default",
@@ -302,7 +285,7 @@ async def test_devices_surfaces_sender_seen_only_in_filtered_events(
 
 
 async def test_devices_excludes_empty_sender_identity_from_filtered_events(
-    app: FastAPI, pool: asyncpg.Pool
+    app: FastAPI, switchboard_pool: asyncpg.Pool
 ) -> None:
     """An empty-string sender_identity in filtered_events (google_health/spotify/
     google_calendar's no-organizer placeholder) is excluded — it never becomes a
@@ -310,16 +293,18 @@ async def test_devices_excludes_empty_sender_identity_from_filtered_events(
     """
     now = datetime.now(UTC)
 
-    await _seed_registry(pool, connector_type="google_calendar", endpoint_identity="primary")
+    await _seed_registry(
+        switchboard_pool, connector_type="google_calendar", endpoint_identity="primary"
+    )
     await _seed_ingestion_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="google_calendar",
         endpoint_identity="primary",
         sender="organizer@example.com",
     )
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="google_calendar",
         endpoint_identity="primary",
@@ -327,7 +312,7 @@ async def test_devices_excludes_empty_sender_identity_from_filtered_events(
     )
     # No-organizer placeholder — must be excluded from `devices`.
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="google_calendar",
         endpoint_identity="primary",
@@ -344,7 +329,7 @@ async def test_devices_excludes_empty_sender_identity_from_filtered_events(
 
 
 async def test_device_lookback_reads_filtered_events_across_partitions(
-    app: FastAPI, pool: asyncpg.Pool
+    app: FastAPI, switchboard_pool: asyncpg.Pool
 ) -> None:
     """The 90-day device lookback correctly reads a filtered_events row from a
     different monthly partition than the current one (core_007 partitioning).
@@ -352,16 +337,18 @@ async def test_device_lookback_reads_filtered_events_across_partitions(
     now = datetime.now(UTC)
     two_months_ago = now - timedelta(days=60)
 
-    await _seed_registry(pool, connector_type="home_assistant", endpoint_identity="default")
+    await _seed_registry(
+        switchboard_pool, connector_type="home_assistant", endpoint_identity="default"
+    )
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=now,
         connector_type="home_assistant",
         endpoint_identity="default",
         sender_identity="binary_sensor.recent",
     )
     await _seed_filtered_event(
-        pool,
+        switchboard_pool,
         received_at=two_months_ago,
         connector_type="home_assistant",
         endpoint_identity="default",
@@ -369,7 +356,7 @@ async def test_device_lookback_reads_filtered_events_across_partitions(
     )
 
     # Sanity: the two rows really landed in different partitions.
-    partitions = await pool.fetch(
+    partitions = await switchboard_pool.fetch(
         "SELECT DISTINCT tableoid::regclass::text AS partition "
         "FROM connectors.filtered_events ORDER BY partition"
     )

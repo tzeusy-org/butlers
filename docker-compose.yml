@@ -66,6 +66,9 @@ x-postgres-env: &postgres-env
   POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-}
   BUTLERS_DB_POOL_MIN_SIZE: ${BUTLERS_DB_POOL_MIN_SIZE:-0}
   BUTLERS_DB_POOL_MAX_SIZE: ${BUTLERS_DB_POOL_MAX_SIZE:-4}
+  # Set "check" together with BUTLERS_MIGRATOR_DB_USER: daemons then only verify their
+  # chains are at head (docs/data_and_storage/migrator-login.md). Default "run".
+  BUTLERS_STARTUP_MIGRATIONS: ${BUTLERS_STARTUP_MIGRATIONS:-run}
 
 x-connector-env: &connector-env
   <<: *postgres-env
@@ -122,9 +125,17 @@ services:
 
   migrations:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    command: ["db", "migrate"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db prepare-chronicler-memory --dir /app/roster
+        && exec /usr/local/bin/python -I /app/scripts/runtime_clis/python_entrypoint.py butlers db migrate --dir /app/roster
     environment:
       <<: *postgres-env
+      # bu-dss7he.6 S3: the migrator login, when set; unset keeps the shared login.
+      # See docs/data_and_storage/migrator-login.md before setting it.
+      POSTGRES_USER: ${BUTLERS_MIGRATOR_DB_USER:-${POSTGRES_USER:-butlers}}
+      POSTGRES_PASSWORD: ${BUTLERS_MIGRATOR_DB_PASSWORD:-${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.dev or .env.prod}}
     volumes:
       - ./roster:/app/roster:ro
     networks: [db]
@@ -231,8 +242,8 @@ services:
     command: ["dashboard", "--host", "0.0.0.0", "--port", "41200"]
     environment:
       <<: *postgres-env
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -332,7 +343,7 @@ services:
 
   connector-telegram-bot:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_bot"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_bot", "python", "-m", "butlers.connectors.telegram_bot"]
     command: []
     environment:
       <<: *connector-env
@@ -357,7 +368,7 @@ services:
 
   connector-telegram-user:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.telegram_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/telegram_user", "python", "-m", "butlers.connectors.telegram_user_client"]
     command: []
     environment:
       <<: *connector-env
@@ -375,7 +386,7 @@ services:
 
   connector-whatsapp-user:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.whatsapp_user_client"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/whatsapp_user", "python", "-m", "butlers.connectors.whatsapp_user_client"]
     command: []
     environment:
       <<: *connector-env
@@ -396,7 +407,7 @@ services:
 
   connector-google-calendar:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_calendar"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_calendar", "python", "-m", "butlers.connectors.google_calendar"]
     command: []
     environment:
       <<: *connector-env
@@ -418,7 +429,7 @@ services:
 
   connector-spotify:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.spotify"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/spotify", "python", "-m", "butlers.connectors.spotify"]
     command: []
     environment:
       <<: *connector-env
@@ -439,7 +450,7 @@ services:
 
   connector-steam:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/steam", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.steam"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/steam", "python", "-m", "butlers.connectors.steam"]
     command: []
     environment:
       <<: *connector-env
@@ -467,7 +478,7 @@ services:
         GIT_SHA: ${GIT_SHA:-unknown}
     image: butlers-app-audio:${BUTLERS_APP_TAG:-latest}
     profiles: [audio]
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.live_listener"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/live_listener", "python", "-m", "butlers.connectors.live_listener"]
     command: []
     environment:
       <<: *connector-env
@@ -489,7 +500,7 @@ services:
 
   connector-owntracks:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/owntracks", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.owntracks"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/owntracks", "python", "-m", "butlers.connectors.owntracks"]
     command: []
     environment:
       <<: *connector-env
@@ -516,7 +527,7 @@ services:
   # not templated here (see bu-whhll.6 follow-ups).
   connector-activitywatch:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/activitywatch", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.activitywatch"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/activitywatch", "python", "-m", "butlers.connectors.activitywatch"]
     command: []
     environment:
       <<: *connector-env
@@ -539,7 +550,7 @@ services:
 
   connector-home-assistant:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.home_assistant"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/home_assistant", "python", "-m", "butlers.connectors.home_assistant"]
     command: []
     environment:
       <<: *connector-env
@@ -581,7 +592,7 @@ services:
 
   oauth-gate:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/oauth_gate.py"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "scripts/oauth_gate.py"]
     command: []
     environment:
       <<: *postgres-env
@@ -602,7 +613,7 @@ services:
   butlers-control:
     profiles: [control-stage]
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/control", "butlers", "control", "--profile", "KEY_ABSENT_STAGE", "--config", "roster/switchboard", "--session-host", "butlers-control-session"]
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
@@ -619,8 +630,8 @@ services:
       BUTLERS_HOST: butlers-up
       SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -667,7 +678,7 @@ services:
 
   butlers-up:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "butlers", "up"]
     command: []
     ports:
       - "127.0.0.1:${SWITCHBOARD_HOST_PORT:-41100}:41100"
@@ -678,13 +689,14 @@ services:
       net.ipv4.ip_local_reserved_ports: "41100-41112"
     # No security_opt: runtime sessions run Codex with
     # --dangerously-bypass-approvals-and-sandbox (never bwrap), so butlers-up
-    # keeps Docker's default AppArmor confinement. Only the dashboard services
-    # below need a user-namespace-capable posture (bu-swzloi).
+    # keeps Docker's default AppArmor confinement. Only the dashboard-api
+    # services (dashboard-api and dashboard-api-hotreload) need a
+    # user-namespace-capable posture (bu-swzloi).
     environment:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
-      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-0}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       # Owner-facing alerts are generated here, not in dashboard-api.  Preserve
       # the configured public frontend origin (including any path prefix) so a
       # Telegram deep link never falls back to the daemon host's localhost.
@@ -731,7 +743,7 @@ services:
 
   connector-gmail:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.gmail"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/gmail", "python", "-m", "butlers.connectors.gmail"]
     command: []
     environment:
       <<: *connector-env
@@ -754,7 +766,7 @@ services:
 
   connector-google-drive:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_drive"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google_drive", "python", "-m", "butlers.connectors.google_drive"]
     command: []
     environment:
       <<: *connector-env
@@ -785,7 +797,7 @@ services:
 
   connector-google-health:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google-health", "uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.connectors.google_health"]
+    entrypoint: ["/app/scripts/dev_entrypoint.sh", "connectors/google-health", "python", "-m", "butlers.connectors.google_health"]
     command: []
     environment:
       <<: *connector-env
@@ -817,7 +829,7 @@ services:
   butlers-control-hotreload:
     profiles: [control-stage-hotreload]
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard --session-host butlers-control-session"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "control", "--profile", "KEY_ABSENT_STAGE", "--config", "roster/switchboard", "--session-host", "butlers-control-session"]
     command: []
     # Keep the same MCP port reservation as the baked daemon service above.
     sysctls:
@@ -828,7 +840,7 @@ services:
       SWITCHBOARD_MCP_URL: http://butlers-control:41100/sse
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -837,8 +849,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
@@ -876,7 +888,7 @@ services:
   butlers-up-hotreload:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers up"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "up"]
     command: []
     # Keep the same MCP port reservation as the baked daemon service above.
     sysctls:
@@ -885,7 +897,7 @@ services:
       <<: *postgres-env
       BUTLERS_SWITCHBOARD_URL: http://dashboard-api:41200
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       DASHBOARD_URL: ${DASHBOARD_URL:-${OAUTH_DASHBOARD_URL:-http://localhost:41200}}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       HOME: /root
@@ -894,8 +906,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - runtime_claude:/root/.claude
       - runtime_codex:/root/.codex
       - runtime_opencode:/root/.opencode
@@ -924,14 +936,14 @@ services:
   dashboard-api-hotreload:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
     profiles: [hotreload]
-    entrypoint: ["sh", "-c", "uv sync --dev && exec uv run butlers dashboard --host 0.0.0.0 --port 41200"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "dashboard", "--host", "0.0.0.0", "--port", "41200"]
     command: []
     ports:
       - "127.0.0.1:${DASHBOARD_HOST_PORT:-41200}:41200"
     environment:
       <<: *postgres-env
       BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: ${BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER:-1}
-      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-0}
+      BUTLERS_FLEET_CONDITION_HANDOFF: ${BUTLERS_FLEET_CONDITION_HANDOFF:-1}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-http://localhost:41200/api/oauth/google/callback}
       OAUTH_DASHBOARD_URL: ${OAUTH_DASHBOARD_URL:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -961,8 +973,8 @@ services:
       - ./src:/app/src
       - ./roster:/app/roster:ro
       - ./pyproject.toml:/app/pyproject.toml:ro
+      - ./uv.lock:/app/uv.lock:ro
       - ./logs:/app/logs
-      - uv_cache:/root/.cache/uv
       - wa_bridge_socket:/tmp/wa-bridge
       - butlers_backups:/backups:ro
     # bu-0uqgo.11 (REQ-core-credentials-002): Dashboard is the only signing
@@ -1014,6 +1026,40 @@ services:
         = '{"status":"unavailable"}503'
     networks: [control-session]
 
+  # RFC 0038 D3 session host (bu-kiuh8v.1, .15). Dark: off unless the
+  # `session-host` profile is named, no published or exposed port, no database,
+  # domain or connector credential. It sits only on the internal control-session
+  # network, so it has no route out at all until the SNI egress proxy lands. It
+  # installs no reviewed runtime profile, so it refuses every launch; it serves the
+  # Codex credential volume to the pinned control-plane caller over mTLS on 41198.
+  # Its two volumes: the PKI directory (tls.crt, tls.key, client-ca.crt,
+  # server.sha256, caller.sha256; never committed, provisioned out of band) and the
+  # credential volume. Without provisioned PKI it refuses to start. The composition
+  # is pinned by tests/scripts/test_session_host_env_guard.py.
+  session-host:
+    image: butlers-app:${BUTLERS_APP_TAG:-latest}
+    profiles: [session-host]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "butlers", "session-host"]
+    command:
+      - --pki-dir=/run/session-host/pki
+      - --staging-root=/var/lib/session-host/staging
+      - --credentials-root=/var/lib/session-host/credentials/codex
+      - --broker-origin=https://broker.invalid
+      - --bind-host=0.0.0.0
+      - --port=41198
+    environment:
+      HOME: /root
+    volumes:
+      - "${SESSION_HOST_PKI_DIR:-./deploy/session-host/pki-unprovisioned}:/run/session-host/pki:ro"
+      - session_host_credentials:/var/lib/session-host/credentials
+    tmpfs:
+      - /var/lib/session-host/staging:mode=0700
+    # Moby's default plus exactly the Bubblewrap launch (deploy/seccomp/README.md).
+    security_opt:
+      - seccomp:./deploy/seccomp/session-host-sandbox.json
+    networks: [control-session]
+    restart: on-failure:3
+
 # ── Runtime-probe control keys ──────────────────────────────────────────
 # REQ-core-credentials-002.  A host path is configuration, not key material;
 # neither document is ever committed.  Both default to a tracked placeholder
@@ -1041,9 +1087,10 @@ configs:
 volumes:
   minio_data:
   frontend_node_modules:
-  uv_cache:
   runtime_claude:
   runtime_codex:
+  # The session host's Codex credential volume (dark; bu-kiuh8v.15).
+  session_host_credentials:
   runtime_opencode:
   runtime_gemini:
   wa_bridge_socket:

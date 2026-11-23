@@ -48,6 +48,14 @@ SENSITIVE_ARG_NAMES: frozenset[str] = frozenset(
 )
 
 
+#: Sensitive argument names that say who or where a call goes. The authenticated owner's
+#: approval view shows these so the owner sees the exact call that will run (bu-0rbswe AC4);
+#: credentials, amounts and the like stay redacted.
+RECIPIENT_ARG_NAMES: frozenset[str] = frozenset(
+    {"to", "recipient", "recipients", "email", "address", "account"}
+)
+
+
 def is_sensitive_by_heuristic(arg_name: str) -> bool:
     """Return True if *arg_name* matches a known sensitive pattern.
 
@@ -161,8 +169,13 @@ def redact_tool_args(
     tool_name: str,
     tool_args: dict[str, Any],
     module: Module | None = None,
+    *,
+    reveal_recipients: bool = False,
 ) -> dict[str, Any]:
     """Redact sensitive arguments in tool_args for safe API exposure.
+
+    ``reveal_recipients`` is for the authenticated owner's approval view only: arguments in
+    ``RECIPIENT_ARG_NAMES`` keep their value; every other sensitive argument stays redacted.
 
     For each argument in *tool_args*:
     - If the argument is sensitive (per module metadata or heuristic),
@@ -188,7 +201,7 @@ def redact_tool_args(
 
     for arg_name, arg_value in tool_args.items():
         is_sensitive = resolve_arg_sensitivity(tool_name, arg_name, module)
-        if is_sensitive:
+        if is_sensitive and not (reveal_recipients and arg_name.lower() in RECIPIENT_ARG_NAMES):
             redacted[arg_name] = "[REDACTED]"
         else:
             redacted[arg_name] = arg_value

@@ -7,6 +7,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.calendar_approval import (
+    bind_calendar_approval_calendar,
+    calendar_approval_args,
+)
 
 from .constants import (
     DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
@@ -20,6 +25,7 @@ from .constants import (
     logger,
 )
 from .models import CalendarEvent, CalendarEventCreate
+from .party import gate_calendar_party_mutation
 from .time_helpers import (
     _recurrence_lines_append_exdate,
     _recurrence_lines_bound_until,
@@ -130,33 +136,41 @@ class RecurrenceMixin:
         action_payload: dict[str, Any],
         recurrence_scope: str,
         occurrences_touched: int,
-        approval_bypass: bool,
+        resolved_calendar_id: str,
     ) -> dict[str, Any] | None:
         """Route large ``series`` / ``following`` mutations through the approval gate.
 
-        Returns an ``approval_required`` response when gated, otherwise ``None``.
+        Return an approval request or explicit refusal when gated, otherwise ``None``.
         A single-occurrence ``this`` mutation is never gated on impact.
         """
-        if approval_bypass or self._approval_enqueuer is None:
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
             return None
         if recurrence_scope == "this":
             return None
         if occurrences_touched < RECURRENCE_HIGH_IMPACT_THRESHOLD:
             return None
-        gated_tool_args = dict(tool_args)
-        gated_tool_args["_approval_bypass"] = True
-        agent_summary = (
-            f"Calendar recurrence high-impact action: {tool_name} touches "
-            f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
-            f"butler={self._butler_name})"
-        )
-        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
-        response = {
-            "status": "approval_required",
-            "action_id": action_id,
-            "message": "This recurrence-scoped mutation has been queued for approval.",
-            "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
-        }
+        if self._approval_enqueuer is None:
+            response = {
+                "status": "approval_unavailable",
+                "message": "This high-impact recurrence mutation requires the approvals module.",
+                "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+            }
+        else:
+            gated_tool_args = bind_calendar_approval_calendar(
+                calendar_approval_args(tool_name, **tool_args), resolved_calendar_id
+            )
+            agent_summary = (
+                f"Calendar recurrence high-impact action: {tool_name} touches "
+                f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
+                f"butler={self._butler_name})"
+            )
+            action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+            response = {
+                "status": "approval_required",
+                "action_id": action_id,
+                "message": "This recurrence-scoped mutation has been queued for approval.",
+                "impact": {"occurrences_touched": occurrences_touched, "scope": recurrence_scope},
+            }
         source_id = await self._resolve_action_source_id(
             source_kind=SOURCE_KIND_PROVIDER, lane="user"
         )
@@ -164,7 +178,11 @@ class RecurrenceMixin:
             idempotency_key=idempotency_key,
             action_type=action_type,
             request_id=request_id,
-            action_status=MUTATION_STATUS_PENDING,
+            action_status=(
+                MUTATION_STATUS_NOOP
+                if response["status"] == "approval_unavailable"
+                else MUTATION_STATUS_PENDING
+            ),
             action_payload=action_payload,
             action_result=response,
             source_id=source_id,
@@ -183,7 +201,7 @@ class RecurrenceMixin:
         send_updates: str | None,
         request_id: str | None,
         tool_name: str,
-        approval_bypass: bool = False,
+        approval_args: dict[str, Any],
     ) -> dict[str, Any]:
         """Delete a single occurrence (``this``) or this-and-following of a series."""
         await self._require_calendar_write_permission()
@@ -214,6 +232,8 @@ class RecurrenceMixin:
             action_type="workspace_user_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name=tool_name,
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -245,6 +265,23 @@ class RecurrenceMixin:
             )
             return result
 
+        party_gate = await gate_calendar_party_mutation(
+            self,
+            tool_name=tool_name,
+            tool_args=approval_args,
+            attendees=[a.email for a in existing_event.attendees] if send_updates != "none" else [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
         # A non-recurring event has no occurrences to exclude — fall back to a
         # whole-event delete so the scope argument degrades gracefully.
         if not existing_event.recurrence_rule:
@@ -252,6 +289,7 @@ class RecurrenceMixin:
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
                 send_updates=send_updates,
+                **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
             )
             await self._project_provider_mutation(
                 source_id=source_id,
@@ -289,19 +327,13 @@ class RecurrenceMixin:
         gate = await self._maybe_gate_recurrence_impact(
             tool_name=tool_name,
             action_type="workspace_user_delete",
-            tool_args={
-                "event_id": normalized_event_id,
-                "calendar_id": resolved_calendar_id,
-                "recurrence_scope": recurrence_scope,
-                "instance_start_at": occurrence_start.isoformat(),
-                "send_updates": send_updates,
-            },
+            tool_args=approval_args,
             request_id=normalized_request_id,
             idempotency_key=idempotency_key,
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
-            approval_bypass=approval_bypass,
+            resolved_calendar_id=resolved_calendar_id,
         )
         if gate is not None:
             return gate
@@ -323,6 +355,7 @@ class RecurrenceMixin:
             event_id=normalized_event_id,
             recurrence=new_recurrence,
             send_updates=send_updates,
+            **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
         )
         await self._emit_calendar_audit("delete", existing_event.title, resolved_calendar_id)
         await self._project_provider_mutation(
@@ -378,8 +411,8 @@ class RecurrenceMixin:
         entity_ids: list[uuid.UUID] | None,
         request_id: str | None,
         tool_name: str,
+        approval_args: dict[str, Any],
         clear_entity_ids: bool = False,
-        approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Edit a single occurrence (``this``) or this-and-following of a series.
 
@@ -424,6 +457,8 @@ class RecurrenceMixin:
             action_type="workspace_user_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name=tool_name,
+            tool_args=approval_args,
         )
         if replay is not None:
             return replay
@@ -460,6 +495,23 @@ class RecurrenceMixin:
             )
             return result
 
+        party_gate = await gate_calendar_party_mutation(
+            self,
+            tool_name=tool_name,
+            tool_args=approval_args,
+            attendees=[a.email for a in existing_event.attendees],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
         occurrences_touched = self._count_scope_occurrences(
             event=existing_event,
             recurrence_scope=recurrence_scope,
@@ -468,21 +520,13 @@ class RecurrenceMixin:
         gate = await self._maybe_gate_recurrence_impact(
             tool_name=tool_name,
             action_type="workspace_user_update",
-            tool_args={
-                "event_id": normalized_event_id,
-                "instance_start_at": occurrence_start.isoformat(),
-                "recurrence_scope": recurrence_scope,
-                "title": title,
-                "calendar_id": resolved_calendar_id,
-                "entity_ids": [str(e) for e in entity_ids] if entity_ids is not None else None,
-                "clear_entity_ids": clear_entity_ids,
-            },
+            tool_args=approval_args,
             request_id=normalized_request_id,
             idempotency_key=idempotency_key,
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
-            approval_bypass=approval_bypass,
+            resolved_calendar_id=resolved_calendar_id,
         )
         if gate is not None:
             return gate
@@ -534,6 +578,7 @@ class RecurrenceMixin:
             calendar_id=resolved_calendar_id,
             event_id=normalized_event_id,
             recurrence=new_recurrence,
+            **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
         )
         detached_event = await provider.create_event(
             calendar_id=resolved_calendar_id, payload=detached_payload
@@ -603,29 +648,37 @@ class RecurrenceMixin:
         action_payload: dict[str, Any],
         source_kind: str,
     ) -> dict[str, Any] | None:
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
+            return None
         if action_type not in MUTATION_HIGH_IMPACT_ACTIONS:
             return None
         if self._approval_enqueuer is None:
-            return None
-
-        gated_tool_args = dict(tool_args)
-        gated_tool_args["_approval_bypass"] = True
-        agent_summary = (
-            f"Calendar workspace high-impact action requested: {tool_name} "
-            f"(butler={self._butler_name})"
-        )
-        action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
-        response = {
-            "status": "approval_required",
-            "action_id": action_id,
-            "message": "This workspace mutation has been queued for approval.",
-        }
+            response = {
+                "status": "approval_unavailable",
+                "message": "This high-impact workspace mutation requires the approvals module.",
+            }
+        else:
+            gated_tool_args = calendar_approval_args(tool_name, **tool_args)
+            agent_summary = (
+                f"Calendar workspace high-impact action requested: {tool_name} "
+                f"(butler={self._butler_name})"
+            )
+            action_id = await self._approval_enqueuer(tool_name, gated_tool_args, agent_summary)
+            response = {
+                "status": "approval_required",
+                "action_id": action_id,
+                "message": "This workspace mutation has been queued for approval.",
+            }
         source_id = await self._resolve_action_source_id(source_kind=source_kind, lane="butler")
         await self._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type=action_type,
             request_id=request_id,
-            action_status=MUTATION_STATUS_PENDING,
+            action_status=(
+                MUTATION_STATUS_NOOP
+                if response["status"] == "approval_unavailable"
+                else MUTATION_STATUS_PENDING
+            ),
             action_payload=action_payload,
             action_result=response,
             source_id=source_id,

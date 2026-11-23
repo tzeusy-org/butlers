@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 
+from butlers.api.control_plane_carrier import carry_via_control_plane
 from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
@@ -54,6 +55,7 @@ from butlers.api.routers.secrets_v2 import (
 from butlers.api.routers.settings_console import (
     run_settings_console_delta_loop,
 )
+from butlers.api.vendor_door_store import VendorDoorStore, create_vendor_door_pool
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
 from butlers.core.definer_search_path import (
     compute_unpinned_definers,
@@ -70,10 +72,29 @@ from butlers.db import (
     has_insecure_infra_defaults,
     is_grafana_anonymous_enabled,
 )
+from butlers.jobs.backup_facts_snapshot import (
+    DEFAULT_SNAPSHOT_INTERVAL_S,
+    run_backup_facts_snapshot_loop,
+)
+from butlers.jobs.calendar_overcommitment import (
+    CHECK_INTERVAL_ENV as _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+)
+from butlers.jobs.calendar_overcommitment import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+)
+from butlers.jobs.calendar_overcommitment import (
+    resolve_lookahead_days as resolve_calendar_overcommitment_lookahead_days,
+)
+from butlers.jobs.calendar_overcommitment import run_calendar_overcommitment_loop
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
     run_calendar_sync_deadman_loop,
 )
+from butlers.jobs.capability_health import run_capability_health_loop, writer_dsn
+from butlers.jobs.day_sheet_push import (
+    DEFAULT_CHECK_INTERVAL_S as DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+)
+from butlers.jobs.day_sheet_push import run_day_sheet_push_loop
 from butlers.jobs.deploy_drift import (
     DEFAULT_DRIFT_CHECK_INTERVAL_S,
     run_migration_drift_loop,
@@ -156,9 +177,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         app.state.owner_auth_service = None
         logger.warning("Owner authentication storage is unavailable")
+    # The vendor-door routes get their own restricted login, never the auth pool.
+    app.state.vendor_door_pool = await create_vendor_door_pool()
+    app.state.vendor_door_store = VendorDoorStore(app.state.vendor_door_pool)
 
     # Startup
-    init_dependencies()
+    init_dependencies(carrier=carry_via_control_plane)
 
     # Check infra creds for known-default values (A4 indicator: infra_creds_insecure_default).
     # Dev posture: warns loudly per credential.  Hardened posture: raises RuntimeError.
@@ -189,10 +213,14 @@ async def lifespan(app: FastAPI):
     job_health = JobHealthStore(lambda: get_db_manager().pool("switchboard"))
     app.state.background_job_health = job_health
     secrets_lifecycle_task: asyncio.Task | None = None
+    capability_health_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
     migration_drift_task: asyncio.Task | None = None
     calendar_deadman_task: asyncio.Task | None = None
+    calendar_overcommitment_task: asyncio.Task | None = None
+    day_sheet_push_task: asyncio.Task | None = None
+    backup_facts_task: asyncio.Task | None = None
     external_deadman_task: asyncio.Task | None = None
     fleet_events_bridge_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
@@ -303,6 +331,20 @@ async def lifespan(app: FastAPI):
                 health=job_health.recorder("secrets_lifecycle", "periodic", scan_interval_s),
             )
         )
+
+        # Capability health (RFC 0038 S6): publishes system.dep through its own login as
+        # perception_health_writer. No dedicated DSN means no job; readers then see unknown.
+        health_dsn = writer_dsn()
+        if health_dsn is not None:
+            capability_health_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "capability_health",
+                    lambda: run_capability_health_loop(get_db_manager(), health_dsn),
+                    health=job_health.recorder("capability_health", "periodic", 60),
+                )
+            )
+        else:
+            await job_health.recorder("capability_health", "periodic", 60).disabled()
 
         # Hourly automated model-catalog verification sweep (bu-hmdqz.2):
         # closes the loop left open by the manual-only "Verify all" button —
@@ -484,6 +526,74 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
+        # Calendar overcommitment (bu-vcjgo8, REQ-owner-condition-ledger-007): the
+        # radar's conflict scan over the owner's forward window, reconciled into the
+        # owner condition ledger. See butlers.jobs.calendar_overcommitment.
+        try:
+            overcommitment_interval_s = _resolve_positive_float_env(
+                _CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_ENV,
+                DEFAULT_CALENDAR_OVERCOMMITMENT_CHECK_INTERVAL_S,
+            )
+            overcommitment_lookahead_days = resolve_calendar_overcommitment_lookahead_days()
+            calendar_overcommitment_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "calendar_overcommitment",
+                    lambda: run_calendar_overcommitment_loop(
+                        get_db_manager(),
+                        interval_s=overcommitment_interval_s,
+                        lookahead_days=overcommitment_lookahead_days,
+                    ),
+                    health=job_health.recorder(
+                        "calendar_overcommitment", "periodic", overcommitment_interval_s
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start calendar-overcommitment loop", exc_info=True)
+
+        # Day sheet push (bu-5ii4gj.2 S3): tomorrow's day sheet to the owner, from the same
+        # projection the dashboard serves. Dark: each tick is a no-op unless
+        # DAY_SHEET_PUSH_ENABLED is set. See butlers.jobs.day_sheet_push.
+        try:
+
+            async def _switchboard_client():
+                return await get_mcp_manager().get_client("switchboard")
+
+            day_sheet_push_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "day_sheet_push",
+                    lambda: run_day_sheet_push_loop(
+                        get_db_manager(),
+                        client_provider=_switchboard_client,
+                        interval_s=DEFAULT_DAY_SHEET_PUSH_INTERVAL_S,
+                    ),
+                    health=job_health.recorder(
+                        "day_sheet_push", "periodic", DEFAULT_DAY_SHEET_PUSH_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start day-sheet push loop", exc_info=True)
+
+        # Backup facts snapshot (bu-deqpzd): this process alone mounts the dump
+        # volume, so it publishes the content-free facts the QA patrol needs
+        # into public.state. Always on: an unset BUTLERS_BACKUP_DIR is itself
+        # published, so the patrol can tell "unconfigured" from "unseen".
+        try:
+            backup_facts_task = _track_background_task(
+                supervise_lifespan_loop(
+                    "backup_facts_snapshot",
+                    lambda: run_backup_facts_snapshot_loop(
+                        get_db_manager(), interval_s=DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                    health=job_health.recorder(
+                        "backup_facts_snapshot", "periodic", DEFAULT_SNAPSHOT_INTERVAL_S
+                    ),
+                )
+            )
+        except Exception:
+            logger.warning("Failed to start backup-facts-snapshot loop", exc_info=True)
+
         # External deadman: DB write/read and receiver-fleet truth gate the
         # outbound heartbeat. No configured target means no loop or HTTP.
         # See butlers.jobs.external_deadman for tick identity and failure rules.
@@ -543,6 +653,10 @@ async def lifespan(app: FastAPI):
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await secrets_lifecycle_task
+    if capability_health_task is not None:
+        capability_health_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await capability_health_task
     if model_verify_task is not None:
         model_verify_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -567,10 +681,31 @@ async def lifespan(app: FastAPI):
         calendar_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await calendar_deadman_task
+    if calendar_overcommitment_task is not None:
+        calendar_overcommitment_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await calendar_overcommitment_task
+    if day_sheet_push_task is not None:
+        day_sheet_push_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await day_sheet_push_task
+    if backup_facts_task is not None:
+        backup_facts_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await backup_facts_task
     if external_deadman_task is not None:
         external_deadman_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await external_deadman_task
+    # Detached decision-memory writes need the pools that shutdown_db_manager closes.
+    with contextlib.suppress(Exception):
+        from butlers.api.routers.approvals import drain_decision_writebacks
+
+        await asyncio.wait_for(drain_decision_writebacks(), timeout=30)
+    vendor_door_pool = getattr(app.state, "vendor_door_pool", None)
+    if vendor_door_pool is not None:
+        await vendor_door_pool.close()
+        app.state.vendor_door_pool = None
     if app.state.owner_auth_service is not None:
         await close_owner_auth_service(app.state.owner_auth_service)
         app.state.owner_auth_service = None
@@ -662,6 +797,7 @@ def create_app(
                     ".*key.*",
                     ".*secret.*",
                     ".*password.*",
+                    ".*capture-intake.*",
                 ],
             )
             logger.info("FastAPI OTel instrumentation enabled")

@@ -24,8 +24,8 @@ policy invention:
   triggers the spawner tries to resume on -- see ``preferred_features``.
 - Consequence follows where the dispatch's own product goes: outward to a
   requester (``route``/``dashboard``/``external``/``trigger``), onto
-  butler-owned state (``tick``/``schedule``/``deadline``/``healing``), or into an
-  internal artifact nobody is waiting on (``classification``/``qa``).
+  butler-owned state (``tick``/``schedule``/``deadline``/``healing``/``qa``), or into an
+  internal artifact nobody is waiting on (``classification``).
 
 Everything else -- context floor, deadline, per-call budget -- is left ``None``
 unless a caller supplies it, because nothing in the trigger alone determines it
@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 #: Bumped whenever the derivation table or the fit rules below change meaning.
 #: Recorded alongside every resolution so a stored receipt can be read against
 #: the policy that actually produced it rather than against today's.
-DISPATCH_POLICY_VERSION = "2"
+DISPATCH_POLICY_VERSION = "3"
 
 
 class Consequence(enum.StrEnum):
@@ -82,6 +82,7 @@ class _TriggerProfile:
 _TOOLS = frozenset({ModelFeature.TOOL_USE})
 _NO_FEATURES: frozenset[ModelFeature] = frozenset()
 _RESUME = frozenset({ModelFeature.SESSION_RESUME})
+_WORKSPACE = frozenset({ModelFeature.WORKSPACE_AGENT})
 
 # Deterministic trigger-class -> requirements table. Keyed by trigger CLASS, not
 # by raw trigger_source, so `schedule:nightly-digest` and `schedule:weekly-review`
@@ -98,7 +99,11 @@ _TRIGGER_PROFILES: dict[str, _TriggerProfile] = {
     # spawner._run gives healing and QA sessions `mcp_servers = {}`, so neither
     # needs tool use; QA additionally produces only an internal artifact.
     "healing": _TriggerProfile(_NO_FEATURES, _NO_FEATURES, Consequence.REVERSIBLE),
-    "qa": _TriggerProfile(_NO_FEATURES, _NO_FEATURES, Consequence.OBSERVE),
+    # A ``qa`` session is an engineering executor (RFC 0038 D18, bu-ejow5p.5): it must run
+    # shell and filesystem tools in its worktree and its commits are real, reversible work,
+    # so it requires a workspace-capable runtime and is judged at REVERSIBLE (an UNKNOWN
+    # capability is "not proven", never "supported"). It still gets no MCP server.
+    "qa": _TriggerProfile(_WORKSPACE, _NO_FEATURES, Consequence.REVERSIBLE),
     UNKNOWN_TRIGGER_CLASS: _TriggerProfile(_TOOLS, _NO_FEATURES, Consequence.EXTERNAL),
 }
 

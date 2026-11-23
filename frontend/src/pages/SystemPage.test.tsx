@@ -9,7 +9,7 @@
 
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { cleanup, fireEvent, render as renderDom, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render as renderDom } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -1426,7 +1426,7 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     );
   }
 
-  it("r refreshes butler status and connector data", async () => {
+  it("r refreshes board status, connectors and visible heartbeat facts", async () => {
     const boardRefetch = vi.fn();
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       rows: [],
@@ -1438,7 +1438,20 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     const requests: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       requests.push(`${init?.method ?? "GET"} ${url}`);
-      return new Response(JSON.stringify({data: {butlers: []}, meta: {}}), {status: 200});
+      const first = requests.length === 1;
+      const butlers = [{
+        name: "general",
+        last_heartbeat_at: "2026-05-03T10:00:00Z",
+        last_probe_at: "2026-05-03T10:00:00Z",
+        last_session_at: null,
+        active_session_count: 0,
+        heartbeat_age_seconds: 60,
+        observation_state: first ? "healthy" : "unavailable",
+        administrative_policy: "active",
+        route_compatibility: "compatible",
+        effective_eligibility: first ? "eligible" : "ineligible",
+      }];
+      return new Response(JSON.stringify({ data: { butlers }, meta: {} }), { status: 200 });
     }));
     const connectorsRefetch = vi.fn();
     vi.mocked(useConnectorSummaries).mockReturnValue({
@@ -1449,20 +1462,25 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
       refetch: connectorsRefetch,
     } as AnyMock);
 
-    renderPageDom();
-    await waitFor(() => expect(requests).toEqual(["GET /api/system/butlers/heartbeat"]));
+    const page = renderPageDom();
+    await page.findByLabelText("Service eligibility: eligible");
+    expect(requests).toEqual(["GET /api/system/butlers/heartbeat"]);
     fireEvent.keyDown(window, { key: "r" });
-    await waitFor(() => expect(requests).toHaveLength(2));
+    await page.findByLabelText("Service eligibility: ineligible");
 
     expect(boardRefetch).toHaveBeenCalledTimes(1);
     expect(connectorsRefetch).toHaveBeenCalledTimes(1);
     expect(requests).toEqual(["GET /api/system/butlers/heartbeat", "GET /api/system/butlers/heartbeat"]);
     const input = document.createElement("input");
-    document.body.append(input); input.focus();
-    fireEvent.keyDown(input, {key: "r"});
-    expect(boardRefetch).toHaveBeenCalledTimes(1);
-    expect(connectorsRefetch).toHaveBeenCalledTimes(1);
-    expect(requests).toEqual(["GET /api/system/butlers/heartbeat", "GET /api/system/butlers/heartbeat"]);
-    input.remove();
+    document.body.append(input);
+    try {
+      input.focus();
+      fireEvent.keyDown(input, { key: "r" });
+      expect(boardRefetch).toHaveBeenCalledTimes(1);
+      expect(connectorsRefetch).toHaveBeenCalledTimes(1);
+      expect(requests).toEqual(["GET /api/system/butlers/heartbeat", "GET /api/system/butlers/heartbeat"]);
+    } finally {
+      input.remove();
+    }
   });
 });

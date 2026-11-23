@@ -57,6 +57,10 @@ DECLARE
     _amendment_target_oid OID;
     _amendment_target_safe BOOLEAN;
     _bootstrap_oid OID;
+    _rotate_from TEXT;
+    _rotate_oid OID;
+    _rotate_owned BIGINT;
+    _rotate_default_acls BIGINT;
 BEGIN
     -- Clear even a previous failed invocation's session snapshots before checks.
     PERFORM set_config('butlers.bootstrap_amendment_oid', '', false);
@@ -76,6 +80,44 @@ BEGIN
         false
     ) THEN
         RAISE EXCEPTION 'restore-drill admin bootstrap requires a cluster superuser';
+    END IF;
+
+    -- MIGRATION_ROLE_ROTATION_READ_ONLY_PREFLIGHT (bu-dss7he.6 S5): opt-in through
+    -- butlers.rotate_migration_role_from. The old login must own nothing here, which is
+    -- the state `butlers db transfer-ownership` leaves. That is the same owned set it
+    -- checks: everything except default privileges, which REASSIGN OWNED leaves behind and
+    -- this replay re-creates for the connecting user. The pins move further down.
+    _rotate_from := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '');
+    IF _rotate_from IS NOT NULL THEN
+        IF _rotate_from = _migration_user::text THEN
+            RAISE EXCEPTION 'migration-role rotation needs a connecting user other than %',
+                _rotate_from;
+        END IF;
+        SELECT oid INTO _rotate_oid FROM pg_roles WHERE rolname::text = _rotate_from;
+        IF _rotate_oid IS NULL THEN
+            RAISE EXCEPTION 'migration-role rotation: role % does not exist', _rotate_from;
+        END IF;
+        SELECT count(*) FILTER (WHERE d.classid <> 'pg_catalog.pg_default_acl'::regclass),
+               count(*) FILTER (WHERE d.classid = 'pg_catalog.pg_default_acl'::regclass)
+          INTO _rotate_owned, _rotate_default_acls
+          FROM pg_shdepend AS d
+         WHERE d.refclassid = 'pg_catalog.pg_authid'::regclass
+           AND d.refobjid = _rotate_oid
+           AND d.deptype = 'o'
+           AND d.dbid = (SELECT oid FROM pg_database WHERE datname = current_database());
+        IF _rotate_owned > 0 OR EXISTS (
+            SELECT FROM pg_database
+            WHERE datname = current_database() AND datdba = _rotate_oid
+        ) THEN
+            RAISE EXCEPTION
+                'migration-role rotation refused: % still owns % object(s) here; run butlers db transfer-ownership first',
+                _rotate_from, _rotate_owned;
+        END IF;
+        IF _rotate_default_acls > 0 THEN
+            RAISE NOTICE
+                'migration-role rotation: % keeps % default-privilege entries; they govern only objects it creates',
+                _rotate_from, _rotate_default_acls;
+        END IF;
     END IF;
 
     _amendment_oid := to_regclass('public.insight_amendments');
@@ -110,6 +152,17 @@ BEGIN
            OR _amendment_owner NOT IN (_bootstrap_oid, _amendment_target_oid) THEN
             RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
         END IF;
+        -- The two core_255 definers converge with the table (bu-jjv2du), same owner rule.
+        IF EXISTS (
+            SELECT 1 FROM pg_proc
+            WHERE oid IN (
+                to_regprocedure('public.enqueue_premise_amendments(text, text, timestamptz, text)'),
+                to_regprocedure('public.resolve_finance_bill_status(uuid)')
+            )
+              AND proowner NOT IN (_bootstrap_oid, _amendment_target_oid)
+        ) THEN
+            RAISE EXCEPTION 'definer ownership refuses an unexpected existing owner';
+        END IF;
     END IF;
     -- Session-only snapshots bind the later DO to this actual catalog read.
     -- Every full script invocation overwrites them; they grant no authority.
@@ -122,6 +175,48 @@ BEGIN
                        COALESCE(_amendment_target_oid::text, ''), false);
 END;
 $$;
+
+-- ── Migration-role rotation (bu-dss7he.6 S5) ────────────────────────────────
+-- Opt-in, superuser only: PGOPTIONS="-c butlers.connecting_user=<migrator>
+--   -c butlers.rotate_migration_role_from=<old shared login>". Unset, this block does
+-- nothing. Set, the preflight above has already refused unless the old login owns
+-- nothing here. This block then re-points the six bootstrap_configuration pins from the
+-- old login to the connecting user, all six or none (one DO block). See
+-- docs/data_and_storage/migrator-login.md. DND fencing objects and purpose owners are
+-- not touched.
+DO $migration_role_rotation$
+DECLARE
+    _old NAME := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '')::name;
+    _new NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    _pin REGCLASS;
+    _current NAME;
+BEGIN
+    IF _old IS NULL THEN
+        RETURN;
+    END IF;
+    FOREACH _pin IN ARRAY ARRAY[
+        to_regclass('restore_drill_executor_admin.bootstrap_configuration'),
+        to_regclass('dnd_generation_admin.bootstrap_configuration'),
+        to_regclass('runtime_attention_admin.bootstrap_configuration'),
+        to_regclass('dashboard_attention.bootstrap_configuration'),
+        to_regclass('dashboard_stepup.bootstrap_configuration'),
+        to_regclass('perception_admin.bootstrap_configuration')
+    ] LOOP
+        CONTINUE WHEN _pin IS NULL;
+        EXECUTE format('SELECT migration_role FROM %s WHERE singleton', _pin) INTO _current;
+        IF _current IS NULL OR _current = _new THEN
+            CONTINUE;
+        END IF;
+        IF _current <> _old THEN
+            RAISE EXCEPTION 'migration-role rotation refused: % pins %, not %',
+                _pin, _current, _old;
+        END IF;
+        EXECUTE format('UPDATE %s SET migration_role = $1 WHERE singleton', _pin) USING _new;
+    END LOOP;
+END
+$migration_role_rotation$;
 
 -- ── Extensions ────────────────────────────────────────────────────────────────
 
@@ -204,6 +299,7 @@ DECLARE
     _restore_drill_audit_writer_role TEXT := 'restore_drill_executor_audit_writer';
     _restore_drill_executor_schema TEXT := 'restore_drill_executor';
     _optional_calendar_role TEXT := 'butler_calendar_rw';
+    _cnpg_metrics_exporter_role TEXT := 'cnpg_metrics_exporter';
     _migration_user TEXT := COALESCE(NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers');
     _db_name TEXT := current_database();
     _schema TEXT;
@@ -479,6 +575,15 @@ BEGIN
             _role
         );
 
+        -- Exact invoker boundary installed by core_315. Replay also repairs
+        -- late-created canonical roles without depending on creator defaults.
+        IF to_regprocedure('public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean)') IS NOT NULL THEN
+            REVOKE EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) FROM PUBLIC;
+            EXECUTE format('GRANT SELECT, UPDATE ON public.memory_catalog TO %I', _role);
+            EXECUTE format('GRANT SELECT, DELETE ON public.entity_graph_edges TO %I', _role);
+            EXECUTE format('GRANT EXECUTE ON FUNCTION public.invalidate_memory_projection(text,text,uuid[],timestamptz,boolean,boolean) TO %I', _role);
+        END IF;
+
         -- Butler roles may read connector-owned tables (for dashboards/routes).
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, _role);
         EXECUTE format(
@@ -494,21 +599,16 @@ BEGIN
         );
     END LOOP;
 
-    -- Relationship follow-up jobs aggregate recent inbound interactions from the
-    -- switchboard message inbox, so the relationship runtime role needs
-    -- read-only access to the switchboard schema.
-    EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, 'butler_relationship_rw');
-    EXECUTE format(
-        'GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I',
-        _switchboard_schema,
-        'butler_relationship_rw'
-    );
-    EXECUTE format(
-        'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO %I',
-        _migration_user,
-        _switchboard_schema,
-        'butler_relationship_rw'
-    );
+    -- Relationship, Messenger and Travel jobs read switchboard.message_inbox, so their runtime
+    -- roles need USAGE on the switchboard schema. The table-level SELECT is not granted here:
+    -- core_339 and sw_079 grant it on message_inbox alone.  A schema-wide SELECT or default
+    -- privilege here would re-widen reads (butler_secrets, future tables) on every bootstrap
+    -- rerun, so the bootstrap never grants either (bu-svqpzo.13).
+    FOREACH _role IN ARRAY ARRAY[
+        'butler_relationship_rw', 'butler_messenger_rw', 'butler_travel_rw'
+    ] LOOP
+        EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _switchboard_schema, _role);
+    END LOOP;
 
     -- Chronicler reads only the specific evidence surfaces declared in RFC 0014
     -- source compatibility contracts (butler_chronicler_rw = read-only role).
@@ -523,6 +623,8 @@ BEGIN
     --   relationship.entity_facts       — CoreSessionsAdapter contact resolution
     --                                      (bu-hjo3i) + comms.message_bursts
     --                                      participant resolution (bu-jc6htw.1)
+    --   relationship.address_geocodes   — owner anchor-address coordinates
+    --                                      (bu-r3fmja.3)
     --
     -- Planned (PLANNED compatibility; tables may not yet exist):
     --   connectors.steam_play_history
@@ -600,12 +702,25 @@ BEGIN
                 _schema
             );
         END IF;
+        -- address_geocodes (owner anchor-address coordinates, bu-r3fmja.3 /
+        -- chronicler-situational-inference; relationship schema only). rel_038 grants
+        -- it on creation; this keeps reruns convergent.
+        IF _schema = 'relationship' AND EXISTS (
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = _schema AND table_name = 'address_geocodes'
+        ) THEN
+            EXECUTE format(
+                'GRANT SELECT ON TABLE %I.address_geocodes TO butler_chronicler_rw',
+                _schema
+            );
+        END IF;
     END LOOP;
 
     -- Connectors evidence surfaces for PLANNED adapters (grant when tables exist).
     EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', _connector_schema, 'butler_chronicler_rw');
     FOREACH _table IN ARRAY ARRAY[
         'steam_play_history',
+        'steam_status_history',
         'owntracks_points',
         'home_assistant_history'
     ] LOOP
@@ -702,6 +817,29 @@ BEGIN
         _connector_role
     );
 
+    -- connectors.evidence_journal holds full message content and is append-only evidence
+    -- (core_361): connector_writer inserts and reads it, and no other role holds any privilege.
+    -- The blanket fleet and connector grants above (and the connectors-schema default
+    -- privileges) must not leave a butler role able to read it, or the writer able to rewrite it.
+    IF to_regclass('connectors.evidence_journal') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE connectors.evidence_journal FROM PUBLIC';
+        FOR _role IN
+            SELECT r.rolname
+            FROM pg_class c
+            CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+            JOIN pg_roles r ON r.oid = a.grantee
+            WHERE c.oid = 'connectors.evidence_journal'::regclass
+              AND a.grantee <> c.relowner
+              AND r.rolname <> _connector_role
+        LOOP
+            EXECUTE format('REVOKE ALL ON TABLE connectors.evidence_journal FROM %I', _role);
+        END LOOP;
+        EXECUTE format(
+            'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE connectors.evidence_journal FROM %I',
+            _connector_role
+        );
+    END IF;
+
     -- Cost claims are append/lifecycle evidence. Generic public-table bootstrap
     -- grants must not make their current assertion, resolution, or audit rows
     -- deletable. Forced RLS remains the authority fence; these revokes keep the
@@ -714,6 +852,53 @@ BEGIN
                 _role
             );
         END LOOP;
+    END IF;
+
+    -- public.state holds dashboard-owned control facts (settings.general,
+    -- Telegram consent, infra.backup_facts). Only the owner login writes it;
+    -- runtime roles read it. Keep core_306's revoke after the broad public
+    -- grant above so a bootstrap replay cannot restore runtime DML.
+    IF to_regclass('public.state') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_connector_role, _optional_calendar_role] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.state FROM %I', _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.state TO %I', _role);
+            END IF;
+        END LOOP;
+    END IF;
+
+    -- public.consolidation_runs is an append-only audit: each memory-enabled
+    -- butler daemon inserts its own rows as butler_<name>_rw, and nothing may
+    -- rewrite or erase them. Keep core_308's fence after the broad public grant
+    -- so a bootstrap replay cannot restore UPDATE/DELETE (or connector INSERT).
+    IF to_regclass('public.consolidation_runs') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_optional_calendar_role] LOOP
+            IF _role = _connector_role THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I',
+                    _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.consolidation_runs TO %I', _role);
+            ELSIF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE UPDATE, DELETE ON TABLE public.consolidation_runs FROM %I', _role
+                );
+                EXECUTE format(
+                    'GRANT SELECT, INSERT ON TABLE public.consolidation_runs TO %I', _role
+                );
+            END IF;
+        END LOOP;
+    END IF;
+
+    -- CNPG's metrics exporter (a pg_monitor member CNPG creates; declared as
+    -- CNPG_METRICS_EXPORTER in butlers.db_authority.grants) lost CONNECT when
+    -- core_001 revoked it from PUBLIC, so every exporter query here was denied,
+    -- including the replication-slot query behind the RFC 0039 D16 slot alerts.
+    -- CONNECT only; local and Docker Postgres have no such role.
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _cnpg_metrics_exporter_role) THEN
+        EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', _db_name, _cnpg_metrics_exporter_role);
     END IF;
 
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
@@ -738,6 +923,9 @@ DECLARE
     _expected_oid OID := NULLIF(current_setting('butlers.bootstrap_amendment_oid', true), '')::oid;
     _expected_owner OID := NULLIF(current_setting('butlers.bootstrap_amendment_owner', true), '')::oid;
     _expected_target OID := NULLIF(current_setting('butlers.bootstrap_amendment_target_oid', true), '')::oid;
+    _definer TEXT;
+    _definer_oid OID;
+    _definer_owner OID;
 BEGIN
     IF NOT COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) THEN
         RAISE EXCEPTION 'amendment ownership requires the original privileged bootstrap identity';
@@ -774,28 +962,52 @@ BEGIN
     IF _owner IS DISTINCT FROM _expected_owner THEN
         RAISE EXCEPTION 'amendment ownership owner changed after initial preflight';
     END IF;
-    IF _owner = _target_oid THEN
-        RETURN;
-    END IF;
-    IF _owner IS DISTINCT FROM _bootstrap THEN
-        RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
-    END IF;
+    -- The table transition; EXIT leaves it as a no-op so the definers still converge.
+    <<amendment_table>>
+    BEGIN
+        IF _owner = _target_oid THEN
+            EXIT amendment_table;
+        END IF;
+        IF _owner IS DISTINCT FROM _bootstrap THEN
+            RAISE EXCEPTION 'amendment ownership refuses an unexpected existing owner';
+        END IF;
 
-    LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;
-    SELECT oid,
-           rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
-                                OR rolreplication OR rolbypassrls)
-      INTO _locked_target, _locked_target_safe FROM pg_roles WHERE rolname::text = _target;
-    SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
-      FROM pg_class WHERE oid = _oid;
-    IF to_regclass('public.insight_amendments') IS DISTINCT FROM _oid
-       OR _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char"
-       OR _owner IS DISTINCT FROM _bootstrap
-       OR _locked_target IS DISTINCT FROM _target_oid
-       OR NOT COALESCE(_locked_target_safe, false) THEN
-        RAISE EXCEPTION 'amendment ownership identity changed before transition';
-    END IF;
-    EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);
+        LOCK TABLE ONLY public.insight_amendments IN ACCESS EXCLUSIVE MODE NOWAIT;
+        SELECT oid,
+               rolcanlogin AND NOT (rolsuper OR rolcreaterole OR rolcreatedb
+                                    OR rolreplication OR rolbypassrls)
+          INTO _locked_target, _locked_target_safe FROM pg_roles WHERE rolname::text = _target;
+        SELECT relowner, relkind, relpersistence INTO _owner, _kind, _persistence
+          FROM pg_class WHERE oid = _oid;
+        IF to_regclass('public.insight_amendments') IS DISTINCT FROM _oid
+           OR _kind IS DISTINCT FROM 'r'::"char" OR _persistence IS DISTINCT FROM 'p'::"char"
+           OR _owner IS DISTINCT FROM _bootstrap
+           OR _locked_target IS DISTINCT FROM _target_oid
+           OR NOT COALESCE(_locked_target_safe, false) THEN
+            RAISE EXCEPTION 'amendment ownership identity changed before transition';
+        END IF;
+        EXECUTE format('ALTER TABLE public.insight_amendments OWNER TO %I', _target);
+    END;
+
+    -- bu-jjv2du: the table's two core_255 SECURITY DEFINER functions follow it. A
+    -- bootstrap-owned definer runs as the superuser and blocks every ordinary CREATE OR
+    -- REPLACE (core_312 then fails loud). ALTER FUNCTION OWNER keeps the body, proconfig
+    -- and EXECUTE grants (owner references in the ACL follow the new owner). Same rule
+    -- as the table: already-target is a no-op, only the bootstrap owner is transferred,
+    -- a third owner refuses, and this DO stays atomic with the table transition.
+    FOREACH _definer IN ARRAY ARRAY[
+        'public.enqueue_premise_amendments(text, text, timestamptz, text)',
+        'public.resolve_finance_bill_status(uuid)'
+    ] LOOP
+        _definer_oid := to_regprocedure(_definer);
+        CONTINUE WHEN _definer_oid IS NULL;
+        SELECT proowner INTO _definer_owner FROM pg_proc WHERE oid = _definer_oid;
+        CONTINUE WHEN _definer_owner = _target_oid;
+        IF _definer_owner IS DISTINCT FROM _bootstrap THEN
+            RAISE EXCEPTION 'definer ownership refuses an unexpected existing owner';
+        END IF;
+        EXECUTE format('ALTER FUNCTION %s OWNER TO %I', _definer, _target);
+    END LOOP;
 END;
 $$;
 -- AMENDMENT_OWNER_CONVERGENCE_END
@@ -960,8 +1172,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_restore_drill_executor_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM restore_drill_executor_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'restore_drill_executor_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_restore_drill_executor_admin$;
 
 -- A public.audit_log trigger runs as the effective user of the INSERT. Keep
 -- that user intentionally unable to resolve or write the private authority
@@ -1500,7 +1726,8 @@ BEGIN
               'finalize_interface',
               'install_interface',
               'install_private_mutation',
-              'rollback_interface'
+              'rollback_interface',
+              'install_backup_interface'
           )
           AND admin_function.pronargs = 0
           AND admin_function.proowner <> v_bootstrap_owner
@@ -1602,8 +1829,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_dnd_generation_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM dnd_generation_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'dnd_generation_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_dnd_generation_admin$;
 
 -- Single source of truth for dnd_generation_private.mutate's body.
 --
@@ -1868,6 +2109,414 @@ END;
 $dnd_install_private_mutation$;
 
 REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_private_mutation() FROM PUBLIC;
+
+-- Private-history backup interface (bu-cew60z). Installed only by the
+-- finalizer above/below, never by the migration login. See
+-- docs/operations/backup-restore.md "Private history export".
+CREATE OR REPLACE FUNCTION dnd_generation_admin.install_backup_interface()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, pg_temp
+AS $dnd_backup_installer$
+DECLARE
+    v_role NAME;
+    v_oid OID;
+    v_dnd_owner OID;
+BEGIN
+    SELECT oid INTO v_dnd_owner FROM pg_roles WHERE rolname = 'dnd_generation_owner';
+    IF v_dnd_owner IS NULL
+       OR to_regclass('public.dnd_generation_guard') IS NULL
+       OR to_regclass('public.dnd_generation_mutations') IS NULL
+       OR to_regclass('public.user_context') IS NULL THEN
+        RAISE EXCEPTION 'DND backup interface requires the finalized DND relations';
+    END IF;
+
+    -- Both roles are inert: NOLOGIN, no memberships either way, no credential.
+    -- Granting LOGIN or a membership edge is the owner's activation act.
+    FOREACH v_role IN ARRAY ARRAY['butlers_backup_export', 'butlers_backup_restore']::name[] LOOP
+        SELECT oid INTO v_oid FROM pg_roles WHERE rolname = v_role;
+        IF v_oid IS NULL THEN
+            EXECUTE format(
+                'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS',
+                v_role
+            );
+        ELSIF NOT EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE oid = v_oid
+              AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+              AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
+              AND NOT rolbypassrls
+              AND NOT EXISTS (SELECT 1 FROM pg_auth_members
+                              WHERE roleid = v_oid OR member = v_oid)
+              AND NOT EXISTS (SELECT 1 FROM pg_authid
+                              WHERE oid = v_oid AND rolpassword IS NOT NULL)
+        ) THEN
+            RAISE EXCEPTION 'DND backup role % is untrusted', v_role;
+        END IF;
+    END LOOP;
+
+    -- Never adopt migration/runtime-owned lookalikes: replacing a function
+    -- preserves its ACL, and transferring its owner would elevate those grants.
+    -- Correct owner-created objects may be refreshed, with only the fixed
+    -- capability grants and no grant options or third-party schema creation.
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname = 'dnd_generation_backup' AND (
+            n.nspowner <> v_dnd_owner OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_dnd_owner OR
+                    (a.grantee IN ('butlers_backup_export'::regrole,
+                                   'butlers_backup_restore'::regrole)
+                     AND a.privilege_type = 'USAGE')
+                )
+            )
+        )
+    ) OR EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'dnd_generation_backup' AND (
+            p.proowner <> v_dnd_owner OR NOT (
+                (p.proname IN ('export_v1', 'export_schema_v1') AND p.pronargs = 0) OR
+                (p.proname = 'restore_v1' AND p.proargtypes = '3802'::oidvector)
+            ) OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_dnd_owner OR
+                    (a.grantee = CASE p.proname
+                         WHEN 'export_v1' THEN 'butlers_backup_export'::regrole
+                         WHEN 'export_schema_v1' THEN 'butlers_backup_export'::regrole
+                         WHEN 'restore_v1' THEN 'butlers_backup_restore'::regrole END
+                     AND a.privilege_type = 'EXECUTE')
+                )
+            )
+        )
+    ) THEN
+        RAISE EXCEPTION 'DND backup schema or function authority is untrusted';
+    END IF;
+
+    CREATE SCHEMA IF NOT EXISTS dnd_generation_backup AUTHORIZATION dnd_generation_owner;
+
+    CREATE OR REPLACE FUNCTION dnd_generation_backup.export_v1()
+    RETURNS TABLE (ordinal INTEGER, relation_name TEXT, payload JSONB)
+    LANGUAGE sql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    SET row_security = on
+    AS $dnd_export$
+        SELECT 1, 'dnd_generation_mutations'::text, to_jsonb(m)
+          FROM public.dnd_generation_mutations AS m
+        UNION ALL
+        SELECT 2, 'dnd_generation_guard'::text, to_jsonb(g)
+          FROM public.dnd_generation_guard AS g
+        UNION ALL
+        SELECT 3, 'user_context'::text, to_jsonb(c)
+          FROM public.user_context AS c
+         WHERE c.signal_type = 'dnd'
+    $dnd_export$;
+
+    -- pg_dump cannot even LOCK the two omitted tables as the ordinary login.
+    -- Export their actual fixed catalog definition through the same read-only
+    -- capability instead. This is not an arbitrary relation/DDL export API.
+    CREATE OR REPLACE FUNCTION dnd_generation_backup.export_schema_v1()
+    RETURNS SETOF text
+    LANGUAGE plpgsql
+    STABLE
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    SET row_security = on
+    AS $dnd_schema$
+    DECLARE
+        v_name text;
+        v_relation regclass;
+        v_owner oid;
+        v_columns text;
+        v_item record;
+        v_roles text;
+    BEGIN
+        FOREACH v_name IN ARRAY ARRAY['dnd_generation_mutations', 'user_context'] LOOP
+            v_relation := to_regclass(format('public.%I', v_name));
+            SELECT relowner INTO v_owner FROM pg_class
+             WHERE oid = v_relation AND relkind = 'r' AND NOT relispartition;
+            IF v_owner IS DISTINCT FROM to_regrole('dnd_generation_owner')::oid
+               OR (SELECT count(*) FROM pg_attribute WHERE attrelid = v_relation
+                   AND attnum > 0 AND NOT attisdropped) <>
+                    (CASE v_name WHEN 'user_context' THEN 9 ELSE 10 END)
+               OR (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+                   WHERE attrelid=v_relation AND attnum>0 AND NOT attisdropped) IS DISTINCT FROM
+                    (CASE v_name WHEN 'user_context' THEN
+                        ARRAY['id','signal_type','value','set_by_butler','set_at','expires_at',
+                              'confidence','metadata','superseded_at']
+                    ELSE ARRAY['mutation_id','generation','writer','operation','correlation',
+                               'requested_expires_at','effective_expires_at',
+                               'semantic_fingerprint_version','semantic_fingerprint','committed_at'] END)
+               OR (SELECT array_agg(atttypid ORDER BY attnum) FROM pg_attribute
+                   WHERE attrelid=v_relation AND attnum>0 AND NOT attisdropped) IS DISTINCT FROM
+                    (CASE v_name WHEN 'user_context' THEN
+                        ARRAY[2950,25,25,25,1184,1184,700,3802,1184]::oid[]
+                    ELSE ARRAY[2950,20,25,25,25,1184,1184,21,25,1184]::oid[] END)
+               OR NOT EXISTS (SELECT 1 FROM pg_class WHERE oid=v_relation
+                   AND relrowsecurity=(v_name='user_context')
+                   AND relforcerowsecurity=(v_name='user_context'))
+               OR EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = v_relation
+                   AND attnum > 0 AND (attisdropped OR attidentity <> ''
+                                      OR attgenerated <> '' OR attacl IS NOT NULL
+                                      OR attcollation NOT IN (0,100)))
+               OR (SELECT count(*) FROM pg_constraint WHERE conrelid=v_relation) <>
+                    (CASE v_name WHEN 'user_context' THEN 3 ELSE 6 END)
+               OR (SELECT count(*) FROM pg_index WHERE indrelid=v_relation) <>
+                    (CASE v_name WHEN 'user_context' THEN 3 ELSE 2 END)
+               OR EXISTS (SELECT 1 FROM pg_index WHERE indrelid=v_relation AND indexprs IS NOT NULL)
+               OR EXISTS (SELECT 1 FROM pg_inherits
+                          WHERE inhrelid = v_relation OR inhparent = v_relation)
+               OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = v_relation AND NOT tgisinternal)
+               OR EXISTS (SELECT 1 FROM pg_rewrite WHERE ev_class = v_relation)
+               OR EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = v_relation
+                          AND contype NOT IN ('p', 'u', 'c'))
+               OR EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = v_relation AND
+                    (v_name <> 'user_context' OR polname NOT IN
+                       ('dnd_user_context_select', 'dnd_user_context_insert',
+                        'dnd_user_context_update', 'dnd_user_context_delete')))
+               OR (SELECT count(*) FROM pg_policy WHERE polrelid = v_relation) <>
+                    (CASE v_name WHEN 'user_context' THEN 4 ELSE 0 END)
+            THEN
+                RAISE EXCEPTION 'DND schema export requires the supported canonical relations';
+            END IF;
+            -- Referenced expression functions/operators must be built-ins.
+            -- There is no export of arbitrary dependency code or extra tables.
+            IF EXISTS (
+                SELECT 1 FROM pg_depend d
+                LEFT JOIN pg_proc f ON d.refclassid = 'pg_proc'::regclass AND f.oid = d.refobjid
+                LEFT JOIN pg_operator o ON d.refclassid = 'pg_operator'::regclass AND o.oid = d.refobjid
+                WHERE ((d.classid = 'pg_attrdef'::regclass AND d.objid IN
+                          (SELECT oid FROM pg_attrdef WHERE adrelid = v_relation)) OR
+                       (d.classid = 'pg_constraint'::regclass AND d.objid IN
+                          (SELECT oid FROM pg_constraint WHERE conrelid = v_relation)) OR
+                       (d.classid = 'pg_policy'::regclass AND d.objid IN
+                          (SELECT oid FROM pg_policy WHERE polrelid = v_relation)) OR
+                       (d.classid = 'pg_class'::regclass AND d.objid IN
+                          (SELECT indexrelid FROM pg_index WHERE indrelid = v_relation)))
+                  AND (coalesce(f.pronamespace, 'pg_catalog'::regnamespace) <> 'pg_catalog'::regnamespace
+                       OR coalesce(o.oprnamespace, 'pg_catalog'::regnamespace) <> 'pg_catalog'::regnamespace
+                       OR (d.refclassid='pg_class'::regclass AND d.refobjid<>v_relation)
+                       OR (d.refclassid='pg_collation'::regclass AND d.refobjid<>100))
+            ) THEN
+                RAISE EXCEPTION 'DND schema export refuses foreign expression dependencies';
+            END IF;
+            SELECT string_agg(format('%I %s%s%s', a.attname,
+                       format_type(a.atttypid, a.atttypmod),
+                       CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END,
+                       CASE WHEN ad.oid IS NULL THEN '' ELSE ' DEFAULT ' || pg_get_expr(ad.adbin, ad.adrelid) END),
+                       ', ' ORDER BY a.attnum)
+              INTO v_columns FROM pg_attribute a
+              LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+             WHERE a.attrelid = v_relation AND a.attnum > 0 AND NOT a.attisdropped;
+            RETURN NEXT format('CREATE TABLE public.%I (%s);', v_name, v_columns);
+            FOR v_item IN SELECT conname, pg_get_constraintdef(oid) AS definition
+                            FROM pg_constraint WHERE conrelid = v_relation ORDER BY conname LOOP
+                RETURN NEXT format('ALTER TABLE public.%I ADD CONSTRAINT %I %s;',
+                                   v_name, v_item.conname, v_item.definition);
+            END LOOP;
+            FOR v_item IN SELECT pg_get_indexdef(i.indexrelid) AS definition FROM pg_index i
+                          WHERE i.indrelid = v_relation AND NOT EXISTS
+                            (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)
+                          ORDER BY i.indexrelid LOOP
+                RETURN NEXT v_item.definition || ';';
+            END LOOP;
+            RETURN NEXT format('ALTER TABLE public.%I OWNER TO dnd_generation_owner;', v_name);
+            -- CREATE may inherit target default ACLs. Remove them before
+            -- replaying the exact source grants, never merge unknown access.
+            RETURN NEXT format($ddl$
+DO $dnd_acl$
+DECLARE a record;
+BEGIN
+  FOR a IN SELECT DISTINCT x.grantee FROM pg_class c,
+           LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) x
+           WHERE c.oid=%L::regclass AND x.grantee<>c.relowner LOOP
+    EXECUTE format('REVOKE ALL ON TABLE %%s FROM %%s', %L::regclass,
+                   CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(a.grantee)) END);
+  END LOOP;
+END
+$dnd_acl$;
+$ddl$, 'public.' || v_name, 'public.' || v_name);
+
+            FOR v_item IN SELECT a.* FROM pg_class c,
+                          LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a
+                          WHERE c.oid = v_relation AND a.grantee <> v_owner LOOP
+                IF v_item.grantee = 0 OR v_item.is_grantable THEN
+                    RAISE EXCEPTION 'DND schema export refuses public or delegable table grants';
+                END IF;
+                RETURN NEXT format('GRANT %s ON TABLE public.%I TO %I;',
+                    v_item.privilege_type, v_name, pg_get_userbyid(v_item.grantee));
+            END LOOP;
+            FOR v_item IN SELECT * FROM pg_policy WHERE polrelid = v_relation ORDER BY polname LOOP
+                SELECT string_agg(CASE WHEN role_oid = 0 THEN 'PUBLIC'
+                                      ELSE quote_ident(pg_get_userbyid(role_oid)) END, ', ' ORDER BY role_oid)
+                  INTO v_roles FROM unnest(v_item.polroles) AS role_oid;
+                RETURN NEXT format('CREATE POLICY %I ON public.%I AS %s FOR %s TO %s%s%s;',
+                    v_item.polname, v_name, CASE WHEN v_item.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END,
+                    CASE v_item.polcmd WHEN 'r' THEN 'SELECT' WHEN 'a' THEN 'INSERT'
+                         WHEN 'w' THEN 'UPDATE' WHEN 'd' THEN 'DELETE' ELSE 'ALL' END, v_roles,
+                    CASE WHEN v_item.polqual IS NULL THEN '' ELSE
+                        ' USING (' || pg_get_expr(v_item.polqual, v_relation) || ')' END,
+                    CASE WHEN v_item.polwithcheck IS NULL THEN '' ELSE
+                        ' WITH CHECK (' || pg_get_expr(v_item.polwithcheck, v_relation) || ')' END);
+            END LOOP;
+            FOR v_item IN SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = v_relation LOOP
+                IF v_item.relrowsecurity THEN
+                    RETURN NEXT format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY;', v_name);
+                END IF;
+                IF v_item.relforcerowsecurity THEN
+                    RETURN NEXT format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY;', v_name);
+                END IF;
+            END LOOP;
+        END LOOP;
+    END;
+    $dnd_schema$;
+
+    CREATE OR REPLACE FUNCTION dnd_generation_backup.restore_v1(p_rows JSONB)
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, pg_temp
+    SET row_security = on
+    AS $dnd_restore$
+    DECLARE
+        v_item JSONB;
+        v_relation REGCLASS;
+        v_columns TEXT[];
+        v_expected_receipts BIGINT;
+        v_expected_context BIGINT;
+        v_guard JSONB;
+        v_guard_count BIGINT;
+        v_current_generation BIGINT;
+    BEGIN
+        IF p_rows IS NULL OR jsonb_typeof(p_rows) <> 'array' THEN
+            RAISE EXCEPTION 'DND restore requires a JSON array of staged rows';
+        END IF;
+        FOR v_item IN SELECT value FROM jsonb_array_elements(p_rows) LOOP
+            IF jsonb_typeof(v_item) IS DISTINCT FROM 'object' THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            IF NOT COALESCE(v_item ?& ARRAY['ordinal','relation','row'], false)
+               OR (v_item - ARRAY['ordinal','relation','row']) <> '{}'::jsonb
+               OR jsonb_typeof(v_item->'relation') IS DISTINCT FROM 'string'
+               OR jsonb_typeof(v_item->'ordinal') IS DISTINCT FROM 'number'
+               OR jsonb_typeof(v_item->'row') IS DISTINCT FROM 'object'
+               OR NOT COALESCE(v_item->>'relation' IN
+                   ('dnd_generation_mutations','dnd_generation_guard','user_context'), false)
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            IF v_item->>'ordinal' IS DISTINCT FROM (CASE v_item->>'relation'
+                  WHEN 'dnd_generation_mutations' THEN '1'
+                  WHEN 'dnd_generation_guard' THEN '2'
+                  WHEN 'user_context' THEN '3' END)
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+            v_relation := CASE v_item->>'relation'
+                WHEN 'dnd_generation_mutations' THEN 'public.dnd_generation_mutations'::regclass
+                WHEN 'dnd_generation_guard' THEN 'public.dnd_generation_guard'::regclass
+                WHEN 'user_context' THEN 'public.user_context'::regclass END;
+            SELECT array_agg(attname::text) INTO v_columns
+            FROM pg_attribute WHERE attrelid = v_relation AND attnum > 0 AND NOT attisdropped;
+            IF NOT COALESCE((v_item->'row') ?& v_columns, false)
+               OR ((v_item->'row') - v_columns) <> '{}'::jsonb
+               OR (v_item->>'relation' = 'user_context'
+                   AND v_item->'row'->>'signal_type' IS DISTINCT FROM 'dnd')
+               OR (v_item->>'relation' = 'dnd_generation_guard' AND (
+                   v_item->'row'->'guard_id' IS DISTINCT FROM '1'::jsonb
+                   OR jsonb_typeof(v_item->'row'->'generation') IS DISTINCT FROM 'number'
+                   OR NOT COALESCE(v_item->'row'->>'generation' ~ '^(0|[1-9][0-9]*)$', false)
+                   OR jsonb_typeof(v_item->'row'->'updated_at') IS DISTINCT FROM 'string'
+               ))
+            THEN
+                RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows';
+            END IF;
+        END LOOP;
+
+        LOCK TABLE public.dnd_generation_guard, public.dnd_generation_mutations,
+                   public.user_context IN SHARE ROW EXCLUSIVE MODE;
+
+        SELECT count(*) INTO v_guard_count
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_guard';
+        IF v_guard_count <> 1 THEN
+            RAISE EXCEPTION 'DND restore refused malformed or foreign staged rows: exactly one guard required';
+        END IF;
+        SELECT item->'row' INTO v_guard
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_guard';
+
+        SELECT generation INTO v_current_generation
+          FROM public.dnd_generation_guard WHERE guard_id = 1;
+        -- Only a fresh target: no receipts, no DND context, and a guard that is
+        -- still at its seed or already equals the staged snapshot.
+        IF EXISTS (SELECT 1 FROM public.dnd_generation_mutations)
+           OR EXISTS (SELECT 1 FROM public.user_context WHERE signal_type = 'dnd')
+           OR v_current_generation IS NULL
+           OR (v_current_generation <> 0
+               AND (v_guard IS NULL OR v_current_generation <> (v_guard->>'generation')::bigint))
+        THEN
+            RAISE EXCEPTION 'DND restore refused: target already holds DND history';
+        END IF;
+
+        SELECT count(*) INTO v_expected_receipts FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_mutations';
+        SELECT count(*) INTO v_expected_context FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'user_context';
+
+        INSERT INTO public.dnd_generation_mutations
+        SELECT (jsonb_populate_record(NULL::public.dnd_generation_mutations, item->'row')).*
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'dnd_generation_mutations'
+         ORDER BY (item->'row'->>'generation')::bigint;
+
+        IF v_guard IS NOT NULL THEN
+            UPDATE public.dnd_generation_guard AS guard
+               SET generation = (v_guard->>'generation')::bigint,
+                   updated_at = (v_guard->>'updated_at')::timestamptz
+             WHERE guard.guard_id = 1;
+        END IF;
+        IF EXISTS (
+            SELECT 1 FROM public.dnd_generation_mutations AS receipt
+             WHERE receipt.generation > (SELECT generation FROM public.dnd_generation_guard)
+        ) THEN
+            RAISE EXCEPTION 'DND restore refused: receipts exceed the staged guard generation';
+        END IF;
+
+        INSERT INTO public.user_context
+        SELECT (jsonb_populate_record(NULL::public.user_context, item->'row')).*
+          FROM jsonb_array_elements(p_rows) AS item
+         WHERE item->>'relation' = 'user_context'
+         ORDER BY item->'row'->>'id';
+
+        IF (SELECT count(*) FROM public.dnd_generation_mutations) <> v_expected_receipts
+           OR (SELECT count(*) FROM public.user_context WHERE signal_type = 'dnd')
+              <> v_expected_context THEN
+            RAISE EXCEPTION 'DND restore row-count parity failed';
+        END IF;
+    END;
+    $dnd_restore$;
+
+    EXECUTE 'ALTER FUNCTION dnd_generation_backup.export_v1() OWNER TO dnd_generation_owner';
+    EXECUTE 'ALTER FUNCTION dnd_generation_backup.export_schema_v1() OWNER TO dnd_generation_owner';
+    EXECUTE 'ALTER FUNCTION dnd_generation_backup.restore_v1(jsonb) OWNER TO dnd_generation_owner';
+    REVOKE ALL PRIVILEGES ON SCHEMA dnd_generation_backup FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_backup.export_v1() FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_backup.export_schema_v1() FROM PUBLIC;
+    REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_backup.restore_v1(jsonb) FROM PUBLIC;
+    GRANT USAGE ON SCHEMA dnd_generation_backup
+        TO butlers_backup_export, butlers_backup_restore;
+    GRANT EXECUTE ON FUNCTION dnd_generation_backup.export_v1() TO butlers_backup_export;
+    GRANT EXECUTE ON FUNCTION dnd_generation_backup.export_schema_v1() TO butlers_backup_export;
+    GRANT EXECUTE ON FUNCTION dnd_generation_backup.restore_v1(jsonb) TO butlers_backup_restore;
+END;
+$dnd_backup_installer$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION dnd_generation_admin.install_backup_interface() FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION dnd_generation_admin.finalize_interface()
 RETURNS void
@@ -2398,13 +3047,23 @@ BEGIN
             'dnd_generation_admin.install_interface()'::regprocedure,
             'dnd_generation_admin.finalize_interface()'::regprocedure,
             'dnd_generation_admin.install_private_mutation()'::regprocedure,
-            'dnd_generation_admin.rollback_interface()'::regprocedure
+            'dnd_generation_admin.rollback_interface()'::regprocedure,
+            'dnd_generation_admin.install_backup_interface()'::regprocedure
         )
           AND acl.privilege_type = 'EXECUTE'
           AND acl.grantee <> v_bootstrap_owner
     ) THEN
         RAISE EXCEPTION 'DND authority ACL finalization is incomplete';
     END IF;
+
+    -- Private-history backup interface (bu-cew60z). The dump identity stays
+    -- unable to read the three DND relations and gains no grant, membership or
+    -- EXECUTE here. Two fixed NOLOGIN roles, each holding exactly one fixed
+    -- SECURITY DEFINER function owned by dnd_generation_owner, are the only
+    -- way to export or restore the complete DND population. Nothing may log in
+    -- as either role until the owner performs the documented activation step;
+    -- dnd_generation_owner itself keeps its no-membership fence.
+    PERFORM dnd_generation_admin.install_backup_interface();
 
     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC';
     EXECUTE 'ALTER DEFAULT PRIVILEGES FOR ROLE dnd_generation_owner IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC';
@@ -2916,6 +3575,7 @@ BEGIN
     DROP FUNCTION public.context_dnd_mutate(uuid, text, text, timestamptz, text, real, jsonb);
     DROP FUNCTION dnd_generation_private.mutate(uuid, text, text, timestamptz, text, real, jsonb);
     DROP FUNCTION dnd_generation_private.canonical_json(jsonb);
+    DROP SCHEMA IF EXISTS dnd_generation_backup CASCADE;
     DROP SCHEMA dnd_generation_private;
     DROP TABLE public.dnd_generation_mutations;
     DROP TABLE public.dnd_generation_guard;
@@ -4046,8 +4706,22 @@ VALUES (
     )
 )
 ON CONFLICT (singleton) DO UPDATE SET
-    migration_role = EXCLUDED.migration_role,
     bootstrap_role = EXCLUDED.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_runtime_attention_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM runtime_attention_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'runtime_attention_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_runtime_attention_admin$;
 
 -- Single source of truth for the legacy debounce-marker planter's body.
 --
@@ -5834,6 +6508,18 @@ BEGIN
 END;
 $$;
 
+-- Owner-only vendor-door writes (bu-jv1moa.40): the dashboard API takes this capability role with
+-- SET LOCAL ROLE for confirm, revoke, reject and create. It is a NOLOGIN capability role like
+-- dashboard_auth_api; membership for the dashboard login stays explicit host provisioning.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'dashboard_vendor_doors') THEN
+        CREATE ROLE dashboard_vendor_doors NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE
+            NOCREATEDB NOREPLICATION NOBYPASSRLS;
+    END IF;
+END;
+$$;
+
 -- Ordinary owner-at-creation and clause authoring are a separate purpose from
 -- D13 standing-permission confirmation. Only privileged bootstrap stages DDL.
 DO $attention_bootstrap$
@@ -5859,7 +6545,7 @@ BEGIN
   RAISE EXCEPTION 'untrusted attention bootstrap namespace'; END IF;
  IF EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
   WHERE n.nspname='dashboard_attention'
-  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims')
+  AND c.relname IN('bootstrap_configuration','tickets','stamps','candidate_causes','final_claims','reach_proposals','clause_decay')
   AND NOT(c.relkind='r' AND c.relowner=CASE WHEN c.oid=to_regclass('dashboard_attention.bootstrap_configuration')
    THEN current_user::regrole ELSE 'dashboard_attention_owner'::regrole END)) THEN
   RAISE EXCEPTION 'untrusted attention bootstrap table'; END IF;
@@ -5914,7 +6600,9 @@ BEGIN
   ('dashboard_attention.stamps','namespace,task_id,operation,definition_digest,created_at'),
   ('dashboard_attention.candidate_causes','candidate_id,definition_digest,origin,created_at'),
   ('dashboard_attention.final_claims','namespace,task_id,original_next_run_at,definition_digest,revoked'),
-  ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by')
+  ('public.break_through_clauses','id,entity_id,sender_domain,channel,security_kind,scope,expires_at,revoked_at,created_at,created_by'),
+  ('dashboard_attention.reach_proposals','id,sender_domain,channel,security_kind,scope,created_at,expires_at,consumed_at,dismissed_at,clause_id'),
+  ('dashboard_attention.clause_decay','clause_id,state,changed_at')
  ) expected(relation,columns) LOOP
   IF NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass(item.relation)
    AND c.relkind='r' AND c.relowner=owner_oid
@@ -5947,7 +6635,12 @@ BEGIN
   ('dashboard_attention.evaluate(jsonb)','jsonb'),
   ('dashboard_attention.final_claim(text,uuid,timestamp with time zone)','boolean'),
   ('dashboard_attention.remember(uuid,jsonb)','boolean'),
-  ('dashboard_attention.candidate_origin(uuid)','jsonb')
+  ('dashboard_attention.candidate_origin(uuid)','jsonb'),
+  ('dashboard_attention.owner_channel_list()','jsonb'),
+  ('dashboard_attention.owner_channel_revoke(uuid)','jsonb'),
+  ('dashboard_attention.owner_channel_propose(jsonb)','jsonb'),
+  ('dashboard_attention.decay_clauses()','jsonb'),
+  ('dashboard_attention.decay_apply(jsonb)','jsonb')
  ) expected(signature,result) LOOP
   IF NOT EXISTS(SELECT FROM pg_proc p WHERE p.oid=to_regprocedure(item.signature)
    AND p.proowner=owner_oid AND p.prosecdef AND p.prorettype=item.result::regtype
@@ -5961,7 +6654,7 @@ BEGIN
    EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %s',item.signature,grantee_name);
   END LOOP;
  END LOOP;
- IF 10<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
+ IF 15<>(SELECT count(*) FROM pg_proc WHERE pronamespace='dashboard_attention'::regnamespace) THEN
   RAISE EXCEPTION 'unexpected attention function'; END IF;
  REVOKE CREATE ON SCHEMA dashboard_attention FROM dashboard_attention_owner;
  IF to_regclass('public.insight_candidates') IS NOT NULL THEN
@@ -5972,9 +6665,12 @@ BEGIN
   GRANT SELECT ON public.insight_candidates TO dashboard_attention_owner;
  END IF;
  REVOKE ALL ON dashboard_attention.candidate_causes FROM PUBLIC,dashboard_auth_api;
- REVOKE ALL ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM PUBLIC,dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM PUBLIC,dashboard_auth_api;
  IF EXISTS(SELECT FROM pg_roles WHERE rolname='butler_switchboard_rw') THEN
   GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO butler_switchboard_rw;
+  -- S4 decay: the Switchboard sweep may read live clause ids and narrow them (ask, dormant); the
+  -- dashboard session alone can keep or revive one.
+  GRANT EXECUTE ON FUNCTION dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) TO butler_switchboard_rw;
  END IF;
  GRANT USAGE ON SCHEMA dashboard_auth TO dashboard_attention_owner;
  GRANT SELECT ON dashboard_auth.instance,dashboard_auth.sessions TO dashboard_attention_owner;
@@ -5983,6 +6679,8 @@ BEGIN
  GRANT USAGE ON SCHEMA dashboard_attention TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.api(text,jsonb) FROM PUBLIC;
  GRANT EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb) TO dashboard_auth_api;
+ REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) FROM PUBLIC;
+ GRANT EXECUTE ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb) TO dashboard_auth_api;
  REVOKE ALL ON FUNCTION dashboard_attention.consume(text,text,text,text,text,text,uuid),
   dashboard_attention.definition_digest(text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb)
   FROM PUBLIC,dashboard_auth_api;
@@ -6008,7 +6706,7 @@ BEGIN
   END IF;
  END LOOP;
  EXECUTE format('GRANT USAGE ON SCHEMA dashboard_attention TO %I',r);
- EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,public.break_through_clauses TO %I',r);
+ EXECUTE format('GRANT SELECT ON dashboard_attention.bootstrap_configuration,dashboard_attention.tickets,dashboard_attention.stamps,dashboard_attention.final_claims,dashboard_attention.candidate_causes,dashboard_attention.reach_proposals,dashboard_attention.clause_decay,public.break_through_clauses TO %I',r);
  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) TO %I',r);
 END $finalize$;
 REVOKE ALL ON FUNCTION dashboard_attention.finalize_interface() FROM PUBLIC;
@@ -6094,7 +6792,7 @@ BEGIN
    OR EXISTS(SELECT FROM jsonb_each(p) e WHERE e.key NOT IN('namespace','task_id',
     'original_next_run_at','entity_id','sender_domain','channel','security_kind') OR jsonb_typeof(e.value)<>'string')
    THEN RETURN false; END IF;
-  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref','lane','deliver_after','claim_id','claimed_at','attempt_started_at'])::text,'UTF8')),'hex')
    INTO d FROM public.insight_candidates c WHERE id=candidate;
   IF d IS NULL THEN RETURN false; END IF;
   INSERT INTO dashboard_attention.candidate_causes VALUES(candidate,d,p,clock_timestamp())
@@ -6108,7 +6806,7 @@ BEGIN
  BEGIN
   SELECT * INTO b FROM dashboard_attention.candidate_causes WHERE candidate_id=candidate;
   IF NOT FOUND THEN RETURN NULL; END IF;
-  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref'])::text,'UTF8')),'hex')
+  SELECT encode(sha256(convert_to((to_jsonb(c)-ARRAY['status','delivered_at','delivery_attempt_count','metadata','delivery_ref','lane','deliver_after','claim_id','claimed_at','attempt_started_at'])::text,'UTF8')),'hex')
    INTO d FROM public.insight_candidates c WHERE id=candidate AND status='pending';
   IF d IS DISTINCT FROM b.definition_digest THEN RETURN NULL; END IF;
   RETURN b.origin;
@@ -6164,7 +6862,7 @@ BEGIN
  CREATE FUNCTION dashboard_attention.api(action text,p jsonb) RETURNS jsonb
  LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $api$
  DECLARE s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
-  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid;
+  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid; pr dashboard_attention.reach_proposals%ROWTYPE;
  BEGIN
   SELECT * INTO s FROM dashboard_auth.instance WHERE singleton FOR UPDATE;
   t:=clock_timestamp();
@@ -6175,7 +6873,7 @@ BEGIN
   IF NOT FOUND OR se.revoked OR se.expires_at<=t OR se.credential_epoch<>s.credential_epoch
    OR se.session_epoch<>s.session_epoch
    THEN RETURN '{"error":"UNAUTHORIZED"}'; END IF;
-  IF NOT EXISTS(SELECT FROM dashboard_auth.csrf
+  IF action NOT IN('clause_list','proposal_list','decay_state') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf
    WHERE session_digest=se.digest AND digest=p->>'csrf_digest' AND expires_at>t)
    THEN RETURN '{"error":"FORBIDDEN"}'; END IF;
   IF action='issue' THEN
@@ -6206,6 +6904,43 @@ BEGIN
   ELSIF action='clause_revoke' THEN
    UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,t) WHERE id=(p->>'id')::uuid
     RETURNING id INTO c;
+   IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='clause_list' THEN
+   RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+    'entity_id',k.entity_id,'sender_domain',k.sender_domain,'channel',k.channel,
+    'security_kind',k.security_kind,'scope',k.scope,'expires_at',k.expires_at,
+    'created_at',k.created_at) ORDER BY k.created_at DESC)
+    FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+     ORDER BY created_at DESC LIMIT 200) k),'[]'::jsonb));
+  ELSIF action='proposal_list' THEN
+   RETURN jsonb_build_object('proposals',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+    'sender_domain',k.sender_domain,'channel',k.channel,'security_kind',k.security_kind,
+    'scope',k.scope,'created_at',k.created_at,'expires_at',k.expires_at) ORDER BY k.created_at DESC)
+    FROM (SELECT * FROM dashboard_attention.reach_proposals WHERE consumed_at IS NULL
+     AND dismissed_at IS NULL AND expires_at>t ORDER BY created_at DESC LIMIT 50) k),'[]'::jsonb));
+  ELSIF action='proposal_confirm' THEN
+   SELECT * INTO pr FROM dashboard_attention.reach_proposals WHERE id=(p->>'id')::uuid FOR UPDATE;
+   IF NOT FOUND OR pr.consumed_at IS NOT NULL OR pr.dismissed_at IS NOT NULL OR pr.expires_at<=t
+    THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   INSERT INTO public.break_through_clauses(sender_domain,channel,security_kind,scope)
+    VALUES(pr.sender_domain,pr.channel,pr.security_kind,pr.scope) RETURNING id INTO c;
+   UPDATE dashboard_attention.reach_proposals SET consumed_at=t,clause_id=c WHERE id=pr.id;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='proposal_dismiss' THEN
+   UPDATE dashboard_attention.reach_proposals SET dismissed_at=t WHERE id=(p->>'id')::uuid
+    AND consumed_at IS NULL AND dismissed_at IS NULL RETURNING id INTO c;
+   IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+   RETURN jsonb_build_object('id',c);
+  ELSIF action='decay_state' THEN
+   RETURN jsonb_build_object('decay',COALESCE((SELECT jsonb_agg(jsonb_build_object('clause_id',d.clause_id,
+    'state',d.state,'changed_at',d.changed_at) ORDER BY d.changed_at DESC)
+    FROM dashboard_attention.clause_decay d JOIN public.break_through_clauses k ON k.id=d.clause_id
+    WHERE k.revoked_at IS NULL),'[]'::jsonb));
+  ELSIF action='clause_keep' THEN
+   UPDATE dashboard_attention.clause_decay d SET state='kept',changed_at=t
+    FROM public.break_through_clauses k WHERE k.id=d.clause_id AND k.revoked_at IS NULL
+    AND d.clause_id=(p->>'id')::uuid AND d.state IN('asked','dormant') RETURNING d.clause_id INTO c;
    IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
    RETURN jsonb_build_object('id',c);
   END IF;
@@ -6275,7 +7010,9 @@ BEGIN
    AND (entity_id IS NULL OR entity_id=(p->>'entity_id')::uuid)
    AND (sender_domain IS NULL OR sender_domain=p->>'sender_domain')
    AND (channel IS NULL OR channel=p->>'channel')
-   AND (security_kind IS NULL OR security_kind=p->>'security_kind') ORDER BY created_at,id LIMIT 1;
+   AND (security_kind IS NULL OR security_kind=p->>'security_kind')
+   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d
+    WHERE d.clause_id=public.break_through_clauses.id AND d.state='dormant') ORDER BY created_at,id LIMIT 1;
   IF c IS NOT NULL THEN RETURN jsonb_build_object('cause','owner_clause','ref',c); END IF;
   RETURN '{"cause":"routine"}';
  END $evaluate$;
@@ -6290,11 +7027,147 @@ BEGIN
  UPDATE dashboard_attention.final_claims SET revoked=true;
  DELETE FROM dashboard_attention.tickets WHERE task_id IS NULL;
  UPDATE public.break_through_clauses SET revoked_at=COALESCE(revoked_at,clock_timestamp());
+ UPDATE dashboard_attention.reach_proposals SET dismissed_at=clock_timestamp() WHERE consumed_at IS NULL AND dismissed_at IS NULL;
  FOR n IN SELECT rolname FROM pg_roles WHERE rolname<>'dashboard_attention_owner' LOOP
-  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid) FROM %I',n);
+  EXECUTE format('REVOKE EXECUTE ON FUNCTION dashboard_attention.api(text,jsonb),dashboard_attention.consume(text,text,text,text,text,text,uuid),dashboard_attention.final_claim(text,uuid,timestamp with time zone),dashboard_attention.evaluate(jsonb),dashboard_attention.remember(uuid,jsonb),dashboard_attention.candidate_origin(uuid),dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid),dashboard_attention.owner_channel_propose(jsonb),dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM %I',n);
  END LOOP;
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_attention.deactivate_interface() FROM PUBLIC;
+
+-- bu-s11n0s.8 S4: decay narrows a clause, never widens one. ``clause_decay`` holds one row per
+-- clause the sweep asked about ('asked') or put dormant ('dormant'); the owner's dashboard session
+-- sets 'kept' (re-arming it). A dormant clause is skipped by ``evaluate`` but stays listed and
+-- revivable. The Switchboard sweep may only read live clause ids/dates (decay_clauses) and apply
+-- ask/dormant to clauses old enough (decay_apply, thresholds enforced here, not by the caller).
+CREATE TABLE IF NOT EXISTS dashboard_attention.clause_decay (
+ clause_id uuid PRIMARY KEY,
+ state text NOT NULL CHECK(state IN('asked','dormant','kept')),
+ changed_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+ALTER TABLE dashboard_attention.clause_decay OWNER TO dashboard_attention_owner;
+REVOKE ALL ON TABLE dashboard_attention.clause_decay FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.decay_clauses() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $decay_list$
+BEGIN
+ RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+  'created_at',k.created_at,'state',d.state,'changed_at',d.changed_at) ORDER BY k.created_at)
+  FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+   AND (expires_at IS NULL OR expires_at>clock_timestamp()) ORDER BY created_at LIMIT 500) k
+  LEFT JOIN dashboard_attention.clause_decay d ON d.clause_id=k.id),'[]'::jsonb));
+END $decay_list$;
+ALTER FUNCTION dashboard_attention.decay_clauses() OWNER TO dashboard_attention_owner;
+CREATE OR REPLACE FUNCTION dashboard_attention.decay_apply(p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $decay_apply$
+DECLARE t timestamptz:=clock_timestamp(); ask uuid[]; dormant uuid[]; asked jsonb; slept uuid[];
+BEGIN
+ IF p IS NULL OR jsonb_typeof(p)<>'object'
+  OR EXISTS(SELECT FROM jsonb_object_keys(p) k WHERE k NOT IN('ask','dormant'))
+  OR jsonb_typeof(COALESCE(p->'ask','[]'::jsonb))<>'array'
+  OR jsonb_typeof(COALESCE(p->'dormant','[]'::jsonb))<>'array'
+  OR jsonb_array_length(COALESCE(p->'ask','[]'::jsonb))>200
+  OR jsonb_array_length(COALESCE(p->'dormant','[]'::jsonb))>200 THEN
+  RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ BEGIN
+  SELECT COALESCE(array_agg(x::uuid),'{}') INTO ask FROM jsonb_array_elements_text(COALESCE(p->'ask','[]'::jsonb)) x;
+  SELECT COALESCE(array_agg(x::uuid),'{}') INTO dormant FROM jsonb_array_elements_text(COALESCE(p->'dormant','[]'::jsonb)) x;
+ EXCEPTION WHEN invalid_text_representation THEN RETURN '{"error":"INVALID_REQUEST"}'; END;
+ -- Dormant first, so a clause in both lists ends dormant and is never also asked.
+ WITH w AS (INSERT INTO dashboard_attention.clause_decay AS d(clause_id,state,changed_at)
+  SELECT k.id,'dormant',t FROM public.break_through_clauses k WHERE k.id=ANY(dormant)
+   AND k.revoked_at IS NULL AND k.created_at<=t-interval '90 days'
+  ON CONFLICT (clause_id) DO UPDATE SET state='dormant',changed_at=t
+   WHERE d.state='asked' OR (d.state='kept' AND d.changed_at<=t-interval '90 days')
+  RETURNING d.clause_id) SELECT COALESCE(array_agg(clause_id),'{}') INTO slept FROM w;
+ WITH w AS (INSERT INTO dashboard_attention.clause_decay AS d(clause_id,state,changed_at)
+  SELECT k.id,'asked',t FROM public.break_through_clauses k WHERE k.id=ANY(ask) AND NOT k.id=ANY(slept)
+   AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>t) AND k.created_at<=t-interval '30 days'
+  ON CONFLICT (clause_id) DO UPDATE SET state='asked',changed_at=t
+   WHERE d.state='kept' AND d.changed_at<=t-interval '30 days'
+  RETURNING d.clause_id,d.changed_at) SELECT COALESCE(jsonb_agg(jsonb_build_object('id',clause_id,'at',changed_at)),'[]'::jsonb) INTO asked FROM w;
+ RETURN jsonb_build_object('asked',asked,'dormant',to_jsonb(slept));
+END $decay_apply$;
+ALTER FUNCTION dashboard_attention.decay_apply(jsonb) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.decay_clauses(),dashboard_attention.decay_apply(jsonb) FROM PUBLIC;
+
+-- bu-s11n0s.8 S3c-1: the Telegram owner channel may list and revoke break-through clauses, and
+-- nothing else. These two SECURITY DEFINER functions are the whole of that authority: the list
+-- reads the unrevoked clauses (never message content), and the revoke only sets ``revoked_at`` on
+-- one still-live clause. Neither can create a clause or touch a session; ``api()`` keeps the
+-- cookie session and CSRF proof for every grant. They are created here, before the grant block
+-- finalizes the catalog, so a fresh install (install_interface) and an installed database both
+-- reach the same thirteen-function interface. CREATE OR REPLACE keeps owner and ACL; idempotent.
+-- bu-s11n0s.8 S3c-2: the Telegram owner channel may PROPOSE a clause, never create one. A proposal
+-- is matchers only (never message text), expires after 24 hours and means nothing until the
+-- owner confirms it on the dashboard, where the cookie session and CSRF proof of api() create the
+-- real clause. The table belongs to the owner role; the only other privilege is SELECT for the migration role (so pg_dump can back it up). It is written solely by
+-- owner_channel_propose, which validates every matcher and caps pending proposals at ten.
+CREATE TABLE IF NOT EXISTS dashboard_attention.reach_proposals (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ sender_domain text, channel text, security_kind text,
+ scope text NOT NULL CHECK(scope IN('always','quiet_hours_only')),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ expires_at timestamptz NOT NULL,
+ consumed_at timestamptz, dismissed_at timestamptz, clause_id uuid,
+ CHECK(num_nonnulls(sender_domain,channel,security_kind)>0),
+ CHECK(sender_domain IS NULL OR (sender_domain=lower(sender_domain)
+  AND length(sender_domain)<=253 AND sender_domain ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$')),
+ CHECK(channel IS NULL OR channel IN('telegram','email','whatsapp','dashboard')),
+ CHECK(security_kind IS NULL OR security_kind IN('new_sign_in','password_changed','mfa_changed','recovery_changed','deletion_scheduled'))
+);
+ALTER TABLE dashboard_attention.reach_proposals OWNER TO dashboard_attention_owner;
+REVOKE ALL ON TABLE dashboard_attention.reach_proposals FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_propose(p jsonb) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $propose_owner$
+DECLARE d text; ch text; kind text; sc text; pid uuid; t timestamptz:=clock_timestamp(); k text;
+BEGIN
+ IF p IS NULL OR jsonb_typeof(p)<>'object' THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ FOR k IN SELECT jsonb_object_keys(p) LOOP
+  IF k NOT IN('sender_domain','channel','security_kind','scope')
+   OR jsonb_typeof(p->k) NOT IN('string','null') THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ END LOOP;
+ d:=lower(p->>'sender_domain'); ch:=p->>'channel'; kind:=p->>'security_kind';
+ sc:=COALESCE(p->>'scope','quiet_hours_only');
+ IF num_nonnulls(d,ch,kind)=0
+  OR (d IS NOT NULL AND (length(d)>253 OR d !~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$'))
+  OR (ch IS NOT NULL AND ch NOT IN('telegram','email','whatsapp','dashboard'))
+  OR (kind IS NOT NULL AND kind NOT IN('new_sign_in','password_changed','mfa_changed','recovery_changed','deletion_scheduled'))
+  OR sc NOT IN('always','quiet_hours_only') THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ -- An identical live proposal is the same proposal: repeating the command is harmless.
+ SELECT id INTO pid FROM dashboard_attention.reach_proposals
+  WHERE consumed_at IS NULL AND dismissed_at IS NULL AND expires_at>t AND scope=sc
+   AND sender_domain IS NOT DISTINCT FROM d AND channel IS NOT DISTINCT FROM ch
+   AND security_kind IS NOT DISTINCT FROM kind LIMIT 1;
+ IF pid IS NOT NULL THEN RETURN jsonb_build_object('id',pid); END IF;
+ IF 10<=(SELECT count(*) FROM dashboard_attention.reach_proposals
+  WHERE consumed_at IS NULL AND dismissed_at IS NULL AND expires_at>t) THEN
+  RETURN '{"error":"RATE_LIMITED"}'; END IF;
+ INSERT INTO dashboard_attention.reach_proposals(sender_domain,channel,security_kind,scope,created_at,expires_at)
+  VALUES(d,ch,kind,sc,t,t+interval '24 hours') RETURNING id INTO pid;
+ RETURN jsonb_build_object('id',pid);
+END $propose_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_propose(jsonb) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_propose(jsonb) FROM PUBLIC;
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_list() RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $list_owner$
+BEGIN
+ RETURN jsonb_build_object('clauses',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',k.id,
+  'sender_domain',k.sender_domain,'channel',k.channel,'security_kind',k.security_kind,
+  'scope',k.scope,'expires_at',k.expires_at) ORDER BY k.created_at DESC)
+  FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL
+   ORDER BY created_at DESC LIMIT 10) k),'[]'::jsonb));
+END $list_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_list() OWNER TO dashboard_attention_owner;
+CREATE OR REPLACE FUNCTION dashboard_attention.owner_channel_revoke(clause uuid) RETURNS jsonb
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $revoke_owner$
+DECLARE c uuid;
+BEGIN
+ UPDATE public.break_through_clauses SET revoked_at=clock_timestamp()
+  WHERE id=clause AND revoked_at IS NULL RETURNING id INTO c;
+ IF c IS NULL THEN RETURN '{"error":"INVALID_REQUEST"}'; END IF;
+ RETURN jsonb_build_object('id',c);
+END $revoke_owner$;
+ALTER FUNCTION dashboard_attention.owner_channel_revoke(uuid) OWNER TO dashboard_attention_owner;
+REVOKE ALL ON FUNCTION dashboard_attention.owner_channel_list(),dashboard_attention.owner_channel_revoke(uuid) FROM PUBLIC;
 
 DO $attention_grant$
 DECLARE migration_name name;
@@ -6309,6 +7182,106 @@ BEGIN
   PERFORM dashboard_attention.finalize_interface();
  END IF;
 END $attention_grant$;
+
+-- ATTENTION_API_REFRESH_BEGIN
+-- bu-s11n0s.8 S3a: dashboard_attention.api gains the read-only ``clause_list`` action (no CSRF:
+-- it mutates nothing; the session checks stay). install_interface creates the function only on a
+-- first install; an installed one is rewritten here in place, replacing exactly the CSRF guard and
+-- the tail (body, owner, proconfig and EXECUTE grants are otherwise kept). Idempotent: a rewritten
+-- body no longer carries the old text.
+DO $attention_api_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ old_csrf constant text := E'  IF NOT EXISTS(SELECT FROM dashboard_auth.csrf\n   WHERE session_digest=se.digest AND digest=p->>''csrf_digest'' AND expires_at>t)\n   THEN RETURN ''{"error":"FORBIDDEN"}''; END IF;\n  IF action=''issue'' THEN';
+ new_csrf constant text := E'  IF action<>''clause_list'' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf\n   WHERE session_digest=se.digest AND digest=p->>''csrf_digest'' AND expires_at>t)\n   THEN RETURN ''{"error":"FORBIDDEN"}''; END IF;\n  IF action=''issue'' THEN';
+ old_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''clause_list'' THEN\n   RETURN jsonb_build_object(''clauses'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''id'',k.id,\n    ''entity_id'',k.entity_id,''sender_domain'',k.sender_domain,''channel'',k.channel,\n    ''security_kind'',k.security_kind,''scope'',k.scope,''expires_at'',k.expires_at,\n    ''created_at'',k.created_at) ORDER BY k.created_at DESC)\n    FROM (SELECT * FROM public.break_through_clauses WHERE revoked_at IS NULL\n     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+BEGIN
+ IF f IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(definition, old_csrf, new_csrf), old_tail, new_tail);
+  END IF;
+ END IF;
+END $attention_api_refresh$;
+-- ATTENTION_API_REFRESH_END
+
+-- ATTENTION_PROPOSAL_REFRESH_BEGIN
+-- bu-s11n0s.8 S3c-2: dashboard_attention.api gains proposal_list (read only, no CSRF like
+-- clause_list), proposal_confirm and proposal_dismiss (session + CSRF as for every grant).
+-- An installed api() is rewritten in place, replacing exactly the CSRF guard, the declaration
+-- line and the tail. Idempotent: a rewritten body no longer carries the old text.
+DO $attention_proposal_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ old_csrf constant text := E'  IF action<>''clause_list'' AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ new_csrf constant text := E'  IF action NOT IN(''clause_list'',''proposal_list'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ old_decl constant text := E'  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid;\n BEGIN';
+ new_decl constant text := E'  b dashboard_attention.tickets%ROWTYPE; t timestamptz; c uuid; pr dashboard_attention.reach_proposals%ROWTYPE;\n BEGIN';
+ old_tail constant text := E'     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'     ORDER BY created_at DESC LIMIT 200) k),''[]''::jsonb));\n  ELSIF action=''proposal_list'' THEN\n   RETURN jsonb_build_object(''proposals'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''id'',k.id,\n    ''sender_domain'',k.sender_domain,''channel'',k.channel,''security_kind'',k.security_kind,\n    ''scope'',k.scope,''created_at'',k.created_at,''expires_at'',k.expires_at) ORDER BY k.created_at DESC)\n    FROM (SELECT * FROM dashboard_attention.reach_proposals WHERE consumed_at IS NULL\n     AND dismissed_at IS NULL AND expires_at>t ORDER BY created_at DESC LIMIT 50) k),''[]''::jsonb));\n  ELSIF action=''proposal_confirm'' THEN\n   SELECT * INTO pr FROM dashboard_attention.reach_proposals WHERE id=(p->>''id'')::uuid FOR UPDATE;\n   IF NOT FOUND OR pr.consumed_at IS NOT NULL OR pr.dismissed_at IS NOT NULL OR pr.expires_at<=t\n    THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   INSERT INTO public.break_through_clauses(sender_domain,channel,security_kind,scope)\n    VALUES(pr.sender_domain,pr.channel,pr.security_kind,pr.scope) RETURNING id INTO c;\n   UPDATE dashboard_attention.reach_proposals SET consumed_at=t,clause_id=c WHERE id=pr.id;\n   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''proposal_dismiss'' THEN\n   UPDATE dashboard_attention.reach_proposals SET dismissed_at=t WHERE id=(p->>''id'')::uuid\n    AND consumed_at IS NULL AND dismissed_at IS NULL RETURNING id INTO c;\n   IF c IS NULL THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+BEGIN
+ IF f IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_decl IN definition) > 0
+   AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(replace(definition, old_csrf, new_csrf), old_decl, new_decl), old_tail, new_tail);
+  END IF;
+ END IF;
+END $attention_proposal_refresh$;
+-- ATTENTION_PROPOSAL_REFRESH_END
+
+-- ATTENTION_DECAY_REFRESH_BEGIN
+-- bu-s11n0s.8 S4: an installed dashboard_attention.api gains decay_state (read, no CSRF) and
+-- clause_keep (session + CSRF), and an installed evaluate skips dormant clauses. Both are
+-- rewritten in place by replacing exactly the guard/tail text; owner, proconfig and EXECUTE
+-- grants are otherwise kept. Idempotent: a rewritten body no longer carries the old text.
+DO $attention_decay_refresh$
+DECLARE f regprocedure := to_regprocedure('dashboard_attention.api(text,jsonb)'); definition text;
+ g regprocedure := to_regprocedure('dashboard_attention.evaluate(jsonb)');
+ old_csrf constant text := E'IF action NOT IN(''clause_list'',''proposal_list'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ new_csrf constant text := E'IF action NOT IN(''clause_list'',''proposal_list'',''decay_state'') AND NOT EXISTS(SELECT FROM dashboard_auth.csrf';
+ old_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ new_tail constant text := E'   RETURN jsonb_build_object(''id'',c);\n  ELSIF action=''decay_state'' THEN\n   RETURN jsonb_build_object(''decay'',COALESCE((SELECT jsonb_agg(jsonb_build_object(''clause_id'',d.clause_id,\n    ''state'',d.state,''changed_at'',d.changed_at) ORDER BY d.changed_at DESC)\n    FROM dashboard_attention.clause_decay d JOIN public.break_through_clauses k ON k.id=d.clause_id\n    WHERE k.revoked_at IS NULL),''[]''::jsonb));\n  ELSIF action=''clause_keep'' THEN\n   UPDATE dashboard_attention.clause_decay d SET state=''kept'',changed_at=t\n    FROM public.break_through_clauses k WHERE k.id=d.clause_id AND k.revoked_at IS NULL\n    AND d.clause_id=(p->>''id'')::uuid AND d.state IN(''asked'',''dormant'') RETURNING d.clause_id INTO c;\n   IF c IS NULL THEN RETURN ''{"error":"INVALID_REQUEST"}''; END IF;\n   RETURN jsonb_build_object(''id'',c);\n  END IF;\n  RETURN ''{"error":"INVALID_REQUEST"}'';\n END';
+ old_eval constant text := E'   AND (security_kind IS NULL OR security_kind=p->>''security_kind'') ORDER BY created_at,id LIMIT 1;';
+ new_eval constant text := E'   AND (security_kind IS NULL OR security_kind=p->>''security_kind'')\n   AND NOT EXISTS(SELECT FROM dashboard_attention.clause_decay d\n    WHERE d.clause_id=public.break_through_clauses.id AND d.state=''dormant'') ORDER BY created_at,id LIMIT 1;';
+BEGIN
+ IF f IS NOT NULL AND to_regclass('dashboard_attention.clause_decay') IS NOT NULL THEN
+  definition := pg_get_functiondef(f);
+  IF position(old_csrf IN definition) > 0 AND position(old_tail IN definition) > 0 THEN
+   EXECUTE replace(replace(definition, old_csrf, new_csrf), old_tail, new_tail);
+  END IF;
+ END IF;
+ IF g IS NOT NULL AND to_regclass('dashboard_attention.clause_decay') IS NOT NULL THEN
+  definition := pg_get_functiondef(g);
+  IF position(old_eval IN definition) > 0 THEN
+   EXECUTE replace(definition, old_eval, new_eval);
+  END IF;
+ END IF;
+END $attention_decay_refresh$;
+-- ATTENTION_DECAY_REFRESH_END
+
+-- ATTENTION_DIGEST_REFRESH_BEGIN
+-- bu-jv1moa.8 (core_334): the candidate definition digest ignores the delivery
+-- lane and claim columns, so a candidate remembered before core_334 keeps its
+-- origin and claim churn never changes it. install_interface creates these two
+-- functions only on a first install; an installed pair is rewritten here, in
+-- place, by replacing exactly the exclusion array (body, owner, proconfig and
+-- EXECUTE grants are otherwise kept). Idempotent: a rewritten body no longer
+-- carries the old array. core_334 refuses to run until this has been applied.
+DO $attention_digest_refresh$
+DECLARE f regprocedure; definition text;
+ old_array constant text := 'ARRAY[''status'',''delivered_at'',''delivery_attempt_count'',''metadata'',''delivery_ref'']';
+ new_array constant text := 'ARRAY[''status'',''delivered_at'',''delivery_attempt_count'',''metadata'',''delivery_ref'',''lane'',''deliver_after'',''claim_id'',''claimed_at'',''attempt_started_at'']';
+BEGIN
+ FOREACH f IN ARRAY ARRAY[to_regprocedure('dashboard_attention.remember(uuid,jsonb)'),
+  to_regprocedure('dashboard_attention.candidate_origin(uuid)')] LOOP
+  CONTINUE WHEN f IS NULL;
+  definition := pg_get_functiondef(f);
+  IF position(old_array IN definition) > 0 THEN
+   EXECUTE replace(definition, old_array, new_array);
+  END IF;
+ END LOOP;
+END $attention_digest_refresh$;
+-- ATTENTION_DIGEST_REFRESH_END
 
 -- D13 fixed step-up interface. Roles/objects are staged ONLY by this existing
 -- privileged bootstrap; ordinary core_277 can invoke no-input installers only.
@@ -6436,42 +7409,16 @@ BEGIN
 END $finalize$;
 REVOKE ALL ON FUNCTION dashboard_stepup.finalize_interface() FROM PUBLIC;
 
-CREATE OR REPLACE FUNCTION dashboard_stepup.install_interface() RETURNS void
-LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
-DECLARE auth_owner oid; migration_name name;
+-- The two consumer routines, defined once. install_interface creates them on
+-- a first installation; upgrade_interface replaces them in place on an
+-- existing one (bu-dhloi1.29). CREATE OR REPLACE keeps each routine's owner
+-- and ACL; finalize_interface then re-asserts both.
+CREATE OR REPLACE FUNCTION dashboard_stepup.install_routines() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $routines$
 BEGIN
- SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
- SELECT nspowner INTO auth_owner FROM pg_namespace WHERE nspname='dashboard_auth'
-  AND obj_description(oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
- IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
-  AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
-  OR to_regclass('dashboard_auth.instance') IS NULL OR to_regclass('dashboard_auth.sessions') IS NULL
-  OR to_regclass('dashboard_auth.credentials') IS NULL OR to_regclass('dashboard_auth.ceremonies') IS NULL
-  THEN RAISE EXCEPTION 'step-up requires existing trusted owner authentication'; END IF;
- IF to_regclass('dashboard_stepup.bindings') IS NOT NULL
-  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NOT NULL
-  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NOT NULL
-  THEN RAISE EXCEPTION 'step-up interface must be absent before first installation'; END IF;
- GRANT CREATE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner;
-CREATE TABLE dashboard_stepup.bindings (
- id text PRIMARY KEY,
- session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
- credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
- kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion')),
- target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
- action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
- namespace text NOT NULL, expires_at timestamptz NOT NULL,
- nonce_digest text UNIQUE CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
- revoked boolean NOT NULL DEFAULT false,
- consumed_at timestamptz, consumed_tx bigint, result jsonb,
- created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
- CHECK((consumed_at IS NULL)=(consumed_tx IS NULL)),
- CHECK(result IS NULL OR (consumed_at IS NOT NULL AND jsonb_typeof(result)='object'))
-);
-ALTER TABLE dashboard_stepup.bindings OWNER TO dashboard_stepup_owner;
-REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
-
-CREATE FUNCTION dashboard_stepup.ceremony(action text,p jsonb) RETURNS jsonb
+ IF to_regclass('dashboard_stepup.bindings') IS NULL
+  THEN RAISE EXCEPTION 'step-up routines require the bindings store'; END IF;
+CREATE OR REPLACE FUNCTION dashboard_stepup.ceremony(action text,p jsonb) RETURNS jsonb
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $ceremony$
 DECLARE
  s dashboard_auth.instance%ROWTYPE; se dashboard_auth.sessions%ROWTYPE;
@@ -6493,7 +7440,7 @@ BEGIN
  IF NOT FOUND THEN RETURN '{"error":"AUTH_UNAVAILABLE"}'; END IF;
  IF action='options' THEN
   IF NOT p ?& ARRAY['kind','request_digest','action_digest','ceremony_id','challenge','target','namespace']
-   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion')
+   OR p->>'kind' NOT IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen')
    OR p->>'request_digest' !~ '^[0-9a-f]{64}$' OR p->>'action_digest' !~ '^[0-9a-f]{64}$'
    OR p->>'ceremony_id' !~ '^[A-Za-z0-9_-]{43}$' OR p->>'challenge' !~ '^[A-Za-z0-9_-]{43}$'
    OR length(p->>'target') NOT BETWEEN 1 AND 128
@@ -6556,7 +7503,7 @@ ALTER FUNCTION dashboard_stepup.ceremony(text,jsonb) OWNER TO dashboard_stepup_o
 REVOKE ALL ON FUNCTION dashboard_stepup.ceremony(text,jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION dashboard_stepup.ceremony(text,jsonb) TO dashboard_auth_api;
 
-CREATE FUNCTION dashboard_stepup.consume(
+CREATE OR REPLACE FUNCTION dashboard_stepup.consume(
  phase text,raw_nonce text,session_digest text,kind text,target text,
  request_digest text,action_digest text,result jsonb
 ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $consume$
@@ -6603,9 +7550,15 @@ BEGIN
   OR jsonb_typeof(result->'kind') IS DISTINCT FROM 'string'
   OR result->>'kind' IS DISTINCT FROM kind
   OR result->>'id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-  OR result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  OR (kind<>'mode_loosen'
+      AND result->>'rule_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
   OR (kind IN ('create','from_action') AND result->>'id' IS DISTINCT FROM result->>'rule_id')
   OR (kind IN ('approve_with_rule','promotion') AND result->>'id' IS DISTINCT FROM target)
+  OR (kind='contain' AND result->>'id' IS DISTINCT FROM result->>'rule_id')
+  OR (kind='policy_loosen' AND result->>'rule_id' IS DISTINCT FROM split_part(target,':',1))
+  -- mode_loosen (bu-dhloi1.21): the overlay (sw_076) or entry (sw_077) row the step-up bound, mode:new-version.
+  OR (kind='mode_loosen' AND (result->>'rule_id' !~ '^[a-z_]{1,32}:[1-9][0-9]{0,18}$'
+      OR result->>'rule_id' IS DISTINCT FROM split_part(target,':',1)||':'||split_part(target,':',2)))
   THEN RETURN '{"state":"refused"}'; END IF;
  UPDATE dashboard_stepup.bindings x SET result=consume.result WHERE x.id=b.id;
  RETURN jsonb_build_object('state','completed');
@@ -6613,6 +7566,45 @@ END $consume$;
 ALTER FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)
  OWNER TO dashboard_stepup_owner;
 REVOKE ALL ON FUNCTION dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb) FROM PUBLIC,dashboard_auth_api;
+END $routines$;
+REVOKE ALL ON FUNCTION dashboard_stepup.install_routines() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION dashboard_stepup.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $install$
+DECLARE auth_owner oid; migration_name name;
+BEGIN
+ SELECT migration_role INTO STRICT migration_name FROM dashboard_stepup.bootstrap_configuration WHERE singleton;
+ SELECT nspowner INTO auth_owner FROM pg_namespace WHERE nspname='dashboard_auth'
+  AND obj_description(oid,'pg_namespace')='butlers:dashboard-owner-auth:core_240';
+ IF auth_owner IS NULL OR (auth_owner<>migration_name::regrole
+  AND NOT (SELECT rolsuper FROM pg_roles WHERE oid=auth_owner))
+  OR to_regclass('dashboard_auth.instance') IS NULL OR to_regclass('dashboard_auth.sessions') IS NULL
+  OR to_regclass('dashboard_auth.credentials') IS NULL OR to_regclass('dashboard_auth.ceremonies') IS NULL
+  THEN RAISE EXCEPTION 'step-up requires existing trusted owner authentication'; END IF;
+ IF to_regclass('dashboard_stepup.bindings') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.ceremony(text,jsonb)') IS NOT NULL
+  OR to_regprocedure('dashboard_stepup.consume(text,text,text,text,text,text,text,jsonb)') IS NOT NULL
+  THEN RAISE EXCEPTION 'step-up interface must be absent before first installation'; END IF;
+ GRANT CREATE ON SCHEMA dashboard_stepup TO dashboard_stepup_owner;
+CREATE TABLE dashboard_stepup.bindings (
+ id text PRIMARY KEY,
+ session_digest text NOT NULL CHECK(session_digest ~ '^[0-9a-f]{64}$'),
+ credential_epoch bigint NOT NULL, session_epoch bigint NOT NULL,
+ kind text NOT NULL CHECK(kind IN ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen')),
+ target text NOT NULL, request_digest text NOT NULL CHECK(request_digest ~ '^[0-9a-f]{64}$'),
+ action_digest text NOT NULL CHECK(action_digest ~ '^[0-9a-f]{64}$'),
+ namespace text NOT NULL, expires_at timestamptz NOT NULL,
+ nonce_digest text UNIQUE CHECK(nonce_digest ~ '^[0-9a-f]{64}$'),
+ revoked boolean NOT NULL DEFAULT false,
+ consumed_at timestamptz, consumed_tx bigint, result jsonb,
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ CHECK((consumed_at IS NULL)=(consumed_tx IS NULL)),
+ CHECK(result IS NULL OR (consumed_at IS NOT NULL AND jsonb_typeof(result)='object'))
+);
+ALTER TABLE dashboard_stepup.bindings OWNER TO dashboard_stepup_owner;
+REVOKE ALL ON TABLE dashboard_stepup.bindings FROM PUBLIC,dashboard_auth_api;
+
+ PERFORM dashboard_stepup.install_routines();
 
  PERFORM dashboard_stepup.finalize_interface();
 END $install$;
@@ -6635,6 +7627,27 @@ BEGIN
 END $deactivate$;
 REVOKE ALL ON FUNCTION dashboard_stepup.deactivate_interface() FROM PUBLIC;
 
+-- Bring an existing installation to this file's closed consumer catalog
+-- (bu-dhloi1.29 added contain and policy_loosen; bu-dhloi1.21 added
+-- mode_loosen). Idempotent and history
+-- preserving: every past binding and receipt row stays as it is; only the
+-- kind CHECK and the two routines are replaced, then finalize re-asserts
+-- ownership, provenance and grants. Reached only from this privileged
+-- bootstrap, never from an ordinary migration.
+CREATE OR REPLACE FUNCTION dashboard_stepup.upgrade_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $upgrade$
+BEGIN
+ IF to_regclass('dashboard_stepup.bindings') IS NULL
+  THEN RAISE EXCEPTION 'step-up upgrade requires an existing installation'; END IF;
+ LOCK TABLE dashboard_stepup.bindings IN ACCESS EXCLUSIVE MODE;
+ ALTER TABLE dashboard_stepup.bindings DROP CONSTRAINT IF EXISTS bindings_kind_check,
+  ADD CONSTRAINT bindings_kind_check CHECK(kind IN
+   ('create','from_action','approve_with_rule','promotion','contain','policy_loosen','mode_loosen'));
+ PERFORM dashboard_stepup.install_routines();
+ PERFORM dashboard_stepup.finalize_interface();
+END $upgrade$;
+REVOKE ALL ON FUNCTION dashboard_stepup.upgrade_interface() FROM PUBLIC;
+
 DO $stepup_grant$
 DECLARE migration_name name;
 BEGIN
@@ -6643,7 +7656,2169 @@ BEGIN
  EXECUTE format('GRANT SELECT ON TABLE dashboard_stepup.bootstrap_configuration TO %I',migration_name);
  EXECUTE format('GRANT EXECUTE ON FUNCTION dashboard_stepup.install_interface(),dashboard_stepup.finalize_interface(),dashboard_stepup.deactivate_interface() TO %I',migration_name);
  IF to_regclass('dashboard_stepup.bindings') IS NOT NULL THEN
-  PERFORM dashboard_stepup.finalize_interface();
+  PERFORM dashboard_stepup.upgrade_interface();
  END IF;
 END $stepup_grant$;
 RESET ROLE;
+
+-- ── Chronicler private-memory projection boundary ─────────────────────────
+-- A public row id is the only input accepted by the two public visibility
+-- interfaces. The fixed bootstrap-owned installer below is called by the core
+-- migration and by every bootstrap replay; the private NOLOGIN role owns only
+-- the narrow readers and never becomes a runtime role.
+DO $chronicler_memory_roles$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    v_bootstrap_is_superuser BOOLEAN;
+    v_schema_owner OID;
+    v_bootstrap_owner OID;
+BEGIN
+    IF NOT COALESCE((SELECT rolsuper FROM pg_catalog.pg_roles
+                     WHERE rolname = current_user), false)
+       OR current_user::name = v_migration_role THEN
+        RAISE EXCEPTION 'Chronicler memory boundary requires privileged init-db bootstrap';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles
+                   WHERE rolname = 'chronicler_memory_owner') THEN
+        EXECUTE 'CREATE ROLE chronicler_memory_owner '
+            || 'NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB '
+            || 'NOREPLICATION NOBYPASSRLS';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_roles AS owner_role
+        WHERE owner_role.rolname = 'chronicler_memory_owner'
+          AND NOT owner_role.rolcanlogin AND NOT owner_role.rolinherit
+          AND NOT owner_role.rolsuper AND NOT owner_role.rolcreaterole
+          AND NOT owner_role.rolcreatedb AND NOT owner_role.rolreplication
+          AND NOT owner_role.rolbypassrls
+          AND NOT EXISTS (
+              SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+              WHERE membership.roleid = owner_role.oid OR membership.member = owner_role.oid
+          )
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory definer owner is not fixed and membership-free';
+    END IF;
+    IF pg_catalog.to_regnamespace('chronicler_memory_admin') IS NULL THEN
+        EXECUTE pg_catalog.format(
+            'CREATE SCHEMA chronicler_memory_admin AUTHORIZATION %I', current_user
+        );
+    END IF;
+    SELECT namespace.nspowner, bootstrap.rolsuper
+      INTO v_schema_owner, v_bootstrap_is_superuser
+      FROM pg_catalog.pg_namespace AS namespace
+      JOIN pg_catalog.pg_roles AS bootstrap ON bootstrap.oid = namespace.nspowner
+     WHERE namespace.nspname = 'chronicler_memory_admin';
+    IF v_schema_owner IS NULL OR NOT COALESCE(v_bootstrap_is_superuser, false) THEN
+        RAISE EXCEPTION 'Chronicler memory installer schema is not bootstrap-owned';
+    END IF;
+    SELECT oid INTO STRICT v_bootstrap_owner
+      FROM pg_catalog.pg_roles WHERE rolname = current_user;
+    IF EXISTS (
+        SELECT 1
+        FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema
+          ON admin_schema.oid = admin_function.pronamespace
+        WHERE admin_schema.nspname = 'chronicler_memory_admin'
+          AND admin_function.proname IN ('install_interface', 'finalize_interface')
+          AND admin_function.pronargs = 0
+          AND admin_function.proowner <> v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION
+            'Chronicler memory admin interface function is not owned by the bootstrap role';
+    END IF;
+    REVOKE ALL ON SCHEMA chronicler_memory_admin FROM PUBLIC;
+END;
+$chronicler_memory_roles$;
+
+CREATE OR REPLACE FUNCTION chronicler_memory_admin.install_interface()
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $chronicler_install$
+BEGIN
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NULL
+       OR pg_catalog.to_regclass('public.entity_graph_edges') IS NULL THEN
+        RETURN;
+    END IF;
+
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION chronicler_memory_admin.projection_row_visible(
+            p_projection_id uuid, p_is_graph boolean
+        ) RETURNS boolean
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+        AS $body$
+        DECLARE
+            v_source_schema text;
+            v_source_table text;
+            v_source_id uuid;
+            v_rows bigint;
+            v_fact record;
+            v_fact_date date;
+            v_closed_through date;
+            v_replay_epoch bigint;
+            v_replay_ack bigint;
+            v_blocked_reason text;
+            v_timezone text;
+            v_redacted boolean;
+            v_pending boolean;
+            v_reason boolean;
+            v_detail jsonb;
+            v_first date;
+        BEGIN
+            IF p_projection_id IS NULL OR p_is_graph IS NULL THEN
+                RETURN false;
+            END IF;
+            IF p_is_graph THEN
+                EXECUTE 'SELECT source_schema, source_table, source_id '
+                     || 'FROM public.entity_graph_edges WHERE id = $1'
+                  INTO v_source_schema, v_source_table, v_source_id USING p_projection_id;
+            ELSE
+                EXECUTE 'SELECT source_schema, source_table, source_id '
+                     || 'FROM public.memory_catalog WHERE id = $1'
+                  INTO v_source_schema, v_source_table, v_source_id USING p_projection_id;
+            END IF;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 THEN
+                RETURN false;
+            END IF;
+            IF v_source_schema IS DISTINCT FROM 'chronicler_mem'
+               OR v_source_table IS DISTINCT FROM 'facts' THEN
+                RETURN true;
+            END IF;
+            IF v_source_id IS NULL
+               OR pg_catalog.to_regclass('chronicler_mem.facts') IS NULL THEN
+                RETURN false;
+            END IF;
+
+            -- All private relation references stay dynamic: this function is
+            -- installed before the optional chronicler_mem and chronicler chains.
+            EXECUTE 'SELECT source_butler, predicate, content_authority, validity, '
+                 || 'invalid_at, subject, tags, metadata '
+                 || 'FROM chronicler_mem.facts WHERE id = $1'
+              INTO v_fact USING v_source_id;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 THEN
+                RETURN false;
+            END IF;
+
+            IF pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions')
+               IS NOT NULL THEN
+                EXECUTE 'SELECT EXISTS ('
+                     || 'SELECT 1 FROM chronicler.daily_repair_fact_dispositions '
+                     || 'WHERE fact_id = $1 AND disposition = ''disposed'' AND redacted)'
+                  INTO v_redacted USING v_source_id;
+                IF v_redacted THEN
+                    RETURN false;
+                END IF;
+            END IF;
+
+            IF v_fact.content_authority IN ('owner', 'owner_device') THEN
+                RETURN true;
+            END IF;
+            IF v_fact.predicate NOT IN (
+                'lane-skew', 'sleep-debt', 'revisit-low-confidence-block'
+            ) THEN
+                RETURN true;
+            END IF;
+            IF v_fact.source_butler IS DISTINCT FROM 'chronicler'
+               OR v_fact.validity IS NULL
+               OR v_fact.validity NOT IN ('active', 'fading')
+               OR v_fact.invalid_at IS NOT NULL
+               OR pg_catalog.jsonb_typeof(v_fact.metadata) IS DISTINCT FROM 'object'
+               OR v_fact.metadata->>'source' IS DISTINCT FROM 'chronicler'
+               OR pg_catalog.jsonb_typeof(v_fact.tags) IS DISTINCT FROM 'array' THEN
+                RETURN false;
+            END IF;
+
+            IF v_fact.predicate = 'sleep-debt' THEN
+                v_detail := v_fact.metadata->'as_of';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR v_fact.subject IS DISTINCT FROM 'sleep'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'debt_seconds') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'shortfall_days') IS DISTINCT FROM 'number'
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'window_days') IS DISTINCT FROM 'number'
+                   OR NOT v_fact.tags @> '["chronicler-insight", "sleep-debt"]'::jsonb THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'as_of', '')::date;
+            ELSIF v_fact.predicate = 'lane-skew' THEN
+                v_detail := v_fact.metadata->'local_date';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR COALESCE(v_fact.metadata->>'lane', '') = ''
+                   OR v_fact.subject IS DISTINCT FROM (v_fact.metadata->>'lane' || ' lane')
+                   OR v_fact.metadata->>'direction' IS NULL
+                   OR v_fact.metadata->>'direction' NOT IN ('up', 'down')
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'seconds') IS DISTINCT FROM 'number'
+                   OR NOT v_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-insight', 'lane-skew', v_fact.metadata->>'lane'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'local_date', '')::date;
+            ELSE
+                v_detail := v_fact.metadata->'local_date';
+                IF pg_catalog.jsonb_typeof(v_detail) IS DISTINCT FROM 'string'
+                   OR v_fact.metadata->>'flag_type' IS NULL
+                   OR v_fact.metadata->>'flag_type' NOT IN ('feeder_dark', 'sleep_missing')
+                   OR v_fact.metadata->>'severity' IS NULL
+                   OR v_fact.subject IS DISTINCT FROM (
+                       (v_fact.metadata->>'local_date') || ' ' || (v_fact.metadata->>'flag_type')
+                   )
+                   OR pg_catalog.jsonb_typeof(v_fact.metadata->'detail') IS DISTINCT FROM 'object'
+                   OR NOT v_fact.tags @> pg_catalog.jsonb_build_array(
+                       'chronicler-self-reminder', v_fact.metadata->>'flag_type'
+                   ) THEN
+                    RETURN false;
+                END IF;
+                v_first := NULLIF(v_fact.metadata->>'local_date', '')::date;
+            END IF;
+
+            -- Invalid dates are an unclassified source row. Other SQL/ACL errors
+            -- are allowed to propagate instead of becoming an empty success.
+            IF v_first IS NULL THEN
+                RETURN false;
+            END IF;
+            v_fact_date := v_first;
+            IF pg_catalog.to_regclass('chronicler.daily_repair_control') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_days') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_source_redactions') IS NULL
+               OR pg_catalog.to_regclass('chronicler.daily_repair_retention_spans') IS NULL
+               OR pg_catalog.to_regclass('chronicler.episodes') IS NULL
+               OR pg_catalog.to_regclass('chronicler.v_episodes_corrected') IS NULL THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT closed_through, replay_epoch, replay_ack, blocked_reason, timezone '
+                 || 'FROM chronicler.daily_repair_control WHERE singleton'
+              INTO v_closed_through, v_replay_epoch, v_replay_ack, v_blocked_reason, v_timezone;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows = 0 OR v_blocked_reason IS NOT NULL OR v_timezone IS NULL OR v_timezone = ''
+               OR v_replay_epoch IS DISTINCT FROM v_replay_ack
+               OR v_fact_date > v_closed_through THEN
+                RETURN false;
+            END IF;
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_days '
+                 || 'WHERE local_date = $1 AND facts_pending)'
+              INTO v_pending USING v_fact_date;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+
+            EXECUTE 'SELECT disposition = ''disposed'' OR redacted '
+                 || 'FROM chronicler.daily_repair_fact_dispositions '
+                 || 'WHERE fact_id = $1 AND local_date = $2 '
+                 || 'ORDER BY generation DESC LIMIT 1'
+              INTO v_pending USING v_source_id, v_fact_date;
+            GET DIAGNOSTICS v_rows = ROW_COUNT;
+            IF v_rows > 0 AND v_pending THEN
+                RETURN false;
+            END IF;
+
+            -- An admitted cursor and an unadmitted currently-expired source both
+            -- hold the exact dependent day closed. The live source query is
+            -- read-only and uses only the narrow columns granted by the 030
+            -- finalizer; it prevents a timeout rollback from exposing old rows.
+            EXECUTE 'SELECT EXISTS ('
+                 || 'SELECT 1 FROM chronicler.daily_repair_retention_spans AS span '
+                 || 'WHERE $1 BETWEEN span.cursor_date AND '
+                 || 'LEAST(span.last_date + 28, $2))'
+              INTO v_pending USING v_fact_date, v_closed_through;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+            EXECUTE $q$
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM chronicler.episodes AS raw
+                    JOIN chronicler.v_episodes_corrected AS effective
+                      ON effective.id = raw.id
+                    CROSS JOIN chronicler.daily_repair_control AS control
+                    WHERE (raw.privacy = 'restricted' OR raw.tombstone_at IS NOT NULL
+                           OR (raw.retention_days IS NOT NULL
+                               AND raw.start_at + pg_catalog.make_interval(days => raw.retention_days)
+                                   < pg_catalog.clock_timestamp())
+                           OR effective.privacy = 'restricted'
+                           OR effective.tombstone_at IS NOT NULL
+                           OR (effective.retention_days IS NOT NULL
+                               AND effective.start_at + pg_catalog.make_interval(days => effective.retention_days)
+                                   < pg_catalog.clock_timestamp()))
+                      AND NOT EXISTS (
+                          SELECT 1 FROM chronicler.daily_repair_source_redactions AS redaction
+                          WHERE redaction.source_id = raw.id
+                      )
+                      AND (
+                          $1 BETWEEN (raw.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((raw.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                          OR $1 BETWEEN (effective.start_at AT TIME ZONE control.timezone)::date
+                              AND LEAST(COALESCE(
+                                  ((effective.end_at - interval '1 microsecond')
+                                      AT TIME ZONE control.timezone)::date,
+                                  control.closed_through), control.closed_through) + 28
+                      )
+                )
+            $q$ INTO v_pending USING v_fact_date;
+            IF v_pending THEN
+                RETURN false;
+            END IF;
+            RETURN true;
+        EXCEPTION
+            WHEN invalid_datetime_format OR datetime_field_overflow THEN
+                RETURN false;
+        END
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.chronicler_catalog_row_visible(p_row_id uuid)
+        RETURNS boolean LANGUAGE sql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp
+        AS $body$
+            SELECT chronicler_memory_admin.projection_row_visible(p_row_id, false)
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.chronicler_graph_row_visible(p_row_id uuid)
+        RETURNS boolean LANGUAGE sql SECURITY DEFINER
+        SET search_path = pg_catalog, pg_temp
+        AS $body$
+            SELECT chronicler_memory_admin.projection_row_visible(p_row_id, true)
+        $body$
+    $ddl$;
+
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.guard_chronicler_catalog_identity()
+        RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
+        AS $body$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'
+                   AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                    RAISE EXCEPTION 'only Chronicler may create private-fact catalog pointers'
+                        USING ERRCODE = '42501';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF ((OLD.source_schema = 'chronicler_mem' AND OLD.source_table = 'facts')
+                OR (NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'))
+               AND (OLD.id IS DISTINCT FROM NEW.id
+                    OR OLD.source_schema IS DISTINCT FROM NEW.source_schema
+                    OR OLD.source_table IS DISTINCT FROM NEW.source_table
+                    OR OLD.source_id IS DISTINCT FROM NEW.source_id)
+               AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                RAISE EXCEPTION 'only Chronicler may retarget private-fact catalog pointers'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END
+        $body$
+    $ddl$;
+    EXECUTE $ddl$
+        CREATE OR REPLACE FUNCTION public.guard_chronicler_graph_identity()
+        RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog
+        AS $body$
+        BEGIN
+            IF TG_OP = 'INSERT' THEN
+                IF NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'
+                   AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                    RAISE EXCEPTION 'only Chronicler may create private-fact graph pointers'
+                        USING ERRCODE = '42501';
+                END IF;
+                RETURN NEW;
+            END IF;
+            IF ((OLD.source_schema = 'chronicler_mem' AND OLD.source_table = 'facts')
+                OR (NEW.source_schema = 'chronicler_mem' AND NEW.source_table = 'facts'))
+               AND (OLD.id IS DISTINCT FROM NEW.id
+                    OR OLD.source_schema IS DISTINCT FROM NEW.source_schema
+                    OR OLD.source_table IS DISTINCT FROM NEW.source_table
+                    OR OLD.source_id IS DISTINCT FROM NEW.source_id)
+               AND current_user IS DISTINCT FROM 'butler_chronicler_rw' THEN
+                RAISE EXCEPTION 'only Chronicler may retarget private-fact graph pointers'
+                    USING ERRCODE = '42501';
+            END IF;
+            RETURN NEW;
+        END
+        $body$
+    $ddl$;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.memory_catalog'::regclass
+          AND trigger_row.tgname = 'chronicler_catalog_identity_guard'
+          AND NOT trigger_row.tgisinternal
+          AND trigger_row.tgfoid = 'public.guard_chronicler_catalog_identity()'::regprocedure
+          AND trigger_row.tgenabled = 'O'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+                   WHERE trigger_row.tgrelid = 'public.memory_catalog'::regclass
+                     AND trigger_row.tgname = 'chronicler_catalog_identity_guard'
+                     AND NOT trigger_row.tgisinternal) THEN
+            RAISE EXCEPTION 'unexpected Chronicler catalog identity trigger shape';
+        END IF;
+        CREATE TRIGGER chronicler_catalog_identity_guard
+        BEFORE INSERT OR UPDATE ON public.memory_catalog
+        FOR EACH ROW EXECUTE FUNCTION public.guard_chronicler_catalog_identity();
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+        WHERE trigger_row.tgrelid = 'public.entity_graph_edges'::regclass
+          AND trigger_row.tgname = 'chronicler_graph_identity_guard'
+          AND NOT trigger_row.tgisinternal
+          AND trigger_row.tgfoid = 'public.guard_chronicler_graph_identity()'::regprocedure
+          AND trigger_row.tgenabled = 'O'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS trigger_row
+                   WHERE trigger_row.tgrelid = 'public.entity_graph_edges'::regclass
+                     AND trigger_row.tgname = 'chronicler_graph_identity_guard'
+                     AND NOT trigger_row.tgisinternal) THEN
+            RAISE EXCEPTION 'unexpected Chronicler graph identity trigger shape';
+        END IF;
+        CREATE TRIGGER chronicler_graph_identity_guard
+        BEFORE INSERT OR UPDATE ON public.entity_graph_edges
+        FOR EACH ROW EXECUTE FUNCTION public.guard_chronicler_graph_identity();
+    END IF;
+END
+$chronicler_install$;
+REVOKE ALL ON FUNCTION chronicler_memory_admin.install_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION chronicler_memory_admin.finalize_interface()
+RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $chronicler_finalize$
+DECLARE
+    v_bootstrap OID;
+    v_owner OID;
+    v_role TEXT;
+BEGIN
+    SELECT proowner INTO v_bootstrap
+      FROM pg_catalog.pg_proc
+     WHERE oid = 'chronicler_memory_admin.finalize_interface()'::regprocedure;
+    IF v_bootstrap IS NULL OR NOT COALESCE(
+        (SELECT rolsuper FROM pg_catalog.pg_roles WHERE oid = v_bootstrap), false
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory finalizer is not bootstrap-owned';
+    END IF;
+    SELECT oid INTO v_owner FROM pg_catalog.pg_roles
+     WHERE rolname = 'chronicler_memory_owner'
+       AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+       AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
+       AND NOT rolbypassrls;
+    IF v_owner IS NULL OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_auth_members
+        WHERE roleid = v_owner OR member = v_owner
+    ) THEN
+        RAISE EXCEPTION 'Chronicler memory owner role is not membership-free';
+    END IF;
+    PERFORM chronicler_memory_admin.install_interface();
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NULL
+       OR pg_catalog.to_regclass('public.entity_graph_edges') IS NULL THEN
+        RETURN;
+    END IF;
+
+    -- PostgreSQL requires the new owner to have CREATE on each destination
+    -- schema while ownership is transferred. The role is NOLOGIN and has no
+    -- memberships; remove CREATE immediately after the three fixed transfers.
+    EXECUTE 'GRANT CREATE ON SCHEMA chronicler_memory_admin TO chronicler_memory_owner';
+    EXECUTE 'GRANT CREATE ON SCHEMA public TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION public.chronicler_catalog_row_visible(uuid) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'ALTER FUNCTION public.chronicler_graph_row_visible(uuid) '
+         || 'OWNER TO chronicler_memory_owner';
+    EXECUTE 'REVOKE CREATE ON SCHEMA chronicler_memory_admin FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE CREATE ON SCHEMA public FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.chronicler_catalog_row_visible(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.chronicler_graph_row_visible(uuid) FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.guard_chronicler_catalog_identity() FROM PUBLIC';
+    EXECUTE 'REVOKE ALL ON FUNCTION public.guard_chronicler_graph_identity() FROM PUBLIC';
+    EXECUTE 'GRANT USAGE ON SCHEMA chronicler_memory_admin TO chronicler_memory_owner';
+    EXECUTE 'GRANT USAGE ON SCHEMA public TO chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON public.memory_catalog FROM chronicler_memory_owner';
+    EXECUTE 'REVOKE ALL ON public.entity_graph_edges FROM chronicler_memory_owner';
+    EXECUTE 'GRANT SELECT (id, source_schema, source_table, source_id) '
+         || 'ON public.memory_catalog TO chronicler_memory_owner';
+    EXECUTE 'GRANT SELECT (id, source_schema, source_table, source_id) '
+         || 'ON public.entity_graph_edges TO chronicler_memory_owner';
+
+    IF pg_catalog.to_regclass('chronicler_mem.facts') IS NOT NULL THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA chronicler_mem TO chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler_mem.facts FROM chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, source_butler, predicate, content_authority, validity, '
+             || 'invalid_at, subject, tags, metadata) ON chronicler_mem.facts '
+             || 'TO chronicler_memory_owner';
+    END IF;
+    IF pg_catalog.to_regclass('chronicler.episodes') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.v_episodes_corrected') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_control') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_days') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_fact_dispositions') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_source_redactions') IS NOT NULL
+       AND pg_catalog.to_regclass('chronicler.daily_repair_retention_spans') IS NOT NULL THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA chronicler TO chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.episodes FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.v_episodes_corrected FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_control FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_days FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_fact_dispositions FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_source_redactions FROM chronicler_memory_owner';
+        EXECUTE 'REVOKE ALL ON chronicler.daily_repair_retention_spans FROM chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, start_at, end_at, privacy, retention_days, tombstone_at) '
+             || 'ON chronicler.episodes TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (id, start_at, end_at, privacy, retention_days, tombstone_at) '
+             || 'ON chronicler.v_episodes_corrected TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (singleton, timezone, closed_through, replay_epoch, replay_ack, blocked_reason) '
+             || 'ON chronicler.daily_repair_control TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (local_date, facts_pending) '
+             || 'ON chronicler.daily_repair_days TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (fact_id, local_date, generation, disposition, redacted) '
+             || 'ON chronicler.daily_repair_fact_dispositions TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (source_id) '
+             || 'ON chronicler.daily_repair_source_redactions TO chronicler_memory_owner';
+        EXECUTE 'GRANT SELECT (last_date, cursor_date) '
+             || 'ON chronicler.daily_repair_retention_spans TO chronicler_memory_owner';
+    END IF;
+
+    FOR v_role IN SELECT rolname::text FROM pg_catalog.pg_roles
+                   WHERE rolname <> 'chronicler_memory_owner' LOOP
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION chronicler_memory_admin.projection_row_visible(uuid, boolean) FROM %I',
+            v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.guard_chronicler_catalog_identity() FROM %I', v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.guard_chronicler_graph_identity() FROM %I', v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.chronicler_catalog_row_visible(uuid) FROM %I',
+            v_role
+        );
+        EXECUTE pg_catalog.format(
+            'REVOKE ALL ON FUNCTION public.chronicler_graph_row_visible(uuid) FROM %I',
+            v_role
+        );
+    END LOOP;
+    FOREACH v_role IN ARRAY ARRAY[
+        'butler_chronicler_rw', 'butler_concierge_rw', 'butler_education_rw',
+        'butler_finance_rw', 'butler_general_rw', 'butler_health_rw', 'butler_home_rw',
+        'butler_lifestyle_rw', 'butler_messenger_rw', 'butler_qa_rw',
+        'butler_relationship_rw', 'butler_switchboard_rw', 'butler_travel_rw'
+    ] LOOP
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = v_role) THEN
+            EXECUTE pg_catalog.format(
+                'GRANT EXECUTE ON FUNCTION public.chronicler_catalog_row_visible(uuid) TO %I',
+                v_role
+            );
+            EXECUTE pg_catalog.format(
+                'GRANT EXECUTE ON FUNCTION public.chronicler_graph_row_visible(uuid) TO %I',
+                v_role
+            );
+        END IF;
+    END LOOP;
+END
+$chronicler_finalize$;
+REVOKE ALL ON FUNCTION chronicler_memory_admin.finalize_interface() FROM PUBLIC;
+DO $chronicler_migration_grant$
+DECLARE
+    v_migration_role NAME := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+BEGIN
+    EXECUTE pg_catalog.format(
+        'GRANT USAGE ON SCHEMA chronicler_memory_admin TO %I', v_migration_role
+    );
+    EXECUTE pg_catalog.format(
+        'GRANT EXECUTE ON FUNCTION chronicler_memory_admin.finalize_interface() TO %I',
+        v_migration_role
+    );
+END
+$chronicler_migration_grant$;
+DO $chronicler_memory_replay$
+BEGIN
+    IF pg_catalog.to_regclass('public.memory_catalog') IS NOT NULL
+       AND pg_catalog.to_regclass('public.entity_graph_edges') IS NOT NULL THEN
+        PERFORM chronicler_memory_admin.finalize_interface();
+    END IF;
+END
+$chronicler_memory_replay$;
+
+-- RFC 0039 D4/D9 PRIMARY prerequisites only. CNPG owns the five identities
+-- and the projection database. Ordinary local/restore callers without them keep
+-- their existing behavior; this block never creates/normalizes those roles.
+DO $public_mcp_primary$
+DECLARE
+    migration_role name := COALESCE(
+        NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers'
+    )::name;
+    migration_oid oid;
+    relation_name text;
+    relation_oid oid;
+    expected_columns text[];
+    actual_columns text[];
+    expected_checks text[];
+    actual_checks text[];
+    runtime_role text;
+    item record;
+    attribute record;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_database WHERE datname='butlers_public')
+       OR (SELECT count(*) FROM pg_roles WHERE rolname IN (
+           'butlers_projection_publisher', 'mcp_projection_owner', 'mcp_public_ro',
+           'mcp_proposals_reader', 'mcp_subscription_owner')) <> 5 THEN
+        RETURN;
+    END IF;
+    -- PUBLIC_MCP_PUBLISHER_SECURITY_BEGIN
+IF NOT EXISTS (SELECT 1 FROM pg_authid WHERE
+        rolname='butlers_projection_publisher'
+              AND rolcanlogin AND rolreplication AND NOT rolinherit
+              AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole
+              AND NOT rolbypassrls AND rolpassword IS NULL) THEN
+    RAISE EXCEPTION 'public MCP publisher attributes/credential refused';
+END IF;
+IF EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles r
+           ON r.oid IN (m.roleid, m.member)
+           WHERE r.rolname='butlers_projection_publisher') THEN
+    RAISE EXCEPTION 'public MCP publisher membership refused';
+END IF;
+IF EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE error IS NOT NULL)
+   OR EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE error IS NOT
+        NULL) THEN
+    RAISE EXCEPTION 'public MCP authentication configuration refused';
+END IF;
+IF (SELECT count(*) FROM pg_ident_file_mappings WHERE
+        map_name='local')<>2
+   OR NOT EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE
+        map_name='local'
+                  AND sys_name='postgres' AND pg_username='postgres')
+   OR NOT EXISTS (SELECT 1 FROM pg_ident_file_mappings WHERE
+        map_name='local'
+                  AND sys_name='postgres' AND
+        pg_username='butlers_projection_publisher')
+        THEN
+    RAISE EXCEPTION 'public MCP local peer map refused';
+END IF;
+IF (SELECT count(*) FROM pg_hba_file_rules WHERE type='local'
+    AND database=ARRAY['all'] AND user_name=ARRAY['all']
+    AND auth_method='peer' AND options=ARRAY['map=local'])<>1 THEN
+    RAISE EXCEPTION 'public MCP local peer rule refused';
+END IF;
+IF NOT EXISTS (SELECT 1 FROM pg_hba_file_rules WHERE type='host'
+               AND database=ARRAY['all'] AND
+        user_name=ARRAY['butlers_projection_publisher']
+               AND address='all' AND auth_method='reject') THEN
+    RAISE EXCEPTION 'public MCP publisher TCP rejection missing';
+END IF;
+IF EXISTS (
+    SELECT 1 FROM pg_hba_file_rules h
+    WHERE (h.user_name && ARRAY['all', 'butlers_projection_publisher']
+           OR EXISTS (SELECT 1 FROM unnest(h.user_name) u WHERE u LIKE
+        '+%' OR u LIKE '/%'))
+      AND (
+        'replication'=ANY(h.database)
+        OR (h.type='local' AND NOT (h.database=ARRAY['all']
+              AND h.user_name=ARRAY['all'] AND h.auth_method='peer'
+              AND h.options=ARRAY['map=local']))
+        OR (h.type<>'local' AND h.auth_method<>'reject'
+            AND h.rule_number < (SELECT min(rule_number) FROM
+        pg_hba_file_rules
+                 WHERE type='host' AND database=ARRAY['all']
+                   AND user_name=ARRAY['butlers_projection_publisher']
+                   AND address='all' AND auth_method='reject'))
+      )
+) THEN
+    RAISE EXCEPTION
+        'public MCP publisher alternate authentication refused';
+END IF;
+    -- PUBLIC_MCP_PUBLISHER_SECURITY_END
+    SELECT oid INTO STRICT migration_oid FROM pg_roles WHERE rolname=migration_role;
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname='mcp_surface'
+               AND nspowner<>migration_oid) THEN
+        RAISE EXCEPTION 'public MCP metadata schema has an unsupported owner';
+    END IF;
+    EXECUTE format('CREATE SCHEMA IF NOT EXISTS mcp_surface AUTHORIZATION %I', migration_role);
+    -- No source reader role or public default privileges apply in this namespace.
+    IF to_regclass('mcp_surface.controls') IS NULL THEN
+        CREATE TABLE mcp_surface.controls (
+            domain text PRIMARY KEY CHECK (domain IN (
+                'all','knowledge','travel','relationship','time','finance','health','proposals')),
+            state text NOT NULL CHECK (state IN ('enabled','disabled')),
+            changed_at timestamptz NOT NULL DEFAULT now(),
+            changed_by text NOT NULL DEFAULT 'system'
+        );
+        EXECUTE format('ALTER TABLE mcp_surface.controls OWNER TO %I', migration_role);
+    END IF;
+    IF to_regclass('mcp_surface.manifest_state') IS NULL THEN
+        CREATE TABLE mcp_surface.manifest_state (
+            digest text PRIMARY KEY CHECK (digest ~ '^[a-f0-9]{64}$')
+        );
+        CREATE UNIQUE INDEX manifest_state_singleton ON mcp_surface.manifest_state ((true));
+        EXECUTE format('ALTER TABLE mcp_surface.manifest_state OWNER TO %I', migration_role);
+    END IF;
+    FOREACH relation_name IN ARRAY ARRAY['controls','manifest_state'] LOOP
+        relation_oid := to_regclass(format('mcp_surface.%I',relation_name));
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid=relation_oid
+                       AND relkind='r' AND relowner=migration_oid) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported owner/shape', relation_name;
+        END IF;
+        -- The actor of the last change (bu-y66o00.9). Private: it is not in the projection
+        -- manifest, so it never replicates. Added to the owner's own table only.
+        IF relation_name='controls' THEN
+            ALTER TABLE mcp_surface.controls
+                ADD COLUMN IF NOT EXISTS changed_by text NOT NULL DEFAULT 'system';
+        END IF;
+        expected_columns := CASE relation_name WHEN 'controls' THEN
+            ARRAY['domain:text:true','state:text:true','changed_at:timestamp with time zone:true',
+                      'changed_by:text:true']
+            ELSE ARRAY['digest:text:true'] END;
+        SELECT array_agg(attname||':'||format_type(atttypid,atttypmod)||':'||attnotnull ORDER BY attnum)
+          INTO actual_columns FROM pg_attribute WHERE attrelid=relation_oid
+          AND attnum>0 AND NOT attisdropped;
+        IF actual_columns IS DISTINCT FROM expected_columns
+           OR (SELECT count(*) FROM pg_constraint WHERE conrelid=relation_oid AND contype='p')<>1
+           OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid=relation_oid AND contype='p'
+                          AND conkey=ARRAY[1]::smallint[]) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported shape', relation_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid=relation_oid
+                   AND attnum>0 AND NOT attisdropped AND attgenerated<>'') THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has generated columns',relation_name;
+        END IF;
+        expected_checks := CASE relation_name WHEN 'controls' THEN ARRAY[
+            'CHECK ((domain = ANY (ARRAY[''all''::text, ''knowledge''::text, ''travel''::text, ''relationship''::text, ''time''::text, ''finance''::text, ''health''::text, ''proposals''::text])))',
+            'CHECK ((state = ANY (ARRAY[''enabled''::text, ''disabled''::text])))'
+        ] ELSE ARRAY['CHECK ((digest ~ ''^[a-f0-9]{64}$''::text))'] END;
+        SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid))
+          INTO actual_checks FROM pg_constraint WHERE conrelid=relation_oid AND contype='c'
+          AND convalidated AND NOT connoinherit;
+        IF actual_checks IS DISTINCT FROM expected_checks
+           OR (SELECT count(*) FROM pg_constraint WHERE conrelid=relation_oid AND contype='c')
+              <>cardinality(expected_checks) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has unsupported checks',relation_name;
+        END IF;
+        IF relation_name='manifest_state' AND NOT EXISTS (
+            SELECT 1 FROM pg_index WHERE indrelid=relation_oid AND indisunique
+            AND indisvalid AND indimmediate AND indpred IS NULL
+            AND pg_get_expr(indexprs,indrelid)='true'
+        ) THEN
+            RAISE EXCEPTION 'public MCP manifest state lacks singleton identity';
+        END IF;
+        -- Refuse unrecognized grants instead of silently taking over a foreign interface.
+        IF EXISTS (SELECT 1 FROM pg_class c, LATERAL aclexplode(c.relacl) a
+                   WHERE c.oid=relation_oid AND a.grantee<>migration_oid
+                   AND NOT (a.grantee='butlers_projection_publisher'::regrole
+                            AND a.privilege_type='SELECT' AND NOT a.is_grantable)
+                   AND a.grantee<>0 AND a.grantee NOT IN (
+                       SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                       OR rolname='connector_writer')) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported ACL', relation_name;
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_attribute c,LATERAL aclexplode(c.attacl) a
+                   WHERE c.attrelid=relation_oid AND a.grantee<>migration_oid
+                   AND a.grantee<>0 AND a.grantee NOT IN (
+                       SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                       OR rolname='connector_writer')) THEN
+            RAISE EXCEPTION 'public MCP metadata relation % has an unsupported column ACL',relation_name;
+        END IF;
+        EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM PUBLIC',relation_name);
+        EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM PUBLIC',
+            CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at,changed_by' ELSE 'digest' END,
+            relation_name);
+        FOR runtime_role IN SELECT rolname FROM pg_roles
+            WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\' OR rolname='connector_writer' LOOP
+            EXECUTE format('REVOKE ALL ON mcp_surface.%I FROM %I',relation_name,runtime_role);
+            EXECUTE format('REVOKE ALL (%s) ON mcp_surface.%I FROM %I',
+                CASE relation_name WHEN 'controls' THEN 'domain,state,changed_at,changed_by' ELSE 'digest' END,
+                relation_name,runtime_role);
+        END LOOP;
+    END LOOP;
+    IF EXISTS (SELECT 1 FROM pg_namespace n, LATERAL aclexplode(n.nspacl) a
+               WHERE n.nspname='mcp_surface' AND a.grantee<>migration_oid
+               AND NOT (a.grantee='butlers_projection_publisher'::regrole
+                        AND a.privilege_type='USAGE' AND NOT a.is_grantable)
+               AND a.grantee<>0 AND a.grantee NOT IN (
+                   SELECT oid FROM pg_roles WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\'
+                   OR rolname='connector_writer')) THEN
+        RAISE EXCEPTION 'public MCP metadata schema has an unsupported ACL';
+    END IF;
+    REVOKE ALL ON SCHEMA mcp_surface FROM PUBLIC;
+    FOR runtime_role IN SELECT rolname FROM pg_roles
+        WHERE rolname LIKE 'butler\_%\_rw' ESCAPE '\' OR rolname='connector_writer' LOOP
+        EXECUTE format('REVOKE ALL ON SCHEMA mcp_surface FROM %I',runtime_role);
+    END LOOP;
+    GRANT USAGE ON SCHEMA mcp_surface TO butler_relationship_rw;
+    GRANT SELECT ON mcp_surface.controls TO butler_relationship_rw;
+    INSERT INTO mcp_surface.controls(domain,state)
+        SELECT domain,'enabled' FROM unnest(ARRAY[
+            'all','knowledge','travel','relationship','time','finance','health','proposals']) domain
+        ON CONFLICT DO NOTHING;
+    -- PUBLIC_MCP_PUBLISHER_GRANTS_BEGIN
+GRANT CONNECT ON DATABASE butlers TO butlers_projection_publisher;
+FOR item IN SELECT nspname FROM pg_namespace
+    WHERE left(nspname, 3)<>'pg_' AND nspname<>'information_schema' LOOP
+    EXECUTE
+        format('REVOKE ALL ON SCHEMA %I FROM butlers_projection_publisher',
+        item.nspname);
+    EXECUTE
+
+        format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM butlers_projection_publisher',
+        item.nspname);
+END LOOP;
+FOR item IN SELECT n.nspname, c.relname FROM pg_class c JOIN pg_namespace
+        n ON
+        n.oid=c.relnamespace
+    WHERE left(n.nspname, 3)<>'pg_' AND n.nspname<>'information_schema'
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f') LOOP
+    EXECUTE
+        format('REVOKE ALL ON TABLE %I.%I FROM butlers_projection_publisher',
+                   item.nspname, item.relname);
+    FOR attribute IN SELECT attname FROM pg_attribute
+        WHERE attrelid=format('%I.%I', item.nspname,
+        item.relname)::regclass
+          AND attnum>0 AND NOT attisdropped LOOP
+        EXECUTE
+        format('REVOKE ALL (%I) ON TABLE %I.%I FROM butlers_projection_publisher',
+
+                       attribute.attname, item.nspname, item.relname);
+    END LOOP;
+END LOOP;
+FOR item IN SELECT DISTINCT schemaname FROM pg_publication_tables
+             WHERE pubname='butlers_public_v1' LOOP
+    EXECUTE
+
+        format('GRANT USAGE ON SCHEMA %I TO butlers_projection_publisher',
+        item.schemaname);
+END LOOP;
+FOR item IN SELECT schemaname, tablename FROM pg_publication_tables
+             WHERE pubname='butlers_public_v1' LOOP
+    EXECUTE
+        format('GRANT SELECT ON TABLE %I.%I TO butlers_projection_publisher',
+                   item.schemaname, item.tablename);
+END LOOP;
+    -- PUBLIC_MCP_PUBLISHER_GRANTS_END
+    ALTER ROLE mcp_public_ro SET statement_timeout='2s';
+    EXECUTE format('GRANT CREATE ON DATABASE %I TO %I',current_database(),migration_role);
+END
+$public_mcp_primary$;
+
+-- ── Dark perception representation: privileged, fixed, no live grants ─────
+-- Dedicated service identities are deliberately NOT members of domain/LLM
+-- roles or the migration login. Host provisioning and .21 activation are separate.
+DO $perception_stage$
+DECLARE r text; owner_oid oid; bootstrap_oid oid;
+BEGIN
+    SELECT oid INTO bootstrap_oid FROM pg_catalog.pg_roles WHERE rolname=current_user;
+    IF NOT (SELECT rolsuper FROM pg_catalog.pg_roles WHERE oid=bootstrap_oid) THEN
+        RAISE EXCEPTION 'perception bootstrap requires privileged installer';
+    END IF;
+    FOREACH r IN ARRAY ARRAY['perception_owner','perception_owner_reader',
+        'perception_availability_reader','perception_dots_writer','perception_context_writer',
+        'perception_health_writer','perception_expect_writer','perception_sensing_writer',
+        'perception_attention_writer','perception_retention'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r) THEN
+            EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION',r);
+        END IF;
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname=r AND
+            ((r='perception_owner' AND rolcanlogin) OR rolinherit OR rolsuper OR rolbypassrls OR rolcreatedb
+             OR rolcreaterole OR rolreplication)) THEN
+            RAISE EXCEPTION 'unsafe perception service role';
+        END IF;
+        -- No ambient member may SET ROLE into a trusted writer/reader/owner.
+        -- Authentication provisioning is a separate named deployment action.
+        IF EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m JOIN pg_catalog.pg_roles p
+            ON p.oid=m.roleid OR p.oid=m.member WHERE p.rolname=r) THEN
+            RAISE EXCEPTION 'perception role membership is not permitted';
+        END IF;
+        EXECUTE format('REVOKE CREATE ON SCHEMA public FROM %I',r);
+        EXECUTE format('GRANT USAGE ON SCHEMA public TO %I',r);
+    END LOOP;
+    IF to_regnamespace('perception_admin') IS NULL THEN
+        EXECUTE format('CREATE SCHEMA perception_admin AUTHORIZATION %I',current_user);
+    END IF;
+    IF (SELECT nspowner FROM pg_catalog.pg_namespace WHERE nspname='perception_admin')
+        <>bootstrap_oid THEN RAISE EXCEPTION 'untrusted perception installer schema'; END IF;
+END $perception_stage$;
+REVOKE ALL ON SCHEMA perception_admin FROM PUBLIC;
+DO $perception_admin_ownership$
+DECLARE
+    v_bootstrap_owner oid;
+    v_table_owner oid;
+BEGIN
+    SELECT nspowner INTO v_bootstrap_owner FROM pg_namespace
+    WHERE nspname='perception_admin';
+    SELECT admin_table.relowner INTO v_table_owner
+    FROM pg_class AS admin_table
+    JOIN pg_namespace AS admin_schema ON admin_schema.oid=admin_table.relnamespace
+    WHERE admin_schema.nspname='perception_admin'
+      AND admin_table.relname='bootstrap_configuration'
+      AND admin_table.relkind='r';
+    IF v_table_owner IS NOT NULL AND v_table_owner<>v_bootstrap_owner THEN
+        RAISE EXCEPTION 'perception bootstrap configuration is not owned by the bootstrap role';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_proc AS admin_function
+        JOIN pg_namespace AS admin_schema ON admin_schema.oid=admin_function.pronamespace
+        WHERE admin_schema.nspname='perception_admin'
+          AND admin_function.proname IN ('install_interface','finalize_interface','rollback_interface')
+          AND admin_function.pronargs=0
+          AND admin_function.proowner<>v_bootstrap_owner
+    ) THEN
+        RAISE EXCEPTION 'perception admin interface function is not owned by the bootstrap role';
+    END IF;
+END $perception_admin_ownership$;
+CREATE TABLE IF NOT EXISTS perception_admin.bootstrap_configuration (
+    singleton boolean PRIMARY KEY CHECK(singleton), migration_role name NOT NULL,
+    bootstrap_role name NOT NULL
+);
+REVOKE ALL ON perception_admin.bootstrap_configuration FROM PUBLIC;
+INSERT INTO perception_admin.bootstrap_configuration
+VALUES(true,COALESCE(NULLIF(current_setting('butlers.connecting_user',true),''),'butlers'),current_user)
+ON CONFLICT(singleton) DO UPDATE SET bootstrap_role=excluded.bootstrap_role;
+
+-- A replay naming a different login must not re-point the pin silently; the opt-in
+-- rotation (butlers.rotate_migration_role_from) already moved it before this point.
+DO $pin_perception_admin$
+BEGIN
+    IF EXISTS (
+        SELECT FROM perception_admin.bootstrap_configuration
+        WHERE singleton
+          AND migration_role <> COALESCE(
+              NULLIF(current_setting('butlers.connecting_user', true), ''), 'butlers')::name
+    ) THEN
+        RAISE EXCEPTION 'perception_admin bootstrap configuration differs';
+    END IF;
+END
+$pin_perception_admin$;
+
+CREATE OR REPLACE FUNCTION perception_admin.install_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp
+AS $perception_install$
+DECLARE t text; table_oid oid; f regprocedure; r text; v_role name; v_oid oid; v_backup_owner oid; dep text;
+BEGIN
+    IF to_regnamespace('perception_private') IS NULL THEN
+        CREATE SCHEMA perception_private AUTHORIZATION perception_owner;
+    ELSIF (SELECT nspowner FROM pg_namespace WHERE nspname='perception_private')
+        <> 'perception_owner'::regrole THEN
+        RAISE EXCEPTION 'untrusted perception private schema';
+    END IF;
+    REVOKE ALL ON SCHEMA perception_private FROM PUBLIC;
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        table_oid:=to_regclass(t);
+        IF table_oid IS NOT NULL AND (SELECT relowner FROM pg_class WHERE oid=table_oid)
+            <> 'perception_owner'::regrole THEN
+            RAISE EXCEPTION 'untrusted preexisting perception table';
+        END IF;
+    END LOOP;
+    -- system.dep changed from a bare state string to {state,cause,observed_at}.
+    -- Nothing is converted: a slot or event still holding the old shape needs
+    -- forward remediation, never a silent rewrite of immutable history.
+    IF to_regclass('public.situation_slots') IS NOT NULL AND to_regclass('public.timeline') IS NOT NULL THEN
+        IF EXISTS (SELECT 1 FROM public.situation_slots WHERE kind='system.dep'
+                AND jsonb_typeof(typed_value)='string')
+            OR EXISTS (SELECT 1 FROM public.timeline WHERE kind='system.dep'
+                AND (jsonb_typeof(typed_value)='string' OR jsonb_typeof(to_value)='string'
+                    OR jsonb_typeof(from_value)='string')) THEN
+            RAISE EXCEPTION 'legacy system.dep values require forward remediation';
+        END IF;
+    END IF;
+    CREATE TABLE IF NOT EXISTS perception_private.kinds (
+        kind text PRIMARY KEY, schema_version integer NOT NULL CHECK(schema_version=1),
+        owning_domain text NOT NULL, writer_role name NOT NULL,
+        primitive text NOT NULL CHECK(primitive IN ('product','set','enum')),
+        field_schema jsonb NOT NULL, categories text[] NOT NULL,
+        read_visibility text NOT NULL,
+        freshness_policy jsonb NOT NULL DEFAULT
+            '{"profile":"required","until":"min(original_evidence_expiry,observed_at+source_max_age,effective_end)"}'
+    );
+    INSERT INTO perception_private.kinds(kind,schema_version,owning_domain,writer_role,
+        primitive,field_schema,categories,read_visibility) VALUES
+        ('owner.place',1,'home','perception_dots_writer','product',
+         '{"presence":["inside","outside"],"place_ref":"uuid|null","locality_ref":"uuid|null"}',
+         ARRAY['location'],'owner_only'),
+        ('owner.activity',1,'general','perception_context_writer','set',
+         '{"max":8,"enum":["traveling","sleeping","meeting","focused","exercising","sick","socializing","commuting"]}',
+         ARRAY['routine','health'],'private_domain'),
+        ('owner.clock',1,'general','perception_context_writer','product',
+         '{"zone":"IANA","basis":["phone","owner","home","utc_fallback","owner_confirmed_booking"],"evidence_ref":"uuid"}',
+         ARRAY['location','routine'],'private_domain'),
+        ('system.dep',1,'general','perception_health_writer','product',
+         '{"state":["available","degraded","blind","down","held","unconfigured"],"cause":["oauth_revoked","credential_missing","provider_unavailable","domain_unreachable","signal_unmeasurable","policy_held","not_configured","unknown"],"observed_at":"UTC"}',
+         ARRAY[]::text[],'filtered_health'),
+        ('expect.window',1,'chronicler','perception_expect_writer','product',
+         '{"start":"UTC","end":"UTC","deviation":["pending","within","missed"],"expectation_kind":"registered_enum"}',
+         ARRAY['routine'],'private_domain'),
+        ('home.sensing',1,'home','perception_sensing_writer','enum',
+         '["available","degraded","unavailable"]',ARRAY[]::text[],'private_domain'),
+        ('owner.mode',1,'general','perception_context_writer','set',
+         '{"max":8,"enum":["asleep","travel","house_unattended","sick","focus","hosting","holiday","emergency"]}',
+         ARRAY['routine','health','location'],'owner_only'),
+        ('owner.suppression',1,'general','perception_attention_writer','product',
+         '{"active":"boolean","record_ref":"versioned_DND_receipt|null"}',
+         ARRAY['routine'],'availability_only')
+    ON CONFLICT(kind) DO UPDATE SET schema_version=excluded.schema_version,
+        owning_domain=excluded.owning_domain,writer_role=excluded.writer_role,
+        primitive=excluded.primitive,field_schema=excluded.field_schema,
+        categories=excluded.categories,read_visibility=excluded.read_visibility;
+
+    -- Configuration is privileged source custody, never a tool/role registration API.
+    CREATE TABLE IF NOT EXISTS perception_private.sources (
+        source text PRIMARY KEY CHECK(octet_length(source) BETWEEN 1 AND 128),
+        writer name NOT NULL,
+        kind text NOT NULL REFERENCES perception_private.kinds(kind) CHECK(kind IN ('owner.place','owner.activity','owner.clock',
+            'system.dep','expect.window','home.sensing','owner.mode','owner.suppression')),
+        subjects uuid[] NOT NULL DEFAULT '{}', null_subject boolean NOT NULL DEFAULT false,
+        max_age_seconds integer CHECK(max_age_seconds>0 AND max_age_seconds<=34560000),
+        expectation_kinds text[] NOT NULL DEFAULT '{}',
+        evidence_sources text[] NOT NULL DEFAULT '{}'
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.source_refs (
+        id uuid NOT NULL, source text NOT NULL REFERENCES perception_private.sources(source),
+        ref_type text NOT NULL CHECK(ref_type IN ('place','locality','suppression',
+            'expectation_kind','routine','dependency','sensing_group','principal','evidence')),
+        read_alias text CHECK(read_alias IS NULL OR (ref_type='dependency'
+            AND read_alias ~ '^[a-z][a-z0-9_.-]{0,127}$')),
+        PRIMARY KEY(id,source,ref_type), UNIQUE(source,read_alias)
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.suppression_refs (
+        id uuid PRIMARY KEY REFERENCES public.dnd_generation_mutations(mutation_id),
+        source text NOT NULL REFERENCES perception_private.sources(source)
+    );
+    INSERT INTO perception_private.sources(source,writer,kind) VALUES
+        ('home.dots','perception_dots_writer','owner.place'),
+        ('context.activity','perception_context_writer','owner.activity'),
+        ('context.clock','perception_context_writer','owner.clock'),
+        ('context.mode','perception_context_writer','owner.mode'),
+        ('health.dependencies','perception_health_writer','system.dep'),
+        ('chronicler.expectations','perception_expect_writer','expect.window'),
+        ('home.sensing','perception_sensing_writer','home.sensing'),
+        ('attention.suppression','perception_attention_writer','owner.suppression')
+    ON CONFLICT(source) DO NOTHING;
+    -- The capability-health reducer (RFC 0038 S6, bu-dhloi1.14) is the named
+    -- producer owner of health.dependencies, so its profile is activated here:
+    -- finite 900s freshness, one subject and one evidence reference per declared
+    -- dependency (butlers.core.capability_dependencies). The block runs while the
+    -- profile is unconfigured, or is already this installer's own (evidence source
+    -- capability_health), so a newly declared dependency is registered by re-running
+    -- the installer. A profile an operator configured otherwise is never touched,
+    -- and a configured freshness maximum is kept.
+    IF EXISTS (SELECT 1 FROM perception_private.sources WHERE source='health.dependencies'
+            AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health'])) THEN
+        FOREACH dep IN ARRAY ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram'] LOOP
+            INSERT INTO perception_private.source_refs(id,source,ref_type,read_alias) VALUES
+                (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||dep),
+                    'health.dependencies','dependency',dep),
+                (public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','evidence:'||dep),
+                    'health.dependencies','evidence',NULL)
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+        UPDATE perception_private.sources SET max_age_seconds=COALESCE(max_age_seconds,900),
+            subjects=ARRAY(SELECT public.uuid_generate_v5('fbb3d862-d597-5afb-b727-949f3a0e8829','dependency:'||d)
+                FROM unnest(ARRAY['conditions','google','home_assistant','owntracks','spotify','steam','telegram']) d),
+            evidence_sources=ARRAY['capability_health']
+        WHERE source='health.dependencies'
+            AND (max_age_seconds IS NULL OR evidence_sources=ARRAY['capability_health']);
+    END IF;
+    -- Every other profile and its subject/source references stay unconfigured/dark
+    -- until its named producer owner has a verified finite profile.
+    CREATE TABLE IF NOT EXISTS public.situation_slots (
+        id uuid PRIMARY KEY, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid,
+        state text NOT NULL CHECK(state IN ('known','unknown','unmeasurable','unconfigured')),
+        typed_value jsonb, source text NOT NULL, observed_at timestamptz NOT NULL,
+        fresh_until timestamptz NOT NULL, evidence_refs jsonb NOT NULL, labels jsonb NOT NULL,
+        generation bigint NOT NULL CHECK(generation>0), writer name NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        UNIQUE NULLS NOT DISTINCT(kind,subject_entity),
+        CHECK((state='known')=(typed_value IS NOT NULL)), CHECK(isfinite(observed_at)),
+        CHECK(isfinite(fresh_until)), CHECK(kind<>'owner.mode')
+    );
+    -- Modes have one versioned projection, never a second situation-slot copy.
+    CREATE TABLE IF NOT EXISTS public.owner_modes (
+        LIKE public.situation_slots INCLUDING DEFAULTS INCLUDING CONSTRAINTS,
+        effective_span jsonb NOT NULL, cause uuid NOT NULL
+    );
+    -- LIKE copies the exclusion CHECK above; replace only this new table's check.
+    ALTER TABLE public.owner_modes DROP CONSTRAINT IF EXISTS situation_slots_kind_check;
+    ALTER TABLE public.owner_modes DROP CONSTRAINT IF EXISTS owner_modes_kind_check;
+    ALTER TABLE public.owner_modes ADD CONSTRAINT owner_modes_kind_check CHECK(kind='owner.mode');
+    CREATE UNIQUE INDEX IF NOT EXISTS owner_modes_identity ON public.owner_modes
+        (kind,subject_entity) NULLS NOT DISTINCT;
+    CREATE UNIQUE INDEX IF NOT EXISTS owner_modes_id ON public.owner_modes(id);
+    CREATE TABLE IF NOT EXISTS public.timeline (
+        id uuid PRIMARY KEY, source text NOT NULL, event_key text NOT NULL,
+        digest text NOT NULL, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid,
+        class text NOT NULL CHECK(class IN ('transition','record','occurrence','point')),
+        operation text NOT NULL CHECK(operation IN ('assert','retract')),
+        retracts_event_id uuid REFERENCES public.timeline(id),
+        at timestamptz NOT NULL CHECK(isfinite(at)),
+        confirmed_at timestamptz NOT NULL CHECK(isfinite(confirmed_at) AND confirmed_at>=at),
+        late boolean NOT NULL, effective_span jsonb NOT NULL, observed_at timestamptz NOT NULL,
+        zone text, lived_date date, measures jsonb NOT NULL DEFAULT '{}',
+        typed_value jsonb, from_state text, to_state text, from_value jsonb, to_value jsonb,
+        evidence_refs jsonb NOT NULL, labels jsonb NOT NULL, generation bigint NOT NULL,
+        writer name NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        UNIQUE(source,event_key), UNIQUE(id,kind,subject_entity), UNIQUE(retracts_event_id),
+        FOREIGN KEY(retracts_event_id,kind,subject_entity) REFERENCES public.timeline(id,kind,subject_entity),
+        CHECK(late=(confirmed_at-at>interval '15 minutes')),
+        CHECK((operation='assert' AND retracts_event_id IS NULL) OR
+              (operation='retract' AND retracts_event_id IS NOT NULL AND class='record')),
+        CHECK((class='transition' AND from_state IN ('known','unknown','unmeasurable','unconfigured')
+              AND to_state IN ('known','unknown','unmeasurable','unconfigured')
+              AND (from_state='known')=(from_value IS NOT NULL)
+              AND (to_state='known')=(to_value IS NOT NULL)) OR
+              (class<>'transition' AND from_state IS NULL AND to_state IS NULL
+               AND from_value IS NULL AND to_value IS NULL)),
+        CHECK(operation<>'retract' OR typed_value IS NULL)
+    );
+    CREATE TABLE IF NOT EXISTS perception_private.receipts (
+        event_id uuid PRIMARY KEY REFERENCES public.timeline(id), digest text NOT NULL,
+        receipt jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    );
+    CREATE TABLE IF NOT EXISTS public.perception_conditions (
+        id uuid PRIMARY KEY, kind text NOT NULL REFERENCES perception_private.kinds(kind), subject_entity uuid, goal_ref uuid,
+        predicate jsonb NOT NULL, source_boundary jsonb NOT NULL, source text NOT NULL, digest text NOT NULL,
+        starts_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
+        generation bigint NOT NULL CHECK(generation>0), evidence_refs jsonb NOT NULL,
+        labels jsonb NOT NULL, state text NOT NULL CHECK(state IN ('open','fired','expired','cancelled')),
+        CHECK(isfinite(starts_at) AND isfinite(expires_at) AND starts_at<expires_at),
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+    );
+    CREATE TABLE IF NOT EXISTS public.perception_suppressions (
+        LIKE public.perception_conditions INCLUDING ALL,
+        authority_ref uuid NOT NULL
+    );
+
+    -- Guard source tables and the complete append-only audit even from an
+    -- accidental future broad GRANT. Definer-only FORCE RLS is the boundary.
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        EXECUTE format('ALTER TABLE %s OWNER TO perception_owner',t);
+        EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY',t);
+        EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY',t);
+        EXECUTE format('DROP POLICY IF EXISTS perception_owner_only ON %s',t);
+        EXECUTE format('CREATE POLICY perception_owner_only ON %s USING '
+            '(current_user=''perception_owner'') WITH CHECK(current_user=''perception_owner'')',t);
+        EXECUTE format('REVOKE ALL ON %s FROM PUBLIC',t);
+        FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
+            SELECT grantee FROM aclexplode(COALESCE((SELECT relacl FROM pg_class
+                WHERE oid=t::regclass),acldefault('r','perception_owner'::regrole))))
+            AND rolname<>current_user AND rolname<>'perception_owner' LOOP
+            EXECUTE format('REVOKE ALL ON %s FROM %I',t,r);
+        END LOOP;
+    END LOOP;
+    CREATE OR REPLACE FUNCTION perception_private.canonical_json(v jsonb) RETURNS text
+    LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $canon$
+    DECLARE result text;
+    BEGIN
+        IF jsonb_typeof(v)='object' THEN
+            SELECT '{'||COALESCE(string_agg(to_jsonb(key)::text||':'||
+                perception_private.canonical_json(value),',' ORDER BY key COLLATE "C"),'')||'}'
+                INTO result FROM jsonb_each(v);
+        ELSIF jsonb_typeof(v)='array' THEN
+            SELECT '['||COALESCE(string_agg(perception_private.canonical_json(value),','
+                ORDER BY ord),'')||']' INTO result FROM jsonb_array_elements(v) WITH ORDINALITY a(value,ord);
+        ELSE result:=v::text; END IF;
+        RETURN result;
+    END $canon$;
+
+    CREATE OR REPLACE FUNCTION perception_private.instant(v jsonb) RETURNS timestamptz
+    LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog,pg_temp AS $instant$
+    DECLARE result timestamptz;
+    BEGIN
+        IF v IS NULL OR jsonb_typeof(v)<>'string' OR (v#>>'{}')!~'(Z|[+]00:00)$' THEN
+            RAISE EXCEPTION 'finite UTC instant required' USING ERRCODE='22023';
+        END IF;
+        result:=(v#>>'{}')::timestamptz;
+        IF NOT isfinite(result) THEN RAISE EXCEPTION 'finite UTC instant required' USING ERRCODE='22023'; END IF;
+        RETURN result;
+    END $instant$;
+
+    CREATE OR REPLACE FUNCTION perception_private.valid_value(k text,v jsonb,s text) RETURNS boolean
+    LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $typed$
+    DECLARE names text[]; x jsonb; ref_key text;
+    BEGIN
+        IF k='owner.place' THEN
+            names:=ARRAY['presence','place_ref','locality_ref'];
+            IF NOT COALESCE(v->>'presence' IN ('inside','outside'),false) THEN RETURN false; END IF;
+            FOREACH ref_key IN ARRAY ARRAY['place_ref','locality_ref'] LOOP
+                IF v->ref_key<>'null'::jsonb AND NOT EXISTS (
+                    SELECT 1 FROM perception_private.source_refs WHERE id=(v->>ref_key)::uuid
+                    AND source=s AND ref_type=CASE ref_key WHEN 'place_ref' THEN 'place' ELSE 'locality' END
+                ) THEN RETURN false; END IF;
+            END LOOP;
+        ELSIF k IN ('owner.activity','owner.mode') THEN
+            IF jsonb_typeof(v)<>'array' OR jsonb_array_length(v)>8 THEN RETURN false; END IF;
+            IF (SELECT count(*)<>count(DISTINCT value) FROM jsonb_array_elements(v)) THEN RETURN false; END IF;
+            FOR x IN SELECT value FROM jsonb_array_elements(v) LOOP
+                IF jsonb_typeof(x)<>'string' OR (k='owner.activity' AND x#>>'{}' NOT IN
+                    ('traveling','sleeping','meeting','focused','exercising','sick','socializing','commuting'))
+                    OR (k='owner.mode' AND x#>>'{}' NOT IN
+                    ('asleep','travel','house_unattended','sick','focus','hosting','holiday','emergency')) THEN
+                    RETURN false;
+                END IF;
+            END LOOP;
+            RETURN true;
+        ELSIF k='owner.clock' THEN
+            names:=ARRAY['zone','basis','evidence_ref'];
+            IF NOT COALESCE(v->>'basis' IN ('phone','owner','home','utc_fallback','owner_confirmed_booking'),false)
+                OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name=v->>'zone')
+                OR NOT EXISTS (SELECT 1 FROM perception_private.source_refs WHERE id=(v->>'evidence_ref')::uuid
+                    AND source=s AND ref_type='evidence') THEN RETURN false; END IF;
+        ELSIF k='expect.window' THEN
+            names:=ARRAY['start','end','deviation','expectation_kind'];
+            IF NOT COALESCE(v->>'deviation' IN ('pending','within','missed'),false)
+                OR perception_private.instant(v->'start')>=perception_private.instant(v->'end')
+                OR jsonb_typeof(v->'expectation_kind')<>'string'
+                OR NOT EXISTS (SELECT 1 FROM perception_private.sources
+                    WHERE source=s AND v->>'expectation_kind'=ANY(expectation_kinds)) THEN
+                RETURN false;
+            END IF;
+        ELSIF k='owner.suppression' THEN
+            names:=ARRAY['active','record_ref'];
+            IF jsonb_typeof(v->'active')<>'boolean' OR (v->>'active')::boolean AND v->'record_ref'='null'::jsonb THEN
+                RETURN false;
+            END IF;
+            IF v->'record_ref'<>'null'::jsonb AND NOT EXISTS (SELECT 1 FROM perception_private.suppression_refs
+                WHERE id=(v->>'record_ref')::uuid AND source=s) THEN RETURN false; END IF;
+        ELSIF k='system.dep' THEN
+            names:=ARRAY['state','cause','observed_at'];
+            IF NOT COALESCE(v->>'state' IN ('available','degraded','blind','down','held','unconfigured'),false)
+                OR NOT (v ? 'cause') OR NOT (v ? 'observed_at') THEN RETURN false; END IF;
+            -- An available dependency has no cause; every other state names one of the closed eight.
+            IF v->>'state'='available' THEN
+                IF v->'cause'<>'null'::jsonb THEN RETURN false; END IF;
+            ELSIF jsonb_typeof(v->'cause') IS DISTINCT FROM 'string' OR v->>'cause' NOT IN
+                ('oauth_revoked','credential_missing','provider_unavailable','domain_unreachable',
+                 'signal_unmeasurable','policy_held','not_configured','unknown') THEN
+                RETURN false;
+            END IF;
+            PERFORM perception_private.instant(v->'observed_at');
+        ELSIF k='home.sensing' THEN
+            RETURN jsonb_typeof(v)='string' AND v#>>'{}' IN ('available','degraded','unavailable');
+        ELSE RETURN false;
+        END IF;
+        RETURN jsonb_typeof(v)='object' AND v-names='{}'::jsonb
+            AND (SELECT count(*) FROM jsonb_object_keys(v))=cardinality(names);
+    END $typed$;
+
+    CREATE OR REPLACE FUNCTION perception_private.immutable_event() RETURNS trigger
+    LANGUAGE plpgsql SET search_path=pg_catalog,pg_temp AS $immutable$
+    DECLARE sanctioned boolean:=false;
+    BEGIN
+        -- The one sanctioned delete: public.perception_purge_place_history, running as its
+        -- owner with its transaction-local marker, on an owner.place row past the 400-day
+        -- history horizon. Everything else, for every role, still refuses.
+        IF TG_OP='DELETE' AND current_user='perception_owner'
+            AND COALESCE(current_setting('perception.purge',true),'')='on' THEN
+            IF TG_TABLE_NAME='timeline' THEN
+                sanctioned:=OLD.kind='owner.place' AND OLD.at<clock_timestamp()-interval '400 days';
+            ELSIF TG_TABLE_NAME='receipts' THEN
+                SELECT EXISTS (SELECT 1 FROM public.timeline t WHERE t.id=OLD.event_id
+                    AND t.kind='owner.place' AND t.at<clock_timestamp()-interval '400 days')
+                    INTO sanctioned;
+            END IF;
+        END IF;
+        IF sanctioned THEN RETURN OLD; END IF;
+        RAISE EXCEPTION 'perception history is immutable' USING ERRCODE='23514';
+    END $immutable$;
+    DROP TRIGGER IF EXISTS perception_history_immutable ON public.timeline;
+    CREATE TRIGGER perception_history_immutable BEFORE UPDATE OR DELETE ON public.timeline
+        FOR EACH ROW EXECUTE FUNCTION perception_private.immutable_event();
+    DROP TRIGGER IF EXISTS perception_receipt_immutable ON perception_private.receipts;
+    CREATE TRIGGER perception_receipt_immutable BEFORE UPDATE OR DELETE ON perception_private.receipts
+        FOR EACH ROW EXECUTE FUNCTION perception_private.immutable_event();
+
+    CREATE OR REPLACE FUNCTION public.perception_write(b jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $write$
+    DECLARE
+        actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        profile perception_private.sources%ROWTYPE; old record; target public.timeline%ROWTYPE;
+        prior perception_private.receipts%ROWTYPE; eid uuid; rid uuid; tid uuid;
+        s text; k text; subj uuid; gen bigint; stamp timestamptz; observed timestamptz;
+        confirmed timestamptz; fresh timestamptz; start_at timestamptz; end_at timestamptz;
+        e jsonb; labels jsonb; result jsonb; body_digest text; historical boolean;
+        fields text[]:=ARRAY['version','kind','subject','source','event_key','expected_generation',
+            'state','observed_at','effective_span','typed_value_or_ref','evidence_refs','labels',
+            'at','confirmed_at','retracts_event_id'];
+    BEGIN
+        IF jsonb_typeof(b)<>'object' OR b-fields<>'{}'::jsonb
+            OR (SELECT count(*) FROM jsonb_object_keys(b))<>cardinality(fields)
+            OR b->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(b->'version')<>'number' THEN
+            RAISE EXCEPTION 'closed perception request required' USING ERRCODE='22023';
+        END IF;
+        s:=b->>'source'; k:=b->>'kind'; subj:=(b->>'subject')::uuid;
+        SELECT * INTO profile FROM perception_private.sources WHERE source=s AND kind=k;
+        IF NOT FOUND OR actor<>profile.writer OR profile.max_age_seconds IS NULL
+            OR actor<>(SELECT writer_role FROM perception_private.kinds WHERE kind=k) THEN
+            RAISE EXCEPTION 'perception source authority/profile required' USING ERRCODE='42501';
+        END IF;
+        IF subj IS NULL AND NOT profile.null_subject OR subj IS NOT NULL AND NOT subj=ANY(profile.subjects) THEN
+            RAISE EXCEPTION 'perception subject not registered' USING ERRCODE='42501';
+        END IF;
+        IF k LIKE 'owner.%' AND NOT EXISTS (SELECT 1 FROM public.entities
+            WHERE id=subj AND 'owner'=ANY(roles)) THEN
+            RAISE EXCEPTION 'actual owner subject required' USING ERRCODE='42501';
+        END IF;
+        IF octet_length(b->>'event_key') NOT BETWEEN 1 AND 256
+            OR jsonb_typeof(b->'event_key')<>'string'
+            OR jsonb_typeof(b->'expected_generation')<>'number'
+            OR b->>'expected_generation'!~'^[0-9]+$' THEN
+            RAISE EXCEPTION 'invalid event identity/generation' USING ERRCODE='22023';
+        END IF;
+        gen:=(b->>'expected_generation')::bigint;
+        IF gen<0 OR gen=9223372036854775807 THEN RAISE EXCEPTION 'generation overflow' USING ERRCODE='22023'; END IF;
+        IF b->>'state' NOT IN ('known','unknown','unmeasurable','unconfigured')
+            OR ((b->>'state'='known') AND NOT COALESCE(perception_private.valid_value(k,b->'typed_value_or_ref',s),false))
+            OR (b->>'state'<>'known' AND b->'typed_value_or_ref'<>'null'::jsonb) THEN
+            RAISE EXCEPTION 'invalid typed perception value/state' USING ERRCODE='22023';
+        END IF;
+        stamp:=perception_private.instant(b->'at'); observed:=perception_private.instant(b->'observed_at');
+        confirmed:=perception_private.instant(b->'confirmed_at');
+        start_at:=perception_private.instant(b->'effective_span'->'start');
+        end_at:=perception_private.instant(b->'effective_span'->'end');
+        IF confirmed<stamp OR observed>confirmed OR start_at>stamp OR end_at<=stamp
+            OR (b->'effective_span')-ARRAY['start','end']<>'{}'::jsonb THEN
+            RAISE EXCEPTION 'invalid perception interval' USING ERRCODE='22023';
+        END IF;
+        fresh:=least(end_at,observed+make_interval(secs=>profile.max_age_seconds));
+        IF jsonb_typeof(b->'evidence_refs')<>'array' OR jsonb_array_length(b->'evidence_refs') NOT BETWEEN 1 AND 32
+            OR (SELECT count(*)<>count(DISTINCT value->>'ref') FROM jsonb_array_elements(b->'evidence_refs')) THEN
+            RAISE EXCEPTION 'bounded unique evidence required' USING ERRCODE='22023';
+        END IF;
+        FOR e IN SELECT value FROM jsonb_array_elements(b->'evidence_refs') LOOP
+            IF jsonb_typeof(e)<>'object' OR e-ARRAY['ref','source','expires_at']<>'{}'::jsonb
+                OR NOT COALESCE(e->>'source'=ANY(profile.evidence_sources),false)
+                OR NOT EXISTS (SELECT 1 FROM perception_private.source_refs
+                    WHERE id=(e->>'ref')::uuid AND source=s AND ref_type='evidence') THEN
+                RAISE EXCEPTION 'unregistered evidence' USING ERRCODE='22023';
+            END IF;
+            fresh:=least(fresh,perception_private.instant(e->'expires_at'));
+        END LOOP;
+        labels:=b->'labels';
+        IF jsonb_typeof(labels)<>'object' OR NOT labels ?& ARRAY['version','label_instr','label_data','label_sens'] OR labels->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(labels->'version')<>'number'
+            OR labels-ARRAY['version','label_instr','label_data','label_sens']<>'{}'::jsonb THEN
+            RAISE EXCEPTION 'closed labels required' USING ERRCODE='22023';
+        END IF;
+        FOREACH s IN ARRAY ARRAY['label_instr','label_data','label_sens'] LOOP
+            IF jsonb_typeof(labels->s) IS DISTINCT FROM 'array' OR jsonb_array_length(labels->s)>32
+                OR (SELECT count(*)<>count(DISTINCT value) FROM jsonb_array_elements(labels->s)) THEN
+                RAISE EXCEPTION 'invalid labels' USING ERRCODE='22023';
+            END IF;
+            FOR e IN SELECT value FROM jsonb_array_elements(labels->s) LOOP
+                IF jsonb_typeof(e)<>'string' OR
+                    (s='label_sens' AND e#>>'{}' NOT IN
+                    ('health','finance','location','routine','relationship_notes','credentials')) OR
+                    (s<>'label_sens' AND e<>'"world"'::jsonb AND NOT EXISTS (
+                        SELECT 1 FROM perception_private.source_refs WHERE id=(e#>>'{}')::uuid
+                        AND source=profile.source AND ref_type='principal')) THEN
+                    RAISE EXCEPTION 'unresolved label principal/category' USING ERRCODE='22023';
+                END IF;
+            END LOOP;
+        END LOOP;
+        -- Until .6 activation there is no caller-authoritative label downgrade:
+        -- preserve resolved refs while joining unknown world and all six categories.
+        labels:=jsonb_build_object('version',1,
+            'label_instr',(SELECT jsonb_agg(x ORDER BY x) FROM
+                (SELECT DISTINCT value AS x FROM jsonb_array_elements((labels->'label_instr')||'["world"]'::jsonb)) q),
+            'label_data',(SELECT jsonb_agg(x ORDER BY x) FROM
+                (SELECT DISTINCT value AS x FROM jsonb_array_elements((labels->'label_data')||'["world"]'::jsonb)) q),
+            'label_sens','["credentials","finance","health","location","relationship_notes","routine"]'::jsonb);
+        s:=profile.source;
+        eid:=public.uuid_generate_v5('e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32',
+            perception_private.canonical_json(jsonb_build_array('perception-event-v1',s,b->>'event_key')));
+        body_digest:=encode(sha256(convert_to(perception_private.canonical_json(b),'UTF8')),'hex');
+        -- One ordered transaction serializer covers absent-slot creation, replay
+        -- and CAS. There is no second producer/retraction lock protocol.
+        PERFORM pg_advisory_xact_lock(hashtextextended('perception:'||k||':'||COALESCE(subj::text,'null'),0));
+        SELECT * INTO prior FROM perception_private.receipts WHERE event_id=eid;
+        IF FOUND THEN
+            IF prior.digest<>body_digest THEN RAISE EXCEPTION 'changed perception replay' USING ERRCODE='23514'; END IF;
+            RETURN prior.receipt;
+        END IF;
+        tid:=(b->>'retracts_event_id')::uuid;
+        IF tid IS NOT NULL THEN
+            SELECT * INTO target FROM public.timeline WHERE id=tid;
+            IF NOT FOUND OR k<>'owner.place' OR target.kind<>k
+                OR target.subject_entity IS DISTINCT FROM subj OR target.source<>s OR target.writer<>actor
+                OR target.class<>'transition' OR target.operation<>'assert'
+                OR target.from_state IS DISTINCT FROM 'known' OR target.to_state IS DISTINCT FROM 'known'
+                OR target.from_value->>'presence' IS DISTINCT FROM 'inside'
+                OR target.to_value->>'presence' IS DISTINCT FROM 'outside'
+                OR b->>'state' IS DISTINCT FROM 'known'
+                OR b->'typed_value_or_ref'->>'presence' IS DISTINCT FROM 'inside'
+                OR stamp<=target.at OR stamp-target.at>interval '10 minutes'
+                OR EXISTS (SELECT 1 FROM public.timeline WHERE retracts_event_id=tid) THEN
+                RAISE EXCEPTION 'unearned perception retraction' USING ERRCODE='23514';
+            END IF;
+        END IF;
+        IF k='owner.mode' THEN
+            SELECT state,typed_value,observed_at,generation INTO old FROM public.owner_modes
+                WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj FOR UPDATE;
+        ELSE
+            SELECT state,typed_value,observed_at,generation INTO old FROM public.situation_slots
+                WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj FOR UPDATE;
+        END IF;
+        IF gen<>COALESCE(old.generation,0) THEN
+            RETURN jsonb_build_object('status','conflict','generation',COALESCE(old.generation,0));
+        END IF;
+        historical:=(old.observed_at IS NOT NULL AND observed<old.observed_at) OR
+            stamp<COALESCE((SELECT max(at) FROM public.timeline WHERE kind=k
+                AND subject_entity IS NOT DISTINCT FROM subj AND class='transition'),stamp);
+        IF NOT historical THEN
+            IF k='owner.mode' THEN
+                INSERT INTO public.owner_modes(id,kind,subject_entity,state,typed_value,source,observed_at,
+                    fresh_until,evidence_refs,labels,generation,writer,effective_span,cause)
+                VALUES(public.uuid_generate_v5(eid,'slot'),k,subj,b->>'state',NULLIF(b->'typed_value_or_ref','null'),s,
+                    observed,fresh,b->'evidence_refs',labels,gen+1,actor,b->'effective_span',eid)
+                ON CONFLICT(kind,subject_entity) DO UPDATE SET state=excluded.state,typed_value=excluded.typed_value,
+                    source=excluded.source,observed_at=excluded.observed_at,fresh_until=excluded.fresh_until,
+                    evidence_refs=excluded.evidence_refs,labels=excluded.labels,generation=excluded.generation,
+                    writer=excluded.writer,effective_span=excluded.effective_span,cause=excluded.cause;
+            ELSE
+                INSERT INTO public.situation_slots(id,kind,subject_entity,state,typed_value,source,observed_at,
+                    fresh_until,evidence_refs,labels,generation,writer)
+                VALUES(public.uuid_generate_v5(eid,'slot'),k,subj,b->>'state',NULLIF(b->'typed_value_or_ref','null'),s,
+                    observed,fresh,b->'evidence_refs',labels,gen+1,actor)
+                ON CONFLICT(kind,subject_entity) DO UPDATE SET state=excluded.state,typed_value=excluded.typed_value,
+                    source=excluded.source,observed_at=excluded.observed_at,fresh_until=excluded.fresh_until,
+                    evidence_refs=excluded.evidence_refs,labels=excluded.labels,generation=excluded.generation,writer=excluded.writer;
+            END IF;
+        END IF;
+        INSERT INTO public.timeline(id,source,event_key,digest,kind,subject_entity,class,operation,at,confirmed_at,
+            late,effective_span,observed_at,typed_value,from_state,to_state,from_value,to_value,evidence_refs,labels,generation,writer,
+            zone,lived_date)
+        VALUES(eid,s,b->>'event_key',body_digest,k,subj,CASE WHEN historical THEN 'record' ELSE 'transition' END,
+            'assert',stamp,confirmed,confirmed-stamp>interval '15 minutes',b->'effective_span',observed,
+            NULLIF(b->'typed_value_or_ref','null'),CASE WHEN NOT historical THEN COALESCE(old.state,'unknown') END,
+            CASE WHEN NOT historical THEN b->>'state' END,CASE WHEN NOT historical THEN old.typed_value END,
+            CASE WHEN NOT historical THEN NULLIF(b->'typed_value_or_ref','null') END,b->'evidence_refs',labels,
+            CASE WHEN historical THEN gen ELSE gen+1 END,actor,
+            CASE WHEN k='owner.clock' THEN b->'typed_value_or_ref'->>'zone' END,
+            CASE WHEN k='owner.clock' THEN (stamp AT TIME ZONE (b->'typed_value_or_ref'->>'zone'))::date END);
+        IF tid IS NOT NULL THEN
+            rid:=public.uuid_generate_v5('e90a74c8-7ccd-5de7-b5f8-c82bc75e0c32',
+                perception_private.canonical_json(jsonb_build_array('perception-event-v1',s,
+                    'retract:'||eid::text||':'||tid::text)));
+            labels:=labels||jsonb_build_object(
+                'label_instr',(SELECT jsonb_agg(x ORDER BY x) FROM (SELECT DISTINCT value x
+                    FROM jsonb_array_elements((labels->'label_instr')||(target.labels->'label_instr'))) q),
+                'label_data',(SELECT jsonb_agg(x ORDER BY x) FROM (SELECT DISTINCT value x
+                    FROM jsonb_array_elements((labels->'label_data')||(target.labels->'label_data'))) q));
+            INSERT INTO public.timeline(id,source,event_key,digest,kind,subject_entity,class,operation,retracts_event_id,
+                at,confirmed_at,late,effective_span,observed_at,evidence_refs,labels,generation,writer)
+            VALUES(rid,s,'retract:'||eid::text||':'||tid::text,body_digest,k,subj,'record','retract',tid,
+                stamp,confirmed,confirmed-stamp>interval '15 minutes',b->'effective_span',observed,
+                b->'evidence_refs',labels,CASE WHEN historical THEN gen ELSE gen+1 END,actor);
+        END IF;
+        result:=jsonb_build_object('status',CASE WHEN historical THEN 'historical' ELSE 'committed' END,
+            'event_id',eid,'retraction_event_id',rid,'generation',CASE WHEN historical THEN gen ELSE gen+1 END);
+        INSERT INTO perception_private.receipts(event_id,digest,receipt) VALUES(eid,body_digest,result);
+        IF rid IS NOT NULL THEN
+            INSERT INTO perception_private.receipts(event_id,digest,receipt) VALUES(rid,body_digest,result);
+        END IF;
+        RETURN result;
+    END $write$;
+    CREATE OR REPLACE FUNCTION public.perception_read(k text,subj uuid,as_of timestamptz) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path=pg_catalog,pg_temp AS $read$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        slot record; configured boolean; alias_subject uuid; alias_parts text[]; matches integer;
+    BEGIN
+        IF actor NOT IN ('perception_owner_reader','perception_availability_reader') THEN
+            RAISE EXCEPTION 'perception reader authority required' USING ERRCODE='42501';
+        END IF;
+        -- Resolve only reads, after caller authority. Alias metadata is
+        -- privileged registration on the existing source-reference registry;
+        -- neither a suffix nor caller subject creates a dependency/routine.
+        IF k IS NULL OR octet_length(k)>256 THEN
+            RAISE EXCEPTION 'bounded perception alias required' USING ERRCODE='22023';
+        END IF;
+        k:=CASE WHEN k IN ('owner.presence','at_home','in_space','away') THEN 'owner.place'
+            WHEN k IN ('traveling','sleeping','meeting','focused','exercising','sick','socializing','commuting') THEN 'owner.activity'
+            WHEN k='owner_clock' THEN 'owner.clock' WHEN k='dnd' THEN 'owner.suppression' ELSE k END;
+        IF k LIKE 'system.dep.%' OR k LIKE 'expect.%' AND k<>'expect.window' THEN
+            IF actor<>'perception_owner_reader' THEN
+                RAISE EXCEPTION 'private registered alias required' USING ERRCODE='42501';
+            END IF;
+            IF k LIKE 'system.dep.%' THEN
+                SELECT count(*),(array_agg(ref.id))[1] INTO matches,alias_subject
+                FROM perception_private.source_refs ref
+                JOIN perception_private.sources src ON src.source=ref.source
+                WHERE ref.ref_type='dependency' AND src.kind='system.dep'
+                    AND src.max_age_seconds IS NOT NULL AND ref.id=ANY(src.subjects)
+                    AND (ref.read_alias=substring(k FROM 12) OR ref.id::text=substring(k FROM 12));
+                k:='system.dep';
+            ELSE
+                alias_parts:=regexp_match(k,'^expect\.([^\[\]]+)\[([0-9a-f-]{36})\]$');
+                IF alias_parts IS NULL THEN
+                    RAISE EXCEPTION 'registered expectation alias required' USING ERRCODE='22023';
+                END IF;
+                SELECT count(*),(array_agg(ref.id))[1] INTO matches,alias_subject
+                FROM perception_private.source_refs ref
+                JOIN perception_private.sources src ON src.source=ref.source
+                WHERE ref.ref_type='routine' AND src.kind='expect.window'
+                    AND src.max_age_seconds IS NOT NULL AND ref.id=ANY(src.subjects)
+                    AND ref.id::text=alias_parts[2] AND alias_parts[1]=ANY(src.expectation_kinds);
+                k:='expect.window';
+            END IF;
+            IF matches<>1 OR subj IS NOT NULL AND subj<>alias_subject THEN
+                RAISE EXCEPTION 'unambiguous registered perception alias required' USING ERRCODE='22023';
+            END IF;
+            subj:=alias_subject;
+        END IF;
+        IF as_of IS NULL OR NOT isfinite(as_of) OR k NOT IN ('owner.place','owner.activity','owner.clock','system.dep',
+            'expect.window','home.sensing','owner.mode','owner.suppression') THEN
+            RAISE EXCEPTION 'bounded perception read required' USING ERRCODE='22023';
+        END IF;
+        IF actor='perception_availability_reader' THEN
+            -- No detail, source membership or history oracle for exposed readers.
+            SELECT fresh_until,observed_at,state,typed_value INTO slot FROM public.situation_slots
+                WHERE kind='owner.suppression' AND subject_entity IS NOT DISTINCT FROM subj;
+            RETURN jsonb_build_object('state','unknown','availability_reason','detail_restricted',
+                'busy_until',CASE WHEN slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of
+                    AND slot.typed_value->'active'='true'::jsonb THEN slot.fresh_until END);
+        END IF;
+        SELECT EXISTS(SELECT 1 FROM perception_private.sources WHERE kind=k
+            AND max_age_seconds IS NOT NULL AND
+            (subj=ANY(subjects) OR subj IS NULL AND null_subject)) INTO configured;
+        IF k='owner.mode' THEN
+            SELECT * INTO slot FROM public.owner_modes WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
+        ELSE
+            SELECT * INTO slot FROM public.situation_slots WHERE kind=k AND subject_entity IS NOT DISTINCT FROM subj;
+        END IF;
+        IF alias_parts IS NOT NULL AND slot.state='known'
+            AND slot.typed_value->>'expectation_kind' IS DISTINCT FROM alias_parts[1] THEN
+            RAISE EXCEPTION 'expectation alias does not identify this routine value' USING ERRCODE='22023';
+        END IF;
+        IF slot.id IS NULL THEN
+            RETURN jsonb_build_object('state',CASE WHEN configured THEN 'unknown' ELSE 'unconfigured' END,
+                'value',NULL,'source',NULL,'age_seconds',NULL,'labels',jsonb_build_object('version',1,
+                    'label_instr',jsonb_build_array('world'),'label_data',jsonb_build_array('world'),
+                    'label_sens',jsonb_build_array('credentials','finance','health','location','relationship_notes','routine')),
+                'availability_reason',CASE WHEN configured THEN 'configured_empty' ELSE 'unconfigured' END);
+        END IF;
+        RETURN jsonb_build_object('id',slot.id,'kind',k,'subject',subj,
+            'state',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'unknown' ELSE slot.state END,
+            'value',CASE WHEN configured AND slot.state='known' AND slot.fresh_until>as_of AND slot.observed_at<=as_of THEN slot.typed_value END,
+            'stale_last_value',CASE WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN slot.typed_value END,
+            'source',slot.source,'observed_at',slot.observed_at,'fresh_until',slot.fresh_until,
+            'age_seconds',greatest(0,extract(epoch FROM as_of-slot.observed_at)),
+            'labels',slot.labels,'evidence_refs',slot.evidence_refs,'generation',slot.generation,
+            'availability_reason',CASE WHEN NOT configured THEN 'unconfigured' WHEN slot.state='known' AND (slot.fresh_until<=as_of OR slot.observed_at>as_of) THEN 'stale'
+                WHEN slot.state='unmeasurable' THEN 'all_inputs_unmeasurable'
+                WHEN slot.state='unknown' THEN 'unknown_evidence'
+                WHEN slot.state='unconfigured' THEN 'unconfigured' ELSE 'confirmed' END);
+    END $read$;
+
+    CREATE OR REPLACE FUNCTION public.perception_timeline(
+        since timestamptz,until_at timestamptz,k text,subj uuid,before_id uuid,page_size integer,live boolean
+    ) RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER STABLE
+    SET search_path=pg_catalog,pg_temp AS $query$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name; result jsonb;
+    BEGIN
+        IF actor<>'perception_owner_reader' THEN
+            RAISE EXCEPTION 'private perception history required' USING ERRCODE='42501';
+        END IF;
+        IF since IS NULL OR until_at IS NULL OR page_size IS NULL OR NOT isfinite(since) OR NOT isfinite(until_at) OR since>=until_at OR page_size NOT BETWEEN 1 AND 100
+            OR live IS NULL OR until_at-since>interval '400 days' THEN
+            RAISE EXCEPTION 'bounded perception query required' USING ERRCODE='22023';
+        END IF;
+        -- The target join is in the SAME statement/snapshot as the page. It is
+        -- deliberately independent of the caller's time window and pagination.
+        SELECT COALESCE(jsonb_agg(item ORDER BY at DESC,id DESC),'[]'::jsonb) INTO result FROM (
+            SELECT e.id,e.at,to_jsonb(e)||jsonb_build_object('retracted',r.id IS NOT NULL,
+                'retraction_event_id',r.id) AS item
+            FROM public.timeline e LEFT JOIN public.timeline r ON r.retracts_event_id=e.id
+            WHERE e.at>=since AND e.at<until_at AND (k IS NULL OR e.kind=k)
+                AND (subj IS NULL OR e.subject_entity=subj)
+                AND (before_id IS NULL OR (e.at,e.id)<(
+                    SELECT c.at,c.id FROM public.timeline c WHERE c.id=before_id))
+                AND (NOT live OR (e.class='transition' AND e.operation='assert' AND NOT e.late
+                    AND r.id IS NULL AND e.at>=until_at-interval '10 minutes'))
+            ORDER BY e.at DESC,e.id DESC LIMIT page_size
+        ) q;
+        RETURN result;
+    END $query$;
+
+    CREATE OR REPLACE FUNCTION public.perception_purge_place_history(batch integer,dry_run boolean)
+    RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp AS $purge$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        cutoff timestamptz:=clock_timestamp()-interval '400 days';
+        ids uuid[]; retractions uuid[]; n_events integer; n_retractions integer:=0; n_receipts integer:=0;
+    BEGIN
+        IF actor<>'perception_retention' THEN
+            RAISE EXCEPTION 'perception retention identity required' USING ERRCODE='42501';
+        END IF;
+        IF batch IS NULL OR batch NOT BETWEEN 1 AND 10000 OR dry_run IS NULL THEN
+            RAISE EXCEPTION 'bounded perception retention batch required' USING ERRCODE='22023';
+        END IF;
+        -- Place transitions strictly older than the 400-day history horizon (the same bound
+        -- perception_timeline enforces, on the same column). A retraction younger than the
+        -- cutoff keeps its target: the foreign key would refuse the delete anyway.
+        -- A dry run changes nothing, so it takes no row locks and cannot block a writer.
+        IF dry_run THEN
+            SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
+            SELECT e.id FROM public.timeline e
+            WHERE e.kind='owner.place' AND e.class='transition' AND e.operation='assert'
+                AND e.at<cutoff
+                AND NOT EXISTS (SELECT 1 FROM public.timeline r
+                    WHERE r.retracts_event_id=e.id AND r.at>=cutoff)
+            ORDER BY e.at,e.id LIMIT batch
+            ) q;
+        ELSE
+            SELECT COALESCE(array_agg(q.id),ARRAY[]::uuid[]) INTO ids FROM (
+            SELECT e.id FROM public.timeline e
+            WHERE e.kind='owner.place' AND e.class='transition' AND e.operation='assert'
+                AND e.at<cutoff
+                AND NOT EXISTS (SELECT 1 FROM public.timeline r
+                    WHERE r.retracts_event_id=e.id AND r.at>=cutoff)
+            ORDER BY e.at,e.id LIMIT batch FOR UPDATE OF e
+            ) q;
+        END IF;
+        n_events:=cardinality(ids);
+        SELECT COALESCE(array_agg(r.id),ARRAY[]::uuid[]) INTO retractions
+            FROM public.timeline r WHERE r.retracts_event_id=ANY(ids);
+        IF NOT dry_run AND n_events>0 THEN
+            PERFORM set_config('perception.purge','on',true);
+            DELETE FROM perception_private.receipts WHERE event_id=ANY(ids||retractions);
+            GET DIAGNOSTICS n_receipts=ROW_COUNT;
+            DELETE FROM public.timeline WHERE id=ANY(retractions);
+            GET DIAGNOSTICS n_retractions=ROW_COUNT;
+            DELETE FROM public.timeline WHERE id=ANY(ids);
+            GET DIAGNOSTICS n_events=ROW_COUNT;
+            PERFORM set_config('perception.purge','off',true);
+        ELSIF dry_run THEN
+            -- Counted from the same selection the real run deletes.
+            n_retractions:=cardinality(retractions);
+            SELECT count(*) INTO n_receipts FROM perception_private.receipts
+                WHERE event_id=ANY(ids||retractions);
+        END IF;
+        RETURN jsonb_build_object('dry_run',dry_run,'events',n_events,
+            'retractions',n_retractions,'receipts',n_receipts);
+    END $purge$;
+
+    CREATE OR REPLACE FUNCTION perception_private.valid_predicate(p jsonb,depth integer DEFAULT 0)
+    RETURNS boolean LANGUAGE plpgsql STABLE SET search_path=pg_catalog,pg_temp AS $predicate$
+    DECLARE fields text[]; child jsonb;
+    BEGIN
+        IF depth>2 OR jsonb_typeof(p) IS DISTINCT FROM 'object'
+            OR jsonb_typeof(p->'tag') IS DISTINCT FROM 'string'
+            OR octet_length(p::text)>8192 THEN RETURN false; END IF;
+        CASE p->>'tag'
+        WHEN 'all','any' THEN
+            IF p-ARRAY['tag','children']<>'{}'::jsonb
+                OR jsonb_typeof(p->'children') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            IF jsonb_array_length(p->'children') NOT BETWEEN 1 AND 16 THEN RETURN false; END IF;
+            FOR child IN SELECT value FROM jsonb_array_elements(p->'children') LOOP
+                IF NOT COALESCE(perception_private.valid_predicate(child,depth+1),false) THEN RETURN false; END IF;
+            END LOOP;
+            RETURN true;
+        WHEN 'at' THEN
+            fields:=ARRAY['tag','instant','zone'];
+            PERFORM perception_private.instant(p->'instant');
+            IF jsonb_typeof(p->'zone') IS DISTINCT FROM 'string'
+                OR NOT EXISTS(SELECT 1 FROM pg_timezone_names WHERE name=p->>'zone') THEN RETURN false; END IF;
+        WHEN 'transition' THEN
+            fields:=ARRAY['tag','kind','subject','from','to'];
+            IF jsonb_typeof(p->'kind') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'from') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'to') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'kind' IN ('owner.place','owner.activity','owner.clock','system.dep','expect.window',
+                'home.sensing','owner.mode','owner.suppression'),false) OR
+                NOT COALESCE(p->>'from' IN ('known','unknown','unmeasurable','unconfigured'),false) OR
+                NOT COALESCE(p->>'to' IN ('known','unknown','unmeasurable','unconfigured'),false) THEN RETURN false; END IF;
+            IF p->'subject' IS DISTINCT FROM 'null'::jsonb THEN
+                IF jsonb_typeof(p->'subject') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+                PERFORM (p->>'subject')::uuid;
+            END IF;
+        WHEN 'decision' THEN
+            fields:=ARRAY['tag','subject_id','outcome'];
+            IF jsonb_typeof(p->'subject_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'outcome') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'outcome' IN ('approved','rejected','expired','cancelled'),false) THEN RETURN false; END IF;
+            PERFORM (p->>'subject_id')::uuid;
+        WHEN 'owner_input' THEN
+            fields:=ARRAY['tag','goal_id','binding_ref'];
+            IF jsonb_typeof(p->'goal_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'binding_ref') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+            PERFORM (p->>'goal_id')::uuid;
+            PERFORM (p->>'binding_ref')::uuid;
+        WHEN 'effect_settled' THEN
+            fields:=ARRAY['tag','effect_id','status_set'];
+            IF jsonb_typeof(p->'effect_id') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'status_set') IS DISTINCT FROM 'array' THEN RETURN false; END IF;
+            PERFORM (p->>'effect_id')::uuid;
+            IF jsonb_array_length(p->'status_set') NOT BETWEEN 1 AND 4
+                OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
+                    WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                        OR NOT COALESCE((value#>>'{}') IN ('succeeded','failed','cancelled','unknown'),false)) THEN RETURN false; END IF;
+        ELSE RETURN false;
+        END CASE;
+        RETURN p-fields='{}'::jsonb AND (SELECT count(*) FROM jsonb_object_keys(p))=cardinality(fields);
+    END $predicate$;
+
+    CREATE OR REPLACE FUNCTION public.perception_bind(b jsonb) RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $binding$
+    DECLARE actor name:=COALESCE(NULLIF(current_setting('role',true),'none'),session_user)::name;
+        profile perception_private.sources%ROWTYPE; existing record; table_name text;
+        labels jsonb; boundary jsonb; e jsonb; id uuid; digest text; starts timestamptz; expires timestamptz;
+        fields text[]:=ARRAY['version','id','kind','subject','goal_ref','predicate','source_boundary',
+            'source','starts_at','expires_at','evidence_refs','authority_ref'];
+    BEGIN
+        IF jsonb_typeof(b)<>'object' OR b-fields<>'{}'::jsonb
+            OR (SELECT count(*) FROM jsonb_object_keys(b))<>cardinality(fields) OR b->>'version' IS DISTINCT FROM '1' OR jsonb_typeof(b->'version')<>'number'
+            OR NOT COALESCE(perception_private.valid_predicate(b->'predicate'),false)
+            OR (SELECT count(*) FROM jsonb_path_query(b->'predicate','strict $.** ? (@.tag != "all" && @.tag != "any")'))>16 THEN
+            RAISE EXCEPTION 'closed bounded perception binding required' USING ERRCODE='22023';
+        END IF;
+        SELECT * INTO profile FROM perception_private.sources WHERE source=b->>'source' AND kind=b->>'kind';
+        IF NOT FOUND OR actor<>profile.writer OR actor NOT IN ('perception_context_writer','perception_attention_writer')
+            OR profile.max_age_seconds IS NULL OR NOT COALESCE((b->>'subject')::uuid=ANY(profile.subjects),false) THEN
+            RAISE EXCEPTION 'perception binding authority required' USING ERRCODE='42501';
+        END IF;
+        boundary:=b->'source_boundary';
+        IF jsonb_typeof(boundary) IS DISTINCT FROM 'array' OR jsonb_array_length(boundary) NOT BETWEEN 1 AND 16
+            OR EXISTS(SELECT 1 FROM jsonb_array_elements(boundary) entries(value)
+                WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
+                    OR NOT COALESCE((value#>>'{}')=ANY(profile.evidence_sources),false)) OR
+            jsonb_typeof(b->'evidence_refs')<>'array' OR jsonb_array_length(b->'evidence_refs') NOT BETWEEN 1 AND 32 THEN
+            RAISE EXCEPTION 'perception source boundary required' USING ERRCODE='22023';
+        END IF;
+        FOR e IN SELECT value FROM jsonb_array_elements(b->'evidence_refs') LOOP
+            IF NOT EXISTS(SELECT 1 FROM perception_private.source_refs ref
+                WHERE ref.id=(e#>>'{}')::uuid AND ref.source=profile.source AND ref.ref_type='evidence') THEN
+                RAISE EXCEPTION 'perception binding evidence required' USING ERRCODE='22023';
+            END IF;
+        END LOOP;
+        starts:=perception_private.instant(b->'starts_at'); expires:=perception_private.instant(b->'expires_at');
+        IF starts>=expires OR expires-starts>make_interval(secs=>profile.max_age_seconds) THEN
+            RAISE EXCEPTION 'finite perception binding interval required' USING ERRCODE='22023';
+        END IF;
+        IF b->'authority_ref'<>'null'::jsonb AND (actor<>'perception_attention_writer'
+            OR NOT EXISTS(SELECT 1 FROM perception_private.suppression_refs ref WHERE ref.id=(b->>'authority_ref')::uuid
+                AND ref.source=profile.source)) THEN
+            RAISE EXCEPTION 'existing suppression authority required' USING ERRCODE='42501';
+        END IF;
+        id:=(b->>'id')::uuid; PERFORM (b->>'goal_ref')::uuid;
+        digest:=encode(sha256(convert_to(perception_private.canonical_json(b),'UTF8')),'hex');
+        table_name:=CASE WHEN b->'authority_ref'='null'::jsonb THEN 'public.perception_conditions'
+            ELSE 'public.perception_suppressions' END;
+        PERFORM pg_advisory_xact_lock(hashtextextended('perception-binding:'||id::text,0));
+        EXECUTE format('SELECT digest FROM %s WHERE id=$1',table_name) INTO existing USING id;
+        IF existing.digest IS NOT NULL THEN
+            IF existing.digest<>digest THEN RAISE EXCEPTION 'immutable perception binding changed' USING ERRCODE='23514'; END IF;
+            RETURN jsonb_build_object('id',id,'generation',1,'state','open');
+        END IF;
+        labels:=jsonb_build_object('version',1,'label_instr',jsonb_build_array('world'),
+            'label_data',jsonb_build_array('world'),'label_sens',jsonb_build_array('credentials','finance',
+                'health','location','relationship_notes','routine'));
+        IF table_name='public.perception_conditions' THEN
+            INSERT INTO public.perception_conditions(id,kind,subject_entity,goal_ref,predicate,source_boundary,source,
+                starts_at,expires_at,generation,evidence_refs,labels,state,digest)
+            VALUES(id,profile.kind,(b->>'subject')::uuid,(b->>'goal_ref')::uuid,b->'predicate',boundary,profile.source,
+                starts,expires,1,b->'evidence_refs',labels,'open',digest);
+        ELSE
+            INSERT INTO public.perception_suppressions(id,kind,subject_entity,goal_ref,predicate,source_boundary,source,
+                starts_at,expires_at,generation,evidence_refs,labels,state,authority_ref,digest)
+            VALUES(id,profile.kind,(b->>'subject')::uuid,(b->>'goal_ref')::uuid,b->'predicate',boundary,profile.source,
+                starts,expires,1,b->'evidence_refs',labels,'open',(b->>'authority_ref')::uuid,digest);
+        END IF;
+        RETURN jsonb_build_object('id',id,'generation',1,'state','open');
+    END $binding$;
+
+    CREATE OR REPLACE FUNCTION public.perception_registry() RETURNS jsonb
+    LANGUAGE plpgsql SECURITY DEFINER STABLE SET search_path=pg_catalog,pg_temp AS $registry$
+    BEGIN
+        IF COALESCE(NULLIF(current_setting('role',true),'none'),session_user)<>'perception_owner_reader' THEN
+            RAISE EXCEPTION 'private perception registry reader required' USING ERRCODE='42501';
+        END IF;
+        RETURN (SELECT jsonb_agg(to_jsonb(k) ORDER BY kind) FROM perception_private.kinds k);
+    END $registry$;
+
+    -- Fixed function allowlist: no grants to domain, connector, model or
+    -- migration identities, even when bootstrap re-widens public-table ACLs.
+    FOR f IN SELECT p.oid::regprocedure FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+        WHERE n.nspname='perception_private' OR n.nspname='public'
+        AND p.proname=ANY(ARRAY['perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history']) LOOP
+        EXECUTE format('ALTER FUNCTION %s OWNER TO perception_owner',f);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f);
+        FOR r IN SELECT rolname FROM pg_roles WHERE oid IN (
+            SELECT grantee FROM aclexplode(COALESCE((SELECT proacl FROM pg_proc
+                WHERE oid=f::oid),acldefault('f','perception_owner'::regrole))))
+            AND rolname<>current_user AND rolname<>'perception_owner' LOOP
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I',f,r);
+        END LOOP;
+    END LOOP;
+    GRANT EXECUTE ON FUNCTION public.perception_registry() TO perception_owner_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_bind(jsonb) TO perception_context_writer,perception_attention_writer;
+    GRANT EXECUTE ON FUNCTION public.perception_write(jsonb) TO perception_dots_writer,
+        perception_context_writer,perception_health_writer,perception_expect_writer,
+        perception_sensing_writer,perception_attention_writer;
+    GRANT EXECUTE ON FUNCTION public.perception_read(text,uuid,timestamptz)
+        TO perception_owner_reader,perception_availability_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_timeline(timestamptz,timestamptz,text,uuid,uuid,integer,boolean)
+        TO perception_owner_reader;
+    GRANT EXECUTE ON FUNCTION public.perception_purge_place_history(integer,boolean)
+        TO perception_retention;
+
+
+    -- PERCEPTION_BACKUP_BEGIN
+    -- Fixed ten-relation companion. The catalog digest is the canonical PG17
+    -- installer profile (names/types/defaults/constraints/indexes/policies,
+    -- immutable triggers and the closed gateway/helper bodies/ACLs), not data.
+    SELECT oid INTO v_backup_owner FROM pg_roles WHERE rolname='perception_owner';
+    -- Both roles are inert: NOLOGIN, no memberships either way, no credential.
+    -- Granting LOGIN or a membership edge is the owner's activation act.
+    FOREACH v_role IN ARRAY ARRAY['butlers_backup_export', 'butlers_backup_restore']::name[] LOOP
+        SELECT oid INTO v_oid FROM pg_roles WHERE rolname = v_role;
+        IF v_oid IS NULL THEN
+            EXECUTE format(
+                'CREATE ROLE %I NOLOGIN NOINHERIT NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS',
+                v_role
+            );
+        ELSIF NOT EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE oid = v_oid
+              AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
+              AND NOT rolcreaterole AND NOT rolcreatedb AND NOT rolreplication
+              AND NOT rolbypassrls
+              AND NOT EXISTS (SELECT 1 FROM pg_auth_members
+                              WHERE roleid = v_oid OR member = v_oid)
+              AND NOT EXISTS (SELECT 1 FROM pg_authid
+                              WHERE oid = v_oid AND rolpassword IS NOT NULL)
+        ) THEN
+            RAISE EXCEPTION 'perception backup role % is untrusted', v_role;
+        END IF;
+    END LOOP;
+
+    -- Never adopt migration/runtime-owned lookalikes: replacing a function
+    -- preserves its ACL, and transferring its owner would elevate those grants.
+    -- Correct owner-created objects may be refreshed, with only the fixed
+    -- capability grants and no grant options or third-party schema creation.
+    IF EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname = 'perception_backup' AND (
+            n.nspowner <> v_backup_owner OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_backup_owner OR
+                    (a.grantee IN ('butlers_backup_export'::regrole,
+                                   'butlers_backup_restore'::regrole)
+                     AND a.privilege_type = 'USAGE')
+                )
+            )
+        )
+    ) OR EXISTS (
+        SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'perception_backup' AND (
+            p.proowner <> v_backup_owner OR NOT (
+                (p.proname IN ('export_v1', 'export_schema_v1') AND p.pronargs = 0) OR
+                (p.proname = 'restore_v1' AND p.proargtypes = '3802'::oidvector)
+            ) OR EXISTS (
+                SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) a
+                WHERE a.is_grantable OR NOT (
+                    a.grantee = v_backup_owner OR
+                    (a.grantee = CASE p.proname
+                         WHEN 'export_v1' THEN 'butlers_backup_export'::regrole
+                         WHEN 'export_schema_v1' THEN 'butlers_backup_export'::regrole
+                         WHEN 'restore_v1' THEN 'butlers_backup_restore'::regrole END
+                     AND a.privilege_type = 'EXECUTE')
+                )
+            )
+        )
+    ) THEN
+        RAISE EXCEPTION 'perception backup schema or function authority is untrusted';
+    END IF;
+
+    CREATE SCHEMA IF NOT EXISTS perception_backup AUTHORIZATION perception_owner;
+
+
+    CREATE OR REPLACE FUNCTION perception_private.backup_catalog() RETURNS jsonb
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp SET row_security=on
+    AS $perception_catalog$
+WITH tables AS (
+ SELECT unnest(ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions']) AS name
+), table_catalog AS (
+ SELECT name,jsonb_build_object(
+ 'owner',pg_get_userbyid(c.relowner),'kind',c.relkind,'rls',c.relrowsecurity,'force',c.relforcerowsecurity,
+ 'columns',(SELECT jsonb_agg(jsonb_build_array(a.attname,format_type(a.atttypid,a.atttypmod),a.attnotnull,a.attidentity,a.attgenerated,pg_get_expr(d.adbin,d.adrelid)) ORDER BY a.attnum) FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped),
+ 'constraints',(SELECT coalesce(jsonb_agg(jsonb_build_array(conname,pg_get_constraintdef(oid)) ORDER BY conname COLLATE "C"),'[]') FROM pg_constraint WHERE conrelid=c.oid),
+ 'indexes',(SELECT coalesce(jsonb_agg(pg_get_indexdef(indexrelid) ORDER BY pg_get_indexdef(indexrelid) COLLATE "C"),'[]') FROM pg_index WHERE indrelid=c.oid),
+ 'triggers',(SELECT coalesce(jsonb_agg(pg_get_triggerdef(oid) ORDER BY tgname COLLATE "C"),'[]') FROM pg_trigger WHERE tgrelid=c.oid AND NOT tgisinternal),
+ 'policies',(SELECT coalesce(jsonb_agg(jsonb_build_array(polname,polcmd,polpermissive,pg_get_expr(polqual,polrelid),pg_get_expr(polwithcheck,polrelid),(SELECT jsonb_agg(CASE WHEN r=0 THEN 'PUBLIC' ELSE pg_get_userbyid(r) END ORDER BY r) FROM unnest(polroles) r)) ORDER BY polname COLLATE "C"),'[]') FROM pg_policy WHERE polrelid=c.oid),
+ 'acl',(SELECT coalesce(jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,a.privilege_type,a.is_grantable) ORDER BY CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END COLLATE "C",a.privilege_type COLLATE "C"),'[]') FROM aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a)
+ ) AS value FROM tables t LEFT JOIN pg_class c ON c.oid=to_regclass(t.name)
+), functions AS (
+ SELECT p.oid,p.oid::regprocedure::text AS name, jsonb_build_object('definition',pg_get_functiondef(p.oid),'owner',pg_get_userbyid(p.proowner),'config',p.proconfig,'acl',(SELECT jsonb_agg(jsonb_build_array(CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,a.privilege_type,a.is_grantable) ORDER BY CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END COLLATE "C",a.privilege_type COLLATE "C") FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a)) AS value
+ FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE (n.nspname='perception_private' AND p.proname<>'backup_catalog') OR n.nspname='public' AND p.proname IN ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history')
+)
+SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM table_catalog),'functions',(SELECT jsonb_object_agg(name,value) FROM functions));
+    $perception_catalog$;
+    ALTER FUNCTION perception_private.backup_catalog() OWNER TO perception_owner;
+    REVOKE ALL ON FUNCTION perception_private.backup_catalog() FROM PUBLIC;
+
+    CREATE OR REPLACE FUNCTION perception_backup.export_schema_v1() RETURNS SETOF text
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp SET row_security=on
+    AS $perception_schema$
+    DECLARE relation_name text; relation_oid regclass; item record; columns_sql text;
+        role_sql text; catalog jsonb; grant_item record;
+        relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions'];
+    BEGIN
+        catalog:=perception_private.backup_catalog();
+        -- The pin below is the catalog hash under PostgreSQL 17 (the CI major). It embeds
+        -- pg_get_functiondef text, which differs by major version, so a local server of another
+        -- major reports a different hash. Recompute on a migrated postgres:17 database with
+        -- SELECT encode(sha256(convert_to(perception_private.backup_catalog()::text,'UTF8')),'hex')
+        -- run as perception_owner.
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'1fa34ae16009bc205e2b5657cca667b563d48ff3f5e3a7c1ca6c29afef30e94f'
+            OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
+            OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+                WHERE n.nspname='perception_private')<>6
+            OR NOT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='perception_private'
+                AND nspowner='perception_owner'::regrole)
+        THEN RAISE EXCEPTION 'perception schema export requires exact canonical catalog'; END IF;
+        RETURN NEXT 'CREATE SCHEMA perception_private AUTHORIZATION perception_owner;';
+        RETURN NEXT 'REVOKE ALL ON SCHEMA perception_private FROM PUBLIC;';
+        FOREACH relation_name IN ARRAY relations LOOP
+            relation_oid:=relation_name::regclass;
+            SELECT string_agg(format('%I %s%s%s',a.attname,format_type(a.atttypid,a.atttypmod),
+                CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END,
+                CASE WHEN d.oid IS NULL THEN '' ELSE ' DEFAULT '||pg_get_expr(d.adbin,d.adrelid) END),', ' ORDER BY a.attnum)
+            INTO columns_sql FROM pg_attribute a LEFT JOIN pg_attrdef d
+                ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+            WHERE a.attrelid=relation_oid AND a.attnum>0 AND NOT a.attisdropped;
+            RETURN NEXT format('CREATE TABLE %s (%s);',relation_name,columns_sql);
+            RETURN NEXT format('ALTER TABLE %s OWNER TO perception_owner;',relation_name);
+            -- Owner-only, even when a target has broad ALTER DEFAULT PRIVILEGES.
+            RETURN NEXT format($ddl$
+DO $perception_acl$
+DECLARE a record;
+BEGIN
+  FOR a IN SELECT DISTINCT x.grantee FROM pg_class c,
+      LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) x
+      WHERE c.oid=%L::regclass AND x.grantee<>c.relowner LOOP
+    EXECUTE format('REVOKE ALL ON TABLE %%s FROM %%s',%L::regclass,
+      CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(a.grantee)) END);
+  END LOOP;
+END $perception_acl$;
+$ddl$,relation_name,relation_name);
+            RETURN NEXT format('GRANT ALL ON TABLE %s TO perception_owner;',relation_name);
+        END LOOP;
+        -- All tables precede functions and FKs. The ordinary dump has disabled
+        -- function-body checking, but this block is independently ordered.
+        FOR item IN SELECT p.*,p.oid::regprocedure::text AS signature FROM pg_proc p
+            JOIN pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='perception_private' OR n.nspname='public' AND p.proname IN
+                ('perception_write','perception_read','perception_timeline','perception_bind','perception_registry','perception_purge_place_history')
+            ORDER BY p.oid::regprocedure::text LOOP
+            IF item.proowner<>'perception_owner'::regrole THEN
+                RAISE EXCEPTION 'perception function owner mismatch'; END IF;
+            RETURN NEXT pg_get_functiondef(item.oid)||';';
+            RETURN NEXT format('ALTER FUNCTION %s OWNER TO perception_owner;',item.signature);
+            RETURN NEXT format('REVOKE ALL ON FUNCTION %s FROM PUBLIC;',item.signature);
+            RETURN NEXT format($ddl$
+DO $perception_function_acl$
+DECLARE a record;
+BEGIN
+  FOR a IN SELECT DISTINCT x.grantee FROM pg_proc p,
+      LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) x
+      WHERE p.oid=%L::regprocedure AND x.grantee<>p.proowner LOOP
+    EXECUTE format('REVOKE ALL ON FUNCTION %%s FROM %%s',%L::regprocedure,
+      CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE quote_ident(pg_get_userbyid(a.grantee)) END);
+  END LOOP;
+END $perception_function_acl$;
+$ddl$,item.signature,item.signature);
+            FOR grant_item IN SELECT item.signature AS signature,a.* FROM aclexplode(coalesce(item.proacl,acldefault('f',item.proowner))) a
+                WHERE a.grantee<>item.proowner LOOP
+                RETURN NEXT format('GRANT %s ON FUNCTION %s TO %I;',grant_item.privilege_type,grant_item.signature,pg_get_userbyid(grant_item.grantee));
+            END LOOP;
+        END LOOP;
+        FOREACH relation_name IN ARRAY relations LOOP
+            relation_oid:=relation_name::regclass;
+            FOR item IN SELECT conname,pg_get_constraintdef(oid) AS definition FROM pg_constraint
+                WHERE conrelid=relation_oid ORDER BY conname LOOP
+                RETURN NEXT format('ALTER TABLE %s ADD CONSTRAINT %I %s;',relation_name,item.conname,item.definition);
+            END LOOP;
+            FOR item IN SELECT pg_get_indexdef(indexrelid) AS definition FROM pg_index i
+                WHERE indrelid=relation_oid AND NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conindid=i.indexrelid)
+                ORDER BY indexrelid LOOP RETURN NEXT item.definition||';'; END LOOP;
+            FOR item IN SELECT pg_get_triggerdef(oid) AS definition FROM pg_trigger
+                WHERE tgrelid=relation_oid AND NOT tgisinternal ORDER BY tgname LOOP
+                RETURN NEXT item.definition||';'; END LOOP;
+            RETURN NEXT format('CREATE POLICY perception_owner_only ON %s USING (current_user=''perception_owner'') WITH CHECK (current_user=''perception_owner'');',relation_name);
+            RETURN NEXT format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY;',relation_name);
+            RETURN NEXT format('ALTER TABLE %s FORCE ROW LEVEL SECURITY;',relation_name);
+        END LOOP;
+    END;
+    $perception_schema$;
+
+    CREATE OR REPLACE FUNCTION perception_backup.export_v1()
+    RETURNS TABLE(ordinal integer,relation_name text,payload jsonb)
+    LANGUAGE plpgsql STABLE SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp SET row_security=on
+    AS $perception_export$
+    DECLARE relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions']; n integer;
+    BEGIN
+        -- Validate the complete fixed catalog even for empty populations.
+        PERFORM * FROM perception_backup.export_schema_v1();
+        FOR n IN 1..cardinality(relations) LOOP
+            RETURN QUERY EXECUTE format('SELECT %s,%L::text,to_jsonb(t) FROM %s t',n,relations[n],relations[n]);
+        END LOOP;
+    END;
+    $perception_export$;
+
+    CREATE OR REPLACE FUNCTION perception_backup.restore_v1(rows jsonb) RETURNS void
+    LANGUAGE plpgsql VOLATILE SECURITY DEFINER
+    SET search_path=pg_catalog,pg_temp SET row_security=on
+    AS $perception_restore$
+    DECLARE relations text[]:=ARRAY['perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','public.timeline','perception_private.receipts','public.situation_slots','public.owner_modes','public.perception_conditions','public.perception_suppressions']; relation_name text; n integer; item jsonb;
+        row_data jsonb; columns_expected text[]; count_existing bigint;
+    BEGIN
+        PERFORM * FROM perception_backup.export_schema_v1();
+        IF rows IS NULL OR jsonb_typeof(rows)<>'array' THEN
+            RAISE EXCEPTION 'perception restore requires a closed staged array'; END IF;
+        -- Validate every envelope and exact column set before touching any row.
+        FOR item IN SELECT value FROM jsonb_array_elements(rows) LOOP
+            IF jsonb_typeof(item)<>'object' OR item-ARRAY['ordinal','relation','row']<>'{}'::jsonb
+                OR NOT item ?& ARRAY['ordinal','relation','row']
+                OR jsonb_typeof(item->'ordinal')<>'number' OR jsonb_typeof(item->'relation')<>'string'
+                OR jsonb_typeof(item->'row')<>'object' THEN
+                RAISE EXCEPTION 'perception restore malformed envelope'; END IF;
+            n:=array_position(relations,item->>'relation');
+            IF n IS NULL OR item->>'ordinal' IS DISTINCT FROM n::text THEN
+                RAISE EXCEPTION 'perception restore foreign relation or ordinal'; END IF;
+            SELECT array_agg(attname::text ORDER BY attnum) INTO columns_expected FROM pg_attribute
+                WHERE attrelid=relations[n]::regclass AND attnum>0 AND NOT attisdropped;
+            row_data:=item->'row';
+            IF NOT row_data ?& columns_expected OR row_data-columns_expected<>'{}'::jsonb THEN
+                RAISE EXCEPTION 'perception restore exact columns required'; END IF;
+        END LOOP;
+        -- Never merge/reseed configured source state or durable history.
+        FOREACH relation_name IN ARRAY relations LOOP
+            EXECUTE format('SELECT count(*) FROM %s',relation_name) INTO count_existing;
+            IF count_existing<>0 THEN RAISE EXCEPTION 'perception restore target is not empty'; END IF;
+        END LOOP;
+        FOR n IN 1..cardinality(relations) LOOP
+            -- Assertions precede self-referencing retractions, independent of UUID order.
+            FOR item IN SELECT value FROM jsonb_array_elements(rows)
+                WHERE value->>'relation'=relations[n]
+                ORDER BY CASE WHEN value->'row'->>'operation'='retract' THEN 1 ELSE 0 END,value->'row'->>'created_at',value->'row'->>'id' LOOP
+                EXECUTE format('INSERT INTO %s SELECT (jsonb_populate_record(NULL::%s,$1)).*',relations[n],relations[n]) USING item->'row';
+            END LOOP;
+        END LOOP;
+    END;
+    $perception_restore$;
+    FOREACH f IN ARRAY ARRAY['perception_backup.export_v1()'::regprocedure,
+        'perception_backup.export_schema_v1()'::regprocedure,'perception_backup.restore_v1(jsonb)'::regprocedure] LOOP
+        EXECUTE format('ALTER FUNCTION %s OWNER TO perception_owner',f);
+        EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f);
+        EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO %I',f,
+            CASE WHEN f='perception_backup.restore_v1(jsonb)'::regprocedure THEN 'butlers_backup_restore' ELSE 'butlers_backup_export' END);
+    END LOOP;
+    REVOKE ALL ON SCHEMA perception_backup FROM PUBLIC;
+    GRANT USAGE ON SCHEMA perception_backup TO butlers_backup_export,butlers_backup_restore;
+    -- PERCEPTION_BACKUP_END
+
+    IF to_regclass('public.entities') IS NOT NULL THEN
+        GRANT SELECT ON public.entities TO perception_owner;
+    END IF;
+END $perception_install$;
+REVOKE ALL ON FUNCTION perception_admin.install_interface() FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION perception_admin.finalize_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $perception_finalize$
+DECLARE t text; r record;
+BEGIN
+    -- Re-run the fixed definitions and post-baseline revocations, never re-grant
+    -- a table directly to a service or ordinary migration/domain identity.
+    PERFORM perception_admin.install_interface();
+    FOREACH t IN ARRAY ARRAY['public.situation_slots','public.owner_modes','public.timeline',
+        'public.perception_conditions','public.perception_suppressions',
+        'perception_private.kinds','perception_private.sources','perception_private.source_refs','perception_private.suppression_refs','perception_private.receipts'] LOOP
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE oid=t::regclass
+            AND relowner='perception_owner'::regrole AND relrowsecurity AND relforcerowsecurity) THEN
+            RAISE EXCEPTION 'perception finalization refused';
+        END IF;
+    END LOOP;
+    IF to_regclass('public.entities') IS NOT NULL THEN
+        GRANT SELECT ON public.entities TO perception_owner;
+    END IF;
+    FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'perception_%' LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname=r.rolname AND
+            (rolsuper OR rolbypassrls OR (r.rolname='perception_owner' AND rolcanlogin)
+             OR rolinherit OR rolcreatedb OR rolcreaterole OR rolreplication))
+            OR EXISTS (SELECT 1 FROM pg_auth_members WHERE roleid=r.rolname::regrole OR member=r.rolname::regrole) THEN
+            RAISE EXCEPTION 'perception role isolation refused';
+        END IF;
+    END LOOP;
+END $perception_finalize$;
+REVOKE ALL ON FUNCTION perception_admin.finalize_interface() FROM PUBLIC;
+CREATE OR REPLACE FUNCTION perception_admin.rollback_interface() RETURNS void
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $perception_rollback$
+BEGIN
+    LOCK TABLE public.timeline,public.situation_slots,public.owner_modes,
+        public.perception_conditions,public.perception_suppressions IN ACCESS EXCLUSIVE MODE;
+    IF EXISTS(SELECT 1 FROM public.timeline) OR EXISTS(SELECT 1 FROM public.situation_slots)
+        OR EXISTS(SELECT 1 FROM public.owner_modes) OR EXISTS(SELECT 1 FROM public.perception_conditions)
+        OR EXISTS(SELECT 1 FROM public.perception_suppressions) THEN
+        RAISE EXCEPTION 'perception downgrade retains durable history; forward remediation required';
+    END IF;
+    -- Empty additive shared objects intentionally remain for another core schema.
+    -- This retires no producer, reader, role or authority and deletes no history.
+END $perception_rollback$;
+REVOKE ALL ON FUNCTION perception_admin.rollback_interface() FROM PUBLIC;
+DO $perception_grant_installer$
+DECLARE migration name;
+BEGIN
+    SELECT migration_role INTO migration FROM perception_admin.bootstrap_configuration WHERE singleton;
+    EXECUTE format('GRANT USAGE ON SCHEMA perception_admin TO %I',migration);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION perception_admin.install_interface() TO %I',migration);
+    EXECUTE format('GRANT EXECUTE ON FUNCTION perception_admin.rollback_interface() TO %I',migration);
+    -- finalize is NOT a migration API. Only the fixed bootstrap owner may call.
+    EXECUTE format('REVOKE ALL ON FUNCTION perception_admin.finalize_interface() FROM %I',migration);
+    IF to_regclass('public.situation_slots') IS NOT NULL THEN
+        PERFORM perception_admin.finalize_interface();
+    END IF;
+END $perception_grant_installer$;
+
+-- ── Retire the old shared login's install/teardown EXECUTE (bu-dss7he.25) ─────
+-- Opt-in with the migration-role rotation: PGOPTIONS="-c butlers.rotate_migration_role_from=<old
+-- shared login>". Unset, this block does nothing, so the shared-login-as-migrator setup
+-- keeps working. These SECURITY DEFINER functions have no caller check, and
+-- deactivate_interface revokes every claim and binding, so after the rotation only the
+-- new migration role may hold EXECUTE. Runs last, after every section has granted to the
+-- rotated pin, and runs as the superuser, so it can revoke grants whatever their grantor.
+DO $rotation_revoke_install$
+DECLARE
+    _old NAME := NULLIF(current_setting('butlers.rotate_migration_role_from', true), '')::name;
+    _fn TEXT;
+BEGIN
+    IF _old IS NULL THEN
+        RETURN;
+    END IF;
+    FOREACH _fn IN ARRAY ARRAY[
+        'dashboard_attention.install_interface()',
+        'dashboard_attention.finalize_interface()',
+        'dashboard_attention.deactivate_interface()',
+        'dashboard_stepup.install_interface()',
+        'dashboard_stepup.finalize_interface()',
+        'dashboard_stepup.deactivate_interface()',
+        'perception_admin.install_interface()',
+        'perception_admin.rollback_interface()'
+    ] LOOP
+        IF to_regprocedure(_fn) IS NOT NULL THEN
+            EXECUTE format('REVOKE ALL ON FUNCTION %s FROM %I', _fn, _old);
+        END IF;
+    END LOOP;
+END
+$rotation_revoke_install$;

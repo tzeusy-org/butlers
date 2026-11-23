@@ -62,12 +62,15 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 // TopologyTile
 // ---------------------------------------------------------------------------
 
-function TopologyTile() {
+function TopologyTile({
+  refetchHeartbeats,
+}: {
+  refetchHeartbeats: ReturnType<typeof useButlerHeartbeats>["refetch"];
+}) {
   // Keep the topology's existing board activity/tone contract. The heartbeat
   // tile separately displays receiver observation and service-policy facts;
   // neither query snapshot is an atomic or row-wide availability verdict.
   const { rows, aggregates } = useButlerStatusBoard();
-  const { refetch: refetchHeartbeats } = useButlerHeartbeats();
   const {
     data: connectorsResponse,
     isLoading: connectorsLoading,
@@ -129,6 +132,8 @@ function TopologyTile() {
 // ---------------------------------------------------------------------------
 
 function SystemPage() {
+  const heartbeat = useButlerHeartbeats();
+
   return (
     <Page
       archetype="overview"
@@ -161,7 +166,7 @@ function SystemPage() {
           <EgressCatalogTile />
         </div>
         <div className="lg:col-span-2 h-full">
-          <ButlerHeartbeatTile />
+          <ButlerHeartbeatTile heartbeat={heartbeat} />
         </div>
         <div className="lg:col-span-3 h-full">
           <StandingConditionsTile />
@@ -169,7 +174,7 @@ function SystemPage() {
       </div>
 
       {/* Ecosystem topology -- full-width section below ownership fact tiles */}
-      <TopologyTile />
+      <TopologyTile refetchHeartbeats={heartbeat.refetch} />
     </Page>
   );
 }

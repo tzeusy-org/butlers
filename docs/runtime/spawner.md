@@ -80,6 +80,13 @@ A session row is inserted into the `sessions` table with the prompt, trigger sou
 
 The spawner generates a config declaring a single MCP server --- this butler's FastMCP instance. The URL includes a `runtime_session_id` query parameter for tool call correlation. Only declared credentials are included in the environment; undeclared env vars do not leak.
 
+The paired nonsecret workload egress controls are a separate deployment input.
+The spawner validates `BUTLERS_EGRESS_MODE` and `BUTLERS_EGRESS_GATEWAY` and carries
+that selection into ordinary, QA sandbox override and healing children. Credential
+store entries and override dictionaries cannot replace those controls. All other
+QA sandbox environment values retain their existing boundary; healing still
+receives no butler credentials. An invalid deployment transport refuses invocation.
+
 ### 5. System Prompt Composition
 
 The system prompt is composed in `spawner_context._compose_system_prompt()` from these layers, in stable order for token-cache efficiency (each appended as a suffix, separated by one blank line, only when non-empty):
@@ -247,7 +254,8 @@ curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
 - Shared dashboard defaults live in `public.state` under `settings.general`
   (`GENERAL_SETTINGS_STATE_KEY`), edited through `/api/settings/general`: `timezone`, `language`,
   `date_format`, `time_format`, `week_starts_on`, `currency`. `measurement_system` is response-only
-  `metric`. `Spawner` injects the block into every butler's system prompt.
+  `metric`. `Spawner` injects the block into every butler's system prompt. `public.state` is
+  read-only to butler and connector roles (core_306); only the dashboard's owner login writes it.
 - `notify` and `memory_store_fact` tool metadata document required and optional fields with a valid
   JSON example and constrained enums (`channel`, `intent`, `permanence`); `tags` is a JSON array.
   Scheduled prompts that do not reply to ingress use `intent="send"`.
@@ -275,8 +283,9 @@ curl -s http://localhost:41101/metrics 2>/dev/null | grep butlers_spawner
 - Codex stages per-invocation `HOME` roots under `~/.codex/.tmp` (the CLI fails with `codex_home`
   under `/tmp`).
 - QA agent sessions receive no GitHub credential (`build_agent_env()`: no `GH_TOKEN`, no git
-  credential variable), and automated publication (push / PR create) fails closed with
-  `publication_unavailable` until the isolated publisher lands. The dispatcher alone keeps the
+  credential variable), and automated publication (push / PR create) fails closed until the isolated publisher lands: a
+  committed investigation is sealed and retained as an unpublished proposal, ending `failed` with
+  `publication_unavailable`. The dispatcher alone keeps the
   token for PR-status polling and fetch/worktree preparation (`gh` in `Dockerfile.base`). QA
   branches from a freshly fetched
   verified immutable `origin/main` commit via the worktree `base_ref`. Failed fetch or

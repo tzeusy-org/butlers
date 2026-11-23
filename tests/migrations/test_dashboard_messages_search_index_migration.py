@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -18,19 +19,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_221_dashboard_messages_search_index", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     sqls: list[str] = []
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_221_dashboard_messages_search_index")
 
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = sqls.append
@@ -41,36 +32,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def search_index_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL,
-                title TEXT NOT NULL DEFAULT '',
-                status TEXT NOT NULL DEFAULT 'active',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                message_count INTEGER NOT NULL DEFAULT 0,
-                source_channel TEXT NOT NULL DEFAULT 'dashboard'
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-                    ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                session_id UUID
-            )
-            """
-        )
-        yield pool
+async def search_index_pool(db):
+    """The real dashboard tables as core_221's predecessor (core_220) left them."""
+    return await db("core", revisions={"core": "core_220"})
 
 
 async def _insert_conversation(pool: asyncpg.Pool, *, conv_id: uuid.UUID) -> None:

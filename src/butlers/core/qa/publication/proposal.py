@@ -16,8 +16,10 @@ import re
 import stat
 import uuid
 from pathlib import Path
+from typing import Any
 
 from butlers.core.qa.models import QaFinding
+from butlers.core.qa.publication import retention
 from butlers.core.qa.publication.binding import QA_BASE_REF, InvalidBinding, PublicationBinding
 from butlers.core.qa.publication.export import (
     ExportRefused,
@@ -29,6 +31,7 @@ from butlers.core.qa.publication.publisher import (
     PublicationStatus,
     QaPublisher,
 )
+from butlers.core.qa.publication.state import PublicationRefused
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 
 logger = logging.getLogger(__name__)
@@ -219,8 +222,11 @@ async def publish_investigation(
             else PublicationStatus.REFUSED
         )
         return await publisher.record_refusal(attempt_id, PublicationResult(status, exc.code))
-    except (InvalidBinding, OSError, TimeoutError):
-        logger.warning("QA publication could not bind attempt=%s", attempt_id, exc_info=True)
+    except (InvalidBinding, OSError, TimeoutError) as exc:
+        # Type name only: binding/anonymizer errors can carry pre-egress PR text.
+        logger.warning(
+            "QA publication could not bind attempt=%s (%s)", attempt_id, type(exc).__name__
+        )
         return await publisher.record_refusal(
             attempt_id, PublicationResult(PublicationStatus.REFUSED, "unbound_export")
         )
@@ -238,6 +244,70 @@ async def publish_investigation(
             labels=labels,
             whitelist=whitelist,
         )
-    except Exception:  # noqa: BLE001 — post-egress errors are recorded inside the publisher
-        logger.warning("QA publisher raised before egress (attempt=%s)", attempt_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 — post-egress errors are recorded inside the publisher
+        # Type name only: a pre-egress failure can carry the unpublished PR text.
+        logger.warning(
+            "QA publisher raised before egress (attempt=%s, %s)", attempt_id, type(exc).__name__
+        )
         return PublicationResult(PublicationStatus.REFUSED, "publisher_error")
+
+
+async def retain_unpublished_proposal(
+    pool: Any,
+    *,
+    repo_root: Path,
+    attempt_id: uuid.UUID,
+    branch_name: str,
+    base_sha: str | None,
+    identity: GitIdentity | None,
+    isolated: bool = False,
+) -> PublicationResult | None:
+    """Seal and retain a committed investigation when no publisher is injected.
+
+    Needs no credential and performs no egress: the same in-process validator the publisher
+    uses seals the exact ``base..head`` commits, and the immutable bytes are kept in
+    ``public.qa_publication_exports``.  Returns ``None`` when the proposal is retained.  A
+    validator refusal returns the refusal (receipted, as the publisher does); an unretainable
+    export returns a refusal WITHOUT a receipt so the caller fails closed.  Never raises.
+    """
+    if base_sha is None or identity is None:
+        return await _refuse(pool, attempt_id, PublicationStatus.REFUSED, "unbound_export")
+    try:
+        objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
+        export = await build_sealed_export(
+            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+        )
+    except ExportRefused as exc:
+        status = (
+            PublicationStatus.ANONYMIZATION_FAILED
+            if exc.code in _LEAK_CODES
+            else PublicationStatus.REFUSED
+        )
+        return await _refuse(pool, attempt_id, status, exc.code)
+    except (OSError, TimeoutError) as exc:
+        logger.warning(
+            "QA proposal could not be sealed attempt=%s (%s)", attempt_id, type(exc).__name__
+        )
+        return await _refuse(pool, attempt_id, PublicationStatus.REFUSED, "unbound_export")
+    try:
+        await retention.retain_export(
+            pool, attempt_id, export, sealed_before_isolation=not isolated
+        )
+    except PublicationRefused as exc:
+        # Nothing was retained and no receipt is claimed: the caller keeps today's fail-closed
+        # path, so the case stays ambiguous rather than falsely unpublished.
+        return PublicationResult(PublicationStatus.REFUSED, exc.code)
+    return None
+
+
+async def _refuse(
+    pool: Any, attempt_id: uuid.UUID, status: PublicationStatus, category: str
+) -> PublicationResult:
+    result = PublicationResult(status, category)
+    try:
+        await retention.record_refusal(pool, attempt_id, status=status.value, category=category)
+    except Exception as exc:  # noqa: BLE001 — a lost receipt only weakens a later claim
+        logger.warning(
+            "QA refusal receipt unrecorded (attempt=%s): %s", attempt_id, type(exc).__name__
+        )
+    return result

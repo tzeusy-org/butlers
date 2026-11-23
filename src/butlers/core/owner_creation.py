@@ -19,7 +19,8 @@ from typing import Any
 from fastmcp.server.middleware import Middleware
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 
-META_KEY = "butlers/owner-creation-v1"
+from butlers.core.owner_creation_claim import META_KEY
+
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 

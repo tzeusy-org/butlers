@@ -17,6 +17,7 @@ Covers:
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -55,12 +56,29 @@ def _permissions_pool(
     then performs its mutation through the acquired connection, whose
     ``execute``/``fetchrow`` mocks are the pool's own.
     """
-    return fake_pool(
+    pool = fake_pool(
         execute=None,
         fetchval=registered,
         fetchrow=None,
         fetch=AsyncMock(side_effect=[records(butler_rows or []), records(rows or [])]),
     )
+    connection = pool.connection
+    active = False
+    original = connection.transaction
+    connection.is_in_transaction = lambda: active
+
+    @asynccontextmanager
+    async def transaction():
+        nonlocal active
+        async with original():
+            active = True
+            try:
+                yield
+            finally:
+                active = False
+
+    connection.transaction = MagicMock(side_effect=transaction)
+    return pool
 
 
 def _make_db(pool: FakePool) -> MagicMock:

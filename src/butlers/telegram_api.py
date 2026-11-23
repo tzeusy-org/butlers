@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 import httpx
@@ -189,6 +190,69 @@ def validate_telegram_reply_markup(
     return reply_markup
 
 
+_MESSAGE_NOT_MODIFIED = frozenset(
+    {
+        "Bad Request: message is not modified",
+        "Bad Request: message is not modified: specified new message content and reply "
+        "markup are exactly the same as a current content and reply markup of the message",
+    }
+)
+
+
+def telegram_outage_status(status_code: int) -> bool:
+    """Whether a Bot API status says the bot or provider failed, not the one message.
+
+    Telegram refuses a specific message with 400 or 403. 401 and 404 mean the token or API
+    path was rejected, 429 means slow down, and 5xx is the provider itself.
+    """
+    return status_code in (401, 404, 429) or status_code >= 500
+
+
+def telegram_message_not_modified(response: httpx.Response) -> bool:
+    """Whether Telegram refused an edit because the message already looks that way.
+
+    For an edit that sets a known end state, this is the end state, not a failure.
+    """
+    if response.status_code != 400:
+        return False
+    try:
+        data = response.json()
+    except ValueError:
+        return False
+    return (
+        isinstance(data, dict)
+        and data.get("ok") is False
+        and data.get("error_code") == 400
+        and data.get("description") in _MESSAGE_NOT_MODIFIED
+    )
+
+
+_SAFE_DESCRIPTION = re.compile(r"[A-Za-z0-9 ,.:;'_()-]{1,120}\Z", re.ASCII)
+# A bot token is ``<digits>:<secret>``; a description shaped like one is never a Telegram phrase.
+_TOKEN_SHAPED = re.compile(r"\d{5,}:[A-Za-z0-9_-]{20,}")
+
+
+def telegram_error_description(response: httpx.Response) -> str:
+    """A log-safe Bot API error description, or ``"unparsed"``.
+
+    Telegram's own refusals are short fixed phrases. Anything else (not JSON, a URL,
+    a long or oddly shaped string) could carry the bot-token URL, so it is dropped.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        return "unparsed"
+    description = data.get("description") if isinstance(data, dict) else None
+    if (
+        isinstance(description, str)
+        and _SAFE_DESCRIPTION.fullmatch(description)
+        and "http" not in description.lower()
+        and not _TOKEN_SHAPED.search(description)
+    ):
+        return description
+    return "unparsed"
+
+
 async def edit_telegram_message_text(
     client: httpx.AsyncClient,
     api_base_url: str,
@@ -196,15 +260,22 @@ async def edit_telegram_message_text(
     chat_id: str,
     message_id: int,
     text: str,
+    reply_markup: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Edit one Telegram message's text through ``editMessageText``."""
+    """Edit one Telegram message's text through ``editMessageText``.
+
+    Without ``reply_markup`` the edit also removes the message's inline keyboard; with it,
+    the given keyboard replaces the old one.
+    """
     source = clamp_edit_source(text)
-    payload = {
+    payload: dict[str, Any] = {
         "chat_id": chat_id,
         "message_id": message_id,
         "text": render_markdown(source),
         "parse_mode": "HTML",
     }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     response = await client.post(f"{api_base_url}/editMessageText", json=payload)
     if telegram_parse_rejection(response):
         payload = {key: value for key, value in payload.items() if key != "parse_mode"}
@@ -235,5 +306,7 @@ __all__ = [
     "TelegramReplyMarkupValidationError",
     "edit_telegram_message_text",
     "remove_telegram_inline_keyboard",
+    "telegram_error_description",
+    "telegram_message_not_modified",
     "validate_telegram_reply_markup",
 ]

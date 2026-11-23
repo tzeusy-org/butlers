@@ -35,46 +35,68 @@ from butlers.chronicler.gap_interview import (
     TransportResult,
     build_callback_data,
 )
+from butlers.core.custody_egress import (
+    CustodyEgressRefused,
+    require_custody_clear,
+    telegram_chat_target,
+)
 
 logger = logging.getLogger(__name__)
 
 _TELEGRAM_CHAT_INFO_TYPE = "telegram_chat_id"
 _TELEGRAM_TOKEN_SECRET = "BUTLER_TELEGRAM_TOKEN"
 
-# Button labels shown to the owner, paired with the answer they encode.
-_BUTTONS: tuple[tuple[str, GapInterviewAnswer], ...] = (
-    ("✅ Work day", GapInterviewAnswer.CONFIRM),
-    ("✏️ Not work", GapInterviewAnswer.CORRECT),
-    ("🚫 Dismiss", GapInterviewAnswer.DISMISS),
-)
+# Button label for each answer. A decision's ``options`` pick which are shown.
+_BUTTON_LABELS: dict[GapInterviewAnswer, str] = {
+    GapInterviewAnswer.CONFIRM: "✅ Work day",
+    GapInterviewAnswer.CORRECT: "✏️ Not work",
+    GapInterviewAnswer.DISMISS: "🚫 Dismiss",
+    GapInterviewAnswer.WORK: "💼 Work",
+    GapInterviewAnswer.SOCIAL: "🧑‍🤝‍🧑 Social",
+    GapInterviewAnswer.PLAY: "🎮 Play",
+    GapInterviewAnswer.EAT: "🍽️ Eat",
+    GapInterviewAnswer.REST: "🛋️ Rest",
+}
+_BUTTONS_PER_ROW = 3
 
 
 class TelegramInlineButtonTransport(GapInterviewTransport):
     """Deliver a gap interview as a Telegram inline-keyboard message."""
 
-    def __init__(self, *, http_client: Any, api_base: str, chat_id: str) -> None:
+    def __init__(
+        self, *, http_client: Any, api_base: str, chat_id: str, custody_pool: Any = None
+    ) -> None:
         self._http = http_client
         self._api_base = api_base.rstrip("/")
         self._chat_id = chat_id
+        # Read for the endpoint custody fence at send time. Without one, custody is unknown
+        # and the question is not sent (REQ-endpoint-custody-holds-007 fails closed).
+        self._custody_pool = custody_pool
 
-    def _reply_markup(self, interview_id: str) -> dict[str, Any]:
-        return {
-            "inline_keyboard": [
-                [
-                    {
-                        "text": label,
-                        "callback_data": build_callback_data(interview_id, answer),
-                    }
-                    for label, answer in _BUTTONS
-                ]
-            ]
-        }
+    def _reply_markup(self, interview: GapInterview) -> dict[str, Any]:
+        buttons = [
+            {
+                "text": _BUTTON_LABELS[GapInterviewAnswer(option)],
+                "callback_data": build_callback_data(interview.interview_id, option),
+            }
+            for option in interview.decision.options
+        ]
+        rows = [buttons[i : i + _BUTTONS_PER_ROW] for i in range(0, len(buttons), _BUTTONS_PER_ROW)]
+        return {"inline_keyboard": rows}
 
     async def deliver_interview(self, interview: GapInterview) -> TransportResult:
+        # A held (or unreadable) owner chat gets no question. Not delivered means the
+        # engine does not mark the day asked, so a later run asks once custody clears.
+        target = telegram_chat_target(self._chat_id)
+        try:
+            await require_custody_clear(self._custody_pool, None if target is None else [target])
+        except CustodyEgressRefused as exc:
+            logger.warning("gap interview not sent: custody %s", exc.reason)
+            return TransportResult(delivered=False, detail=f"custody_{exc.reason}")
         payload = {
             "chat_id": self._chat_id,
             "text": interview.decision.question,
-            "reply_markup": self._reply_markup(interview.interview_id),
+            "reply_markup": self._reply_markup(interview),
         }
         try:
             resp = await self._http.post(f"{self._api_base}/sendMessage", json=payload)
@@ -142,7 +164,7 @@ async def build_telegram_transport(
         return None
     api_base = f"https://api.telegram.org/bot{token}"
     return TelegramInlineButtonTransport(
-        http_client=http_client, api_base=api_base, chat_id=chat_id
+        http_client=http_client, api_base=api_base, chat_id=chat_id, custody_pool=pool
     )
 
 

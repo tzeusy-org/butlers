@@ -8,13 +8,16 @@ be suppressed-but-never-delivered indefinitely (e.g. secrets_lifecycle's
 deliver() bug, bu-tdd4k.2 -- 120 suppressed / 0 delivered) with nothing to
 observe the outage except its absence downstream.
 
-Two endpoints:
+Three endpoints:
 
 - ``GET /api/attention/ledger`` -- windowed, filterable (intent / source /
   outcome / origin_butler) paginated row list.
 - ``GET /api/attention/ledger/summary`` -- per-``origin_butler`` delivery-vs-
   suppression rollup over a window, with the ``suppressed_never_delivered``
   flag the Trust Console panel exists to surface loudly.
+- ``GET /api/attention/efficacy`` -- the latest observational verdict per
+  insight class and priority band (``public.insight_class_efficacy``,
+  bu-s11n0s.15 S2). Observe-only.
 
 Naming note: the ledger's own ``source`` column is the choke-point literal
 (``notify``/``insight`` for proactive egress, plus ``discretion`` for the one
@@ -41,6 +44,8 @@ from butlers.api.models.attention_ledger import (
     AttentionLedgerListResponse,
     AttentionLedgerSummaryResponse,
     AttentionSourceSummary,
+    InsightClassEfficacy,
+    InsightEfficacyResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -388,3 +393,89 @@ async def get_attention_ledger_summary(
             raise
         _log_missing_ledger_table_once(operation="get_attention_ledger_summary")
         return _empty_ledger_summary(since=effective_since, until=until)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/attention/efficacy -- latest observational verdict per insight class
+# ---------------------------------------------------------------------------
+
+
+def _is_missing_efficacy_table_error(exc: Exception) -> bool:
+    """Return whether *exc* means ``insight_class_efficacy`` is not migrated yet."""
+    if exc.__class__.__name__ == "UndefinedTableError":
+        return True
+    msg = str(exc).lower()
+    return "relation" in msg and "insight_class_efficacy" in msg and "does not exist" in msg
+
+
+async def _query_efficacy(
+    pool: asyncpg.Pool, *, origin_butler: str | None, category: str | None
+) -> InsightEfficacyResponse:
+    conditions: list[str] = []
+    args: list[object] = []
+    if origin_butler is not None:
+        args.append(origin_butler)
+        conditions.append(f"origin_butler = ${len(args)}")
+    if category is not None:
+        args.append(category)
+        conditions.append(f"category = ${len(args)}")
+    where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    rows = await pool.fetch(
+        "SELECT DISTINCT ON (origin_butler, category, priority_band) "
+        "origin_butler, category, priority_band, bucket_date, n_treated, n_holdout, "
+        "treated_resolved, holdout_resolved, treated_median_resolve_s, "
+        "holdout_median_resolve_s, verdict, evidence, computed_at "
+        f"FROM public.insight_class_efficacy{where_clause} "
+        "ORDER BY origin_butler, category, priority_band, bucket_date DESC",
+        *args,
+    )
+    return InsightEfficacyResponse(
+        data=[
+            InsightClassEfficacy(
+                **{key: row[key] for key in _EFFICACY_COLUMNS},
+                evidence=_normalize_metadata(row["evidence"]) or {},
+            )
+            for row in rows
+        ]
+    )
+
+
+_EFFICACY_COLUMNS = (
+    "origin_butler",
+    "category",
+    "priority_band",
+    "bucket_date",
+    "n_treated",
+    "n_holdout",
+    "treated_resolved",
+    "holdout_resolved",
+    "treated_median_resolve_s",
+    "holdout_median_resolve_s",
+    "verdict",
+    "computed_at",
+)
+
+
+@router.get("/efficacy", response_model=InsightEfficacyResponse)
+async def get_insight_efficacy(
+    origin_butler: str | None = Query(None, description="Narrow to one originating butler"),
+    category: str | None = Query(None, description="Narrow to one insight category"),
+    *,
+    db: Db,
+) -> InsightEfficacyResponse:
+    """Return the latest observational verdict per (class, priority band).
+
+    Observe-only (bu-s11n0s.15 S2): verdicts compare natural arms (delivered vs. held by budget
+    or context) within one priority band; nothing reads them to shape delivery. A sweep that
+    failed leaves the previous row in force, so ``computed_at`` is the row's age.
+    """
+    pool = _get_shared_pool(db)
+    if pool is None:
+        return InsightEfficacyResponse(data=[], source_available=False)
+    try:
+        return await _query_efficacy(pool, origin_butler=origin_butler, category=category)
+    except Exception as exc:
+        if not _is_missing_efficacy_table_error(exc):
+            raise
+        logger.debug("insight_class_efficacy is missing; returning no verdicts")
+        return InsightEfficacyResponse(data=[])

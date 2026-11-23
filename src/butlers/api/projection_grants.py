@@ -85,6 +85,8 @@ class ProjectionGrantStore(Protocol):
 
     async def revoke(self, projection_id: uuid.UUID) -> ProjectionGrant | None: ...
 
+    async def rotate(self, projection_id: uuid.UUID) -> tuple[ProjectionGrant, str] | None: ...
+
     async def record_fetch(self, projection_id: uuid.UUID, status: str) -> None: ...
 
 
@@ -157,6 +159,20 @@ class PostgresProjectionGrantStore:
         )
         return _grant(row) if row is not None else None
 
+    async def rotate(self, projection_id: uuid.UUID) -> tuple[ProjectionGrant, str] | None:
+        """Swap the token in one UPDATE: the old digest stops resolving at commit."""
+        token = new_token()
+        row = await self._pool.fetchrow(
+            f"""
+            UPDATE public.ambient_projections SET token_digest = $2
+            WHERE id = $1 AND revoked_at IS NULL
+            RETURNING {_COLUMNS}
+            """,
+            projection_id,
+            token_digest(token),
+        )
+        return (_grant(row), token) if row is not None else None
+
     async def record_fetch(self, projection_id: uuid.UUID, status: str) -> None:
         await self._pool.execute(
             """
@@ -226,7 +242,7 @@ def liveness_attention_items(rows: list[Any], now: datetime) -> list[dict]:
                 "type": "projection",
                 "butler": None,
                 "description": description,
-                "link": "/settings",
+                "link": "/settings/projections",
                 "source": "projection",
                 "projection_id": str(row["id"]),
             }

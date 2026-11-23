@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from butlers.api.audit_emit import IgnoresCallerAssertedActor
 
@@ -211,8 +211,10 @@ class ResolveGapInterviewRequest(BaseModel):
     """Body for the gap-interview one-tap resolve endpoint (bu-whhll.12).
 
     Posted by the ``telegram_bot`` connector when the owner taps an inline
-    button (``cgi:<interview_id>:<answer>``). ``answer`` is one of
-    ``confirm`` / ``correct`` / ``dismiss``.
+    button (``cgi:<interview_id>:<answer>``). ``answer`` is ``confirm`` /
+    ``correct`` / ``dismiss`` for an occupation interview, or a lane (``work`` /
+    ``social`` / ``play`` / ``eat`` / ``rest``) or ``dismiss`` for a block
+    interview (bu-r3fmja).
     """
 
     interview_id: str
@@ -586,6 +588,7 @@ class RollupDay(BaseModel):
       legitimate absence, not a degraded/error state: never render this as a
       false all-clear zero, but also never set
       ``RollupsResponse.rollups_source_error`` for it.
+    - ``pending_repair`` — source repair is still running; numeric values and prose are hidden.
     - ``unknown`` — the query for this window failed (see
       ``RollupsResponse.rollups_source_error``); this day's ``lanes``/
       ``flags`` are empty because nothing could be read, not because nothing
@@ -640,22 +643,30 @@ class RollupsResponse(BaseModel):
 class BalanceLaneRow(BaseModel):
     """One lane's balance for the target day, from GET /api/chronicler/balance.
 
-    Baseline is a trailing rolling-window mean over ``chronicler.daily_rollups``
-    (see ``balance.compute_daily_balance``) — the same materialized per-day
-    totals ``GET /api/chronicler/rollups`` reads, so this surface can never
-    diverge from the rollup numbers a client already renders elsewhere.
+    Baseline is the owner's personal band (median and MAD over the lookback
+    window, ``butlers.core.baselines``) of ``chronicler.daily_rollups`` (see
+    ``balance.compute_daily_balance``) — the same materialized per-day totals
+    ``GET /api/chronicler/rollups`` reads, so this surface can never diverge
+    from the rollup numbers a client already renders elsewhere.
     """
 
     lane: str
     seconds: int = 0
     baseline_seconds: float | None = None
-    """Trailing rolling-window mean seconds for this lane, or null when there
-    is no materialized rollup history yet within the lookback window — not
+    """The band center (median seconds) for this lane, or null when the lane
+    has too little materialized rollup history in the lookback window — not
     the same as a real 0 baseline."""
     delta_seconds: float | None = None
     """``seconds - baseline_seconds``. Null whenever ``baseline_seconds`` is
     null."""
     baseline_sample_days: int = 0
+    """Prior materialized days the band rests on (``n_observed``)."""
+    state: str = "insufficient_history"
+    """``within`` / ``above`` / ``below`` / ``insufficient_history`` — what
+    the day can honestly be called against the band."""
+    band_low: float | None = None
+    band_high: float | None = None
+    """The usual range in seconds; null unless the band is ready."""
     unavailable: bool = False
     """True when a source contributing to this lane is ``feeder_dark`` for
     the target day (mirrors ``RollupLaneRow.unavailable``) — render this as
@@ -677,8 +688,9 @@ class BalanceResponse(BaseModel):
     local_date: str
     timezone: str
     status: str
-    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown`` —
-    same three-state contract as ``RollupDay.status``."""
+    """One of ``materialized`` / ``not_yet_materialized`` / ``pending_repair`` /
+    ``unknown`` — same status contract as ``RollupDay.status``. A pending target
+    or baseline date hides all lanes until repair completes."""
     baseline_lookback_days: int
     lanes: list[BalanceLaneRow] = Field(default_factory=list)
     """Empty when ``status != 'materialized'``; one entry per
@@ -694,10 +706,18 @@ class TrendLaneDay(BaseModel):
 
     local_date: str
     status: str
-    """One of ``materialized`` / ``not_yet_materialized`` / ``unknown``."""
+    """One of ``materialized`` / ``not_yet_materialized`` / ``pending_repair`` /
+    ``unknown``. Pending target or baseline dates hide their values."""
     seconds: int = 0
     baseline_seconds: float | None = None
     delta_seconds: float | None = None
+    state: str | None = None
+    """``BalanceLaneRow.state`` for a materialized day; null otherwise."""
+    band_low: float | None = None
+    band_high: float | None = None
+    """Personal-baseline band edges (seconds); null without a ready band."""
+    baseline_sample_days: int = 0
+    """Observed days the band rests on (``BalanceLaneRow.baseline_sample_days``)."""
     unavailable: bool = False
     """See ``BalanceLaneRow.unavailable`` — same feeder_dark cross-reference,
     evaluated per day."""
@@ -709,18 +729,18 @@ class TrendLaneSeries(BaseModel):
     lane: str
     days: list[TrendLaneDay] = Field(default_factory=list)
     """Ordered by local_date ASC, one entry per day in [start_date, end_date]."""
-    streak_days: int = 0
+    streak_days: int | None = 0
     """Trailing run of consecutive non-zero-activity days ending at
     ``end_date`` (``balance.compute_lane_streak``). 0 when the most recent
-    day has no activity in this lane."""
+    day has no activity in this lane. Null while a visible day is pending repair."""
 
 
 class TrendAnomaly(BaseModel):
     """One day where a lane's total deviated sharply from its baseline.
 
-    Flagged by ``balance.is_lane_anomalous`` — requires both a minimum
-    baseline sample size and a delta clearing an absolute-and-relative
-    threshold, so early-history noise never produces a fabricated anomaly.
+    Flagged by ``balance.is_lane_anomalous`` — the day falls outside the lane's
+    personal band, and a lane needs enough baseline days to have one, so
+    early-history noise never produces a fabricated anomaly.
     """
 
     lane: str
@@ -729,7 +749,7 @@ class TrendAnomaly(BaseModel):
     baseline_seconds: float
     delta_seconds: float
     direction: str
-    """``"spike"`` when seconds > baseline, ``"drop"`` when seconds < baseline."""
+    """``"spike"`` when above the band, ``"drop"`` when below it."""
 
 
 class TrendsResponse(BaseModel):
@@ -878,8 +898,9 @@ class UpdateRoutineRequest(BaseModel):
 class LocationRetentionPolicyResponse(BaseModel):
     """GET/PUT /api/chronicler/location-retention (bu-s11n0s.7).
 
-    ``status`` is ``not_enforced`` until raw expiry is gated on genuine
-    projection coverage; it never claims raw location evidence was forgotten.
+    ``enforced`` is the owner's switch (off by default, bu-s11n0s.75) and
+    ``status`` follows it: ``enforcing`` only while it is on. It never claims
+    raw location evidence was forgotten.
     """
 
     days: int
@@ -890,7 +911,8 @@ class LocationRetentionPolicyResponse(BaseModel):
     raw_age_basis: str
     precision_after_forgetting: str
     covered_sources: list[str]
-    status: Literal["not_enforced"]
+    enforced: bool
+    status: Literal["not_enforced", "enforcing"]
 
 
 class UpdateLocationRetentionRequest(BaseModel):
@@ -898,12 +920,22 @@ class UpdateLocationRetentionRequest(BaseModel):
 
     Strict: booleans, strings, floats and unknown fields (including any
     caller-asserted actor) are refused; the actor comes from authentication.
+    ``enforced`` turns raw expiry on or off; omitted, the switch is kept. An
+    explicit ``null`` is refused.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     days: int = Field(..., ge=1, le=30)
     expected_version: int = Field(..., ge=1)
+    enforced: bool | None = None
+
+    @field_validator("enforced", mode="before")
+    @classmethod
+    def _no_explicit_null(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("enforced must be true or false when given")
+        return value
 
 
 __all__ = [

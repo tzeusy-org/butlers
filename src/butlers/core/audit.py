@@ -19,8 +19,9 @@ from typing import Any
 
 import asyncpg
 from asyncpg.exceptions import UndefinedTableError
+from opentelemetry import metrics
 
-from butlers.metrics_registry import get_or_create_counter
+from butlers.core.audit_transaction import pending_append, record_append
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +78,17 @@ class AuditTableNotAvailableError(Exception):
     """
 
 
-# Prometheus counter -- incremented per successful append to public.audit_log.
-audit_log_appended_total = get_or_create_counter(
-    "audit_log_appended_total",
-    "Number of rows appended to public.audit_log, partitioned by action.",
-    labelnames=["action"],
-)
+def _record_appended(action: str) -> None:
+    """Add one to ``butlers.audit.log.appended{action}`` on the ``butlers`` OTel meter.
+
+    The instrument is resolved per call: ``create_counter`` is idempotent per meter, and
+    resolving late binds to whichever meter provider is installed when the row lands.
+    """
+    metrics.get_meter("butlers").create_counter(
+        "butlers.audit.log.appended",
+        description="Rows appended to public.audit_log, partitioned by action.",
+    ).add(1, {"action": action})
+
 
 _error_row_listeners: list[Callable[[dict[str, Any]], None]] = []
 
@@ -124,10 +130,17 @@ async def append(
     result: str | None = None,
     error: str | None = None,
     failure_category: str | None = None,
+    metric_action: str | None = None,
 ) -> int:
     """Append one row to ``public.audit_log`` and return the new row id.
 
-    Increments ``audit_log_appended_total{action}`` on success.
+    Adds 1 to the OTel counter ``butlers.audit.log.appended{action}`` only after
+    acknowledged commit. An open transaction must belong to ``audit_transaction``;
+    the integer receipt is still returned before that owner commits. Savepoints
+    merge pending records into their outer owner; rollback discards them. An
+    interrupted commit has unknown durability and records nothing.
+    The attribute is ``metric_action`` when given, else ``action``; callers whose
+    ``action`` embeds request-derived text must pass a bounded ``metric_action``.
 
     Accepts either an asyncpg pool or an already-acquired connection so that
     callers can run the audit insert inside the same SQL transaction as the
@@ -196,6 +209,8 @@ async def append(
     if pool is None or _native_storage_unavailable(pool):
         raise AuditTableNotAvailableError("Required audit storage is not available")
 
+    pending = pending_append(pool)
+
     # Sanitize metadata into a fully JSON-safe dict (UUID/datetime -> str) via
     # a json.dumps/loads round-trip. Bind the resulting DICT directly (no
     # json.dumps, no ::jsonb cast): every asyncpg pool in this codebase
@@ -259,7 +274,7 @@ async def append(
         ) from exc
     if type(row_id) is not int or row_id <= 0:
         raise AuditTableNotAvailableError("Required audit storage returned no receipt")
-    audit_log_appended_total.labels(action=action).inc()
+    record_append(pending, metric_action or action, _record_appended)
 
     # Notify listeners (the dashboard's live "issue" event) whenever an
     # error-result row lands. Best-effort: never let a listener block or fail

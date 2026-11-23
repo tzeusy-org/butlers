@@ -2178,3 +2178,64 @@ class TestAtomicBreakerOutcomeWiring:
         assert result.success is True
         assert result.output == "fallback-succeeded"
         assert raising_counter.labels.called
+
+
+class TestExecutorEnvUnfitLeavesTheBreakerUntouched:
+    """bu-ejow5p.5: a QA sandbox auth failure must not open a fleet-visible model breaker."""
+
+    async def _run(self, tmp_path: Path, trigger: str) -> list[Any]:
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(parents=True)
+        adapter = _FailThenSuccessAdapter(
+            fail_count=1,
+            error=RuntimeError("Claude CLI exited with code 1: authentication failed"),
+        )
+        with (
+            patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
+            patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                return_value=_catalog_primary(model="primary-model"),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_QUOTA_ALLOWED,
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=(
+                    DEFAULT_RUNTIME_TYPE,
+                    "fallback-model",
+                    [],
+                    _FALLBACK_CATALOG_ID,
+                    1800,
+                ),
+            ),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as write_attempt,
+        ):
+            mock_create.return_value = _SESSION_ID
+            await Spawner(
+                config=_make_config(),
+                config_dir=config_dir,
+                pool=AsyncMock(),
+                runtime=adapter,
+            ).trigger("hello", trigger, env_override={"PATH": "/usr/bin"})
+        return list(write_attempt.await_args_list)
+
+    async def test_executor_auth_failure_is_not_a_breaker_outcome(self, tmp_path: Path) -> None:
+        calls = await self._run(tmp_path, "qa")
+        failed = next(c for c in calls if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID)
+        assert failed.kwargs["outcome"] == "executor_env_unfit"
+        assert failed.kwargs["failure_reason"].startswith("executor_env_unfit")
+
+    async def test_non_executor_auth_failure_still_counts_toward_the_breaker(
+        self, tmp_path: Path
+    ) -> None:
+        calls = await self._run(tmp_path / "route", "route")
+        failed = next(c for c in calls if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID)
+        assert failed.kwargs["outcome"] == "runtime_failure"

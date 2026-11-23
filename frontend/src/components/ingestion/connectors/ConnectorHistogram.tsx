@@ -13,8 +13,17 @@
  *
  * No card chrome. One elevation. No color fills beyond foreground treatment.
  *
+ * A `deaf` slot (no heartbeat recorded, see ListeningState) draws a hatched
+ * full-height cell, so "not listening" differs in shape from a measured zero,
+ * and a visible legend names the deaf hours ("not listening 3h").
+ *
  * Spec: docs/redesigns/ingestion-connector-detail.jsx §ConnectorHistogram
  */
+
+import type { ListeningState } from '@/api/types'
+import { describeNotListening } from '@/lib/bucket-series'
+import { useHatchPatternId } from '@/hooks/use-hatch-pattern-id'
+import { NotListeningCell, NotListeningPattern } from './NotListeningHatch'
 
 interface ConnectorHistogramProps {
   /**
@@ -32,6 +41,11 @@ interface ConnectorHistogramProps {
    * Absent or all-zero renders no overlay.
    */
   secondaryData?: (number | null)[]
+  /**
+   * Optional per-slot listening state, aligned with `data` (bu-s11n0s.5).
+   * Only `deaf` changes the drawing; absent draws no listening marks.
+   */
+  listening?: (ListeningState | null)[]
   height?: number
 }
 
@@ -48,8 +62,16 @@ const RELATIVE_LABELS = ['-24h', '-18h', '-12h', '-6h', 'now']
  * tick hanging down from the top of each column — a distinct signal, never
  * stacked additively onto the primary ingested bars.
  */
-export function ConnectorHistogram({ data, secondaryData, height = 96 }: ConnectorHistogramProps) {
+export function ConnectorHistogram({
+  data,
+  secondaryData,
+  listening,
+  height = 96,
+}: ConnectorHistogramProps) {
+  const patternId = useHatchPatternId()
   const bars = Array.from({ length: 24 }, (_, i) => data[i] ?? null)
+  const deaf = Array.from({ length: 24 }, (_, i) => listening?.[i] === 'deaf')
+  const notListening = describeNotListening(listening)
   const peakValue = Math.max(0, ...bars.map((v) => v ?? 0))
 
   // Quiet filtered overlay: own-peak normalization + 30% height cap (mirrors the
@@ -70,7 +92,8 @@ export function ConnectorHistogram({ data, secondaryData, height = 96 }: Connect
   // A connector that is 100% skip-routed has zero ingested but real filtered
   // volume (bu-c48im) — do NOT collapse to the empty state in that case, or the
   // skip volume the histogram exists to surface would be hidden.
-  if (peakValue === 0 && !hasSecondaryVolume) {
+  // A deaf window is not "no throughput": keep the strip so its hatching shows.
+  if (peakValue === 0 && !hasSecondaryVolume && !notListening) {
     return (
       <div data-testid="histogram-empty">
         <div
@@ -107,6 +130,7 @@ export function ConnectorHistogram({ data, secondaryData, height = 96 }: Connect
         aria-hidden="true"
         style={{ width: '100%', height }}
       >
+        {notListening && <NotListeningPattern id={patternId} />}
         {bars.map((v, i) => {
           const x = i * (barWidth + barGap)
           const secondaryV = secondaryBars?.[i] ?? 0
@@ -121,6 +145,24 @@ export function ConnectorHistogram({ data, secondaryData, height = 96 }: Connect
               className="fill-muted-foreground/25"
             />
           )
+          // Not listening: a hatched cell, plus the bar only if volume was counted.
+          if (deaf[i]) {
+            return (
+              <g key={i} data-slot="deaf">
+                <NotListeningCell x={x} width={barWidth} height={height} patternId={patternId} />
+                {v !== null && v > 0 && (
+                  <rect
+                    x={x}
+                    y={height - Math.max(2, (v / peak) * height)}
+                    width={barWidth}
+                    height={Math.max(2, (v / peak) * height)}
+                    className="fill-foreground/60"
+                  />
+                )}
+                {secondaryTick}
+              </g>
+            )
+          }
           // Not reported: no bar, so it can never be mistaken for a measured zero.
           if (v === null) {
             return (
@@ -164,6 +206,14 @@ export function ConnectorHistogram({ data, secondaryData, height = 96 }: Connect
           </span>
         ))}
       </div>
+      {notListening && (
+        <p
+          className="mt-1 font-mono text-[9.5px] tracking-[0.06em] text-muted-foreground/70"
+          data-testid="histogram-listening-legend"
+        >
+          hatched · {notListening}
+        </p>
+      )}
     </div>
   )
 }

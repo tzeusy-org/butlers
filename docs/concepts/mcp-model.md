@@ -182,11 +182,16 @@ conflicts with the inventory is refused rather than silently replaced.
 | `output_sensitivity` | Whole-payload `ordinary` or `sensitive`; current declarations use `sensitive`. |
 | `resource_params` | Visible argument names selecting resources, excluding message content and display attributes. |
 | `selection_bound` | One explicit true or false per `resource_params` name. True only where a spec requires the scope be exactly what the owner picked (REQ-capability-authorization-018): such a capability is neither listed nor callable without an owner-surface selection record. Every current param is false; a missing, extra or non-boolean entry fails the catalog check. Declarative only: no runtime path reads it yet. |
+| `alias_free_params` | The subset of `resource_params` whose identifiers have no alias. The handler names a resource only by that identifier: a strict UUID, with no `primary`/`me`/`self` shortcut, no name-or-email alternative, and no fuzzy or int parsing. These params, with `alias_resolvers` params, can narrow an owner tighten-only term (bu-dhloi1.10). Undeclared means none. Declared today: none. A merge makes every entity or contact id an alias of its survivor (bu-dhloi1.34), so entity ids moved to `alias_resolvers` and contact ids cannot narrow. Home Assistant entity slugs, unaudited relationship `entity_*` tools and switchboard `contact_id`/`target_contact_id` stay aliasable. |
+| `categories` | Required sorted subset of the six RFC 0038 S1 sensitivity categories (`credentials`, `finance`, `health`, `location`, `relationship_notes`, `routine`) the output may carry. If it is missing, unknown or unsorted, the tool is ungrantable. The declaration cites its domain spec in `CATEGORY_SPECS`. Free-text and cross-domain outputs name all six. The narrower declarations are listed in `docs/architecture/capability-broker.md` (bu-dhloi1.27). |
+| `alias_resolvers` | Aliasable `resource_params` (never `alias_free_params`) mapped to a closed resolver kind (`calendar` or `entity`). The broker resolves them to canonical ids before owner law, so they can narrow an owner term too; an unresolved value fails closed. `calendar` also pins the canonical id into the call. `entity` matches only: owner law compares on the live merge survivor, and the call keeps the id it named (bu-dhloi1.30, bu-dhloi1.34, [capability broker](../architecture/capability-broker.md#resolved-aliases-bu-dhloi130)). Declared today: `calendar_id` on every calendar tool, `calendar_ids` on `calendar_find_free_slots`, and the audited entity UUID params on the core, calendar, memory and chronicler tools. Undeclared means none. |
 | `safety_args` | Existing sensitive visible arguments an approval must pin. |
 | `approval_policy` | Immutable snapshot of the existing actual configured gate, including disabled/absent state. |
 | `idempotency` | `none` or `key_required`; Calendar responses require their native request/command identity. |
 | `owner_authority` | Whether a write steers future sessions, such as an owner profile, preference or recovery policy. |
 | `recipient_params` | Frozen named selectors, unresolved inherited parties and the actual conditional owner default. |
+| `content_params` | Optional. The arguments that carry delivered content; with `recipient_params` they rebuild the exact call an approval card shows. Published only when declared. |
+| `resource_pair` | Optional (bu-jv1moa.64). Two `resource_params` names (neither selection-bound) that a grant scopes as one pair, never as two independent sets: the broker checks the call's `(first, second)` against the grant's pair scope, encoded length-prefixed as `<len(first)>:<first><second>` under the synthetic key `first+second` (`butlers.core.resource_pairs`). A grant with no pair scope has an empty scope: the capability is neither listed nor callable. Published only when declared, so undeclared tools keep their catalog digest. Declared today: `attachment_materialize` `(message_id, attachment_id)`; admission does not issue the scope yet, so the tool stays dark. |
 
 Recipient selectors and resources can overlap. Calendar attendees identify
 parties; `calendar_id` selects a calendar. Email `to` and `thread_id` select
@@ -337,6 +342,18 @@ Cause receipts contain a fixed classification plus an opaque reference; they
 never copy message content, bearer material or a sender address. A missing,
 expired, revoked, edited or unreadable cause remains routine. This is the
 pre-switch boundary; RFC0038 first-switch delivery remains separate work.
+
+## Prompts that await a reply
+
+`notify(awaits_reply_seconds=N)`, 30-86400, marks a Telegram `send` or `reply` as a prompt the
+owner may answer by replying to that exact message within the window. Any other channel or intent
+refuses with `awaits_reply_validation`. The argument is part of the call's argument digest, so
+approvals and the broker's assertion bind it. A delivered prompt returns an additive `delivery`
+block (`transport`, `endpoint`, `conversation`, `locator`, `prompt_expires_at`) built from
+Messenger's report of the message it sent; a call without the argument, or a delivery Messenger
+cannot report, returns what it always did. The block is a claim: the capability broker derives
+the reply ref from it and from the owner entity and channel it recorded itself, and never lets
+the expiry exceed the window the call named (see the goal runner's owner-answer wait).
 
 ## Informational confirm admission
 

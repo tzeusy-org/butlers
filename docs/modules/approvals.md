@@ -39,7 +39,7 @@ The approval gate operates at two independent layers, both enforcing gating:
 
 **Layer 1 -- MCP tool wrapping** (`gate.py`): Intercepts gated tool calls at the MCP boundary. Primary gate for direct LLM tool invocations.
 
-**Layer 2 -- `route.execute` inline gate** (`daemon.py`): The Messenger butler's `route.execute` handler calls channel module methods directly, bypassing MCP tool wrappers. An inline gate re-enforces role-based gating at this layer.
+**Layer 2 -- `route.execute` inline gate** (`core_tools/_routing.py`): The Messenger butler's `route.execute` handler calls channel module methods directly, bypassing MCP tool wrappers. An inline gate re-enforces role-based gating at this layer. A plain send or reply it parks is stored as the registered native tool (`telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`) with that handler's arguments, so the card shows the registered preview and approval replays the native tool once. Inert-link and file deliveries have no native argument for those facts; they keep the exact routed envelope and their cards are Open only. So does a plain delivery whose native tool this Messenger does not register (email without `send_tools`), since approval could not replay it. An owner-approved `notify` that arrives with a Switchboard attestation of its source's verified single-use proof is not parked again: the shared approval matcher honours it for that exact routed envelope only, and only on the kernel-admitted Switchboard hop.
 
 ### Role-Based Auto-Approval
 
@@ -108,6 +108,11 @@ The owner can save, edit, inspect and revoke typed standing-reply template draft
   `approval_rules` and no `active` field (requests carrying one are refused with 422).
   Activation, broker enforcement, per-window limits and receipts belong to bu-jv1moa.28.
 
+The dashboard's `/approvals` page carries the editor (the "Standing-reply drafts" section,
+`frontend/src/components/approvals/reply-template-drafts-panel.tsx`): author, edit, inspect,
+revoke (explicit confirm) and preview. Every preview shows `authority: none`, and the
+section has no activation control.
+
 Every route requires the owner's verified dashboard session; API-key, connector-callback and
 runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
 Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no
@@ -129,18 +134,155 @@ permanently (owner decision bu-bup68v); other tools are refused as unsupported.
 Valid status transitions:
 
 ```
-pending -> approved | rejected | expired
+pending -> approved | rejected | expired | cancelled
 approved -> executed | abandoned
-rejected, expired, executed, abandoned -> (terminal)
+rejected, expired, executed, abandoned, cancelled -> (terminal)
 ```
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it; an already-executed replay returns the stored result without re-running the tool.
+`cancelled` applies only to actions with RFC 0038 goal lineage: when a goal is
+stopped, `goal_park.cancel_goal_effects` takes exactly the actions whose broker
+effects were cancelled (never one already dispatched) and cancels the pending ones through
+`transition_pending_action` (an `action_cancelled` event; owner prompts are
+fenced with the `action_rejected` delivery reason code) and abandons its
+approved, never-executed actions (`action_abandoned`). The dashboard's decided-history
+filter includes it. Goal lineage (`goal_id`, `goal_invocation_id`,
+`goal_depth`, `goal_exposed`, `goal_origin`, migration `approvals_020`) is set
+only by the capability broker's park path
+([Capability Broker](../architecture/capability-broker.md)); `goal_origin` is
+separate from the producer `origin`, and `legacy` is reserved for actions
+created before the cutover. Approving an action whose lineage is exposed never
+counts toward standing-rule promotion. A park also records `goal_rule_possible` (the broker's park-time "may a standing rule match" answer; explanation only) and, when exposed, `goal_exposure_cause`
+(migration `approvals_023`): the invocation's closed S1 `exposure_cause` (`ingress`, `read`,
+`child`, `inbox`, `recovery`, `legacy_unknown`), read by the broker under the goal lock. NULL means
+unknown (an unexposed lineage, or a row that recorded none); it never comes from the model or
+the call arguments.
+
+Both owner surfaces show the same lineage lines, built once by `lineage_facts` from that park record: the
+Telegram card ("Parked by a goal") and the dashboard approval detail (`goal.facts` on
+`ApprovalGoalLineage`). The lines are a closed vocabulary (goal, origin, exposed by, standing rule), never
+model claims or call arguments; an unrecorded fact reads "Unknown". They explain and never authorize.
+
+The owner decides a goal action on the usual surfaces (dashboard approve, the
+module `approve_action` tool, `operations.approve_action`): the decision is
+recorded and the result carries `execution_code: goal_effect_requires_broker`,
+but nothing runs it there; the capability broker reads the decision and runs
+the effect. An edit to a goal action's arguments is refused with that code.
+Every legacy run path (the shared executor, dispatch-by-id, both retry routes)
+refuses a goal action with the same typed code.
+
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — uses the shared `execute_approved_action()` path. It holds a database row lock from its approved/null eligibility check through handler invocation and the successful terminal write, so an Abandon request cannot win after a side effect starts. A successful action becomes `executed` only after its result and immutable audit event are persisted. If a handler is unavailable or fails, the action remains `approved` with no execution result so the operator can retry, reject, or dashboard-abandon it. The exception is a send that may already have gone out (an uncertain transport outcome, or a Telegram effect-uncertain or partial-delivery marker): it is recorded `executed` with `{status: outcome_unknown, delivery_confirmed: false}` and never retried, because Retry could message a non-owner twice (REQ-runtime-attention-outbox-002). An already-executed replay returns the stored result without re-running the tool.
 
 `abandoned` is a terminal, dashboard-only recovery outcome for an action that was
 previously approved but intentionally left unexecuted. It requires a non-blank
 reason and appends an immutable `action_abandoned` event in the same transaction.
 There is no MCP, Telegram callback, automatic, bulk, or scheduled abandonment
 path.
+
+## External MCP fact proposals
+
+An outside MCP client may propose a Relationship fact (RFC 0039 D13). The
+model-free Relationship importer parks it through
+`park.park_external_proposal(connection, *, proposal_id, action_id, tool_args,
+client_label, evidence_url, origin_butler, requested_at=None)`, normally via the
+Relationship helper `tools/external_fact_proposals.park_external_fact_proposal`,
+which also records the fact's third-party provenance. The entry point
+(REQ-module-approvals-010):
+
+- parks `relationship_assert_fact` outside the gate wrapper, so no standing rule
+  is consulted and `approval_rule_id` stays NULL;
+- uses the shared durable admission protocol. With admission enabled it records
+  one standalone `collapsed` presentation, like `park_prepared_action`, so no
+  approval-request push or digest entry is ever sent, and the action does not
+  count toward the burst window. `origin` stays NULL; the origin CHECK is
+  unchanged;
+- keys the action `external_mcp:<proposal_id>` and parks a proposal at most once,
+  whatever the earlier action's status;
+- runs inside the caller's transaction when given a connection;
+- stores only template `why`/`agent_summary` text and digest-only evidence. The
+  evidence items are typed `text` references whose `ref` is
+  `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and
+  `external_mcp:url_sha256=<hex>`. The full URL and the note stay in
+  `relationship.external_fact_proposals`. The typed `{type, ref, note}` shape is
+  required because the dashboard dossier model and the Relationship evidence
+  ledger accept nothing else;
+- refuses stored arguments that carry `src`, `content_authority`, `observed_at`
+  or other server-recorded provenance, and arguments without their own
+  `approval_action_id`;
+- expires unanswered after 14 days (expiry is denial).
+
+The action then appears on the approvals list like any other. Approval,
+rejection, edit, expiry and execution use the existing transitions and the
+shared executor, with three exemptions keyed on the `external_mcp:` prefix
+(`external_proposals.is_external_proposal_key`) on every approve surface: the
+dashboard route, the module `approve_action` tool, `operations.approve_action`
+and the Telegram callback.
+
+- **No autonomy history.** `autonomy_tracker.counts_toward_promotion` returns
+  false, so the approval records no `autonomy_approval_history` row.
+- **No promotion.** For the same reason it neither counts toward nor creates a
+  promotion suggestion.
+- **No rule.** `create_rule=true` is refused before any step-up is consumed or
+  the status changes, and the action stays `pending`. The dashboard route answers
+  409. `create_rule_from_action` refuses an external proposal in the same way.
+
+Nothing approves such an action except the owner's own decision. Standing rules
+apply only at gate time, and autonomy policy only feeds suggestions
+(REQ-public-mcp-proposals-008).
+
+### Typed dashboard review (REQ-dashboard-approvals-904)
+
+`relationship_assert_fact` has **no** registered call preview, and none should be
+added: a shared preview would make every internal Relationship fact one-tap
+approvable from a notification card or a summary dialog, and an older dashboard
+would show its plain Approve button. This follows the merge-review precedent
+(REQ-dashboard-approvals-902). Instead, `GET /api/approvals/{id}` returns
+`external_proposal_review` for an `external_mcp:` action only, read by
+`butlers.api.external_proposal_review.read_external_proposal_review`:
+
+- `subject` and `object` (`id`, `name`, `entity_type`, `status` of `live`,
+  `missing`, `merged` or `deleted`, read from `public.entities` now; `deleted`
+  covers `deleted_at` and the forget `tombstone` marker), `predicate`,
+  `client_label` (from the `external_mcp:client=` evidence ref), `proposal_id`;
+- `note` and `evidence_url`, read from `relationship.external_fact_proposals`
+  (the row whose `proposal_id` is the key's and whose `pending_action_id` is the
+  action). They are outside-authored data; the dashboard renders both as plain
+  text, never a link, image or preview;
+- `authority_statement`, the third-party authority text;
+- `unresolvable_entity`, `approve_unavailable_reason` and `displayed_call`
+  (`{tool_name, args_digest}`, the same digest as a card preview).
+
+For such an action `call_preview` is null, `proposed_action` has no
+`tool_args` and `referenced_entities` is empty (the review names the entities). `displayed_call` is offered only when the review shows everything the
+stored call carries: exactly the argument shape the importer parks (two entity
+UUIDs, a predicate, `object_kind = 'entity'`, `conf = 1.0`, the action's own
+`approval_action_id`, a null temporal packet), the proposal record backs this
+action with the same subject, predicate and object, it is still `parked`, the
+client label is recorded, and both entities are live. Otherwise it is null and
+`approve_unavailable_reason` says why (an unresolvable entity also sets
+`unresolvable_entity`). The dashboard approve route (`POST
+/api/approvals/{id}/approve` and its `actions/` alias, both `approve_owning_action`)
+re-reads the review under the pending-row lock: it answers 409 with that reason,
+or 409 "changed since shown" when the submitted `displayed_call` differs, before
+any decision, audit or dispatch. An approve without a `displayed_call` (a
+connector callback: no card ever showed it) and an approve carrying `edits` are
+refused with their own 409 details: the owner decides the call as reviewed, since
+an edit would execute arguments no review showed; the owner rejects instead.
+Only after those checks does the route pass the owning write an
+`ExternalReviewBinding` (action id and the displayed `args_digest`).
+`operations.approve_action` refuses an `external_mcp:` action unless that binding
+names this action and the stored call's digest, and the approvals module's
+`approve_action` MCP tool refuses one outright, both before any status change
+(`EXTERNAL_PROPOSAL_REVIEW_ONLY`), so no model-driven path approves an outside
+proposal. Reject and Defer are unaffected. If an entity is
+tombstoned after approval, the approved replay still fails closed
+(`relationship_assert_fact` refuses it and the importer reports `apply_failed`).
+
+The dashboard dossier renders the typed review in place of the stored-call
+preview (`frontend/src/components/approvals/external-proposal-review.tsx`):
+a named region before the decision controls, Approve disabled and described by
+the stated reason when unavailable, no raw arguments, and no "Always allow this
+shape" teaching prompt after approval. Summary surfaces keep requiring a generic
+preview, so they send the owner to the dossier.
 
 ## Risk Tiers
 
@@ -166,6 +308,18 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   Protected peer admission and the owning source's durable presentation proof
   are separate prerequisites. Ordinary TCP or caller correlation cannot enable
   recovery, and constructing the opt-in transport does not activate rollout.
+- The recovery worker reports each scan/claim/handoff outcome on
+  `approval_delivery_worker_outcomes_total{schema,stage,outcome,reason}` and a matching log
+  line. Labels come only from the closed vocabularies in
+  `src/butlers/core/approval_delivery_worker.py` (`OBSERVATION_OUTCOMES`, `SAFE_REASON_CODES`);
+  identifiers, recipients, callback material, provider references and exception text never
+  appear. A handoff outcome is recorded only after its repository write commits; a refused
+  compare-and-set records `start_refused`/`write_refused`, and a failed transaction records only
+  `scan/failed`. Observer failures are swallowed and never change the action or presentation.
+- Only `transition_pending_action` (`delivery_lifecycle.py`) may move an action out of
+  `pending`. `tests/contracts/test_relationship_pending_actions_choke_point.py` pins the full
+  inventory of `UPDATE pending_actions SET status` writers; the other writers move `approved` to
+  `executed`/`abandoned` and must bind `ActionStatus.APPROVED` as their guard.
 
 - Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
@@ -193,6 +347,31 @@ None. The approvals module is a leaf module. Other modules interact with it indi
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
+- Dashboard approval, Telegram approval taps and Retry dispatch stored `notify` calls to the
+  owning butler's `dispatch_approved_action`, like every other tool; the API process never calls
+  Switchboard `deliver` itself. The owning daemon's executor
+  (`src/butlers/modules/approvals/approved_notify.py`) sends a `notify.v1` envelope: the approved
+  intent and delivery fields stay inside `delivery`, with `request_context` on the envelope; the
+  owning daemon supplies both `origin_butler` and `source_butler`. It never resolves or substitutes
+  a recipient. Where the cohost approval topology exists, the envelope carries a single-use source
+  proof so Messenger honours the approval instead of parking it twice. That is the only supported
+  topology for approved non-owner sends (cohosted `butlers up`, source approvals worker flag on).
+  In a single `butlers run`, on split hosts, or with the worker flag off, Messenger parks a
+  second, previewable native approval instead, by design
+  ([approval delivery authority](../runtime/approval-delivery-authority.md#supported-topology-and-the-fallback)).
+  This handoff runs inside the shared executor's row lock. A failed delivery, a refused proof, or
+  a second park leaves the action `approved` with a null execution result.
+- Calendar mutation replay (the eight tools in `CALENDAR_APPROVAL_TOOLS`,
+  `src/butlers/modules/calendar_approval.py`) first checks the requested tool name and argument
+  digest against the locked approved row; a mismatch refuses before dispatch. The executor then
+  dispatches, and binds the execution context to, the canonical public call built from the stored
+  row. Rows parked before bu-svqpzo.1 carry a literal `_approval_bypass: true` marker (and, for
+  `calendar_update_event_instance`, `clear_entity_ids: false`); only those exact values are dropped.
+  Any other value or unknown key refuses before effect. The marker is never forwarded and grants
+  nothing; delete this retirement once no pending calendar row carries it.
+  A row for a tool that takes `calendar_id` must bind it concretely: rows parked before bu-eio2my
+  with `calendar_id: null` are refused before effect (the owner never saw the calendar a replay
+  would resolve to) and must be re-requested.
 - `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
   tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.
@@ -249,6 +428,17 @@ over-budget call, or an `administer` or protected or
 consequential tool. Register a preview with `register_preview(tool, renderer,
 effect_class=...)`; an unregistered tool is Open only by design.
 
+A communicating tool can instead declare `content_params` on its catalog descriptor
+(`core/tool_presentation_inventory.py`; optional, additive). The preview is then rebuilt from
+the descriptor's `recipient_params` plus `content_params` and nothing else: every non-empty
+stored argument must be one of them, every recipient and content value must be present and
+well-formed, and the tool must be `communicate`. A tool that declares it never falls back to the
+registry, so a failure there is Open only. Tools that do not declare it keep the registry. Only
+`telegram_edit_message_text` and `whatsapp_reply_to_message` declare it today. The published
+catalog carries `content_params` only for tools that declare it, so every other tool keeps its
+descriptor and catalog digest; the two declaring tools' digests (and so the fleet generation
+digest) change once, and goals admitted under the older digest are refused until republished.
+
 Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
 stored call) on its `approval_delivery_presentations` row, written under the
 action's row lock when the handoff starts; the handoff does not start if the
@@ -268,6 +458,15 @@ retains that exact reviewed snapshot even if a later fetch sees a different call
 No raw secret-field fallback or truncated preview earns an Approve button.
 Rows presented before migration 018 carry no digest and are not checked.
 Migration 018's downgrade refuses while any presentation carries a digest.
+
+## Canonical owner delivery (dark)
+
+With `public.owner_delivery_rollout.enabled`, a single card carries single-use `od1` tokens
+instead of `apr1` HMAC tokens, bound to one owner-delivery subject per action; a decision on
+any surface (or by any other path through `transition_pending_action`) stales every other
+card's buttons and queues them for retraction. See
+[Owner delivery](../api_and_protocols/owner-delivery.md). Default off; nothing changes
+until it is enabled.
 
 ## Related Pages
 
@@ -294,3 +493,109 @@ with exact persisted arguments, no edits and `create_rule=False`. An already
 approved command may recover through that same owning dispatch; its independent
 committed attempt fence prevents a repeated provider write. RFC 0023 recovery
 remains notification-only and retains its default-off authority boundary.
+
+### Domain producers without unrelated generic gates
+
+`[modules.approvals].enabled` continues to control generic `gated_tools`
+wrapping and its mandatory reverse coverage for declared write tools. The
+optional typed `domain_producers` list accepts only `calendar` and
+`google_drive`, without duplicates, and defaults to empty. It enables only
+those modules' own pending-action producers while leaving unrelated gates and
+standing-rule policy unchanged. The owning approvals module, queue pool and
+already-wired executor must all be active; configuration alone is insufficient.
+
+For example, a calendar owner can load actions with `enabled=false` and
+`domain_producers=["calendar"]`. This preserves its existing Spotify and other
+module behavior while giving guest invitations the same-owner approval path.
+A producer flag and the descriptive catalog marker grant no execution authority:
+only an authenticated owner decision and exact stored-call executor context do.
+
+## Decision set read view (dark)
+
+`GET /api/decision-sets/{set_id}[?version=]` (owner only) and
+`modules/approvals/decision_set_view.py` show one decision set version (`core/decision_sets.py`)
+as the owner will be asked to decide it. A set stores only each item's capability, stored-argument
+digest and recipient, so the view reads each item's exact call from its parked `pending_actions`
+row (read only from the approvals pool of the item's capability domain, as the broker parked it; a copy in any other pool is ignored and an id found in two pools is `changed`), recomputes the argument digest and
+rebuilds the call through the S1 or catalog preview. The item then carries the rebuilt facts and
+the broker's lineage facts (`lineage_facts`). An item whose row is missing, unreadable (pool
+failure, named in `meta.sources_degraded`), no longer pending, owned by another goal, changed since
+parking, or without a complete exact preview is `exact: false` with a closed `reason` and no
+facts; one such item, a version that is not `open` or an elapsed set makes the whole set not
+`decidable` and the owner reviews each call on its approval page. The view grants nothing and
+never accepts arguments: deciding goes through `DecisionSetResolver.decide`, which rechecks every
+row and digest under the goal lock. `unticked_outcome` is the producer's `UNTICKED_OUTCOME`, so the
+card words what happens to an unticked item from that value alone.
+
+Each item also carries `claims`: the assistant's own `why`, `blast_radius` and `reversibility`,
+labelled as claims apart from the server facts.
+
+## Decision set cards and decisions (dark)
+
+A set is decided from two places, both through `DecisionSetResolver.decide`, and both stay dark
+behind `OWNER_DECISIONS_LIVE`: the resolver refuses `unavailable`, and the app serves no resolver
+(`app.state.decision_set_resolver`) until the path is wired, so both routes answer 503.
+
+- **Telegram** (`decision_set_card.py`, `decision_set_delivery.py`). The card offers exactly
+  Approve, Reject and Open; there is no tick state and no toggle callback. Approve decides the
+  *default selection*: every exact plain item, never an `explicit_only` (administer) item. Reject
+  rejects every item. The card names the items Approve covers, the ones that need their own tick
+  on the dashboard, and what the rest come to, worded from `UNTICKED_OUTCOME`. It shows each
+  item's exact call as server facts and the assistant's words under "Assistant says (claims, not
+  verified)", every untrusted value in an inert code span. A set that cannot be shown exactly and
+  completely in one message offers Open only and mints no token.
+- **The `od1` subject** is kind `decision_set` (`core_331` widens the subject-kind CHECK; no new
+  table), `source_ref = "<set id>:<version>"`, bound to the set digest and the card's default
+  selection (`action_digest`). The selection is never carried in a token or callback: redeem
+  recomputes it from the freshly read set, and any change (another version, an item that stopped
+  being exact) refuses `action_changed`. A decision from the dashboard closes the subject, so a
+  card still in Telegram is retracted and its tokens go stale. Redeem is Telegram only; the
+  subject CAS is serialised by the subject row lock, never the set's version row (the resolver
+  commits on its own connections).
+- **Dashboard** (`POST /api/decision-sets/{set_id}/decision`, owner only). The body is the version,
+  `approve` or `reject`, and the ticked items as effect id plus the `item_digest` shown. It carries
+  no call content. An `explicit_only` item is decided only when ticked by itself; an unknown item,
+  a duplicate, or a set that is not `decidable` refuses before the resolver, and the resolver
+  rechecks everything again. Refusals are `{"error": "decision_set_refused", "reason": ...}` with
+  `resource` 404, `unavailable` 503 and everything else 409.
+
+- **Sending the card** (`send_set_card`). Nothing is minted or sent unless `OWNER_DECISIONS_LIVE`
+  and the owner-delivery rollout are both on. A card that offers a decision opens the subject and
+  presentation, marks the presentation handed off *before* the transport call (so a crash leaves
+  an honest `unknown` and a retry mints no fresh tokens), then settles the result; a provider
+  failure lets a retry present again with fresh tokens. The listed default selection and the
+  tokens' action digest come from the one view the caller read. An open-only card is sent with
+  Open alone and mints nothing. Open links to `/decision-sets/<set id>` (self-link route key
+  `decision_set`), which carries the set id and nothing else.
+- **The goal-runner trigger** (`goal_runner/decision_set_cards.py`, `DecisionSetCards`). A
+  collaborator the runner calls after resolving decision sets; a runner built without it never
+  runs it, and with it the sweep stays dark behind the same flag and rollout. Each sweep first
+  closes cards whose version left `open` (superseded or cancelled gives `cancelled`, expired gives
+  `expired`, decided closes with the verdict in `owner_decisions`, never the subject's), through
+  `close_for_authority`, so the Telegram connector's retraction drain lists them. It then checks
+  owner suppression *before* reading a view, presenting or minting, and sends at most
+  `SEND_LIMIT` decidable open versions, oldest first. Exactly-once per `(set_id, version)` is the
+  subject and presentation key: a replay, a restart or a second runner finds the card handed off.
+  A set whose view cannot be read is skipped. A set the card cannot offer a decision on is not
+  card-sent, because it has no exactly-once subject and each member effect already has its own
+  approval card. A delivered card records the provider's numeric message id (the deliver
+  result's `delivery_id`, only when it is all digits), so the Telegram connector's retraction
+  drain can edit it. A send with no such id is simply not retractable; stale taps are still
+  refused either way.
+- **Held individual cards** (core_332, bu-jv1moa.80). When a set card is handed off, `send_set_card`
+  records its items in the append-only `public.owner_delivery_subject_members` in the same
+  transaction as `begin_send`. The approval delivery worker of each item's domain skips an
+  action in `claim_next` while `public.owner_delivery_item_held(schema, action id)` is true: a
+  live telegram presentation (`sent` or `unknown`, current generation) of an unresolved subject
+  covers it. A digest is claimed only while some member is pending and not held, and its count
+  leaves held members out. A hold changes no state, so the individual presentation is simply
+  claimed again once the subject resolves (left, cancelled, superseded, expired) or the card is
+  proven failed; decided items are no longer pending. A claimed or handed-off presentation is never
+  held, so recovery and reconciliation do not wait. An item covered by two live set cards is held
+  until both close. The table is SELECT/INSERT for `butler_switchboard_rw` only; the domain worker
+  asks the SECURITY DEFINER function, which answers one boolean. A card claimed before the hold
+  commits still goes out: a documented duplicate, never a lost card. Before core_332 the worker
+  runs the previous query. The dark path has no rows, so nothing is held.
+- **Dashboard page** (`/decision-sets/:setId`) renders the server view; `in_default_selection`,
+  `decidable` and `exact` come from the server and the page never computes them. It posts only
+  the ticks.

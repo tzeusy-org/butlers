@@ -46,7 +46,9 @@ Source baseline: `origin/main` at `61334a9b3`. Every path and symbol below was r
 `id`, `source_key` (sha256 of channel, endpoint, chat, provider message id, direction),
 `state` (`pending`, `carded`, `tracked`, `done`, `ignored`, `superseded`, `lapsed`), `kind`,
 `direction`, `counterparty_entity_id`, `action_description` (at most 120 characters),
-`deadline`, `confidence`, `marker`, `fingerprint`, `channel`, `evidence_ref`
+`deadline`, `confidence`, `marker` (a closed category: `first_person_will`,
+`first_person_going_to`, `first_person_obligation`, `relay_told`, `relay_promised`; never the
+matched text, which can carry a third party's name), `fingerprint`, `channel`, `evidence_ref`
 (`{ingestion_event_id, provider_message_id}`), `taint` (`untrusted_origin`), `event_time`,
 `lapse_at` (`event_time + 14 days`), `card_snapshot` (rendered question, card spans, recipient
 binding, timeout fixed once; written before the first card request), `confirm_id`,
@@ -56,9 +58,11 @@ binding, timeout fixed once; written before the first card request), `confirm_id
 ### Evidence on a tracked commitment
 
 `evidence_opened = {source: "owner_chat_candidate", channel, ingestion_event_id,
-provider_message_id, event_time, marker, candidate_id, confirm_id, answered_at,
+provider_message_id, event_time, marker, candidate_id, confirm_id, applied_at,
 detected_at}`. There is no `utterance` or `excerpt`, unlike the routed path, because the
-message text is never stored outside the Switchboard inbox.
+message text is never stored outside the Switchboard inbox. `applied_at` is when
+Relationship applied the answer. The owner's answer time stays on the confirm row
+(`public.pending_confirms.answered_at`), which Relationship's role cannot read.
 
 ## Behavior matrix
 
@@ -126,10 +130,11 @@ which the Track-only boundary and REQ-008 provenance rule do not allow.
 | `event_time` older than 14 days and terminal | Tombstone deleted. Safe, because the projection never returns events older than 14 days, so a purged tombstone can never be re-hit. |
 
 The 14-day bound covers the Relationship candidate store only. The card's question and quoted
-action are also written to `public.pending_confirms` by the signed confirm transport, which
-today neither purges nor redacts answered or expired rows and includes them in backups
-(`docs/runtime/signed-confirms.md`, `docs/operations/backup-restore.md`). Bounding that copy is a
-transport retention change, filed as a follow-up rather than claimed here.
+action are also written to `public.pending_confirms` by the signed confirm transport. That
+transport redacts a row's prompt to a digest tombstone 14 days after the row settles; backups
+taken before then keep the copy until they are pruned (`docs/runtime/signed-confirms.md`
+§ Prompt retention, `docs/operations/backup-restore.md`). That is the transport's policy, not a
+guarantee of this store.
 
 ### Restatement after Done or Ignore
 
@@ -152,8 +157,21 @@ allow. The S2 cap revisit is the place to reconsider it.
    `public.domain_events`. A connector outbox duplicates ingestion durability and pushes
    selection into connectors. Running `detect_commitment` in Switchboard moves Relationship
    domain inference into infrastructure. Reversible: yes.
-2. The projection shares the trusted kernel-peer composition that installs the signed-confirm
-   topology, so S1 activates as one unit at the canonical switch. Reversible: yes.
+2. The projection is the `owner_chat.spans` service-plane named relay (RFC 0038 D7), answered
+   in-process by Switchboard with no MCP tool behind it. It is authenticated by a projected
+   workload token with the relay audience; the presented `relationship` daemon narrows the
+   allowlist and is not separately proven. The arguments are a strict cursor-only schema.
+   Amended 2026-11-14 (bu-jv1moa.11, task 2.1): the earlier choice, sharing the kernel-peer
+   composition of the signed-confirm topology, could not ship because that composition is not
+   instantiated in any deployment until bu-atc3xi. S1 still activates as one unit at the
+   canonical switch, because the reducer does not run while the signed-confirm composition is
+   absent (decision 9). The original stop rule ("If not, the projection must not ship with
+   weaker caller authentication; it waits.") is moved to an owner act, not overridden: the
+   projection ships dark, and S1 activation (`COMMITMENT_CANDIDATES_LIVE`, and any use of the
+   relay) waits on owner approval bead bu-dhloi1.281 (PR #5713, the REQ-butler-switchboard-008
+   workload principal) as well as on bu-atc3xi. Until the owner approves workload-bound relay
+   authentication there, `BUTLERS_SERVICE_PLANE_AUTH` stays off and the projection is
+   unreachable. Reversible: yes.
 3. Explicit per-entry connector facts, over inferring direction from `owner_sender_id`.
    Inference fails for Telegram `@username` endpoints and cannot see forwarding per entry.
    Missing facts fail closed. Reversible: yes.
@@ -204,9 +222,14 @@ Rejected alternatives (not live):
 - Telegram endpoints configured as `@username` today carry no owner direction; after the connector
   change, `Message.out` covers them. Until the connector ships, Telegram yields nothing.
 - `message_inbox` partitions dropped before a span is read produce nothing (fail closed).
-- `[Unknown]` Whether the kernel-peer companion can bind a third audience for the projection
-  without new transport code (verify task 2.1). If not, the projection must not ship with weaker
-  caller authentication; it waits.
-- `[Unknown]` Whether any production path still emits single-message (non-batch) user-client
-  envelopes (`_normalize_single_event_to_ingest_v1`, `_normalize_to_ingest_v1`). The projection
-  must either cover them with the same facts or exclude them (verify task 2.2).
+- Resolved (task 2.1): the projection binds on the live service-plane relay authentication
+  (decision 2), not on the kernel-peer companion. The bullet this replaces read: "Whether the
+  kernel-peer companion can bind a third audience for the projection without new transport code
+  (verify task 2.1). If not, the projection must not ship with weaker caller authentication; it
+  waits." Its wait is kept as an activation gate on owner bead bu-dhloi1.281 (decision 2).
+- One bridge per WhatsApp account is assumed. Two live-linked bridges on the same account would
+  each see the other's sends as live `is_from_me` messages with `from_history` false, so the
+  bridge's own echo exclusion would not hold.
+- Resolved (task 2.2): Telegram's single-message envelopes (backfill, ingest retry, chat-id
+  fallback) are live and carry no per-entry facts. They are excluded in S1, so those owner
+  messages never become candidates; covering them is a follow-up.

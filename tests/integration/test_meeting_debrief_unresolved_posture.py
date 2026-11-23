@@ -15,8 +15,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.relationship.meeting_debrief import meeting_debrief_pending
 
 pytestmark = [
@@ -28,26 +26,12 @@ pytestmark = [
 _TRUNCATE = ["public.entities", "relationship.meeting_debriefs"]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "memory", "relationship"]
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=1,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "relationship, public"},
-    )
+async def debrief_pool(db) -> asyncpg.Pool:
+    p = await db("core", "memory", "relationship", schema="relationship", max_size=1)
     for table in _TRUNCATE:
         await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-    yield p
-    await p.close()
+    return p
 
 
 async def _snapshot(pool, *attendees: dict) -> None:
@@ -86,34 +70,42 @@ def _names(pending: dict) -> list[str]:
     return [a["email"] for d in pending["debriefs"] for a in d["attendees"]]
 
 
-async def test_attendee_unresolved_at_snapshot_and_later_no_contact_is_not_named(pool) -> None:
+async def test_attendee_unresolved_at_snapshot_and_later_no_contact_is_not_named(
+    debrief_pool,
+) -> None:
     await _snapshot(
-        pool,
+        debrief_pool,
         {"entity_id": None, "name": "Gone Away", "email": "gone@example.test"},
         {"entity_id": None, "name": "Still Unknown", "email": "unknown@example.test"},
     )
-    await _later_person(pool, "gone@example.test", "no_contact")
+    await _later_person(debrief_pool, "gone@example.test", "no_contact")
 
-    assert _names(await meeting_debrief_pending(pool)) == ["unknown@example.test"]
+    assert _names(await meeting_debrief_pending(debrief_pool)) == ["unknown@example.test"]
 
 
-async def test_attendee_unresolved_at_snapshot_and_later_active_is_still_named(pool) -> None:
-    await _snapshot(pool, {"entity_id": None, "name": "Friend", "email": "friend@example.test"})
-    await _later_person(pool, "friend@example.test", "active")
+async def test_attendee_unresolved_at_snapshot_and_later_active_is_still_named(
+    debrief_pool,
+) -> None:
+    await _snapshot(
+        debrief_pool, {"entity_id": None, "name": "Friend", "email": "friend@example.test"}
+    )
+    await _later_person(debrief_pool, "friend@example.test", "active")
 
-    assert _names(await meeting_debrief_pending(pool)) == ["friend@example.test"]
+    assert _names(await meeting_debrief_pending(debrief_pool)) == ["friend@example.test"]
 
 
 @pytest.mark.parametrize("blocking_first", [True, False], ids=["blocker-first", "blocker-last"])
 async def test_shared_email_with_a_no_contact_claimant_is_withheld_in_either_row_order(
-    pool, blocking_first
+    debrief_pool, blocking_first
 ) -> None:
-    await _snapshot(pool, {"entity_id": None, "name": "Shared", "email": "shared@example.test"})
+    await _snapshot(
+        debrief_pool, {"entity_id": None, "name": "Shared", "email": "shared@example.test"}
+    )
     order = ["no_contact", "active"] if blocking_first else ["active", "no_contact"]
     for posture in order:
-        await _later_person(pool, "shared@example.test", posture)
+        await _later_person(debrief_pool, "shared@example.test", posture)
 
-    assert _names(await meeting_debrief_pending(pool)) == []
+    assert _names(await meeting_debrief_pending(debrief_pool)) == []
 
 
 async def _entity_with_email(pool, email: str, *, posture="active", metadata=None) -> str:
@@ -132,17 +124,19 @@ async def _entity_with_email(pool, email: str, *, posture="active", metadata=Non
     return str(entity_id)
 
 
-async def test_one_entity_with_two_casings_of_its_email_resolves_to_that_entity(pool) -> None:
+async def test_one_entity_with_two_casings_of_its_email_resolves_to_that_entity(
+    debrief_pool,
+) -> None:
     from butlers.jobs.meeting_debrief import _resolve_people
 
-    dana = await _entity_with_email(pool, "Dana@Example.com")
-    await pool.execute(
+    dana = await _entity_with_email(debrief_pool, "Dana@Example.com")
+    await debrief_pool.execute(
         "INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src) "
         "VALUES ($1::uuid, 'has-email', 'dana@example.com', 'literal', 'test')",
         dana,
     )
 
-    people = await _resolve_people(pool, {"dana@example.com"})
+    people = await _resolve_people(debrief_pool, {"dana@example.com"})
 
     assert people["dana@example.com"]["entity_id"] == dana
 
@@ -152,14 +146,14 @@ _TOMBSTONES = [{"merged_into": str(uuid.uuid4())}, {"deleted_at": "2031-01-01"}]
 
 @pytest.mark.parametrize("metadata", _TOMBSTONES, ids=["merged", "deleted"])
 async def test_tombstoned_active_holder_neither_blocks_nor_makes_the_email_ambiguous(
-    pool, metadata
+    debrief_pool, metadata
 ) -> None:
     from butlers.jobs.meeting_debrief import _resolve_people
 
-    live = await _entity_with_email(pool, "dana@example.com")
-    await _entity_with_email(pool, "dana@example.com", metadata=metadata)
+    live = await _entity_with_email(debrief_pool, "dana@example.com")
+    await _entity_with_email(debrief_pool, "dana@example.com", metadata=metadata)
 
-    people = await _resolve_people(pool, {"dana@example.com"})
+    people = await _resolve_people(debrief_pool, {"dana@example.com"})
 
     assert people["dana@example.com"]["entity_id"] == live
     assert people["dana@example.com"]["posture"] == "active"
@@ -167,19 +161,21 @@ async def test_tombstoned_active_holder_neither_blocks_nor_makes_the_email_ambig
 
 @pytest.mark.parametrize("metadata", _TOMBSTONES, ids=["merged", "deleted"])
 async def test_tombstoned_no_contact_holder_still_withholds_beside_a_live_active_entity(
-    pool, metadata
+    debrief_pool, metadata
 ) -> None:
-    await _snapshot(pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
-    await _entity_with_email(pool, "dana@example.com")
-    await _entity_with_email(pool, "dana@example.com", posture="no_contact", metadata=metadata)
-
-    assert _names(await meeting_debrief_pending(pool)) == []
-
-
-async def test_deleted_memorial_holder_alone_still_withholds(pool) -> None:
-    await _snapshot(pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
+    await _snapshot(debrief_pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
+    await _entity_with_email(debrief_pool, "dana@example.com")
     await _entity_with_email(
-        pool, "dana@example.com", posture="memorial", metadata={"deleted_at": "2031-01-01"}
+        debrief_pool, "dana@example.com", posture="no_contact", metadata=metadata
     )
 
-    assert _names(await meeting_debrief_pending(pool)) == []
+    assert _names(await meeting_debrief_pending(debrief_pool)) == []
+
+
+async def test_deleted_memorial_holder_alone_still_withholds(debrief_pool) -> None:
+    await _snapshot(debrief_pool, {"entity_id": None, "name": "Dana", "email": "dana@example.com"})
+    await _entity_with_email(
+        debrief_pool, "dana@example.com", posture="memorial", metadata={"deleted_at": "2031-01-01"}
+    )
+
+    assert _names(await meeting_debrief_pending(debrief_pool)) == []

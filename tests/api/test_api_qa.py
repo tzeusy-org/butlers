@@ -377,7 +377,7 @@ class TestCredentialsStatusProductionWiring:
         app, pool = _build_summary_app()
         mock_db = app.dependency_overrides[get_db]()
 
-        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_READ_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
 
         # Point the deps singleton at the same mock_db so the production-wired
         # callable (which reads get_db_manager()) resolves against this pool.
@@ -402,6 +402,7 @@ class TestCredentialsStatusProductionWiring:
         # Only presence booleans + the optional hint are exposed — no secret values.
         assert set(creds.keys()) == {
             "gh_token_present",
+            "gh_write_token_present",
             "git_author_name_present",
             "git_author_email_present",
             "provisioning_hint",
@@ -428,13 +429,13 @@ class TestCredentialsStatusProductionWiring:
         assert creds["git_author_name_present"] is False
         assert creds["git_author_email_present"] is False
         assert creds["provisioning_hint"] is not None
-        assert "BUTLERS_QA_GH_TOKEN" in creds["provisioning_hint"]
+        assert "BUTLERS_QA_GH_READ_TOKEN" in creds["provisioning_hint"]
 
     async def test_make_credentials_status_fn_returns_booleans_only(self) -> None:
         """The factory's callable reads presence via the store and returns ONLY
         booleans (never secret values)."""
         pool = MagicMock()
-        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN"})
+        _wire_credential_acquire(pool, {"BUTLERS_QA_GH_READ_TOKEN"})
         db = MagicMock(spec=DatabaseManager)
         db.credential_shared_pool.return_value = pool
 
@@ -444,6 +445,7 @@ class TestCredentialsStatusProductionWiring:
 
         assert result == {
             "gh_token_present": True,
+            "gh_write_token_present": False,
             "git_author_name_present": False,
             "git_author_email_present": False,
         }

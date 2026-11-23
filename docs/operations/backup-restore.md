@@ -149,8 +149,8 @@ plane by name:
 |---|---|
 | `restore_drill_executor` schema | The restore-drill result ledger and its three constrained functions |
 | `restore_drill_executor_admin`, `dnd_generation_admin`, `runtime_attention_admin` schemas | Bootstrap configuration rows and the fixed installer/finalizer functions |
-| `public.dnd_generation_mutations` | DND generation mutation audit |
-| `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
+| `public.dnd_generation_mutations` | Excluded from the ordinary dump; its rows travel through the [private history export](#private-history-export) once that is activated |
+| `public.user_context` | Excluded from the ordinary dump; only the `signal_type = 'dnd'` rows travel through the [private history export](#private-history-export). Every other signal is expiring, self-regenerating state and is not backed up |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
 | `public.task_continuity` | Task continuity control state; not recovered from this artifact |
 | `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
@@ -211,6 +211,119 @@ Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
+
+### Private history export
+
+The required full-backup contract includes complete DND history: every row of
+`public.dnd_generation_mutations` (including expired and superseded receipts),
+the `public.dnd_generation_guard` row, and the `signal_type = 'dnd'` rows of
+`public.user_context`. The ten canonical perception relations in
+`deploy/backup/private_history_manifest.json` are exported in the same snapshot
+through the closed `perception_backup` interface. Its owner is the membership-free
+`perception_owner`; it reuses the same inert export/restore capabilities. Every
+population must have an implemented exporter, including empty configured sources.
+The exact privileged `perception_admin.bootstrap_configuration` singleton is
+bootstrap control, reconstructed by the reviewed script, rather than application
+history. An unknown perception relation still refuses coverage.
+
+The mechanism stays dark until separately authorized authentication/provisioning.
+An artifact which logs omission is not a complete private-history backup. Source
+conformance does not activate export, release operational holds or switch live
+consumers.
+
+**Mechanism.** The dump identity is never widened: it receives no grant,
+membership or EXECUTE for any of this. `scripts/init-db.sql` (the DND finalizer)
+installs three fixed `SECURITY DEFINER` functions in schema
+`dnd_generation_backup`, owned by `dnd_generation_owner`, whose no-membership
+fence is unchanged:
+
+| Function | Executable by | Does |
+|---|---|---|
+| `export_v1()` | `butlers_backup_export` only | Returns the three populations as typed JSON rows in the caller's snapshot |
+| `export_schema_v1()` | `butlers_backup_export` only | Emits actual catalog DDL for only the two omitted canonical tables, without private rows or pg_dump table locks; refuses unsupported shape/dependencies |
+| `restore_v1(jsonb)` | `butlers_backup_restore` only | Inserts them into a fresh target, in receipt, guard, context order; refuses a target that already holds DND history |
+
+Both roles are created `NOLOGIN NOINHERIT` with no membership edge and no
+credential. `pg_dump.sh` runs the export in the same exported snapshot as the
+dump and proves in that transaction that the function is the exact owner-only
+interface before reading it. Runtime grants and forced owner-only RLS are
+unchanged. Bootstrap refuses an existing backup schema/function with foreign ownership
+or noncanonical ACL grants before privileged adoption; a correct fixed-owner rerun
+preserves the exact boundary. Inert capability roles with credentials or membership
+edges are refused. Before rerunning this dark bootstrap, any separately activated
+capability must again satisfy these inert-role checks: disabling a member login
+alone does not remove its membership edge, and a capability credential must also be
+absent. Reversing activation remains a separate owner-controlled action.
+Restore rejects missing/null keys, mismatched ordinals, foreign row shapes and an
+absent or malformed singleton guard before changing the target.
+
+**Dark until activated.** Until the owner configures an export identity the
+script publishes the artifact without the history and says so on stderr (`NOTICE:
+... NOT in this artifact`). Once `BACKUP_EXPORT_USER` is set, an export or proof
+failure refuses publication; there is no silent fallback.
+
+Activation is an owner step and is not performed by any repository change: give
+the export login `CONNECT` on the database and membership in (or make it)
+`butlers_backup_export`; export `BACKUP_EXPORT_USER` and
+`BACKUP_EXPORT_PASSWORD` to the backup process. The same read-only snapshot also
+supplies canonical schema metadata for the two omitted tables. The schema interface
+accepts no table argument: it verifies the fixed names/types, owners, ordinary-table
+shape and supported dependencies, then emits actual columns/defaults, constraints,
+indexes, owner/ACL and RLS/policies. Unexpected columns, column ACLs, triggers,
+inheritance, generated/identity columns or foreign expression dependencies refuse
+publication. The ordinary dump identity still cannot lock/read those tables; merely
+using `--exclude-table-data` would not avoid pg_dump's definition locks.
+
+An authorized complete-artifact restore can therefore reconstruct these omitted
+relations on an empty target before replaying staged DND history. The restoring
+login still needs the existing trusted-owner handoff authority (see Ownership
+precondition), `butlers_backup_restore` membership and `TEMPORARY`; none is granted
+by the producer or consumer. Both the staged block and the actual restore consumer
+verify the fixed namespace owner, exact three function signatures, SECURITY DEFINER,
+configuration and capability-only EXECUTE/USAGE ACLs. The consumer refuses a missing,
+foreign or failed ownership handoff even when all public function fences remain
+correct. It does not repair it or elevate a normal database owner. Private replay
+also requires all three tables to retain their canonical owner and fresh history.
+The complete consumer's ordinary snapshot, core tracking and rotated capture epoch
+remain part of restore verification; replaying an extracted private tail is not a
+supported substitute. Disposable tests prepare bootstrap-dependent targets before
+temporary export activation and remove that activation before later bootstrap.
+
+**Perception companion.** `perception_backup` has the same three fixed signatures,
+owner/config/ACL checks and no table or SQL input parameter. Its schema exporter
+accepts only the canonical ten-table catalog, closed helper/gateway bodies and
+ACLs. It fingerprints columns, defaults, constraints, indexes, policies and
+immutable triggers; it refuses unknown shape/authority before emitting DDL.
+`perception_private` and the five public projection tables are omitted from the
+ordinary dump because even definition locks require private privileges. Their
+actual definitions and all rows travel through the complete companion, not an
+ordinary-role grant or `--exclude-table-data` workaround.
+
+Schema replay creates every table before functions and foreign keys. Row replay
+orders kinds, sources, source references, DND suppression references, timeline
+assertions before retractions, receipts, slots/modes and conditions/suppressions.
+DND history is restored first. Source configuration is captured history, never
+silently reseeded. Every target population must be empty; a bootstrapped target's
+seed registry is not a fresh replay target. No immutable trigger is disabled and
+no source event is replayed through the live writer. The actual restore consumer
+independently audits the perception namespace, fixed capabilities and catalog;
+a failed owner handoff cannot be certified by successful ordinary rows.
+
+**Retention consequence.** The artifact holds private DND and perception history, including
+rows already expired, retracted or superseded in the live database, for up to
+`BACKUP_RETAIN_DAYS` (default 14 days) after they stop being live. Backup
+retention, cadence and artifact handling are unchanged.
+
+Databases that already applied the DND migration receive the interface when
+`scripts/init-db.sql` is next re-run as the cluster superuser (the DND finalizer
+installs it). Until then the script logs the omission. The ordinary dump also
+lists the `dnd_generation_backup` schema and function definitions, as it already
+does for `dnd_generation_private`. Roles and trusted authority must already be
+provisioned by `init-db.sql`; the dump does not create role memberships. Failed
+ownership assignments are refused, not certified as an ordinary successful restore.
+
+Restore restores the exact snapshot: guard generation and timestamps are
+preserved, no counter is reseeded and no mutation is replayed.
 
 ### Fleet case history
 
@@ -302,9 +415,17 @@ epoch prerequisite remain independent of the Fleet audit.
 ### Confidential signed-confirm history
 
 `public.pending_confirms` is durable application state. A backup preserves the
-whole immutable prompt, accepted answer, application receipt, claim and delivery
-state; losing these rows could send another prompt or apply a recorded choice
-again. The table remains protected by enabled and forced RLS. Its schema,
+prompt, accepted answer, application receipt, claim and delivery state; losing
+these rows could send another prompt or apply a recorded choice again.
+
+Prompt copy is bounded in the database, not by a backup exclusion. Fourteen days
+after a row settles, the confirm worker replaces its question, quotes and option
+labels with a digest tombstone ([prompt retention](../runtime/signed-confirms.md#prompt-retention)),
+and later dumps carry only the tombstone. A dump taken before that still holds the
+content until the dump itself is pruned: about 14 more days on the node
+(`BACKUP_RETAIN_DAYS`), and up to the monthly horizon of the
+[off-node copy](offsite-backup-copy.md) when it is enabled. Restoring an older dump
+brings the content back until the next worker cycle redacts it again. The table remains protected by enabled and forced RLS. Its schema,
 ownership, policies and functions travel through ordinary `pg_dump`, while its
 rows use a separate hex-wrapped JSON staging block bound to the same exported
 snapshot as the ordinary dump and cost-claim export.
@@ -768,3 +889,10 @@ downgrade tolerates complete shared absence; partial tables, altered General
 policies or retained admission/operation evidence require forward remediation.
 The empty check holds exclusive table locks so a concurrent admission cannot
 commit between inspection and removal.
+
+The perception companion carries an explicit versioned complete-coverage
+marker and start/end/staging framing. The consumer refuses a missing or
+inconsistent component before target mutation, even for empty populations.
+Restored complete history must pass the fixed full catalog validator. Older or
+dark ordinary artifacts retain inert namespace ownership checks and explicitly
+report that absent perception history is not complete private-history proof.

@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,7 +33,8 @@ from httpx import ASGITransport, AsyncClient
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.core.crypto import aes_gcm
-from butlers.testing.records import Record
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import Record, records
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -64,55 +66,37 @@ def _make_webhook_record(overrides: dict | None = None) -> dict:
     return base
 
 
-class _NullTxCtx:
-    """No-op async context manager standing in for ``conn.transaction()``."""
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False  # never suppress — let exceptions propagate/rollback
-
-
-class _AcquireCtx:
-    """Async context manager standing in for ``pool.acquire()``.
-
-    Yields *conn* (the same mock as the pool itself) so existing assertions
-    against ``pool.execute``/``pool.fetchrow`` keep working unchanged even
-    though the write endpoints now issue those calls via an acquired
-    connection.
-    """
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
-def _make_pool(
+def _webhook_pool(
     *,
     rows: list[dict] | None = None,
-    fetchrow_return: dict | None = None,
-    execute_return: str = "DELETE 1",
-) -> AsyncMock:
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[Record(r) for r in (rows or [])])
-    pool.fetchrow = AsyncMock(return_value=Record(fetchrow_return) if fetchrow_return else None)
-    pool.execute = AsyncMock(return_value=execute_return)
-    # pool.acquire() yields the pool mock itself as "conn" (see _AcquireCtx),
-    # and pool.transaction() is a no-op context manager, so the route's
-    # ``async with pool.acquire() as conn, conn.transaction():`` exercises the
-    # same execute/fetchrow mocks asserted on throughout this module.
-    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
-    pool.transaction = MagicMock(return_value=_NullTxCtx())
+    fetchrow: dict | AsyncMock | None = None,
+    execute: str | None = "DELETE 1",
+) -> FakePool:
+    """Switchboard pool whose acquired connection reports asyncpg transaction state.
+
+    The write routes run ``async with pool.acquire() as conn, audit_transaction(conn)``;
+    ``is_in_transaction`` is true only inside ``conn.transaction()``.
+    """
+    if isinstance(fetchrow, dict):
+        fetchrow = Record(fetchrow)
+    pool = fake_pool(fetch=records(rows or []), fetchrow=fetchrow, execute=execute)
+    depth = 0
+
+    @asynccontextmanager
+    async def _transaction():
+        nonlocal depth
+        depth += 1
+        try:
+            yield
+        finally:
+            depth -= 1
+
+    pool.connection.transaction = MagicMock(side_effect=_transaction)
+    pool.connection.is_in_transaction = MagicMock(side_effect=lambda: depth > 0)
     return pool
 
 
-def _make_db(pool: AsyncMock) -> MagicMock:
+def _make_db(pool: FakePool) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     return db
@@ -136,7 +120,7 @@ def clear_overrides(app):
 
 async def test_list_webhooks_empty(app):
     """Empty DB returns empty list."""
-    pool = _make_pool(rows=[])
+    pool = _webhook_pool(rows=[])
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -150,7 +134,7 @@ async def test_list_webhooks_empty(app):
 async def test_list_webhooks_returns_rows(app):
     """Rows from DB are returned as webhook objects."""
     row = _make_webhook_record()
-    pool = _make_pool(rows=[row])
+    pool = _webhook_pool(rows=[row])
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -177,8 +161,7 @@ async def test_create_webhook(app, monkeypatch):
         prefix = args[6]  # $6 = secret_prefix
         return Record(_make_webhook_record({"secret_prefix": prefix}))
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -219,8 +202,7 @@ async def test_create_webhook_client_secret_ignored(app, monkeypatch):
     def _fetchrow(*args, **kwargs):
         return Record(_make_webhook_record({"secret_prefix": args[6]}))
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -247,7 +229,7 @@ async def test_create_webhook_client_secret_ignored(app, monkeypatch):
 async def test_list_and_get_omit_secret(app):
     """GET list and GET one expose only secret_prefix — never the plaintext secret."""
     row = _make_webhook_record({"secret_prefix": "abc123…"})
-    pool = _make_pool(rows=[row], fetchrow_return=row)
+    pool = _webhook_pool(rows=[row], fetchrow=row)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -280,8 +262,7 @@ async def test_put_regenerate_rotates_secret(app, monkeypatch):
         # Second call: UPDATE ... RETURNING — reflect the new prefix ($5).
         return Record(_make_webhook_record({"secret_prefix": args[5]}))
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -319,8 +300,7 @@ async def test_put_without_regenerate_keeps_secret(app):
             return Record(existing)
         return Record(_make_webhook_record({"secret_prefix": args[5]}))
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -358,8 +338,7 @@ async def test_put_concurrent_delete_returns_404(app):
         # Second call: UPDATE ... RETURNING — simulate a concurrent delete.
         return None
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -383,7 +362,7 @@ async def test_put_concurrent_delete_returns_404(app):
 
 async def test_delete_webhook_success(app):
     """DELETE returns 200 and wiped=True when row exists."""
-    pool = _make_pool(execute_return="DELETE 1")
+    pool = _webhook_pool(execute="DELETE 1")
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -397,7 +376,7 @@ async def test_delete_webhook_success(app):
 
 async def test_delete_webhook_not_found(app):
     """DELETE returns 404 when row does not exist."""
-    pool = _make_pool(execute_return="DELETE 0")
+    pool = _webhook_pool(execute="DELETE 0")
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -414,8 +393,7 @@ async def test_delete_webhook_not_found(app):
 
 async def test_test_webhook_not_found(app):
     """Test endpoint returns 404 when webhook does not exist."""
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(return_value=None)
+    pool = _webhook_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -428,8 +406,7 @@ async def test_test_webhook_not_found(app):
 async def test_test_webhook_returns_result(app):
     """Test endpoint dispatches and returns a result object."""
     row = _make_webhook_record()
-    pool = _make_pool(fetchrow_return=row)
-    pool.execute = AsyncMock(return_value=None)
+    pool = _webhook_pool(fetchrow=row, execute=None)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -546,7 +523,7 @@ async def test_create_webhook_missing_key_fails(app, monkeypatch):
     """
     monkeypatch.delenv("WEBHOOK_SECRET_KEY", raising=False)
 
-    pool = _make_pool()
+    pool = _webhook_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -588,28 +565,25 @@ def _make_dispatch_row(
     events: list[str] | None = None,
     secret_encrypted: bytes | None = None,
     retry_policy: dict | None = None,
-) -> MagicMock:
-    """Build a mock asyncpg row for the dispatch SELECT query."""
-    row = MagicMock()
-    data = {
-        "id": uuid.UUID(wh_id or _WH_ID),
-        "endpoint": endpoint,
-        "events": json.dumps(events if events is not None else ["permission.set"]),
-        "secret_encrypted": secret_encrypted,
-        "retry_policy": json.dumps(retry_policy or {"max_attempts": 1, "backoff_seconds": 0}),
-    }
-    row.__getitem__ = MagicMock(side_effect=lambda k, _d=data: _d[k])
-    return row
+) -> Record:
+    """Build an asyncpg-shaped row for the dispatch SELECT query."""
+    return Record(
+        {
+            "id": uuid.UUID(wh_id or _WH_ID),
+            "endpoint": endpoint,
+            "events": json.dumps(events if events is not None else ["permission.set"]),
+            "secret_encrypted": secret_encrypted,
+            "retry_policy": json.dumps(retry_policy or {"max_attempts": 1, "backoff_seconds": 0}),
+        }
+    )
 
 
 async def test_dispatch_event_fires_subscribed_webhook():
     """dispatch_event delivers to webhooks subscribed to the event."""
     from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
 
-    pool = AsyncMock()
     row = _make_dispatch_row(events=["permission.set"])
-    pool.fetch = AsyncMock(return_value=[row])
-    pool.execute = AsyncMock()
+    pool = fake_pool(fetch=[row], execute=None)
 
     ok_result = WebhookTestResult(
         webhook_id=uuid.UUID(_WH_ID), status_code=200, latency_ms=5.0, ok=True
@@ -632,10 +606,8 @@ async def test_dispatch_event_skips_unsubscribed_webhook():
     """dispatch_event does not deliver to webhooks not subscribed to the event."""
     from butlers.api.routers.webhooks import _dispatch_event_impl
 
-    pool = AsyncMock()
     row = _make_dispatch_row(events=["data.export"])  # not permission.set
-    pool.fetch = AsyncMock(return_value=[row])
-    pool.execute = AsyncMock()
+    pool = fake_pool(fetch=[row], execute=None)
 
     with patch("butlers.api.routers.webhooks._dispatch_webhook", new_callable=AsyncMock) as mock_d:
         await _dispatch_event_impl(pool, "permission.set", {})
@@ -648,10 +620,8 @@ async def test_dispatch_event_catchall_wildcard():
     """dispatch_event delivers to webhooks subscribed to '*' for any event."""
     from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
 
-    pool = AsyncMock()
     row = _make_dispatch_row(events=["*"])
-    pool.fetch = AsyncMock(return_value=[row])
-    pool.execute = AsyncMock()
+    pool = fake_pool(fetch=[row], execute=None)
 
     ok_result = WebhookTestResult(
         webhook_id=uuid.UUID(_WH_ID), status_code=200, latency_ms=5.0, ok=True
@@ -671,10 +641,8 @@ async def test_dispatch_event_skips_empty_events_list():
     """dispatch_event does not deliver to webhooks with an empty events list."""
     from butlers.api.routers.webhooks import _dispatch_event_impl
 
-    pool = AsyncMock()
     row = _make_dispatch_row(events=[])
-    pool.fetch = AsyncMock(return_value=[row])
-    pool.execute = AsyncMock()
+    pool = fake_pool(fetch=[row], execute=None)
 
     with patch("butlers.api.routers.webhooks._dispatch_webhook", new_callable=AsyncMock) as mock_d:
         await _dispatch_event_impl(pool, "permission.set", {})
@@ -687,10 +655,8 @@ async def test_dispatch_event_records_failure_on_exhaustion():
     """dispatch_event records last_delivery_ok=False when all retries fail."""
     from butlers.api.routers.webhooks import WebhookTestResult, _dispatch_event_impl
 
-    pool = AsyncMock()
     row = _make_dispatch_row(events=["permission.set"])
-    pool.fetch = AsyncMock(return_value=[row])
-    pool.execute = AsyncMock()
+    pool = fake_pool(fetch=[row], execute=None)
 
     fail_result = WebhookTestResult(
         webhook_id=uuid.UUID(_WH_ID),
@@ -717,8 +683,7 @@ async def test_dispatch_event_tolerates_fetch_error():
     """dispatch_event does not propagate errors when fetching webhook rows fails."""
     from butlers.api.routers.webhooks import _dispatch_event_impl
 
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(side_effect=RuntimeError("DB gone"))
+    pool = fake_pool(fetch=AsyncMock(side_effect=RuntimeError("DB gone")))
 
     # Must not raise
     await _dispatch_event_impl(pool, "permission.set", {})
@@ -730,8 +695,7 @@ async def test_dispatch_event_returns_task():
 
     from butlers.api.routers.webhooks import dispatch_event
 
-    pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[])
+    pool = fake_pool(fetch=[])
 
     task = dispatch_event(pool, "permission.set", {})
     assert isinstance(task, asyncio.Task)
@@ -746,8 +710,7 @@ async def test_create_webhook_dispatches_webhook_create_event(app, monkeypatch):
         prefix = args[6]
         return Record(_make_webhook_record({"secret_prefix": prefix}))
 
-    pool = _make_pool()
-    pool.fetchrow = AsyncMock(side_effect=_fetchrow)
+    pool = _webhook_pool(fetchrow=AsyncMock(side_effect=_fetchrow))
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 

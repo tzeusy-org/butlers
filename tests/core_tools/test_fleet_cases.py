@@ -93,6 +93,11 @@ def test_all_fleet_case_tools_also_registered_for_switchboard():
         "close_case",
         "record_case_link",
         "read_case",
+        # RFC 0038 D7: the service-only twins the fleet_case.* relays target.
+        "open_case_service",
+        "propose_case_posture_service",
+        "close_case_service",
+        "record_case_link_service",
     }
 
 
@@ -576,6 +581,176 @@ class TestRecordCaseLink:
             case_id=_CASE_ID, link_kind="owner_condition", ref="condition-1"
         )
         assert result == {"status": "error", "error": "Switchboard unreachable", "retryable": True}
+
+
+_WRITES = [
+    ("open_case", {"correlation_key": "health:owner:respiratory-illness"}, "fleet_case.open"),
+    (
+        "propose_case_posture",
+        {"case_id": _CASE_ID, "posture": "urgent"},
+        "fleet_case.propose_posture",
+    ),
+    ("close_case", {"case_id": _CASE_ID, "outcome": "resolved"}, "fleet_case.close"),
+    (
+        "record_case_link",
+        {"case_id": _CASE_ID, "link_kind": "owner_condition", "ref": "condition-1"},
+        "fleet_case.record_link",
+    ),
+]
+
+
+def _mock_data_layer(monkeypatch) -> dict[str, AsyncMock]:
+    mocks = {
+        "open_case": AsyncMock(return_value=_CASE),
+        "propose_posture": AsyncMock(return_value={**_CASE, "posture": "urgent"}),
+        "close_case": AsyncMock(return_value={**_CASE, "state": "closed"}),
+        "write_case_link": AsyncMock(return_value=({"id": "l1"}, True)),
+        "evaluate_case_attention": AsyncMock(
+            return_value={"bypass": True, "attention_ledger_id": "attn-9"}
+        ),
+    }
+    for name, mock in mocks.items():
+        monkeypatch.setattr(_fleet_cases.fleet_cases, name, mock)
+    return mocks
+
+
+class TestServiceTwins:
+    """RFC 0038 D7: each Switchboard write tool has a service-only twin the
+    ``fleet_case.*`` relays target; the twin runs the same Switchboard write."""
+
+    def test_twins_are_registered_only_on_switchboard(self):
+        registered = _register(butler_name="finance")
+        assert not {name for name in registered if name.endswith("_service")}
+
+    @pytest.mark.parametrize(("tool", "args", "_relay"), _WRITES, ids=[w[0] for w in _WRITES])
+    async def test_a_twin_writes_exactly_as_its_tool_does_on_switchboard(
+        self, monkeypatch, tool, args, _relay
+    ):
+        registered = _register(butler_name="switchboard")
+        mocks = _mock_data_layer(monkeypatch)
+        monkeypatch.setattr(_fleet_cases, "dispatch_via_switchboard_route", AsyncMock())
+
+        via_tool = await registered[tool](**args)
+        tool_calls = {name: mock.await_args_list[:] for name, mock in mocks.items()}
+        for mock in mocks.values():
+            mock.reset_mock()
+        via_twin = await registered[f"{tool}_service"](**args)
+        twin_calls = {name: mock.await_args_list[:] for name, mock in mocks.items()}
+
+        assert via_twin == via_tool
+        assert via_twin["status"] == "ok"
+        assert twin_calls == tool_calls
+        _fleet_cases.dispatch_via_switchboard_route.assert_not_awaited()
+
+    @pytest.mark.parametrize("tool", ["open_case", "close_case", "record_case_link"])
+    async def test_a_twin_reports_a_data_layer_refusal_as_an_error(self, monkeypatch, tool):
+        registered = _register(butler_name="switchboard")
+        target = {"record_case_link": "write_case_link"}.get(tool, tool)
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, target, AsyncMock(side_effect=FleetCaseError("refused"))
+        )
+        args = next(args for name, args, _ in _WRITES if name == tool)
+
+        assert await registered[f"{tool}_service"](**args) == {
+            "status": "error",
+            "error": "refused",
+        }
+
+
+class _RelayedSwitchboard:
+    """A domain daemon's Switchboard client; with the switch on only its URL is used."""
+
+    def __init__(self, url: str | None = "http://butlers-control:41100/mcp") -> None:
+        self.transport = SimpleNamespace(url=url)
+
+
+@pytest.fixture
+def relay_on(monkeypatch):
+    """Switch on; record call_relay; the generic route must not be used."""
+    import butlers.core.service_plane.client as relay_client
+
+    monkeypatch.setenv("BUTLERS_SERVICE_PLANE_AUTH", "1")
+    monkeypatch.setattr(
+        _fleet_cases,
+        "dispatch_via_switchboard_route",
+        AsyncMock(side_effect=AssertionError("generic route used")),
+    )
+    relay = SimpleNamespace(calls=[], reply=None, failure=None)
+
+    async def call_relay(name, args, *, daemon, switchboard_url, **kwargs):
+        relay.calls.append((name, args, daemon, switchboard_url))
+        if relay.failure is not None:
+            raise relay.failure
+        return relay.reply
+
+    monkeypatch.setattr(relay_client, "call_relay", call_relay)
+    return relay
+
+
+class TestSwitchOnRelay:
+    @pytest.mark.parametrize(("tool", "args", "relay_name"), _WRITES, ids=[w[0] for w in _WRITES])
+    async def test_a_domain_butler_writes_through_its_named_relay(
+        self, relay_on, tool, args, relay_name
+    ):
+        registered = _register(butler_name="health", switchboard_client=_RelayedSwitchboard())
+        relay_on.reply = {"result": {"status": "ok", "case": _CASE}, "transport": "mcp"}
+
+        result = await registered[tool](**args)
+
+        assert result == {"status": "ok", "case": _CASE}
+        assert relay_on.calls == [(relay_name, args, "health", "http://butlers-control:41100/mcp")]
+
+    async def test_a_linkable_evidence_kind_links_through_the_relay(self, relay_on, monkeypatch):
+        registered = _register(butler_name="health", switchboard_client=_RelayedSwitchboard())
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases,
+            "contribute_evidence",
+            AsyncMock(return_value=({"id": "e1"}, True)),
+        )
+        monkeypatch.setattr(
+            _fleet_cases.fleet_cases, "get_case_summary", AsyncMock(return_value=None)
+        )
+        relay_on.reply = {"result": {"status": "ok", "link": {"id": "l1"}}, "transport": "mcp"}
+
+        result = await registered["contribute_case_evidence"](
+            case_id=_CASE_ID, kind="owner_condition", ref="condition-1"
+        )
+
+        assert result["link"] == {"id": "l1"}
+        assert [call[0] for call in relay_on.calls] == ["fleet_case.record_link"]
+
+    async def test_relay_failures_and_route_errors_are_error_results(self, relay_on):
+        from butlers.core.service_plane.client import RelayUnavailable
+        from butlers.core.service_plane.relays import RelayRefused
+
+        registered = _register(butler_name="finance", switchboard_client=_RelayedSwitchboard())
+        cases = [
+            (RelayRefused("caller_not_allowed"), None, False),
+            (RelayRefused("unknown_relay", status=404), None, True),
+            (RelayUnavailable("http_502"), None, True),
+            (OSError("token missing"), None, True),
+            (None, {"error": "ConnectionError: down", "retryable": True}, True),
+            (None, {"result": {"status": "error", "error": "closed"}}, False),
+        ]
+        for failure, reply, retryable in cases:
+            relay_on.failure, relay_on.reply = failure, reply
+            result = await registered["close_case"](case_id=_CASE_ID, outcome="resolved")
+            assert result["status"] == "error"
+            assert result.get("retryable", False) is retryable, (failure, reply)
+
+    async def test_without_a_configured_switchboard_nothing_is_sent(self, relay_on):
+        for client in (None, _RelayedSwitchboard(url=None)):
+            registered = _register(butler_name="finance", switchboard_client=client)
+            result = await registered["open_case"](correlation_key="k")
+            assert result["status"] == "error" and result["retryable"] is True
+        assert relay_on.calls == []
+
+    async def test_switchboard_itself_never_relays(self, relay_on, monkeypatch):
+        registered = _register(butler_name="switchboard")
+        _mock_data_layer(monkeypatch)
+
+        assert (await registered["open_case"](correlation_key="k"))["status"] == "ok"
+        assert relay_on.calls == []
 
 
 class TestReadCase:

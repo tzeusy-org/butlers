@@ -40,14 +40,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.connectors.discretion import DiscretionEvaluator, discretion_evaluations_total
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.core import model_call
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
 pytestmark = pytest.mark.unit
 
-_MODULE = "butlers.connectors.discretion_dispatcher"
+_MODULE = "butlers.core.discretion_dispatcher"
 _KERNEL = "butlers.core.model_call"
 
 

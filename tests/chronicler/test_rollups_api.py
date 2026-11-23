@@ -16,7 +16,7 @@ lives in tests/integration/test_chronicler_rollups_api_integration.py.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -79,6 +79,12 @@ def _build_app(
     monkeypatch.setattr(router_module, "list_daily_rollups_range", fake_rollups_range)
     monkeypatch.setattr(router_module, "list_daily_rollup_flags_range", fake_flags_range)
 
+    async def fake_numeric_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
+        if raise_error:
+            raise RuntimeError("simulated query failure")
+        return rollups or [], flags or [], set(), False
+
+    monkeypatch.setattr(router_module, "_numeric_snapshot", fake_numeric_snapshot, raising=False)
     return app
 
 
@@ -434,3 +440,112 @@ async def test_response_echoes_timezone(monkeypatch: pytest.MonkeyPatch):
     app = _build_app(monkeypatch, rollups=[], flags=[])
     resp = await _get(app, {"date": "2026-07-05"})
     assert resp.json()["data"]["tz"] == "Asia/Singapore"
+
+
+async def test_pending_retention_marks_only_affected_rollup_days_pending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    affected = date(2026, 7, 5)
+    unaffected = date(2026, 7, 6)
+    app = _build_app(
+        monkeypatch,
+        rollups=[_rollup(affected, "work", 3600), _rollup(unaffected, "work", 2400)],
+        flags=[_flag(affected, "routine_break"), _flag(unaffected, "routine_break")],
+    )
+    router_module = _find_chronicler_router_module(app)
+
+    async def pending_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
+        return (
+            [_rollup(affected, "work", 3600), _rollup(unaffected, "work", 2400)],
+            [_flag(affected, "routine_break"), _flag(unaffected, "routine_break")],
+            {affected},
+            False,
+        )
+
+    monkeypatch.setattr(router_module, "_numeric_snapshot", pending_snapshot, raising=False)
+    response = await _get(
+        app, {"start_date": affected.isoformat(), "end_date": unaffected.isoformat()}
+    )
+    assert response.status_code == 200
+    days = response.json()["data"]["days"]
+    assert days[0]["status"] == "pending_repair"
+    assert days[0]["lanes"] == []
+    assert days[0]["flags"] == []
+    assert days[0]["narrative"] is None
+    assert days[1]["status"] == "materialized"
+    assert next(lane for lane in days[1]["lanes"] if lane["lane"] == "work")["seconds"] == 2400
+
+
+async def test_balance_hides_materialized_target_when_its_baseline_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    target = date(2026, 7, 5)
+    pending_baseline = target - timedelta(days=1)
+    app = _build_app(
+        monkeypatch,
+        rollups=[_rollup(target, "work", 3600), _rollup(pending_baseline, "work", 1200)],
+    )
+    router_module = _find_chronicler_router_module(app)
+
+    async def pending_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
+        return (
+            [_rollup(target, "work", 3600), _rollup(pending_baseline, "work", 1200)],
+            [],
+            {pending_baseline},
+            False,
+        )
+
+    monkeypatch.setattr(router_module, "_numeric_snapshot", pending_snapshot, raising=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/chronicler/balance",
+            params={"date": target.isoformat(), "lookback_days": 2},
+        )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "pending_repair"
+    assert data["lanes"] == []
+
+
+async def test_trends_marks_pending_date_and_keeps_later_unaffected_day(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    pending = date(2026, 6, 29)
+    unaffected = date(2026, 7, 1)
+    app = _build_app(
+        monkeypatch,
+        rollups=[_rollup(pending, "work", 3600), _rollup(unaffected, "work", 2400)],
+    )
+    router_module = _find_chronicler_router_module(app)
+
+    async def pending_snapshot(pool, *, start_date, end_date, flag_start_date, flag_end_date):
+        return (
+            [_rollup(pending, "work", 3600), _rollup(unaffected, "work", 2400)],
+            [],
+            {pending},
+            False,
+        )
+
+    monkeypatch.setattr(router_module, "_numeric_snapshot", pending_snapshot, raising=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/chronicler/trends",
+            params={"window": "week", "end_date": "2026-07-05", "lookback_days": 1},
+        )
+    assert response.status_code == 200
+    days = {
+        day["local_date"]: day
+        for lane in response.json()["data"]["lanes"]
+        for day in lane["days"]
+        if lane["lane"] == "work"
+    }
+    assert days[pending.isoformat()]["status"] == "pending_repair"
+    assert days[pending.isoformat()]["seconds"] == 0
+    work_series = next(lane for lane in response.json()["data"]["lanes"] if lane["lane"] == "work")
+    assert work_series["streak_days"] is None
+    assert days[unaffected.isoformat()]["status"] == "materialized"
+    assert days[unaffected.isoformat()]["seconds"] == 2400

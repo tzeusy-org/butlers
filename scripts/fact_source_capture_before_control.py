@@ -1,0 +1,1367 @@
+"""Finite, separately scoped hosted old-runtime PostgreSQL witness control.
+
+No command/selector/revision inputs. Local software controls are not a PG witness.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import re
+import resource
+import secrets
+import selectors
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from importlib import import_module, util
+from pathlib import Path
+
+CANDIDATE = "9b46e8e7342411cf3e8f2b75c139d077509233b0"
+CANDIDATE_TREE = "bf80be4ed461cd68c8d4dc2b63a3bf0ba2333782"
+OLD_COMMIT = "37d3917c38080a0e43aa73d8f114b715c2377568"
+RUNTIME = "src/butlers/core/fact_authority.py"
+OLD_BLOB = "6fb7494b993a459d58736d91d72c96382c728998"
+NEW_BLOB = "1f3287e7583f31eb969ffcdc6d3eeb3a5204d271"
+PREPARE_HELPER_SHA256 = "81d2f5701c376fd52bd51772e3b874b7b81a722259d2fea4427fd471ae4bce64"
+PREPARE_STAGES = {
+    "entry",
+    "compatibility",
+    "uv-version",
+    "lock-check",
+    "frozen-sync",
+    "own-source",
+    "metadata-write",
+}
+ERROR_CLASSES = {
+    "none",
+    "subprocess-timeout",
+    "subprocess-error",
+    "os-error",
+    "value-error",
+    "other",
+}
+REFUSAL_COUNTS = (
+    "scan_refused",
+    "task_overflow",
+    "children_overflow",
+    "owned_overflow",
+    "pending_overflow",
+    "walk_overflow",
+)
+NODE = (
+    "tests/integration/test_fact_source_capture_pool_liveness.py::"
+    "test_capacity_one_registered_owner_capture_and_concurrent_sources"
+)
+SUPERVISOR = Path(__file__).resolve().with_name("fact_source_capture_before_supervisor.py")
+SETTLEMENT_BASIS = "linux-subreaper-all-child-v2"
+SUPERVISOR_CANCELLED_EXIT = 3
+PHASE_KEYS = {
+    "schema",
+    "binding",
+    "phase",
+    "collected",
+    "starts",
+    "phases",
+    "exception",
+    "nested_acquire",
+    "owner_frame",
+    "pool_capacity_one",
+    "runtime_role",
+    "registered_mcp",
+    "lookup_reached",
+    "capture_tasks_settled",
+    "pool_reacquired",
+    "durable_partial_reports",
+    "memory_partial_reports",
+    "process_cleanup",
+    "process_cleanup_basis",
+    "process_cancelled",
+    "sentinel_preserved",
+    "pytest_exit",
+    "terminal",
+}
+CANCELLED = []
+AGGREGATE_DEADLINE = None
+CONTROL_STAGES = {
+    "controller-identity",
+    "output-setup",
+    "aggregate-budget",
+    "workload-clone",
+    "workload-checkout",
+    "workload-validation",
+    "uv-install",
+    "environment-prepare",
+    "sentinel-start",
+    "before",
+    "after",
+    "sentinel-cleanup",
+    "summary",
+}
+# Only producer-owned literal refusals may leave the private execution domain.
+REFUSAL_REASONS = {
+    "provider-identity",
+    "provider-run",
+    "controller-checkout",
+    "controller-sha",
+    "controller-workflow-sha",
+    "controller-workflow-ref",
+    "controller-python",
+    "controller-dirty",
+    "aggregate-start",
+    "aggregate-deadline",
+    "control-cancelled",
+    "workload-clone",
+    "workload-head",
+    "workload-tree",
+    "workload-index",
+    "workload-drift",
+    "runtime-link",
+    "runtime-blob",
+    "runtime-mode",
+    "uv-install",
+    "environment-prepare",
+    "lifecycle",
+    "missing-phase-receipt",
+    "post-call-source-drift",
+}
+
+
+def refusal(error, progress, binding):
+    """A closed diagnostic, never a phase receipt or proof of PG/cleanup."""
+    category = "value-error"
+    if isinstance(error, subprocess.TimeoutExpired):
+        category = "subprocess-timeout"
+    elif isinstance(error, subprocess.SubprocessError):
+        category = "subprocess-error"
+    elif isinstance(error, OSError):
+        category = "os-error"
+    elif isinstance(error, KeyError):
+        category = "missing-key"
+    reason = error.args[0] if len(error.args) == 1 else None
+    data = {
+        "schema": "fact-capture-control-refusal.v1",
+        "complete": False,
+        "control_verdict": "UNKNOWN",
+        "stage": progress["stage"] if progress["stage"] in CONTROL_STAGES else "unknown",
+        "error_class": category,
+        "reason": reason if type(reason) is str and reason in REFUSAL_REASONS else "unknown",
+        "binding": binding,
+        "pg_call": "UNKNOWN",
+        "cleanup": "UNKNOWN",
+    }
+    if progress.get("stage") == "environment-prepare":
+        data["preparation"] = progress.get("preparation")
+    if progress.get("stage") == "uv-install":
+        data["uv_install"] = progress.get("uv_install")
+    return data
+
+
+def preparation_child():
+    """Observe the exact helper without intercepting its calls, output or verdict."""
+    config_path = Path(os.environ["FACT_CAPTURE_PREPARE_CONFIG"])
+    config = json.loads(config_path.read_text())
+    if set(config) != {"root"}:
+        raise ValueError("prepare-config")
+    root = Path(config["root"]).resolve()
+    if root.parent != config_path.resolve().parent or root.name != "workload":
+        raise ValueError("prepare-root")
+    helper = root / "scripts/ci_environment.py"
+    if (
+        helper.is_symlink()
+        or hashlib.sha256(helper.read_bytes()).hexdigest() != PREPARE_HELPER_SHA256
+    ):
+        raise ValueError("prepare-helper")
+    observation = {
+        "schema": "fact-capture-prepare-observation.v1",
+        "helper_sha256": PREPARE_HELPER_SHA256,
+        "substage": "entry",
+        "error_class": "none",
+        "helper_exit": None,
+    }
+    active = True
+
+    def category(kind):
+        for parent, name in (
+            (subprocess.TimeoutExpired, "subprocess-timeout"),
+            (subprocess.SubprocessError, "subprocess-error"),
+            (OSError, "os-error"),
+            (ValueError, "value-error"),
+        ):
+            if issubclass(kind, parent):
+                return name
+        return "other"
+
+    def trace(frame, event, arg):
+        if frame.f_code.co_filename != str(helper):
+            return None
+        if event == "call":
+            if frame.f_code.co_name == "compatibility":
+                observation["substage"] = "compatibility"
+            elif frame.f_code.co_name == "validate_source":
+                observation["substage"] = "own-source"
+        elif event == "exception" and not issubclass(arg[0], SystemExit):
+            observation["error_class"] = category(arg[0])
+        return trace
+
+    def audit(event, args):
+        if not active:
+            return
+        if event == "subprocess.Popen":
+            for command, stage in (
+                (["uv", "--version"], "uv-version"),
+                (["uv", "lock", "--check"], "lock-check"),
+                (
+                    [
+                        "uv",
+                        "sync",
+                        "--frozen",
+                        "--dev",
+                        "--compile-bytecode",
+                        "--reinstall-package",
+                        "butlers",
+                    ],
+                    "frozen-sync",
+                ),
+            ):
+                if args[1] == command:
+                    observation["substage"] = stage
+        elif (
+            event == "open"
+            and args[0] == str(root / ".venv/ci-environment.json")
+            and args[1] == "w"
+        ):
+            observation["substage"] = "metadata-write"
+
+    # Preserve the pinned helper's script argv and original main/catch/exit path.
+    # Normal import must select its uncached source before any helper code runs.
+    sys.argv = [str(helper), "prepare"]
+    sys.path[0] = str(helper.parent)
+    sys.addaudithook(audit)
+    sys.settrace(trace)
+    try:
+        if "ci_environment" in sys.modules:
+            raise ValueError("prepare-helper-preloaded")
+        spec = util.find_spec("ci_environment")
+        if (
+            spec is None
+            or not isinstance(spec.origin, str)
+            or spec.submodule_search_locations is not None
+            or Path(spec.origin).resolve() != helper
+        ):
+            raise ValueError("prepare-helper-origin")
+        caches = (Path(util.cache_from_source(str(helper))), helper.with_suffix(".pyc"))
+        if any(path.exists() or path.is_symlink() for path in caches):
+            raise ValueError("prepare-helper-cache")
+        module = import_module("ci_environment")
+        if (
+            Path(module.__file__).resolve() != helper
+            or module.__spec__ is None
+            or not isinstance(module.__spec__.origin, str)
+            or Path(module.__spec__.origin).resolve() != helper
+        ):
+            raise ValueError("prepare-helper-origin")
+        raise SystemExit(module.main())
+    except SystemExit as error:
+        if type(error.code) is int and 0 <= error.code <= 255:
+            observation["helper_exit"] = error.code
+        raise
+    finally:
+        sys.settrace(None)
+        active = False
+        if observation["helper_exit"] == 0:
+            observation["error_class"] = "none"
+        atomic(root.parent / "prepare-observation.json", observation)
+
+
+def preparation_observation(path):
+    """Only the fixed observer schema may cross the private output boundary."""
+    try:
+        if path.is_symlink() or path.stat().st_size > 8192:
+            return None
+        data = json.loads(path.read_text())
+        if (
+            set(data) != {"schema", "helper_sha256", "substage", "error_class", "helper_exit"}
+            or data["schema"] != "fact-capture-prepare-observation.v1"
+            or data["helper_sha256"] != PREPARE_HELPER_SHA256
+            or data["substage"] not in PREPARE_STAGES
+            or data["error_class"] not in ERROR_CLASSES
+            or not (
+                data["helper_exit"] is None
+                or type(data["helper_exit"]) is int
+                and 0 <= data["helper_exit"] <= 255
+            )
+        ):
+            return None
+        return data
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def digest(data):
+    return hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def atomic(path, value):
+    wire = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    if len(wire) > 32768:
+        raise ValueError("receipt-size")
+    temporary = path.with_suffix(".pending")
+    with temporary.open("xb") as stream:
+        os.chmod(temporary, 0o600)
+        stream.write(wire + b"\n")
+    temporary.replace(path)
+
+
+def git(root, *args, binary=False, env=None):
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL="/dev/null")
+    if env is not None:
+        environment["GIT_INDEX_FILE"] = env["GIT_INDEX_FILE"]
+    timeout = (
+        20 if AGGREGATE_DEADLINE is None else min(20, AGGREGATE_DEADLINE - time.monotonic() - 60)
+    )
+    if timeout <= 0 or CANCELLED:
+        raise ValueError("aggregate-deadline")
+    result = subprocess.check_output(
+        ["git", "-c", "core.hooksPath=/dev/null", *args],
+        cwd=root,
+        env=environment,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+    )
+    return result if binary else result.decode().strip()
+
+
+def overlay(root, phase):
+    if phase not in ("before", "after"):
+        raise ValueError("phase")
+    blob = OLD_BLOB if phase == "before" else NEW_BLOB
+    target = root / RUNTIME
+    if target.is_symlink():
+        raise ValueError("runtime-link")
+    target.write_bytes(git(root, "cat-file", "blob", blob, binary=True))
+
+
+def workload_state(root, phase):
+    if git(root, "rev-parse", "HEAD") != CANDIDATE:
+        raise ValueError("workload-head")
+    if git(root, "rev-parse", "HEAD^{tree}") != CANDIDATE_TREE:
+        raise ValueError("workload-tree")
+    if git(root, "write-tree") != CANDIDATE_TREE:
+        raise ValueError("workload-index")
+    changes = git(root, "diff", "--no-ext-diff", "--name-only", "HEAD", "--").splitlines()
+    expected = [RUNTIME] if phase == "before" else []
+    if changes != expected or git(root, "ls-files", "--others", "--exclude-standard"):
+        raise ValueError("workload-drift")
+    blob = OLD_BLOB if phase == "before" else NEW_BLOB
+    if (root / RUNTIME).is_symlink() or (root / RUNTIME).read_bytes() != git(
+        root, "cat-file", "blob", blob, binary=True
+    ):
+        raise ValueError("runtime-blob")
+    mode = git(root, "ls-tree", CANDIDATE, "--", RUNTIME).split()[0]
+    if mode != "100644" or (root / RUNTIME).stat().st_mode & 0o111:
+        raise ValueError("runtime-mode")
+    manifest = git(root, "ls-tree", "-rz", CANDIDATE, binary=True)
+    with tempfile.TemporaryDirectory(prefix="fact-control-index-") as directory:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        git(root, "read-tree", CANDIDATE, env=environment)
+        git(root, "update-index", "--cacheinfo", mode, blob, RUNTIME, env=environment)
+        physical_tree = git(root, "write-tree", env=environment)
+    return {
+        "candidate": CANDIDATE,
+        "candidate_tree": CANDIDATE_TREE,
+        "physical_tree": physical_tree,
+        "runtime_blob": blob,
+        "runtime_sha256": hashlib.sha256((root / RUNTIME).read_bytes()).hexdigest(),
+        "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+        "lock_sha256": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
+        "differences": expected,
+    }
+
+
+# Diagnostic annexes never participate in phase or witness eligibility.
+AFTER_DIAGNOSTIC_SCHEMA = "fact-capture-call-diagnostic.v1"
+DIAGNOSTIC_CATEGORIES = {
+    "none",
+    "unknown",
+    "other",
+    "timeout",
+    "value-error",
+    "assertion-error",
+    "key-error",
+    "type-error",
+    "runtime-error",
+    "identity-query",
+    "http-timeout",
+    "http-error",
+    "db-error",
+    "cancelled",
+}
+DIAGNOSTIC_OPERATIONS = {
+    "none",
+    "unknown",
+    "capture-snapshot",
+    "capture-owner-lookup",
+    "capture-lock-context",
+    "capture-lock-read",
+    "capture-source-check",
+    "capture-report-build",
+    "capture-report-write",
+    "capture-cache",
+    "resolver-routing",
+    "resolver-endpoint",
+    "resolver-client-context",
+    "resolver-tool-call",
+    "resolver-result-decode",
+    "resolver-wrap",
+    "resolver-suppress",
+}
+
+
+def unknown_after_diagnostic(binding):
+    return {
+        "schema": AFTER_DIAGNOSTIC_SCHEMA,
+        "binding": binding,
+        "phase": "after",
+        "available": False,
+        "truncated": False,
+        "call_error": {"category": "unknown", "operation": "unknown"},
+        "resolver_errors": [],
+    }
+
+
+def safe_after_diagnostic(data, binding):
+    """Reconstruct a bounded closed annex; it cannot qualify a phase."""
+    unknown = unknown_after_diagnostic(binding)
+    if type(data) is not dict or set(data) != set(unknown):
+        return unknown
+    if (
+        data["schema"] != AFTER_DIAGNOSTIC_SCHEMA
+        or data["binding"] != binding
+        or data["phase"] != "after"
+        or type(data["available"]) is not bool
+        or type(data["truncated"]) is not bool
+    ):
+        return unknown
+
+    def pair(value):
+        return (
+            type(value) is dict
+            and set(value) == {"category", "operation"}
+            and type(value["category"]) is str
+            and value["category"] in DIAGNOSTIC_CATEGORIES
+            and type(value["operation"]) is str
+            and value["operation"] in DIAGNOSTIC_OPERATIONS
+        )
+
+    call = data["call_error"]
+    records = data["resolver_errors"]
+    if not pair(call) or type(records) is not list or len(records) > 8:
+        return unknown
+    if (
+        (call["category"] == "none") != (call["operation"] == "none")
+        or (data["available"] and call["category"] == "unknown")
+        or (data["available"] and call["operation"] == "unknown" and not data["truncated"])
+    ):
+        return unknown
+    total, seen, clean = 0, set(), []
+    for row in records:
+        if type(row) is not dict or set(row) != {"category", "operation", "count"}:
+            return unknown
+        value = {key: row[key] for key in ("category", "operation")}
+        if not pair(value) or type(row["count"]) is not int or not 1 <= row["count"] <= 24:
+            return unknown
+        key = (row["category"], row["operation"])
+        if key in seen or row["category"] in ("none", "unknown") or row["operation"] == "none":
+            return unknown
+        if (row["operation"] != "unknown" and not row["operation"].startswith("resolver-")) or (
+            row["operation"] == "unknown" and not data["truncated"]
+        ):
+            return unknown
+        seen.add(key)
+        total += row["count"]
+        clean.append({**value, "count": row["count"]})
+    if total > 24 or (not data["available"] and (call != unknown["call_error"] or records)):
+        return unknown
+    result = {
+        **unknown,
+        "available": data["available"],
+        "truncated": data["truncated"],
+        "call_error": dict(call),
+        "resolver_errors": clean,
+    }
+    try:
+        if len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode()) > 8192:
+            return unknown
+    except (TypeError, ValueError, RecursionError):
+        return unknown
+    return result
+
+
+def read_after_diagnostic(path, binding):
+    """Private regular-file input only; no raw bytes pass into public evidence."""
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate-diagnostic-key")
+            result[key] = value
+        return result
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 8192:
+                return unknown_after_diagnostic(binding)
+            raw = os.read(fd, 8193)
+        finally:
+            os.close(fd)
+        if len(raw) > 8192:
+            return unknown_after_diagnostic(binding)
+        return safe_after_diagnostic(json.loads(raw, object_pairs_hook=unique), binding)
+    except (OSError, ValueError, TypeError, RecursionError):
+        return unknown_after_diagnostic(binding)
+
+
+def safe_phase(data, name, binding):
+    if set(data) != PHASE_KEYS or data["schema"] != "fact-capture-pg-phase.v1":
+        raise ValueError("phase-schema")
+    if data["binding"] != binding or data["phase"] != name:
+        raise ValueError("phase-binding")
+    if (
+        type(data["collected"]) is not int
+        or not 0 <= data["collected"] <= 2
+        or type(data["starts"]) is not int
+        or not 0 <= data["starts"] <= 2
+        or not isinstance(data["phases"], dict)
+        or set(data["phases"]) - {"setup", "call", "teardown"}
+        or any(v not in ("passed", "failed", "skipped") for v in data["phases"].values())
+    ):
+        raise ValueError("phase-values")
+    if data["exception"] not in ("none", "TimeoutError", "other"):
+        raise ValueError("exception-category")
+    for key in (
+        "nested_acquire",
+        "owner_frame",
+        "pool_capacity_one",
+        "runtime_role",
+        "registered_mcp",
+        "capture_tasks_settled",
+        "pool_reacquired",
+        "process_cleanup",
+        "process_cancelled",
+        "sentinel_preserved",
+        "terminal",
+    ):
+        if type(data[key]) is not bool:
+            raise ValueError("phase-boolean")
+    for key in ("durable_partial_reports", "memory_partial_reports", "pytest_exit"):
+        if data[key] is not None and (type(data[key]) is not int or not 0 <= data[key] <= 255):
+            raise ValueError("phase-number")
+    if data["lookup_reached"] not in ("UNKNOWN", "OBSERVED"):
+        raise ValueError("lookup-category")
+    if data["process_cleanup_basis"] not in (SETTLEMENT_BASIS, "UNKNOWN"):
+        raise ValueError("cleanup-basis")
+
+
+def require_phase(data, name, binding):
+    safe_phase(data, name, binding)
+    if set(data) != PHASE_KEYS or data["schema"] != "fact-capture-pg-phase.v1":
+        raise ValueError("phase-schema")
+    if data["binding"] != binding or data["phase"] != name:
+        raise ValueError("phase-binding")
+    if type(data["collected"]) is not int or type(data["starts"]) is not int:
+        raise ValueError("phase-count-type")
+    if data["collected"] != 1 or data["starts"] != 1:
+        raise ValueError("phase-population")
+    needed = [
+        "pool_capacity_one",
+        "runtime_role",
+        "registered_mcp",
+        "capture_tasks_settled",
+        "pool_reacquired",
+        "process_cleanup",
+        "sentinel_preserved",
+        "terminal",
+    ]
+    if data["process_cancelled"] is not False:
+        raise ValueError("control-cancelled")
+    if data["process_cleanup_basis"] != SETTLEMENT_BASIS:
+        raise ValueError("cleanup-basis")
+    if any(data[k] is not True for k in needed):
+        raise ValueError("phase-incomplete")
+    if type(data["durable_partial_reports"]) is not int or data["durable_partial_reports"] != 0:
+        raise ValueError("partial-report")
+    expected = {
+        "setup": "passed",
+        "call": "failed" if name == "before" else "passed",
+        "teardown": "passed",
+    }
+    if (
+        data["phases"] != expected
+        or type(data["pytest_exit"]) is not int
+        or data["pytest_exit"] != (1 if name == "before" else 0)
+    ):
+        raise ValueError("phase-outcome")
+    if name == "before":
+        if (
+            data["exception"] != "TimeoutError"
+            or data["nested_acquire"] is not True
+            or data["owner_frame"] is not True
+            or data["memory_partial_reports"] != 0
+            or type(data["memory_partial_reports"]) is not int
+        ):
+            raise ValueError("before-not-known-red")
+    elif data["exception"] != "none":
+        raise ValueError("after-not-green")
+    if data["lookup_reached"] not in ("UNKNOWN", "OBSERVED"):
+        raise ValueError("lookup-reachability")
+
+
+def require_witness(before, after, binding):
+    require_phase(before, "before", binding)
+    require_phase(after, "after", binding)
+    return "WITNESS_COMPLETE"
+
+
+def process_start(pid):
+    raw = Path(f"/proc/{pid}/stat").read_text()
+    return int(raw[raw.rfind(")") + 2 :].split()[19])
+
+
+def first_scan_refusal_observation(diagnostic):
+    """Project the applied shared closed tuple; absence or malformed data stays unknown."""
+    counts = diagnostic.get("counts")
+    if type(counts) is not dict:
+        return None
+    count = counts.get("scan_refused")
+    first = diagnostic.get("first_scan_refusal")
+    if type(count) is not int or not 1 <= count <= 65535:
+        return None
+    if type(first) is not dict or set(first) != {"s", "k", "o", "b"}:
+        return None
+    if not all(type(first[key]) is int for key in ("s", "k", "o", "b")):
+        return None
+    if not (1 <= first["s"] <= 3 and 1 <= first["k"] <= 6 and 1 <= first["o"] <= 4):
+        return None
+    if first["b"] not in {0, 1, 2, 3, 7, 10, 11, 15, 17, 19, 23, 27, 31}:
+        return None
+    if first["k"] == 1 and (first["b"] & 15) == 15:
+        return None
+    return {key: first[key] for key in ("s", "k", "o", "b")}
+
+
+def task_scan_observation(diagnostic):
+    """Validate optional closed task metadata without accepting a refused scan."""
+    value = diagnostic.get("first_task_scan")
+    keys = {
+        "phase",
+        "before_probe",
+        "after_probe",
+        "before_known",
+        "after_known",
+        "same_task_start",
+        "before_dead",
+        "after_dead",
+        "classification",
+    }
+    if type(value) is not dict or set(value) != keys:
+        return None
+    if any(
+        type(value[key]) is not str
+        for key in ("phase", "before_probe", "after_probe", "classification")
+    ):
+        return None
+    if value["phase"] not in {
+        "child-open",
+        "child-context-enter",
+        "child-read",
+        "child-parse",
+        "child-context-exit",
+    }:
+        return None
+    categories = {"known", "absent", "denied", "invalid", "other", "unknown"}
+    if any(value[key] not in categories for key in ("before_probe", "after_probe")):
+        return None
+    if any(type(value[key]) is not bool for key in ("before_known", "after_known")):
+        return None
+    if any(
+        value[key] is not None and type(value[key]) is not bool
+        for key in ("same_task_start", "before_dead", "after_dead")
+    ):
+        return None
+    if any(
+        value[f"{side}_known"] != (value[f"{side}_probe"] == "known")
+        for side in ("before", "after")
+    ):
+        return None
+    both = value["before_known"] and value["after_known"]
+    if (value["same_task_start"] is not None) != both:
+        return None
+    if any(
+        (value[f"{side}_dead"] is not None) != value[f"{side}_known"]
+        for side in ("before", "after")
+    ):
+        return None
+    expected = (
+        "task-entry-absent"
+        if value["after_probe"] == "absent"
+        else "task-identity-changed"
+        if both and value["same_task_start"] is False
+        else "task-known"
+        if value["after_known"]
+        else "task-probe-unknown"
+    )
+    if value["classification"] != expected:
+        return None
+    first = first_scan_refusal_observation(diagnostic)
+    expected_operation = {
+        "child-open": 2,
+        "child-context-enter": 2,
+        "child-read": 3,
+        "child-parse": 4,
+        "child-context-exit": 2,
+    }[value["phase"]]
+    if first is None or first["o"] != expected_operation:
+        return None
+    return dict(value)
+
+
+def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protocol_refused):
+    """Project protocol observations, never child output or a new cleanup verdict."""
+    outcomes = [value for value in events if value.get("event") == "outcome"]
+    settled = [value for value in events if value.get("event") == "settled"]
+    diagnostics = [value for value in events if value.get("event") == "diagnostic"]
+    outcome = outcomes[0] if len(outcomes) == 1 else {}
+    diagnostic = diagnostics[0] if len(diagnostics) == 1 else {}
+
+    def number(value, lower=0, upper=65535):
+        return value if type(value) is int and lower <= value <= upper else None
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    def literal(value, allowed):
+        return value if type(value) is str and value in allowed else "unknown"
+
+    counts = diagnostic.get("counts")
+    counts = counts if isinstance(counts, dict) else {}
+    return {
+        "child_exit": number(outcome.get("code"), upper=255),
+        "child_signal": literal(
+            outcome.get("signal"),
+            {
+                "SIGABRT",
+                "SIGALRM",
+                "SIGBUS",
+                "SIGFPE",
+                "SIGHUP",
+                "SIGILL",
+                "SIGINT",
+                "SIGKILL",
+                "SIGPIPE",
+                "SIGQUIT",
+                "SIGSEGV",
+                "SIGTERM",
+                "SIGTRAP",
+                "SIGXCPU",
+                "SIGXFSZ",
+            },
+        ),
+        "supervisor_exit": number(supervisor_exit, -64, 255),
+        "timed_out": bool(timed_out),
+        "cancelled": bool(cancelled),
+        "protocol_refused": bool(protocol_refused),
+        "outcome_records": min(8, len(outcomes)),
+        "settled_records": min(8, len(settled)),
+        "settled_complete": boolean(settled[0].get("complete")) if len(settled) == 1 else None,
+        "completion_basis": (
+            SETTLEMENT_BASIS
+            if len(settled) == 1 and settled[0].get("basis") == SETTLEMENT_BASIS
+            else "UNKNOWN"
+        ),
+        "reason": literal(
+            diagnostic.get("reason"),
+            {
+                "settled",
+                "latched_refusal",
+                "settlement_deadline",
+            },
+        ),
+        "counts": {key: number(counts.get(key)) for key in REFUSAL_COUNTS},
+        "counts_saturated": boolean(diagnostic.get("counts_saturated")),
+        "kernel_children_closed": boolean(diagnostic.get("kernel_children_closed")),
+        "first_scan_refusal": first_scan_refusal_observation(diagnostic),
+        "first_task_scan": task_scan_observation(diagnostic),
+    }
+
+
+def kernel_settlement_complete(events, supervisor_exit):
+    """Accept only the versioned kernel-domain proof, never a census or root0."""
+    if type(supervisor_exit) is not int or supervisor_exit not in (
+        0,
+        SUPERVISOR_CANCELLED_EXIT,
+        -signal.SIGTERM,
+        -signal.SIGINT,
+    ):
+        return False
+    if [x.get("event") for x in events] != ["ready", "outcome", "diagnostic", "settled"]:
+        return False
+    grouped = {
+        kind: [x for x in events if x.get("event") == kind]
+        for kind in ("ready", "outcome", "diagnostic", "settled")
+    }
+    if any(len(values) != 1 for values in grouped.values()) or len(events) != 4:
+        return False
+    ready, outcome, diagnostic, settled = (grouped[k][0] for k in grouped)
+    if set(ready) != {"event", "pid", "start_ticks"} or any(
+        type(ready[k]) is not int or ready[k] <= (1 if k == "pid" else 0)
+        for k in ("pid", "start_ticks")
+    ):
+        return False
+    if set(outcome) != {"event", "code", "signal"}:
+        return False
+    code, signum = outcome["code"], outcome["signal"]
+    if not (
+        (type(code) is int and 0 <= code <= 255 and signum is None)
+        or (code is None and type(signum) is str and signum in signal.Signals.__members__)
+    ):
+        return False
+    if set(settled) != {
+        "event",
+        "complete",
+        "basis",
+        "all_child_echild",
+        "held_children",
+        "root_outcome",
+        "cancelled",
+    }:
+        return False
+    if not (
+        settled["basis"] == SETTLEMENT_BASIS
+        and settled["complete"] is True
+        and settled["all_child_echild"] is True
+        and type(settled["held_children"]) is int
+        and settled["held_children"] == 0
+        and settled["root_outcome"] is True
+        and type(settled["cancelled"]) is bool
+        and (supervisor_exit != 0 or settled["cancelled"] is False)
+    ):
+        return False
+    if set(diagnostic) != {
+        "event",
+        "reason",
+        "counts",
+        "counts_saturated",
+        "first_scan_refusal",
+        "first_task_scan",
+        "owned_remaining",
+        "direct_remaining",
+        "kernel_children_closed",
+    }:
+        return False
+    counts = diagnostic.get("counts")
+    return (
+        diagnostic.get("reason") == "settled"
+        and diagnostic.get("kernel_children_closed") is True
+        and diagnostic.get("counts_saturated") is False
+        and diagnostic.get("first_scan_refusal") is None
+        and diagnostic.get("first_task_scan") is None
+        and type(counts) is dict
+        and set(counts) == set(REFUSAL_COUNTS)
+        and all(type(value) is int and value == 0 for value in counts.values())
+        and type(diagnostic.get("owned_remaining")) is int
+        and diagnostic["owned_remaining"] == 0
+        and type(diagnostic.get("direct_remaining")) is int
+        and diagnostic["direct_remaining"] == 0
+    )
+
+
+def supervisor_was_cancelled(events, supervisor_exit):
+    """Cancellation is separate from physical kernel settlement, including late signals."""
+    return supervisor_exit in (SUPERVISOR_CANCELLED_EXIT, -signal.SIGTERM, -signal.SIGINT) or any(
+        x.get("event") == "settled" and x.get("cancelled") is True for x in events
+    )
+
+
+def run_owned(command, environment, seconds, *, cwd=None):
+    """Use the existing confined subreaper; only its closed lifecycle crosses stdout."""
+    started = time.monotonic()
+    deadline = started + seconds
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SUPERVISOR),
+            str(os.getpid()),
+            str(process_start(os.getpid())),
+            *command,
+        ],
+        env=environment,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    wire = bytearray()
+    events = []
+    stopped = False
+    timed_out = False
+    overflow = False
+    cleanup_deadline = None
+    try:
+        while True:
+            now = time.monotonic()
+            if not stopped and (
+                CANCELLED or now >= deadline or any(x.get("event") == "outcome" for x in events)
+            ):
+                timed_out = now >= deadline
+                # The versioned supervisor starts its own cleanup on root
+                # outcome. A redundant signal can hit interpreter finalization
+                # after complete proof was emitted. Only cancellation/timeout
+                # asks it to stop; every path still receives the cleanup bound.
+                if CANCELLED or timed_out:
+                    process.terminate()
+                stopped = True
+                cleanup_deadline = now + 10
+            if stopped and now >= cleanup_deadline:
+                process.kill()
+                break
+            for key, _ in selector.select(0.02):
+                chunk = os.read(key.fileobj.fileno(), 4096)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                wire.extend(chunk)
+                if len(wire) > 16384:
+                    overflow = True
+                    if not stopped:
+                        process.terminate()
+                        stopped = True
+                        cleanup_deadline = now + 10
+                    wire.clear()
+                    continue
+                while b"\n" in wire:
+                    line, _, rest = wire.partition(b"\n")
+                    wire[:] = rest
+                    try:
+                        value = json.loads(line)
+                        if not isinstance(value, dict) or len(events) >= 8:
+                            raise ValueError("lifecycle")
+                        events.append(value)
+                    except (ValueError, UnicodeError):
+                        overflow = True
+            if process.poll() is not None and not selector.get_map():
+                break
+        process.wait(timeout=5)
+    finally:
+        selector.close()
+        process.stdout.close()
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+    outcomes = [x for x in events if x.get("event") == "outcome"]
+    complete = not overflow and not wire and kernel_settlement_complete(events, process.returncode)
+    code = outcomes[0].get("code") if len(outcomes) == 1 else None
+    supervisor_cancelled = supervisor_was_cancelled(events, process.returncode)
+    if supervisor_cancelled and not timed_out and not CANCELLED:
+        # Unexpected domain cancellation must reach aggregate/terminal sealing
+        # even if an intermediate caller were to ignore the returned flag.
+        CANCELLED.append("supervisor")
+    cancelled = bool(CANCELLED) or supervisor_cancelled
+    return {
+        "exit": code,
+        "cleanup_complete": complete,
+        "timed_out": timed_out,
+        "cancelled": cancelled,
+        "elapsed_s": time.monotonic() - started,
+        "observation": lifecycle_observation(
+            events, process.returncode, timed_out, cancelled, overflow
+        ),
+    }
+
+
+def uv_install_observation(installed):
+    """Only closed values from the existing owned installer result; never a verdict."""
+
+    def number(value, lower=0, upper=255):
+        return value if type(value) is int and lower <= value <= upper else None
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    observed = installed.get("observation")
+    observed = observed if type(observed) is dict else {}
+    return {
+        "exit": number(installed.get("exit"), -64, 255),
+        "cleanup_complete": boolean(installed.get("cleanup_complete")),
+        "timed_out": boolean(installed.get("timed_out")),
+        "cancelled": boolean(installed.get("cancelled")),
+        "lifecycle": {
+            "child_exit": number(observed.get("child_exit"), -64, 255),
+            "supervisor_exit": number(observed.get("supervisor_exit"), -64, 255),
+            "protocol_refused": boolean(observed.get("protocol_refused")),
+            "outcome_records": number(observed.get("outcome_records"), upper=8),
+            "settled_records": number(observed.get("settled_records"), upper=8),
+            "settled_complete": boolean(observed.get("settled_complete")),
+        },
+    }
+
+
+def prepare_uv(root, private, environment, seconds, *, progress=None):
+    """Invoke the unchanged installer under our aggregate and owned subreaper."""
+    installed = run_owned(
+        [sys.executable, str(root / "scripts/install_ci_uv.py")],
+        {**environment, "GITHUB_PATH": str(private / "installer-path")},
+        seconds,
+    )
+    if progress is not None:
+        progress["uv_install"] = uv_install_observation(installed)
+    if (
+        installed["exit"] != 0
+        or not installed["cleanup_complete"]
+        or installed["timed_out"]
+        or installed["cancelled"]
+    ):
+        raise ValueError("uv-install")
+    return {
+        **environment,
+        "PATH": str(Path(environment["HOME"]) / ".local/bin")
+        + os.pathsep
+        + environment.get("PATH", ""),
+    }
+
+
+def child_environment():
+    keep = ("PATH", "HOME", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR")
+    return {
+        **{key: os.environ[key] for key in keep if key in os.environ},
+        "CI": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUNBUFFERED": "1",
+        "TESTCONTAINERS_RYUK_DISABLED": "true",
+    }
+
+
+def phase_child():
+    config = json.loads(Path(os.environ["FACT_CAPTURE_CONTROL_CONFIG"]).read_text())
+    root = Path(config["root"])
+    raw = Path(config["raw_log"])
+    fd = os.open(raw, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (16 * 1024 * 1024, 16 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    interpreter = root / ".venv/bin/python"
+    command = [
+        str(interpreter),
+        "-m",
+        "pytest",
+        NODE,
+        "-vv",
+        "--tb=short",
+        "-n",
+        "0",
+        "-p",
+        "fact_source_capture_before_observer",
+        "-p",
+        "no:cacheprovider",
+    ]
+    os.chdir(root)
+    os.execve(str(interpreter), command, dict(os.environ))
+
+
+def provider_binding(root):
+    env = os.environ
+    if (
+        env.get("GITHUB_REPOSITORY") != "tzeusy-org/butlers"
+        or env.get("GITHUB_EVENT_NAME") != "pull_request"
+        or env.get("GITHUB_WORKFLOW") != "Fact Source Capture BEFORE Control"
+    ):
+        raise ValueError("provider-identity")
+    for key in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+        value = env.get(key, "")
+        if not value.isdecimal() or not 0 < int(value) < 10**20:
+            raise ValueError("provider-run")
+    head = git(root, "rev-parse", "HEAD")
+    reference = env.get("GITHUB_WORKFLOW_REF", "")
+    if env.get("GITHUB_SHA") != head:
+        raise ValueError("controller-sha")
+    if env.get("GITHUB_WORKFLOW_SHA") != head:
+        raise ValueError("controller-workflow-sha")
+    if not re.fullmatch(
+        r"tzeusy-org/butlers/\.github/workflows/"
+        r"fact-source-capture-before-control\.yml@refs/pull/[1-9][0-9]*/merge",
+        reference,
+    ):
+        raise ValueError("controller-workflow-ref")
+    if platform.python_version() != "3.12.15":
+        raise ValueError("controller-python")
+    if git(root, "status", "--porcelain"):
+        raise ValueError("controller-dirty")
+    return {
+        "repository": env["GITHUB_REPOSITORY"],
+        "workflow": env["GITHUB_WORKFLOW"],
+        "run": env["GITHUB_RUN_ID"],
+        "attempt": env["GITHUB_RUN_ATTEMPT"],
+        "controller_head": head,
+        "controller_tree": git(root, "rev-parse", "HEAD^{tree}"),
+        "nonce": secrets.token_hex(32),
+        "python": platform.python_version(),
+    }
+
+
+def execute(root, output, progress=None):
+    global AGGREGATE_DEADLINE
+    if progress is None:
+        progress = {}
+    progress["stage"] = "controller-identity"
+    binding = provider_binding(root)
+    progress["binding"] = binding
+    progress["stage"] = "aggregate-budget"
+    started = float(os.environ["FACT_CAPTURE_CONTROL_STARTED"])
+    if not 0 <= time.monotonic() - started < 2480:
+        raise ValueError("aggregate-start")
+    deadline = started + 2480
+    AGGREGATE_DEADLINE = deadline
+    receipts = {}
+    environment = child_environment()
+
+    def remaining(bound):
+        value = min(bound, deadline - time.monotonic() - 120)
+        if value < bound or CANCELLED:
+            raise ValueError("aggregate-deadline")
+        return value
+
+    with tempfile.TemporaryDirectory(prefix="fact-pg-witness-", dir=output.parent) as directory:
+        private = Path(directory)
+        os.chmod(private, 0o700)
+        workload = private / "workload"
+        # Clone only local authenticated checkout objects. No remote command or revision input.
+        source = root.parent / "workload-source"
+        progress["stage"] = "workload-clone"
+        with (private / "clone.log").open("wb") as stream:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "clone",
+                    "--shared",
+                    "--no-hardlinks",
+                    "--no-checkout",
+                    str(source),
+                    str(workload),
+                ],
+                stdout=stream,
+                stderr=stream,
+                timeout=30,
+            )
+        if result.returncode:
+            raise ValueError("workload-clone")
+        progress["stage"] = "workload-checkout"
+        git(workload, "checkout", "--detach", CANDIDATE)
+        progress["stage"] = "workload-validation"
+        state = workload_state(workload, "after")
+        binding["workload"] = state
+        overlay(workload, "before")
+        binding["phase_states"] = {"before": workload_state(workload, "before")}
+        overlay(workload, "after")
+        binding["phase_states"]["after"] = workload_state(workload, "after")
+        binding["observer_sha256"] = hashlib.sha256(
+            (root / "scripts/fact_source_capture_before_observer.py").read_bytes()
+        ).hexdigest()
+        progress["stage"] = "uv-install"
+        environment = prepare_uv(root, private, environment, remaining(640), progress=progress)
+        progress["stage"] = "environment-prepare"
+        prepare_config = private / "prepare-config.json"
+        atomic(prepare_config, {"root": str(workload)})
+        prepared = run_owned(
+            [sys.executable, str(Path(__file__).resolve()), "--prepare-child"],
+            {**environment, "FACT_CAPTURE_PREPARE_CONFIG": str(prepare_config)},
+            remaining(640),
+            cwd=workload,
+        )
+        progress["preparation"] = {
+            "lifecycle": prepared["observation"],
+            "helper": preparation_observation(private / "prepare-observation.json"),
+        }
+        if (
+            prepared["exit"] != 0
+            or not prepared["cleanup_complete"]
+            or prepared["timed_out"]
+            or prepared["cancelled"]
+        ):
+            raise ValueError("environment-prepare")
+        progress["stage"] = "sentinel-start"
+        sentinel = subprocess.Popen(
+            [sys.executable, "-c", "import time;time.sleep(1200)"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            for name in ("before", "after"):
+                progress["stage"] = name
+                overlay(workload, name)
+                state = workload_state(workload, name)
+                config = {
+                    "binding": binding,
+                    "phase": name,
+                    "root": str(workload),
+                    "output": str(private / (name + ".json")),
+                    "raw_log": str(private / (name + ".private.log")),
+                    "runtime_sha256": state["runtime_sha256"],
+                }
+                config_file = private / (name + "-config.json")
+                atomic(config_file, config)
+                env = {
+                    **environment,
+                    "FACT_CAPTURE_CONTROL_CONFIG": str(config_file),
+                    "PYTHONPATH": str(root / "scripts"),
+                    "PYTHONPYCACHEPREFIX": str(private / (name + "-pycache")),
+                }
+                lifecycle = run_owned(
+                    [sys.executable, str(Path(__file__).resolve()), "--phase-child"],
+                    env,
+                    remaining(420),
+                )
+                if not Path(config["output"]).is_file():
+                    raise ValueError("missing-phase-receipt")
+                data = json.loads(Path(config["output"]).read_text())
+                data.update(
+                    process_cleanup=lifecycle["cleanup_complete"],
+                    process_cancelled=lifecycle["cancelled"],
+                    process_cleanup_basis=(
+                        lifecycle["observation"].get("completion_basis", "UNKNOWN")
+                        if lifecycle["cleanup_complete"]
+                        else "UNKNOWN"
+                    ),
+                    sentinel_preserved=sentinel.poll() is None,
+                    pytest_exit=lifecycle["exit"],
+                )
+                if lifecycle["timed_out"] or lifecycle["cancelled"]:
+                    data["terminal"] = False
+                # Retain a closed nonpass prefix without leaking arbitrary plugin values.
+                safe_phase(data, name, binding)
+                atomic(output / (name + ".json"), data)
+                if name == "after":
+                    atomic(
+                        output / "after-diagnostic.json",
+                        read_after_diagnostic(
+                            Path(config["output"]).with_name("after-diagnostic.json"), binding
+                        ),
+                    )
+                require_phase(data, name, binding)
+                receipts[name] = data
+                if workload_state(workload, name) != state:
+                    raise ValueError("post-call-source-drift")
+        finally:
+            # Retain the failed phase unless cleanup itself fails.
+            try:
+                sentinel.kill()
+                sentinel.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                progress["stage"] = "sentinel-cleanup"
+                raise
+        progress["stage"] = "summary"
+        verdict = require_witness(receipts["before"], receipts["after"], binding)
+        # Return only tentative evidence. The private domain must finish cleanup
+        # before main can begin the interruptible terminal publication.
+        return {
+            "schema": "fact-capture-pg-control.v1",
+            "complete": False,
+            "control_verdict": verdict,
+            "binding": binding,
+            "workload_only": True,
+            "phases": {k: digest(v) for k, v in receipts.items()},
+        }
+
+
+def main():
+    if sys.argv[1:] == ["--phase-child"]:
+        phase_child()
+    if sys.argv[1:] == ["--prepare-child"]:
+        preparation_child()
+    if len(sys.argv) != 1:
+        return 2
+    root = Path(__file__).resolve().parents[1]
+    output = Path(os.environ.get("RUNNER_TEMP", "/nonexistent")) / "fact-capture-before-evidence"
+    progress = {"stage": "controller-identity"}
+    binding = None
+    output_created = False
+    terminal = False
+
+    def discard_summary():
+        # Only this invocation's newly created output directory is ever adopted.
+        for name in ("summary.pending", "summary.json"):
+            (output / name).unlink(missing_ok=True)
+
+    def cancel(signum, frame):
+        nonlocal terminal
+        if not CANCELLED:
+            CANCELLED.append(signum)
+        if terminal:
+            # No owned child/private cleanup remains to interrupt. Stay armed
+            # through CLI exit, including atomic write and success announcement.
+            # Disarm before removal so another signal cannot interrupt refusal.
+            terminal = False
+            try:
+                discard_summary()
+            finally:
+                raise ValueError("control-cancelled")
+
+    def require_terminal():
+        if CANCELLED:
+            raise ValueError("control-cancelled")
+        if AGGREGATE_DEADLINE is not None and time.monotonic() >= AGGREGATE_DEADLINE:
+            raise ValueError("aggregate-deadline")
+
+    try:
+        # Refuse before creating output or starting children on an unbound host.
+        binding = provider_binding(root)
+        progress["stage"] = "output-setup"
+        output.mkdir(exist_ok=False)
+        output_created = True
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(sig, cancel)
+        summary = execute(root, output, progress)
+        terminal = True
+        require_terminal()
+        atomic(output / "summary.json", summary)
+        require_terminal()
+        print("fact-capture control WITNESS_COMPLETE; BEFORE test remains FAILED")
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
+        terminal = False
+        data = refusal(error, progress, progress.get("binding", binding))
+        if output_created:
+            try:
+                discard_summary()
+                atomic(output / "control-refusal.json", data)
+            except (OSError, ValueError):
+                # Do not replace the original refusal or print storage/exception values.
+                print("fact-capture control refusal artifact unavailable")
+        print(
+            "fact-capture control UNKNOWN/refused; "
+            f"stage={data['stage']} class={data['error_class']} reason={data['reason']}"
+        )
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -91,7 +91,25 @@ DEFAULT_WELLNESS_RULES: tuple[WellnessRule, ...] = (
 _NON_NUMERIC_STATES = frozenset({"", "unknown", "unavailable", "none", "null"})
 
 
-ClassifyOutcome = Literal["promoted", "no_match", "skipped_non_numeric", "denylisted"]
+# Entity-id tokens marking a transient (not yet settled) reading, e.g. a scale
+# reporting while the user steps on/off. Vendor-neutral; matched case-insensitively.
+TRANSIENT_ENTITY_TOKENS: tuple[str, ...] = (
+    "non_stabilized",
+    "unstabilized",
+    "non_stable",
+    "unstable",
+)
+
+
+def is_transient_entity(entity_id: str) -> bool:
+    """Return True when ``entity_id`` marks a transient reading that must not be promoted."""
+    lowered = entity_id.lower()
+    return any(token in lowered for token in TRANSIENT_ENTITY_TOKENS)
+
+
+ClassifyOutcome = Literal[
+    "promoted", "no_match", "skipped_non_numeric", "denylisted", "skipped_transient"
+]
 
 
 @dataclass(frozen=True)
@@ -180,7 +198,7 @@ class WellnessClassifier:
         current HA state is temporarily unavailable. The denylist and strict
         metadata rules remain identical to ordinary event classification.
         """
-        if entity_id in self._denylist:
+        if entity_id in self._denylist or is_transient_entity(entity_id):
             return None
 
         for rule in self._rules:
@@ -204,6 +222,9 @@ class WellnessClassifier:
         """Return the full classification verdict (metric + outcome + value)."""
         if entity_id in self._denylist:
             return ClassifyResult(metric=None, outcome="denylisted")
+
+        if is_transient_entity(entity_id):
+            return ClassifyResult(metric=None, outcome="skipped_transient")
 
         metric = self.match_metric(
             entity_id=entity_id,

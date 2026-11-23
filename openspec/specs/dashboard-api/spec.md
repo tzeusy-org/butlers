@@ -2075,3 +2075,47 @@ Scope: v1-mandatory
 - **WHEN** response verbs and receipts are added to the calendar workspace
 - **THEN** existing invitation explicit-status admission, radar, entry details, CRUD permissions and loading/partial/clean-empty contracts remain intact
 - **AND** the new operation does not infer consent from missing response/push data or alter provider/tool defaults
+
+### Requirement: Owner /now Situation Card (dark)
+
+The dashboard API SHALL expose `GET /api/now`, the owner's deterministic situation card: one line
+per signal (place, activity, mode, clock, quiet) in the four perception states, rendered from typed
+owner reads with no LLM call. It is owner-authenticated and released dark behind
+`perception.flags.NOW_LIVE`. Source: the /now card in Wave 0 of
+`docs/redesigns/2026-10-16-jarvis-arch-pursuit.md` (bu-dhloi1.21); the rendering lives in
+`src/butlers/perception/now.py`.
+
+#### Scenario: Dark until the switch
+
+- **WHEN** `NOW_LIVE` is off
+- **THEN** `GET /api/now` answers 404 and reads nothing
+
+#### Scenario: Owner authentication is required
+
+- **WHEN** the request carries no dashboard owner authority
+- **THEN** the route refuses with 401 before any perception read
+
+#### Scenario: Every state renders and none reads as all-clear
+
+- **WHEN** a signal is unknown, unmeasurable, unconfigured, missing or malformed
+- **THEN** its line says so ("Unknown", "Can't be measured", "Not set up", "Unknown (unreadable)")
+- **AND** the card is `all_current: true` only when every signal is known and fresh
+
+#### Scenario: Stale is shown as stale
+
+- **WHEN** a signal's value is past its freshness
+- **THEN** the line is unknown and shows the last value marked stale, never as current
+
+#### Scenario: No detail beyond the coarse place
+
+- **WHEN** the card renders a place, mode, clock or quiet signal
+- **THEN** place reads only "At a known place" or "Elsewhere"
+- **AND** no place or locality reference, evidence or record reference, title or coordinate appears
+
+#### Scenario: Owner reader role per request
+
+- **WHEN** the card is live
+- **THEN** the reads run on a fresh connection that switches to `perception_owner_reader` with
+  `SET LOCAL ROLE` inside one transaction
+- **AND** a missing reader DSN, a missing or ambiguous owner entity, or a reader failure answers
+  503 `now_unavailable`

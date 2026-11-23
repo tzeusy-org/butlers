@@ -249,6 +249,7 @@ function activityResponse(items: ResponseOf<"getEntityTimeline">): ResponseOf<"g
     offset: 0,
     degraded: false,
     degraded_reason: null,
+    chronicler_truncated: false,
   };
 }
 
@@ -307,7 +308,7 @@ async function installEntityStubs(page: Page, overrides: {
     (route) => {
       const requestUrl = new URL(route.request().url());
       const body = requestUrl.searchParams.get("bins") === "daily"
-        ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null })
+        ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null, chronicler_truncated: false })
         : mockJson("getEntityActivity", activityResponse(activityItems));
       return route.fulfill({
         status: 200,
@@ -465,7 +466,7 @@ test.describe("entity-redesign: entity detail page", () => {
       (route) => {
         const requestUrl = new URL(route.request().url());
         const body = requestUrl.searchParams.get("bins") === "daily"
-            ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null })
+            ? mockJson("getEntityActivityBins", { bins: [], degraded: false, degraded_reason: null, chronicler_truncated: false })
             : mockJson("getEntityActivity", activityResponse(MOCK_TIMELINE_POPULATED));
         return route.fulfill({
           status: 200,

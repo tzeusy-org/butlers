@@ -23,6 +23,7 @@ from butlers.core.approval_delivery_authority import (
 from butlers.core.confirm_delivery import terminal_text
 from butlers.core.confirm_models import ConfirmPrompt
 from butlers.core.confirm_service import ConfirmService, SinkRegistration
+from butlers.core.scheduler.cancel import raise_if_task_cancelled
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,38 @@ class ConfirmSource:
     sink_name: str | None = None
     values: frozenset[str] = frozenset()
     apply: Callable[[UUID, str, str], Awaitable[dict]] | None = None
+
+
+#: The registered deterministic sources, by name. The canonical switch builds each with
+#: its owning daemon's pool and passes the result as ``sources``; nothing else may.
+COMMITMENT_CANDIDATE_SOURCE = "relationship.commitment_candidate"
+UNKNOWN_SENDER_SOURCE = "switchboard.unknown_sender"
+
+
+def relationship_confirm_sources(pool) -> dict[str, ConfirmSource]:
+    """Relationship's registered sources (REQ-commitment-lifecycle-013), built on its pool."""
+    from butlers.core.confirm_recipient import owner_recipient_reader
+    from butlers.roster_imports import roster_module
+
+    cards = roster_module("relationship", "tools/commitment_candidate_cards")
+    return {
+        COMMITMENT_CANDIDATE_SOURCE: cards.build_source(
+            pool, owner_recipient=owner_recipient_reader(pool)
+        )
+    }
+
+
+def switchboard_confirm_sources(pool) -> dict[str, ConfirmSource]:
+    """Switchboard's registered sources (the unknown-sender card), built on its pool."""
+    from butlers.core.confirm_recipient import owner_recipient_reader
+    from butlers.roster_imports import roster_module
+
+    cards = roster_module("switchboard", "tools/identity/unknown_sender_cards")
+    return {
+        UNKNOWN_SENDER_SOURCE: cards.build_source(
+            pool, owner_recipient=owner_recipient_reader(pool)
+        )
+    }
 
 
 class ConfirmProducer:
@@ -260,7 +293,9 @@ async def run_confirm_worker(delivery, stop: asyncio.Event):
     while not stop.is_set():
         try:
             await delivery.cycle()
-        except Exception:
+        except (Exception, asyncio.CancelledError) as exc:
+            # A cycle's own stray cancel is its failure; only a cancel of this task ends the loop.
+            raise_if_task_cancelled(exc)
             # No source content/credential/driver errors go into a generic runtime log.
             import logging
 

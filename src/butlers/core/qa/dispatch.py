@@ -60,14 +60,18 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import asyncpg
 
+from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.git_env import FETCH_COMMAND_ARGS, harden_git_env, isolated_git_env
 from butlers.core.healing.anonymizer import anonymize, validate_anonymized
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
+    QA_BREAKER_EFFECTIVE_STATUS_SQL,
+    QA_BREAKER_THRESHOLD,
+    QA_BREAKER_WHERE_SQL,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
@@ -76,6 +80,7 @@ from butlers.core.healing.tracking import (
     create_dispatch_event,
     create_or_join_attempt,
     delete_orphaned_attempt,
+    get_paused_proposal,
     get_publication_hold,
     get_recent_attempt,
     record_phase_session,
@@ -84,17 +89,26 @@ from butlers.core.healing.tracking import (
 )
 from butlers.core.healing.worktree import (
     WorktreeCreationError,
+    _branch_name,
     create_healing_worktree,
     remove_healing_worktree,
 )
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import Complexity, resolve_model
+from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
+    hold_findings_for_retry,
     update_finding_attempt,
     update_finding_dedup_reason,
-    update_finding_dispatch_queued,
+)
+from butlers.core.qa.job_isolation import (
+    LIVE_ATTEMPTS,
+    JobIsolation,
+    active_job_count,
+    cleanup_attempt,
+    import_artifacts,
+    prepare_attempt_clone,
 )
 from butlers.core.qa.journal import (
     record_escalated_event,
@@ -106,13 +120,21 @@ from butlers.core.qa.journal import (
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
-from butlers.core.qa.publication.export import GitIdentity
-from butlers.core.qa.publication.proposal import publish_investigation
+from butlers.core.qa.publication.export import ExportRefused, GitIdentity
+from butlers.core.qa.publication.proposal import (
+    _NOTES_FILE as _PR_NOTES_FILE,
+)
+from butlers.core.qa.publication.proposal import (
+    publish_investigation,
+    resolve_branch_head,
+    retain_unpublished_proposal,
+)
 from butlers.core.qa.publication.publisher import (
     PublicationResult,
     PublicationStatus,
     QaPublisher,
 )
+from butlers.core.qa.publication.retention import EXPORT_RETENTION
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
@@ -181,7 +203,12 @@ def _flagged_event_detail(finding: QaFinding) -> str:
 #: The default QA PR labels; the reconciliation script binds ``pr_labels`` holds with them.
 DEFAULT_PR_LABELS = ("self-healing", "automated")
 
-#: CredentialStore key for the GitHub token used by QA investigations.
+#: CredentialStore key of the read-only GitHub token used only for PR-status polling
+#: (fine-grained: pull requests, commit statuses and metadata read).
+QA_GH_READ_TOKEN_KEY = "BUTLERS_QA_GH_READ_TOKEN"
+#: Legacy WRITE-scoped token key.  Investigators run as root in the daemon's pod, so a
+#: write credential is reachable by construction; the daemon never resolves this key
+#: (bu-ejow5p.1).  It is referenced only to detect and refuse a leftover secret.
 QA_GH_TOKEN_KEY = "BUTLERS_QA_GH_TOKEN"
 QA_GIT_AUTHOR_NAME_KEY = "BUTLERS_QA_GIT_AUTHOR_NAME"
 QA_GIT_AUTHOR_EMAIL_KEY = "BUTLERS_QA_GIT_AUTHOR_EMAIL"
@@ -286,6 +313,10 @@ _ALLOWED_ENV_VARS = frozenset(
     }
 )
 
+#: Default rung for an engineering executor (owner decision, bu-ejow5p.5): ``workhorse``, resolved
+#: exactly (no fallthrough). One reasoning escalation per incident generation is move C's budget.
+EXECUTOR_COMPLEXITY: Final = Complexity.WORKHORSE
+
 _QA_AGENT_SUBDIR = Path(".tmp/qa-agent")
 _QA_AGENT_OVERRIDE = """# QA Agent Override
 
@@ -300,6 +331,12 @@ Rules specific to this workspace:
 - Do not push branches or open PRs yourself.
 - Stay within the scope of the current QA investigation or PR-review follow-up.
 """
+
+
+def _launch_identity(spawner: Any, fallback: str) -> str:
+    """Butler identity the launching spawner resolves models under (else the finding's butler)."""
+    name = getattr(getattr(spawner, "_config", None), "name", None)
+    return name if isinstance(name, str) and name else fallback
 
 
 # ---------------------------------------------------------------------------
@@ -339,12 +376,18 @@ class QaDispatchConfig:
     severity_threshold: int = 2
     cooldown_minutes: int = 60
     max_concurrent: int = 2
-    circuit_breaker_threshold: int = 5
+    circuit_breaker_threshold: int = QA_BREAKER_THRESHOLD
     timeout_minutes: int = 30
     pr_labels: list[str] = field(default_factory=lambda: list(DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None
     repo_whitelist: RepoWhitelist | None = None
     """Repository whitelist the publisher enforces; ``None`` refuses publication."""
+    publication_hold_days: int = 7
+    """Days a retained unpublished proposal holds its fingerprint while no publisher exists;
+    capped at the 30-day export retention."""
+    job_isolation: JobIsolation | None = None
+    """Run each attempt in a per-attempt credential-free Job (bu-ejow5p.11). ``None`` (the
+    default) keeps the in-daemon worktree path; the isolated path ships dark."""
     publisher: QaPublisher | None = None
     """Trusted deterministic publisher.  ``None`` (the production default) disables
     publication: a committed investigation fails ``publication_unavailable``."""
@@ -370,12 +413,16 @@ class QaDispatchResult:
         Short machine-readable reason code (``"dispatched"`` on success).
     attempt_id:
         UUID of the created ``healing_attempts`` row, or ``None``.
+    gate:
+        The halting gate that stopped this finding when ``reason`` is ``"hold_failed"`` (the
+        write that queues it failed), so the patrol still records why remediation stopped.
     """
 
     accepted: bool
     fingerprint: str | None
     reason: str
     attempt_id: uuid.UUID | None = None
+    gate: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +529,11 @@ def _build_git_prep_env() -> dict[str, str]:
 
 
 _PUBLICATION_UNAVAILABLE = "publication_unavailable"
+_PUBLICATION_UNRETAINED = "publication_unretained"
+#: Retention-store refusals: nothing was kept and no receipt exists, so the attempt fails closed.
+_RETENTION_REFUSALS = frozenset(
+    {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
+)
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
@@ -551,6 +603,20 @@ async def _detect_no_op_branch(
     except Exception:  # noqa: BLE001
         logger.debug("_detect_no_op_branch: subprocess failed, assuming not a no-op", exc_info=True)
         return False
+
+
+async def _job_branch_is_no_op(seal_root: Path, branch_name: str, base_sha: str | None) -> bool:
+    """No-op detection for an isolated attempt, without running git in the pod-written clone.
+
+    The branch head is read straight from the ref files (no symlinks, 40-hex only); it equals the
+    trusted base commit exactly when the agent committed nothing. Anything unreadable is "not a
+    no-op", so the sealer decides (and refuses) rather than this check guessing.
+    """
+    try:
+        _objects, head = resolve_branch_head(seal_root, branch_name)
+    except ExportRefused:
+        return False
+    return base_sha is not None and head == base_sha
 
 
 async def _resolve_pr_by_head(
@@ -1126,6 +1192,18 @@ async def _qa_timeout_watchdog(
 # ---------------------------------------------------------------------------
 
 
+async def _label_containment(pool: asyncpg.Pool, attempt_id: uuid.UUID, containment: str) -> None:
+    """Record how the attempt is contained (``job`` or ``none``); a failed write never blocks it."""
+    try:
+        await pool.execute(
+            "UPDATE public.healing_attempts SET containment = $2 WHERE id = $1",
+            attempt_id,
+            containment,
+        )
+    except Exception:  # noqa: BLE001 - a label is bookkeeping, not a gate
+        logger.warning("QA containment label not recorded for attempt=%s", attempt_id)
+
+
 async def _run_investigation_session(
     pool: asyncpg.Pool,
     repo_root: Path,
@@ -1149,6 +1227,12 @@ async def _run_investigation_session(
     """
     import time as _time
 
+    await _label_containment(
+        pool, attempt_id, "job" if config.job_isolation is not None else "none"
+    )
+
+    if config.job_isolation is not None:
+        LIVE_ATTEMPTS.add(str(attempt_id))
     investigation_session_id: uuid.UUID | None = None
     phase_session_id: uuid.UUID | None = None
     _phase_start = _time.monotonic()
@@ -1180,7 +1264,14 @@ async def _run_investigation_session(
             attempt_id=attempt_id,
             dashboard_base_url=config.dashboard_base_url,
         )
-        agent_cwd = _prepare_agent_workspace(worktree_path)
+        isolation = config.job_isolation
+        seal_root = repo_root
+        agent_cwd: Path | None = None
+        job_launch = None
+        if isolation is None:
+            agent_cwd = _prepare_agent_workspace(worktree_path)
+        else:
+            job_launch = isolation.launch(attempt_id, deadline_s=config.timeout_minutes * 60)
 
         # Build sandboxed environment for the agent
         sandbox_env = build_agent_env(
@@ -1200,12 +1291,26 @@ async def _run_investigation_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
-            cwd=str(agent_cwd),
+            complexity=EXECUTOR_COMPLEXITY,
+            cwd=str(agent_cwd) if agent_cwd is not None else None,
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
             timeout_override=config.timeout_minutes * 60,
+            qa_job_launch=job_launch,
         )
+
+        if isolation is not None:
+            # The pod is terminal (or never ran). Everything the daemon reads from the attempt
+            # from here on comes from the daemon-owned scratch copy; the pod-written clone is
+            # only ever opened by the in-process sealer, never by git.
+            scratch = await asyncio.to_thread(
+                import_artifacts,
+                isolation,
+                attempt_id,
+                [_UNFIXABLE_FILE, _INVESTIGATION_NOTES_JSON, _PR_NOTES_FILE],
+            )
+            seal_root = worktree_path
+            worktree_path = scratch
 
         if result.session_id is not None:
             # Capture the session_id locally; do NOT call update_attempt_status here because
@@ -1334,7 +1439,11 @@ async def _run_investigation_session(
         # push or open a PR from the agent-controlled worktree until the isolated
         # publisher lands (bu-mc01y5.6-.7).  Only no-op detection (local git log,
         # no credential) still runs so empty investigations stay "unfixable".
-        if await _detect_no_op_branch(repo_root, branch_name, build_agent_env()):
+        if (
+            await _job_branch_is_no_op(seal_root, branch_name, base_sha)
+            if isolation is not None
+            else await _detect_no_op_branch(repo_root, branch_name, build_agent_env())
+        ):
             # The investigation agent produced no commits — classify as unfixable
             # so the fingerprint is not left in an active state and a future
             # investigation cycle will not re-attempt the same finding.
@@ -1381,11 +1490,14 @@ async def _run_investigation_session(
             )
             return
 
-        diff_snapshot = await _capture_commit_diff_snapshot(worktree_path)
+        # No git runs in a pod-written clone: an isolated attempt records no diff snapshot yet.
+        diff_snapshot = (
+            [] if isolation is not None else await _capture_commit_diff_snapshot(worktree_path)
+        )
         if config.publisher is not None:
             publication = await publish_investigation(
                 config.publisher,
-                repo_root=repo_root,
+                repo_root=seal_root,
                 worktree_path=worktree_path,
                 attempt_id=attempt_id,
                 finding=finding,
@@ -1429,6 +1541,85 @@ async def _run_investigation_session(
             )
             return
 
+        # No publisher: keep the work as an unpublished proposal (bu-ejow5p.2).  Sealing and
+        # retention need no credential and no egress.  A validator refusal is recorded as the
+        # publisher records it; an unretainable export falls through to the fail-closed path.
+        identity = (
+            GitIdentity(git_author_name.strip(), git_author_email.strip())
+            if git_author_name and git_author_email
+            else None
+        )
+        refusal = await retain_unpublished_proposal(
+            pool,
+            repo_root=seal_root,
+            attempt_id=attempt_id,
+            branch_name=branch_name,
+            base_sha=base_sha,
+            identity=identity,
+            isolated=config.job_isolation is not None,
+        )
+        if refusal is None:
+            _elapsed = (_time.monotonic() - _phase_start) * 1000
+            if metrics is not None:
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="proposal_retained",
+                    duration_ms=_elapsed,
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:  # noqa: BLE001
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+                healing_session_id=investigation_session_id,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                # The sealed bytes live in the retention store; the agent branch is not needed.
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+        if refusal.category not in _RETENTION_REFUSALS:
+            await _record_publication_outcome(
+                pool,
+                refusal,
+                attempt_id=attempt_id,
+                branch_name=branch_name,
+                diff_snapshot=diff_snapshot,
+                healing_session_id=investigation_session_id,
+                phase_session_id=phase_session_id,
+                metrics=metrics,
+                elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+
+        # Retention did not succeed for THIS attempt (an export row from a re-run does not
+        # count), so the reason must not match the breaker's retained-success marker.
+        unretained_detail = f"{_PUBLICATION_UNRETAINED}: {refusal.category}; nothing was pushed"
         if metrics is not None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
             metrics.record_recovery_phase_duration(
@@ -1440,7 +1631,7 @@ async def _run_investigation_session(
             metrics.record_recovery_execution_failure(
                 workflow="qa",
                 phase="investigate",
-                error_class=_PUBLICATION_UNAVAILABLE,
+                error_class=_PUBLICATION_UNRETAINED,
             )
         if phase_session_id is not None:
             try:
@@ -1448,7 +1639,7 @@ async def _run_investigation_session(
                     pool,
                     phase_session_id,
                     "failed",
-                    error_detail=_PUBLICATION_UNAVAILABLE,
+                    error_detail=unretained_detail,
                 )
             except Exception as _pss_exc:
                 logger.debug("Failed to mark phase session failed: %s", _pss_exc)
@@ -1456,14 +1647,14 @@ async def _run_investigation_session(
             pool,
             attempt_id,
             "failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
             healing_session_id=investigation_session_id,
         )
         await _record_escalation_for_terminal(
             pool,
             attempt_id=attempt_id,
             status="failed",
-            error_detail=_PUBLICATION_UNAVAILABLE_DETAIL,
+            error_detail=unretained_detail,
         )
         await _persist_notes_and_remove_worktree(
             pool,
@@ -1551,6 +1742,9 @@ async def _run_investigation_session(
             otel_span=_inv_span,
         )
     finally:
+        if config.job_isolation is not None:
+            await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+            LIVE_ATTEMPTS.discard(str(attempt_id))
         if metrics is not None:
             metrics.recovery_workflow_end(workflow="qa")
         if _HAS_OTEL and _inv_span is not None:
@@ -2133,6 +2327,16 @@ async def _dispatch_pr_review_followup(
     bool
         ``True`` if a follow-up agent task was dispatched, ``False`` otherwise.
     """
+    if config.job_isolation is not None:
+        # A follow-up checks the PR branch out into a shared-.git worktree and runs the agent
+        # in the daemon. With isolation configured that is exactly what must not happen, and
+        # the isolated follow-up is not built yet: refuse rather than run un-isolated.
+        logger.warning(
+            "PR review follow-up refused (follow_up_isolation_unavailable): attempt=%s",
+            attempt_id,
+        )
+        return False
+
     if not pr_branch_name:
         logger.warning(
             "PR review follow-up: no existing branch recorded for attempt=%s — skipping",
@@ -2346,7 +2550,7 @@ async def _run_review_followup_session(
         result = await spawner.trigger(
             prompt=prompt,
             trigger_source="qa",
-            complexity=Complexity.SPECIALTY,
+            complexity=EXECUTOR_COMPLEXITY,
             cwd=str(agent_cwd),
             bypass_butler_semaphore=True,
             env_override=sandbox_env,
@@ -2464,24 +2668,18 @@ async def _is_circuit_breaker_tripped(
     dispatch events do not have a ``healing_session_id`` and remain excluded
     from the circuit-breaker signal.
 
-    Kept byte-identical to the dashboard filter in
-    ``butlers.api.routers.qa._QA_CIRCUIT_BREAKER_WHERE_CLAUSE``.
+    Shares its SQL with the dashboard
+    (``butlers.core.healing.constants.QA_BREAKER_*``). A failed attempt that retained a sealed
+    proposal reads as ``proposal_retained``, an execution success.
     """
     # Check only QA-originated terminal attempts where an investigation actually
     # launched (healing_session_id IS NOT NULL).  Admission-control rejections
     # were never inserted as attempts (they use healing_dispatch_events instead),
     # so this filter is defensive against any legacy rows.
     rows = await pool.fetch(
-        """
-        SELECT status
-        FROM public.healing_attempts
-        WHERE qa_patrol_id IS NOT NULL
-          AND closed_at IS NOT NULL
-          AND healing_session_id IS NOT NULL
-          AND closed_at > COALESCE(
-                (SELECT max(reset_at) FROM public.breaker_resets WHERE breaker = 'qa'),
-                '-infinity'::timestamptz
-              )
+        f"""
+        SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status
+        {QA_BREAKER_WHERE_SQL}
         ORDER BY closed_at DESC
         LIMIT $1
         """,
@@ -2576,7 +2774,8 @@ async def dispatch_qa_investigation(
     spawner:
         The QA staffer's ``Spawner`` instance.
     gh_token:
-        GitHub token from CredentialStore.resolve("BUTLERS_QA_GH_TOKEN").
+        Always ``None`` from the QA module: investigation dispatch needs no GitHub token
+        (the read-only polling token never reaches it).
     task_registry:
         Optional list to which watchdog tasks will be appended.
 
@@ -2701,6 +2900,38 @@ async def dispatch_qa_investigation(
                     fingerprint=fp,
                     reason="infra_condition_open",
                 )
+
+        # ---------------------------------------------------------------
+        # Gate 5.6: Publication paused (bu-ejow5p.2)
+        # ---------------------------------------------------------------
+        # While no publisher is injected, a fingerprint whose committed investigation is
+        # retained as an unpublished proposal is not investigated again inside the hold
+        # window.  It pairs with the breaker treating that proposal as an execution success:
+        # neutrality without this hold is unbounded spend.  A non-atomic pre-check; the
+        # authoritative claim stays create_or_join_attempt.
+        if config.publisher is None:
+            hold_days = min(config.publication_hold_days, EXPORT_RETENTION.days)
+            held_attempt = await get_paused_proposal(pool, fp, hold_days)
+            if held_attempt is not None:
+                await update_finding_dedup_reason(pool, finding_id, "publication_paused")
+                await create_dispatch_event(
+                    pool,
+                    fingerprint=fp,
+                    butler_name=finding.source_butler,
+                    decision="publication_paused",
+                    reason=(
+                        "A retained unpublished proposal already exists for this fingerprint; "
+                        "publication is disabled, so it is not investigated again within the "
+                        f"{hold_days}-day hold window"
+                    ),
+                    attempt_id=None,
+                    event_id=uuid.uuid5(uuid.NAMESPACE_URL, f"qa:publication-paused:{finding_id}"),
+                )
+                if metrics is not None:
+                    metrics.record_recovery_dispatch_decision(
+                        workflow="qa", decision="publication_paused"
+                    )
+                return QaDispatchResult(accepted=False, fingerprint=fp, reason="publication_paused")
 
         # ---------------------------------------------------------------
         # Gate 6: Novelty gate — atomic check+insert
@@ -2864,64 +3095,35 @@ async def dispatch_qa_investigation(
                 fp[:12],
             )
 
-        # ---------------------------------------------------------------
-        # Gate 9: Circuit breaker
-        # ---------------------------------------------------------------
-        if config.circuit_breaker_threshold > 0:
-            tripped = await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
-            if tripped:
-                logger.warning(
-                    "QA dispatch skipped: circuit breaker tripped (threshold=%d, fingerprint=%s)",
-                    config.circuit_breaker_threshold,
-                    fp[:12],
-                )
-                await delete_orphaned_attempt(pool, attempt_id)
-                try:
-                    await update_finding_dedup_reason(pool, finding_id, "circuit_breaker")
-                except Exception as _dr_exc:
-                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
-                try:
-                    await create_dispatch_event(
-                        pool,
-                        fingerprint=fp,
-                        butler_name=finding.source_butler,
-                        decision="circuit_breaker",
-                        reason=(
-                            f"Circuit breaker tripped:"
-                            f" {config.circuit_breaker_threshold} consecutive failures"
-                        ),
-                    )
-                except Exception as _evt_exc:
-                    logger.debug(
-                        "QA dispatch: failed to record circuit_breaker event: %s", _evt_exc
-                    )
-                if metrics is not None:
-                    metrics.record_recovery_dispatch_decision(
-                        workflow="qa", decision="circuit_breaker"
-                    )
-                return QaDispatchResult(
-                    accepted=False,
-                    fingerprint=fp,
-                    reason="circuit_breaker",
-                )
+        # Gate 9 (circuit breaker) is the batch dispatcher's: ``dispatch_novel_findings`` reads the
+        # breaker before each launch and holds the rest of the patrol as one decision, so a
+        # tripped breaker never reaches a claim here.
 
         # ---------------------------------------------------------------
         # Gate 10: Model resolution
         # ---------------------------------------------------------------
         model_result = None
         try:
-            model_result = await resolve_model(pool, finding.source_butler, Complexity.SPECIALTY)
+            # Same identity (the launching spawner's butler), exact rung and intent that
+            # ``Spawner._run`` resolves under at launch, so admission cannot pass on a model
+            # the launch would then refuse.
+            model_result = await resolve_model_with_effective_tier(
+                pool,
+                _launch_identity(spawner, finding.source_butler),
+                EXECUTOR_COMPLEXITY,
+                allow_tier_fallthrough=False,
+                intent=derive_dispatch_intent("qa", EXECUTOR_COMPLEXITY),
+            )
         except Exception as model_exc:
             logger.warning(
-                "Model resolution failed for specialty tier (butler=%s): %s",
+                "Model resolution failed for the executor rung (butler=%s): %s",
                 finding.source_butler,
                 model_exc,
             )
 
         if model_result is None:
             logger.warning(
-                "QA dispatch skipped: no self_healing tier model available "
-                "(butler=%s, fingerprint=%s)",
+                "QA dispatch skipped: no executor-rung model available (butler=%s, fingerprint=%s)",
                 finding.source_butler,
                 fp[:12],
             )
@@ -2936,7 +3138,7 @@ async def dispatch_qa_investigation(
                     fingerprint=fp,
                     butler_name=finding.source_butler,
                     decision="no_model",
-                    reason="No self_healing tier model available",
+                    reason="No executor-rung (workhorse) model available",
                 )
             except Exception as _evt_exc:
                 logger.debug("QA dispatch: failed to record no_model event: %s", _evt_exc)
@@ -2965,15 +3167,37 @@ async def dispatch_qa_investigation(
             )
         logger.info("QA preparation: attempt=%s base_sha=%s", attempt_id, _base_ref)
 
+        if config.job_isolation is not None:
+            # Owned from before the directory exists, so a sweep cannot race its creation.
+            LIVE_ATTEMPTS.add(str(attempt_id))
         try:
-            worktree_path, branch_name = await create_healing_worktree(
-                repo_root,
-                finding.source_butler,
-                fp,
-                prefix=_QA_PREFIX,
-                base_ref=_base_ref,
-            )
-        except WorktreeCreationError as wt_exc:
+            if config.job_isolation is not None:
+                # Independent clone in the exchange: no shared .git with the daemon's repository.
+                branch_name = _branch_name(finding.source_butler, fp, prefix=_QA_PREFIX)
+                worktree_path = await prepare_attempt_clone(
+                    config.job_isolation,
+                    attempt_id=attempt_id,
+                    trusted_repo=repo_root,
+                    base_sha=_base_ref,
+                    branch_name=branch_name,
+                    author=(
+                        (git_author_name.strip(), git_author_email.strip())
+                        if git_author_name and git_author_email
+                        else None
+                    ),
+                )
+            else:
+                worktree_path, branch_name = await create_healing_worktree(
+                    repo_root,
+                    finding.source_butler,
+                    fp,
+                    prefix=_QA_PREFIX,
+                    base_ref=_base_ref,
+                )
+        except (WorktreeCreationError, RuntimeError, OSError) as wt_exc:
+            if config.job_isolation is not None:
+                await asyncio.to_thread(cleanup_attempt, config.job_isolation, attempt_id)
+                LIVE_ATTEMPTS.discard(str(attempt_id))
             logger.warning(
                 "QA dispatch failed: worktree creation error (fingerprint=%s): %s",
                 fp[:12],
@@ -2983,7 +3207,9 @@ async def dispatch_qa_investigation(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=f"Worktree creation failed: {wt_exc.git_output or str(wt_exc)}",
+                error_detail=(
+                    f"Worktree creation failed: {getattr(wt_exc, 'git_output', None) or wt_exc}"
+                ),
             )
             return QaDispatchResult(
                 accepted=False,
@@ -3081,6 +3307,92 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
+async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> bool:
+    """Whether dispatch must halt: the breaker is open, or its state cannot be read.
+
+    Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
+    rather than raising out of the batch or launching with the safeguard unreadable.
+    """
+    try:
+        return await _is_circuit_breaker_tripped(pool, threshold)
+    except Exception as exc:
+        logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
+        return True
+
+
+async def _hold_for_retry(
+    pool: asyncpg.Pool,
+    findings: list[TriagedFinding],
+    reason: str,
+    metrics: ButlerMetrics | None,
+) -> bool:
+    """Stamp ``reason`` on the findings and queue them for the next patrol.
+
+    Returns whether the hold was written. A failed hold is counted as its own dispatch decision
+    so the loss is visible, and the caller must not report the findings as held.
+    """
+    try:
+        await hold_findings_for_retry(pool, [t.finding_id for t in findings], reason)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "QA dispatch: failed to hold %d finding(s) (%s): %s", len(findings), reason, exc
+        )
+        if metrics is not None:
+            metrics.record_recovery_dispatch_decision(workflow="qa", decision="hold_failed")
+        return False
+
+
+async def _halt_batch(
+    pool: asyncpg.Pool,
+    remaining: list[TriagedFinding],
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> list[QaDispatchResult]:
+    """Hold the rest of a patrol behind an open breaker: no claims, one event.
+
+    The breaker is read before this write, so an owner reset in between leaves the findings
+    held for one patrol; the next patrol admits them. The worst case is a one-patrol delay.
+    """
+    logger.warning(
+        "QA dispatch halted: circuit breaker tripped (threshold=%d, findings=%d)",
+        config.circuit_breaker_threshold,
+        len(remaining),
+    )
+    if not await _hold_for_retry(pool, remaining, "circuit_breaker", metrics):
+        return [
+            QaDispatchResult(
+                accepted=False,
+                fingerprint=t.finding.fingerprint,
+                reason="hold_failed",
+                gate="circuit_breaker",
+            )
+            for t in remaining
+        ]
+    lead = remaining[0].finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=lead.fingerprint,
+            butler_name=lead.source_butler,
+            decision="circuit_breaker",
+            reason=(
+                f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
+                f"failures; {len(remaining)} finding(s) held for a later patrol"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record circuit_breaker event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="circuit_breaker")
+    return [
+        QaDispatchResult(
+            accepted=False, fingerprint=t.finding.fingerprint, reason="circuit_breaker"
+        )
+        for t in remaining
+    ]
+
+
 async def dispatch_novel_findings(
     pool: asyncpg.Pool,
     novel_findings: list[TriagedFinding],
@@ -3126,10 +3438,36 @@ async def dispatch_novel_findings(
     """
     results: list[QaDispatchResult] = []
     cap_skipped = 0
+    held: list[TriagedFinding] = []
 
-    for triaged in novel_findings:
-        active_count = await count_active_attempts(pool, qa_only=True)
-        if active_count >= config.max_concurrent:
+    for index, triaged in enumerate(novel_findings):
+        # An open breaker is a property of the patrol, not of each finding, and it outranks the
+        # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
+        # the rest as one decision instead of dropping them. Once the cap has been reached
+        # nothing more launches, so the remainder stays a cap hold.
+        if (
+            cap_skipped == 0
+            and config.circuit_breaker_threshold > 0
+            and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
+        ):
+            results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
+            break
+
+        # Once the cap is reached, stop calling dispatch for the remaining findings.
+        # Continuing would insert a claim row per finding before rejecting it, and those
+        # orphaned 'failed' rows would trigger cooldown on the next patrol.
+        at_cap = cap_skipped > 0
+        if not at_cap:
+            active_count = await count_active_attempts(pool, qa_only=True)
+            if config.job_isolation is not None:
+                # Jobs the cluster still runs count too: a restart may have orphaned one. An
+                # unreadable fleet reads as "at cap", never as empty.
+                job_count = await active_job_count(config.job_isolation)
+                active_count = (
+                    config.max_concurrent if job_count is None else max(active_count, job_count)
+                )
+            at_cap = active_count >= config.max_concurrent
+        if at_cap:
             results.append(
                 QaDispatchResult(
                     accepted=False,
@@ -3138,37 +3476,7 @@ async def dispatch_novel_findings(
                 )
             )
             cap_skipped += 1
-            continue
-
-        # Once the concurrency cap is reached, stop calling dispatch for remaining
-        # findings.  Continuing would cause each subsequent finding to go through
-        # create_or_join_attempt (inserting a new row) before being rejected — these
-        # orphaned 'failed' rows can then trigger cooldown for the next patrol cycle.
-        if cap_skipped > 0:
-            results.append(
-                QaDispatchResult(
-                    accepted=False,
-                    fingerprint=triaged.finding.fingerprint,
-                    reason="concurrency_cap",
-                )
-            )
-            cap_skipped += 1
-            # Record authoritative suppression reason and queue finding for retry
-            # in the next patrol cycle.  Without this the qa_findings row stays
-            # with dedup_reason=NULL (misleading) and the finding is silently lost
-            # for one-shot errors that won't be re-discovered by a source.
-            try:
-                await update_finding_dedup_reason(pool, triaged.finding_id, "concurrency_cap")
-            except Exception as _dr_exc:
-                logger.debug(
-                    "QA dispatch: failed to update finding dedup_reason (cap skip): %s", _dr_exc
-                )
-            try:
-                await update_finding_dispatch_queued(pool, triaged.finding_id, True)
-            except Exception as _dq_exc:
-                logger.debug(
-                    "QA dispatch: failed to mark finding dispatch_queued (cap skip): %s", _dq_exc
-                )
+            held.append(triaged)
             continue
 
         result = await dispatch_qa_investigation(
@@ -3186,8 +3494,22 @@ async def dispatch_novel_findings(
         )
         results.append(result)
 
-        if result.reason == "concurrency_cap":
-            cap_skipped += 1
+    if held:
+        # Record the authoritative reason and queue every capped finding for the next patrol:
+        # a one-shot error that no source rediscovers would otherwise be lost.
+        if not await _hold_for_retry(pool, held, "concurrency_cap", metrics):
+            lost = {t.finding.fingerprint for t in held}
+            results = [
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=r.fingerprint,
+                    reason="hold_failed",
+                    gate="concurrency_cap",
+                )
+                if (r.reason == "concurrency_cap" and r.fingerprint in lost)
+                else r
+                for r in results
+            ]
 
     if cap_skipped > 0:
         logger.info(

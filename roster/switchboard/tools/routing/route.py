@@ -10,15 +10,18 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fastmcp import Client as MCPClient
 from opentelemetry import trace
 
 from butlers.core.control_plane_identity import PROBE_DEADLINE_S, probe_once
 from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
 from butlers.core.model_routing import Complexity
 from butlers.core.route_observability import opaque_route_ref
+from butlers.core.service_plane.health_peer import health_medication_transport
+from butlers.core.switchboard_tls import internal_service_http_options, scoped_mcp_httpx_factory
 from butlers.core.telemetry import inject_trace_context
 from butlers.core_tools._switchboard_route_dispatch import is_retryable_route_exception
+from butlers.mcp_liveness import LivenessClient as MCPClient
+from butlers.mcp_liveness import ServerUnresponsive
 from butlers.tools.switchboard.registry.registry import (
     DEFAULT_ROUTE_CONTRACT_VERSION,
     ControlPlaneTargetDecision,
@@ -43,6 +46,32 @@ from butlers.tools.switchboard.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The routed tools that declare a ``trace_context`` parameter. route() adds its
+#: trace carrier only to these: any other tool's fixed signature refuses an
+#: unexpected keyword. ``tests/contracts/test_route_trace_context_tools.py``
+#: keeps this exactly the set of declaring tools.
+TRACE_CONTEXT_TOOLS = frozenset(
+    {
+        "route.execute",
+        "calendar_response_fence_status",
+        "contacts_report_channel",
+        "contacts_resolve_channel",
+        "medication_travel_snapshot",
+        "medication_travel_snapshot_service",
+    }
+)
+
+
+def _is_error_result(result: Any) -> bool:
+    """Whether an MCP tool result is an error.
+
+    FastMCP's ``CallToolResult`` names the flag ``is_error``; ``isError`` is the
+    MCP wire name, which a raw ``mcp.types.CallToolResult`` still uses.
+    """
+    return getattr(result, "is_error", False) is True or getattr(result, "isError", False) is True
+
+
 _ROUTER_CLIENTS: dict[str, tuple[MCPClient, Any]] = {}
 _ROUTER_CLIENT_LOCKS: dict[str, asyncio.Lock] = {}
 _ROUTE_RECHECK_DEADLINE_S = PROBE_DEADLINE_S + 2.0
@@ -79,7 +108,8 @@ async def _resolve_receiver_route_target(
             # The L2 operation reserves its sequence before this identity GET
             # and conditionally records only the current boot/sequence.  No
             # Dashboard API or owner credential enters this path.
-            async with httpx.AsyncClient(trust_env=False, timeout=PROBE_DEADLINE_S) as client:
+            options = internal_service_http_options(expected.url, trust_env=False)
+            async with httpx.AsyncClient(timeout=PROBE_DEADLINE_S, **options) as client:
                 outcome = await probe_once(pool, expected, client=client)
             if outcome.category != "healthy" or not outcome.recorded:
                 return None, "target_unavailable", True
@@ -93,7 +123,7 @@ async def _resolve_receiver_route_target(
             if current.state == "ready":
                 return current, "ready", False
             return None, current.reason, current.state == "stale"
-    except TimeoutError:
+    except (TimeoutError, httpx.RequestError):
         return None, "target_unavailable", True
     except Exception:
         # The failure category is fixed; a DB/HTTP exception may contain a
@@ -198,7 +228,16 @@ async def _call_tool_with_router_client(
     endpoint_url: str,
     tool_name: str,
     args: dict[str, Any],
+    *,
+    resend_after_send: bool = True,
 ) -> Any:
+    """Call one tool on the cached router client, reconnecting once on a retryable failure.
+
+    With ``resend_after_send=False`` the reconnect happens only when the failure
+    proves the call was never sent; a failure after the request went out (a
+    reset or timeout mid-request) raises instead, so a write is never
+    duplicated. The default keeps route()'s existing policy.
+    """
     first_exc: Exception | None = None
     telemetry = get_switchboard_telemetry()
     # This narrowly guards effect calls, preserving existing read-only retry.
@@ -216,10 +255,19 @@ async def _call_tool_with_router_client(
 
     for reconnect in (False, True):
         try:
+            transport = health_medication_transport(endpoint_url, tool_name, "switchboard")
+            if transport is not None:
+                async with MCPClient(transport) as client:
+                    return await client.call_tool(tool_name, args, raise_on_error=False)
             client = await _get_cached_router_client(endpoint_url, reconnect=reconnect)
             return await client.call_tool(tool_name, args, raise_on_error=False)
         except Exception as exc:
-            if telegram_effect and not proves_transport_not_attempted(exc):
+            if isinstance(exc, ServerUnresponsive):
+                # Outcome unknown and the handler may still run: never reconnect and resend.
+                raise
+            if (telegram_effect or not resend_after_send) and not proves_transport_not_attempted(
+                exc
+            ):
                 raise
             if not is_retryable_route_exception(exc):
                 raise
@@ -559,7 +607,7 @@ async def route(
 
             # Inject trace context into args
             trace_context = inject_trace_context()
-            if trace_context and finance_warning_call is None:
+            if trace_context and finance_warning_call is None and tool_name in TRACE_CONTEXT_TOOLS:
                 route_args = {**route_args, "trace_context": trace_context}
             # Only the transport call itself belongs in this try. Everything
             # after it is bookkeeping about a send that already happened, and
@@ -587,14 +635,32 @@ async def route(
                         if tool_name == "route.execute"
                         else {}
                     )
+                    # RFC 0038 D7: empty unless BUTLERS_SERVICE_PLANE_AUTH is on.
+                    from butlers.core.service_plane.messenger_delivery import (
+                        messenger_delivery_headers,
+                        service_plane_auth_enabled,
+                    )
+
+                    headers = {
+                        **headers,
+                        **messenger_delivery_headers(
+                            target_butler, tool_name, enabled=service_plane_auth_enabled()
+                        ),
+                    }
                     if headers:
                         # A capability is request-specific: never share the
                         # endpoint-cached MCP session with unrelated reports.
                         from fastmcp.client.transports import StreamableHttpTransport
 
-                        peer_client = MCPClient(
-                            StreamableHttpTransport(endpoint_url, headers=headers)
+                        options = internal_service_http_options(endpoint_url)
+                        peer_transport = StreamableHttpTransport(
+                            endpoint_url,
+                            headers=headers,
+                            httpx_client_factory=scoped_mcp_httpx_factory(options)
+                            if options
+                            else None,
                         )
+                        peer_client = MCPClient(peer_transport)
                         peer_context = (
                             finance_warning_call.client_context(peer_client)
                             if finance_warning_call is not None
@@ -604,7 +670,7 @@ async def route(
                             result = await peer.call_tool(
                                 tool_name, route_args, raise_on_error=False
                             )
-                            if getattr(result, "isError", False):
+                            if _is_error_result(result):
                                 raise TransportRejected(_extract_mcp_error_text(result))
                             result = _extract_fact_route_result(result)
                             if (
@@ -688,6 +754,13 @@ async def route(
                 telemetry=telemetry,
                 metric_base_attrs=metric_base_attrs,
             )
+            # The two Travel snapshot entry points expect the MCP result
+            # wrapper around Health's unwrapped, JSON-decoded payload.
+            if target_butler == "health" and (source_butler, tool_name) in {
+                ("travel", "medication_travel_snapshot"),
+                ("relay:medication.travel_snapshot", "medication_travel_snapshot_service"),
+            }:
+                result = {"data": result, "is_error": False}
             return {"result": result, "transport": CONFIRMED.as_dict()}
 
 
@@ -703,8 +776,7 @@ async def _call_butler_tool(endpoint_url: str, tool_name: str, args: dict[str, A
     """
     result = await _call_tool_with_router_client(endpoint_url, tool_name, args)
 
-    # CallToolResult uses 'isError' (not 'is_error') per MCP spec.
-    if getattr(result, "isError", False):
+    if _is_error_result(result):
         error_text = _extract_mcp_error_text(result)
         if not error_text:
             error_text = f"Tool '{tool_name}' returned an error."

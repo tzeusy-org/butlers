@@ -15,9 +15,8 @@ exactly one owner entity fleet-wide, so ``_project_commitment_edge`` and
 discriminator, and ``backfill_commitment_edges`` scans every commitment-class
 row in the DB with no ``source`` filter. A prior test's commitment row whose
 counterparty entity got cleaned up would otherwise still be a backfill
-candidate and trip an FK violation on the next test's re-run. A fresh DB per
-test costs a few extra seconds against a single migration chain ("core") but
-sidesteps that whole class of cross-test contamination.
+candidate and trip an FK violation on the next test's re-run. A fresh template
+clone per test sidesteps that whole class of cross-test contamination.
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ import pytest
 
 from butlers.core.commitments import create_commitment
 from butlers.core.entity_graph_edges import backfill_commitment_edges
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -42,16 +40,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def migrated_db_url(postgres_container) -> str:
-    """A fresh DB per test — see the module docstring for why this is not module-scoped."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
-    yield p
-    await p.close()
+async def one_conn_pool(db) -> asyncpg.Pool:
+    """One connection, so a callee that ignores ``transaction_connection`` blocks."""
+    return await db("core", max_size=1)
 
 
 @pytest.fixture
@@ -85,13 +76,13 @@ async def _edge_for_condition(pool: asyncpg.Pool, condition_id: uuid.UUID) -> as
 
 
 @pytest.fixture
-async def owner_and_counterparty(pool: asyncpg.Pool) -> tuple[uuid.UUID, uuid.UUID]:
+async def owner_and_counterparty(one_conn_pool: asyncpg.Pool) -> tuple[uuid.UUID, uuid.UUID]:
     """A real owner-role entity plus a counterparty in this test's fresh DB."""
-    owner_id = await pool.fetchval(
+    owner_id = await one_conn_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Owner', 'person', '{owner}') RETURNING id"
     )
-    counterparty_id = await pool.fetchval(
+    counterparty_id = await one_conn_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Sam', 'person', '{}') RETURNING id"
     )
@@ -101,13 +92,13 @@ async def owner_and_counterparty(pool: asyncpg.Pool) -> tuple[uuid.UUID, uuid.UU
 class TestCommitmentEntityGraphProjection:
     async def test_owner_to_other_projects_owner_as_subject(
         self,
-        pool: asyncpg.Pool,
+        one_conn_pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
     ) -> None:
         owner_id, counterparty_id = owner_and_counterparty
         transition = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -117,7 +108,7 @@ class TestCommitmentEntityGraphProjection:
             evidence_opened=_evidence("session-1"),
             action_description="send Sam the book",
         )
-        edge = await _edge_for_condition(pool, transition.condition_id)
+        edge = await _edge_for_condition(one_conn_pool, transition.condition_id)
         assert edge is not None
         assert edge["subject_entity_id"] == owner_id
         assert edge["predicate"] == "committed-to"
@@ -125,13 +116,13 @@ class TestCommitmentEntityGraphProjection:
 
     async def test_other_to_owner_swaps_subject_and_object(
         self,
-        pool: asyncpg.Pool,
+        one_conn_pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
     ) -> None:
         owner_id, counterparty_id = owner_and_counterparty
         transition = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Sam owes the owner a book",
             kind="waiting_for",
@@ -141,19 +132,19 @@ class TestCommitmentEntityGraphProjection:
             evidence_opened=_evidence("session-1"),
             action_description="Sam sends the owner a book",
         )
-        edge = await _edge_for_condition(pool, transition.condition_id)
+        edge = await _edge_for_condition(one_conn_pool, transition.condition_id)
         assert edge is not None
         assert edge["subject_entity_id"] == counterparty_id
         assert edge["object_entity_id"] == owner_id
 
     async def test_self_direction_projects_no_edge(
         self,
-        pool: asyncpg.Pool,
+        one_conn_pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
     ) -> None:
         transition = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Finish the report",
             kind="obligation",
@@ -163,16 +154,18 @@ class TestCommitmentEntityGraphProjection:
             evidence_opened=_evidence("session-1"),
             action_description="finish the quarterly report",
         )
-        assert await _edge_for_condition(pool, transition.condition_id) is None
+        assert await _edge_for_condition(one_conn_pool, transition.condition_id) is None
 
-    async def test_no_owner_entity_projects_no_edge(self, pool: asyncpg.Pool, source: str) -> None:
+    async def test_no_owner_entity_projects_no_edge(
+        self, one_conn_pool: asyncpg.Pool, source: str
+    ) -> None:
         """No owner entity exists yet -- a no-op, not a failure."""
-        counterparty_id = await pool.fetchval(
+        counterparty_id = await one_conn_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Sam', 'person', '{}') RETURNING id"
         )
         transition = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -182,13 +175,13 @@ class TestCommitmentEntityGraphProjection:
             evidence_opened=_evidence("session-1"),
             action_description="send Sam the book",
         )
-        assert await _edge_for_condition(pool, transition.condition_id) is None
+        assert await _edge_for_condition(one_conn_pool, transition.condition_id) is None
 
     # REQ-entity-graph-002: actual source transaction/projection effect asserted here.
     @pytest.mark.parametrize("mode", ["pool", "caller-transaction"])
     async def test_projection_failure_rolls_back_the_commitment_write(
         self,
-        pool: asyncpg.Pool,
+        one_conn_pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
         monkeypatch: pytest.MonkeyPatch,
@@ -200,7 +193,7 @@ class TestCommitmentEntityGraphProjection:
         _, counterparty_id = owner_and_counterparty
 
         positive = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source + ":positive",
             summary="Keep the existing agreement",
             kind="promise",
@@ -210,7 +203,7 @@ class TestCommitmentEntityGraphProjection:
             evidence_opened=_evidence("positive"),
             action_description="keep the existing agreement",
         )
-        positive_edge = await _edge_for_condition(pool, positive.condition_id)
+        positive_edge = await _edge_for_condition(one_conn_pool, positive.condition_id)
         assert positive_edge is not None and positive_edge["object_entity_id"] == counterparty_id
         real_projector = entity_graph_edges.project_entity_graph_edge
         projected_ids = []
@@ -242,33 +235,35 @@ class TestCommitmentEntityGraphProjection:
         with pytest.raises(RuntimeError, match="simulated entity_graph_edges projection failure"):
             async with asyncio.timeout(15):
                 if mode == "pool":
-                    await create_commitment(pool, **creation)
+                    await create_commitment(one_conn_pool, **creation)
                 else:
-                    async with pool.acquire() as conn, conn.transaction():
-                        await create_commitment(pool, **creation, transaction_connection=conn)
+                    async with one_conn_pool.acquire() as conn, conn.transaction():
+                        await create_commitment(
+                            one_conn_pool, **creation, transaction_connection=conn
+                        )
 
         assert len(projected_ids) == 1, "actual graph SQL preceded the propagated fault"
-        assert await _rows_for(pool, source) == []
+        assert await _rows_for(one_conn_pool, source) == []
         assert (
-            await pool.fetchval(
+            await one_conn_pool.fetchval(
                 "SELECT count(*) FROM public.entity_graph_edges WHERE source_id = ANY($1::uuid[])",
                 projected_ids,
             )
             == 0
         )
-        assert await _edge_for_condition(pool, positive.condition_id) == positive_edge
+        assert await _edge_for_condition(one_conn_pool, positive.condition_id) == positive_edge
 
     # REQ-entity-graph-001: natural-key rerun assertions only.
     # REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.
     async def test_backfill_is_idempotent(
         self,
-        pool: asyncpg.Pool,
+        one_conn_pool: asyncpg.Pool,
         source: str,
         owner_and_counterparty: tuple[uuid.UUID, uuid.UUID],
     ) -> None:
         owner_id, counterparty_id = owner_and_counterparty
         transition = await create_commitment(
-            pool,
+            one_conn_pool,
             source=source,
             summary="Send Sam the book",
             kind="promise",
@@ -280,17 +275,17 @@ class TestCommitmentEntityGraphProjection:
         )
         # Simulate a historical row written before this projection existed --
         # remove the edge the live writer just projected.
-        await pool.execute(
+        await one_conn_pool.execute(
             "DELETE FROM public.entity_graph_edges"
             " WHERE source_schema = 'public' AND source_table = 'owner_conditions'"
             " AND source_id = $1",
             transition.condition_id,
         )
 
-        first_count = await backfill_commitment_edges(pool)
-        second_count = await backfill_commitment_edges(pool)
+        first_count = await backfill_commitment_edges(one_conn_pool)
+        second_count = await backfill_commitment_edges(one_conn_pool)
 
-        edge = await _edge_for_condition(pool, transition.condition_id)
+        edge = await _edge_for_condition(one_conn_pool, transition.condition_id)
         assert first_count == 1
         assert second_count == 0
         assert edge is not None

@@ -7,7 +7,7 @@ original 001 migration never created — producing a hard 500 on the core teachi
 write path and the quiz-history endpoint alike.
 
 These tests run the real ``core`` + ``education`` Alembic chains against a
-testcontainers PostgreSQL database (no hand-rolled CREATE TABLE) so they fail
+testcontainers PostgreSQL database (no hand-written DDL) so they fail
 before the 002 forward migration is added and pass once it is.  They exercise
 both call sites end-to-end and assert that ``evaluator_notes`` round-trips.
 """
@@ -20,9 +20,6 @@ import uuid
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -31,31 +28,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + education migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "education"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with education quiz tables cleared between tests."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute(
-        "TRUNCATE TABLE education.quiz_responses, education.mind_map_edges, "
-        "education.mind_map_nodes, education.mind_maps CASCADE"
-    )
-    yield p
-    await p.close()
+async def education_pool(db):
+    """A private clone migrated with the core and education chains."""
+    return await db("core", "education")
 
 
 async def _seed_map_and_node(pool: asyncpg.Pool) -> tuple[str, str]:
@@ -75,8 +51,8 @@ async def _seed_map_and_node(pool: asyncpg.Pool) -> tuple[str, str]:
 class TestEvaluatorNotesColumn:
     """The migration must create a nullable TEXT ``evaluator_notes`` column."""
 
-    async def test_column_exists_and_is_nullable_text(self, pool):
-        row = await pool.fetchrow(
+    async def test_column_exists_and_is_nullable_text(self, education_pool):
+        row = await education_pool.fetchrow(
             "SELECT data_type, is_nullable FROM information_schema.columns "
             "WHERE table_schema = 'education' AND table_name = 'quiz_responses' "
             "  AND column_name = 'evaluator_notes'"
@@ -89,13 +65,13 @@ class TestEvaluatorNotesColumn:
 class TestMasteryRecordResponse:
     """``mastery_record_response`` INSERT must persist evaluator_notes (no 500)."""
 
-    async def test_record_response_round_trips_evaluator_notes(self, pool):
+    async def test_record_response_round_trips_evaluator_notes(self, education_pool):
         from butlers.tools.education.mastery import mastery_record_response
 
-        mind_map_id, node_id = await _seed_map_and_node(pool)
+        mind_map_id, node_id = await _seed_map_and_node(education_pool)
 
         response_id = await mastery_record_response(
-            pool=pool,
+            pool=education_pool,
             node_id=node_id,
             mind_map_id=mind_map_id,
             question_text="What is a list comprehension?",
@@ -105,19 +81,19 @@ class TestMasteryRecordResponse:
             evaluator_notes="Clear and correct definition.",
         )
 
-        stored = await pool.fetchval(
+        stored = await education_pool.fetchval(
             "SELECT evaluator_notes FROM education.quiz_responses WHERE id = $1::uuid",
             response_id,
         )
         assert stored == "Clear and correct definition."
 
-    async def test_record_response_allows_null_evaluator_notes(self, pool):
+    async def test_record_response_allows_null_evaluator_notes(self, education_pool):
         from butlers.tools.education.mastery import mastery_record_response
 
-        mind_map_id, node_id = await _seed_map_and_node(pool)
+        mind_map_id, node_id = await _seed_map_and_node(education_pool)
 
         response_id = await mastery_record_response(
-            pool=pool,
+            pool=education_pool,
             node_id=node_id,
             mind_map_id=mind_map_id,
             question_text="Define a tuple.",
@@ -126,7 +102,7 @@ class TestMasteryRecordResponse:
             response_type="review",
         )
 
-        stored = await pool.fetchval(
+        stored = await education_pool.fetchval(
             "SELECT evaluator_notes FROM education.quiz_responses WHERE id = $1::uuid",
             response_id,
         )
@@ -136,13 +112,13 @@ class TestMasteryRecordResponse:
 class TestQuizHistorySelect:
     """The quiz-history SELECT must execute and return evaluator_notes (no 500)."""
 
-    async def test_quiz_history_select_returns_evaluator_notes(self, pool):
+    async def test_quiz_history_select_returns_evaluator_notes(self, education_pool):
         from butlers.tools.education.mastery import mastery_record_response
 
-        mind_map_id, node_id = await _seed_map_and_node(pool)
+        mind_map_id, node_id = await _seed_map_and_node(education_pool)
         notes = f"eval-{uuid.uuid4().hex[:8]}"
         await mastery_record_response(
-            pool=pool,
+            pool=education_pool,
             node_id=node_id,
             mind_map_id=mind_map_id,
             question_text="Q?",
@@ -154,7 +130,7 @@ class TestQuizHistorySelect:
 
         # Mirror the exact SELECT used by GET /api/education/quiz-responses
         # (roster/education/api/router.py::list_quiz_responses).
-        rows = await pool.fetch(
+        rows = await education_pool.fetch(
             "SELECT qr.id, qr.node_id, qr.mind_map_id, qr.question_text, qr.user_answer,"
             " qr.quality, qr.response_type, qr.session_id, qr.responded_at,"
             " qr.evaluator_notes, n.label AS node_label"

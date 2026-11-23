@@ -29,6 +29,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.goal_lineage import taint_insert
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -171,14 +173,20 @@ async def alert_configure(
         async with pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE facts SET validity = 'superseded' WHERE id = $1",
+                    "UPDATE facts SET validity = 'superseded', dropped_at = CASE WHEN "
+                    "validity IN ('superseded', 'expired') THEN dropped_at ELSE $2 END "
+                    "WHERE id = $1",
                     old_id,
+                    now,
                 )
+                taint = taint_insert(7)
                 new_row = await conn.fetchrow(
-                    """
+                    f"""
                     INSERT INTO facts (subject, predicate, content, importance, permanence,
-                                       scope, metadata, supersedes_id, created_at, observed_at)
-                    VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $6, $6)
+                                       scope, metadata, supersedes_id, created_at, observed_at
+                                       {taint.columns})
+                    VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $6, $6
+                            {taint.placeholders})
                     RETURNING id
                     """,
                     alert_type,
@@ -187,14 +195,16 @@ async def alert_configure(
                     metadata,
                     old_id,
                     now,
+                    *taint.values,
                 )
         fact_id = str(new_row["id"])
     else:
+        taint = taint_insert(6)
         new_row = await pool.fetchrow(
-            """
+            f"""
             INSERT INTO facts (subject, predicate, content, importance, permanence,
-                               scope, metadata, created_at, observed_at)
-            VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $5)
+                               scope, metadata, created_at, observed_at{taint.columns})
+            VALUES ($1, $2, $3, 7.0, 'stable', 'global', $4, $5, $5{taint.placeholders})
             RETURNING id
             """,
             alert_type,
@@ -202,6 +212,7 @@ async def alert_configure(
             alert_type,
             metadata,
             now,
+            *taint.values,
         )
         fact_id = str(new_row["id"])
 

@@ -8,6 +8,7 @@ preserved exactly.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -40,6 +41,13 @@ from butlers.core.approvals_hooks import (
     is_approved_tool_execution,
     park_pending_action,
 )
+from butlers.core.approved_delivery import (
+    APPROVED_NOTIFY_CONTEXT_KEY,
+    ApprovedNotifyAttestation,
+    bind_verified_approved_delivery,
+    reset_verified_approved_delivery,
+)
+from butlers.core.custody_egress import CustodyEgressRefused
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.notify_attachments import AttachmentError, redact_attachment_content
@@ -60,7 +68,11 @@ from butlers.core.spawner import SESSION_CANCELLED_ERROR, Spawner
 from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
-from butlers.identity import resolve_owner_channel_via_definer
+from butlers.identity import (
+    ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES,
+    resolve_owner_channel_via_definer,
+)
+from butlers.routing_guidance import build_attachments_block
 from butlers.telegram_api import TelegramPartialDeliveryError
 from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
@@ -121,6 +133,27 @@ def _raw_input_has_approval_recovery(input_payload: Any) -> bool:
         return False
     notify_request = context.get("notify_request")
     return isinstance(notify_request, dict) and notify_request.get("recovery") is not None
+
+
+def _authenticated_approved_notify(input_payload: Any) -> ApprovedNotifyAttestation | None:
+    """Return Switchboard's approved-notify attestation only from its protected hop.
+
+    The field is a plain value on any public request, so it is honoured only when
+    the kernel-admitted Switchboard principal installed this request. Coverage of
+    the exact routed envelope is checked later by the shared approval matcher.
+    """
+    if not isinstance(input_payload, dict):
+        return None
+    context = input_payload.get("context")
+    raw = context.get(APPROVED_NOTIFY_CONTEXT_KEY) if isinstance(context, dict) else None
+    if raw is None:
+        return None
+    if protected_approval_principal(audience="messenger:approval-recovery") != "switchboard":
+        return None
+    try:
+        return ApprovedNotifyAttestation.from_internal_dict(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _preauthenticate_messenger_recovery(
@@ -282,37 +315,7 @@ def _build_route_runtime_context(
     elif isinstance(input_context, str):
         context_parts.append(f"\nINPUT CONTEXT:\n{input_context}")
     if attachments:
-        att_lines: list[str] = []
-        for att in attachments:
-            filename = att.get("filename", "unnamed")
-            media_type = att.get("media_type", "unknown")
-            size_kb = (att.get("size_bytes") or 0) / 1024
-            storage_ref = att.get("storage_ref")
-            if storage_ref:
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    f"size={size_kb:.1f}KB, storage_ref={storage_ref}"
-                )
-            else:
-                # No retrieval tool exists for a storage_ref-less attachment yet
-                # (bu-2jtfw.7 S4, attachment_materialize, is unimplemented) — say
-                # so honestly instead of promising an "on-demand retrieval" verb
-                # that does not exist.
-                att_lines.append(
-                    f"  - filename={filename}, media_type={media_type}, "
-                    "status=unavailable (could not be fetched; no storage_ref)"
-                )
-        context_parts.append(
-            f"\nATTACHMENTS ({len(attachments)} file(s)):\n"
-            + "\n".join(att_lines)
-            + "\n\nTo view an IMAGE attachment, call "
-            "`attachment_view(storage_ref=<storage_ref>)` using the EXACT storage_ref "
-            "value shown above (starts with 's3://') — it returns the image itself. "
-            "For a non-image attachment with a storage_ref, call "
-            "`get_attachment(storage_ref=<storage_ref>)` instead. Do NOT pass the "
-            "filename as storage_ref. An attachment shown as status=unavailable has "
-            "no retrieval tool yet — do not guess at its contents; say so plainly."
-        )
+        context_parts.append(build_attachments_block(attachments))
     non_interactive_guidance = _build_non_interactive_route_safety_guidance(
         source_channel, addressed=addressed
     )
@@ -394,13 +397,6 @@ class _RoutedDeliveryCommand:
     execute: Callable[[], Awaitable[Any]]
 
 
-ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
-    "email": "email",
-    "telegram": "telegram",
-    "whatsapp": "whatsapp_jid",
-}
-
-
 def _telegram_files_command(
     telegram_module: Any,
     origin: str,
@@ -448,6 +444,7 @@ async def _build_routed_delivery_command(
     notify_context: Any,
     render_links_inert: bool = False,
     attachments: list[dict[str, Any]] | None = None,
+    actions: Any = None,
 ) -> _RoutedDeliveryCommand | None:
     """Materialize the registered native command before approval evaluation.
 
@@ -551,6 +548,23 @@ async def _build_routed_delivery_command(
                     attachments,
                     None,
                     rendering_kwargs,
+                )
+            link_markup = _door_link_reply_markup(actions)
+            if link_markup is not None:
+                # Server-resolved link button; the text itself carries no URL.
+                rendering_kwargs = {**rendering_kwargs, "server_built_reply_markup": True}
+                return _RoutedDeliveryCommand(
+                    channel=channel,
+                    approval_target=recipient,
+                    tool_name="telegram_send_message",
+                    tool_args={"chat_id": recipient, "text": rendered_text},
+                    execute=partial(
+                        telegram_module._send_message,
+                        recipient,
+                        rendered_text,
+                        reply_markup=link_markup,
+                        **rendering_kwargs,
+                    ),
                 )
             return _RoutedDeliveryCommand(
                 channel=channel,
@@ -663,6 +677,56 @@ async def _build_routed_delivery_command(
     raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
 
 
+# Native channel tools whose registered handler accepts the materialized command
+# arguments unchanged. File sends pin redacted refs/digests (not the handler's
+# input) and have no native argument for inert-link rendering.
+_NATIVE_REPLAY_TOOLS = frozenset(
+    {
+        "telegram_send_message",
+        "telegram_reply_to_message",
+        "email_send_message",
+        "email_reply_to_thread",
+        "whatsapp_send_message",
+    }
+)
+
+
+async def _native_tool_registered(daemon: Any, tool_name: str) -> bool:
+    """True only if this daemon's MCP surface serves ``tool_name`` for replay."""
+    get_tool = getattr(getattr(daemon, "mcp", None), "get_tool", None)
+    if not callable(get_tool):
+        return False
+    try:
+        tool = get_tool(tool_name)
+        if inspect.isawaitable(tool):
+            tool = await tool
+    except Exception:
+        return False
+    return tool is not None
+
+
+async def _replayable_park_command(
+    daemon: Any, command: _RoutedDeliveryCommand, notify_request: Any
+) -> tuple[str, dict[str, Any] | None]:
+    """Return the tool name and args a recipient park stores for exact replay.
+
+    A plain send or reply parks as the registered native tool with its handler
+    arguments, so the approval card's registered preview renders and approval
+    replays that tool once. Inert-link rendering and file sends have no native
+    handler argument; they keep the routed envelope (``None`` args) and replay
+    through ``route.execute`` with every rendering fact intact. So does a send
+    whose native tool this daemon does not register (for example email without
+    ``send_tools``): its approved executor would have no handler to replay.
+    """
+    if (
+        command.tool_name in _NATIVE_REPLAY_TOOLS
+        and not notify_request.render_links_inert
+        and await _native_tool_registered(daemon, command.tool_name)
+    ):
+        return command.tool_name, json.loads(json.dumps(command.tool_args))
+    return "route.execute", None
+
+
 async def _check_routed_delivery_approval(
     *,
     daemon: Any,
@@ -748,11 +812,14 @@ async def _check_routed_delivery_approval(
 
     if command is None:
         return None
+    # Park the registered native command so its preview renders and approval
+    # replays that exact handler call (module-approvals: replayable commands).
+    park_tool_name, park_tool_args = await _replayable_park_command(daemon, command, notify_request)
     kwargs = {
         "rule_tool_name": command.tool_name,
         "rule_match_args": command.tool_args,
-        "park_tool_name": "route.execute",
-        "park_tool_args": approved_args,
+        "park_tool_name": park_tool_name,
+        "park_tool_args": park_tool_args if park_tool_args is not None else approved_args,
         "park_summary": "Messenger delivery to a recipient not uniquely identified as owner.",
         "session_id": session_id,
         "butler_name": daemon.config.name,
@@ -800,6 +867,29 @@ def _format_validation_error(prefix: str, exc: ValidationError) -> str:
     return f"{prefix}: {message}"
 
 
+async def _telegram_reply_target(telegram_module: Any, adapter_result: Any) -> dict[str, str]:
+    """Where a sent Telegram message landed: its reply locator and the bot that sent it.
+
+    ``locator`` is ``<chat_id>:<message_id>`` of the last part sent, the form an inbound reply
+    carries. Best effort and additive: any gap returns nothing and the delivery receipt is what
+    it was before. It never raises, because the message is already delivered.
+    """
+    try:
+        sent = adapter_result.get("result") if isinstance(adapter_result, dict) else None
+        if telegram_module is None or not isinstance(sent, dict):
+            return {}
+        chat = (sent.get("chat") or {}).get("id")
+        message_id = sent.get("message_id")
+        if chat in (None, "") or message_id in (None, "") or isinstance(message_id, bool):
+            return {}
+        endpoint = await telegram_module.bot_endpoint_identity()
+        if not isinstance(endpoint, str) or not endpoint:
+            return {}
+        return {"locator": f"{chat}:{message_id}", "endpoint": endpoint}
+    except Exception:
+        return {}
+
+
 def _extract_delivery_id(
     *,
     channel: str,
@@ -833,6 +923,20 @@ def _extract_delivery_id(
     if fallback_request_id:
         return f"{channel}:{fallback_request_id}"
     return f"{channel}:{uuid.uuid4()}"
+
+
+def _channel_of(raw_notify_request: dict[str, Any]) -> str | None:
+    delivery = raw_notify_request.get("delivery")
+    channel = delivery.get("channel") if isinstance(delivery, dict) else None
+    return channel if isinstance(channel, str) else None
+
+
+def _door_link_reply_markup(actions: Any) -> dict[str, Any] | None:
+    """A one-button inline keyboard for a server-resolved link on a send, else None."""
+    for action in actions or ():
+        if action.verb == "open_link":
+            return {"inline_keyboard": [[{"text": action.label, "url": action.url}]]}
+    return None
 
 
 def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
@@ -919,30 +1023,43 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             except Exception:
                 return _approval_recovery_refusal_response()
 
-        parent_ctx = extract_trace_context(trace_context) if trace_context else None
-        tracer = trace.get_tracer("butlers")
-        with tracer.start_as_current_span("butler.tool.route.execute", context=parent_ctx) as _span:
-            tag_butler_span(_span, butler_name)
-            # Capture the accept-phase span context so the background processing
-            # task can link back to it via a SpanLink (cross-trace correlation).
-            accept_span_ctx = _span.get_span_context()
-            return await _route_execute_inner(
-                schema_version=schema_version,
-                request_context=request_context,
-                input=input,
-                subrequest=subrequest,
-                target=target,
-                source_metadata=source_metadata,
-                trace_context=trace_context,
-                parent_ctx=parent_ctx,
-                accept_span_ctx=accept_span_ctx,
-                daemon=daemon,
-                pool=pool,
-                spawner=spawner,
-                butler_name=butler_name,
-                route_metrics=route_metrics,
-                trusted_messenger_recovery=trusted_messenger_recovery,
-            )
+        # RFC 0038 D13: an owner-approved notify arrives with Switchboard's
+        # attestation. It counts only on the kernel-admitted Switchboard hop and
+        # only for this task; on public ingress it is an inert, ignored field.
+        approved_token = None
+        attestation = _authenticated_approved_notify(input) if butler_name == "messenger" else None
+        if attestation is not None:
+            approved_token = bind_verified_approved_delivery(attestation)
+        try:
+            parent_ctx = extract_trace_context(trace_context) if trace_context else None
+            tracer = trace.get_tracer("butlers")
+            with tracer.start_as_current_span(
+                "butler.tool.route.execute", context=parent_ctx
+            ) as _span:
+                tag_butler_span(_span, butler_name)
+                # Capture the accept-phase span context so the background processing
+                # task can link back to it via a SpanLink (cross-trace correlation).
+                accept_span_ctx = _span.get_span_context()
+                return await _route_execute_inner(
+                    schema_version=schema_version,
+                    request_context=request_context,
+                    input=input,
+                    subrequest=subrequest,
+                    target=target,
+                    source_metadata=source_metadata,
+                    trace_context=trace_context,
+                    parent_ctx=parent_ctx,
+                    accept_span_ctx=accept_span_ctx,
+                    daemon=daemon,
+                    pool=pool,
+                    spawner=spawner,
+                    butler_name=butler_name,
+                    route_metrics=route_metrics,
+                    trusted_messenger_recovery=trusted_messenger_recovery,
+                )
+        finally:
+            if approved_token is not None:
+                reset_verified_approved_delivery(approved_token)
 
     async def _route_execute_inner(
         schema_version: str,
@@ -1127,6 +1244,20 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         _route_internal_context["request_context"] = {
             "source_channel": parsed_route.request_context.source_channel
         }
+        # REQ-endpoint-custody-holds-005: Switchboard's custody read found the owner-looking
+        # sender's endpoint held or unreadable. Only the validated envelope field sets it.
+        if parsed_route.request_context.source_sender_custody == "endpoint_held":
+            _route_internal_context["source_custody"] = "endpoint_held"
+        # A named sender entity carries its source endpoint for the write-time custody recheck.
+        if parsed_route.request_context.source_sender_entity_id:
+            from butlers.core.custody_ingress import SOURCE_ENDPOINT_KEY, source_endpoint_record
+
+            _source_endpoint = source_endpoint_record(
+                parsed_route.request_context.source_channel,
+                parsed_route.request_context.source_sender_identity,
+            )
+            if _source_endpoint is not None:
+                _route_internal_context[SOURCE_ENDPOINT_KEY] = _source_endpoint
         _observability_request_id = (
             opaque_route_ref(route_request_id) if _content_blind_route else route_request_id
         )
@@ -1154,6 +1285,30 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 context_payload=route_context,
                 error_class="validation_error",
                 message=message,
+            )
+
+        # RFC 0038 D7: behind BUTLERS_SERVICE_PLANE_AUTH (default off), Messenger
+        # admits a delivery only from Switchboard on the butlers-control workload.
+        from butlers.core.service_plane.messenger_delivery import (
+            admit_delivery_request,
+            delivery_refusal_error,
+        )
+
+        delivery_refusal = await admit_delivery_request(daemon.config.name)
+        if delivery_refusal is not None:
+            logger.warning(
+                "route.execute delivery caller refused: butler=%s reason=%s",
+                butler_name,
+                delivery_refusal,
+            )
+            error_class, retryable = delivery_refusal_error(delivery_refusal)
+            return _route_error_response(
+                context_payload=route_context,
+                error_class=error_class,
+                message=delivery_refusal,
+                retryable=retryable,
+                # Refused before acceptance: nothing reached a provider.
+                transport=RECIPIENT_UNAVAILABLE if retryable else None,
             )
 
         # Public envelope fields never supply attribution. Resolve the private
@@ -1697,10 +1852,17 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             )
 
-        from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+        from butlers.tools.switchboard.notification.self_links import (
+            parse_delivered_notify_request_resolving_doors,
+        )
 
         try:
-            notify_request = parse_delivered_notify_request(raw_notify_request)
+            # A door is resolved here, on its own connection and outside any transaction.
+            notify_request = await parse_delivered_notify_request_resolving_doors(
+                raw_notify_request,
+                daemon.db.pool if daemon.db is not None else None,
+                supports_buttons=_channel_of(raw_notify_request) == "telegram",
+            )
         except ValidationError as exc:
             message = (
                 "Invalid approval recovery request."
@@ -1936,6 +2098,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 subject=notify_request.delivery.subject,
                 notify_context=notify_context,
                 render_links_inert=notify_request.render_links_inert,
+                actions=notify_request.actions if intent == "send" else None,
                 attachments=(
                     [
                         item.model_dump(exclude_none=True)
@@ -2122,6 +2285,28 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     retryable=False,
                     partial_delivery=True,
                     message_ids=exc.message_ids,
+                ),
+            )
+        except CustodyEgressRefused as exc:
+            # The adapter refused before provider traffic (REQ-endpoint-custody-holds-007). A
+            # held endpoint stays refused until a protected release; an unreadable custody
+            # state is safe to retry after recovery. The message names no target.
+            error_class = (
+                "validation_error" if exc.reason == "endpoint_held" else "target_unavailable"
+            )
+            error_message = str(exc)
+            return _route_error_response(
+                context_payload=route_context,
+                error_class=error_class,
+                message=error_message,
+                retryable=exc.retryable,
+                transport=POLICY_DENIED,
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class=error_class,
+                    message=error_message,
+                    retryable=exc.retryable,
                 ),
             )
         except PermissionUnavailable:
@@ -2329,6 +2514,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             "delivery": {
                 "channel": channel,
                 "delivery_id": delivery_id,
+                **(
+                    await _telegram_reply_target(modules_by_name.get("telegram"), adapter_result)
+                    if channel == "telegram" and intent in {"send", "reply"}
+                    else {}
+                ),
             },
         }
         return _route_success_response(

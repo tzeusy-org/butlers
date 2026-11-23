@@ -68,6 +68,7 @@ import httpx
 
 from butlers.api.db import DatabaseManager
 from butlers.core import audit as audit_router
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.job_health import record_tick
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,7 @@ async def run_external_deadman_check(
     try:
         async with asyncio.timeout(timeout_s):
             async with pool.acquire(timeout=_DB_TIMEOUT_S) as connection:
-                async with connection.transaction():
+                async with audit_transaction(connection):
                     if not await connection.fetchval(
                         "SELECT pg_try_advisory_xact_lock($1::bigint)", _TICK_LOCK
                     ):

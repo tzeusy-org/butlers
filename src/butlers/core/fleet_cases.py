@@ -521,6 +521,12 @@ async def run_lapse_sweep(
     - no :func:`contribute_evidence` row for the case at or after the cutoff
       -- a still-accreting situation never lapses no matter how old the case
       itself is.
+    - not an ``endpoint_custody:<episode>`` case whose episode still has an
+      unreleased hold (``public.custody_case_held``, a content-blind definer
+      the sweep's role may call; it cannot read ``custody_holds``). A lost
+      device can stay quiet for weeks, and its case closes only when every
+      hold is released or replaced (REQ-endpoint-custody-holds-010), never by
+      lapse. A custody case with no unreleased hold lapses like any other.
 
     Doing the eligibility check and the write in one statement (rather than
     a SELECT candidates then per-row close_case) closes the TOCTOU window
@@ -549,6 +555,7 @@ async def run_lapse_sweep(
               SELECT 1 FROM public.fleet_case_evidence e
               WHERE e.case_id = c.id AND e.contributed_at >= $4
           )
+          AND public.custody_case_held(c.correlation_key) IS NOT TRUE
         RETURNING {_CASE_COLUMNS}
         """,
         LAPSE_OUTCOME,

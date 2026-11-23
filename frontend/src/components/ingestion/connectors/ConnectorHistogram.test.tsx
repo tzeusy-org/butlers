@@ -50,6 +50,20 @@ describe('ConnectorHistogram', () => {
     expect(html).toContain('fill-border')
   })
 
+  it('hatches a not-listening slot, distinct in shape from a measured zero (bu-s11n0s.5)', () => {
+    const listening = Array(24).fill('live')
+    listening[5] = listening[6] = listening[7] = 'deaf'
+    listening[23] = 'unknown'
+    // A deaf window with no volume still draws the strip: deafness is not "no throughput".
+    const html = renderToStaticMarkup(<ConnectorHistogram data={ZEROS} listening={listening} />)
+    expect(html).not.toContain('histogram-empty')
+    const slots = html.match(/<g[^>]*>/g) ?? []
+    const deafSlots = slots.flatMap((g, i) => (g.includes('data-slot="deaf"') ? [i] : []))
+    expect(deafSlots).toEqual([5, 6, 7])
+    expect(html.match(/fill="url\(#/g)).toHaveLength(3)
+    expect(html).toContain('not listening 3h')
+  })
+
   it('handles a single non-zero bucket (no all-zero false positive)', () => {
     const single = Array(24).fill(0)
     single[0] = 1

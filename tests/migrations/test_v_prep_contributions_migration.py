@@ -11,7 +11,6 @@ is written (empty-when-none), is not updatable (UNION view — INSERT fails), an
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -21,6 +20,7 @@ from alembic import command
 from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migration_db,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -34,14 +34,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_142", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # Static structure checks
 # ---------------------------------------------------------------------------
@@ -49,7 +41,7 @@ def _load_migration():
 
 @pytest.mark.unit
 def test_view_and_role_identity():
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_142")
     assert mod._VIEW_FQN == "calendar.v_prep_contributions"
     assert mod._CALENDAR_SCHEMA == "calendar"
     assert mod._CALENDAR_ROLE == "butler_calendar_rw"
@@ -115,7 +107,7 @@ def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
         # walk them. On a core-only DB the
         # specialist ``state`` tables don't exist yet, so the view is created
         # via the NULL-returning stub UNION term (absent-specialist guard).
-        command.upgrade(core, f"core@{_load_migration().revision}")
+        command.upgrade(core, f"core@{load_migration(_MIGRATION_PATH, 'core_142').revision}")
         assert _view_exists(db_url), "prep view should exist after upgrade"
 
         with engine.connect() as conn:
@@ -138,7 +130,9 @@ def test_prep_view_roundtrip_empty_and_not_updatable(postgres_container):
                 )
         # The rollback above ran on the privileged test-control path, so its
         # paired reapplication stays there too.
-        command.upgrade(bootstrap_core, f"core@{_load_migration().revision}")
+        command.upgrade(
+            bootstrap_core, f"core@{load_migration(_MIGRATION_PATH, 'core_142').revision}"
+        )
 
         # The privileged reapplication owns the regenerated view, so inspect
         # its post-rollback shape with the disposable control connection.

@@ -29,6 +29,7 @@ import {
   ProvenanceSection,
   StateLine,
 } from "@/components/memory/DetailSkeleton";
+import { FactVouchControl } from "@/components/memory/FactVouchControl";
 import { Mono } from "@/components/ui/Mono";
 import { Voice } from "@/components/ui/Voice";
 import { Badge } from "@/components/ui/badge";
@@ -144,6 +145,8 @@ function CommitFooter({ fact }: { fact: Fact }) {
           Re-inks the fact: resets decay from today.
         </Voice>
       </div>
+
+      {fact.held && <FactVouchControl fact={fact} disabled={busy} />}
 
       <div className="flex flex-wrap items-center gap-3">
         {/* Retract — secondary (bordered, not colored). One-step confirm. */}
@@ -305,6 +308,8 @@ export default function FactDetailPage({ now }: FactDetailPageProps = {}) {
               fact.validity,
               `${fact.permanence} permanence`,
               fact.scope ? `${fact.scope} scope` : null,
+              fact.held ? "reported, not vouched for" : null,
+              fact.endorsed_at ? "vouched by you" : null,
             ]}
           />
 

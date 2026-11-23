@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 docker_available = shutil.which("docker") is not None
 psql_available = shutil.which("psql") is not None
@@ -131,7 +132,7 @@ def test_init_db_bootstrap_grants_connector_writer_switchboard_access(postgres_c
     engine = create_engine(migration_user_url, isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
-            # schema-standin-exempt: a two-column GRANT target, not a query
+            # Hand DDL on purpose: a two-column GRANT target, not a query
             # stand-in. This fixture runs before any migration, on purpose:
             # it tests init-db.sql's privilege boundary, and the registry's
             # real column list is irrelevant to that.
@@ -246,7 +247,7 @@ def test_init_db_bootstrap_repairs_connector_function_execute_grant(postgres_con
 def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_message_inbox(
     postgres_container,
 ):
-    """relationship runtime role can read switchboard.message_inbox after bootstrap."""
+    """Bootstrap grants Switchboard USAGE; migrations own the explicit inbox SELECT."""
     host, port, admin_user, admin_password = _admin_params(postgres_container)
     admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
     engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
@@ -310,7 +311,7 @@ def test_init_db_bootstrap_grants_relationship_read_access_to_switchboard_messag
         engine.dispose()
 
     assert row["schema_usage"] is True
-    assert row["inbox_select"] is True
+    assert row["inbox_select"] is False
 
 
 def test_init_db_bootstrap_repairs_membership_set_option_for_qa(postgres_container):
@@ -1372,7 +1373,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # general.calendar_event_instances — approved evidence surface
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_instances ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),"
@@ -1392,7 +1393,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             # companions; each is an approved Chronicler read surface.
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_sources ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
@@ -1401,7 +1402,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_events ("
                     "  id UUID PRIMARY KEY DEFAULT gen_random_uuid()"
@@ -1410,7 +1411,7 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
             )
             conn.execute(
                 text(
-                    # schema-standin-exempt: privilege-only GRANT target; the
+                    # Hand DDL on purpose: a privilege-only GRANT target; the
                     # fixture checks init-db ACLs, not the calendar table shape.
                     "CREATE TABLE general.calendar_event_entities ("
                     "  event_id UUID NOT NULL,"
@@ -1502,3 +1503,380 @@ def test_chronicler_rw_reads_sessions_but_not_other_tables(postgres_container):
         "butler_chronicler_rw must NOT be able to SELECT education.state_store "
         "(not an approved RFC 0014 evidence surface — broad grants violate RFC 0014 §D1)"
     )
+
+
+def test_init_db_grants_cnpg_metrics_exporter_connect_only_when_the_role_exists(
+    postgres_container,
+):
+    """bu-y66o00.63: CNPG's exporter keeps CONNECT after core_001's PUBLIC revoke.
+
+    Without it every exporter query against the database is denied, including the
+    replication-slot query behind the RFC 0039 D16 slot alerts. Local and Docker
+    Postgres have no such role, so there the bootstrap must stay a no-op.
+    """
+    exporter = "cnpg_metrics_exporter"
+    host, port, admin_user, admin_password = _admin_params(postgres_container)
+    admin_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/postgres"
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("DROP DATABASE IF EXISTS butlers"))
+            conn.execute(text("DROP ROLE IF EXISTS butlers"))
+            conn.execute(text(f"DROP ROLE IF EXISTS {exporter}"))
+            conn.execute(text("CREATE ROLE butlers LOGIN PASSWORD 'butlers'"))
+            conn.execute(text("CREATE DATABASE butlers OWNER butlers"))
+            # What core_001 leaves: no CONNECT through PUBLIC.
+            conn.execute(text("REVOKE ALL ON DATABASE butlers FROM PUBLIC"))
+    finally:
+        engine.dispose()
+
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    acl_sql = text(
+        "SELECT a.privilege_type, a.is_grantable FROM pg_database d, "
+        "LATERAL aclexplode(d.datacl) a JOIN pg_roles r ON r.oid = a.grantee "
+        "WHERE d.datname = 'butlers' AND r.rolname = :role"
+    )
+    butlers_url = f"postgresql://{admin_user}:{admin_password}@{host}:{port}/butlers"
+
+    def run_bootstrap() -> None:
+        _run_psql_file(
+            host=host,
+            port=port,
+            user=admin_user,
+            password=admin_password,
+            database="butlers",
+            file_path=script_path,
+        )
+
+    # Role absent (local/Docker): the bootstrap succeeds and creates nothing.
+    run_bootstrap()
+    engine = create_engine(butlers_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT count(*) FROM pg_roles WHERE rolname = :r"), {"r": exporter}
+                ).scalar_one()
+                == 0
+            )
+            # Stand in for the role CNPG creates on every instance.
+            conn.execute(text(f"CREATE ROLE {exporter} LOGIN PASSWORD 'exporter'"))
+            conn.execute(text(f"GRANT pg_monitor TO {exporter}"))
+            assert conn.execute(acl_sql, {"role": exporter}).all() == []
+    finally:
+        engine.dispose()
+    exporter_url = f"postgresql://{exporter}:exporter@{host}:{port}/butlers"
+    # The live failure: with PUBLIC revoked and no grant, the exporter cannot connect.
+    exporter_engine = create_engine(exporter_url)
+    try:
+        with pytest.raises(OperationalError, match="permission denied"):
+            with exporter_engine.connect():
+                pass
+    finally:
+        exporter_engine.dispose()
+
+    # Role present: CONNECT and nothing else, and a rerun (every deploy) keeps it.
+    for _ in range(2):
+        run_bootstrap()
+        engine = create_engine(butlers_url)
+        try:
+            with engine.connect() as conn:
+                assert conn.execute(acl_sql, {"role": exporter}).all() == [("CONNECT", False)]
+                assert (
+                    conn.execute(
+                        text("SELECT has_database_privilege(:r, 'butlers', 'CREATE, TEMPORARY')"),
+                        {"r": exporter},
+                    ).scalar_one()
+                    is False
+                )
+        finally:
+            engine.dispose()
+
+    exporter_engine = create_engine(exporter_url)
+    try:
+        with exporter_engine.connect() as conn:
+            # The exporter's slot query (cnpg_pg_replication_slots_*) now runs.
+            assert conn.execute(text("SELECT count(*) FROM pg_replication_slots")).scalar_one() >= 0
+    finally:
+        exporter_engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def public_mcp_postgres_container():
+    from butlers.testing.public_mcp import public_mcp_cluster
+
+    with public_mcp_cluster() as postgres:
+        yield postgres
+
+
+def test_public_mcp_primary_bootstrap_is_guarded_private_and_repeatable(
+    public_mcp_postgres_container,
+):
+    """Real script: absent owner prerequisites skip, then precise metadata ACLs survive rerun."""
+    from butlers.testing.migration import (
+        create_migration_db,
+        migration_bootstrap_db_url,
+    )
+
+    postgres_container = public_mcp_postgres_container
+    from butlers.testing.public_mcp import create_public_mcp_roles
+
+    name = "butlers"
+    url = create_migration_db(postgres_container, name)
+    migration = create_engine(url)
+    admin = create_engine(migration_bootstrap_db_url(postgres_container, name))
+    cluster = create_engine(postgres_container.get_connection_url(), isolation_level="AUTOCOMMIT")
+    script = Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql"
+    host, port, user, password = _admin_params(postgres_container)
+    roles = (
+        "butlers_projection_publisher",
+        "mcp_projection_owner",
+        "mcp_public_ro",
+        "mcp_proposals_reader",
+        "mcp_subscription_owner",
+    )
+
+    def bootstrap(check=True):
+        return _run_psql_file(
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database=name,
+            file_path=script,
+            connecting_user=principal,
+            no_psqlrc=True,
+            check=check,
+        )
+
+    try:
+        with migration.connect() as conn:
+            principal = conn.execute(text("SELECT current_user")).scalar_one()
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with admin.begin() as conn:
+            conn.exec_driver_sql(
+                f'ALTER DATABASE "{name}" OWNER TO {conn.dialect.identifier_preparer.quote(user)}'
+            )
+        with migration.connect() as conn:
+            assert not conn.execute(
+                text("SELECT has_database_privilege(current_user,current_database(),'CREATE')")
+            ).scalar_one()
+        # Supply only the CNPG-managed role prerequisites first; no projection DB => still skip.
+        with cluster.connect() as conn:
+            create_public_mcp_roles(conn, include_subscription_owner=False)
+            before = conn.execute(
+                text(
+                    "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                ),
+                {"roles": list(roles)},
+            ).all()
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with cluster.connect() as conn:
+            conn.exec_driver_sql("CREATE DATABASE butlers_public OWNER mcp_projection_owner")
+        # A projection DB with one missing managed identity still supplies no metadata.
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(text("SELECT to_regclass('mcp_surface.controls')")).scalar_one()
+                is None
+            )
+        with cluster.connect() as conn:
+            conn.exec_driver_sql("CREATE ROLE mcp_subscription_owner LOGIN NOREPLICATION")
+            conn.exec_driver_sql(
+                "GRANT pg_create_subscription,mcp_projection_owner TO mcp_subscription_owner"
+            )
+            before = conn.execute(
+                text(
+                    "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                ),
+                {"roles": list(roles)},
+            ).all()
+        assert bootstrap().returncode == 0
+        with migration.begin() as conn:
+            assert conn.execute(
+                text("SELECT has_database_privilege(current_user,current_database(),'CREATE')")
+            ).scalar_one()
+            conn.execute(
+                text("UPDATE mcp_surface.controls SET state='disabled' WHERE domain='finance'")
+            )
+        with admin.begin() as conn:
+            conn.exec_driver_sql("GRANT USAGE ON SCHEMA mcp_surface TO butler_finance_rw")
+            conn.exec_driver_sql("GRANT ALL ON mcp_surface.manifest_state TO butler_finance_rw")
+            conn.exec_driver_sql(
+                "GRANT UPDATE(digest) ON mcp_surface.manifest_state TO butler_finance_rw"
+            )
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert (
+                conn.execute(
+                    text("SELECT state FROM mcp_surface.controls WHERE domain='finance'")
+                ).scalar_one()
+                == "disabled"
+            )
+            assert conn.execute(text("SELECT count(*) FROM mcp_surface.controls")).scalar_one() == 8
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='mcp_surface'"
+                    )
+                ).scalar_one()
+                == principal
+            )
+            assert conn.execute(
+                text(
+                    "SELECT bool_and(pg_get_userbyid(relowner)=:p) FROM pg_class WHERE relnamespace='mcp_surface'::regnamespace"
+                ),
+                {"p": principal},
+            ).scalar_one()
+            assert conn.execute(
+                text(
+                    "SELECT has_schema_privilege('butler_relationship_rw','mcp_surface','USAGE') AND has_table_privilege('butler_relationship_rw','mcp_surface.controls','SELECT')"
+                )
+            ).scalar_one()
+            for role in _NORMAL_RUNTIME_ROLES:
+                assert not conn.execute(
+                    text(
+                        "SELECT has_table_privilege(:r,'mcp_surface.manifest_state','SELECT,INSERT,UPDATE,DELETE')"
+                    ),
+                    {"r": role},
+                ).scalar_one()
+                assert not conn.execute(
+                    text(
+                        "SELECT has_table_privilege(:r,'mcp_surface.controls','INSERT,UPDATE,DELETE')"
+                    ),
+                    {"r": role},
+                ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_column_privilege('butler_finance_rw','mcp_surface.manifest_state','digest','UPDATE')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(n.nspacl) a WHERE n.nspname='mcp_surface' AND a.grantee=0)"
+                )
+            ).scalar_one()
+        with cluster.connect() as conn:
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT rolname,rolcanlogin,rolreplication,rolinherit FROM pg_roles WHERE rolname=ANY(:roles) ORDER BY rolname"
+                    ),
+                    {"roles": list(roles)},
+                ).all()
+                == before
+            )
+        # Grant synchronization uses actual publication membership. Explicit
+        # metadata SELECT/USAGE is recognized on rerun; publisher UPDATE is not.
+        with admin.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE PUBLICATION butlers_public_v1 FOR TABLE mcp_surface.controls, mcp_surface.manifest_state"
+            )
+            unrelated_before = conn.execute(
+                text(
+                    "SELECT oid,rolcanlogin,rolsuper,rolreplication FROM pg_roles WHERE rolname='butler_finance_rw'"
+                )
+            ).one()
+        assert bootstrap().returncode == 0
+        assert bootstrap().returncode == 0
+        with admin.connect() as conn:
+            assert conn.execute(
+                text(
+                    "SELECT has_database_privilege('butlers_projection_publisher','butlers','CONNECT') AND has_schema_privilege('butlers_projection_publisher','mcp_surface','USAGE') AND has_table_privilege('butlers_projection_publisher','mcp_surface.controls','SELECT') AND has_table_privilege('butlers_projection_publisher','mcp_surface.manifest_state','SELECT')"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_namespace n,LATERAL aclexplode(n.nspacl) a WHERE n.nspname='public' AND a.grantee='butlers_projection_publisher'::regrole)"
+                )
+            ).scalar_one()
+            assert not conn.execute(
+                text(
+                    "SELECT has_table_privilege('butlers_projection_publisher','mcp_surface.controls','UPDATE,INSERT,DELETE')"
+                )
+            ).scalar_one()
+            assert conn.execute(
+                text(
+                    "SELECT 'statement_timeout=2s'=ANY(rolconfig) FROM pg_roles WHERE rolname='mcp_public_ro'"
+                )
+            ).scalar_one()
+            assert (
+                conn.execute(
+                    text(
+                        "SELECT oid,rolcanlogin,rolsuper,rolreplication FROM pg_roles WHERE rolname='butler_finance_rw'"
+                    )
+                ).one()
+                == unrelated_before
+            )
+        for fault, restore, message in (
+            (
+                "ALTER ROLE butlers_projection_publisher PASSWORD 'disposable-fault'",
+                "ALTER ROLE butlers_projection_publisher PASSWORD NULL",
+                "attributes/credential",
+            ),
+            (
+                "GRANT butler_finance_rw TO butlers_projection_publisher",
+                "REVOKE butler_finance_rw FROM butlers_projection_publisher",
+                "membership",
+            ),
+            (
+                "GRANT UPDATE ON mcp_surface.manifest_state TO butlers_projection_publisher",
+                "REVOKE UPDATE ON mcp_surface.manifest_state FROM butlers_projection_publisher",
+                "unsupported ACL",
+            ),
+        ):
+            try:
+                with cluster.connect() as conn:
+                    # Role changes are cluster-global; relation grants belong to butlers.
+                    if fault.startswith("GRANT UPDATE"):
+                        with admin.begin() as primary:
+                            primary.exec_driver_sql(fault)
+                    else:
+                        conn.exec_driver_sql(fault)
+                refused = bootstrap(check=False)
+                assert refused.returncode != 0 and message in refused.stderr
+            finally:
+                if restore.startswith("REVOKE UPDATE"):
+                    with admin.begin() as conn:
+                        conn.exec_driver_sql(restore)
+                else:
+                    with cluster.connect() as conn:
+                        conn.exec_driver_sql(restore)
+            assert bootstrap().returncode == 0
+        # The real dedicated HBA/peer files are scoped and restored, including
+        # bootstrap reruns: a NULL password alone does not establish this guard.
+        from butlers.testing.public_mcp import PublicMcpTopology
+
+        topology = PublicMcpTopology(postgres_container, migration, admin, principal, {})
+        for config, message in (
+            ({"ident": "local postgres postgres\n"}, "peer map"),
+            ({"hba": "local all all trust\nhost all all all trust\n"}, "peer rule"),
+        ):
+            with topology.authentication(**config):
+                refused = bootstrap(check=False)
+                assert refused.returncode != 0 and message in refused.stderr
+            assert bootstrap().returncode == 0
+        # Unknown authority cannot be quietly normalized by an ordinary rerun.
+        with admin.begin() as conn:
+            conn.exec_driver_sql("GRANT SELECT ON mcp_surface.manifest_state TO mcp_public_ro")
+        refused = bootstrap(check=False)
+        assert refused.returncode != 0 and "unsupported ACL" in refused.stderr
+        with admin.begin() as conn:
+            conn.exec_driver_sql("REVOKE SELECT ON mcp_surface.manifest_state FROM mcp_public_ro")
+            conn.exec_driver_sql(
+                f"ALTER TABLE mcp_surface.controls OWNER TO {conn.dialect.identifier_preparer.quote(user)}"
+            )
+        refused = bootstrap(check=False)
+        assert refused.returncode != 0 and "unsupported owner/shape" in refused.stderr
+    finally:
+        migration.dispose()
+        admin.dispose()
+        cluster.dispose()

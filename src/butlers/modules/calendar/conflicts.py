@@ -5,10 +5,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
+from butlers.core.temporal.household_context import (
+    HOUSEHOLD_OVERLAP_SQL,
+    events_from_overlap_rows,
+)
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
 )
+from butlers.modules.approvals.execution_context import get_approval_execution_context
 
 from .constants import (
     _SUGGESTION_SEARCH_HORIZON,
@@ -217,6 +223,10 @@ class ConflictsMixin:
         not wired (approvals module disabled), returns explicit fallback
         guidance instead.
         """
+        # The approvals executor replaying this exact approved call opens the
+        # gate; anything else (another tool, other arguments) still parks.
+        if get_approval_execution_context(tool_name=tool_name, tool_args=tool_args) is not None:
+            return None
         config = self._require_config()
         if not config.conflicts.require_approval_for_overlap:
             return None
@@ -351,14 +361,46 @@ class ConflictsMixin:
         """Resolve which calendars an availability query should span.
 
         An explicit list is validated through ``_resolve_calendar_id`` (rejecting
-        unknown ids). With no list, the query spans every connected calendar,
-        falling back to the default-target calendar before discovery completes.
+        unknown ids). With no list this is the unfiltered set of connected calendars;
+        ``_find_free_slots`` uses ``_default_free_busy_calendar_ids`` instead, which
+        keeps only the owner's.
         """
         if calendar_ids:
             return [self._resolve_calendar_id(calendar_id) for calendar_id in calendar_ids]
         if self._all_provider_calendar_ids:
             return list(self._all_provider_calendar_ids)
         return [self._resolve_calendar_id(None)]
+
+    async def _default_free_busy_calendar_ids(self) -> list[str]:
+        """The calendars a default availability query spans: owner-time sources only.
+
+        Another person's calendar must not remove the owner's free slot, so the default
+        spans only the sources whose stored role is ``owner`` or ``butler`` (the Butlers
+        calendar holds the butler's own holds). The role is read each call, so an owner
+        reclassification applies without a resync. When the ledger is unreadable or names
+        none of the discovered calendars, the default-target calendar is used instead.
+        """
+        # getattr: this mixin's host attributes are untyped here, and a typed access would grow
+        # the pyright baseline for no gain.
+        known: list[str] = list(getattr(self, "_all_provider_calendar_ids", ()))
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        if known and pool is not None:
+            try:
+                rows = await pool.fetch(
+                    "SELECT calendar_id FROM calendar_sources "
+                    "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
+                    f"AND time_role IN {owner_time_roles_sql()}",
+                    getattr(self, "_require_provider")().name,  # noqa: B009
+                    known,
+                )
+            except Exception:
+                logger.warning("Failed to read calendar source roles", exc_info=True)
+                rows = []
+            owner_ids = {row["calendar_id"] for row in rows}
+            ordered = [calendar_id for calendar_id in known if calendar_id in owner_ids]
+            if ordered:
+                return ordered
+        return [getattr(self, "_resolve_calendar_id")(None)]  # noqa: B009
 
     async def _find_free_slots(
         self,
@@ -389,7 +431,11 @@ class ConflictsMixin:
 
         part_of_day, avoid_weekdays = _parse_slot_constraints(constraints)
         provider = self._require_provider()
-        resolved_ids = self._resolve_free_busy_calendar_ids(calendar_ids)
+        resolved_ids = (
+            self._resolve_free_busy_calendar_ids(calendar_ids)
+            if calendar_ids
+            else await self._default_free_busy_calendar_ids()
+        )
 
         try:
             busy = await provider.get_free_busy(
@@ -424,7 +470,37 @@ class ConflictsMixin:
             "slots": slots,
             "duration_minutes": duration_minutes,
             "calendar_ids": resolved_ids,
+            "household_context": await self._household_context(search_start, search_end),
         }
+
+    async def _household_context(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        """Other people's events in the window as time-and-subject context, never busy time.
+
+        They do not remove a slot (free/busy spans owner calendars only); this lists them beside
+        the slots so a proposal can say whose calendar a window sits next to. No title, location
+        or attendee leaves this read (REQ-module-calendar-038). Fail-open: an unreadable ledger
+        gives an empty list.
+        """
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        if pool is None:
+            return []
+        try:
+            rows = await pool.fetch(HOUSEHOLD_OVERLAP_SQL, start, end)
+        except Exception:
+            logger.warning("Failed to read household context", exc_info=True)
+            return []
+        events = events_from_overlap_rows(rows)
+        return [
+            {
+                "role": e.role,
+                "subject_entity_id": e.subject_entity_id,
+                "subject_label": e.subject_label,
+                "start_at": e.starts_at.isoformat(),
+                "end_at": e.ends_at.isoformat(),
+                "all_day": e.all_day,
+            }
+            for e in events
+        ]
 
     @staticmethod
     def _build_suggested_slots(

@@ -104,10 +104,19 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import REGISTRY, Counter, Gauge
 
-from butlers.connectors.catalog import connector_descriptor
+from butlers.connector_catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
+from butlers.connectors.evidence_journal import (
+    EvidenceNotCommitted,
+    commit_envelope,
+    require_committed,
+)
+from butlers.connectors.filtered_event_buffer import (
+    FilteredEventBuffer,
+    ParkNotDurableError,
+    drain_replay_pending,
+)
 from butlers.connectors.google_health_client import (
     GoogleHealthClient,
     GoogleHealthCredentialError,
@@ -126,6 +135,7 @@ from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, shared_db_name_from_env
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
+from butlers.egress.http_transport import external_async_client
 from butlers.google_account_registry import (
     GOOGLE_HEALTH_SCOPE_FAMILIES,
     GoogleAccount,
@@ -136,16 +146,15 @@ from butlers.google_account_registry import (
     list_health_scoped_accounts,
 )
 from butlers.google_credentials import (
+    GOOGLE_TOKEN_URL,
+    GoogleTokenCache,
     InvalidGoogleCredentialsError,
+    _mark_account_revoked,
     google_oauth_error_code,
     load_google_credentials,
 )
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_CAPABILITY, CHANNEL_KIND_FEED
-from butlers.oauth_token_payload import (
-    OAuthTokenValidationError,
-    validate_oauth_token_payload,
-)
 
 _DESCRIPTOR = connector_descriptor("google_health")
 
@@ -175,7 +184,7 @@ GOOGLE_HEALTH_SCOPES: frozenset[str] = frozenset(
     }
 )
 
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_TOKEN_URL = GOOGLE_TOKEN_URL
 _TOKEN_REFRESH_BUFFER_S = 60  # refresh access token 60s before expiry
 
 # Default per-resource polling cadences (seconds).
@@ -840,6 +849,10 @@ class OwnerContext:
     auth_error_message: str | None = None
     auth_error_at: datetime | None = None  # when the error was last set, for observability
 
+    if TYPE_CHECKING:
+        _google_token_cache: GoogleTokenCache | None = None
+        _revoked_refresh_token: str | None = None
+
     @classmethod
     def from_registry(cls, account: HealthScopedAccount) -> OwnerContext:
         """Construct an OwnerContext from a registry account row."""
@@ -963,7 +976,7 @@ class GoogleHealthConnector:
         """Full startup sequence followed by the main poll loop."""
         logger.info("GoogleHealthConnector starting")
 
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = external_async_client(timeout=30.0)
         self._running = True
 
         try:
@@ -1157,6 +1170,20 @@ class GoogleHealthConnector:
         for existing in health_accounts:
             if existing.id in cur_ids:
                 self._accounts[existing.id].refresh_from(existing)
+
+        # Alert rules read these counters through increase(), which needs a prior
+        # sample; a child created lazily by its first inc() would hide the
+        # first-ever event. Prime every current identity (an email change
+        # re-keys it) at zero; labels() is idempotent.
+        for ctx in self._accounts.values():
+            for bundle in RESOURCE_BUNDLES:
+                for counter in (
+                    google_health_window_page_cap_exceeded_total,
+                    google_health_quarantined_envelopes_total,
+                ):
+                    counter.labels(
+                        endpoint_identity=ctx.endpoint_identity, resource=bundle.resource
+                    )
 
         # ----------------------------------------------------------------
         # Update legacy single-account fields + scope/account missing flags.
@@ -1492,7 +1519,9 @@ class GoogleHealthConnector:
         self._client_secret = creds.client_secret
         return True
 
-    async def _mint_access_token(self, account_uuid: uuid.UUID) -> str:
+    async def _mint_access_token(
+        self, account_uuid: uuid.UUID, *, force_refresh: bool = False
+    ) -> str:
         """Mint a fresh access token for the given account.
 
         Per design.md ADR-4: uses ``_resolve_entity_refresh_token`` to fetch
@@ -1532,71 +1561,51 @@ class GoogleHealthConnector:
             )
 
         assert self._http_client is not None
+        cache = getattr(ctx, "_google_token_cache", None)
+        if cache is None:
+            cache = ctx._google_token_cache = GoogleTokenCache(
+                ctx, "cached_access_token", "token_expires_at", account=str(account_uuid)
+            )
+
+        async def credential_is_current() -> bool:
+            shared_pool = self._shared_pool
+            return (
+                self._accounts.get(account_uuid) is ctx
+                and shared_pool is not None
+                and await _resolve_entity_refresh_token(shared_pool, ctx.entity_id) == refresh_token
+            )
+
+        assert self._client_id is not None and self._client_secret is not None
         try:
-            resp = await self._http_client.post(
-                _GOOGLE_TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "refresh_token": refresh_token,
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                    # Down-scope the access token to health scopes only. The
-                    # per-account refresh token is scope-widened (Gmail, Drive,
-                    # Calendar, Contacts, …), but the Google Health API rejects
-                    # any token carrying non-health scopes with
-                    # 403 DISALLOWED_OAUTH_SCOPES. Requesting a subset here mints
-                    # a health-only access token the API accepts.
-                    "scope": " ".join(sorted(GOOGLE_HEALTH_SCOPES)),
-                },
+            return await cache.get_token(
+                self._http_client,
+                client_id=self._client_id,
+                client_secret=self._client_secret,
+                refresh_token=refresh_token,
+                scopes=frozenset(GOOGLE_HEALTH_SCOPES),
+                credential_is_current=credential_is_current,
                 timeout=15,
+                force_refresh=force_refresh,
             )
-        except httpx.TransportError as exc:
-            raise GoogleHealthError(f"Token refresh transport error: {exc}") from exc
-
-        if resp.status_code != 200:
-            body = resp.text[:200]
-            # The shared helper reads only the token endpoint's exact top-level
-            # OAuth code. Nested data-API prose mentioning ``invalid_grant`` is
-            # not evidence that this account's refresh grant was revoked.
-            oauth_error = google_oauth_error_code(resp)
-            if oauth_error == "invalid_grant":
-                raise GoogleHealthTokenRevokedError(
-                    f"Google refresh token revoked/expired for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
-            if oauth_error == "unauthorized_client":
-                raise GoogleHealthOAuthCredentialError(
-                    f"Google OAuth client unauthorized for {ctx.email}: "
-                    f"HTTP {resp.status_code}: {body}"
-                )
+        except httpx.HTTPStatusError as exc:
+            code = google_oauth_error_code(exc.response)
+            if code == "invalid_grant":
+                ctx._revoked_refresh_token = refresh_token
+                raise GoogleHealthTokenRevokedError("Google refresh grant revoked") from exc
+            if code == "unauthorized_client":
+                raise GoogleHealthOAuthCredentialError("Google OAuth client unauthorized") from exc
             raise GoogleHealthCredentialError(
-                f"Google token refresh failed for {ctx.email}: HTTP {resp.status_code}: {body}"
-            )
-
-        # Validate the whole payload before touching the account context, so a
-        # malformed 200 cannot leave a stale token paired with a fresh expiry.
-        try:
-            token = validate_oauth_token_payload(resp.json())
-        except OAuthTokenValidationError as exc:
+                f"Google token refresh failed: HTTP {exc.response.status_code}"
+            ) from exc
+        except httpx.TransportError as exc:
+            raise GoogleHealthError("Token refresh transport error") from exc
+        except ValueError as exc:
             raise GoogleHealthCredentialError(
                 f"Google token refresh returned an invalid token payload for {ctx.email}"
             ) from exc
 
-        ctx.cached_access_token = token.access_token
-        ctx.token_expires_at = datetime.now(UTC) + timedelta(seconds=token.expires_in)
-        return token.access_token
-
     async def _get_access_token(self, account_uuid: uuid.UUID) -> str:
-        """Return a usable access token for the given account, refreshing if near expiry."""
-        ctx = self._accounts.get(account_uuid)
-        if ctx is not None:
-            now = datetime.now(UTC)
-            if (
-                ctx.cached_access_token
-                and ctx.token_expires_at
-                and now < ctx.token_expires_at - timedelta(seconds=_TOKEN_REFRESH_BUFFER_S)
-            ):
-                return ctx.cached_access_token
+        """Resolve the actual account credential and reuse its scoped cache."""
         return await self._mint_access_token(account_uuid)
 
     async def _mark_account_revoked(self, account_uuid: uuid.UUID) -> None:
@@ -1609,15 +1618,13 @@ class GoogleHealthConnector:
         if self._shared_pool is None:
             return
         try:
-            async with self._shared_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE public.google_accounts
-                    SET status = 'revoked'
-                    WHERE id = $1
-                    """,
-                    account_uuid,
-                )
+            ctx = self._accounts.get(account_uuid)
+            grant = getattr(ctx, "_revoked_refresh_token", None)
+            if grant is None:
+                return
+            await _mark_account_revoked(
+                self._shared_pool, account_id=account_uuid, expected_refresh_token=grant
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "GoogleHealthConnector: failed to mark account %s revoked (non-fatal): %s",
@@ -1861,7 +1868,7 @@ class GoogleHealthConnector:
                     state.next_poll_monotonic = time.monotonic() + delay
                     next_due = min(next_due, state.next_poll_monotonic)
                     continue
-                except GoogleHealthForbiddenError as exc:
+                except GoogleHealthForbiddenError:
                     # 403 is an access/authorisation problem (OAuth test-mode,
                     # restricted-scope allowlist, or API not enabled) — NOT a
                     # transient or credential failure.  Mark the source API as
@@ -1871,10 +1878,9 @@ class GoogleHealthConnector:
                     self._source_api_error_message = "api_forbidden"
                     logger.warning(
                         "GoogleHealthConnector: 403 Forbidden account=%s resource=%s "
-                        "(OAuth test-mode / scope allowlist / API access) — %s",
+                        "(OAuth test-mode / scope allowlist / API access)",
                         ctx.email,
                         state.bundle.resource,
-                        exc,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1895,14 +1901,18 @@ class GoogleHealthConnector:
                     continue
                 except GoogleHealthSourcePreconditionError as exc:
                     self._last_source_api_ok = False
-                    self._source_api_error_message = exc.reason.lower()
+                    reason = (
+                        "account_not_linked"
+                        if exc.reason.lower() == "account_not_linked"
+                        else "failed_precondition"
+                    )
+                    self._source_api_error_message = reason
                     logger.warning(
                         "GoogleHealthConnector: source precondition failed "
-                        "account=%s resource=%s reason=%s redirect_uri=%s",
+                        "account=%s resource=%s reason=%s",
                         ctx.email,
                         state.bundle.resource,
-                        exc.reason,
-                        exc.redirect_uri,
+                        reason,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1936,7 +1946,7 @@ class GoogleHealthConnector:
                         ctx.email,
                         state.bundle.resource,
                         state.consecutive_failures,
-                        exc,
+                        state.last_error,
                     )
                     google_health_polls_total.labels(
                         endpoint_identity=ctx.endpoint_identity,
@@ -1989,7 +1999,12 @@ class GoogleHealthConnector:
     ) -> None:
         """Extend this resource's failure streak and publish it as an alertable gauge."""
         state.consecutive_failures += 1
-        state.last_error = str(exc)
+        if isinstance(exc, httpx.HTTPStatusError):
+            state.last_error = f"HTTP {exc.response.status_code}"
+        elif isinstance(exc, GoogleHealthPollIncompleteError):
+            state.last_error = "poll_incomplete"
+        else:
+            state.last_error = "source_api_unreachable"
         state.last_error_at = datetime.now(UTC)
         google_health_resource_consecutive_failures.labels(
             endpoint_identity=ctx.endpoint_identity,
@@ -2105,7 +2120,7 @@ class GoogleHealthConnector:
                 if state.rejected_key == record_id:
                     state.rejected_key, state.rejected_count = None, 0
                 emitted += 1
-            elif outcome is SubmissionOutcome.REJECTED and self._quarantine_if_poison(
+            elif outcome is SubmissionOutcome.REJECTED and await self._quarantine_if_poison(
                 state, record_id, envelope, endpoint_identity=endpoint_identity
             ):
                 pass  # receipted; consumed so the rest of the window can commit
@@ -2140,7 +2155,7 @@ class GoogleHealthConnector:
         self._last_source_api_ok = True
         self._source_api_error_message = None
 
-    def _quarantine_if_poison(
+    async def _quarantine_if_poison(
         self,
         state: ResourceState,
         record_id: str,
@@ -2153,6 +2168,9 @@ class GoogleHealthConnector:
         Returns ``True`` when the envelope is quarantined: an ``error`` row with reason
         ``poison_quarantine`` and the full envelope lands in ``connectors.filtered_events`` (the
         receipt an operator replays from), and the caller treats the sample as consumed.
+        The receipt is the only copy once the sample is consumed, so it is committed first
+        (bu-dhloi1.274); if it cannot be written the sample is not consumed and the poll
+        stays incomplete.
         """
         if state.rejected_key == record_id:
             state.rejected_count += 1
@@ -2173,16 +2191,27 @@ class GoogleHealthConnector:
             endpoint_identity=endpoint_identity, resource=state.bundle.resource
         ).inc()
         if self._filtered_event_buffer is not None:
-            self._filtered_event_buffer.record(
-                external_message_id=external_event_id,
-                source_channel=envelope.get("source", {}).get("channel", ""),
-                sender_identity=envelope.get("sender", {}).get("identity", ""),
-                subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
-                filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
-                full_payload=envelope,
-                status="error",
-                error_detail=f"ingest rejected {attempts} consecutive attempts",
-            )
+            try:
+                await self._filtered_event_buffer.park(
+                    self._shared_pool,
+                    external_message_id=external_event_id,
+                    source_channel=envelope.get("source", {}).get("channel", ""),
+                    sender_identity=envelope.get("sender", {}).get("identity", ""),
+                    subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
+                    filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
+                    full_payload=envelope,
+                    error_detail=f"ingest rejected {attempts} consecutive attempts",
+                )
+            except ParkNotDurableError:
+                logger.error(
+                    "GoogleHealthConnector: %s rejected %d times but its quarantine receipt "
+                    "could not be written; holding the checkpoint",
+                    external_event_id,
+                    attempts,
+                )
+                # The next rejection reaches the limit again and retries the receipt.
+                state.rejected_key, state.rejected_count = record_id, attempts - 1
+                return False
         return True
 
     async def _get_window_records(
@@ -2388,6 +2417,20 @@ class GoogleHealthConnector:
 
         async with self._semaphore:
             start_t = time.perf_counter()
+            # Evidence before acknowledgement (bu-uhbhzq.4): the journal row first. A failed
+            # write is a FAILED outcome (not consumed, nothing submitted) and copies the sample
+            # nowhere: no error-buffer row, because the cursor holds and the sample is re-read.
+            # A failed submit keeps the journal row and parks below.
+            try:
+                await commit_envelope(self._shared_pool, envelope)
+            except EvidenceNotCommitted as exc:
+                self._metrics.record_error("evidence_error", "journal")
+                logger.error(
+                    "GoogleHealthConnector: evidence not committed; holding the sample "
+                    "(failure_class=%s)",
+                    exc.reason,
+                )
+                return SubmissionOutcome.FAILED
             try:
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
@@ -2420,7 +2463,12 @@ class GoogleHealthConnector:
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
-        """Submit directly to Switchboard — bypasses filter gate (replay path)."""
+        """Replay path (no filter gate): confirm the journal row exists, write nothing, send.
+
+        A parked sample was journaled before its submit. A legacy row or a preview with no
+        original idempotency key has no such row and is refused (bu-uhbhzq.4).
+        """
+        await require_committed(self._shared_pool, envelope)
         await self._mcp_client.call_tool("ingest", envelope)
 
     async def _flush_filtered_events(self) -> None:

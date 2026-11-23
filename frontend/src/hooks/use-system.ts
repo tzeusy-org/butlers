@@ -178,11 +178,17 @@ export function useDeploymentFacts() {
  * query itself failed server-side; render "unknown", never "no active
  * conditions".
  */
-export function useSystemConditions(params: SystemConditionsParams = {}) {
+export function useSystemConditions(
+  params: SystemConditionsParams = {},
+  options: { keepPreviousData?: boolean } = {},
+) {
   return useQuery({
     queryKey: ["system-conditions", params],
     queryFn: () => getSystemConditions(params),
     refetchInterval: SYSTEM_POLL_FAST_MS,
+    // A filter change keeps the old rows on screen until the new page lands
+    // instead of flashing the tile's loading skeleton.
+    placeholderData: options.keepPreviousData ? (prev) => prev : undefined,
   });
 }
 

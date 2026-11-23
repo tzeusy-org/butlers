@@ -24,7 +24,9 @@ from butlers.chronicler.adapters.steam import (
     SOURCE_NAME,
     SteamPlayAdapter,
 )
-from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.chronicler.models import Episode, Layer, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
 _DATE = date(2026, 4, 25)
@@ -38,7 +40,7 @@ _APP_NAME = "Counter-Strike 2"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _steam_row(
     steam_id: int = _STEAM_ID,
     steam_account_id: str | None = None,
     app_id: int = _APP_ID,
@@ -59,18 +61,13 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    """Build a MagicMock that supports dict-style access via __getitem__."""
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -80,21 +77,8 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _chronicler_pool() -> AsyncMock:
@@ -104,7 +88,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=None)
 
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -155,7 +139,7 @@ def test_no_llm_imports_in_steam_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_project_single_row_produces_one_episode() -> None:
-    row = _make_row()
+    row = _steam_row()
     adapter = SteamPlayAdapter()
     upserted: list[Episode] = []
 
@@ -176,7 +160,7 @@ async def test_project_single_row_produces_one_episode() -> None:
 
 @pytest.mark.asyncio
 async def test_episode_fields_from_row() -> None:
-    row = _make_row(play_date=_DATE, playtime_minutes=90, app_name="Counter-Strike 2")
+    row = _steam_row(play_date=_DATE, playtime_minutes=90, app_name="Counter-Strike 2")
     adapter = SteamPlayAdapter()
     upserted: list[Episode] = []
 
@@ -191,6 +175,7 @@ async def test_episode_fields_from_row() -> None:
         await adapter.project(pool, chronicler_pool=cp, since=None)
 
     ep = upserted[0]
+    assert ep.layer == Layer.EVIDENCE
     assert ep.source_name == SOURCE_NAME
     assert ep.episode_type == EPISODE_TYPE_PLAY
     assert ep.precision == Precision.DAY
@@ -204,7 +189,7 @@ async def test_episode_anchored_to_recorded_at_when_within_day() -> None:
     play_date = date(2026, 4, 25)
     playtime = 90  # minutes
     recorded = datetime(2026, 4, 25, 12, 0, 0, tzinfo=UTC)
-    row = _make_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
+    row = _steam_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
     adapter = SteamPlayAdapter()
     upserted: list[Episode] = []
 
@@ -229,7 +214,7 @@ async def test_episode_anchored_to_end_of_day_when_recorded_at_outside() -> None
     play_date = date(2026, 4, 23)
     playtime = 120  # minutes
     recorded = datetime(2026, 4, 25, 9, 0, 0, tzinfo=UTC)  # 2 days later
-    row = _make_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
+    row = _steam_row(play_date=play_date, playtime_minutes=playtime, recorded_at=recorded)
     adapter = SteamPlayAdapter()
     upserted: list[Episode] = []
 
@@ -251,7 +236,7 @@ async def test_episode_anchored_to_end_of_day_when_recorded_at_outside() -> None
 
 @pytest.mark.asyncio
 async def test_negative_playtime_row_is_skipped_and_watermarked() -> None:
-    row = _make_row(playtime_minutes=-15, recorded_at=_NOW)
+    row = _steam_row(playtime_minutes=-15, recorded_at=_NOW)
     adapter = SteamPlayAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -298,7 +283,7 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
         )
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = SteamPlayAdapter()
     cp = _chronicler_pool()
@@ -322,8 +307,8 @@ async def test_watermark_advances_to_max_recorded_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=2)
     rows = [
-        _make_row(recorded_at=t1, play_date=date(2026, 4, 24)),
-        _make_row(recorded_at=t2, play_date=date(2026, 4, 25)),
+        _steam_row(recorded_at=t1, play_date=date(2026, 4, 24)),
+        _steam_row(recorded_at=t2, play_date=date(2026, 4, 25)),
     ]
     adapter = SteamPlayAdapter()
 

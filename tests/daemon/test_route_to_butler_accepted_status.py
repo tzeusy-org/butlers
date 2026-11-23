@@ -7,9 +7,10 @@ instead of the generic {status: 'ok', butler: ...}.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,171 +20,43 @@ from butlers.core.tool_call_capture import (
     set_current_runtime_session_id,
     set_runtime_session_routing_context,
 )
-from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
+from butlers.testing.fake_pool import fake_pool
 from butlers.tools.switchboard.routing.contracts import parse_route_envelope
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-def _make_switchboard_dir(tmp_path: Path) -> Path:
-    toml_lines = [
-        "[butler]",
-        'name = "switchboard"',
-        "port = 9100",
-        'description = "Routes messages"',
-        "",
-        "[butler.db]",
-        'name = "butlers"',
-        'schema = "switchboard"',
-        "",
-        "[[butler.schedule]]",
-        'name = "daily-check"',
-        'cron = "0 9 * * *"',
-        'prompt = "Do the daily check"',
-    ]
-    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
-    return tmp_path
+async def _route_to_butler(
+    tool_host,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: AsyncMock,
+    *,
+    db: bool = False,
+):
+    """The Switchboard's registered route_to_butler, with the internal route() faked.
 
-
-def _make_runtime_config_row(butler_name: str = "switchboard") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
-
-
-def _make_fetchrow_side_effect(butler_name: str = "switchboard"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
-
-
-def _patch_infra():
-    mock_conn = AsyncMock()
-    # asyncpg uses synchronous factories for both asynchronous contexts.
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
-    transaction.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock()
-    # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_switchboard_and_capture_route_to_butler(
-    butler_dir: Path,
-    patches: dict,
-    mock_route: AsyncMock | None = None,
-) -> tuple[ButlerDaemon, Any]:
-    route_to_butler_fn = None
-    mock_mcp = MagicMock()
-
-    def tool_decorator(*_decorator_args, **decorator_kwargs):
-        declared_name = decorator_kwargs.get("name")
-
-        def decorator(fn):
-            nonlocal route_to_butler_fn
-            resolved_name = declared_name or fn.__name__
-            if resolved_name == "route_to_butler":
-                route_to_butler_fn = fn
-            return fn
-
-        return decorator
-
-    mock_mcp.tool = tool_decorator
-
-    route_patch = (
-        patch("butlers.tools.switchboard.routing.route.route", new=mock_route)
-        if mock_route is not None
-        else patch("butlers.tools.switchboard.routing.route.route")
+    DB-free unless *db*: only the permission tests read SQL (public.permissions).
+    """
+    # The package re-exports route(), shadowing the module name for string targets.
+    monkeypatch.setattr(
+        importlib.import_module("butlers.tools.switchboard.routing.route"), "route", route
     )
-
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        route_patch,
-    ):
-        daemon = ButlerDaemon(butler_dir)
-        await daemon.start()
-
-    return daemon, route_to_butler_fn
+    config_dir = write_butler_config(tmp_path, "switchboard", schema="switchboard", port=41100)
+    if db:
+        host = await tool_host(config_dir, "core", "switchboard")
+    else:
+        host = await tool_host(
+            config_dir,
+            pool=fake_pool(
+                fetchrow=AsyncMock(return_value=None),
+                fetchval=AsyncMock(return_value=None),
+                execute=AsyncMock(return_value=None),
+                fetch=AsyncMock(return_value=[]),
+            ),
+        )
+    return host, await host.tool("route_to_butler")
 
 
 # ---------------------------------------------------------------------------
@@ -191,31 +64,20 @@ async def _start_switchboard_and_capture_route_to_butler(
 # ---------------------------------------------------------------------------
 
 
-async def test_route_to_butler_status_mapping(tmp_path: Path) -> None:
+async def test_route_to_butler_status_mapping(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """route_to_butler maps inner results to correct outer status codes."""
-    patches = _patch_infra()
-    butler_dir = _make_switchboard_dir(tmp_path)
-
     # accepted → passed through
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=mock_route
-    )
-    assert fn is not None
+    _, fn = await _route_to_butler(tool_host, tmp_path, monkeypatch, mock_route)
     result = await fn(butler="health", prompt="test")
     assert result["status"] == "accepted"
     assert result["butler"] == "health"
 
     # error → error with message
-    patches2 = _patch_infra()
     mock_route2 = AsyncMock(return_value={"error": "Butler 'health' not found in registry"})
-    (tmp_path / "d2").mkdir()
-    _, fn2 = await _start_switchboard_and_capture_route_to_butler(
-        _make_switchboard_dir(tmp_path / "d2"),
-        patches2,
-        mock_route=mock_route2,
-    )
-    assert fn2 is not None
+    _, fn2 = await _route_to_butler(tool_host, tmp_path / "d2", monkeypatch, mock_route2)
     result2 = await fn2(butler="health", prompt="test")
     assert result2["status"] == "error"
     assert "not found" in result2.get("error", "")
@@ -226,18 +88,18 @@ async def test_route_to_butler_status_mapping(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
+async def test_route_to_butler_envelope_behavior(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Missing context generates uuid7; runtime session fallback honored; complexity defaults/validation."""
-    patches = _patch_infra()
-    butler_dir = _make_switchboard_dir(tmp_path)
     captured: dict[str, Any] = {}
 
     async def _capture(*_args, **kwargs):
         captured.update(kwargs["args"])
         return {"result": {"status": "accepted"}}
 
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=AsyncMock(side_effect=_capture)
+    _, fn = await _route_to_butler(
+        tool_host, tmp_path, monkeypatch, AsyncMock(side_effect=_capture)
     )
 
     # Missing context: generates uuid7
@@ -300,34 +162,77 @@ async def test_route_to_butler_envelope_behavior(tmp_path: Path) -> None:
     assert captured["input"]["complexity"] == "workhorse"
 
 
+@pytest.mark.parametrize("custody", ["endpoint_held", None, "cleared"])
+async def test_route_to_butler_carries_only_the_held_custody_flag(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, custody
+) -> None:
+    """REQ-endpoint-custody-holds-005: the identity step's custody read reaches the envelope."""
+    captured: dict[str, Any] = {}
+
+    async def _capture(*_args, **kwargs):
+        captured.update(kwargs["args"])
+        return {"result": {"status": "accepted"}}
+
+    _, fn = await _route_to_butler(
+        tool_host, tmp_path, monkeypatch, AsyncMock(side_effect=_capture)
+    )
+    runtime_session_id = f"sess-route-custody-{custody}"
+    set_runtime_session_routing_context(
+        runtime_session_id,
+        {
+            "request_context": {
+                "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+                "source_channel": "telegram_bot",
+                "source_sender_identity": "123456789",
+            },
+            "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+            "source_entity_id": "550e8400-e29b-41d4-a716-446655440000",
+            "source_custody": custody,
+        },
+    )
+    token = set_current_runtime_session_id(runtime_session_id)
+    try:
+        await fn(butler="general", prompt="remember this")
+    finally:
+        reset_current_runtime_session_id(token)
+        clear_runtime_session_routing_context(runtime_session_id)
+    payload = {k: v for k, v in captured.items() if k != "__switchboard_route_context"}
+    parsed = parse_route_envelope(payload).request_context
+    expected = "endpoint_held" if custody == "endpoint_held" else None
+    assert parsed.source_sender_custody == expected
+
+
 # ---------------------------------------------------------------------------
 # Permissions-matrix enforcement (public.permissions: cross_butler) [bu-tzlq6]
 # ---------------------------------------------------------------------------
 
 
-async def test_route_to_butler_blocked_when_cross_butler_revoked(tmp_path: Path) -> None:
+@pytest.mark.real_gate_state
+async def test_route_to_butler_blocked_when_cross_butler_revoked(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Revoked cross_butler blocks the dispatch before the switchboard route runs.
 
     Mirrors the spawn gate: a granted=false cell denies the cross-butler call
     outright (observable error), and the underlying route is never invoked.
     Pre-fix this fails: the matrix was ignored, so the route proceeded.
     """
-    from butlers.core.permissions import PermissionStatus
+    from butlers.core.permissions import CROSS_BUTLER_PERMISSION
+    from butlers.testing.db import open_pool
 
-    patches = _patch_infra()
-    butler_dir = _make_switchboard_dir(tmp_path)
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=mock_route
-    )
-    assert fn is not None
+    host, fn = await _route_to_butler(tool_host, tmp_path, monkeypatch, mock_route, db=True)
+    admin = await open_pool(host.admin_url)
+    try:
+        await admin.execute(
+            "INSERT INTO public.permissions (butler, permission, granted, reason)"
+            " VALUES ('switchboard', $1, false, 'revoked by owner')",
+            CROSS_BUTLER_PERMISSION,
+        )
+    finally:
+        await admin.close()
 
-    with patch(
-        "butlers.core_tools._switchboard.check_permission",
-        new_callable=AsyncMock,
-        return_value=PermissionStatus(allowed=False, explicit=True, reason="revoked by owner"),
-    ):
-        result = await fn(butler="health", prompt="test")
+    result = await fn(butler="health", prompt="test")
 
     assert result["status"] == "error"
     assert "permission denied" in result.get("error", "").lower()
@@ -335,25 +240,39 @@ async def test_route_to_butler_blocked_when_cross_butler_revoked(tmp_path: Path)
     mock_route.assert_not_awaited()
 
 
-async def test_route_to_butler_allowed_when_cross_butler_granted(tmp_path: Path) -> None:
-    """Granted/default cross_butler lets the dispatch proceed to the route."""
+async def test_route_to_butler_refused_when_the_permission_store_is_unreadable(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable permission store refuses the dispatch; the route never runs [bu-svqpzo.3]."""
     from butlers.core.permissions import PermissionStatus
 
-    patches = _patch_infra()
-    (tmp_path / "granted").mkdir(exist_ok=True)
-    butler_dir = _make_switchboard_dir(tmp_path / "granted")
     mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
-    _, fn = await _start_switchboard_and_capture_route_to_butler(
-        butler_dir, patches, mock_route=mock_route
-    )
-    assert fn is not None
-
-    with patch(
+    _host, fn = await _route_to_butler(tool_host, tmp_path, monkeypatch, mock_route, db=True)
+    monkeypatch.setattr(
         "butlers.core_tools._switchboard.check_permission",
-        new_callable=AsyncMock,
-        return_value=PermissionStatus(allowed=True, explicit=True, reason="default"),
-    ):
-        result = await fn(butler="health", prompt="test")
+        AsyncMock(
+            return_value=PermissionStatus(
+                allowed=False, unavailable=True, reason="permission store unavailable"
+            )
+        ),
+    )
+
+    result = await fn(butler="health", prompt="test")
+
+    assert result["status"] == "error"
+    assert "permission" in result.get("error", "").lower()
+    mock_route.assert_not_awaited()
+
+
+async def test_route_to_butler_allowed_when_cross_butler_granted(
+    tool_host, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Granted/default cross_butler lets the dispatch proceed to the route."""
+    mock_route = AsyncMock(return_value={"result": {"status": "accepted"}})
+    _, fn = await _route_to_butler(tool_host, tmp_path, monkeypatch, mock_route, db=True)
+    # No permissions row: the default cell is granted.
+
+    result = await fn(butler="health", prompt="test")
 
     assert result["status"] == "accepted"
     mock_route.assert_awaited_once()

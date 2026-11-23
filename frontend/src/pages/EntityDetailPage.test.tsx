@@ -1522,4 +1522,62 @@ describe("EntityDetailPage — owner setup drives \"(action needed)\" (bu-6m6ou0
 
     expect(renderPage()).not.toContain("(action needed)");
   });
+  describe("activity truncation and row links", () => {
+    const row = (over: Record<string, unknown>) => ({
+      ts: "2026-05-30T12:00:00Z",
+      kind: "note",
+      src: "relationship",
+      store: "narrative",
+      predicate: "contact_note",
+      episode_id: null,
+      ...over,
+    });
+
+    function mockActivity(items: unknown[], truncated: boolean) {
+      vi.mocked(useEntityActivity).mockReturnValue({
+        data: { pages: [{
+          items,
+          total: items.length,
+          limit: 50,
+          offset: 0,
+          degraded: false,
+          degraded_reason: null,
+          chronicler_truncated: truncated,
+        }], pageParams: [0] },
+        isLoading: false,
+        isError: false,
+        isRefetching: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+      } as unknown as ReturnType<typeof useEntityActivity>);
+    }
+
+    it("shows the 500-episode note only when the flag is true", () => {
+      setEntityState(BASE_ENTITY);
+      mockActivity([row({ id: "n1", summary: "A note" })], true);
+      expect(renderPage()).toContain("Showing the latest 500 chronicle episodes");
+      mockActivity([row({ id: "n1", summary: "A note" })], false);
+      expect(renderPage()).not.toContain("latest 500 chronicle episodes");
+    });
+
+    it("opens episodes on their day and narrative facts in fact detail, nothing else", () => {
+      setEntityState(BASE_ENTITY);
+      mockActivity(
+        [
+          row({ id: "ep-1", src: "chronicler", store: null, kind: "episode", episode_id: "ep-1", summary: "Dinner" }),
+          row({ id: "ep-2", src: "chronicler", store: null, kind: "episode", episode_id: "ep-2", ts: null, summary: "Undated" }),
+          row({ id: "fact-1", summary: "Narrative fact" }),
+          row({ id: "fact-2", store: "identity", kind: "fact", predicate: "email", summary: "a@b.c" }),
+        ],
+        false,
+      );
+      const html = renderPage();
+      expect(html).toMatch(/href="\/chronicles\?date=2026-05-30&amp;episode=ep-1"[^>]*>Dinner/);
+      expect(html).toMatch(/href="\/memory\/facts\/fact-1"[^>]*>Narrative fact/);
+      expect(html).not.toMatch(/<a [^>]*>Undated/);
+      expect(html).not.toMatch(/<a [^>]*>a@b\.c/);
+    });
+  });
 });

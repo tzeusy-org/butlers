@@ -32,8 +32,6 @@ import pytest
 
 from butlers.api.degraded import DegradedSources
 from butlers.api.routers.secrets_v2 import _fetch_system_secrets
-from butlers.db import register_jsonb_codec, schema_search_path
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -45,55 +43,26 @@ pytestmark = [
 _logger = logging.getLogger("test_secrets_v2_schema_drift_db")
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain into a butler-like schema named 'finance'.
-
-    The 'core' chain is what creates the real, migrated ``butler_secrets``
-    table (core_001, plus test-state columns from core_106/core_117).
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-        schemas={"core": "finance"},
-    )
+# The 'core' chain, migrated into a butler-like schema named 'finance', is what
+# creates the real ``butler_secrets`` table (core_001, plus test-state columns
+# from core_106/core_117).
+_FINANCE_CORE = {"core": "finance"}
 
 
 @pytest.fixture
-async def finance_pool(migrated_db_url: str):
+async def finance_pool(db) -> asyncpg.Pool:
     """Pool scoped to the migrated 'finance' schema — has a real butler_secrets table."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=2,
-        init=register_jsonb_codec,
-        server_settings={"search_path": schema_search_path("finance")},
-    )
-    yield p
-    await p.close()
+    return await db("core", schemas=_FINANCE_CORE, schema="finance")
 
 
 @pytest.fixture
-async def empty_schema_pool(migrated_db_url: str):
+async def empty_schema_pool(db) -> asyncpg.Pool:
     """Pool scoped to a schema that was never migrated — no butler_secrets table
     exists there (nor in 'public', since the core chain was mapped to 'finance').
     """
-    admin_conn = await asyncpg.connect(migrated_db_url)
-    try:
-        await admin_conn.execute("CREATE SCHEMA IF NOT EXISTS neverbutler")
-    finally:
-        await admin_conn.close()
-
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=2,
-        init=register_jsonb_codec,
-        server_settings={"search_path": schema_search_path("neverbutler")},
-    )
-    yield p
-    await p.close()
+    p = await db("core", schemas=_FINANCE_CORE, schema="neverbutler")
+    await p.execute("CREATE SCHEMA IF NOT EXISTS neverbutler")
+    return p
 
 
 async def test_dropped_column_raises_real_undefined_column_error_and_is_tracked(

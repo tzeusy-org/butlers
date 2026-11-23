@@ -44,6 +44,11 @@ record() {
     "$BUTLERS_BIN" deployments record --source deploy --result "$@"
 }
 
+# Reuse the pre-bootstrap admission immediately before Helm as well. A direct
+# wrapper call or state change during bootstrap cannot skip this read-only gate.
+"$(dirname "${BASH_SOURCE[0]}")/runtime-topology-preflight.sh" \
+  "$ns" "$tag" "$release" -- "$@" || exit $?
+
 status=0
 helm upgrade --install "$release" . --create-namespace "$@" || status=$?
 [ "$status" -eq 0 ] && { kubectl -n "$ns" rollout status deploy/dashboard-api --timeout=10m || status=$?; }

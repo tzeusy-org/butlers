@@ -6,17 +6,28 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
+import logging
 import math
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import asyncpg
+
+from butlers.core.chronicler_visibility import (
+    catalog_projection_visible,
+    local_fact_visibility_condition,
+)
+from butlers.db import _RuntimeRoleError
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
+from butlers.modules.memory.embedding import embed_async
 
 if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.search_vector import preprocess_search_query
+
+logger = logging.getLogger(__name__)
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).
@@ -90,6 +101,7 @@ async def semantic_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -157,6 +169,11 @@ async def semantic_search(
     # weight, not a hard retrieval cutoff, so they must remain searchable).
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        if visibility is not None:
+            conditions.append(visibility)
 
     # Rules: exclude forgotten (metadata->>'forgotten' IS NOT TRUE) and retired
     # (retired_at IS NULL) rules — neither is a live standing order, and this
@@ -228,6 +245,7 @@ async def keyword_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -290,6 +308,11 @@ async def keyword_search(
     # See semantic_search above: fading facts remain searchable.
     if table == "facts":
         conditions.append("validity IN ('active', 'fading')")
+        visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        if visibility is not None:
+            conditions.append(visibility)
 
     # See semantic_search above for why both exclusions apply.
     if table == "rules":
@@ -340,6 +363,7 @@ async def hybrid_search(
     allowed_sensitivities: list[str] | None = None,
     entity_id: str | None = None,
     predicate: str | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -387,6 +411,7 @@ async def hybrid_search(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_id,
         predicate=predicate,
+        memory_schema=memory_schema,
     )
     keyword_results = await keyword_search(
         pool,
@@ -398,6 +423,7 @@ async def hybrid_search(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_id,
         predicate=predicate,
+        memory_schema=memory_schema,
     )
 
     # Build rank maps keyed by id
@@ -580,6 +606,8 @@ async def recall(
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
     read_policy: CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
+    query_embedding: list[float] | None = None,
 ) -> list[dict]:
     """High-level composite-scored retrieval of relevant facts and rules.
 
@@ -604,15 +632,18 @@ async def recall(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored. An explicit ``sensitivity``
-            value above ``read_policy``'s ceiling raises
-            ``SensitivityAuthorizationError`` rather than returning an empty list.
+            An unrecognized key raises ``UnknownMemoryFilterError`` before any query
+            runs. An explicit ``sensitivity`` value above ``read_policy``'s ceiling
+            raises ``SensitivityAuthorizationError`` rather than returning an empty list.
         read_policy: Server-held read ceiling. When omitted, loaded from this
             pool's ``runtime_config`` (fail-closed to ``normal`` if unset) —
             the same ceiling ``search_catalog`` uses, generalized to local
             recall. Callers within one context/session assembly (e.g.
             ``memory_context``) should load this once and pass it explicitly
             so every fetch in that assembly agrees on one ceiling.
+        query_embedding: Precomputed embedding of ``topic``. A caller that also needs the
+            vector elsewhere (``memory_context``'s fleet search) embeds once and passes it;
+            when omitted it is computed on a worker thread, never on the event loop.
 
     Returns:
         List of dicts with ``composite_score`` and ``memory_type`` added.
@@ -621,7 +652,10 @@ async def recall(
     Raises:
         SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
             level above ``read_policy``'s ceiling.
+        UnknownMemoryFilterError: If ``filters`` has a key outside the allowlist.
     """
+    _validate_filter_keys(filters)
+
     if read_policy is None:
         read_policy = await load_catalog_read_policy(pool)
 
@@ -636,7 +670,8 @@ async def recall(
         )
 
     allowed_sensitivities = list(read_policy.allowed_sensitivities)
-    query_embedding = embedding_engine.embed(topic)
+    if query_embedding is None:
+        query_embedding = await embed_async(embedding_engine, topic)
 
     # The entity and predicate filters narrow the candidate set in SQL, before the
     # per-source limit; filtering the top-N afterwards would lose rows ranked below it.
@@ -655,6 +690,7 @@ async def recall(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_filter,
         predicate=predicate_filter,
+        memory_schema=memory_schema,
     )
     rules_results = await hybrid_search(
         pool,
@@ -667,6 +703,7 @@ async def recall(
         allowed_sensitivities=allowed_sensitivities,
         entity_id=entity_filter,
         predicate=predicate_filter,
+        memory_schema=memory_schema,
     )
 
     # Tag each result with its memory type
@@ -712,24 +749,51 @@ async def recall(
 
     scored = scored[:limit]
 
-    # Bump reference counts for returned results
-    for r in scored:
-        table = "facts" if r["memory_type"] == "fact" else "rules"
-        await pool.execute(
-            f"UPDATE {table} SET reference_count = reference_count + 1, "
-            f"last_referenced_at = now() WHERE id = $1",
-            r["id"],
-        )
+    await _bump_reference_counts(pool, scored)
 
     return scored
+
+
+async def _bump_reference_counts(pool: Pool, results: list[dict]) -> None:
+    """Count one reference on every returned fact and rule in a single statement.
+
+    Data-modifying CTEs run whether or not their output is read, so one round trip covers
+    both tables (it was one UPDATE per result, ~30 sequential awaits per memory_context).
+    """
+    # Sorted, so every multi-row writer takes row locks in one order and two bumps (or a bump
+    # and a consolidation) cannot deadlock each other.
+    fact_ids = sorted(r["id"] for r in results if r["memory_type"] == "fact")
+    rule_ids = sorted(r["id"] for r in results if r["memory_type"] == "rule")
+    if not fact_ids and not rule_ids:
+        return
+    # Best effort: a deadlock with another multi-row writer must not fail the recall itself.
+    try:
+        await pool.execute(
+            "WITH f AS (UPDATE facts SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($1::uuid[])), "
+            "r AS (UPDATE rules SET reference_count = reference_count + 1, "
+            "last_referenced_at = now() WHERE id = ANY($2::uuid[])) SELECT 1",
+            fact_ids,
+            rule_ids,
+        )
+    except (
+        asyncpg.PostgresError,
+        asyncpg.InterfaceError,
+        OSError,
+        TimeoutError,
+        _RuntimeRoleError,  # Database._setup_connection: SET ROLE failed at acquire
+    ):
+        # Reference counts are bookkeeping, not the answer. A database, connection or role
+        # failure is tolerated; a real bug (TypeError and the like) still surfaces.
+        logger.warning("could not bump memory reference counts", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
 # Structured filters (post-fetch AND conditions)
 # ---------------------------------------------------------------------------
 
-# Keys that are recognized and applied as AND filters.
-# Unrecognized keys are silently ignored per spec.
+# Keys that are recognized and applied as AND filters. Any other key is refused by
+# ``_validate_filter_keys`` so a misspelled key cannot pass for a scoped query.
 _KNOWN_FILTER_KEYS = frozenset(
     {
         "scope",
@@ -757,7 +821,8 @@ def _apply_filters(results: list[dict], filters: dict[str, Any] | None) -> list[
         retention_class — match row['retention_class'] == value
         sensitivity     — match row['sensitivity'] == value
 
-    Unrecognized filter keys are silently ignored.
+    Keys outside ``_KNOWN_FILTER_KEYS`` are refused upstream by ``_validate_filter_keys``;
+    this function skips any it is handed.
     """
     if not filters:
         return results
@@ -844,6 +909,7 @@ async def search(
     tenant_id: str = "shared",
     filters: dict[str, Any] | None = None,
     read_policy: CatalogReadPolicy | None = None,
+    memory_schema: str | None = None,
 ) -> list[dict]:
     """General-purpose search across memory types.
 
@@ -864,9 +930,9 @@ async def search(
         tenant_id: Tenant scope for isolation (default 'shared').
         filters: Optional dict of AND-conditions (scope, entity_id, predicate,
             source_butler, time_from, time_to, retention_class, sensitivity).
-            Unrecognized keys are silently ignored. An explicit ``sensitivity``
-            value above ``read_policy``'s ceiling raises
-            ``SensitivityAuthorizationError``.
+            An unrecognized key raises ``UnknownMemoryFilterError`` before any query
+            runs. An explicit ``sensitivity`` value above ``read_policy``'s ceiling
+            raises ``SensitivityAuthorizationError``.
         read_policy: Server-held read ceiling. When omitted, loaded from this
             pool's ``runtime_config`` (fail-closed to ``normal`` if unset).
 
@@ -877,6 +943,7 @@ async def search(
         ValueError: If mode or types are invalid.
         SensitivityAuthorizationError: If ``filters['sensitivity']`` names a
             level above ``read_policy``'s ceiling.
+        UnknownMemoryFilterError: If ``filters`` has a key outside the allowlist.
     """
     if mode not in _VALID_SEARCH_MODES:
         raise ValueError(f"Invalid mode: {mode!r}. Must be one of {sorted(_VALID_SEARCH_MODES)}")
@@ -889,6 +956,8 @@ async def search(
                 raise ValueError(
                     f"Invalid type: {t!r}. Must be one of {sorted(_VALID_SEARCH_TYPES)}"
                 )
+
+    _validate_filter_keys(filters)
 
     if read_policy is None:
         read_policy = await load_catalog_read_policy(pool)
@@ -907,9 +976,10 @@ async def search(
     all_results: list[dict] = []
 
     # Embed once for semantic/hybrid modes
-    query_embedding = None
+    # (keyword mode never reads the vector, so it is left empty there).
+    query_embedding: list[float] = []
     if mode in ("semantic", "hybrid"):
-        query_embedding = embedding_engine.embed(query)
+        query_embedding = await embed_async(embedding_engine, query)
 
     for mem_type in types:
         table = _TYPE_TO_TABLE[mem_type]
@@ -923,6 +993,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
         elif mode == "keyword":
             results = await keyword_search(
@@ -933,6 +1004,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
         else:  # hybrid
             results = await hybrid_search(
@@ -944,6 +1016,7 @@ async def search(
                 scope=scope,
                 tenant_id=tenant_id,
                 allowed_sensitivities=allowed_sensitivities,
+                memory_schema=memory_schema,
             )
 
         # Tag with memory type
@@ -1026,6 +1099,25 @@ class CatalogReadPolicy(NamedTuple):
     policy_defaulted: bool = False
 
 
+class UnknownMemoryFilterError(ValueError):
+    """Raised when a structured filter dict names a key the search layer does not apply.
+
+    A misspelled key that is dropped returns an unfiltered result set that looks scoped,
+    so the caller (often an LLM) gets a wrong answer presented as a narrowed one.
+    """
+
+
+def _validate_filter_keys(filters: dict[str, Any] | None) -> None:
+    """Refuse a filter dict with a key outside ``_KNOWN_FILTER_KEYS`` before any query runs."""
+    if not filters:
+        return
+    unknown = sorted(str(key) for key in filters if key not in _KNOWN_FILTER_KEYS)
+    if unknown:
+        raise UnknownMemoryFilterError(
+            f"Unknown filter key(s) {unknown!r}. Allowed keys: {sorted(_KNOWN_FILTER_KEYS)!r}"
+        )
+
+
 class SensitivityAuthorizationError(PermissionError):
     """Raised when an explicit sensitivity filter exceeds the caller's read ceiling.
 
@@ -1085,6 +1177,46 @@ def resolve_allowed_sensitivities(max_sensitivity: str) -> list[str]:
     return list(CATALOG_SENSITIVITY_LEVELS[: ceiling + 1])
 
 
+def _lazy_visibility_top_n_sql(
+    *,
+    score_expr: str,
+    score_alias: str,
+    direction: str,
+    conditions: list[str],
+    limit_idx: int,
+    output_expr: str,
+) -> str:
+    """Rank catalog rows cheaply, then run the visibility function only until N pass.
+
+    ``chronicler_catalog_row_visible`` is a per-row PL/pgSQL call (about 0.5 ms each). In
+    a plain ``WHERE`` it runs for every candidate row before the top-N sort, which cost
+    ~4 s per context fetch on a 15k-row catalog (bu-dhloi1.190). Here the cheap predicates
+    and ordering run first over ``(id, score)`` only; the function then filters that
+    ordered stream and ``LIMIT`` stops it after N visible rows. ``MATERIALIZED`` is
+    required: it stops the planner from pushing the volatile function back into the scan.
+    The visible set and its order are unchanged.
+    """
+    visible_check = catalog_projection_visible("memory_catalog")
+    cheap = " AND ".join(c for c in conditions if c != visible_check)
+    return f"""
+        WITH ranked AS MATERIALIZED (
+            SELECT memory_catalog.id, {score_expr} AS {score_alias}
+            FROM public.memory_catalog AS memory_catalog
+            WHERE {cheap}
+            ORDER BY {score_alias} {direction}
+        ), visible AS MATERIALIZED (
+            SELECT memory_catalog.id, memory_catalog.{score_alias}
+            FROM ranked AS memory_catalog
+            WHERE {visible_check}
+            LIMIT ${limit_idx}
+        )
+        SELECT catalog.*, {output_expr}
+        FROM visible
+        JOIN public.memory_catalog AS catalog ON catalog.id = visible.id
+        ORDER BY visible.{score_alias} {direction}
+    """
+
+
 async def _catalog_semantic_search(
     pool: Pool,
     query_embedding: list[float],
@@ -1098,7 +1230,11 @@ async def _catalog_semantic_search(
     embedding_str = str(query_embedding)
     params: list = [embedding_str, tenant_id]
     # Exclude stale entries (superseded / invalidated facts have invalid_at set).
-    conditions = ["tenant_id = $2", "invalid_at IS NULL"]
+    conditions = [
+        "tenant_id = $2",
+        "invalid_at IS NULL",
+        catalog_projection_visible("memory_catalog"),
+    ]
     if memory_type is not None:
         params.append(memory_type)
         conditions.append(f"memory_type = ${len(params)}")
@@ -1109,14 +1245,14 @@ async def _catalog_semantic_search(
     params.append(limit)
     limit_idx = len(params)
 
-    where = "WHERE " + " AND ".join(conditions)
-    sql = f"""
-        SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM public.memory_catalog
-        {where}
-        ORDER BY embedding <=> $1
-        LIMIT ${limit_idx}
-    """
+    sql = _lazy_visibility_top_n_sql(
+        score_expr="memory_catalog.embedding <=> $1",
+        score_alias="distance",
+        direction="ASC",
+        conditions=conditions,
+        limit_idx=limit_idx,
+        output_expr="1 - visible.distance AS similarity",
+    )
     rows = await pool.fetch(sql, *params)
     return [dict(r) for r in rows]
 
@@ -1140,6 +1276,7 @@ async def _catalog_keyword_search(
         "tenant_id = $2",
         # Exclude stale entries (superseded / invalidated facts have invalid_at set).
         "invalid_at IS NULL",
+        catalog_projection_visible("memory_catalog"),
     ]
     if memory_type is not None:
         params.append(memory_type)
@@ -1151,16 +1288,16 @@ async def _catalog_keyword_search(
     params.append(limit)
     limit_idx = len(params)
 
-    where = "WHERE " + " AND ".join(conditions)
-    sql = f"""
-        SELECT *,
-               ts_rank(search_vector,
-                       plainto_tsquery('{_CATALOG_TS_CONFIG}', $1)) AS rank
-        FROM public.memory_catalog
-        {where}
-        ORDER BY rank DESC
-        LIMIT ${limit_idx}
-    """
+    sql = _lazy_visibility_top_n_sql(
+        score_expr=(
+            f"ts_rank(memory_catalog.search_vector, plainto_tsquery('{_CATALOG_TS_CONFIG}', $1))"
+        ),
+        score_alias="rank",
+        direction="DESC",
+        conditions=conditions,
+        limit_idx=limit_idx,
+        output_expr="visible.rank AS rank",
+    )
     rows = await pool.fetch(sql, *params)
     return [dict(r) for r in rows]
 
@@ -1175,6 +1312,7 @@ async def search_catalog(
     limit: int = 10,
     mode: str = "hybrid",
     read_policy: CatalogReadPolicy,
+    _query_embedding: list[float] | None = None,
 ) -> list[dict]:
     """Search ``public.memory_catalog`` for cross-butler memory discovery.
 
@@ -1194,6 +1332,7 @@ async def search_catalog(
         mode: Search mode — 'semantic', 'keyword', or 'hybrid' (default).
         read_policy: Server-held policy loaded from the calling butler's
             runtime config. Callers cannot supply or raise this authority.
+        _query_embedding: Internal precomputed vector; omitted by normal callers.
 
     Returns:
         List of dicts with catalog row fields plus ``similarity`` (semantic),
@@ -1212,7 +1351,9 @@ async def search_catalog(
     keyword_results: list[dict] = []
 
     if mode in ("semantic", "hybrid"):
-        query_embedding = embedding_engine.embed(query)
+        query_embedding = _query_embedding
+        if query_embedding is None:
+            query_embedding = await embed_async(embedding_engine, query)
         semantic_results = await _catalog_semantic_search(
             pool,
             query_embedding,

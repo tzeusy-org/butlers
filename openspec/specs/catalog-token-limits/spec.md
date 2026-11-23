@@ -137,11 +137,16 @@ Scope: v1-mandatory
 - **WHEN** `check_token_quota()` is called
 - **THEN** limits and both window usages are resolved in a single database round-trip (CTE-based query)
 
-#### Scenario: Fail-open on quota check error
+#### Scenario: Fail-closed on quota check error
 - **WHEN** `check_token_quota()` fails due to a database error (timeout, connection refused, missing partition, etc.)
-- **THEN** the function returns `QuotaStatus(allowed=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)`
-- **AND** the failure is logged as a warning with the exception details
-- **AND** the spawn proceeds (fail-open — the guardrail must never become a single point of failure)
+- **THEN** the function returns `QuotaStatus(allowed=False, unavailable=True, usage_24h=0, limit_24h=None, usage_30d=0, limit_30d=None)`
+- **AND** the failure is logged at ERROR with the exception details
+- **AND** the spawner and the model-call kernel record a `quota_skip` attempt whose reason begins `Token quota unavailable`, not an exhausted-window message, and continue their same-tier candidate loop; when every candidate is refused the existing hard block applies
+
+#### Scenario: Fail-closed on monthly ceiling check error
+- **WHEN** `check_monthly_ceiling()` fails reading the ceiling or pricing the ledger
+- **THEN** it returns `CeilingStatus(allowed=False, unavailable=True, mtd_usd=0.0, ceiling_usd=None)` and logs at ERROR
+- **AND** the dispatch is refused with the reason `Monthly spend ceiling unavailable: ...`, which does not begin with the reached-ceiling prefix and raises no fleet-halt, so the Spend page banner keeps meaning a real breach
 
 ### Requirement: Post-Spawn Ledger Recording
 The system SHALL record token usage to the ledger whenever an adapter reports token consumption, regardless of whether the session completed successfully or failed. Tokens are consumed by the upstream API provider on invocation — a failed session still costs tokens and MUST count against the quota.

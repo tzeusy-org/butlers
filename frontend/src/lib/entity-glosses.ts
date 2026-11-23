@@ -62,6 +62,7 @@ export const ENTITY_TYPE_VALUES: readonly EntityType[] = [
   "person",
   "organization",
   "place",
+  "animal",
   "product",
   "account",
   "event",

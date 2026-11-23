@@ -23,15 +23,15 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from butlers.connectors.spotify_client import (
+from butlers.credential_store import resolve_owner_entity_info
+from butlers.modules.base import Module, ToolMeta, guarded_tool
+from butlers.spotify_client import (
     SpotifyAPIError,
     SpotifyAuthError,
     SpotifyClient,
     SpotifyRateLimitError,
     SpotifyTokenRefreshUnavailableError,
 )
-from butlers.credential_store import resolve_owner_entity_info
-from butlers.modules.base import Module, ToolMeta, guarded_tool
 from butlers.spotify_credentials import SPOTIFY_OAUTH_ACCESS, SPOTIFY_OAUTH_REFRESH
 
 logger = logging.getLogger(__name__)

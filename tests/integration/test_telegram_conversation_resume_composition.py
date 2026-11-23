@@ -24,20 +24,166 @@ from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotCon
 from butlers.core import conversation_sessions
 from butlers.core.model_routing import QuotaStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
+from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.spawner import Spawner
 from butlers.core.utils import generate_uuid7_string
+from butlers.testing.tool_host import host_tools
 from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-from tests.daemon.test_route_execute_conversation_anchor import (
-    _make_butler_toml,
-    _NoopLeaseHeartbeat,
-    _patch_infra,
-    _renew_processing_claim_patch,
-    _ResumeRecordingAdapter,
-    _start_daemon_with_route_execute,
-)
 
 pytestmark = pytest.mark.integration
+
+# Daemon harness this composition boots on. These lived in
+# tests/daemon/test_route_execute_conversation_anchor.py until that file moved onto
+# booted_daemon (bu-rvgzmf.2); moving this test onto the kit is bu-rvgzmf.11.
+
+
+class _NoopLeaseHeartbeat:
+    async def __aenter__(self) -> asyncio.Event:
+        return asyncio.Event()
+
+    async def __aexit__(self, *_args: object) -> bool:
+        return False
+
+
+class _ResumeRecordingAdapter(RuntimeAdapter):
+    supports_resume = True
+
+    def __init__(self) -> None:
+        self.invoke_calls: list[str | None] = []
+        self._last_process_info: dict[str, Any] | None = None
+        self.two_invocations = asyncio.Event()
+
+    @property
+    def binary_name(self) -> str:
+        return "mock"
+
+    @property
+    def last_process_info(self) -> dict[str, Any] | None:
+        return self._last_process_info
+
+    async def invoke(self, *_args: Any, **kwargs: Any) -> tuple[str, list, None]:
+        self.invoke_calls.append(kwargs.get("resume_session_id"))
+        if len(self.invoke_calls) == 2:
+            self.two_invocations.set()
+        self._last_process_info = {
+            "runtime_type": DEFAULT_RUNTIME_TYPE,
+            "provider_session_id": "provider-session-from-first-turn",
+        }
+        return "ok", [], None
+
+    async def reset(self) -> None:
+        return None
+
+    def build_config_file(self, _mcp_servers: dict[str, Any], tmp_dir: Path) -> Path:
+        config_file = tmp_dir / "runtime.json"
+        config_file.write_text("{}")
+        return config_file
+
+    def parse_system_prompt_file(self, _config_dir: Path) -> str:
+        return ""
+
+
+def _make_butler_toml(tmp_path: Path, *, butler_name: str = "health", port: int = 9200) -> Path:
+    toml_lines = [
+        "[butler]",
+        f'name = "{butler_name}"',
+        f"port = {port}",
+        'description = "A test butler"',
+        "",
+        "[butler.db]",
+        'name = "butlers"',
+        f'schema = "{butler_name}"',
+        "",
+        "[[butler.schedule]]",
+        'name = "daily-check"',
+        'cron = "0 9 * * *"',
+        'prompt = "Do the daily check"',
+    ]
+    (tmp_path / "butler.toml").write_text("\n".join(toml_lines))
+    return tmp_path
+
+
+def _patch_infra(butler_name: str = "health"):
+    """A DB-free pool and spawner for the host."""
+    mock_pool = AsyncMock()
+    mock_pool.fetchval.return_value = None
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    transaction_depth = 0
+
+    async def enter_transaction():
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc):
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=mock_conn)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = MagicMock(return_value=acquisition)
+
+    async def runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": butler_name,
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow.side_effect = runtime_row
+    mock_spawner = MagicMock()
+    mock_spawner.stop_accepting = MagicMock()
+    mock_spawner.drain = AsyncMock()
+
+    return {
+        "mock_pool": mock_pool,
+        "mock_spawner": mock_spawner,
+    }
+
+
+async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
+    """The butler's real route.execute on a DB-free host, with no boot (bu-rvgzmf.11).
+
+    The subject is the composition of two ingests through route.execute, not the
+    boot; the spawner is the test's own.
+    """
+    from fastmcp import FastMCP
+
+    host = await host_tools(butler_dir, pool=patches["mock_pool"])
+    daemon = host.daemon
+    # route.execute binds the spawner when it registers, so register once it is set,
+    # in startup's order.
+    daemon.spawner = patches["mock_spawner"]
+    daemon.mcp = FastMCP(daemon.config.name)
+    daemon._register_core_tools()
+    return daemon, await host.tool("route.execute")
+
+
+def _renew_processing_claim_patch():
+    """Keep route tests focused on routing rather than the DB lease primitive."""
+    return patch(
+        "butlers.core.route_inbox.route_inbox_renew_processing_claim",
+        new_callable=AsyncMock,
+        return_value=True,
+    )
 
 
 def _update(update_id: int, message_id: int, text: str) -> dict[str, Any]:

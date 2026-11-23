@@ -7,7 +7,14 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
+from butlers.core.goal_lineage import conditional_for, current_lineage
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
+from butlers.modules.approvals.execution_context import get_approval_execution_context
+from butlers.modules.calendar_approval import (
+    calendar_approval_args,
+    calendar_approval_datetime,
+    calendar_supplied_args,
+)
 
 from .constants import (
     MUTATION_STATUS_APPLIED,
@@ -18,7 +25,7 @@ from .constants import (
     CalendarConflictPolicy,
     logger,
 )
-from .errors import CalendarAuthError, _build_structured_error
+from .errors import CalendarAuthError, CalendarRequestError, _build_structured_error
 from .models import (
     CalendarEventCreate,
     CalendarEventUpdate,
@@ -26,9 +33,19 @@ from .models import (
     EventStatus,
     EventVisibility,
 )
+from .party import gate_calendar_party_mutation
+from .replan import REPLAN_MOVE, declined, movable, move_only, undo_receipt
+from .replan_undo import UNDO_DECLINED, UNDO_DECLINED_TEXT, replan_undo_ledger, undo_refusal
 
 if TYPE_CHECKING:
     from . import CalendarModule
+
+
+def _create_boundary(value: date | datetime | str) -> date | datetime:
+    """Restore a replayed ISO boundary; a bare date stays an all-day date."""
+    if not isinstance(value, str):
+        return value
+    return date.fromisoformat(value) if len(value) == 10 else datetime.fromisoformat(value)
 
 
 def register_event_tools(
@@ -64,12 +81,46 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        # An approved overlap replay passes the parked ISO strings back in.
+        start_at = _create_boundary(start_at)
+        end_at = _create_boundary(end_at)
+        if isinstance(notification, dict):
+            notification = CalendarNotificationInput.model_validate(notification)
         await module._require_calendar_write_permission()
         provider = module._require_provider()
         resolved_calendar_id = module._resolve_calendar_id(calendar_id, for_create=True)
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
         resolved_entity_ids = entity_ids or []
+        # The exact call an overlap approval parks; replaying it rebuilds the
+        # same dict, so only the executor's context for it opens the gate.
+        overlap_args = {
+            "title": title,
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "all_day": all_day,
+            "timezone": timezone,
+            "description": description,
+            "body": body,
+            "location": location,
+            "attendees": attendees or [],
+            "recurrence_rule": recurrence_rule,
+            # Park the structured form; a str(model) cannot be validated back.
+            "notification": (
+                notification.model_dump(mode="json")
+                if isinstance(notification, CalendarNotificationInput)
+                else notification
+            ),
+            "status": status,
+            "visibility": visibility,
+            "notes": notes,
+            "color_id": color_id,
+            # Bind the calendar the owner is shown, not "resolve later".
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+            "entity_ids": [str(e) for e in resolved_entity_ids],
+            "request_id": request_id,
+        }
         action_payload = {
             "title": title,
             "start_at": start_at,
@@ -93,6 +144,8 @@ def register_event_tools(
             action_type="workspace_user_create",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -101,6 +154,22 @@ def register_event_tools(
             lane="user",
             calendar_id=resolved_calendar_id,
         )
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
+            attendees=attendees or [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_create",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=None,
+        )
+        if party_gate is not None:
+            return party_gate
 
         try:
             create_payload = CalendarEventCreate(
@@ -179,26 +248,7 @@ def register_event_tools(
         if conflict_result["status"] == "allow_overlap":
             approval_result = await module._gate_overlap_approval(
                 tool_name="calendar_create_event",
-                tool_args={
-                    "title": title,
-                    "start_at": start_at.isoformat(),
-                    "end_at": end_at.isoformat(),
-                    "all_day": all_day,
-                    "timezone": timezone,
-                    "description": description,
-                    "body": body,
-                    "location": location,
-                    "attendees": attendees or [],
-                    "recurrence_rule": recurrence_rule,
-                    "notification": notification,
-                    "status": status,
-                    "visibility": visibility,
-                    "notes": notes,
-                    "color_id": color_id,
-                    "calendar_id": calendar_id,
-                    "conflict_policy": resolved_conflict_policy,
-                    "entity_ids": [str(e) for e in resolved_entity_ids],
-                },
+                tool_args=overlap_args,
                 conflicts=conflict_result["conflicts"],
                 provider_name=provider.name,
                 resolved_calendar_id=resolved_calendar_id,
@@ -313,7 +363,6 @@ def register_event_tools(
         entity_ids: list[uuid.UUID] | None = None,
         clear_entity_ids: bool = False,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Update an event and preserve Butler tags for Butler-generated entries.
 
@@ -331,6 +380,40 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event",
+            event_id=event_id,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            all_day=all_day,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            attendees=attendees,
+            recurrence_rule=recurrence_rule,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            color_id=color_id,
+            calendar_id=calendar_id,
+            conflict_policy=conflict_policy,
+            entity_ids=entity_ids,
+            clear_entity_ids=clear_entity_ids,
+            request_id=request_id,
+        )
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
+        instance_start_at = calendar_approval_datetime(instance_start_at)
+        # RFC 0038 D13 replan exception: a broker-forwarded conditional move.
+        # Unmet, nothing is written and the broker parks the call as before.
+        condition = conditional_for("calendar_update_event")
+        replan = condition is not None
+        if replan and (
+            condition != REPLAN_MOVE
+            or not move_only(calendar_supplied_args("calendar_update_event", approval_args))
+        ):
+            return declined("not_a_move", event_id=event_id, calendar_id=calendar_id)
         if clear_entity_ids and entity_ids != []:
             raise ValueError("clear_entity_ids requires entity_ids=[]")
         if recurrence_scope != "series":
@@ -354,7 +437,7 @@ def register_event_tools(
                 clear_entity_ids=clear_entity_ids,
                 request_id=request_id,
                 tool_name="calendar_update_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -367,6 +450,13 @@ def register_event_tools(
         )
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
+        # The canonical call an overlap approval parks, with the calendar and
+        # policy the owner is shown bound in; replay rebuilds the same dict.
+        overlap_args = {
+            **approval_args,
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+        }
         action_payload = {
             "event_id": normalized_event_id,
             "title": title,
@@ -390,6 +480,8 @@ def register_event_tools(
             action_type="workspace_user_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -412,23 +504,47 @@ def register_event_tools(
                 exc,
                 exc_info=True,
             )
-            error_payload = _build_structured_error(
-                exc,
-                provider=provider.name,
-                calendar_id=resolved_calendar_id,
+            if replan:
+                existing_event = None
+            else:
+                error_payload = _build_structured_error(
+                    exc,
+                    provider=provider.name,
+                    calendar_id=resolved_calendar_id,
+                )
+                await module._finalize_workspace_mutation(
+                    idempotency_key=idempotency_key,
+                    action_type="workspace_user_update",
+                    request_id=normalized_request_id,
+                    action_status=MUTATION_STATUS_FAILED,
+                    action_payload=action_payload,
+                    action_result=error_payload,
+                    source_id=source_id,
+                    origin_ref=normalized_event_id,
+                    error=error_payload.get("error"),
+                )
+                return error_payload
+
+        async def decline(reason: str) -> dict[str, Any]:
+            """A conditional move that wrote nothing: recorded as a no-op, then parked."""
+            declined_result = declined(
+                reason, event_id=normalized_event_id, calendar_id=resolved_calendar_id
             )
             await module._finalize_workspace_mutation(
                 idempotency_key=idempotency_key,
                 action_type="workspace_user_update",
                 request_id=normalized_request_id,
-                action_status=MUTATION_STATUS_FAILED,
+                action_status=MUTATION_STATUS_NOOP,
                 action_payload=action_payload,
-                action_result=error_payload,
+                action_result=declined_result,
                 source_id=source_id,
                 origin_ref=normalized_event_id,
-                error=error_payload.get("error"),
             )
-            return error_payload
+            return declined_result
+
+        if replan and (reason := movable(existing_event)) is not None:
+            # Checked against the provider's copy, never the model's arguments.
+            return await decline(reason)
         if existing_event is None:
             not_found_result = {
                 "status": "not_found",
@@ -447,6 +563,80 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
             )
             return not_found_result
+
+        # The owner's approved undo of a replan move (bu-4c7nvp.1.12): bound to the
+        # version the move left, so a block changed since is never moved back over.
+        undo_ledger = None if replan else replan_undo_ledger(module)
+        undo_offer = None
+        if undo_ledger is not None:
+            approval = get_approval_execution_context(
+                tool_name="calendar_update_event", tool_args=overlap_args
+            )
+            if approval is not None:
+                undo_offer = await undo_ledger.for_card(approval.action_id)
+        undo = undo_offer is not None
+
+        async def decline_undo(reason: str) -> dict[str, Any]:
+            """An approved undo that wrote nothing: the event is not what the move left."""
+            # ``error`` makes the approvals executor record a failed execution, so the
+            # owner's card never reads as executed when nothing moved.
+            undo_declined = {
+                "status": UNDO_DECLINED,
+                "reason": reason,
+                "error": UNDO_DECLINED_TEXT[reason],
+                "event_id": normalized_event_id,
+                "calendar_id": resolved_calendar_id,
+            }
+            await module._finalize_workspace_mutation(
+                idempotency_key=idempotency_key,
+                action_type="workspace_user_update",
+                request_id=normalized_request_id,
+                action_status=MUTATION_STATUS_NOOP,
+                action_payload=action_payload,
+                action_result=undo_declined,
+                source_id=source_id,
+                origin_ref=normalized_event_id,
+            )
+            return undo_declined
+
+        undo_refused = undo_refusal(undo_offer, existing_event) if undo_offer else None
+        if undo_refused is not None:
+            return await decline_undo(undo_refused)
+
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
+            attendees=[a.email for a in existing_event.attendees] + (attendees or []),
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_update",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_update_event",
+            action_type="workspace_user_update",
+            tool_args=overlap_args,
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
 
         normalized_title = title.strip() if isinstance(title, str) else None
         update_title = normalized_title
@@ -518,6 +708,9 @@ def register_event_tools(
                     exc,
                     exc_info=True,
                 )
+                if replan:
+                    # Nothing was written: a slot that cannot be checked is the owner's call.
+                    return await decline("conflict_check_unavailable")
                 error_payload = _build_structured_error(
                     exc,
                     provider=provider.name,
@@ -535,6 +728,9 @@ def register_event_tools(
                     error=error_payload.get("error"),
                 )
                 return error_payload
+            if replan and conflict_result["conflicts"]:
+                # A move onto anything else on the calendar is the owner's call.
+                return await decline("conflicts")
             if conflict_result["status"] == "conflict":
                 conflict_response = {
                     "status": "conflict",
@@ -560,27 +756,7 @@ def register_event_tools(
             if conflict_result["status"] == "allow_overlap":
                 approval_result = await module._gate_overlap_approval(
                     tool_name="calendar_update_event",
-                    tool_args={
-                        "event_id": event_id,
-                        "title": title,
-                        "start_at": start_at.isoformat() if start_at else None,
-                        "end_at": end_at.isoformat() if end_at else None,
-                        "all_day": all_day,
-                        "timezone": timezone,
-                        "description": description,
-                        "body": body,
-                        "location": location,
-                        "attendees": attendees,
-                        "recurrence_rule": recurrence_rule,
-                        "recurrence_scope": recurrence_scope,
-                        "color_id": color_id,
-                        "calendar_id": calendar_id,
-                        "conflict_policy": resolved_conflict_policy,
-                        "entity_ids": (
-                            [str(e) for e in entity_ids] if entity_ids is not None else None
-                        ),
-                        "clear_entity_ids": clear_entity_ids,
-                    },
+                    tool_args=overlap_args,
                     conflicts=conflict_result["conflicts"],
                     provider_name=provider.name,
                     resolved_calendar_id=resolved_calendar_id,
@@ -614,6 +790,9 @@ def register_event_tools(
             private_metadata=private_metadata,
             entity_ids=entity_ids,
             etag=existing_event.etag,
+            # A conditional move's (or its undo's) etag-bound write is sent once, so a 412
+            # can only mean the event changed before it; a 503 stays an error.
+            single_attempt=replan or undo,
         )
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
@@ -625,6 +804,39 @@ def register_event_tools(
             resolved_calendar_id,
             entity_ids=pre_state_entity_ids,
         )
+        undo_offer_opened = None
+        replan_ledger = None
+        if replan:
+            # The owner's receipt must exist before the move may skip a park.
+            replan_ledger = replan_undo_ledger(module)
+            lineage = current_lineage()
+            goal_id = lineage.goal_id if lineage is not None else None
+            if replan_ledger is None or goal_id is None or not await replan_ledger.available():
+                return await decline("undo_unavailable")
+            # Fail-closed: the owner's card is parked before the write, so any move that
+            # might land has its undo; no card, no write. The earliest pre-image this goal
+            # recorded for the event wins: a retry after a failed-but-committed move reads
+            # the moved event (#5767 review N3).
+            intended = {
+                "start_at": (start_at or existing_event.start_at).isoformat(),
+                "end_at": (end_at or existing_event.end_at).isoformat(),
+            }
+            try:
+                undo_offer_opened = await replan_ledger.open(
+                    goal_id=goal_id,
+                    event_id=normalized_event_id,
+                    calendar_id=resolved_calendar_id,
+                    pre_state=pre_state,
+                    intended=intended,
+                    conflict_policy=resolved_conflict_policy,
+                )
+            except Exception:
+                logger.warning(
+                    "calendar replan undo card could not be parked (event_id=%s)",
+                    normalized_event_id,
+                    exc_info=True,
+                )
+                return await decline("undo_unavailable")
         try:
             event = await provider.update_event(
                 calendar_id=resolved_calendar_id,
@@ -639,6 +851,17 @@ def register_event_tools(
                 exc,
                 exc_info=True,
             )
+            refused = isinstance(exc, CalendarRequestError) and exc.status_code == 412
+            if replan and refused:
+                # The etag-bound write was refused: the event changed since the check, and
+                # nothing was written. The broker parks it; the card this attempt opened is
+                # cancelled as "nothing happened" and no pre-image is kept. Any other
+                # failure keeps the card: the move may have landed.
+                if replan_ledger is not None and undo_offer_opened is not None:
+                    await replan_ledger.discard(undo_offer_opened)
+                return await decline("changed_since_check")
+            if undo and refused:
+                return await decline_undo("changed_since_move")
             error_payload = _build_structured_error(
                 exc,
                 provider=provider.name,
@@ -662,7 +885,22 @@ def register_event_tools(
                 origin_ref=normalized_event_id,
                 error=error_payload.get("error"),
             )
+            if replan:
+                # A conditional move answers committed, declined or an error result, never a
+                # plain one: the forwarder records any plain result as a committed effect.
+                raise exc
             return error_payload
+        if replan and replan_ledger is not None and undo_offer_opened is not None:
+            # Bind the card to the version the move left before anything else can fail.
+            # A failed bind leaves it unbound; the intended times then bind the undo.
+            try:
+                await replan_ledger.commit(undo_offer_opened, moved=module._event_to_payload(event))
+            except Exception:
+                logger.warning(
+                    "calendar replan undo could not record the moved etag (event_id=%s)",
+                    normalized_event_id,
+                    exc_info=True,
+                )
         # Annotate updated event with authorship and body.
         session_id_str = _get_session_id()
         event = event.model_copy(
@@ -696,6 +934,12 @@ def register_event_tools(
         # can reverse-apply an inverse calendar_update_event. It reuses the
         # already-fetched provider event plus its local projection links.
         result["pre_state"] = pre_state
+        if replan and replan_ledger is not None and undo_offer_opened is not None:
+            # The owner's receipt, parked before the write and bound right after it.
+            result["undo"] = {
+                **undo_receipt(undo_offer_opened.pre_state),
+                "action_id": str(undo_offer_opened.action_id),
+            }
         await module._finalize_workspace_mutation(
             idempotency_key=idempotency_key,
             action_type="workspace_user_update",
@@ -716,13 +960,13 @@ def register_event_tools(
         instance_start_at: datetime | None = None,
         send_updates: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete or cancel a calendar event.
 
         For events with attendees, pass send_updates="all" to send
-        cancellation notifications.  By default (send_updates=None),
-        no notification emails are sent.
+        cancellation notifications. ``send_updates="none"`` explicitly suppresses
+        notifications. The omitted provider policy is treated as unknown and
+        requires approval when the event has non-owner attendees.
 
         ``recurrence_scope`` controls how a recurring event is deleted:
         ``series`` (default) removes the whole series; ``this`` removes only
@@ -734,6 +978,16 @@ def register_event_tools(
         Returns status="deleted" on success, or status="not_found" when
         the event did not exist (already deleted — treated as success).
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event",
+            event_id=event_id,
+            calendar_id=calendar_id,
+            recurrence_scope=recurrence_scope,
+            instance_start_at=instance_start_at,
+            send_updates=send_updates,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         if recurrence_scope != "series":
             return await module._apply_occurrence_delete(
                 event_id=event_id,
@@ -743,7 +997,7 @@ def register_event_tools(
                 send_updates=send_updates,
                 request_id=request_id,
                 tool_name="calendar_delete_event",
-                approval_bypass=_approval_bypass,
+                approval_args=approval_args,
             )
         await module._require_calendar_write_permission()
         normalized_event_id = event_id.strip()
@@ -765,6 +1019,8 @@ def register_event_tools(
             action_type="workspace_user_delete",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_delete_event",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
         )
         if replay is not None:
             return replay
@@ -821,6 +1077,41 @@ def register_event_tools(
             )
             return result
 
+        party_gate = await gate_calendar_party_mutation(
+            module,
+            tool_name="calendar_delete_event",
+            tool_args=approval_args,
+            attendees=[a.email for a in existing_event.attendees] if send_updates != "none" else [],
+            calendar_id=resolved_calendar_id,
+            action_type="workspace_user_delete",
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            source_id=source_id,
+            origin_ref=normalized_event_id,
+            snapshot_etag=existing_event.etag,
+        )
+        if party_gate is not None:
+            return party_gate
+
+        gate = await module._maybe_gate_recurrence_impact(
+            tool_name="calendar_delete_event",
+            action_type="workspace_user_delete",
+            tool_args={**approval_args, "calendar_id": resolved_calendar_id},
+            request_id=normalized_request_id,
+            idempotency_key=idempotency_key,
+            action_payload=action_payload,
+            recurrence_scope="series",
+            occurrences_touched=module._count_scope_occurrences(
+                event=existing_event,
+                recurrence_scope="series",
+                occurrence_start=existing_event.start_at,
+            ),
+            resolved_calendar_id=resolved_calendar_id,
+        )
+        if gate is not None:
+            return gate
+
         pre_state_entity_ids = await module._fetch_pre_state_entity_ids(
             source_id=source_id,
             origin_ref=normalized_event_id,
@@ -836,6 +1127,7 @@ def register_event_tools(
                 calendar_id=resolved_calendar_id,
                 event_id=normalized_event_id,
                 send_updates=send_updates,
+                **({"etag": existing_event.etag} if existing_event.etag is not None else {}),
             )
         except CalendarAuthError as exc:
             await module._emit_calendar_audit(
@@ -911,7 +1203,6 @@ def register_event_tools(
         calendar_id: str | None = None,
         entity_ids: list[uuid.UUID] | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Edit a single occurrence (or this-and-following) of a recurring event.
 
@@ -922,6 +1213,25 @@ def register_event_tools(
         series at the boundary and applies the edit to the remainder.  The
         matching ``calendar_event_instances`` row is marked ``is_exception``.
         """
+        approval_args = calendar_approval_args(
+            "calendar_update_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            title=title,
+            start_at=start_at,
+            end_at=end_at,
+            timezone=timezone,
+            description=description,
+            body=body,
+            location=location,
+            recurrence_scope=recurrence_scope,
+            calendar_id=calendar_id,
+            entity_ids=entity_ids,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
+        start_at = calendar_approval_datetime(start_at)
+        end_at = calendar_approval_datetime(end_at)
         return await module._apply_occurrence_update(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -939,7 +1249,7 @@ def register_event_tools(
             entity_ids=entity_ids,
             request_id=request_id,
             tool_name="calendar_update_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )
 
     @_tool("core")
@@ -950,7 +1260,6 @@ def register_event_tools(
         send_updates: str | None = None,
         calendar_id: str | None = None,
         request_id: str | None = None,
-        _approval_bypass: bool = False,
     ) -> dict[str, Any]:
         """Delete a single occurrence (or this-and-following) of a recurring event.
 
@@ -962,6 +1271,16 @@ def register_event_tools(
         ``is_exception`` (status cancelled).  A non-existent base event surfaces
         a fail-open not-found response.
         """
+        approval_args = calendar_approval_args(
+            "calendar_delete_event_instance",
+            event_id=event_id,
+            instance_start_at=instance_start_at,
+            recurrence_scope=recurrence_scope,
+            send_updates=send_updates,
+            calendar_id=calendar_id,
+            request_id=request_id,
+        )
+        instance_start_at = calendar_approval_datetime(instance_start_at)
         return await module._apply_occurrence_delete(
             event_id=event_id,
             instance_start_at=instance_start_at,
@@ -970,5 +1289,5 @@ def register_event_tools(
             send_updates=send_updates,
             request_id=request_id,
             tool_name="calendar_delete_event_instance",
-            approval_bypass=_approval_bypass,
+            approval_args=approval_args,
         )

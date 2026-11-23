@@ -7,6 +7,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime
 
+import asyncpg
 import pytest
 
 # Skip all tests in this module if Docker is not available
@@ -19,20 +20,11 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    """Provision a trusted core + Switchboard migration topology."""
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """A trusted core + Switchboard migration topology."""
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
 def _build_ingest_envelope(
@@ -70,18 +62,18 @@ def _build_ingest_envelope(
 
 
 @pytest.mark.integration
-async def test_ingest_persists_null_for_missing_attachments(pool):
+async def test_ingest_persists_null_for_missing_attachments(switchboard_pool):
     """When attachments field is missing, NULL is persisted to message_inbox."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
     envelope = _build_ingest_envelope(text="Message without attachments")
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
     assert not response.duplicate
 
     # Verify database row has NULL attachments
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT attachments FROM message_inbox WHERE id = $1",
         response.request_id,
     )
@@ -91,7 +83,7 @@ async def test_ingest_persists_null_for_missing_attachments(pool):
 
 
 @pytest.mark.integration
-async def test_ingest_persists_null_for_empty_attachments(pool):
+async def test_ingest_persists_null_for_empty_attachments(switchboard_pool):
     """When attachments is an empty list, NULL is persisted (not empty array)."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
@@ -99,12 +91,12 @@ async def test_ingest_persists_null_for_empty_attachments(pool):
         text="Message with empty attachments",
         attachments=[],
     )
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
 
     # Verify database row has NULL (not [])
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT attachments FROM message_inbox WHERE id = $1",
         response.request_id,
     )
@@ -115,7 +107,7 @@ async def test_ingest_persists_null_for_empty_attachments(pool):
 
 
 @pytest.mark.integration
-async def test_ingest_persists_valid_attachments(pool):
+async def test_ingest_persists_valid_attachments(switchboard_pool):
     """When attachments are provided, they are persisted as JSONB array."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
@@ -132,12 +124,12 @@ async def test_ingest_persists_valid_attachments(pool):
             }
         ],
     )
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
 
     # Verify database row has attachments as JSONB
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT attachments FROM message_inbox WHERE id = $1",
         response.request_id,
     )
@@ -164,7 +156,7 @@ async def test_ingest_persists_valid_attachments(pool):
 
 
 @pytest.mark.integration
-async def test_ingest_persists_multiple_attachments(pool):
+async def test_ingest_persists_multiple_attachments(switchboard_pool):
     """Multiple attachments are persisted as JSONB array."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
@@ -187,12 +179,12 @@ async def test_ingest_persists_multiple_attachments(pool):
             },
         ],
     )
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
 
     # Verify database row
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT attachments FROM message_inbox WHERE id = $1",
         response.request_id,
     )
@@ -223,17 +215,17 @@ async def test_ingest_persists_multiple_attachments(pool):
 
 
 @pytest.mark.integration
-async def test_ingest_persists_sender_display_name(pool):
+async def test_ingest_persists_sender_display_name(switchboard_pool):
     """sender.display_name round-trips into ingestion_events.source_sender_display_name (bu-vs9cr)."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
     envelope = _build_ingest_envelope(text="Named sender")
     envelope["sender"]["display_name"] = "John Doe"
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT source_sender_display_name FROM public.ingestion_events WHERE id = $1",
         response.request_id,
     )
@@ -242,16 +234,16 @@ async def test_ingest_persists_sender_display_name(pool):
 
 
 @pytest.mark.integration
-async def test_ingest_persists_null_display_name_when_absent(pool):
+async def test_ingest_persists_null_display_name_when_absent(switchboard_pool):
     """An envelope with no sender.display_name persists NULL (historical/other ingress)."""
     from butlers.tools.switchboard.ingestion.ingest import ingest_v1
 
     envelope = _build_ingest_envelope(text="Anonymous sender")
-    response = await ingest_v1(pool, envelope)
+    response = await ingest_v1(switchboard_pool, envelope)
 
     assert response.status == "accepted"
 
-    row = await pool.fetchrow(
+    row = await switchboard_pool.fetchrow(
         "SELECT source_sender_display_name FROM public.ingestion_events WHERE id = $1",
         response.request_id,
     )

@@ -21,7 +21,12 @@ The root ``conftest.py`` exposes them as fixtures:
     A core-chain pool, the common case.
 ``fresh_db``
     Sync factory returning a URL, for migration-subject tests:
-    ``url = fresh_db("core", revisions={"core": "core_170"})``.
+    ``url = fresh_db("core", revisions={"core": "core_170"})``. Call it from sync
+    fixtures and tests only: on a cold template it migrates with ``asyncio.run``,
+    which fails inside a running event loop (an async fixture); use ``db`` there.
+
+Code under test that takes a dashboard ``DatabaseManager`` gets one from
+:func:`butlers.testing.db_manager.db_manager` over these pools.
 
 As with :func:`~butlers.testing.migration.create_migrated_test_db`, a chain
 migrates into ``public`` unless ``schemas`` maps it to a schema, for example

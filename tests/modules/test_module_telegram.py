@@ -39,6 +39,10 @@ def _allow_effects_for_provider_tests(request, monkeypatch):
         monkeypatch.setattr(
             "butlers.modules.telegram.require_permission", AsyncMock(return_value=None)
         )
+    # The endpoint custody fence has its own refusal tests (tests/core/test_custody_egress.py).
+    monkeypatch.setattr(
+        "butlers.modules.telegram.require_custody_clear", AsyncMock(return_value=None)
+    )
 
 
 EXPECTED_TELEGRAM_TOOLS = {

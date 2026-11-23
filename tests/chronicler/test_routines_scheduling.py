@@ -122,7 +122,7 @@ async def test_chronicler_module_registers_routines_mine_default_schedule(monkey
     async def _fake_ensure(pool, **kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure)
 
     module = _load_chronicler_module()
     fake_db = AsyncMock()
@@ -144,7 +144,7 @@ async def test_chronicler_module_uses_public_schema_for_legacy_database(monkeypa
     async def _fake_ensure(pool, **kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure)
 
     module = _load_chronicler_module()
     legacy_db = SimpleNamespace(
@@ -169,7 +169,7 @@ async def test_chronicler_module_schedule_failure_is_best_effort(monkeypatch) ->
     async def _flaky_ensure(pool, **kwargs):
         raise RuntimeError("scheduled_tasks not migrated yet")
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _flaky_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _flaky_ensure)
 
     module = _load_chronicler_module()
     fake_db = AsyncMock()
@@ -187,7 +187,7 @@ async def test_chronicler_module_on_startup_registers_schedule(monkeypatch) -> N
     async def _fake_ensure(pool, **kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure)
 
     module = _load_chronicler_module()
     fake_db = AsyncMock()

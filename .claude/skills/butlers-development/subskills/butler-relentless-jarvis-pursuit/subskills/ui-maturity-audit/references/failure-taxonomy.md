@@ -179,7 +179,9 @@ path moves). Rules for consuming and maintaining it:
     `ConnectorDetailView.tsx:752-763` pads by position over `ingestion_connectors.py:548-575`, which
     returns only non-empty hours; `ingestion_connectors.py:173-177,188-192` default liveness fields to
     0. (Positional placement and clock labels fixed 2026-11-02 by bu-s11n0s.5 S1: dense keyed
-    server buckets, `lib/bucket-series.ts`, relative labels. Liveness defaults still open.)
+    server buckets, `lib/bucket-series.ts`, relative labels. S2 replaced the liveness defaults with
+    a heartbeat-derived `live | deaf | unknown` state per bucket, hatched when deaf. The lint ban is
+    still open.)
     *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
     in shape from a measured zero, and a lint ban on positional zero-fill.
 

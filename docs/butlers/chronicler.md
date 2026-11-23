@@ -68,6 +68,36 @@ The generic balance API retains its zero-filled response shape.
   raise `feeder_dark` (`flags.is_source_configured_absent`). It still gates the behavioral flags
   that depend on it, so a missing sleep feeder never produces `sleep_missing`. A source that fed
   the chronicler before and then went inactive, or any inactive required source, is still dark.
+- **Retired sources are not outages, and availability is frozen per day.** A source declared
+  retired in `contracts.INITIAL_SOURCES` (`retired_at`, seeded to `source_adapter_state`;
+  `health.meals` since 2026-08-13) never raises `feeder_dark` from that date, though it still
+  gates the behavioral flags that depend on it. `chronicler_rollup_daily` records each closed
+  local day's source availability once, in the append-only `day_source_availability` table
+  (`available | dark | configured_absent | retired`), on its first run after the day closes
+  (within 36 hours). Flags read that record instead of current state, so a source that recovers
+  no longer erases the days it was down. A closed day with no record past the horizon reports
+  `historical_health_unknown` and its flags are left as they were. The feeder-dark flag detail
+  lists `dark_sources`, `retired_sources` and `configured_absent_sources`. Each run also drops a
+  retired source from past `feeder_dark` flags dated on or after its `retired_at` (idempotent;
+  `corrected_by = 'retired_source'`); every correction, including a flag deleted because the
+  retired source was its only dark one, is first logged in the append-only
+  `retired_flag_corrections` with the original severity and detail. `day_source_availability` and
+  `retired_flag_corrections` also refuse `TRUNCATE`. `daily_repair_days.availability_snapshot` is
+  superseded by the table and unused.
+- **Narration is gated per lane, not per day.** The once-daily labeling pass reads the frozen
+  availability record. A lane is uncaptured when every source feeding it was dark, retired or
+  configured-absent that day. The pass skips only for `no_rollup_data`, `all_lanes_dark` or
+  `availability_unknown` (no snapshot); a `feeder_dark` flag alone no longer skips the day. The
+  prompt lists `uncaptured_lanes` and forbids describing activity or its absence there, and
+  `parse_narration_response` rejects a summary pairing a negation with a keyword of such a lane
+  (`llm_output_invalid`). Re-narrating past days is not done here (bu-uhbhzq.12).
+- **Day-close unknowns name uncaptured lanes.** `owner_day.unknowns` gains one line per
+  uncaptured lane ("Meals not captured (source retired since 13 Aug)"), stored every day and
+  carrying no source identity. `owner_day.recap_mention` lists the lines the delivered recap may
+  mention: a dark lane on its first dark day and weekly after, a retired lane once. One SQL query reads the
+  frozen days to compute a lane's streak in calendar days, with no cutoff; a day with no snapshot
+  neither counts nor resets it. Both the `chronicler_day_close_bundle` tool and the day-close
+  cache pass them, and the day-close prompt mentions a gap only through `recap_mention`.
 - **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
   usual, so a long night never yields both "slept more than usual" and "debt building".
 - **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to
@@ -113,6 +143,42 @@ release is incomplete or closes the shared pool underneath retained work.
 Local software controls do not establish real PostgreSQL, model/provider or
 owner-delivery outcomes; those require their source-bound hosted evidence.
 
+### Where the owner was: anchors and situational blocks (bu-r3fmja)
+
+OwnTracks reports sparsely and goes silent while the phone is still, so place clustering bridges a
+silent gap of up to 16 h at the same place, and a silent stay ends at the departure fix
+(`owntracks_place_cluster.py`, REQ-butler-chronicler-014). `place_episode` rows are `evidence`:
+they say where the owner was and never count on their own.
+
+`chronicler.situation_inferred` (`adapters/situation.py`, pure rules in `situation.py`) turns those
+stays into counted blocks every 30 minutes, re-deriving the last 3 owner-local days:
+
+- An **anchor** decides the lane (`anchors.py`). Per kind, the first source with one wins: the owner
+  place registry (`public.owner_places`), then the memory graph, then `OWNTRACKS_PLACE_REFERENCES`,
+  then (home only) the place most often occupied at 03:00 over 28 days. Work is never inferred.
+- In the **graph**, work is the geocoded `has-address` of the organisation the owner `works-at`;
+  home is the owner's own `has-address`, else the address of the place they `rental-location` /
+  `lives-at`. Relationship geocodes those addresses into `relationship.address_geocodes`; a geocode
+  counts only while its hash matches the address text. To register work, tell Relationship
+  "I work at <Org>; <Org>'s address is <address>".
+- **Blocks:** work anchor → `work_presence_block` (Work), home → `home_block` (Rest), airport →
+  `airport_block` (Travel), anywhere else within 50 km of home → `outing_block` (Social). Farther
+  away is a trip and gets no block.
+- **Precedence:** each block is its stay minus every higher-ranked lane's activity (sleep >
+  exercise > travel > work > play > eat > social > rest) and every owner gap-interview answer.
+  Steam at home is Play; the rest of the evening is Rest. Butler sessions, comms bursts, Spotify and
+  episodes under 10 minutes never preempt; pieces under 15 minutes are dropped.
+- A **provisional hold** covers the stay the clusterer has not closed yet, from the trailing run of
+  same-place fixes to the earliest of last fix + 12 h and now.
+- Each run tombstones the day's earlier blocks it no longer derives, except owner-corrected ones.
+  Payloads carry the anchor kind, label and source and a distance from home rounded to 100 m; no
+  coordinates.
+
+The day-close gap interview (`gap_interview.py`) asks about the longest unexplained waking block
+(at least 30 minutes) when no occupation block anchors the day, e.g. "Yesterday 07:55–10:40 isn't
+accounted for (about 18 km from home). What were you doing?". The Work / Social / Play / Eat / Rest
+buttons write one `chronicler.owner_answer` activity block in that lane; Dismiss counts nothing.
+
 ### Travel intents and location (bu-2tsgqb.7)
 
 `reconcile_day` checks one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h)
@@ -125,3 +191,36 @@ taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`,
 naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never
 checked. Every intent also carries `reconciliation.plan_producer`: `butler` for events the calendar
 module marked `butler_generated` (or titled `BUTLER:`), else `calendar`.
+
+### Timed Steam Play and music evidence (bu-r3fmja.7)
+
+The Steam connector persists detected `personastate` / `gameextrainfo` changes in
+`connectors.steam_status_history` alongside ingest submission. `gameid` is stored
+but never changes that delta rule. A storage failure still advances the polling
+cursor and degrades health. Chronicler has SELECT only; connector writes retain
+the existing connector role boundary. Bootstrap replay preserves the read grant.
+
+`steam.status_history` projects minute-precision `play_session` evidence every
+five minutes. A game ends at the next no-game, other-game or offline change.
+Same-game persona changes keep it open. Open sessions are provisional, capped
+at twelve hours, and refreshed on replay using the same source identity. The
+adapter scans sparse history in bounded keyset pages, carrying an active game
+across page boundaries; its checkpoint does not hide an open session.
+
+Situational fusion alone emits counted `play_block` rows. Known away-from-home
+where-segments, higher-precedence activity and owner answers cut Play out;
+unknown location allows it. Only accepted Play displaces home time. A local date
+with any status session suppresses the daily-total guess; dates with none use
+the existing daily-total placed window under the same exclusions. Steam daily
+totals and Spotify listening rows are evidence, including historical rows.
+Music has no Play lane, but remains available as a quiet-run breaker.
+The migration resets the situation checkpoint once to rebuild historical fallback
+Play. Later runs also revisit dates of changed Steam evidence, so late session
+closures can replace older provisional blocks without losing old daily totals.
+Tombstones and owner corrections revisit canonical, corrected and previously
+projected provenance dates, removing stale counted Play after evidence moves.
+
+The additive core table and historical evidence survive source rollback;
+downgrade does not destroy observations or reintroduce directly counted source
+rows. Trip-span fusion belongs to `bu-r3fmja.8`, which composes its exclusions
+with this source; this change does not infer trips from calendar or PC power.

@@ -30,7 +30,7 @@ and being able to remove its cause.
 lane groups, the lane totals' `--collect-only` count, `make` targets and local runs.
 
 - **Default run:** listed tests are deselected (they appear in the `deselected` count, and the
-  session header says how many are quarantined). The lane groups, lane totals and test budget
+  session header says how many are quarantined). The lane groups and lane totals
   count only selected tests, so they stay consistent.
 - **`--quarantined`:** runs only the listed tests within the requested scope. Use it for diagnostics,
   including a single parameter; registry owners outside that scope need not be collected.

@@ -32,6 +32,7 @@ from sqlalchemy import create_engine, text
 
 from butlers.testing.migration import (
     create_migrated_test_db,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -50,14 +51,6 @@ pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
 _asyncio_session = pytest.mark.asyncio(loop_scope="session")
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_217", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 @pytest.fixture(scope="module")
@@ -674,7 +667,7 @@ async def test_any_role_can_insert_evidence(
 
 
 def test_upgrade_is_idempotent_when_applied_a_second_time(fresh_core_only_db_url: str) -> None:
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_217")
     engine = create_engine(fresh_core_only_db_url)
     with engine.connect() as conn:
         ctx = MigrationContext.configure(conn)
@@ -788,7 +781,10 @@ async def test_offline_restore_importer_is_owner_only_after_bootstrap(
             )
             == '{"flag": false, "zero": 0}'
         )
-        for role in (*_load_migration()._ALL_RUNTIME_ROLES, "connector_writer"):
+        for role in (
+            *load_migration(_MIGRATION_PATH, "core_217")._ALL_RUNTIME_ROLES,
+            "connector_writer",
+        ):
             await ordinary.execute(f'SET ROLE "{role}"')
             assert (
                 await ordinary.fetchval(

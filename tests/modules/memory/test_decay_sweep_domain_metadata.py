@@ -123,3 +123,14 @@ async def test_a_healthy_active_fact_with_a_domain_status_is_not_rewritten(monke
     )
 
     assert connection.updates == []
+
+
+async def test_expiry_uses_same_operation_time_for_canonical_and_projection(monkeypatch):
+    cascade = AsyncMock()
+    monkeypatch.setattr(storage, "_cascade_catalog_disownment", cascade)
+    connection = _Connection([_fact(confidence=0.001, metadata={"status": "resolved"})])
+    await storage.run_decay_sweep(_Pool(connection))
+    sql, args = next((q, a) for q, a in connection.updates if "validity = 'expired'" in q)
+    assert "THEN dropped_at ELSE $3 END" in sql
+    assert args[2] == cascade.await_args.kwargs["invalid_at"]
+    assert args[0]["status"] == "resolved"

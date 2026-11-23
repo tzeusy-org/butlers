@@ -8,27 +8,14 @@ session-close contract (``session_complete``).
 
 from __future__ import annotations
 
-from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from butlers.core.sessions import _classify_friction_kind, _record_friction_event
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
-
-
-class _FakePool:
-    """Fake asyncpg pool capturing execute() calls, optionally raising."""
-
-    def __init__(self, *, raise_on_execute: Exception | None = None) -> None:
-        self._raise_on_execute = raise_on_execute
-        self.execute_calls: list[tuple[str, tuple[Any, ...]]] = []
-
-    async def execute(self, query: str, *args: Any) -> str:
-        self.execute_calls.append((query, args))
-        if self._raise_on_execute is not None:
-            raise self._raise_on_execute
-        return "INSERT 0 1"
 
 
 @pytest.mark.parametrize(
@@ -70,32 +57,34 @@ def test_classify_friction_kind(success, error, model, expected):
 
 
 async def test_record_friction_event_writes_one_row_for_a_classified_kind():
-    pool = _FakePool()
+    pool = fake_pool(execute="INSERT 0 1")
+    error = "RuntimeError: degenerate_tool_loop: 5 consecutive identical calls to foo"
 
-    await _record_friction_event(
-        pool, "session-1", success=False, error="degenerate_tool_loop", model="claude-3"
-    )
+    await _record_friction_event(pool, "session-1", success=False, error=error, model="claude-3")
 
-    assert len(pool.execute_calls) == 1
-    query, args = pool.execute_calls[0]
-    assert "sessions_friction" in query
-    assert args == ("session-1", "degenerate_tool_loop", "degenerate_tool_loop")
+    query, *args = pool.execute.await_args.args
+    pool.execute.assert_awaited_once()
+    assert "INSERT INTO sessions_friction" in query
+    # (session_id, kind, detail): the classified kind, with the raw error as detail.
+    assert args == ["session-1", "degenerate_tool_loop", error]
 
 
 async def test_record_friction_event_is_a_no_op_for_a_clean_session():
-    pool = _FakePool()
+    pool = fake_pool()
 
     await _record_friction_event(pool, "session-1", success=True, error=None, model="claude-3")
 
-    assert pool.execute_calls == []
+    pool.execute.assert_not_awaited()
 
 
 async def test_record_friction_event_swallows_write_failure():
     """A friction-write failure must never propagate out of session close."""
-    pool = _FakePool(raise_on_execute=RuntimeError('relation "sessions_friction" does not exist'))
+    pool = fake_pool(
+        execute=AsyncMock(side_effect=RuntimeError('relation "sessions_friction" does not exist'))
+    )
 
     await _record_friction_event(  # must not raise
         pool, "session-1", success=False, error="degenerate_tool_loop", model="claude-3"
     )
 
-    assert len(pool.execute_calls) == 1  # the write was attempted
+    pool.execute.assert_awaited_once()  # the write was attempted

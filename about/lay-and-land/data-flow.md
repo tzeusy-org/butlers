@@ -309,6 +309,119 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 
 ---
 
+## 10. Public MCP Read Flow (Draft)
+
+Accepted design, not implemented:
+[RFC 0039](../legends-and-lore/rfcs/0039-public-mcp-read-surface.md). The owner's own AI
+clients read Butlers data with no LLM, butler or Switchboard on the path.
+
+```mermaid
+sequenceDiagram
+    participant Cl as ChatGPT / claude.ai
+    participant W as Cloudflare Worker
+    participant FP as filter-proxy (ns mcp)
+    participant P as butlers-public-mcp
+    participant DB as Projection DB
+
+    Cl->>W: tools/call (OAuth bearer)
+    Note over W: OAuth 2.1 + PKCE, GitHub-id allowlist
+    Note over W: Strip x-mcp-*, sign X-MCP-Assertion over exact body
+    W->>FP: via cloudflared-mcp and traefik-mcp
+    Note over FP: Replace Authorization with hop bearer
+    FP->>P: POST (only allowed ingress)
+    Note over P: Trust boundary: bearer digest, assertion, replay, body hash
+    Note over P: Allowlist, argument validation, budget, kill switch, freshness
+    P->>DB: SELECT on mcp_read views (statement_timeout 2s)
+    DB-->>P: Rows + replication_as_of()
+    Note over P: DLP scan and canary check, audit log line
+    P-->>Cl: structuredContent with source {uri, as_of, content_authority}
+```
+
+### Validation and trust boundaries
+
+1. **Worker**: authenticates the owner (GitHub id) and the client (`claude.ai`, `chatgpt.com`
+   CIMD ids), and signs the per-call assertion. The private key never enters the cluster.
+2. **Public pod**: re-checks everything the Worker asserted, against a home-side allowlist that
+   duplicates the Worker's on purpose. Network, `pg_hba` and grants are the next layers: egress
+   reaches only the PostgreSQL port of `postgres-<env>`, which also serves the primary, so
+   `pg_hba` is what admits `mcp_public_ro` to `butlers_public` alone, and the role can read only
+   `mcp_read` views.
+3. **Response**: DLP redaction and canary detection run on every result. A canary hit latches all
+   tools off until restart. `search` and `fetch` never return finance or health records.
+   Finance and health results are shared at full breadth (OD17), so only the credential rules
+   scan them; the identifier and personal-contact rules run on the other domains.
+4. **Freshness**: past 15 minutes of replication lag every tool refuses with `projection_stale`,
+   so a kill switch cannot go unseen for longer. While the owner step is pending, every tool
+   refuses with `projection_apply_pending`, so a server shipping a narrowed manifest never serves
+   unpurged rows; a server still on the old manifest refuses once the new digest replicates.
+
+Reads never write: no `knowledge_read` function reuses memory search, which bumps
+`reference_count` (RFC 0039 D12).
+
+---
+
+## 11. Projection Replication Flow (Draft)
+
+```mermaid
+graph LR
+    M["projection.toml<br/>(checked-in allowlist)"] -->|"butlers public-mcp reconcile<br/>(migration Job, after Alembic)"| PUB["primary: publication butlers_public_v1<br/>column lists + row filters"]
+    M -->|"butlers public-mcp owner-sql<br/>(owner step, superuser via kubectl exec;<br/>run by make deploy-dev, OD20)"| SUBDDL["projection: subscriber tables,<br/>mcp_read views, inbox, subscription,<br/>applied digest"]
+    M -->|"owner step"| SLOT["primary: slot butlers_public_sub,<br/>publisher USAGE + SELECT sync"]
+    SRC["primary tables"] -->|"WAL"| PUB
+    PUB -->|"logical replication, one way"| SUB["projection: subscription butlers_public_sub"]
+    CHR["chronicler.overrides write<br/>+ 15-min sweep"] -->|"same transaction"| CP["chronicler.episodes_public,<br/>rollups_public"]
+    CP --> PUB
+```
+
+Only allowlisted tables and columns leave the primary; a new table or column stays unpublished
+until someone adds it to the manifest. Restrictions arrive as DELETEs because filter columns sit
+in the replica identity. Memory facts outside finance and health, and the graph edges they
+project, pass the same literal predicate allowlists, which hold no contact- or identity-kind
+predicate; facts about people other than the owner are published under them (OD21). Credentials, `butler_secrets`, secured `entity_info` rows, connector
+tokens, approval tables and raw message bodies are never published (RFC 0039 D2, D4). Both
+databases live on `postgres-<env>`, so the owner step pre-creates the replication slot and creates
+the subscription with `create_slot = false` and `password_required = false`, on the local socket
+as the credential-less publisher (RFC 0039 D3, OD14). It runs at the first sync, after each
+manifest change and after each slot invalidation: on dev every `make deploy-dev` runs it after the
+migrations (OD20), and elsewhere the owner does; until it has applied the manifest the
+public server ships with, every tool except `describe` refuses with `projection_apply_pending`.
+An invalidated slot leaves the applied digest matching, so it shows as `projection_stale` and
+the slot and lag alerts until the owner step rebuilds.
+
+---
+
+## 12. External Fact Proposal Flow (Draft)
+
+```mermaid
+sequenceDiagram
+    participant P as butlers-public-mcp
+    participant IN as Projection inbox
+    participant J as Relationship importer job
+    participant AP as Approvals (pending_actions)
+    participant O as Owner (passkey dashboard)
+    participant EX as Approval executor
+
+    P->>IN: INSERT proposal ON CONFLICT DO NOTHING
+    P-->>P: {proposal_id, status: "received"}
+    loop Every 5 minutes, no LLM
+        J->>IN: SELECT up to 100 rows (mcp_proposals_reader)
+        J->>J: Copy to relationship.external_fact_proposals, DELETE inbox rows
+        Note over J: Re-validate: allowlist, entities, DLP, duplicate, conflict, caps
+        J->>AP: park relationship_assert_fact (no standing rule, no push)
+    end
+    O->>AP: Approve, reject or edit (typed review card)
+    AP->>EX: Execute exact stored call
+    EX->>EX: relationship_assert_fact, content_authority=third_party, src=external_mcp
+    Note over J: Next pass maps status to applied / owner_rejected / expired / apply_failed
+```
+
+Proposal state replicates back to the projection, so `fetch("proposal:<id>")` reports the
+outcome. Only entity-to-entity relational predicates are proposable in v1; contact, override and
+family predicates are not. A future LLM auto-approval batch is not v1 and needs its own owner
+decision (RFC 0039 D13).
+
+---
+
 ## Data Path Summary
 
 | Flow | Entry Point | Exit Point | Protocol | Durable? |
@@ -319,3 +432,6 @@ INSERT ... ON CONFLICT DO NOTHING -> read back effective row.
 | Identity | Channel identifier | Resolved entity | SQL (public schema) | N/A (read-only) |
 | Memory | Session episode | Facts / rules | SQL + pgvector | Yes |
 | Heartbeat | Connector loop | Registry update | MCP | No (ephemeral liveness) |
+| Public read (Draft) | Owner AI client via gateway | Tool result | MCP (stateless HTTP) + SQL on projection | No (audit to logs only) |
+| Projection replication (Draft) | Primary WAL | Projection tables (same instance) | PostgreSQL logical replication | Rebuildable copy; in the cluster backups, never restored from them |
+| Fact proposal (Draft) | `propose_fact` | Owner-approved `relationship_assert_fact` | Inbox INSERT -> job pull -> approvals | Inbox transient; `external_fact_proposals` durable |

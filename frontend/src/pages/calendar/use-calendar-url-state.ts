@@ -33,6 +33,8 @@ export function useCalendarUrlState() {
   // top of the primary user/butler view (not a separate view mode). The toggle
   // is persisted in the URL so the layered view is shareable.
   const overlaysEnabled = searchParams.get("overlays") === "1";
+  // A deep link to one entry (the day sheet's door): opened once, then dropped from the URL.
+  const entryParam = searchParams.get("entry");
 
   useEffect(() => {
     const next = new URLSearchParams(searchParams);
@@ -77,57 +79,73 @@ export function useCalendarUrlState() {
       status?: string;
       kind?: string;
       overlays?: boolean;
+      entry?: string | null;
     }) => {
-      const next = new URLSearchParams(searchParams);
+      // Functional form: always apply to the current URL, never a render-time snapshot, so an
+      // async caller cannot resurrect a param another update already dropped.
+      setSearchParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
 
-      if (nextValues.view) next.set("view", nextValues.view);
-      if (nextValues.range) next.set("range", nextValues.range);
-      if (nextValues.anchor)
-        next.set("anchor", serializeAnchor(nextValues.anchor));
+          if (nextValues.view) next.set("view", nextValues.view);
+          if (nextValues.range) next.set("range", nextValues.range);
+          if (nextValues.anchor)
+            next.set("anchor", serializeAnchor(nextValues.anchor));
 
-      if (nextValues.source !== undefined) {
-        if (!nextValues.source || nextValues.source === "all") {
-          next.delete("source");
-        } else {
-          next.set("source", nextValues.source);
-        }
-      }
+          if (nextValues.source !== undefined) {
+            if (!nextValues.source || nextValues.source === "all") {
+              next.delete("source");
+            } else {
+              next.set("source", nextValues.source);
+            }
+          }
 
-      if (nextValues.calendar !== undefined) {
-        if (!nextValues.calendar || nextValues.calendar === "all") {
-          next.delete("calendar");
-        } else {
-          next.set("calendar", nextValues.calendar);
-        }
-      }
+          if (nextValues.calendar !== undefined) {
+            if (!nextValues.calendar || nextValues.calendar === "all") {
+              next.delete("calendar");
+            } else {
+              next.set("calendar", nextValues.calendar);
+            }
+          }
 
-      if (nextValues.status !== undefined) {
-        if (!nextValues.status || nextValues.status === "all") {
-          next.delete("status");
-        } else {
-          next.set("status", nextValues.status);
-        }
-      }
+          if (nextValues.status !== undefined) {
+            if (!nextValues.status || nextValues.status === "all") {
+              next.delete("status");
+            } else {
+              next.set("status", nextValues.status);
+            }
+          }
 
-      if (nextValues.kind !== undefined) {
-        if (!nextValues.kind || nextValues.kind === "all") {
-          next.delete("kind");
-        } else {
-          next.set("kind", nextValues.kind);
-        }
-      }
+          if (nextValues.kind !== undefined) {
+            if (!nextValues.kind || nextValues.kind === "all") {
+              next.delete("kind");
+            } else {
+              next.set("kind", nextValues.kind);
+            }
+          }
 
-      if (nextValues.overlays !== undefined) {
-        if (nextValues.overlays) {
-          next.set("overlays", "1");
-        } else {
-          next.delete("overlays");
-        }
-      }
+          if (nextValues.overlays !== undefined) {
+            if (nextValues.overlays) {
+              next.set("overlays", "1");
+            } else {
+              next.delete("overlays");
+            }
+          }
 
-      setSearchParams(next, { replace: true });
+          if (nextValues.entry !== undefined) {
+            if (nextValues.entry) {
+              next.set("entry", nextValues.entry);
+            } else {
+              next.delete("entry");
+            }
+          }
+
+          return next;
+        },
+        { replace: true },
+      );
     },
-    [searchParams, setSearchParams],
+    [setSearchParams],
   );
 
   return {
@@ -139,6 +157,7 @@ export function useCalendarUrlState() {
     selectedStatus,
     selectedSourceType,
     overlaysEnabled,
+    entryParam,
     updateQuery,
   };
 }

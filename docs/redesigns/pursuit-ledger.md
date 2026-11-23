@@ -34,6 +34,9 @@ Five-second fleet verification with earned calm: nothing fabricated, failure nev
 | 21 (JARVIS architecture) | 2026-10-16 | 15 | bu-dhloi1 | [2026-10-16-jarvis-arch-pursuit.md](2026-10-16-jarvis-arch-pursuit.md) |
 | 22 (backlog optimization) | 2026-10-16 | 2 + reconciliation | bu-1mbyoa | [2026-10-16-backlog-pursuit.md](2026-10-16-backlog-pursuit.md) |
 | 23 (realtime outcomes) | 2026-10-28 | 3 + reconciliation | bu-okh0fw | [2026-10-28-jarvis-pursuit.md](2026-10-28-jarvis-pursuit.md) |
+| 24 (Chronicler regeneration) | 2026-11-21 | 15 | bu-uhbhzq | [2026-11-21-chronicler-pursuit.md](2026-11-21-chronicler-pursuit.md) |
+| 25 (QA self-healing) | 2026-11-21 | 15 | bu-ejow5p | [2026-11-21-qa-self-healing-pursuit.md](2026-11-21-qa-self-healing-pursuit.md) |
+| 26 (calendar ecosystem) | 2026-11-22 | 15 | bu-5ii4gj | [2026-11-22-calendar-pursuit.md](2026-11-22-calendar-pursuit.md) |
 
 ## Tier history
 
@@ -476,3 +479,80 @@ Purchase aftercare, shipment feeds, general event/condition infrastructure, stre
 latency lanes were prior art, not refiled. The detailed dispositions and source-confirmed
 surface snapshots are in [the dossier](2026-10-28-jarvis-pursuit.md). No tracked data JSON or
 separately published artifact was created; complete structured Beads fields hold the packets.
+
+### 24 (Chronicler regeneration) (2026-11-21) · epic bu-uhbhzq
+
+Chronicler-only run on the owner's regeneration framing: keep and index enough evidence now that
+a better Chronicler can rebuild any past day later. Nine read-only auditors (eight ecosystem
+lenses and the Chronicles page) followed a live dev-stack investigation; the owner removed the
+hourly stagger for this run. New tier keys only, so no movement is claimed. Gate `bu-0j96x7`
+remains owner-held.
+
+1. Repair Google Calendar capture and keep an append-only event revision journal (`bu-uhbhzq.1`).
+2. Unblock daily narration: retired sources, per-lane gating, and availability frozen per day (`bu-uhbhzq.2`).
+3. Stop deleting belief history: supersession closes an interval and never deletes (`bu-uhbhzq.3`).
+4. Evidence before acknowledgement: every connector commits a durable evidence row first, and the routing inbox stops being the archive (`bu-uhbhzq.4`).
+5. End the 'multiple' sender: a content-blind party ledger at ingestion and re-resolvable entity links (`bu-uhbhzq.5`).
+6. Derivation ledger: algorithm version, config snapshot, run and evidence on every derived row (`bu-uhbhzq.6`).
+7. Retention charter: a per-source evidence-preservation contract, the location-forgetting decision, and a never-pruned cold archive (`bu-uhbhzq.7`).
+8. Typed telemetry series store: narrow rows, a dictionary, raw and minute tiers, fed before the filter (`bu-uhbhzq.8`).
+9. Sense coverage ledger: per stream and local day, with typed absence reasons (`bu-uhbhzq.9`).
+10. Projection hygiene: yield sentinels, the cursor defects found, and day-scale indexes (`bu-uhbhzq.10`).
+11. Day evidence manifest: what evidence existed for each date, frozen at close (`bu-uhbhzq.11`).
+12. The regenerable day: window-addressable replay with shadow generations, an immutable day account, a budgeted queue and a quality gate (`bu-uhbhzq.12`).
+13. Owner assertions: corrections anchored to time intervals that every regeneration must honour (`bu-uhbhzq.13`).
+14. Owner-device evidence receiver: a push-based desktop sense that replaces the ActivityWatch pull (`bu-uhbhzq.14`).
+15. Chronicles shows coverage, lineage and replayability: a coverage calendar, a raw-evidence door, and a derivation stamp (`bu-uhbhzq.15`).
+
+Deferred by the fifteen-move cap and listed in [the dossier](2026-11-21-chronicler-pursuit.md):
+wearable full fidelity, place entities, co-presence, retrieval surfaces, Finance purchases as
+evidence, the Telegram consent split, phone senses and historical imports. The artifact report
+is private to the owner; complete structured Beads fields hold the packets.
+
+### 25 (QA self-healing) (2026-11-21) · epic bu-ejow5p
+
+Scoped QA lens with live dev-stack debugging; planning only. Gate bu-l34qcx was released by the owner on 2026-11-22 with every recommended option adopted; per-move resolutions are in the bead notes. Moves are deltas to run 19 (bu-6a9xxw), which shipped nothing between the runs.
+
+1. Evict the QA write token from investigator-reachable storage and state containment honestly (bu-ejow5p.1)
+2. Proposal-ready rung: investigate each fingerprint once, seal and keep the patch, record it as unpublished (bu-ejow5p.2)
+3. Breaker v2: execution failures only, evaluated per patrol, names its cause, probes itself back (bu-ejow5p.3)
+4. Canonical finding identity and code-preserving anonymization so one defect is one fingerprint (bu-ejow5p.4)
+5. Engineering-executor launch profile and model ladder: no borrowed persona, memory or discretion tier (bu-ejow5p.5)
+6. Honest QA surface: publication gate as a standing condition, funnel and days-since-last-fix (bu-ejow5p.6)
+7. Owner-as-publisher Fix Inbox: export a retained patch, bind the owner's PR back to the attempt (bu-ejow5p.7)
+8. Heal the healer: remediation-loop liveness conditions, cause-bound resets, prerequisite-stall watchdog (bu-ejow5p.8)
+9. Tracked-defect linkage: a finding tied to a bead or PR is not re-investigated until its fix deploys (bu-ejow5p.9)
+10. QA-to-fleet handoff: structure-only outbox, read-only transport, coordinator intake, loop closure from git and deployments (bu-ejow5p.10)
+11. Per-attempt credential-free Kubernetes Job investigator with an executable isolation verifier (bu-ejow5p.11)
+12. Dedicated qa-publisher workload with a real provider, follow-up identity and a repository-derived restore fence (bu-ejow5p.12)
+13. Dispatcher-assembled evidence bundle with cited-evidence validation (bu-ejow5p.13)
+14. Dispatcher-executed red/green verification receipt on a prebuilt test environment (bu-ejow5p.14)
+15. Per-failure-class trust ladder: durable rungs, automatic demotion, owner step-up promotion, steward-rung RFC draft (bu-ejow5p.15)
+
+Discovery-coverage and impact-ranking ideas were deferred until finding identity is fixed; see the dossier's dropped list.
+
+### 26 (calendar ecosystem) (2026-11-22) · epic bu-5ii4gj
+
+Calendar-only lens: what the system perceives, knows, decides, does and says about the owner's time.
+Six trust repairs lead, nine capability moves follow. The owner released gate `bu-5gywb6` on 2026-11-22. Calendar
+workspace core stays functional; two new calendar cohorts were tiered without a baseline (decision
+surfaces functional, calendar across other surfaces weak). Runs 24 (Chronicler regeneration) and 25 (QA self-healing) were filed the same weekend.
+
+1. Whose time is this: every calendar source gets a role, and one predicate decides what counts as owner time (`bu-5ii4gj.1`)
+2. Owner day sheet: one deterministic projection of a local day, rendered identically on Telegram and the dashboard, that can say 'unknown' (`bu-5ii4gj.2`)
+3. People in time: one participant record per occurrence, and an encounter ledger that only counts meetings that happened (`bu-5ii4gj.3`)
+4. Calendar write and render truth: placements checked against all owner time, no ghost mirrors, no silent drops, failed reads never render as empty (`bu-5ii4gj.4`)
+5. Zone-true time: no hard-coded UTC+8, the event's own zone beside the owner's, and future days read in the zone the owner will be in (`bu-5ii4gj.5`)
+6. Organizer verdict and invitation quarantine: one deterministic trust verdict per organizer, honored by every calendar reader (`bu-5ii4gj.6`)
+7. Time claims from mail: deterministic iCalendar and reservation parsing, reconciled against the calendar (`bu-5ii4gj.7`)
+8. Asked for your time: a time-ask ledger that offers spread-out slots, holds them, drafts the exact reply, and releases every hold on its own (`bu-5ii4gj.8`)
+9. Invitation docket: owner-written typed RSVP policies prepare exact answers that the owner signs with one tap (`bu-5ii4gj.9`)
+10. Changed since you said yes: a material change to an accepted event becomes one premise-bound card, and reminders follow their event (`bu-5ii4gj.10`)
+11. Resolve in place: typed resolution verbs for every conflict, and multi-event change plans with one composite undo (`bu-5ii4gj.11`)
+12. Protected and elastic time: owner-approved focus blocks Google enforces, policy-placed holds that yield, and buffers that follow their event (`bu-5ii4gj.12`)
+13. Domain time claims: each specialist record owns its one calendar presence, moved or retracted when the record changes (`bu-5ii4gj.13`)
+14. Planned versus lived: an evidence-linked outcome per planned block, learned durations with honest denominators, and weekly time intentions (`bu-5ii4gj.14`)
+15. A calendar you can ask and point at: deterministic time questions, model-free capture, occurrence doors, and a keyboard surface (`bu-5ii4gj.15`)
+
+Eighteen further candidates were dropped or deferred; dispositions are in
+[the dossier](2026-11-22-calendar-pursuit.md). Report: https://claude.ai/artifact/CMbkGQPx9EeQy4tyf2Ccea (private to the owner).

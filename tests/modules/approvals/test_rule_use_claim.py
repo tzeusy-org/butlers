@@ -15,17 +15,14 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.identity import ResolvedContact
 from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.rules import claim_rule_use
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -37,26 +34,10 @@ pytestmark = [
 TOOL = "telegram_send_message"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    db_pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=8, init=register_jsonb_codec
-    )
-    await db_pool.execute(
-        "TRUNCATE approval_events, pending_actions, approval_rules, "
-        "standing_reply_template_drafts CASCADE"
-    )
-    yield db_pool
-    await db_pool.close()
+async def approvals_pool(db):
+    """Core + approvals chains; room for the concurrent claim tests."""
+    return await db("core", "approvals", max_size=8)
 
 
 async def _insert_rule(
@@ -153,15 +134,15 @@ async def _approved_count(pool, rule_id) -> int:
 
 
 @pytest.mark.parametrize("max_uses", [1, 3])
-async def test_racing_gate_calls_admit_exactly_max_uses(pool, max_uses: int) -> None:
-    rule_id = await _insert_rule(pool, max_uses=max_uses)
+async def test_racing_gate_calls_admit_exactly_max_uses(approvals_pool, max_uses: int) -> None:
+    rule_id = await _insert_rule(approvals_pool, max_uses=max_uses)
 
-    results, park = await _run_gate_calls(pool, calls=8)
+    results, park = await _run_gate_calls(approvals_pool, calls=8)
 
     assert sum(1 for r in results if r == {"status": "sent"}) == max_uses
     assert park.await_count == 8 - max_uses
-    assert await _approved_count(pool, rule_id) == max_uses
-    assert await _use_count(pool, rule_id) == max_uses
+    assert await _approved_count(approvals_pool, rule_id) == max_uses
+    assert await _use_count(approvals_pool, rule_id) == max_uses
 
 
 @pytest.mark.parametrize(
@@ -173,23 +154,23 @@ async def test_racing_gate_calls_admit_exactly_max_uses(pool, max_uses: int) -> 
     ],
     ids=["exhausted", "inactive", "expired"],
 )
-async def test_unusable_rule_parks_without_counting(pool, rule_kwargs) -> None:
-    rule_id = await _insert_rule(pool, **rule_kwargs)
-    before = await _use_count(pool, rule_id)
+async def test_unusable_rule_parks_without_counting(approvals_pool, rule_kwargs) -> None:
+    rule_id = await _insert_rule(approvals_pool, **rule_kwargs)
+    before = await _use_count(approvals_pool, rule_id)
 
-    results, park = await _run_gate_calls(pool, calls=1)
+    results, park = await _run_gate_calls(approvals_pool, calls=1)
 
     assert results[0] != {"status": "sent"}
     assert park.await_count == 1
-    assert await _approved_count(pool, rule_id) == 0
-    assert await _use_count(pool, rule_id) == before
+    assert await _approved_count(approvals_pool, rule_id) == 0
+    assert await _use_count(approvals_pool, rule_id) == before
 
 
-async def test_executor_no_longer_counts_the_use(pool) -> None:
-    rule_id = await _insert_rule(pool, max_uses=5, use_count=1)  # one use already claimed
+async def test_executor_no_longer_counts_the_use(approvals_pool) -> None:
+    rule_id = await _insert_rule(approvals_pool, max_uses=5, use_count=1)  # one use already claimed
     action_id = uuid.uuid4()
     now = datetime.now(UTC)
-    await pool.execute(
+    await approvals_pool.execute(
         "INSERT INTO pending_actions (id, tool_name, tool_args, status, requested_at, "
         "approval_rule_id, decided_by) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         action_id,
@@ -202,7 +183,7 @@ async def test_executor_no_longer_counts_the_use(pool) -> None:
     )
 
     result = await execute_approved_action(
-        pool=pool,
+        pool=approvals_pool,
         action_id=action_id,
         tool_name=TOOL,
         tool_args={"chat_id": "1"},
@@ -211,7 +192,7 @@ async def test_executor_no_longer_counts_the_use(pool) -> None:
     )
 
     assert result.success
-    assert await _use_count(pool, rule_id) == 1
+    assert await _use_count(approvals_pool, rule_id) == 1
 
 
 _UNUSABLE = [
@@ -223,47 +204,51 @@ _UNUSABLE_IDS = ["exhausted", "inactive", "expired"]
 
 
 @pytest.mark.parametrize("rule_kwargs", _UNUSABLE, ids=_UNUSABLE_IDS)
-async def test_claim_rule_use_refuses_an_unusable_rule_without_counting(pool, rule_kwargs) -> None:
+async def test_claim_rule_use_refuses_an_unusable_rule_without_counting(
+    approvals_pool, rule_kwargs
+) -> None:
     """The claim statement itself re-checks every usability clause under the row lock."""
-    rule_id = await _insert_rule(pool, **rule_kwargs)
-    before = await _use_count(pool, rule_id)
+    rule_id = await _insert_rule(approvals_pool, **rule_kwargs)
+    before = await _use_count(approvals_pool, rule_id)
 
-    assert await claim_rule_use(pool, rule_id) is False
-    assert await _use_count(pool, rule_id) == before
+    assert await claim_rule_use(approvals_pool, rule_id) is False
+    assert await _use_count(approvals_pool, rule_id) == before
 
 
-async def test_claim_rule_use_claims_a_usable_rule_once_per_call(pool) -> None:
+async def test_claim_rule_use_claims_a_usable_rule_once_per_call(approvals_pool) -> None:
     """Positive control for the refusals above: the same call succeeds on a usable rule."""
     rule_id = await _insert_rule(
-        pool, max_uses=2, expires_at=datetime.now(UTC) + timedelta(hours=1)
+        approvals_pool, max_uses=2, expires_at=datetime.now(UTC) + timedelta(hours=1)
     )
 
-    assert [await claim_rule_use(pool, rule_id) for _ in range(3)] == [True, True, False]
-    assert await _use_count(pool, rule_id) == 2
+    assert [await claim_rule_use(approvals_pool, rule_id) for _ in range(3)] == [True, True, False]
+    assert await _use_count(approvals_pool, rule_id) == 2
 
 
 @pytest.mark.parametrize("rule_kwargs", _UNUSABLE, ids=_UNUSABLE_IDS)
 async def test_gate_parks_when_the_matched_rule_became_unusable_before_the_claim(
-    pool, rule_kwargs
+    approvals_pool, rule_kwargs
 ) -> None:
     """A rule matched from a usable snapshot but unusable at claim time never auto-approves."""
-    rule_id = await _insert_rule(pool, **rule_kwargs)
+    rule_id = await _insert_rule(approvals_pool, **rule_kwargs)
     snapshot = {
         "id": rule_id,
         "tool_name": TOOL,
         "arg_constraints": {"chat_id": {"type": "any"}},
     }
-    before = await _use_count(pool, rule_id)
+    before = await _use_count(approvals_pool, rule_id)
 
-    results, park = await _run_gate_calls(pool, calls=1, stale_match=snapshot)
+    results, park = await _run_gate_calls(approvals_pool, calls=1, stale_match=snapshot)
 
     assert results[0] != {"status": "sent"}
     assert park.await_count == 1
-    assert await _approved_count(pool, rule_id) == 0
-    assert await _use_count(pool, rule_id) == before
+    assert await _approved_count(approvals_pool, rule_id) == 0
+    assert await _use_count(approvals_pool, rule_id) == before
 
 
-async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_send(pool) -> None:
+async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_send(
+    approvals_pool,
+) -> None:
     """A draft saved through the real authoring path has no authority at the real gate.
 
     REQ-module-approvals-007 (bu-jv1moa.10): the matching send parks as usual, no
@@ -271,7 +256,7 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
     revision races, idempotent replay (also after an edit and a revoke) and a call
     forging the draft's id.
     """
-    friend = await pool.fetchval(
+    friend = await approvals_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ($1, 'person', ARRAY['contact']) RETURNING id",
         f"Template Friend {uuid.uuid4()}",
@@ -283,14 +268,14 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
         description="running late",
         idempotency_key=f"draft-{uuid.uuid4()}",
     )
-    async with pool.acquire() as conn:
+    async with approvals_pool.acquire() as conn:
         draft = await reply_templates.create_template_draft(conn, **draft_args)
         replay = await reply_templates.create_template_draft(conn, **draft_args)
     assert replay["id"] == draft["id"]
-    assert await pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1
+    assert await approvals_pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1
 
     async def _edit(text: str):
-        async with pool.acquire() as conn:
+        async with approvals_pool.acquire() as conn:
             return await reply_templates.edit_template_draft(
                 conn,
                 draft_id=draft["id"],
@@ -311,7 +296,7 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
     assert committed[0]["revision"] == 2
     draft = committed[0]
     # A retried create after the edit still replays (bound to the create, not current content).
-    async with pool.acquire() as conn:
+    async with approvals_pool.acquire() as conn:
         replay_after_edit = await reply_templates.create_template_draft(conn, **draft_args)
     assert (replay_after_edit["id"], replay_after_edit["revision"]) == (draft["id"], 2)
     text = reply_templates.render_template(draft["content_templates"]["text"]).replace(
@@ -336,7 +321,7 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
     wrapper = _make_gate_wrapper(
         tool_name=TOOL,
         original_fn=telegram_send_message,
-        pool=pool,
+        pool=approvals_pool,
         expiry_hours=72,
         risk_tier=MagicMock(value="medium"),
         rule_precedence=("contact_role", "standing_rule"),
@@ -367,20 +352,20 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
     assert "error" in forged
     executor.assert_not_awaited()
     assert sent == []
-    assert await pool.fetchval("SELECT count(*) FROM approval_rules") == 0
-    rows = await pool.fetch("SELECT id, status, approval_rule_id FROM pending_actions")
+    assert await approvals_pool.fetchval("SELECT count(*) FROM approval_rules") == 0
+    rows = await approvals_pool.fetch("SELECT id, status, approval_rule_id FROM pending_actions")
     assert [(str(r["id"]), r["status"], r["approval_rule_id"]) for r in rows] == [
         (parked["action_id"], ActionStatus.PENDING.value, None)
     ]
     assert (
-        await pool.fetchval(
+        await approvals_pool.fetchval(
             "SELECT status FROM standing_reply_template_drafts WHERE id = $1", draft["id"]
         )
         == "draft"
     )
 
-    async with pool.acquire() as conn:
+    async with approvals_pool.acquire() as conn:
         await reply_templates.revoke_template_draft(conn, draft_id=draft["id"], expected_revision=2)
         replay_after_revoke = await reply_templates.create_template_draft(conn, **draft_args)
     assert (replay_after_revoke["id"], replay_after_revoke["status"]) == (draft["id"], "revoked")
-    assert await pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1
+    assert await approvals_pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1

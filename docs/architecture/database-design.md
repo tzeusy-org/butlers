@@ -51,6 +51,13 @@ tokens live in `entity_info`.
 - Direct cross-butler schema access is prohibited
 - Inter-butler communication happens exclusively via MCP tool calls through the Switchboard
 - Cross-butler foreign keys are never created
+- The one standing exception is a read of a named table, never a schema: the relationship,
+  messenger and travel runtime roles hold `USAGE` on schema `switchboard` and `SELECT` on
+  `switchboard.message_inbox` alone, for their deterministic interaction-sync and meeting-prep
+  jobs (`core_339`, with `sw_079` on a fresh database). No role holds schema-wide `SELECT` or a
+  default privilege on another butler's schema, so `switchboard.butler_secrets` and any table
+  added later stay unreadable. A new cross-schema read needs its own named grant in the chain that
+  owns the table; see [Schema Topology](../data_and_storage/schema-topology.md).
 
 ## Core Tables
 
@@ -97,7 +104,7 @@ Connection parameters are resolved from environment variables: `DATABASE_URL` (l
 
 ## Migration Strategy
 
-Migrations are managed by Alembic, run programmatically at startup (no CLI shelling). The migration runner (`src/butlers/migrations.py`) supports three chain types:
+Migrations are managed by Alembic, run programmatically at startup (no CLI shelling). The migration runner (`src/butlers/migrations/__init__.py`) supports three chain types:
 
 ### Core Chain
 

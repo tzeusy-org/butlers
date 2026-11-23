@@ -85,19 +85,20 @@ The `openai` provider is store-only in the same way (`cli-auth/openai`), and the
 placeholder and test behavior applies. It is an alternative credential for the Codex runtime, and
 `CodexAdapter` resolves it per invocation:
 
-1. **Key stored** -- Codex runs with `CODEX_API_KEY` set and no ChatGPT `auth.json` in its isolated
-   HOME. Every device-code step is skipped: authority reconciliation, pre-warm, refresh lock and
-   finalization. Other inherited auth env vars (`OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`) are
-   removed, because Codex refuses to choose between several.
-2. **Key rejected** -- When that run fails before any tool call with an auth marker (the failover
-   classifier's vocabulary) or OpenAI quota exhaustion (`insufficient_quota`), the session is re-run
-   on the `cli-auth/codex` device-code authority, unchanged. The fallback is logged value-free,
-   recorded as a failed test of `cli-auth/openai`, and tagged in session process info as
-   `auth_fallback=openai_api_key_rejected`. Saving a new key clears that failed test.
-3. **No key, or the lookup fails** -- the device-code authority is used exactly as before.
+1. **ChatGPT login first** -- Codex runs on the `cli-auth/codex` device-code authority, whether or
+   not an API key is stored.
+2. **Login rejected, key stored** -- When that run fails before any tool call with an auth marker
+   (the failover classifier's vocabulary) or quota exhaustion (`insufficient_quota`,
+   `exceeded your current quota`, `Quota exceeded`), or the authority cannot launch, the session is
+   re-run with `CODEX_API_KEY` set and no ChatGPT `auth.json` in its isolated HOME. Other inherited
+   auth env vars (`OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`) are removed, because Codex refuses to
+   choose between several. The fallback is logged value-free and tagged in session process info as
+   `auth_fallback=device_code_rejected`, `auth_mode=openai_api_key`.
+3. **No key, or the lookup fails** -- the device-code failure propagates unchanged.
 
-Timeouts, cancellations, MCP discovery failures and other errors never trigger the fallback. The
-API-key path never reads, writes or rotates the Codex device-code authority.
+Timeouts, cancellations, MCP discovery failures and other errors never trigger the fallback, and a
+failure of the API-key attempt propagates as-is. The API-key path never reads, writes or rotates
+the Codex device-code authority.
 
 ## Health Probes
 
@@ -158,6 +159,22 @@ recovering from a stale local document; other providers remain compatible with
 their ordinary restore behavior.
 
 This restore happens during the dashboard API lifespan startup, ensuring tokens are available before any butler attempts to spawn a CLI instance.
+
+### Session-host target (dark)
+
+RFC 0038 D3 moves runtime OAuth to the session host. The target for that move exists
+but is off. A dashboard Codex login can be retargeted from this process's
+`~/.codex/auth.json` to the session host's credential volume. Runtime sync can push
+the authority there and collect rotations back, with the same fencing as the local
+path.
+
+- No live caller passes a `session_host` target, so login, restore and sync behave
+  exactly as described above.
+- A test pins the off path:
+  - the parameters are keyword-only and default to `None`;
+  - an AST scan proves no live module builds a target.
+- What has to happen before the switch is listed in
+  [Codex auth credential volume](../runtime/session-host.md#codex-auth-credential-volume-dark).
 
 ## Verification
 

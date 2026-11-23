@@ -27,120 +27,6 @@ pytestmark = [
     pytest.mark.skipif(not _docker_available, reason="Docker not available"),
 ]
 
-# ---------------------------------------------------------------------------
-# Minimal schema DDL — TEXT embedding avoids pgvector dependency in tests
-# ---------------------------------------------------------------------------
-
-_DDL_SHARED_ENTITIES = """
-CREATE TABLE IF NOT EXISTS public.entities (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id       TEXT NOT NULL DEFAULT '',
-    canonical_name  VARCHAR NOT NULL DEFAULT '',
-    name            TEXT NOT NULL DEFAULT '',
-    entity_type     VARCHAR NOT NULL DEFAULT 'other',
-    aliases         TEXT[] NOT NULL DEFAULT '{}',
-    metadata        JSONB DEFAULT '{}'::jsonb,
-    roles           TEXT[] NOT NULL DEFAULT '{}',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-_DDL_PREDICATE_REGISTRY = """
-CREATE TABLE IF NOT EXISTS predicate_registry (
-    name                 TEXT PRIMARY KEY,
-    expected_subject_type TEXT,
-    expected_object_type TEXT,
-    is_edge              BOOLEAN NOT NULL DEFAULT false,
-    is_temporal          BOOLEAN NOT NULL DEFAULT false,
-    description          TEXT,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    status               TEXT NOT NULL DEFAULT 'active',
-    superseded_by        TEXT,
-    deprecated_at        TIMESTAMPTZ,
-    inverse_of           TEXT,
-    is_symmetric         BOOLEAN NOT NULL DEFAULT false,
-    aliases              TEXT[] NOT NULL DEFAULT '{}',
-    usage_count          INTEGER NOT NULL DEFAULT 0,
-    last_used_at         TIMESTAMPTZ
-)
-"""
-_DDL_FACTS = """
-CREATE TABLE IF NOT EXISTS facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject             TEXT NOT NULL,
-    predicate           TEXT NOT NULL,
-    content             TEXT NOT NULL,
-    embedding           TEXT,
-    search_vector       TSVECTOR,
-    importance          FLOAT NOT NULL DEFAULT 5.0,
-    confidence          FLOAT NOT NULL DEFAULT 1.0,
-    decay_rate          FLOAT NOT NULL DEFAULT 0.002,
-    permanence          TEXT NOT NULL DEFAULT 'stable',
-    source_butler       TEXT,
-    source_episode_id   UUID,
-    supersedes_id       UUID REFERENCES facts(id) ON DELETE SET NULL,
-    validity            TEXT NOT NULL DEFAULT 'active',
-    scope               TEXT NOT NULL DEFAULT 'global',
-    reference_count     INTEGER NOT NULL DEFAULT 0,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_confirmed_at   TIMESTAMPTZ,
-    tags                JSONB DEFAULT '[]'::jsonb,
-    metadata            JSONB DEFAULT '{}'::jsonb,
-    entity_id           UUID REFERENCES public.entities(id),
-    object_entity_id    UUID REFERENCES public.entities(id),
-    valid_at            TIMESTAMPTZ DEFAULT NULL,
-    tenant_id           TEXT NOT NULL DEFAULT 'owner',
-    request_id          TEXT,
-    idempotency_key     TEXT,
-    observed_at         TIMESTAMPTZ DEFAULT now(),
-    invalid_at          TIMESTAMPTZ,
-    retention_class     TEXT NOT NULL DEFAULT 'operational',
-    sensitivity         TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-_DDL_EPISODES = """
-CREATE TABLE IF NOT EXISTS episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    butler           TEXT NOT NULL,
-    session_id       UUID,
-    content          TEXT NOT NULL,
-    embedding        TEXT,
-    search_vector    TSVECTOR,
-    importance       FLOAT NOT NULL DEFAULT 5.0,
-    expires_at       TIMESTAMPTZ NOT NULL,
-    metadata         JSONB DEFAULT '{}'::jsonb,
-    tenant_id        TEXT NOT NULL DEFAULT 'shared',
-    request_id       TEXT,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    retention_class  TEXT NOT NULL DEFAULT 'operational',
-    sensitivity      TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version TEXT DEFAULT 'unknown'
-)
-"""
-_DDL_MEMORY_LINKS = """
-CREATE TABLE IF NOT EXISTS memory_links (
-    id          BIGSERIAL PRIMARY KEY,
-    source_type TEXT NOT NULL,
-    source_id   UUID NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id   UUID NOT NULL,
-    relation    TEXT NOT NULL,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (source_type, source_id, target_type, target_id)
-)
-"""
-
-_DDL_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_facts_predicate ON facts (predicate)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_validity ON facts (validity)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_scope ON facts (scope)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_entity_id ON facts (entity_id)",
-    "CREATE INDEX IF NOT EXISTS idx_facts_valid_at ON facts (valid_at DESC)",
-]
-
 _DDL_FINANCE_PREDICATES = """
 INSERT INTO predicate_registry (name, is_temporal) VALUES
     ('transaction_debit',   true),
@@ -153,29 +39,23 @@ ON CONFLICT (name) DO NOTHING
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with memory/facts infrastructure."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute(_DDL_SHARED_ENTITIES)
-        await p.execute(_DDL_PREDICATE_REGISTRY)
-        await p.execute(_DDL_EPISODES)
-        await p.execute(_DDL_FACTS)
-        await p.execute(_DDL_MEMORY_LINKS)
-        for ddl in _DDL_INDEXES:
-            await p.execute(ddl)
-        await p.execute(_DDL_FINANCE_PREDICATES)
-        yield p
+async def finance_pool(db):
+    """A core+memory clone (the real facts store) with the finance predicates registered."""
+    pool = await db("core", "memory")
+    await pool.execute(_DDL_FINANCE_PREDICATES)
+    return pool
 
 
 @pytest.fixture
-async def pool_with_owner(pool):
+async def pool_with_owner(finance_pool):
     """Pool pre-seeded with an owner entity in public.entities."""
-    await pool.execute(
-        "INSERT INTO public.entities (name, roles) VALUES ($1, $2)",
+    await finance_pool.execute(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) VALUES ($1, $2, $3)",
         "Owner",
+        "person",
         ["owner"],
     )
-    yield pool
+    yield finance_pool
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +323,7 @@ class TestRecordTransactionFact:
         assert row is not None
         assert row["valid_at"] is not None  # temporal — valid_at set
 
-    async def test_works_without_owner_entity(self, pool):
+    async def test_works_without_owner_entity(self, finance_pool):
         """When no owner entity exists, facts are still created (entity_id=NULL)."""
         with patch(
             "butlers.tools.finance.facts._get_embedding_engine",
@@ -452,7 +332,7 @@ class TestRecordTransactionFact:
             from butlers.tools.finance.facts import record_transaction_fact
 
             result = await record_transaction_fact(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=_utcnow(),
                 merchant="Fallback",
                 amount=-10.00,

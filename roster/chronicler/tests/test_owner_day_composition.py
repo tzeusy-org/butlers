@@ -114,3 +114,71 @@ async def test_registered_bundle_composes_owner_day_with_canonical_enums(monkeyp
     assert all(row["start_at"].endswith("+08:00") for row in observations)
     assert {ref for row in observations for ref in row["source_refs"]} <= set(result["citations"])
     assert result["diagnostics"] == {"automated_session_records": 1, "inbound_email_records": 1}
+
+
+class _Pool:
+    """Hands out a connection stand-in; the loader is patched, so it is never queried."""
+
+    def __init__(self):
+        self.acquired = 0
+
+    def acquire(self):
+        pool = self
+
+        class _Ctx:
+            async def __aenter__(self):
+                pool.acquired += 1
+                return object()
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Ctx()
+
+
+async def _bundle_tool(monkeypatch, pool, loader):
+    from butlers.chronicler import flags
+
+    monkeypatch.setattr(storage, "list_episodes", AsyncMock(return_value=[]))
+    monkeypatch.setattr(storage, "list_point_events", AsyncMock(return_value=[]))
+    monkeypatch.setattr(flags, "load_uncaptured_with_streaks", loader)
+    module = roster_module("chronicler", "modules").ChroniclerModule()
+    mcp = FastMCP("synthetic-gap-recap")
+    await module.register_tools(mcp, None, SimpleNamespace(pool=pool), "chronicler")
+    tools = await registered_tools(mcp)
+    return await tools["chronicler_day_close_bundle"]("2026-10-15", "Asia/Singapore")
+
+
+async def test_the_registered_tool_carries_gaps_into_unknowns_and_the_recap_mention(monkeypatch):
+    seen = {}
+
+    async def loader(conn, *, local_date, timezone):
+        seen.update(local_date=local_date, timezone=timezone)
+        return (
+            [
+                {"lane": "eat", "state": "not_captured", "since": "2026-08-13"},
+                {"lane": "sleep", "state": "dark", "since": None},
+            ],
+            {"eat": 60, "sleep": 8},
+        )
+
+    pool = _Pool()
+    result = await _bundle_tool(monkeypatch, pool, loader)
+
+    assert pool.acquired == 1
+    assert str(seen["local_date"]) == "2026-10-15" and seen["timezone"] == "Asia/Singapore"
+    unknowns = result["owner_day"]["unknowns"]
+    assert "Meals not captured (source retired since 13 Aug)" in unknowns
+    assert "Sleep not captured (source dark)" in unknowns
+    # Retired lane at day 60: stored, not mentioned. Dark lane at day 8: mentioned (weekly).
+    assert result["owner_day"]["recap_mention"] == ["Sleep not captured (source dark)"]
+
+
+async def test_an_unreadable_snapshot_adds_no_gap_lines_and_no_recap_mention(monkeypatch):
+    async def loader(conn, *, local_date, timezone):
+        raise RuntimeError("snapshot unreadable")
+
+    result = await _bundle_tool(monkeypatch, _Pool(), loader)
+
+    assert "recap_mention" not in result["owner_day"]
+    assert all("not captured" not in line for line in result["owner_day"]["unknowns"])

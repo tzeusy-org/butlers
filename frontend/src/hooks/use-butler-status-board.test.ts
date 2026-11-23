@@ -76,7 +76,7 @@ function makeRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
-    hourly_stripe: Array(24).fill(0),
+    hourly_buckets: [],
     hourly_total: 0,
     cadence_seconds: null,
     cadence_label: null,
@@ -156,17 +156,28 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
       heartbeat_age_seconds: 300,
       heartbeat_unavailable: true,
       schema_unreachable: true,
-      hourly_stripe: [1, 2, 3, ...Array(21).fill(0)],
-      hourly_total: 6,
+      // Shuffled, time-keyed buckets: one 23h ago, two in the current hour and
+      // one outside the window; the stripe is placed by hour_start, never by
+      // array position, and hours no bucket covers stay null (bu-s11n0s.5.1).
+      hourly_buckets: [
+        { hour_start: "2026-07-03T09:00:00Z", sessions_count: 2 },
+        { hour_start: "2026-07-02T10:00:00Z", sessions_count: 1 },
+        { hour_start: "2026-07-03T08:00:00Z", sessions_count: 0 },
+        { hour_start: "2026-07-01T09:00:00Z", sessions_count: 9 },
+      ],
+      hourly_total: 3,
       cadence_seconds: 86400,
       cadence_label: "daily",
       silence_seconds: 432000,
       cadence_status: "overdue",
     })
     mockQuerySuccess(makeBoardResponse([row]))
+    vi.useFakeTimers({ now: new Date("2026-07-03T09:30:00Z") })
 
     const { rows } = useButlerStatusBoard()
+    vi.useRealTimers()
     const mapped = rows[0]
+    expect(mapped.hourlyStripe).toEqual([1, ...Array(21).fill(null), 0, 2])
 
     expect(mapped.name).toBe("chronicler")
     expect(mapped.activity).toBe("overdue")
@@ -183,7 +194,7 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
     expect(mapped.heartbeatAgeSeconds).toBe(300)
     expect(mapped.heartbeatUnavailable).toBe(true)
     expect(mapped.schemaUnreachable).toBe(true)
-    expect(mapped.hourlyTotal).toBe(6)
+    expect(mapped.hourlyTotal).toBe(3)
     expect(mapped.cadenceSeconds).toBe(86400)
     expect(mapped.cadenceLabel).toBe("daily")
     expect(mapped.silenceSeconds).toBe(432000)
@@ -197,11 +208,19 @@ describe("row mapping (snake_case wire -> camelCase UI contract)", () => {
   it("sets hourlyStripeError when stripe_source_error is true even if schema_unreachable is false", () => {
     // The hourly-activity query can fail independently of the session-count
     // queries that drive schema_unreachable -- both must gate the stripe.
-    const row = makeRow({ schema_unreachable: false, stripe_source_error: true })
+    const row = makeRow({
+      schema_unreachable: false,
+      stripe_source_error: true,
+      hourly_buckets: [],
+      hourly_total: null,
+    })
     mockQuerySuccess(makeBoardResponse([row]))
 
     const { rows } = useButlerStatusBoard()
     expect(rows[0].hourlyStripeError).toBe(true)
+    // A failed stripe is 24 unreported slots, never a drawn row of zeros.
+    expect(rows[0].hourlyStripe).toEqual(Array(24).fill(null))
+    expect(rows[0].hourlyTotal).toBeNull()
   })
 
   it("preserves server row order exactly (no client-side re-sort)", () => {

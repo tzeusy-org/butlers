@@ -965,12 +965,27 @@ async def get_butler_session_kinds(
 # (see _VALID_WINDOW_DAYS guard below).  With ix_sessions_started_at (core_128)
 # the range filter is index-backed; result set is at most 30 rows (one per day).
 # Budget: O(sessions_in_window) scan → O(30) GROUP BY buckets.  Bounded and safe.
+#
+# Dense window (bu-s11n0s.5.1): one row per UTC day ending today, a quiet day
+# being a measured 0, so a client can draw any day the response omits as
+# unreported rather than as a fabricated zero. Days are pinned to UTC whatever
+# the session TimeZone, matching the frontend's UTC `YYYY-MM-DD` day keys.
 _DAILY_ACTIVITY_SQL = """
-SELECT DATE(started_at) AS d, COUNT(*) AS sessions_count
-FROM sessions
-WHERE started_at >= CURRENT_DATE - ($1 * INTERVAL '1 day')
-GROUP BY d
-ORDER BY d
+WITH days AS (
+  SELECT generate_series(
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') - (($1 - 1) * INTERVAL '1 day'),
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC'),
+    '1 day'
+  ) AS day_start
+)
+SELECT
+  days.day_start::date AS d,
+  COUNT(s.id) AS sessions_count
+FROM days
+LEFT JOIN sessions s ON s.started_at >= days.day_start AT TIME ZONE 'UTC'
+                    AND s.started_at < (days.day_start + INTERVAL '1 day') AT TIME ZONE 'UTC'
+GROUP BY days.day_start
+ORDER BY days.day_start
 """
 
 _VALID_WINDOW_DAYS = {7, 30}
@@ -988,9 +1003,9 @@ async def get_butler_daily_activity(
 ) -> ApiResponse[DailyActivity]:
     """Return daily session counts for a butler over a rolling 7- or 30-day window.
 
-    Queries the butler's ``sessions`` table and groups rows by calendar date.
-    Returns one ``DailyActivityBucket`` per day that had at least one session.
-    Days with no sessions are omitted; an empty window yields ``buckets: []``.
+    Queries the butler's ``sessions`` table over a dense window of UTC days
+    ending today. Returns one ``DailyActivityBucket`` per day, oldest first; a
+    day with no sessions is a measured ``sessions_count: 0`` row.
 
     ``window_days`` must be exactly 7 or 30; other values are rejected with 422.
     """

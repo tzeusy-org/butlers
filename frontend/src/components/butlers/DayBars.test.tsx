@@ -225,3 +225,21 @@ describe("DayBars: height prop", () => {
     expect(html).toContain("height:24px")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Unreported days (bu-s11n0s.5.1)
+// ---------------------------------------------------------------------------
+
+describe("DayBars: unreported days", () => {
+  it("draws a null day as an unreported outline and leaves it out of the totals", () => {
+    const html = renderToStaticMarkup(<DayBars data={[null, 0, 4, null, 2]} />)
+    expect(html.match(/data-slot="unreported"/g)).toHaveLength(2)
+    expect(html).toContain('aria-label="5-day activity, total 6, peak 4, 2 days not reported"')
+  })
+
+  it("names an entirely unreported window instead of a zero total", () => {
+    const html = renderToStaticMarkup(<DayBars data={[null, null, null]} />)
+    expect(html).toContain('aria-label="3-day activity not reported"')
+    expect(html.match(/data-slot="unreported"/g)).toHaveLength(3)
+  })
+})

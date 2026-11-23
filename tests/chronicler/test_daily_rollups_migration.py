@@ -10,10 +10,11 @@ Pure-unit tests — no Docker / PostgreSQL required.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -25,20 +26,10 @@ _EXPECTED_REVISION = "chronicler_019"
 _EXPECTED_DOWN_REVISION = "chronicler_018"
 
 
-def _load_migration():
-    path = _MIGRATIONS_DIR / _MIGRATION_FILE
-    assert path.exists(), f"Migration file not found: {path}"
-    spec = importlib.util.spec_from_file_location("chronicler_019", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_revision_chain_links_onto_018() -> None:
     """chronicler_019 chains directly onto chronicler_018 (revision-chain integrity),
     declares no new branch_labels, and exposes callable upgrade()/downgrade()."""
-    m = _load_migration()
+    m = load_migration(_MIGRATIONS_DIR / _MIGRATION_FILE, "chronicler_019")
     assert m.revision == _EXPECTED_REVISION
     assert m.down_revision == _EXPECTED_DOWN_REVISION
     assert m.branch_labels is None

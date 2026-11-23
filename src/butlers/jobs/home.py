@@ -60,27 +60,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from datetime import UTC, datetime, timedelta
-from typing import Any, TypedDict
+from fnmatch import fnmatchcase
+from typing import Any, Literal, TypedDict
 
 import asyncpg
 
-from butlers.connectors.home_assistant_statistics import (
-    HAStatisticsClient,
-    HAStatisticsError,
-    parse_statistics_change_series,
-)
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
 )
+from butlers.core.owner_conditions import Observation as OwnerObservation
+from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
+from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.core.state import state_get, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import (
     resolve_owner_entity_info,
     resolve_owner_telegram_recipient,
+)
+from butlers.home_assistant_client import (
+    HAStatisticsClient,
+    HAStatisticsError,
+    parse_statistics_change_series,
 )
 from butlers.modules.memory.storage import store_fact
 
@@ -310,7 +315,12 @@ async def _check_owner_notify_suppression(pool: asyncpg.Pool) -> str | None:
     return await check_owner_notify_suppression(pool, log_context="_send_notify")
 
 
-async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
+#: ``_send_notify``'s terminal outcome. Callers that track delivery (the away-safety
+#: producer's ``notified_at``) set their marker only on ``"sent"``.
+NotifyOutcome = Literal["sent", "suppressed", "failed"]
+
+
+async def _send_notify(pool: asyncpg.Pool, message: str) -> NotifyOutcome:
     """Send an owner notification through the notify boundary (channel=telegram, intent=send).
 
     This is the canonical notify helper for Home butler job handlers
@@ -364,7 +374,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=suppress_reason,
         )
-        return
+        return "suppressed"
 
     recipient = await resolve_owner_telegram_recipient(pool)
     if not recipient:
@@ -381,7 +391,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason="no_recipient_configured",
         )
-        return
+        return "failed"
 
     client = get_current_switchboard_client()
     if client is None:
@@ -396,7 +406,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason="switchboard_client_unavailable",
         )
-        return
+        return "failed"
 
     notify_request = {
         "schema_version": "notify.v1",
@@ -428,7 +438,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{exc}",
         )
-        return
+        return "failed"
 
     if result.is_error:
         error_text = str(result.content[0].text) if result.content else "Unknown error"
@@ -443,7 +453,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{error_text}",
         )
-        return
+        return "failed"
 
     data = result.data
     if isinstance(data, dict) and data.get("status") == "failed":
@@ -459,7 +469,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
             priority="medium",
             reason=f"delivery_error:{error_text}",
         )
-        return
+        return "failed"
 
     logger.info("_send_notify: notification delivered to chat_id=%r", recipient)
     await record_attention_event(
@@ -472,6 +482,7 @@ async def _send_notify(pool: asyncpg.Pool, message: str) -> None:
         priority="medium",
         notification_ref=data.get("notification_id") if isinstance(data, dict) else None,
     )
+    return "sent"
 
 
 class _NoOpEmbeddingEngine:
@@ -526,8 +537,6 @@ _SEVERITY_IMPORTANCE: dict[str, float] = {
     "warning": 6.5,
     "info": 5.0,
 }
-
-_TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}"
 
 # Comfort thresholds are Celsius throughout: Home Assistant reports its sensors
 # in the unit configured for the installation (°C here), readings are normalised
@@ -650,8 +659,25 @@ def classify_offline(last_changed: datetime | None, thresholds: dict[str, int]) 
 # conversation agent, Broadlink IR/RF blasters (fire-and-forget), and TTS
 # engines.
 _STEADY_STATE_UNKNOWN_DOMAINS = frozenset(
-    {"button", "conversation", "infrared", "radio_frequency", "tts"}
+    {"button", "conversation", "infrared", "radio_frequency", "person", "tts"}
 )
+
+# HA backup timestamps ("last/next automatic backup") read "unknown" until the first
+# automatic backup has run; with no schedule configured they never leave it.
+_BACKUP_TIMESTAMP_SENSOR_RE = re.compile(r"^sensor\.backup_(last_|next_).*automatic_backup$")
+
+#: State-store key holding a JSON list of entity ids / ``fnmatch`` globs the owner has
+#: retired (dead integrations) so the health check stops reporting them.
+_HEALTH_CHECK_IGNORE_STATE_KEY = "home:health_check:ignore"
+
+# A Home Assistant restart or integration reload flips many entities in the same moment.
+# Reporting each one is noise; a cluster this large inside this window is one event.
+_STORM_MIN_ENTITIES = 20
+_STORM_WINDOW = timedelta(minutes=15)
+# After this long a cluster member is a genuinely dead device, not a restart artifact.
+_STORM_MAX_AGE = timedelta(hours=48)
+# The burst is announced on the run that first sees it (the check runs every 4h).
+_STORM_NOTICE_WINDOW = timedelta(hours=4)
 
 # Zigbee2MQTT per-gesture dimmer "action" sensors (e.g.
 # sensor.bedroom_knob_action_brightness_delta) only hold a value during an
@@ -671,7 +697,51 @@ def is_steady_state_unknown(entity_id: str) -> bool:
     domain = entity_id.split(".", 1)[0]
     if domain in _STEADY_STATE_UNKNOWN_DOMAINS:
         return True
-    return domain == "sensor" and bool(_ACTION_SENSOR_SUFFIX_RE.search(entity_id))
+    return domain == "sensor" and bool(
+        _ACTION_SENSOR_SUFFIX_RE.search(entity_id) or _BACKUP_TIMESTAMP_SENSOR_RE.match(entity_id)
+    )
+
+
+def is_ignored_entity(entity_id: str, patterns: Iterable[str]) -> bool:
+    """True if *entity_id* matches an owner-retired exact id or ``fnmatch`` glob."""
+    return any(fnmatchcase(entity_id, pattern) for pattern in patterns)
+
+
+async def _load_health_check_ignore(pool: asyncpg.Pool) -> list[str]:
+    """Read the owner's retired-entity patterns; anything malformed means no ignores."""
+    raw = await state_get(pool, _HEALTH_CHECK_IGNORE_STATE_KEY)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = None
+    if not isinstance(raw, list):
+        return []
+    # A bare wildcard would mute the whole check while still reporting "all healthy".
+    return [p for p in raw if isinstance(p, str) and p.strip("*?")]
+
+
+def find_restart_storm(candidates: list[tuple[str, datetime]], *, now: datetime) -> set[str]:
+    """Entity ids that went offline together in a recent restart-sized burst.
+
+    *candidates* are ``(entity_id, last_updated)`` for every offline entity. A burst is
+    ``_STORM_MIN_ENTITIES`` or more whose timestamps fit inside ``_STORM_WINDOW``. Members
+    are only suppressed while younger than ``_STORM_MAX_AGE``, so a device that died with
+    the restart is reported individually once the burst is no longer plausibly transient.
+    """
+    recent = sorted(
+        (ts if ts.tzinfo else ts.replace(tzinfo=UTC), entity_id)
+        for entity_id, ts in candidates
+        if now - (ts if ts.tzinfo else ts.replace(tzinfo=UTC)) <= _STORM_MAX_AGE
+    )
+    suppressed: set[str] = set()
+    start = 0
+    for end in range(len(recent)):
+        while recent[end][0] - recent[start][0] > _STORM_WINDOW:
+            start += 1
+        if end - start + 1 >= _STORM_MIN_ENTITIES:
+            suppressed.update(entity_id for _, entity_id in recent[start : end + 1])
+    return suppressed
 
 
 def select_due_issues(
@@ -716,6 +786,102 @@ def select_due_issues(
         else:
             next_alert_state[key] = last_alerted_dt.isoformat()  # type: ignore[union-attr]
     return due, next_alert_state
+
+
+# ---------------------------------------------------------------------------
+# Device threshold owner conditions (bu-6im1ew, REQ-owner-condition-ledger-008)
+# ---------------------------------------------------------------------------
+
+#: Owner condition ledger source for battery and offline crossings.
+DEVICE_THRESHOLD_SOURCE = "home:device-threshold"
+_DEVICE_THRESHOLD_FINGERPRINT_VERSION = 1
+_DEVICE_THRESHOLD_GRACE_S = 3600.0
+_DEVICE_THRESHOLD_QUALIFYING = frozenset({"critical", "warning"})
+
+
+def build_device_threshold_observations(
+    issues: Iterable[dict[str, Any]],
+    *,
+    unmeasured_battery_entity_ids: Iterable[str],
+) -> list[OwnerObservation]:
+    """Build the complete ``home:device-threshold`` observation set for one run.
+
+    Identity is ``{entity_id, issue}``; severity and the battery level are evidence, so an
+    offline device escalating from warning to critical confirms one episode. Only ``critical``
+    and ``warning`` qualify: an ``info`` battery is absent and therefore resolves. A battery
+    entity whose state is not numeric is carried forward ``confirm_only`` with no evidence, so
+    its active condition (and last real reading) is kept and never fabricated or resolved.
+    Summary and metadata carry only what the owner notification shows: entity id, friendly
+    name, issue, severity and, for battery only, the percentage.
+    """
+    observations: list[OwnerObservation] = []
+    for issue in issues:
+        severity = issue["severity"]
+        if severity not in _DEVICE_THRESHOLD_QUALIFYING:
+            continue
+        entity_id = issue["entity_id"]
+        friendly_name = issue["friendly_name"]
+        kind = issue["issue_type"]
+        metadata: dict[str, Any] = {
+            "entity_id": entity_id,
+            "friendly_name": friendly_name,
+            "issue": kind,
+            "severity": severity,
+        }
+        if kind == "battery":
+            metadata["battery_pct"] = issue["value"]
+            summary = f"{friendly_name}: battery at {issue['value']:.0f}% ({severity})"
+        else:
+            summary = f"{friendly_name}: offline ({severity})"
+        observations.append(
+            OwnerObservation(
+                fingerprint=_device_threshold_fingerprint(entity_id, kind),
+                summary=summary,
+                metadata=metadata,
+            )
+        )
+    for entity_id in unmeasured_battery_entity_ids:
+        observations.append(
+            OwnerObservation(
+                fingerprint=_device_threshold_fingerprint(entity_id, "battery"),
+                confirm_only=True,
+            )
+        )
+    return observations
+
+
+def _device_threshold_fingerprint(entity_id: str, issue: str) -> str:
+    return owner_condition_fingerprint(
+        DEVICE_THRESHOLD_SOURCE,
+        _DEVICE_THRESHOLD_FINGERPRINT_VERSION,
+        {"entity_id": entity_id, "issue": issue},
+    )
+
+
+async def _reconcile_device_thresholds(
+    pool: asyncpg.Pool, observations: list[OwnerObservation]
+) -> None:
+    """Best-effort reconcile of one complete, healthy snapshot into the owner ledger.
+
+    A state side effect beside the notification and memory-fact paths, never instead of
+    them: a ledger failure logs and is swallowed so the health check still runs (mirrors
+    Finance's ``_reconcile_owner_conditions``). Callers only reach this after the HA source
+    was confirmed healthy and the snapshot was non-empty, so omission means recovery.
+    """
+    try:
+        await reconcile_owner_condition(
+            pool,
+            source=DEVICE_THRESHOLD_SOURCE,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=_DEVICE_THRESHOLD_GRACE_S,
+        )
+    except Exception:
+        logger.warning(
+            "device_health_check: owner_conditions reconciliation failed for source=%s",
+            DEVICE_THRESHOLD_SOURCE,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1437,6 +1603,26 @@ async def _load_energy_thresholds(pool: asyncpg.Pool) -> dict[str, float]:
     return await _load_thresholds(pool, "energy", _DEFAULT_ENERGY_THRESHOLDS)  # type: ignore[return-value]
 
 
+_ENERGY_UNITS = frozenset({"kwh", "wh", "mwh"})
+
+
+def _is_cumulative_energy_candidate(entity_id: str, attrs: dict[str, Any]) -> bool:
+    """False for entities the keyword match catches that can never carry energy statistics.
+
+    Only ``sensor`` entities qualify. A declared ``device_class`` other than ``energy``
+    (power, voltage, current, monetary) or a declared unit that is not an energy unit
+    (``SGD/kWh`` tariffs, ``W``, ``s``) rules an entity out; an entity declaring neither is
+    kept, so the keyword match still finds sensors with sparse attributes.
+    """
+    if entity_id.split(".", 1)[0] != "sensor":
+        return False
+    device_class = attrs.get("device_class")
+    if device_class and device_class != "energy":
+        return False
+    unit = attrs.get("unit_of_measurement")
+    return not unit or str(unit).lower() in _ENERGY_UNITS
+
+
 async def _discover_energy_sensors(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     """Query ha_entity_snapshot for energy-related sensor entities.
 
@@ -1454,7 +1640,9 @@ async def _discover_energy_sensors(pool: asyncpg.Pool) -> list[dict[str, Any]]:
             except (ValueError, TypeError):
                 attrs = {}
         friendly = attrs.get("friendly_name") or ""
-        if _is_energy_entity(entity_id, friendly):
+        if _is_energy_entity(entity_id, friendly) and _is_cumulative_energy_candidate(
+            entity_id, attrs
+        ):
             sensors.append(
                 {
                     "entity_id": entity_id,
@@ -2081,6 +2269,11 @@ async def run_device_health_check(
        ``select_due_issues`` so an already-known, unresolved issue only
        re-notifies after the configured re-alert window instead of every run.
 
+    Between 4 and 5 it reconciles the ``warning``/``critical`` issues into the owner
+    condition ledger (``home:device-threshold``, best-effort; see
+    ``build_device_threshold_observations``). The early returns on an unmeasurable HA source
+    or an empty snapshot skip that reconcile, so neither ever resolves a condition.
+
     Args:
         pool: asyncpg connection pool for the home butler's database.
         job_args: Optional job arguments (currently unused).
@@ -2138,12 +2331,54 @@ async def run_device_health_check(
     devices_checked = len(rows)
 
     # ------------------------------------------------------------------
+    # 2b. Owner-retired entities and restart storms are excluded up front
+    # ------------------------------------------------------------------
+    ignore_patterns = await _load_health_check_ignore(pool)
+    now = datetime.now(UTC)
+    offline_candidates: list[tuple[str, datetime]] = []
+    for row in rows:
+        stamp = row["last_updated"]
+        if (
+            (row["state"] or "") in ("unavailable", "unknown")
+            and isinstance(stamp, datetime)
+            and not is_steady_state_unknown(row["entity_id"])
+            and not is_ignored_entity(row["entity_id"], ignore_patterns)
+        ):
+            offline_candidates.append((row["entity_id"], stamp))
+    storm_entity_ids = find_restart_storm(offline_candidates, now=now)
+    if ignore_patterns:
+        logger.info(
+            "device_health_check: %d retired-entity pattern(s) active, %d entities skipped",
+            len(ignore_patterns),
+            sum(1 for row in rows if is_ignored_entity(row["entity_id"], ignore_patterns)),
+        )
+    if storm_entity_ids:
+        logger.info(
+            "device_health_check: suppressing %d entities that went offline together "
+            "(likely a Home Assistant restart)",
+            len(storm_entity_ids),
+        )
+        newest = max(ts for eid, ts in offline_candidates if eid in storm_entity_ids)
+        if now - (newest if newest.tzinfo else newest.replace(tzinfo=UTC)) < _STORM_NOTICE_WINDOW:
+            # Suppression must never be silent: one notice per burst (runs are 4h apart).
+            await _send_notify(
+                pool,
+                f"ℹ️ {len(storm_entity_ids)} Home Assistant entities went offline "
+                "together, which usually means an HA restart or an integration/coordinator "
+                "outage. They are held back from device alerts for 48h; check Home Assistant "
+                "if they do not recover.",
+            )
+
+    # ------------------------------------------------------------------
     # 3 & 4. Classify battery and offline issues
     # ------------------------------------------------------------------
     issues: list[dict[str, Any]] = []
+    unmeasured_battery_entity_ids: list[str] = []
 
     for row in rows:
         entity_id: str = row["entity_id"]
+        if is_ignored_entity(entity_id, ignore_patterns):
+            continue
         state: str = row["state"] or ""
         attributes = row["attributes"]
         last_updated = row["last_updated"]
@@ -2166,6 +2401,11 @@ async def run_device_health_check(
                 battery_pct = float(state)
             except (ValueError, TypeError):
                 battery_pct = None
+            if battery_pct is not None and not math.isfinite(battery_pct):
+                battery_pct = None
+            if battery_pct is None:
+                # No reading is not a recovery: the ledger carries the condition forward.
+                unmeasured_battery_entity_ids.append(entity_id)
 
             if battery_pct is not None and battery_pct <= battery_thresholds["info"]:
                 severity = classify_battery(battery_pct, battery_thresholds)
@@ -2182,7 +2422,11 @@ async def run_device_health_check(
                     )
 
         # ---- Offline classification -----------------------------------------
-        if state in ("unavailable", "unknown") and not is_steady_state_unknown(entity_id):
+        if (
+            state in ("unavailable", "unknown")
+            and not is_steady_state_unknown(entity_id)
+            and entity_id not in storm_entity_ids
+        ):
             # Parse last_updated to datetime
             last_changed_dt: datetime | None = None
             if last_updated is not None:
@@ -2206,6 +2450,21 @@ async def run_device_health_check(
                         "description": f"offline (state: {state})",
                     }
                 )
+
+    # ------------------------------------------------------------------
+    # 4b. Owner condition ledger (best-effort, bu-6im1ew)
+    # ------------------------------------------------------------------
+    # Only reached with a healthy HA source and a non-empty snapshot, so this run is a
+    # complete enumeration. Task 2.1: HA's ``last_updated`` moves only when the state or
+    # attributes change, so an old timestamp on a numeric battery reading is a steady value,
+    # not a silent sensor; a sensor HA has lost shows ``unavailable``/``unknown`` and is
+    # carried forward above. A stale numeric reading therefore counts as measured.
+    await _reconcile_device_thresholds(
+        pool,
+        build_device_threshold_observations(
+            issues, unmeasured_battery_entity_ids=unmeasured_battery_entity_ids
+        ),
+    )
 
     # ------------------------------------------------------------------
     # 5. Store memory facts

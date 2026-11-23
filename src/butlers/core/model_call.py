@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -52,7 +53,10 @@ from butlers.core.failover_classifier import (
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import (
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     Complexity,
+    SpendRulesUnavailable,
     apply_spend_routing_rules,
     check_monthly_ceiling,
     check_token_quota,
@@ -84,6 +88,28 @@ class NoModelConfigured(RuntimeError):
 
 class SpendCeilingReached(RuntimeError):
     """The owner's monthly spend ceiling refuses the call."""
+
+
+class NotInvoked(Exception):
+    """Raised by an attempt function that refused before invoking any model.
+
+    The kernel records it as a ``suppressed`` attempt (``not_invoked:<code>``), not a
+    ``runtime_failure``. Only ``runtime_failure`` and ``success`` rows feed the dispatch
+    breaker and the routing evidence, so a refusal that says nothing about the model
+    (a goal-ledger open that lost a race, an exhausted invocation budget) can never
+    count against it. No failover follows, and the exception propagates unchanged.
+    The message must be a short code: it is the recorded reason.
+    """
+
+
+_NOT_INVOKED_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _not_invoked_reason(refusal: NotInvoked) -> str:
+    code = str(refusal)
+    if _NOT_INVOKED_CODE.fullmatch(code) is None:
+        code = "unclassified"
+    return f"not_invoked:{code}"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -155,6 +181,8 @@ class CallSpec:
     enforce_ceiling: bool = True
     max_relaunches: int | None = None
     """Runtime-failure relaunches allowed; ``None`` leaves only ``MAX_ATTEMPTS``."""
+    exact_tier: bool = False
+    """Refuse the canonical tier fallthrough: resolve on ``tier`` or not at all (D16)."""
     caller: str = "model_call"
     """Label that prefixes this call's log lines."""
     owner_cancelled: Callable[[], bool] | None = None
@@ -199,16 +227,22 @@ def _bounded(value: str) -> str:
 
 
 async def _resolve(
-    pool: asyncpg.Pool, spec: CallSpec
+    pool: asyncpg.Pool, spec: CallSpec, sink: AttemptSink
 ) -> tuple[Candidate, str, dict | None, str | None]:
-    """The first candidate, its effective tier, the base receipt and any selection reason."""
+    """The first candidate, its effective tier, the base receipt and any selection reason.
+
+    Raises :class:`SpendRulesUnavailable` after recording a ``quota_skip`` row when the spend
+    rules cannot be read: a rule may carry an owner-set cap, so the call is refused (bu-svqpzo.15).
+    """
     receipts: list[Any] = []
+    exact: dict[str, Any] = {"allow_tier_fallthrough": False} if spec.exact_tier else {}
     resolved = await resolve_model_with_effective_tier(
         pool,
         spec.butler_name,
         spec.tier,
         receipt_intent=spec.receipt_intent,
         receipt_sink=receipts,
+        **exact,
     )
     if resolved is None:
         tier = getattr(spec.tier, "value", spec.tier)
@@ -217,6 +251,12 @@ async def _resolve(
             f"Add an enabled entry with complexity_tier={tier!r}."
         )
     *row, effective_tier = resolved
+    requested_tier = getattr(spec.tier, "value", spec.tier)
+    if spec.exact_tier and effective_tier != requested_tier:
+        # A goal invocation runs on its ladder tier only (RFC 0038 D16): the
+        # canonical fallthrough would silently run an escalation at or below
+        # the tier it escalated from.
+        raise NoModelConfigured(f"No {requested_tier} model qualifies; fallthrough refused.")
     candidate = Candidate.from_row(tuple(row))
     base_receipt = receipts[-1].describe() if receipts else None
 
@@ -240,17 +280,46 @@ async def _resolve(
                     rerouted.model_id,
                 )
             if rerouted.catalog_entry_id != candidate.catalog_entry_id:
-                selection_reason = "spend_rule_override"
-            candidate = rerouted
-        except Exception:
-            logger.warning(
-                "%s: spend routing-rule evaluation failed for butler=%s; keeping tier-resolved "
-                "model=%s",
-                spec.caller,
-                spec.butler_name,
-                candidate.model_id,
-                exc_info=True,
+                if spec.exact_tier:
+                    # RFC 0038 D16: a rule's model may sit on any tier, so an
+                    # exact-tier call keeps its tier-resolved model.
+                    logger.info(
+                        "%s: spend rule reroute ignored for an exact-tier call; keeping model=%s",
+                        spec.caller,
+                        candidate.model_id,
+                    )
+                else:
+                    selection_reason = "spend_rule_override"
+                    candidate = rerouted
+        except Exception as error:
+            # Fail closed (bu-svqpzo.15, .22): any evaluation error could drop a matched rule's cap.
+            refusal = (
+                error
+                if isinstance(error, SpendRulesUnavailable)
+                else SpendRulesUnavailable(SPEND_RULES_UNAVAILABLE_REASON)
             )
+            logger.warning("%s blocked: %s", spec.caller, refusal, exc_info=refusal is not error)
+            await sink.attempt(
+                catalog_entry_id=candidate.catalog_entry_id,
+                butler=spec.butler_name,
+                outcome="quota_skip",
+                attempt_index=0,
+                failure_reason=str(refusal),
+                purpose_lane=spec.purpose_lane,
+                produce_fleet_halt=False,
+                resolution_receipt=project_resolution_receipt(
+                    base_receipt,
+                    catalog_entry_id=candidate.catalog_entry_id,
+                    runtime_type=candidate.runtime_type,
+                    model_id=candidate.model_id,
+                    effective_tier=effective_tier,
+                    attempt_index=0,
+                    selection_reason=None,
+                ),
+            )
+            if refusal is error:
+                raise
+            raise refusal from error
     return candidate, effective_tier, base_receipt, selection_reason
 
 
@@ -273,8 +342,12 @@ async def _ceiling_gate(
     if ceiling.allowed:
         return
     message = (
-        f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
-        f"${ceiling.ceiling_usd:.2f}"
+        CEILING_UNAVAILABLE_REASON
+        if ceiling.unavailable
+        else (
+            f"{CEILING_DENIAL_REASON_PREFIX}: month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+            f"${ceiling.ceiling_usd:.2f}"
+        )
     )
     logger.warning("%s blocked by monthly spend ceiling: %s", spec.caller, message)
     await sink.attempt(
@@ -284,7 +357,7 @@ async def _ceiling_gate(
         attempt_index=attempt_index,
         failure_reason=message,
         purpose_lane=spec.purpose_lane,
-        produce_fleet_halt=True,
+        produce_fleet_halt=not ceiling.unavailable,
         resolution_receipt=receipt,
     )
     raise SpendCeilingReached(message)
@@ -297,6 +370,12 @@ def _quota_message(candidate: Candidate, quota: Any) -> tuple[str, str]:
     if quota.limit_30d is not None and quota.usage_30d >= quota.limit_30d:
         windows.append(f"30d (used={quota.usage_30d}, limit={quota.limit_30d})")
     bounded_windows = _bounded("; ".join(windows))
+    if quota.unavailable:
+        return (
+            f"Token quota unavailable for catalog entry '{_bounded(candidate.model_id)}': "
+            "the quota state could not be read",
+            "unavailable",
+        )
     return (
         f"Token quota exhausted for catalog entry '{_bounded(candidate.model_id)}': "
         f"{bounded_windows}",
@@ -361,7 +440,7 @@ async def call_model(
     an ineligible failure, or a ``RuntimeError`` whose message starts with
     ``same_tier_failover_exhausted`` once candidates, relaunches or attempt slots run out.
     """
-    candidate, effective_tier, base_receipt, selection_reason = await _resolve(pool, spec)
+    candidate, effective_tier, base_receipt, selection_reason = await _resolve(pool, spec, sink)
     receipt = project_resolution_receipt(
         base_receipt,
         catalog_entry_id=candidate.catalog_entry_id,
@@ -488,6 +567,20 @@ async def call_model(
                 resolution_receipt=receipt,
                 usage_evidence=_usage_evidence(spec, None),
                 served_identity=snapshot(adapter),
+                attempt_key=attempt_key,
+            )
+            raise
+        except NotInvoked as refusal:
+            # No model ran: a non-model outcome, like a quota skip (bu-dhloi1.208).
+            await sink.attempt(
+                catalog_entry_id=candidate.catalog_entry_id,
+                butler=spec.butler_name,
+                outcome="suppressed",
+                attempt_index=attempt_count - 1,
+                failure_reason=_not_invoked_reason(refusal),
+                purpose_lane=spec.purpose_lane,
+                resolution_receipt=receipt,
+                served_identity=unknown(candidate.runtime_type, state="not_invoked"),
                 attempt_key=attempt_key,
             )
             raise

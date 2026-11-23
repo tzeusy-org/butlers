@@ -131,6 +131,7 @@ describe("useEntityActivity", () => {
       offset: 0,
       degraded: false,
       degraded_reason: null,
+      chronicler_truncated: false,
     });
 
     useEntityActivity("entity-001", { limit: 50 });

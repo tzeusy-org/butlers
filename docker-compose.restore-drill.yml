@@ -41,7 +41,7 @@ services:
   # never the external PostgreSQL address directly.
   restore-drill-executor:
     image: butlers-app:${BUTLERS_APP_TAG:-latest}
-    entrypoint: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "butlers.jobs.restore_drill_executor"]
+    entrypoint: ["/usr/local/bin/python", "-I", "/app/scripts/runtime_clis/python_entrypoint.py", "python", "-m", "butlers.jobs.restore_drill_executor"]
     command: []
     environment:
       RESTORE_DRILL_EXECUTOR_DB_HOST: ${RESTORE_DRILL_EXECUTOR_DB_HOST:?Run a supported launcher to provide the PostgreSQL TLS DNS hostname}

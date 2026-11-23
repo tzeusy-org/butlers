@@ -45,8 +45,10 @@ from butlers.core.qa.dispatch import (
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
 from butlers.core.qa.triage import TriagedFinding, triage_findings
+from butlers.testing.fake_pool import FakePool, fake_pool
+from tests.core.qa.conftest import _no_paused_proposal, no_paused_proposal  # noqa: F401
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.usefixtures("_no_paused_proposal")]
 
 
 # ---------------------------------------------------------------------------
@@ -91,13 +93,8 @@ def _make_triaged(
     )
 
 
-def _make_pool() -> MagicMock:
-    pool = MagicMock()
-    pool.fetchval = AsyncMock(return_value=0)
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(return_value=[])
-    pool.execute = AsyncMock()
-    return pool
+def _qa_pool() -> FakePool:
+    return fake_pool(fetchval=0, fetchrow=None, fetch=[], execute=None)
 
 
 def _make_dispatch_config(**kwargs) -> QaDispatchConfig:
@@ -117,7 +114,7 @@ class TestFullPatrolCycle:
 
     async def test_full_cycle_log_scanner_to_dispatch(self):
         """A finding from log scanner flows through triage to dispatch."""
-        pool = _make_pool()
+        pool = _qa_pool()
         patrol_id = uuid.uuid4()
         attempt_id = uuid.uuid4()
         worktree_path = Path("/tmp/qa-worktree")
@@ -148,7 +145,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -220,7 +217,7 @@ class TestFullPatrolCycle:
 
     async def test_dispatch_creates_worktree_with_qa_prefix(self):
         """The worktree branch name uses the 'qa' prefix (not 'healing')."""
-        pool = _make_pool()
+        pool = _qa_pool()
         created_branches: list[str] = []
 
         async def capture_worktree(
@@ -257,7 +254,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -290,7 +287,7 @@ class TestFullPatrolCycle:
 
     async def test_timeout_watchdog_registered_in_task_registry(self):
         """After dispatch, the timeout watchdog is tracked in task_registry."""
-        pool = _make_pool()
+        pool = _qa_pool()
         attempt_id = uuid.uuid4()
         task_registry: list[asyncio.Task] = []
         finding = _make_qa_finding(severity=1)
@@ -319,7 +316,7 @@ class TestFullPatrolCycle:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -432,7 +429,7 @@ class TestReactiveRelay:
         findings = await source.discover(lookback_minutes=15)
         assert len(findings) == 1
 
-        pool = _make_pool()
+        pool = _qa_pool()
         attempt_id = uuid.uuid4()
         triaged = _make_triaged(findings[0])
 
@@ -459,7 +456,7 @@ class TestReactiveRelay:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -507,7 +504,7 @@ class TestCrossSourceDeduplication:
 
     async def test_same_fingerprint_two_sources_dispatched_once(self):
         """Two findings with identical fingerprints from different sources yield one dispatch."""
-        pool = _make_pool()
+        pool = _qa_pool()
         shared_fp = "d" * 64
         patrol_id = uuid.uuid4()
         attempt_id = uuid.uuid4()
@@ -550,7 +547,7 @@ class TestCrossSourceDeduplication:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -592,7 +589,7 @@ class TestCrossSourceDeduplication:
 
     async def test_triage_deduplicates_cross_source_findings(self):
         """Triage layer flags the second cross-source finding as intra-patrol dedup."""
-        pool = _make_pool()
+        pool = _qa_pool()
         shared_fp = "e" * 64
         patrol_id = uuid.uuid4()
 
@@ -702,7 +699,7 @@ class TestPatrolCrashRecovery:
         from butlers.modules.qa import QaConfig, QaModule
 
         stale_id = uuid.uuid4()
-        pool = _make_pool()
+        pool = _qa_pool()
 
         # Simulate: fetch returns one stale 'running' patrol row
         pool.fetch = AsyncMock(return_value=[{"id": stale_id}])
@@ -726,7 +723,7 @@ class TestPatrolCrashRecovery:
         """on_startup calls recover_stale_attempts and handles int return value."""
         from butlers.modules.qa import QaConfig, QaModule
 
-        pool = _make_pool()
+        pool = _qa_pool()
         pool.fetch = AsyncMock(return_value=[])  # no stale patrol rows
 
         mod = QaModule()
@@ -759,7 +756,7 @@ class TestHealingApiBackwardCompatibility:
 
     async def test_qa_investigation_uses_shared_healing_attempts_table(self):
         """dispatch_qa_investigation calls create_or_join_attempt (shared table)."""
-        pool = _make_pool()
+        pool = _qa_pool()
         attempt_id = uuid.uuid4()
         create_or_join_calls: list[dict] = []
 
@@ -793,7 +790,7 @@ class TestHealingApiBackwardCompatibility:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -829,7 +826,7 @@ class TestHealingApiBackwardCompatibility:
 
     async def test_qa_investigation_result_has_attempt_id(self):
         """The dispatch result includes a valid attempt_id for cross-reference in APIs."""
-        pool = _make_pool()
+        pool = _qa_pool()
         attempt_id = uuid.uuid4()
         finding = _make_qa_finding(severity=1)
         triaged = _make_triaged(finding)
@@ -857,7 +854,7 @@ class TestHealingApiBackwardCompatibility:
                 return_value=False,
             ),
             patch(
-                "butlers.core.qa.dispatch.resolve_model",
+                "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
                 new_callable=AsyncMock,
                 return_value=MagicMock(),
             ),
@@ -901,43 +898,47 @@ class TestConcurrencyModel:
     """Integration: QA investigations use semaphores without deadlocking callers."""
 
     async def test_dispatch_novel_findings_respects_concurrency_cap(self):
-        """When concurrency cap is reached, dispatch_novel_findings stops dispatching."""
-        pool = _make_pool()
-        patrol_id = uuid.uuid4()
+        """Once the active count reaches the cap, the rest are held durably, not launched."""
+        pool = _qa_pool()
         config = _make_dispatch_config(max_concurrent=2)
-
-        # 4 findings, but concurrency cap of 2 → first hit stops the rest
         findings = [_make_triaged(_make_qa_finding(severity=1)) for _ in range(4)]
-        call_count = 0
 
-        async def dispatch_side_effect(*args, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return QaDispatchResult(
-                    accepted=False,
-                    fingerprint=findings[0].finding.fingerprint,
-                    reason="concurrency_cap",
-                )
+        async def launch(*args, **kwargs):
             return QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched")
 
-        with patch(
-            "butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=dispatch_side_effect
+        with (
+            patch(
+                "butlers.core.qa.dispatch.dispatch_qa_investigation", side_effect=launch
+            ) as launched,
+            # The first launch sees room; by the second finding the fleet is at cap.
+            patch(
+                "butlers.core.qa.dispatch.count_active_attempts",
+                new_callable=AsyncMock,
+                side_effect=[0, 2],
+            ),
+            patch(
+                "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock
+            ) as hold,
         ):
             results = await dispatch_novel_findings(
                 pool=pool,
                 novel_findings=findings,
-                patrol_id=patrol_id,
+                patrol_id=uuid.uuid4(),
                 config=config,
                 repo_root=Path("/tmp/repo"),
                 spawner=MagicMock(),
             )
 
-        # dispatch_qa_investigation called only once
-        assert call_count == 1
-        # All results returned; remaining synthesized as concurrency_cap
-        assert len(results) == 4
-        assert all(r.reason == "concurrency_cap" for r in results)
+        assert launched.call_count == 1
+        assert [r.reason for r in results] == ["dispatched"] + ["concurrency_cap"] * 3
+        hold.assert_awaited_once()
+        assert hold.await_args.args[1] == [f.finding_id for f in findings[1:]]
+        assert hold.await_args.args[2] == "concurrency_cap"
 
     async def test_report_error_returns_immediately_non_blocking(self):
         """report_error via ButlerReportsSource is non-blocking (queues and returns)."""

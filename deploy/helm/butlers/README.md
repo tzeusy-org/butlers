@@ -7,14 +7,45 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, bootstrap, helm upgrade, status
 ```
 
-`make deploy-dev` reruns the deployed tag's `scripts/init-db.sql` (`make bootstrap-dev`) before
-`helm upgrade`. Online migrations only check that privileged bootstrap; they never create it.
+`make deploy-dev` first runs the read-only dev topology preflight, then reruns the deployed tag's
+`scripts/init-db.sql` (`make bootstrap-dev`), then rechecks the same preflight immediately before
+`helm upgrade`. The deploy host needs the checkout's real virtualenv (`uv sync --dev`); the guard
+uses `uv run --no-sync`. Unknown runtime state or an active topology transition stops before
+bootstrap. A split/cohost change requires both runtime roles observed at zero with no old or
+terminating pods. The guard never scales or deletes anything, and competing automation must
+remain held because these reads are not an atomic ownership lock. Online migrations only check
+that privileged bootstrap; they never create it. Production deployment behavior is unchanged.
+
+On dev the `migrations` initContainer also runs `butlers public-mcp reconcile` after Alembic
+(`publicMcp.reconcile: true` in `values.dev.yaml`; off by default, because reconcile refuses
+without the CNPG projection prerequisites). After `record-deploy.sh`, whatever it returned,
+`deploy-dev` runs `scripts/k8s/public-mcp-owner-step.sh`, the public MCP owner step (RFC 0039
+D3, OD20), and exits with the first non-zero status. The step renders its superuser SQL from the
+git tree of `TAG` in this checkout, so the tag must be a local commit. An image without
+`public-mcp reconcile` (a rollback) skips reconcile with a notice; a command listing that crashes
+fails the rollout instead. `PUBLIC_MCP_OWNER_STEP_dev := off` in this makefile, set in a reviewed
+change, skips the step. See
+[Public MCP Read Surface](../../../docs/operations/public-mcp-read-surface.md).
+
+Dev Helm and kubectl must use the same inherited context/`KUBECONFIG`. All supported namespace
+forms, including `-nVALUE` and `-n=VALUE`, must select `butlers-dev`. Helm-only `--kube-*` /
+`--kubeconfig` flags and any `HELM_KUBE*` environment key are refused before render/query;
+their values are never reported. Use the shared inherited context rather than Helm-only overrides.
 
 `localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
 External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
 guide.
 
-Dev selects `butlersControl.enabled=true`: `butlers-control` runs today's
+Dev temporarily selects `butlersControl.enabled=false` by owner decision on
+2026-11-04 so RFC 0023 recovery can use the accepted same-PID authority. One
+`butlers-up` includes Switchboard and shares all five session slots; the control
+workload, session listener and ingress policy are absent. This source selection
+does not attest deployment or enable approval delivery. Follow the
+[exclusive, data-preserving rollout](../../../docs/operations/approval-delivery-dev-rollout.md)
+before replacing either topology; preserve live DB/PVCs and all durable evidence.
+
+Explicit `butlersControl.enabled=true` retains the key-absent split stage:
+`butlers-control` runs today's
 Switchboard service on 41100 plus the refusal-only session port 41199, while
 `butlers-up` excludes Switchboard. Probes use service health. Both Deployments
 have exactly one replica with `Recreate`; their session capacities are 1 and 4
@@ -22,10 +53,51 @@ from the owner fleet budget 5. Invalid/nonpositive staged partitions or budgets
 above five refuse rendering. The production default remains disabled/unsplit at
 five. No GOAL private key is provisioned or mounted in this stage.
 
-`butlers-control-ingress` permits service callers within the namespace on 41100.
+The optional `servicePlaneAuth.switchboardTLS.enabled` mode requires the split
+stage and service-plane workload authentication. It publishes
+`https://butlers-control:41100` as the Switchboard origin. Set
+`servingSecretName` to a Secret with `tls.crt` and `tls.key`. Only the control
+workload mounts the serving key. The certificate needs a DNS SAN for
+`butlers-control`. Set `caConfigMapName` to a ConfigMap with the dedicated public
+Switchboard CA in `ca.crt`. The chart mounts this CA for the service callers and
+connector startup checks. Application clients scope the CA to the configured
+Switchboard origin and use TLS 1.3. Kubelet HTTPS health probes measure availability.
+The Service listener binds the control pod IP. Local runtime MCP uses the same
+port on IPv4 loopback.
+The mode defaults to false. Provision the TLS resources before enabling it.
+
+The optional `servicePlaneAuth.healthTLS.enabled` mode requires the split stage
+and service-plane workload authentication. It serves HTTPS on the existing
+`butlers-up:41103` Service while keeping native Health MCP on IPv4 loopback.
+Set the Health `servingSecretName` to a Secret with `tls.crt` and `tls.key`.
+The certificate needs a DNS SAN for `butlers-up`. Set the Health `caConfigMapName`
+to a ConfigMap with the dedicated public CA in `ca.crt`. Switchboard and
+Dashboard verify this origin before sending their projected Health audience
+tokens. Google Health's startup check uses the same CA and readiness rules.
+The mode defaults to false, with the startup check using HTTP.
+
+When the split stage is selected, `butlers-control-ingress` permits service callers within the namespace on 41100.
 Port 41199 permits only pods with this release's instance label and component
-`control-session-health` (operator/test caller) or `session-host` (reserved future
-identity). These labels are trusted deployment identities, not caller input.
+`control-session-health` (operator/test caller) or `session-host`. These labels are
+trusted deployment identities, not caller input.
+
+`sessionHost.enabled` (default false, requires `butlersControl.enabled`) renders the
+dark RFC 0038 D3 session host: a `session-host` Deployment running
+`butlers session-host`, which refuses every launch and serves the Codex credential
+volume over mTLS. Its control port (`sessionHost.port`, 41198) has a ClusterIP Service,
+and `<release>-session-host-ingress` admits only butlers-control there; it stays
+excluded from the namespace ingress allow. Its only secret is its own PKI
+(`sessionHost.pkiSecret`, provisioned out of band; the pod does not start without it).
+The credential PVC is `<release>-session-host-credentials`. It carries no database,
+domain or connector credential. Egress is not restricted yet (`trackerEgress` allows
+all destinations and policies union); that is the dev reachability work.
+`tests/scripts/test_session_host_env_guard.py` pins its environment composition.
+`sessionHost.seccompLocalhostProfile` (default empty) runs the container under
+`deploy/seccomp/session-host-sandbox.json` as a `Localhost` seccomp profile; set it only
+after installing the file under the node's kubelet seccomp root, since a missing profile
+stops the pod. Seccomp alone does not make Bubblewrap work in the pod: its `--proc` mount
+also needs an unmasked `/proc`, which `procMount: Unmasked` gives only with
+`hostUsers: false` (see `deploy/seccomp/README.md`).
 NetworkPolicy enforcement and the owner Telegram smoke still require actual dev
 verification; a successful render proves neither. See [stage operation and rollback](../../../docs/architecture/key-absent-control.md).
 
@@ -35,7 +107,8 @@ connector with a `healthPort` gets a `metrics-proxy` sidecar
 (`scripts/connector_metrics_proxy.py`) that republishes only `GET /metrics` on the named pod
 port `metrics` (9464). Pods carry `k8s.grafana.com/*` and `prometheus.io/*` scrape annotations;
 `connectorMetrics.podMonitor.enabled` adds a Prometheus Operator `PodMonitor` whose `job` and
-`connector` labels match the Compose scrape jobs. On pods `hostIngress.restrict` isolates, the
-host-ingress policy admits the metrics port from `connectorMetrics.allowFrom` (empty: any
-source). Which discovery the cluster LGTM stack honours is site configuration; confirm the
-targets appear after deploy.
+`connector` labels match the Compose scrape jobs. Default-deny ingress selects every pod, and the
+metrics port admits only pods in `connectorMetrics.sourceNamespace` (default `lgtm`, matched on
+`kubernetes.io/metadata.name`). The chart refuses an empty value and the public MCP namespaces.
+Which discovery the cluster LGTM stack honours, and which namespace its scraper runs in, are site
+configuration; confirm the targets appear after deploy.

@@ -29,8 +29,12 @@ from butlers.connectors.google_calendar import (
     _parse_event_start,
     build_event_envelope,
     build_starting_soon_envelope,
+    scan_starting_soon,
+    scan_starting_soon_on_restart,
 )
+from butlers.connectors.ingest_retry import IngestRetryBudget
 from butlers.ingestion_policy import PolicyDecision
+from tests.connectors.filtered_event_fakes import FilteredEventsPool
 
 _ENDPOINT = "google_calendar:user:test@example.com"
 _OBSERVED = "2026-06-01T10:00:00+00:00"
@@ -244,6 +248,60 @@ async def test_check_starting_soon_emits_spec_envelope(
     assert len(again) == 1
 
 
+def _soon_event(event_id: str, event_type: str | None) -> tuple[dict, datetime]:
+    start_dt = datetime.now(UTC) + timedelta(minutes=14)
+    event = {
+        "id": event_id,
+        "summary": event_id,
+        "status": "confirmed",
+        "start": {"dateTime": start_dt.isoformat()},
+        "end": {"dateTime": (start_dt + timedelta(minutes=30)).isoformat()},
+    }
+    if event_type is not None:
+        event["eventType"] = event_type
+    return event, start_dt
+
+
+async def test_check_starting_soon_skips_out_of_office_and_working_location(
+    account_config: CalendarAccountConfig,
+) -> None:
+    """bu-s11n0s.4: a declared status is not a meeting, so it never gets a starting-soon notice."""
+    runtime = CalendarConnectorRuntime(account_config)
+    for event_id, event_type in (
+        ("ooo", "outOfOffice"),
+        ("location", "workingLocation"),
+        ("focus", "focusTime"),
+        ("meeting", None),
+    ):
+        runtime._upcoming_events[event_id] = _soon_event(event_id, event_type)
+    submitted: list[dict] = []
+
+    async def _capture(env: dict) -> None:
+        submitted.append(env)
+
+    with patch.object(runtime, "_submit_to_ingest_api", side_effect=_capture):
+        await runtime._check_starting_soon()
+
+    assert {env["event"]["external_event_id"] for env in submitted} == {
+        "starting_soon:focus",
+        "starting_soon:meeting",
+    }
+
+
+@pytest.mark.parametrize("scan", [scan_starting_soon, scan_starting_soon_on_restart])
+def test_starting_soon_scans_skip_status_events(scan) -> None:
+    events = [
+        _soon_event(event_id, event_type)[0]
+        for event_id, event_type in (
+            ("ooo", "outOfOffice"),
+            ("location", "workingLocation"),
+            ("meeting", "default"),
+        )
+    ]
+    envelopes = scan(events, StartingSoonSeenSet(), lead_minutes=15, endpoint_identity=_ENDPOINT)
+    assert [env["event"]["external_event_id"] for env in envelopes] == ["starting_soon:meeting"]
+
+
 async def test_blocked_event_buffered_not_ingested(
     account_config: CalendarAccountConfig,
 ) -> None:
@@ -423,6 +481,8 @@ async def test_submission_error_preserves_resolved_organizer_identity(
     identity the policy-filter paths preserve.
     """
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-submit-err",
         "status": "confirmed",
@@ -445,8 +505,8 @@ async def test_submission_error_preserves_resolved_organizer_identity(
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     # row[5] = sender_identity, row[8] = status, row[9] = full_payload dict
     assert row[5] == "org@example.com"
     assert row[8] == "error"
@@ -466,6 +526,8 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
     rather than fabricating a different placeholder.
     """
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-submit-err-noorg",
         "status": "confirmed",
@@ -488,8 +550,8 @@ async def test_submission_error_without_organizer_matches_policy_filter_conventi
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     assert row[5] == "unknown"
     assert row[9]["sender"]["identity"] == "unknown"
 
@@ -605,6 +667,8 @@ async def test_submission_error_retains_raw_payload(
     """Errored content (status='error') is exempt: the raw payload is retained
     for diagnosis and replay."""
     runtime = CalendarConnectorRuntime(account_config)
+    runtime._ingest_retry = IngestRetryBudget(1)  # park on the first failure (bu-dhloi1.149)
+    runtime._db_pool = pool = FilteredEventsPool()  # the park is written durably (.250)
     event = {
         "id": "evt-err-priv",
         "status": "confirmed",
@@ -627,8 +691,8 @@ async def test_submission_error_retains_raw_payload(
         ingested = await runtime._process_event(event)
 
     assert ingested is False
-    assert len(runtime._filtered_event_buffer) == 1
-    row = runtime._filtered_event_buffer._rows[0]
+    assert len(runtime._filtered_event_buffer) == 0
+    (row,) = pool.written
     assert row[8] == "error"
     # The error path preserves the raw payload built into the envelope.
     assert row[9]["payload"]["raw"] == event
@@ -675,6 +739,27 @@ def test_classify_source_api_error_distinguishes_google_revocation_from_api_fail
     else:
         assert str(status_code) in detail
 
+    nested = _google_token_http_error(
+        {"error": {"code": 503, "errors": [{"reason": "syntheticReason"}], "message": "Retry"}},
+        503,
+    )
+    assert _classify_source_api_error(nested) == (False, "code=503, message=Retry")
+    request = httpx.Request("GET", "https://www.googleapis.com/synthetic")
+    for body, expected in (
+        (b"", "HTTP 503"),
+        (b"synthetic plain body", "HTTP 503: synthetic plain body"),
+        (b"[]", "HTTP 503: []"),
+        (b'{"error": {}}', 'HTTP 503: {"error": {}}'),
+        (b"x" * 220, "HTTP 503: " + "x" * 200),
+    ):
+        response = httpx.Response(503, content=body, request=request)
+        error = httpx.HTTPStatusError("source failure", request=request, response=response)
+        assert _classify_source_api_error(error) == (False, expected)
+    assert _classify_source_api_error(httpx.ReadTimeout("synthetic timeout")) == (
+        False,
+        "ReadTimeout: synthetic timeout",
+    )
+
 
 @pytest.mark.parametrize(
     "url",
@@ -718,3 +803,345 @@ def test_calendar_health_reports_revocation_as_error_and_api_failure_as_degraded
         "error",
         "error=invalid_grant, description=Token expired or revoked",
     )
+
+
+# ---------------------------------------------------------------------------
+# Sync token: the full sync must yield one, and its absence must be honest (bu-uhbhzq.1)
+# ---------------------------------------------------------------------------
+
+
+def _synced_runtime(account_config: CalendarAccountConfig, calls: list[dict[str, Any]]):
+    """A runtime over a fake Calendar API that, like Google, withholds a sync token when
+    ``orderBy`` is sent, and requires a sync-token request to repeat the initial filters."""
+    from unittest.mock import AsyncMock
+
+    runtime = CalendarConnectorRuntime(account_config)
+    runtime._cursor_pool = AsyncMock()
+    runtime._running = True
+
+    async def api_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        if "syncToken" in params:
+            return {"items": [], "nextSyncToken": "token-2"}
+        page: dict[str, Any] = {"items": [{"id": "e1", "status": "confirmed"}]}
+        if "orderBy" not in params:
+            page["nextSyncToken"] = "token-1"
+        return page
+
+    runtime._gcal_api_get = api_get  # type: ignore[method-assign]
+    return runtime
+
+
+async def test_the_full_sync_persists_a_token_and_the_next_cycle_is_incremental(
+    account_config: CalendarAccountConfig,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+    saved: list[str] = []
+
+    async def save(pool: Any, connector_type: str, identity: str, token: str, **_: Any) -> None:
+        saved.append(token)
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._ensure_sync_token()
+        await runtime._run_one_poll_cycle()
+
+    assert saved[0] == "token-1"
+    full, incremental = calls[0], calls[1]
+    assert "orderBy" not in full
+    assert incremental["syncToken"] == "token-1"
+    assert {k: v for k, v in incremental.items() if k != "syncToken"} == full
+    assert full == {"singleEvents": "true", "showDeleted": "true"}
+
+
+async def test_a_full_sync_without_a_token_is_degraded_and_never_logs_saved(
+    account_config: CalendarAccountConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+    original = runtime._gcal_api_get
+
+    async def no_token(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        data = await original(path, params)
+        data.pop("nextSyncToken", None)
+        return data
+
+    runtime._gcal_api_get = no_token  # type: ignore[method-assign]
+    runtime._record_source_api_success()
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+        caplog.at_level("INFO", logger="butlers.connectors.google_calendar"),
+    ):
+        await runtime._ensure_sync_token()
+
+    save.assert_not_called()
+    assert "syncToken saved" not in caplog.text
+    state, reason = runtime._get_health_state()
+    assert state == "degraded" and "sync token" in (reason or "")
+
+
+async def test_a_missing_token_waits_a_poll_interval_instead_of_repeating_the_full_sync(
+    account_config: CalendarAccountConfig,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    runtime = _synced_runtime(account_config, calls)
+
+    async def no_token(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        return {"items": []}
+
+    runtime._gcal_api_get = no_token  # type: ignore[method-assign]
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        runtime._running = False
+
+    with (
+        patch("butlers.connectors.google_calendar.asyncio.sleep", fake_sleep),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._run_poll_loop()
+
+    assert len(calls) == 1, "the full sync ran more than once before the first wait"
+    assert sleeps == [account_config.poll_interval_s]
+
+
+async def test_missing_full_sync_token_remains_degraded_during_ingest_retry(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    captured = []
+
+    async def fake_calendar_api(path, params):
+        captured.append(dict(params))
+        runtime._record_source_api_success()
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": [{"id": "event-with-retry", "status": "confirmed"}]}
+
+    with (
+        patch.object(runtime, "_gcal_api_get", side_effect=fake_calendar_api),
+        patch.object(
+            runtime, "_submit_to_ingest_api", AsyncMock(side_effect=RuntimeError("retryable"))
+        ) as submit,
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+    ):
+        await runtime._run_one_poll_cycle()
+
+    assert [params.get("syncToken") for params in captured] == ["expired", None]
+    submit.assert_awaited_once()
+    save.assert_not_called()
+    assert runtime._hold_sync_token is True
+    assert runtime._sync_token == "expired"
+    assert runtime._get_health_state() == (
+        "degraded",
+        "Google Calendar full sync returned no sync token",
+    )
+
+
+async def test_a_410_followed_by_no_token_clears_the_token_and_waits(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    calls: list[dict[str, Any]] = []
+    saved: list[str] = []
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(params))
+        runtime._record_source_api_success()
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    async def save(pool: Any, connector_type: str, identity: str, token: str, **_: Any) -> None:
+        saved.append(token)
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._run_one_poll_cycle()
+        assert runtime._sync_token is None and saved == [""]
+        assert runtime._get_health_state()[0] == "degraded"
+
+
+async def test_a_full_sync_skips_cancelled_events_but_incremental_keeps_them(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    pages = [{"id": "gone", "status": "cancelled"}, {"id": "live", "status": "confirmed"}]
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": pages, "nextSyncToken": "fresh"}
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with patch.object(runtime, "_process_event", AsyncMock()) as process:
+        await runtime._run_one_poll_cycle()
+    assert [c.args[0]["id"] for c in process.await_args_list] == ["live"]
+
+
+async def test_a_later_full_sync_with_a_token_clears_degraded_health(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = _synced_runtime(account_config, [])
+    runtime._record_source_api_success()
+    runtime._missing_sync_token = True
+    assert runtime._get_health_state()[0] == "degraded"
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor"),
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=None),
+    ):
+        await runtime._ensure_sync_token()
+    assert runtime._sync_token == "token-1"
+    assert runtime._get_health_state()[0] != "degraded"
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_cleared_expired_cursor_keeps_recovery_ingest_mode(account_config, restart):
+    from unittest.mock import AsyncMock
+
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    durable_token = "expired"
+
+    async def save(pool, connector_type, identity, token, **kwargs):
+        nonlocal durable_token
+        durable_token = token
+
+    async def load(*args, **kwargs):
+        return durable_token
+
+    async def first_api(path, params):
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    event = {"id": "observed-on-retry", "status": "confirmed"}
+
+    async def next_api(path, params):
+        assert "syncToken" not in params
+        return {"items": [event], "nextSyncToken": "replacement"}
+
+    with (
+        patch("butlers.connectors.google_calendar.save_cursor", save),
+        patch("butlers.connectors.google_calendar.load_cursor", load),
+    ):
+        with patch.object(runtime, "_gcal_api_get", first_api):
+            await runtime._run_one_poll_cycle()
+        assert durable_token == "" and runtime._sync_token is None
+        if restart:
+            runtime = _synced_runtime(account_config, [])
+        with (
+            patch.object(runtime, "_gcal_api_get", next_api),
+            patch.object(runtime, "_process_event", AsyncMock(return_value=True)) as process,
+        ):
+            await runtime._ensure_sync_token()
+        process.assert_awaited_once_with(event)
+        assert durable_token == "replacement"
+
+
+async def test_clearing_expired_cursor_does_not_report_successful_checkpoint(
+    account_config, caplog
+):
+    from butlers.connectors.google_calendar import _SyncTokenExpiredError
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._sync_token = "expired"
+    before = runtime._last_checkpoint_save
+
+    async def api(path, params):
+        if "syncToken" in params:
+            raise _SyncTokenExpiredError()
+        return {"items": []}
+
+    with (
+        patch.object(runtime, "_gcal_api_get", api),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        caplog.at_level("DEBUG", logger="butlers.connectors.google_calendar"),
+    ):
+        await runtime._run_one_poll_cycle()
+    assert save.await_args.args[3] == ""
+    assert "saved syncToken" not in caplog.text, "cursor clearing was logged as a saved sync token"
+    assert runtime._last_checkpoint_save == before
+
+
+async def test_a_cursor_load_error_skips_the_baseline_and_degrades(
+    account_config: CalendarAccountConfig,
+) -> None:
+    runtime = _synced_runtime(account_config, [])
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    runtime._record_source_api_success()
+    api_calls: list[dict[str, Any]] = []
+
+    async def api(path: str, params: dict[str, Any]) -> dict[str, Any]:
+        api_calls.append(dict(params))
+        return {"items": [], "nextSyncToken": "baseline"}
+
+    runtime._gcal_api_get = api  # type: ignore[method-assign]
+    with (
+        patch(
+            "butlers.connectors.google_calendar.load_cursor",
+            side_effect=RuntimeError("store down"),
+        ),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+    ):
+        await runtime._ensure_sync_token()
+
+    assert api_calls == [] and runtime._sync_token is None
+    save.assert_not_called()  # a baseline token must not overwrite a "" marker
+    assert runtime._get_health_state() == ("degraded", "Google Calendar cursor could not be loaded")
+
+    # The next successful read clears the degradation and resumes normally.
+    with (
+        patch("butlers.connectors.google_calendar.load_cursor", return_value="stored"),
+        patch("butlers.connectors.google_calendar.save_cursor"),
+    ):
+        await runtime._ensure_sync_token()
+    assert runtime._sync_token == "stored" and runtime._get_health_state()[0] == "healthy"
+
+
+async def test_a_hold_during_a_pending_resync_keeps_the_marker_and_ingest_mode(
+    account_config: CalendarAccountConfig,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    runtime = _synced_runtime(account_config, [])
+    runtime._resync_pending = True
+    runtime._cursor_pool = object()  # type: ignore[assignment]
+    with (
+        patch.object(
+            runtime, "_submit_to_ingest_api", AsyncMock(side_effect=RuntimeError("retryable"))
+        ),
+        patch("butlers.connectors.google_calendar.save_cursor") as save,
+        patch("butlers.connectors.google_calendar.load_cursor", return_value=""),
+    ):
+        await runtime._ensure_sync_token()
+
+    assert runtime._hold_sync_token is True
+    save.assert_not_called()  # the "" marker stays; no token overwrote it
+    assert runtime._resync_pending is True and runtime._sync_token is None

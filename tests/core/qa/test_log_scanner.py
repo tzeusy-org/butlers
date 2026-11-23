@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -28,6 +29,7 @@ from butlers.core.healing.fingerprint import compute_fingerprint_from_log_entry
 from butlers.core.qa.sources.log_scanner import (
     LogEntry,
     LogScannerSource,
+    _entry_fingerprint,
     _parse_log_line,
     _should_include_entry,
 )
@@ -1125,3 +1127,153 @@ async def test_discover_skips_codex_cli_timeout_log_with_session_records(tmp_pat
     ).discover(lookback_minutes=15)
 
     assert findings == []
+
+
+# ---------------------------------------------------------------------------
+# Canonical log-finding identity (bu-ejow5p.4): class + innermost repo frame + normalized
+# message, never the rendered traceback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_logging(tmp_path):
+    """Run the real configure_logging file pipeline, restoring the root logger afterwards."""
+    from butlers.core.logging import _butler_context, configure_logging
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    # configure_logging binds the butler ContextVar for the whole thread; restore it so a later
+    # test on this worker does not see "finance" (bu-dmcjtm).
+    saved_butler = _butler_context.get()
+    configure_logging(level="INFO", fmt="json", log_root=tmp_path, butler_name="finance")
+    try:
+        yield tmp_path
+    finally:
+        for handler in list(root.handlers):
+            if handler not in saved_handlers:
+                handler.close()
+                root.removeHandler(handler)
+        root.setLevel(saved_level)
+        _butler_context.set(saved_butler)
+
+
+def _fail_on_date(day: str) -> None:
+    raise ValueError(f"cannot compute window for {day}")
+
+
+def _log_failure_two_call_lines(log: logging.Logger, day: str) -> None:
+    try:
+        _fail_on_date(day)
+    except ValueError:
+        log.exception("window computation failed")  # first logging line
+
+
+def _log_failure_other_line(log: logging.Logger, day: str) -> None:
+    try:
+        _fail_on_date(day)
+    except ValueError:
+        log.exception("window computation failed")  # second logging line
+
+
+async def test_log_scanner_real_pipeline_one_defect_is_one_fingerprint(real_logging):
+    log = logging.getLogger("butlers.modules.finance")
+    _log_failure_two_call_lines(log, "2026-11-19")
+    _log_failure_other_line(log, "2026-11-20")
+    _log_failure_two_call_lines(log, "2026-11-21")
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
+    findings = await LogScannerSource(log_root=real_logging).discover(15)
+
+    assert len(findings) == 1
+    (finding,) = findings
+    assert finding.exception_type in {"ValueError", "builtins.ValueError"}
+    assert re.fullmatch(r"(src|tests)/.+:\w+", finding.call_site)
+    assert finding.call_site.endswith(":_fail_on_date")
+    assert finding.occurrence_count == 3
+    # The rendered traceback is evidence, never identity.
+    assert "Traceback" not in finding.exception_type
+    assert "traceback_tail" in finding.structured_evidence
+
+
+def test_fingerprint_survives_line_number_shift():
+    base = {
+        "level": "error",
+        "event": "boom",
+        "exc_type": "builtins.ValueError",
+        "exc_frame": "src/butlers/core/x.py:work",
+        "exc_message_sanitized": "bad <ID>",
+        "exception": 'Traceback...\n  File "src/butlers/core/x.py", line 10, in work\nValueError: bad 1',
+    }
+    shifted = {**base, "exception": base["exception"].replace("line 10", "line 15")}
+
+    def fp(data: dict) -> str:
+        entry = _parse_log_line(
+            json.dumps({**data, "timestamp": datetime.now(UTC).isoformat()}), "finance"
+        )
+        assert entry is not None
+        return _entry_fingerprint(entry)
+
+    assert fp(base) == fp(shifted)
+    other_site = {**base, "exc_frame": "src/butlers/core/y.py:work"}
+    assert fp(base) != fp(other_site)
+
+
+@pytest.mark.parametrize(
+    ("exception_field", "expected"),
+    [
+        ("ValueError", "ValueError"),
+        (
+            "asyncpg.exceptions.PostgresConnectionError",
+            "asyncpg.exceptions.PostgresConnectionError",
+        ),
+        (
+            'Traceback (most recent call last):\n  File "src/butlers/a.py", line 3, in f\n'
+            "    raise KeyError('k')\nKeyError: 'k'",
+            "KeyError",
+        ),
+        (
+            'Traceback (most recent call last):\n  File "x.py", line 1, in f\n'
+            "builtins.RuntimeError: nope 2026-11-21",
+            "builtins.RuntimeError",
+        ),
+        # Unparseable text never becomes the type (and never leaks into it).
+        ("total garbage with user jane.doe@corp.example.com", "unknown"),
+        ("Traceback (most recent call last):\n  no final exception line here", "unknown"),
+    ],
+)
+def test_legacy_exception_text_yields_a_class_or_unknown(exception_field, expected):
+    entry = _parse_log_line(_line(exception=exception_field), "finance")
+    assert entry is not None
+    assert (entry.exception or "unknown") == expected
+
+
+async def test_tool_call_failure_log_still_aligns_with_tool_call_failures(tmp_path):
+    """Cross-source: the mcp_wrappers line keeps its class-name identity."""
+    from butlers.core.healing.fingerprint import _compute_hash, _sanitize_message
+
+    event = "MCP tool call failed (butler=finance module=m tool=t): ValueError: boom 42"
+    line = _line(event=event, logger_name="butlers.mcp_wrappers", exception="ValueError")
+    _write(tmp_path / "butlers" / "finance.log", [line])
+
+    (finding,) = await LogScannerSource(log_root=tmp_path).discover(15)
+
+    assert finding.fingerprint == _compute_hash(
+        "ValueError", "butlers.mcp_wrappers", _sanitize_message(event)
+    )
+
+
+def test_exception_identity_processor_is_credential_safe_and_never_raises():
+    from butlers.core.logging import add_exception_identity
+
+    try:
+        raise ValueError("bad key sk-ant-api03-abc123XYZ_extra-long-token at 2026-11-21")
+    except ValueError:
+        out = add_exception_identity(None, "error", {"exc_info": True, "event": "x"})
+    assert out["exc_type"] == "builtins.ValueError"
+    assert "abc123XYZ" not in out["exc_message_sanitized"]
+    assert out["exc_frame"].endswith(
+        ":test_exception_identity_processor_is_credential_safe_and_never_raises"
+    )  # noqa: E501
+    # Unresolvable exc_info leaves the event untouched instead of raising.
+    assert add_exception_identity(None, "error", {"exc_info": "junk"}) == {"exc_info": "junk"}

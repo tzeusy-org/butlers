@@ -234,6 +234,10 @@ async def test_migrated_response_atomic_park_committed_attempt_and_guarded_inver
     assert module._response_ready is True
 
     class OwningMCPClient:
+        async def ping(self) -> bool:
+            async with Client(mcp) as client:
+                return await client.ping()
+
         async def call_tool(self, name, arguments):
             async with Client(mcp) as client:
                 return await client.call_tool(name, arguments)

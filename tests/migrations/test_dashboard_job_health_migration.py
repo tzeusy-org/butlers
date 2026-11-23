@@ -6,12 +6,16 @@ local collection is not a native outcome.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import shutil
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
@@ -33,6 +37,141 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
+
+_CORE_VERSIONS = _REPO_ROOT / "alembic/versions/core"
+# Shared-DDL downgrades count schema-local consumers. LIKE treats `_` as a
+# wildcard, so the old clause also dropped supported names such as pgpeer/pga.
+_CURRENT_NAMESPACE = "left(namespace.nspname, 3) <> 'pg_'"
+_OLD_NAMESPACE = "namespace.nspname NOT LIKE 'pg_%%'"
+_JOB_TABLES = ("dashboard_job_health", "dashboard_job_transitions")
+
+
+def _consumer_selectors() -> dict[str, str]:
+    """Every core consumer scan, keyed by migration, exactly as its source spells it."""
+    selectors: dict[str, str] = {}
+    for path in sorted(_CORE_VERSIONS.glob("core_*.py")):
+        source = path.read_text()
+        assert _OLD_NAMESPACE not in source, f"{path.name} reintroduces the LIKE pg_ wildcard"
+        found = [
+            node.value
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _CURRENT_NAMESPACE in node.value
+        ]
+        if found:
+            assert len(found) == 1, path.name
+            selectors[path.name] = found[0]
+    return selectors
+
+
+def _assert_supported_schema_selectors(url: str) -> None:
+    """PostgreSQL runs each actual selector against genuinely migrated consumers."""
+    selectors = _consumer_selectors()
+    assert {name.split("_", 2)[1] for name in selectors} >= {
+        "246", "247", "261", "265", "266", "267", "268", "290", "291", "294", "297", "298",
+    }  # fmt: skip
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            predicate = f"AND {_CURRENT_NAMESPACE}"
+            legal = conn.exec_driver_sql(
+                "SELECT namespace.nspname FROM (VALUES ('general'), ('pga'), ('pgpeer'), "
+                "('pg_catalog'), ('pg_toast'), ('pg_temp_3')) AS namespace(nspname) "
+                f"WHERE true {predicate} ORDER BY 1"
+            ).scalars()
+            assert list(legal) == ["general", "pga", "pgpeer"]
+            for name, sql in selectors.items():
+                current = set(conn.exec_driver_sql(sql).scalars())
+                assert {"public", "pgpeer"} <= current, name
+                assert not any(schema.startswith("pg_") for schema in current), name
+                old_sql = sql.replace(_CURRENT_NAMESPACE, _OLD_NAMESPACE)
+                old = set(conn.exec_driver_sql(old_sql).scalars())
+                with pytest.raises(AssertionError, match="pgpeer consumer omitted"):
+                    assert old == current, f"{name}: pgpeer consumer omitted"
+                assert old == current - {"pgpeer"}, name
+    finally:
+        engine.dispose()
+
+
+def _run_core_297_downgrade(url: str, *, old_predicate: bool) -> dict[str, bool]:
+    """Execute core_297's actual downgrade in a transaction that is rolled back."""
+    source = _CORE_VERSIONS / "core_297_dashboard_job_health.py"
+    module = ast.parse(source.read_text())
+    downgrade = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "downgrade"
+    )
+    lock = next(
+        ast.literal_eval(node.value)
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_LOCK" for target in node.targets)
+    )
+    if old_predicate:
+        query = next(
+            node
+            for node in ast.walk(downgrade)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and _CURRENT_NAMESPACE in node.value
+        )
+        query.value = query.value.replace(_CURRENT_NAMESPACE, _OLD_NAMESPACE)
+    code = compile(ast.Module(body=[downgrade], type_ignores=[]), str(source), "exec")
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                namespace: dict[str, Any] = {
+                    "op": Operations(MigrationContext.configure(conn)),
+                    "_LOCK": lock,
+                }
+                exec(code, namespace)
+                namespace["downgrade"]()
+                return {
+                    table: bool(
+                        conn.exec_driver_sql(
+                            f"SELECT to_regclass('public.{table}') IS NOT NULL"
+                        ).scalar()
+                    )
+                    for table in _JOB_TABLES
+                }
+            finally:
+                transaction.rollback()
+    finally:
+        engine.dispose()
+
+
+async def _job_snapshot(pool: asyncpg.Pool) -> dict[str, object]:
+    """Shared health data plus its ownership, RLS policy and ACL posture."""
+    async with pool.acquire() as conn:
+        return {
+            "rows": {
+                table: [
+                    row["value"]
+                    for row in await conn.fetch(
+                        f"SELECT to_jsonb(t)::text AS value FROM public.{table} t ORDER BY 1"
+                    )
+                ]
+                for table in _JOB_TABLES
+            },
+            "posture": [
+                dict(row)
+                for row in await conn.fetch(
+                    """SELECT c.relname,pg_get_userbyid(c.relowner) AS owner,c.relacl::text AS acl,
+                        c.relrowsecurity,c.relforcerowsecurity,p.polname,p.polroles,
+                        pg_get_expr(p.polqual,c.oid) AS using_expression,
+                        pg_get_expr(p.polwithcheck,c.oid) AS check_expression
+                    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                    LEFT JOIN pg_policy p ON p.polrelid=c.oid
+                    WHERE n.nspname='public' AND c.relname=ANY($1::text[])
+                    ORDER BY c.relname,p.polname""",
+                    list(_JOB_TABLES),
+                )
+            ],
+        }
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -421,6 +560,80 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         assert not restored_store.unavailable_jobs
         assert await pool.fetchval("SELECT count(*) FROM public.dashboard_job_health") == 1
         assert await pool.fetchval("SELECT count(*) FROM public.dashboard_job_transitions") >= 2
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_job_health_supported_pg_prefixed_consumer_retains_shared_health(
+    postgres_container,
+):
+    """A pgpeer consumer keeps planted shared health in either departure order."""
+    name = migration_db_name()
+    url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        name,
+        chains=["core"],
+        revisions={"core": "core_297"},
+    )
+    general = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, name), chains=["core"]
+    )
+    # The real ordinary migration login runs pgpeer's full chain, as for the
+    # general peer above; no stamp or hand-created version table.
+    pgpeer = _build_alembic_config(url, chains=["core"], target_schema="pgpeer")
+    await asyncio.to_thread(command.upgrade, pgpeer, "core@core_297")
+    await asyncio.to_thread(_assert_supported_schema_selectors, url)
+    pool = await asyncpg.create_pool(url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        for first, last, retained in (
+            (general, pgpeer, "pgpeer"),
+            (pgpeer, general, "public"),
+        ):
+            store = JobHealthStore(lambda: pool)
+            recorder = store.recorder("model_verify", "periodic", 10)
+            await recorder.starting()
+            await recorder.tick_failed()
+            await recorder.tick_ok()
+            before = await _job_snapshot(pool)
+            assert all(before["rows"].values())
+            # The actual old clause sees one consumer and reaches the DROP;
+            # the exact current source counts both and returns.
+            dropped = await asyncio.to_thread(_run_core_297_downgrade, url, old_predicate=True)
+            with pytest.raises(AssertionError, match="retained job health dropped"):
+                assert all(dropped.values()), "retained job health dropped"
+            kept = await asyncio.to_thread(_run_core_297_downgrade, url, old_predicate=False)
+            assert all(kept.values())
+            assert await _job_snapshot(pool) == before
+
+            await asyncio.to_thread(command.downgrade, first, "core_296")
+            # pinned-revision: the retained consumer stays at own core_297.
+            assert (
+                await pool.fetchval(f"SELECT version_num FROM {retained}.alembic_version")
+                == "core_297"
+            )
+            assert await _job_snapshot(pool) == before
+            await recorder.tick_ok()
+            assert not store.unavailable_jobs
+            await asyncio.to_thread(command.downgrade, last, "core_296")
+            for schema in ("public", "pgpeer"):
+                # pinned-revision: both consumers have left own core_297.
+                assert (
+                    await pool.fetchval(f"SELECT version_num FROM {schema}.alembic_version")
+                    == "core_296"
+                )
+            for table in _JOB_TABLES:
+                assert await pool.fetchval(f"SELECT to_regclass('public.{table}') IS NULL")
+            await asyncio.to_thread(command.upgrade, general, "core@core_297")
+            await asyncio.to_thread(command.upgrade, pgpeer, "core@core_297")
+            # Recreation restores owner and RLS policy; bootstrap replay, not
+            # this migration, owns the runtime ACL regrant compared above.
+            restored = await _job_snapshot(pool)
+            assert [{**row, "acl": None} for row in restored["posture"]] == [
+                {**row, "acl": None} for row in before["posture"]
+            ]
+            assert not any(restored["rows"].values())
     finally:
         await pool.close()
 

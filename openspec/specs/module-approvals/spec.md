@@ -149,6 +149,8 @@ Scope: v1-mandatory
 #### Scenario: Dashboard defer schedules a guarded re-presentation
 - **WHEN** an authenticated dashboard actor defers a still-pending action for `1 ≤ hours ≤ 168`
 - **THEN** the same action/intent transaction extends expiry, supersedes an unstarted current presentation, and appends the next presentation generation for `now + hours`
+- **AND** the new expiry is that time plus the action's original decision window, so the re-sent card can still decide; an action with no expiry keeps none
+- **AND** the same transaction stales every owner-delivery token minted so far, so the old card is retracted and the re-sent card carries fresh tokens and its own provider reference
 - **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
 
 #### Scenario: Already-executed action is replayed
@@ -347,6 +349,29 @@ Scope: v1-mandatory
 - **AND** status remains `approved` with `execution_result = null`
 - **AND** no automatic replay occurs; an operator may retry the approved action or reject it explicitly
 
+#### Scenario: A send that may have gone out is recorded, not left retryable
+
+- **WHEN** the tool returns a failure whose transport outcome is uncertain, or carries a Telegram effect-uncertain or partial-delivery marker (REQ-runtime-attention-outbox-002)
+- **THEN** the executor persists `{"status": "outcome_unknown", "delivery_confirmed": false}` as the execution result, with status `executed` and an `action_execution_succeeded` event whose metadata marks the outcome unknown
+- **AND** neither the provider's text nor the recipient is persisted
+- **AND** Retry does not run the tool again, so a non-owner never receives a second message
+- **AND** a failure proven not attempted stays `approved` and retryable as before
+
+#### Scenario: A provider-rejected send is recorded as a distinct failed outcome
+
+- **WHEN** an approved outbound send fails with a transport outcome of `rejected` (the provider proved it refused the send, so nothing was delivered)
+- **THEN** the executor persists `{"status": "delivery_rejected", "delivery_confirmed": false, "failure_code": "provider_rejected"}` as the execution result, with status `executed` and an `action_execution_succeeded` event whose metadata carries `outcome: "rejected"` and the failure code
+- **AND** the outcome is distinct from success and from `outcome_unknown`, and Retry does not run the tool again
+- **AND** neither the provider's text, the recipient nor the message body is persisted
+
+#### Scenario: A failed approved send records a closed, content-free failure code
+
+- **WHEN** an approved outbound send (`notify`, or a Telegram, email or WhatsApp send tool) fails without a proven provider rejection
+- **THEN** the returned error and the `action_execution_failed` event reason are `send_failed:<code>`, or just `send_failed` when unclassified, where `<code>` is drawn from a closed vocabulary (`recipient_unavailable` or `policy_denied`), and the event metadata carries `failure_code`
+- **AND** no recipient, message body or provider description appears in the error, event or any API field
+- **AND** status remains `approved` and retryable
+- **AND** an uncertain or partial send is never in this vocabulary: it is recorded executed with `outcome_unknown` and is not retryable
+
 #### Scenario: Manual approval without executor wired
 
 - **WHEN** `approve_action` is called but no tool executor is wired
@@ -365,6 +390,24 @@ Scope: v1-mandatory
 - **THEN** it invokes the owning daemon's registered original tool handler without re-entering the gate
 - **AND** a legacy `relationship` action named `entity_merge` is resolved as the registered `memory_entity_merge` callable without rewriting the stored row
 - **AND** actions in any other status, or approved actions with a non-null result, are not replayed
+
+#### Scenario: Approved notify executes in its owning daemon with a single-use proof
+
+- **WHEN** an owner approves a parked `notify` action from the dashboard or a Telegram approval tap
+- **THEN** the dashboard API dispatches it through the owning butler's `dispatch_approved_action`, never by calling Switchboard `deliver` from the API process
+- **AND** the owning daemon's executor, while it holds the approved row with a null result, sends the stored call's canonical `notify.v1` envelope without re-running `notify()`
+- **AND** where the trusted cohost approval hop exists, the source mints an in-memory proof bound to the action id, the stored-call digest and the exact envelope digest, valid for at most ten seconds and consumed by its first verification
+- **AND** Switchboard accepts that proof only from the kernel-admitted caller that is the source, has the source verify it against the live approved, unexecuted row, and forwards an attestation over the protected Messenger hop
+- **AND** a replayed, expired, mismatched or foreign proof, or an action that is no longer approved and unexecuted, is refused and the row stays approved for retry
+- **AND** if Switchboard consumed the proof but no reply arrives before the hop deadline (which outlasts its nested verifier and Messenger calls), the action is recorded executed with an unknown outcome and is not retried, so a non-owner never receives a second message
+- **AND** this operation is separate from the `approval_request` admission, which it does not widen
+- **AND** without the trusted hop the delivery is ordinary, so Messenger's recipient gate applies and parks a native, previewable command
+
+#### Scenario: One shared matcher recognises approved execution
+
+- **WHEN** an egress gate asks whether a call is already approved
+- **THEN** it consults one shared matcher that accepts only the executor's task-bound context, a verified broker `approval_ref` lineage, or a source-verified approved-notify attestation bound to the handling task and covering the exact routed payload
+- **AND** a bare flag, a caller origin, or an action id without a proof grants nothing
 
 #### Scenario: Historic malformed command remains unchanged
 
@@ -521,8 +564,19 @@ Module config MUST be declared under `[modules.approvals]` in `butler.toml`.
 
 #### Scenario: Missing or disabled config
 
-- **WHEN** `[modules.approvals]` is absent or `enabled = false`
+- **WHEN** `[modules.approvals]` is absent or `enabled = false`, with `domain_producers` omitted or empty
 - **THEN** the module does not wrap any tools and no approval gates are active
+- **AND** a missing configuration declares no domain producers
+
+#### Scenario: Explicit domain producer capability
+
+- **WHEN** configuration declares `domain_producers`
+- **THEN** it MUST be a unique typed list containing only `calendar` and/or `google_drive`, defaulting to empty
+- **AND** only those owning domain enqueuers MAY be wired when generic `enabled` is false
+- **AND** wiring MUST require the actual active owning approvals module, callable executor and owning pool
+- **AND** this declaration MUST NOT grant approval authority, create a standing rule or bypass any domain gate
+- **AND** generic `enabled = true` MUST retain its full existing gated-tool completeness validation
+- **AND** unrelated tools MUST retain their existing gating behavior
 
 #### Scenario: Gated tools completeness for outbound butlers
 
@@ -736,6 +790,16 @@ immediate execution when approval is not required.
 - **WHEN** an outbound routed delivery requires approval
 - **THEN** the pending action stores the registered native delivery tool name
 - **AND** `tool_args` contains every required handler argument and no routing-only argument
+- **AND** the approval card renders that native tool's registered preview
+- **AND** approval replays that native tool's handler exactly once, never `route.execute`
+
+#### Scenario: Routed delivery carries a fact the native handler cannot accept
+
+- **WHEN** a parked routed delivery requires inert-link rendering or carries file attachments
+- **THEN** no native handler argument can carry that fact, so the pending action stores the
+  exact routed `route.execute` envelope instead of a lossy native command
+- **AND** its card fails closed to Open only rather than showing a call that would not execute
+- **AND** a plain delivery whose native tool the owning daemon does not register (for example email without `send_tools`) also keeps the routed envelope, because its approved executor would have no native handler to replay
 
 #### Scenario: Immediate and deferred execution are equivalent
 
@@ -765,6 +829,23 @@ control character (other than a newline) or a Unicode format character, an
 over-budget call, and any tool whose effect class is `administer` or protected or
 consequential actuation. The budget SHALL be measured in UTF-16 code units.
 The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
+
+When the parked action carries RFC 0038 goal lineage, the card and the dashboard approval detail
+SHALL show the same authoritative lineage lines, built once from the broker's park record and never
+from caller prose, model claims or call arguments: the goal, the origin, who exposed it (the
+invocation's closed `exposure_cause`, read under the goal lock when the call was reserved and
+written with the park record) and
+whether a standing rule could ever match (the broker's park-time `rule_possible`, explanation only).
+An exposure cause or standing-rule answer the park record did not capture SHALL read "Unknown";
+a record without goal, invocation, origin or exposure shows no lineage lines. These lines explain and SHALL NOT
+authorize: admission and rule matching never read them.
+
+A communicating tool whose catalog descriptor declares `content_params` (optional and additive)
+SHALL have its exact call rebuilt from the descriptor's `recipient_params` plus `content_params`
+and nothing else, in preference to the preview registry. Every non-empty stored argument SHALL be
+one of them, every recipient and content value SHALL be present and well-formed, and the tool SHALL
+be `communicate`; a tool that declares it SHALL NOT fall back to the registry. A tool that does not
+declare it keeps the registry preview unchanged.
 
 Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
 (sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
@@ -802,7 +883,121 @@ SHALL refuse while any presentation carries a digest.
 - **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
 - **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
 
+#### Scenario: Goal-parked card shows authoritative lineage
+
+- **WHEN** an action parked by the capability broker for a goal invocation exposed to third-party data is rendered on the card and on the dashboard detail
+- **THEN** both show the same goal, origin, exposed-by and standing-rule lines from the broker's park record
+- **AND** a fact the record did not capture reads "Unknown", and no line is taken from the model's explanation or the call arguments
+
+#### Scenario: Catalog content parameters give the complete exact call
+
+- **WHEN** a `communicate` tool declares `content_params` and is parked with every recipient and content argument present
+- **THEN** the card and the dashboard show each recipient and content value from the stored arguments
+- **AND** Approve, Reject and Open are offered if the call passes the safety and fit checks
+
+#### Scenario: Declared content parameters that cannot be satisfied
+
+- **WHEN** a tool declares `content_params` and the stored call has an extra non-empty argument, a missing or malformed recipient or content value, or is not a `communicate` tool
+- **THEN** the card offers Open only and the registry preview is not used instead
+
+#### Scenario: Exact call unavailable
+
+- **WHEN** no preview is registered, a declared catalog preview fails, a value is oversize or unshowable, or the stored call no longer matches the presented digest
+- **THEN** the card offers Open only and nothing executes from it
+
 #### Scenario: Stored call changed after presentation
 
 - **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
 - **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown
+
+### Requirement: Decision Sets Are Shown Exactly and Decided Whole
+
+A goal's decision set (RFC 0038 M7) SHALL be shown to the owner version by version, and every
+decision SHALL be exact or refused whole. The path is dark: no card token is minted or sent until
+`OWNER_DECISIONS_LIVE` and the owner-delivery rollout are both on; until a resolver is wired, the
+decision routes answer unavailable and nothing is recorded.
+
+The owner view of one version SHALL read each item's exact stored call from its parked
+`pending_actions` row, only from the approvals pool of the item's capability domain (a copy in any
+other pool SHALL be ignored, and an id found in two pools SHALL make that item changed), SHALL
+recompute the item's argument digest, and SHALL rebuild the call through the exact-call preview. An
+item whose row is missing or unreadable, no longer pending, belongs to another goal, names another
+tool, changed since parking, or has no complete exact preview SHALL be Open-only with a closed
+reason and no facts. One Open-only item, a version that is not `open`, an elapsed set or an empty
+set SHALL make the whole set not decidable, and the owner SHALL review each call on its own approval
+page. Each item SHALL carry the server's own verdict whether it belongs to the default selection
+(an exact plain item of a decidable set, never an `explicit_only` administer item), and the
+assistant's `why`, `blast_radius` and `reversibility` SHALL appear only as labelled claims. Today an
+administer item has no exact preview, so a set that contains one is Open-only as a whole; the
+`explicit_only` rules below apply when such an item is shown exactly.
+
+The Telegram card SHALL offer exactly Approve, Reject and Open. Approve SHALL decide the default
+selection and Reject SHALL reject every item; the selection SHALL NOT be carried in a token or
+callback but recomputed from the set at redeem time and bound by the token's action digest, so a
+changed version or item refuses `action_changed`. The card SHALL name the items Approve covers, the
+items that need the owner's own tick on the dashboard, and what an unticked item comes to, worded
+from the producer's `UNTICKED_OUTCOME`. A set that cannot be shown exactly and completely in one
+message SHALL offer Open only and mint no token. A Telegram token SHALL be redeemable only from the
+connector, and a decision from the dashboard SHALL close the set's owner-delivery subject so the
+card's tokens go stale; the resolver's open-state check SHALL still refuse a stale tap if that close
+lags. Sending the card SHALL mark the presentation handed off before the provider call, so an
+ambiguous result is never resent with fresh tokens.
+
+The dashboard SHALL post only the version, approve or reject, and the ticked items' effect ids with
+the item digests it was shown; an `explicit_only` item SHALL be decided only when ticked by itself,
+and an unknown or duplicate item or a set that is not decidable SHALL be refused before the resolver.
+The page SHALL render the server's view and SHALL NOT compute decidability or the default selection.
+The page SHALL offer ticks and Approve/Reject only when the server reports the set decidable and
+decisions live; otherwise it SHALL show the view with no decision controls. Refusals SHALL be closed
+reasons and SHALL decide nothing.
+
+#### Scenario: Foreign pool copy cannot supply a call
+
+- **WHEN** an item's effect id exists only in an approvals pool other than its capability's domain pool
+- **THEN** the item is Open-only as missing and shows no facts or lineage
+
+#### Scenario: Approve decides the default selection
+
+- **WHEN** the owner taps Approve on a set card with two plain items and one `explicit_only` item shown exactly
+- **THEN** the two plain items are decided approved and the `explicit_only` item is not
+- **AND** if the set changed since the card was sent, nothing is decided and the reply says it changed since shown
+
+#### Scenario: Explicit-only item needs its own tick
+
+- **WHEN** a set contains an `explicit_only` item that is shown exactly
+- **THEN** it is never pre-ticked and never decided by Approve, and the dashboard decides it only when the owner ticks it alone
+
+#### Scenario: Decision path is dark
+
+- **WHEN** `OWNER_DECISIONS_LIVE` or the owner-delivery rollout is off
+- **THEN** no card token is minted and no card is sent
+
+#### Scenario: No resolver is wired
+
+- **WHEN** no decision resolver is registered
+- **THEN** the decision routes answer unavailable with nothing recorded, and the page offers no decision controls
+
+#### Scenario: Ambiguous send is not repeated
+
+- **WHEN** a card's handoff result is unknown
+- **THEN** a retry sends nothing and mints no new token for that presentation
+
+#### Scenario: The trigger presents each version once and only when the owner may be reached
+
+- **WHEN** the goal runner sweeps open decidable set versions with the decision path and rollout on
+- **THEN** each `(set id, version)` is card-sent once across replays, restarts and concurrent runners
+- **AND** while the owner is suppressed no presentation, subject or token is created
+- **AND** a set whose card cannot offer a decision is not card-sent
+
+#### Scenario: A version that left open retracts its card
+
+- **WHEN** a version is superseded, cancelled, expired or decided on the dashboard
+- **THEN** its owner-delivery subject is closed, with a decided verdict read from the decision receipt, and its card is listed for retraction
+
+#### Scenario: A live set card holds its items' individual cards
+
+- **WHEN** a set card is handed off (sent or unknown) and the set is still unresolved
+- **THEN** each covered item's own approval card is not claimed for delivery, and its presentation is left unchanged
+- **AND** when the set resolves or its card is proven failed, an item that is still pending has its own card delivered again
+- **AND** an item covered by two live set cards is released only when both resolve
+- **AND** with no set card handed off nothing is held

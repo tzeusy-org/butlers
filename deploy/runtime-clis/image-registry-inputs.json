@@ -1,0 +1,48 @@
+{
+  "requested": "docker.io/library/registry:3.1.2",
+  "image": "docker.io/library/registry@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8",
+  "platform": "linux/amd64",
+  "index": {
+    "url": "https://registry-1.docker.io/v2/library/registry/manifests/3.1.2",
+    "sha256": "sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c",
+    "size": 8980
+  },
+  "manifest": {
+    "url": "https://registry-1.docker.io/v2/library/registry/manifests/sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8",
+    "sha256": "sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8",
+    "size": 1916
+  },
+  "config": {
+    "mediaType": "application/vnd.oci.image.config.v1+json",
+    "digest": "sha256:39a2a88344598be51c03d6829b40dd29fcda04ce1e01ef1f7596b5af744276ce",
+    "size": 3594
+  },
+  "layers": [
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:881fc932939efef04ca120ad44bbd2c0917851eb247aa4995428afb1e80ede17",
+      "size": 3853673
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:91cd85cbb99965c7b0f724a0fc60517c2c41f3d77b2da9236eaa8717a3de2357",
+      "size": 244476
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:77c315b2f1956726dd1c4e536da21dc5f67efe9862502f2ae5da808ab57f58fa",
+      "size": 16352557
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:ccf28731d9085bceec407dc67afae831fb66e1c25d53fe7053db28f23b8c21b1",
+      "size": 396
+    },
+    {
+      "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+      "digest": "sha256:ca774b37efed7d46f7006d8c5a3b0a062b0d78c0237f92ab11cf595d2550236c",
+      "size": 213
+    }
+  ],
+  "scope": "Public OCI metadata only; no image download or execution."
+}

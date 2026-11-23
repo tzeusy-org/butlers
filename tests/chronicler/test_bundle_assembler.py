@@ -937,3 +937,77 @@ def test_owner_day_clips_effective_windows_and_keeps_missing_evidence_unknown() 
     )
     refs = {ref for row in observations for ref in row["source_refs"]}
     assert "fixture:outside" not in refs and "fixture:naive" not in refs
+
+
+# ---------------------------------------------------------------------------
+# Uncaptured-lane unknowns (bu-uhbhzq.2 slice 5)
+# ---------------------------------------------------------------------------
+
+_RETIRED_EAT = {"lane": "eat", "state": "not_captured", "since": "2026-08-13"}
+_DARK_SLEEP = {"lane": "sleep", "state": "dark", "since": None}
+
+
+def test_unknowns_list_each_uncaptured_lane_deterministically() -> None:
+    from butlers.chronicler.day_close_composition import uncaptured_unknowns
+
+    assert uncaptured_unknowns([_RETIRED_EAT, _DARK_SLEEP]) == [
+        "Meals not captured (source retired since 13 Aug)",
+        "Sleep not captured (source dark)",
+    ]
+
+
+def test_bundle_carries_uncaptured_unknowns_without_endpoint_identity() -> None:
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=[],
+        events=[],
+        uncaptured=[_RETIRED_EAT],
+    )
+    owner_day = bundle.bundle["owner_day"]
+    assert "Meals not captured (source retired since 13 Aug)" in owner_day["unknowns"]
+    assert any("Evidence is partial" in u for u in owner_day["unknowns"])
+    assert "health.meals" not in json.dumps(bundle.bundle)
+
+
+def test_bundle_without_uncaptured_lanes_is_unchanged() -> None:
+    plain = assemble_day_close_bundle(
+        date_label="2026-10-15", timezone="Asia/Singapore", episodes=[], events=[]
+    )
+    assert plain.bundle["owner_day"]["unknowns"] == [
+        "Evidence is partial; gaps do not prove inactivity or a quiet day."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry", "streak", "mentioned"),
+    [
+        (_DARK_SLEEP, 1, True),  # first dark day
+        (_DARK_SLEEP, 2, False),
+        (_DARK_SLEEP, 7, False),
+        (_DARK_SLEEP, 8, True),  # weekly after
+        (_DARK_SLEEP, 15, True),
+        (_RETIRED_EAT, 1, True),  # retired lanes: once
+        (_RETIRED_EAT, 8, False),
+    ],
+)
+def test_recap_mentions_first_dark_day_then_weekly_and_retired_once(
+    entry, streak, mentioned
+) -> None:
+    from butlers.chronicler.day_close_composition import recap_mention
+
+    assert recap_mention(entry, streak=streak) is mentioned
+
+
+def test_bundle_marks_which_unknowns_the_recap_may_mention() -> None:
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=[],
+        events=[],
+        uncaptured=[_RETIRED_EAT, _DARK_SLEEP],
+        uncaptured_streaks={"eat": 4, "sleep": 8},
+    )
+    owner_day = bundle.bundle["owner_day"]
+    assert owner_day["recap_mention"] == ["Sleep not captured (source dark)"]
+    assert len(owner_day["unknowns"]) == 3  # always stored, mentioned or not

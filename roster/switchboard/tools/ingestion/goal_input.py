@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from butlers.core.goal_admission import EvidenceRefused, digest
+from butlers.core.goal_admission import EvidenceRefused
 from butlers.tools.switchboard.contracts import IngestPayloadV1
 
 
@@ -87,24 +87,3 @@ def prepare_goal_input(source_ref, source_digest, payload, reply_locator, *, own
         return GoalInput(source_ref, source_digest, tuple(segments), reply_locator, bool(spans))
     except Exception:
         raise EvidenceRefused("accepted_input_unavailable") from None
-
-
-def scoped_reply_ref(
-    *, transport, endpoint, conversation, recipient_entity, recipient_channel, locator
-):
-    """Server-side outbound writers bind this value on the immutable effect.
-
-    The incoming provider locator is never an asserted effect/goal identifier.
-    Every scope component must agree before admission can even find a goal.
-    """
-    if (
-        not all(
-            isinstance(x, str) and x
-            for x in (transport, endpoint, conversation, recipient_channel, locator)
-        )
-        or recipient_entity is None
-    ):
-        raise EvidenceRefused("reply_scope_unavailable")
-    return "goal-reply-v1:" + digest(
-        [transport, endpoint, conversation, str(recipient_entity), recipient_channel, locator]
-    )

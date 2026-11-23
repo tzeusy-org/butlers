@@ -8,6 +8,7 @@
 ## 2. Deferred
 
 - [x] 2.1 Consumer liveness: one attention item per lapsed grant, derived on read and cleared by the next fetch.
-- [ ] 2.2 Settings > Projections UI with the last-fetch column and the revoke verb.
+- [x] 2.2 Settings > Projections UI (`/settings/projections`) with the last-fetch column and the revoke verb; the liveness attention item links to it.
+- [x] 2.5 One-verb atomic rotate: `POST /api/projections/{id}/rotate` swaps the token digest in a single UPDATE.
 - [x] 2.3 Text and 1-bit PNG glance formats with `valid_until` printed, plus a per-grant response cache.
 - [x] 2.4 Home Assistant package example under `docs/` with an edge staleness template.

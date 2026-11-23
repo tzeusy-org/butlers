@@ -74,3 +74,13 @@ paths = [
   '''^openspec/changes/specify-host-authorized-dashboard-enrollment/design\.md$''',
 ]
 regexes = ['''^cancellation/expiry$''', '''^histories/prep/correction/approval$''', '''^missing/forged/revoked$''']
+
+[[allowlists]]
+description = "Capability-host test JWTs: assertion vectors signed by the synthetic seed 00..1f under the test-only kid mcp-gateway-test-v1 (header pinned, a real gateway kid cannot match), and one DLP sample JWT pinned as its exact value"
+condition = "AND"
+targetRules = ["jwt"]
+paths = ['''^tests/capability_host/fixtures/assertion-v1\.json$''', '''^tests/capability_host/test_dlp\.py$''']
+regexes = [
+  '''^eyJhbGciOiJFZERTQSIsImtpZCI6Im1jcC1nYXRld2F5LXRlc3QtdjEiLCJ0eXAiOiJidXRsZXJzLW1jcC1hc3NlcnRpb24rdjEifQ\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$''',
+  '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3In0\.c2lnbmF0dXJlMTIz$''',
+]

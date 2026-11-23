@@ -27,6 +27,8 @@ from butlers.core.deployments import (
     resolve_core_migration_head,
     resolve_git_sha,
 )
+from butlers.testing.fake_pool import fake_pool
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
@@ -191,27 +193,28 @@ class TestReadMigrationHead:
         assert warnings and warnings[0].exc_info is not None
 
 
+def _alembic_catalog(heads: dict[str, list[str]]):
+    """A cluster whose catalog lists *heads*' schemas, each with those revisions.
+
+    Discovery answers first, then each schema's ``alembic_version`` read in
+    discovery order; :func:`_schemas_read` checks the reads named those schemas.
+    """
+    discovery = records({"table_schema": schema} for schema in heads)
+    per_schema = [records({"version_num": rev} for rev in revs) for revs in heads.values()]
+    return fake_pool(fetch=AsyncMock(side_effect=[discovery, *per_schema]))
+
+
+def _schemas_read(pool) -> list[str]:
+    """Schemas whose ``alembic_version`` the resolver read, after discovery."""
+    discovery, *reads = pool.fetch.await_args_list
+    assert "pg_catalog.pg_class" in discovery.args[0]
+    return [call.args[0].split('"')[1] for call in reads]
+
+
 class TestResolveCoreMigrationHead:
     """bu-l94um: the core chain lives per-butler-schema, never in ``public``.
     resolve_core_migration_head must discover the schemas that actually track
     it via information_schema, not assume any single canonical schema."""
-
-    @staticmethod
-    def _make_pool(schemas: list[str], per_schema_rows: dict[str, list[str]]) -> AsyncMock:
-        """Build a pool whose fetch() routes the pg_catalog schema-discovery
-        query vs the per-schema alembic_version reads."""
-
-        async def _fetch(query, *args):
-            if "pg_class" in query:
-                return [{"table_schema": s} for s in schemas]
-            for schema, revs in per_schema_rows.items():
-                if f'"{schema}".alembic_version' in query:
-                    return [{"version_num": r} for r in revs]
-            return []
-
-        pool = AsyncMock()
-        pool.fetch = AsyncMock(side_effect=_fetch)
-        return pool
 
     @pytest.fixture(autouse=True)
     def _core_ids(self, monkeypatch):
@@ -225,41 +228,32 @@ class TestResolveCoreMigrationHead:
     async def test_public_missing_butler_schema_present(self):
         """``public`` has no alembic_version; the butler schema carries the
         core head — the resolver reads it from where it actually lives."""
-        pool = self._make_pool(
-            schemas=["chronicler", "switchboard"],
-            per_schema_rows={
-                "chronicler": ["core_163", "mem_007"],
-                "switchboard": ["core_163"],
-            },
+        pool = _alembic_catalog(
+            {"chronicler": ["core_163", "mem_007"], "switchboard": ["core_163"]}
         )
         assert await resolve_core_migration_head(pool) == "core_163"
+        assert _schemas_read(pool) == ["chronicler", "switchboard"]
 
     async def test_no_alembic_anywhere_returns_none(self):
         """Nothing tracks the core chain (fresh DB) → None, no raise."""
-        pool = self._make_pool(schemas=[], per_schema_rows={})
+        pool = _alembic_catalog({})
         assert await resolve_core_migration_head(pool) is None
+        assert _schemas_read(pool) == []
 
     async def test_schemas_without_core_chain_return_none(self):
         """Schemas exist but only carry non-core chains → None."""
-        pool = self._make_pool(
-            schemas=["someschema"],
-            per_schema_rows={"someschema": ["mem_007"]},
-        )
+        pool = _alembic_catalog({"someschema": ["mem_007"]})
         assert await resolve_core_migration_head(pool) is None
+        assert _schemas_read(pool) == ["someschema"]
 
     async def test_divergent_heads_records_newest_and_warns(self, caplog):
         """When schemas disagree, record the newest head and log the
         divergence loudly — never silently smooth it over."""
-        pool = self._make_pool(
-            schemas=["chronicler", "switchboard"],
-            per_schema_rows={
-                "chronicler": ["core_161"],
-                "switchboard": ["core_163"],
-            },
-        )
+        pool = _alembic_catalog({"chronicler": ["core_161"], "switchboard": ["core_163"]})
         with caplog.at_level(logging.WARNING, logger="butlers.core.deployments"):
             result = await resolve_core_migration_head(pool)
         assert result == "core_163"
+        assert _schemas_read(pool) == ["chronicler", "switchboard"]
         assert any("diverges across schemas" in r.message for r in caplog.records)
 
 

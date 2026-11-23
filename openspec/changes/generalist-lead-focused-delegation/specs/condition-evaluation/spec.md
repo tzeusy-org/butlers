@@ -47,6 +47,10 @@ Scope: v1-mandatory
 - **WHEN** a successor returns to waiting and its bounded rearm commits, then the evaluator crashes
 - **THEN** restart resumes that generation and complete unseen cursor interval, returns the same intent for duplicate events and never resets count or fired instances
 
+#### Scenario: A fire joins labels and never narrows the registered label
+- **WHEN** an instance fires from registration, an event or a clock crossing
+- **THEN** its fire intent and receipt carry the label snapshot registered with the envelope joined with the unknown label when the cause is registration or event data whose provenance is not yet labelled, or the registered label alone for a clock crossing, and never a narrower label; a re-registration under a different label refuses as a changed boundary
+
 #### Scenario: Widening is not a rearm
 - **WHEN** a request changes predicate/plan/source/effect digest, deadline or maximum rather than narrowing effective grants
 - **THEN** the existing approval cannot cover it; the rearm refuses and a genuinely new envelope must satisfy its original approval boundary

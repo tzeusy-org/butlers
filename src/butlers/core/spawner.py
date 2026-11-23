@@ -43,6 +43,7 @@ from opentelemetry import trace
 from opentelemetry.context import Context
 
 from butlers.config import ButlerConfig
+from butlers.core import session_timing
 from butlers.core.audit import write_audit_entry
 from butlers.core.child_env import without_owner_auth
 from butlers.core.conversation_sessions import (
@@ -92,10 +93,13 @@ from butlers.core.model_routing import (
     BREAKER_OPEN_RULE_OVERRIDE_OUTCOME,
     BREAKER_OPEN_RULE_OVERRIDE_REASON_PREFIX,
     CEILING_DENIAL_REASON_PREFIX,
+    CEILING_UNAVAILABLE_REASON,
+    SPEND_RULES_UNAVAILABLE_REASON,
     CandidateOutcome,
     Complexity,
     DispatchResolution,
     SpendRoutingResult,
+    SpendRulesUnavailable,
     TierQuotaExhausted,
     apply_spend_routing_rules,
     check_monthly_ceiling,
@@ -105,16 +109,25 @@ from butlers.core.model_routing import (
     next_same_tier_candidate,
     resolve_model_with_effective_tier,
 )
-from butlers.core.permissions import SPAWN_PERMISSION, check_permission
+from butlers.core.permissions import SPAWN_PERMISSION, check_permission, denial_message
 from butlers.core.purpose_lane import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     PURPOSE_LANE_STANDARD,
     PurposeLane,
     purpose_lane_from_routing_context,
 )
+from butlers.core.qa.executor_profile import (
+    EXECUTOR_ENV_UNFIT_OUTCOME,
+    executor_prompt_receipt,
+    is_executor_trigger,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
-from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
+from butlers.core.runtimes.base import (
+    QaJobLaunch,
+    RuntimeAdapter,
+    validated_session_timeout_overhead_s,
+)
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
 from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.core.session_process_logs import write as session_process_log_write
@@ -145,6 +158,7 @@ from butlers.core.spawner_context import (
 from butlers.core.spawner_env import (
     _build_env,  # noqa: F401 — re-export for test patches
     _capture_pipeline_routing_context,  # noqa: F401 — re-export for test patches
+    _with_workload_egress,
 )
 from butlers.core.spawner_guardrails import (
     _check_degenerate_tool_loop,
@@ -717,6 +731,9 @@ class Spawner:
         self._metrics.ensure_registered()
         self._mcp_warmup_lock = asyncio.Lock()
         self._warmed_mcp_urls: set[str] = set()
+        # url -> (tool_count, schema_bytes) from the warmup tools/list; feeds
+        # per-session stage timings (bu-dhloi1.180). Counts and sizes only.
+        self._mcp_tool_surface: dict[str, tuple[int, int]] = {}
 
         if runtime is not None:
             self._runtime = runtime
@@ -957,6 +974,7 @@ class Spawner:
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
         attachments: Sequence[Mapping[str, Any]] | None = None,
+        qa_job_launch: QaJobLaunch | None = None,
     ) -> SpawnerResult:
         """Spawn an ephemeral runtime instance.
 
@@ -1059,7 +1077,13 @@ class Spawner:
         ------
         RuntimeError
             If the spawner has been stopped and is no longer accepting triggers.
+        ValueError
+            If ``qa_job_launch`` is given with a non-executor ``trigger_source``.
         """
+        if qa_job_launch is not None and not is_executor_trigger(trigger_source):
+            # A caller that asked for per-attempt isolation must never get an in-daemon run.
+            raise ValueError("qa_job_launch is only valid for an executor trigger source")
+
         if route_lease_lost is not None and route_lease_lost.is_set():
             raise RouteInboxLeaseLost("route inbox processing lease was already lost")
 
@@ -1165,6 +1189,7 @@ class Spawner:
                         dashboard_turn_id=dashboard_turn_id,
                         route_lease_lost=route_lease_lost,
                         attachments=attachments,
+                        qa_job_launch=qa_job_launch,
                     )
                 finally:
                     self._metrics.spawner_active_sessions_dec()
@@ -1197,6 +1222,7 @@ class Spawner:
                             dashboard_turn_id=dashboard_turn_id,
                             route_lease_lost=route_lease_lost,
                             attachments=attachments,
+                            qa_job_launch=qa_job_launch,
                         )
                     finally:
                         self._metrics.spawner_active_sessions_dec()
@@ -1481,6 +1507,10 @@ class Spawner:
                 if result.get("success") and isinstance(url, str) and url:
                     self._warmed_mcp_urls.add(url)
                     warmed_now += 1
+                    count = result.get("tool_count")
+                    size = result.get("tool_schema_bytes")
+                    if isinstance(count, int) and isinstance(size, int):
+                        self._mcp_tool_surface[url] = (count, size)
 
             if warmed_now:
                 logger.debug(
@@ -1565,6 +1595,7 @@ class Spawner:
         dashboard_turn_id: uuid.UUID | None = None,
         route_lease_lost: asyncio.Event | None = None,
         attachments: Sequence[Mapping[str, Any]] | None = None,
+        qa_job_launch: QaJobLaunch | None = None,
     ) -> SpawnerResult:
         """Internal: run the runtime invocation (called under lock)."""
         session_id: uuid.UUID | None = None
@@ -1682,6 +1713,9 @@ class Spawner:
                     self._pool,
                     self._config.name,
                     complexity,
+                    # An executor resolves at its exact rung: no silent downgrade to a
+                    # cheaper, specialty or local entry (RFC 0038 D16/D18, bu-ejow5p.5).
+                    allow_tier_fallthrough=not is_executor_trigger(trigger_source),
                     quota_aware=True,
                     intent=dispatch_intent,
                     receipt_sink=_resolution_receipts,
@@ -1841,8 +1875,8 @@ class Spawner:
         # to a real dispatchable catalog row so downstream quota / failover / ledger all
         # operate on the rule-selected model. This is a SELECTION step (which model),
         # distinct from the authorization (permissions) and budget (quota/ceiling) DENY
-        # gates below. apply_spend_routing_rules fails open, so a rules error never
-        # wedges spawns. Only runs on a real catalog resolution (direct_runtime has no
+        # gates below. apply_spend_routing_rules fails closed on an unreadable
+        # rule set (bu-svqpzo.15). Only runs on a real catalog resolution (direct_runtime has no
         # catalog_entry_id to route from).
         # ---------------------------------------------------------------------------
         # Per-call USD cap surfaced by a matching spend rule's action.max_cost_per_call
@@ -1863,6 +1897,7 @@ class Spawner:
         _pre_rule_catalog_entry_id = catalog_entry_id
         _receipt_selection_reason: str | None = None
         _routing_result: SpendRoutingResult | None = None
+        _spend_rules_refusal: str | None = None
         if catalog_entry_id is not None and self._pool is not None:
             try:
                 _routing_result = await apply_spend_routing_rules(
@@ -1891,13 +1926,20 @@ class Spawner:
                 ) = _routing_result.resolved
                 _spend_rule_max_cost_per_call = _routing_result.max_cost_per_call
                 _spend_rule_breaker_open = _routing_result.breaker_open
-            except Exception:
+            except Exception as exc:
+                # Fail closed (bu-svqpzo.15, .22): a matched rule may carry an owner-set per-call
+                # cap, so an unreadable rule set or any evaluation error refuses the dispatch
+                # below instead of keeping the tier-resolved model and dropping the cap.
+                _spend_rules_refusal = (
+                    str(exc)
+                    if isinstance(exc, SpendRulesUnavailable)
+                    else SPEND_RULES_UNAVAILABLE_REASON
+                )
                 logger.warning(
-                    "Spend routing-rule evaluation failed for butler=%s; "
-                    "keeping tier-resolved model=%s",
+                    "Spend routing-rule evaluation failed for butler=%s; refusing: %s",
                     self._config.name,
-                    model,
-                    exc_info=True,
+                    _spend_rules_refusal,
+                    exc_info=not isinstance(exc, SpendRulesUnavailable),
                 )
         _spend_rule_fired = catalog_entry_id != _pre_rule_catalog_entry_id
         if _spend_rule_fired:
@@ -1976,6 +2018,33 @@ class Spawner:
         )
         _next_attempt_index = 0
 
+        if (
+            _spend_rules_refusal is not None
+            and catalog_entry_id is not None
+            and self._pool is not None
+        ):
+            logger.warning(
+                "Spawn blocked for butler=%s: %s", self._config.name, _spend_rules_refusal
+            )
+            await _write_dispatch_attempt(
+                self._pool,
+                catalog_entry_id=catalog_entry_id,
+                butler=self._config.name,
+                outcome="quota_skip",
+                attempt_index=_next_attempt_index,
+                failure_reason=_spend_rules_refusal,
+                tool_call_count=0,
+                logical_session_id=effective_request_id,
+                purpose_lane=purpose_lane,
+                produce_fleet_halt=False,
+                resolution_receipt=_current_resolution_receipt,
+            )
+            return await self._dashboard_preflight_failure(
+                dashboard_turn_id=dashboard_turn_id,
+                error=_spend_rules_refusal,
+                model=model,
+            )
+
         # Breaker-open rule override (bu-14j0m, decision (b)): if an operator
         # spend rule routed to a model whose dispatch-outcome circuit breaker
         # was open at resolution, record ONE informational attempt row so the
@@ -2031,17 +2100,12 @@ class Spawner:
         # is an authorization decision, not a budget one). Mirrors the spend-ceiling /
         # token-quota denial path: a ``quota_skip`` dispatch-attempt row (so the denial
         # is observable in provenance) plus a failed SpawnerResult. check_permission
-        # fails open, so a DB error never wedges spawns.
+        # fails closed: an unreadable permission store refuses the spawn (bu-svqpzo.3).
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
             perm = await check_permission(self._pool, self._config.name, SPAWN_PERMISSION)
             if not perm.allowed:
-                perm_msg = (
-                    f"Permission denied: butler '{self._config.name}' is not granted "
-                    f"'{SPAWN_PERMISSION}'"
-                )
-                if perm.reason:
-                    perm_msg += f" (reason: {perm.reason})"
+                perm_msg = denial_message(perm, self._config.name, SPAWN_PERMISSION)
                 logger.warning(
                     "Spawn blocked by permissions matrix for butler=%s: %s",
                     self._config.name,
@@ -2089,11 +2153,17 @@ class Spawner:
                         f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
                     )
                 alias = model or str(catalog_entry_id)
-                quota_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
-                    windows_exceeded
-                )
+                if quota.unavailable:
+                    quota_msg = (
+                        f"Token quota unavailable for catalog entry '{alias}': "
+                        "the quota state could not be read"
+                    )
+                else:
+                    quota_msg = f"Token quota exhausted for catalog entry '{alias}': " + "; ".join(
+                        windows_exceeded
+                    )
                 logger.warning(
-                    "Quota exhausted for butler=%s catalog_entry_id=%s; "
+                    "Quota refused for butler=%s catalog_entry_id=%s; "
                     "seeking next same-tier candidate: %s",
                     self._config.name,
                     catalog_entry_id,
@@ -2179,8 +2249,8 @@ class Spawner:
         # a hard block regardless of which model resolved (switching models would not
         # bring spend back under budget).  Reuses the quota denial path: a
         # ``quota_skip`` dispatch-attempt row (so the denial is observable in
-        # provenance) plus a failed SpawnerResult.  Fails open inside
-        # check_monthly_ceiling, so a DB/pricing error never wedges spawns.
+        # provenance) plus a failed SpawnerResult.  check_monthly_ceiling fails closed: a
+        # DB/pricing error returns ``unavailable`` and refuses the dispatch.
         # ---------------------------------------------------------------------------
         if catalog_entry_id is not None and self._pool is not None:
             # Consume the concurrently-prefetched ceiling result (kicked off right
@@ -2195,10 +2265,17 @@ class Spawner:
                 else await check_monthly_ceiling(self._pool)
             )
             if not ceiling.allowed:
+                # An unreadable ceiling refuses with its own reason and no fleet-halt:
+                # the Spend banner keys on the reached-ceiling prefix and must keep
+                # meaning a real breach (bu-svqpzo.3).
                 ceiling_msg = (
-                    f"{CEILING_DENIAL_REASON_PREFIX}: "
-                    f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
-                    f"${ceiling.ceiling_usd:.2f}"
+                    CEILING_UNAVAILABLE_REASON
+                    if ceiling.unavailable
+                    else (
+                        f"{CEILING_DENIAL_REASON_PREFIX}: "
+                        f"month-to-date ${ceiling.mtd_usd:.2f} >= ceiling "
+                        f"${ceiling.ceiling_usd:.2f}"
+                    )
                 )
                 logger.warning(
                     "Spawn blocked by monthly spend ceiling for butler=%s: %s",
@@ -2215,7 +2292,7 @@ class Spawner:
                     tool_call_count=0,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
-                    produce_fleet_halt=True,
+                    produce_fleet_halt=not ceiling.unavailable,
                     resolution_receipt=_current_resolution_receipt,
                 )
                 return await self._dashboard_preflight_failure(
@@ -2344,90 +2421,114 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # Read system prompt. The live override (HEAD of
-            # public.system_prompt_history, set via the dashboard prompt editor)
-            # takes precedence over the on-disk CLAUDE.md seed when present.
-            shared_pool = (
-                self._credential_store.shared_pool if self._credential_store is not None else None
-            )
-            prompt_override = await fetch_system_prompt_override(
-                shared_pool or self._pool, self._config.name
-            )
-            resolved_system_prompt = read_system_prompt_with_sources(
-                self._config_dir, self._config.name, db_override=prompt_override
-            )
-            system_prompt = resolved_system_prompt.prompt
-
-            # Fetch situational context preamble (fail-open)
-            context_preamble_ctx = await fetch_situational_context_preamble(
-                self._pool, self._config.name
-            )
-            general_timezone_instruction = await fetch_general_timezone_instruction(
-                self._pool,
-                self._config.name,
-                self._credential_store,
+            # Engineering executors (QA) get one core-owned profile: no persona, DB prompt
+            # override, memory, situational/timezone preamble or blind-spot disclosure
+            # (RFC 0038 D18). A missing profile refuses the launch (fail closed).
+            executor_receipt = (
+                executor_prompt_receipt() if is_executor_trigger(trigger_source) else None
             )
 
-            # Fetch owner routing instructions (switchboard only)
-            # Intentional name check: routing instructions are the switchboard's classifier
-            # context. No other staffer or domain butler uses this context injection.
-            routing_ctx: str | None = None
-            if self._config.name == "switchboard":
-                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+            # Pre-row stage readings (the session clock starts at row creation).
+            pre_row_marks: dict[str, float] = {}
 
-            memory_ctx: str | None = None
-            memory_enabled = _memory_module_enabled(self._config)
-            # A consolidation session's dedup context is already partition-filtered
-            # in its prompt. Recall-based injection would show an owner-partition
-            # session facts of every authority, which it could restate as
-            # owner-evidenced new facts.
-            if memory_enabled and trigger_source != "schedule:consolidation":
-                memory_ctx = await fetch_memory_context(
+            # An executor neither recalls memory nor stores an episode from its session.
+            memory_enabled = executor_receipt is None and _memory_module_enabled(self._config)
+            if executor_receipt is not None:
+                prompt_receipt = executor_receipt
+                system_prompt = prompt_receipt.prompt
+                _composed_prompt_digest = compose_prompt_digest(system_prompt, None)
+                now_mark = time.monotonic()
+                for stage in ("prompt_context_ms", "memory_context_ms", "blind_spot_ms"):
+                    pre_row_marks[stage] = now_mark
+            else:
+                # Read system prompt. The live override (HEAD of
+                # public.system_prompt_history, set via the dashboard prompt editor)
+                # takes precedence over the on-disk CLAUDE.md seed when present.
+                shared_pool = (
+                    self._credential_store.shared_pool
+                    if self._credential_store is not None
+                    else None
+                )
+                prompt_override = await fetch_system_prompt_override(
+                    shared_pool or self._pool, self._config.name
+                )
+                resolved_system_prompt = read_system_prompt_with_sources(
+                    self._config_dir, self._config.name, db_override=prompt_override
+                )
+                system_prompt = resolved_system_prompt.prompt
+
+                # Fetch situational context preamble (fail-open)
+                context_preamble_ctx = await fetch_situational_context_preamble(
+                    self._pool, self._config.name
+                )
+                general_timezone_instruction = await fetch_general_timezone_instruction(
                     self._pool,
                     self._config.name,
-                    final_prompt,
-                    token_budget=_memory_context_token_budget(self._config),
+                    self._credential_store,
                 )
 
-            blind_spot_preamble_enabled = True
-            if self._runtime_config_accessor is not None:
-                try:
-                    blind_spot_preamble_enabled = (
-                        await self._runtime_config_accessor.get()
-                    ).blind_spot_preamble_enabled
-                except Exception:
-                    logger.warning(
-                        "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
-                        self._config.name,
-                        exc_info=True,
-                    )
-            blind_spot_preamble = await fetch_blind_spot_preamble(
-                self._pool,
-                self._config.name,
-                self._config,
-                enabled=blind_spot_preamble_enabled,
-            )
+                # Fetch owner routing instructions (switchboard only)
+                # Intentional name check: routing instructions are the switchboard's classifier
+                # context. No other staffer or domain butler uses this context injection.
+                routing_ctx: str | None = None
+                if self._config.name == "switchboard":
+                    routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+                pre_row_marks["prompt_context_ms"] = time.monotonic()
 
-            _composed_prompt_digest = compose_prompt_digest(
-                system_prompt,
-                memory_ctx,
-                general_timezone_instruction=general_timezone_instruction,
-                routing_instructions=routing_ctx,
-                context_preamble=context_preamble_ctx,
-            )
-            prompt_receipt = compose_effective_system_prompt_receipt(
-                system_prompt,
-                memory_ctx,
-                base_sources=[
-                    (source.source, source.status, source.content)
-                    for source in resolved_system_prompt.sources
-                ],
-                general_timezone_instruction=general_timezone_instruction,
-                routing_instructions=routing_ctx,
-                context_preamble=context_preamble_ctx,
-                blind_spot_preamble=blind_spot_preamble,
-            )
-            system_prompt = prompt_receipt.prompt
+                memory_ctx: str | None = None
+                # A consolidation session's dedup context is already partition-filtered
+                # in its prompt. Recall-based injection would show an owner-partition
+                # session facts of every authority, which it could restate as
+                # owner-evidenced new facts.
+                if memory_enabled and trigger_source != "schedule:consolidation":
+                    memory_ctx = await fetch_memory_context(
+                        self._pool,
+                        self._config.name,
+                        final_prompt,
+                        token_budget=_memory_context_token_budget(self._config),
+                    )
+                pre_row_marks["memory_context_ms"] = time.monotonic()
+
+                blind_spot_preamble_enabled = True
+                if self._runtime_config_accessor is not None:
+                    try:
+                        blind_spot_preamble_enabled = (
+                            await self._runtime_config_accessor.get()
+                        ).blind_spot_preamble_enabled
+                    except Exception:
+                        logger.warning(
+                            "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                            self._config.name,
+                            exc_info=True,
+                        )
+                blind_spot_preamble = await fetch_blind_spot_preamble(
+                    self._pool,
+                    self._config.name,
+                    self._config,
+                    enabled=blind_spot_preamble_enabled,
+                )
+                pre_row_marks["blind_spot_ms"] = time.monotonic()
+
+                _composed_prompt_digest = compose_prompt_digest(
+                    system_prompt,
+                    memory_ctx,
+                    general_timezone_instruction=general_timezone_instruction,
+                    routing_instructions=routing_ctx,
+                    context_preamble=context_preamble_ctx,
+                )
+                prompt_receipt = compose_effective_system_prompt_receipt(
+                    system_prompt,
+                    memory_ctx,
+                    base_sources=[
+                        (source.source, source.status, source.content)
+                        for source in resolved_system_prompt.sources
+                    ],
+                    general_timezone_instruction=general_timezone_instruction,
+                    routing_instructions=routing_ctx,
+                    context_preamble=context_preamble_ctx,
+                    blind_spot_preamble=blind_spot_preamble,
+                )
+                system_prompt = prompt_receipt.prompt
 
             # effective_request_id was minted before the quota-skip loop above
             # (non-null for both connector-sourced and internal triggers).
@@ -2463,6 +2564,10 @@ class Spawner:
                 span.set_attribute("session_id", str(session_id))
                 runtime_session_id = str(session_id)
                 ensure_runtime_session_capture(runtime_session_id)
+                session_timing.begin(runtime_session_id, origin=t0)
+                for pre_stage, pre_reading in pre_row_marks.items():
+                    session_timing.mark_at(runtime_session_id, pre_stage, pre_reading)
+                session_timing.mark(runtime_session_id, "row_created_ms")
                 set_runtime_session_routing_context(runtime_session_id, routing_context)
                 # Mark the session as real-but-not-yet-invoked so a Stop click
                 # in the remaining setup window is recognized honestly.
@@ -2510,8 +2615,9 @@ class Spawner:
             # Build credential env.
             # Caller-supplied env_override replaces the default env entirely (used by
             # the QA dispatcher to pass a sandboxed environment).
-            # Healing sessions get a minimal env: only PATH + GH_TOKEN for PR creation.
-            # No butler-specific credentials are passed to the isolated healing agent.
+            # Historical healing provenance gets a minimal env: PATH and tracing only.
+            # No GitHub or butler-specific credential reaches it; QA publication goes
+            # only through the restricted QA publisher (REQ-qa-investigation-dispatch-001).
             if env_override is not None:
                 env: dict[str, str] = dict(env_override)
             elif trigger_source == "healing":
@@ -2519,25 +2625,21 @@ class Spawner:
                 host_path = os.environ.get("PATH")
                 if host_path:
                     env["PATH"] = host_path
-                # Resolve GH_TOKEN for PR creation via credential store or env fallback
-                gh_token_key = "GH_TOKEN"
-                if self._credential_store is not None:
-                    gh_token_value = await self._credential_store.resolve(gh_token_key)
-                else:
-                    gh_token_value = os.environ.get(gh_token_key)
-                if gh_token_value:
-                    env[gh_token_key] = gh_token_value
                 # Include traceparent for distributed tracing continuity
                 env.update(get_traceparent_env())
             else:
                 env = await _build_env(self._config, self._credential_store)
+
+            # Sandbox overrides and healing retain workload transport selection;
+            # neither can replace it with credential or caller environment data.
+            env = _with_workload_egress(env)
 
             # Owner authentication belongs to the dashboard, including when an
             # explicit caller override or a custom adapter is used.
             env = without_owner_auth(env)
 
             # Build MCP server config for the adapter.
-            # Healing sessions use a minimal env (PATH + GH_TOKEN only) and no MCP servers.
+            # Healing sessions use a minimal env (PATH and tracing only) and no MCP servers.
             # QA sessions use a sandboxed env supplied via env_override by the QA dispatcher
             # (env isolation is the caller's responsibility, not enforced here) and also
             # receive no MCP servers — both to prevent access to live production state and
@@ -2559,6 +2661,8 @@ class Spawner:
                     runtime_session_id,
                     source_endpoint=self._config.switchboard_url,
                     routed=trigger_source in {"route", "classification"},
+                    routing_context=routing_context,
+                    custody_pool=self._pool,
                 )
                 mcp_servers = {
                     self._config.name: {
@@ -2568,6 +2672,16 @@ class Spawner:
                 }
 
             await self._ensure_mcp_endpoints_warmed(mcp_servers)
+            if runtime_session_id:
+                for server_cfg in mcp_servers.values():
+                    surface = self._mcp_tool_surface.get(
+                        self._normalize_mcp_warmup_url(server_cfg.get("url", "")) or ""
+                    )
+                    if surface is not None:
+                        session_timing.note_tool_surface(
+                            runtime_session_id, tool_count=surface[0], schema_bytes=surface[1]
+                        )
+                        break
 
             # ---------------------------------------------------------------------------
             # Provider-native session resume lookup (bu-ep4ks.8 follow-up, bu-bkthr)
@@ -2721,7 +2835,21 @@ class Spawner:
                         self._pending_invoke_sessions.discard(runtime_session_id)
                         raise asyncio.CancelledError()
                     runtime_invoked = True
-                    invoke_task = asyncio.create_task(runtime.invoke(**invoke_kwargs))
+                    if runtime_session_id:
+                        session_timing.mark(runtime_session_id, "invoke_start_ms")
+                    if qa_job_launch is not None and is_executor_trigger(trigger_source):
+                        # bu-ejow5p.11: an isolated QA attempt runs in a per-attempt Job.
+                        invoke_coro = runtime.invoke_in_job(
+                            prompt=invoke_kwargs["prompt"],
+                            system_prompt=invoke_kwargs["system_prompt"],
+                            mcp_servers=invoke_kwargs["mcp_servers"],
+                            launch=qa_job_launch,
+                            model=invoke_kwargs["model"],
+                            runtime_args=invoke_kwargs.get("runtime_args"),
+                        )
+                    else:
+                        invoke_coro = runtime.invoke(**invoke_kwargs)
+                    invoke_task = asyncio.create_task(invoke_coro)
                     if runtime_session_id:
                         self._invoke_tasks_by_session[runtime_session_id] = invoke_task
                         self._pending_invoke_sessions.discard(runtime_session_id)
@@ -2768,6 +2896,12 @@ class Spawner:
                         # record. Copy it after that task has finished, before
                         # any persistence await or worker reuse.
                         _current_served_identity = snapshot(runtime)
+                        if runtime_session_id:
+                            # Last attempt wins: a failover retry moves the end.
+                            session_timing.mark(runtime_session_id, "invoke_end_ms", overwrite=True)
+                            session_timing.note_adapter(
+                                runtime_session_id, runtime.last_process_info
+                            )
                         # Only this attempt's own entry -- a same-tier failover
                         # retry may have already overwritten the key with a new
                         # invoke_task by the time this finally runs.
@@ -2905,6 +3039,9 @@ class Spawner:
                         exception=_attempt_exc,
                         tool_calls=_attempt_tool_calls,
                         process_info=runtime.last_process_info,
+                        executor_env=is_executor_trigger(trigger_source)
+                        and env_override is not None,
+                        job_isolated=qa_job_launch is not None,
                     )
                 )
 
@@ -3073,7 +3210,13 @@ class Spawner:
                         self._pool,
                         catalog_entry_id=_failed_catalog_entry_id,
                         butler=self._config.name,
-                        outcome=ALLOWANCE_OUTCOME if _is_usage_limit else "runtime_failure",
+                        outcome=(
+                            ALLOWANCE_OUTCOME
+                            if _is_usage_limit
+                            else EXECUTOR_ENV_UNFIT_OUTCOME
+                            if _failover_decision.reason.startswith("executor_env_unfit")
+                            else "runtime_failure"
+                        ),
                         attempt_index=_failed_attempt_index,
                         session_id=session_id,
                         failure_reason=_failover_decision.reason,

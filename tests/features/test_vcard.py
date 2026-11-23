@@ -6,12 +6,8 @@ import shutil
 import sys
 from unittest.mock import MagicMock, patch
 
-import asyncpg
 import pytest
 import vobject
-
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # Skip all tests in this module if Docker is not available
 docker_available = shutil.which("docker") is not None
@@ -21,32 +17,6 @@ pytestmark = [
     # Keep tests on the same loop as async fixtures/pools to avoid asyncpg
     # "Future attached to a different loop" failures under xdist.
     pytest.mark.asyncio(loop_scope="session"),
-]
-
-# Tables to truncate between tests (in dependency order — children first).
-# The relationship chain runs without a schema override, so all unqualified
-# tables land in "public" (same as the original hand-rolled DDL approach).
-# Cross-butler identity tables are also in "public" (created by core chain).
-#
-# Note: rel_007 renames "reminders" → "_reminders_backup"; that table is not
-# used by vcard tests so it is omitted from the list.
-_TRUNCATE_TABLES = [
-    # children first (FK → public.contacts)
-    # activity_feed, notes, gifts, loans, interactions dropped by rel_009
-    # quick_facts dropped by rel_025 (bu-6d5v2)
-    "public.important_dates",
-    "public.addresses",
-    "public.relationships",
-    "public.group_members",
-    "public.contact_labels",
-    # memory / public children
-    "public.memory_links",
-    # facts (no FK parent, but seeded predicate_registry rows are kept)
-    "public.facts",
-    # public identity tables (contacts references entities)
-    # public.contact_info dropped in migration bead 10 (core_115 / bu-e2ja9)
-    "public.contacts",
-    "public.entities",
 ]
 
 
@@ -77,67 +47,21 @@ def patch_embedding_engine():
         yield engine
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a database with real Alembic migrations applied (once per module).
-
-    Runs three chains in order:
-    - ``core``       — public.entities, public.contacts, … (contact_info dropped by core_115)
-    - ``memory``     — facts, predicate_registry, memory_links, … (public schema)
-    - ``relationship`` — relationship tables (no schema override; all land in public)
-
-    The ``relationship`` chain intentionally runs **without** a schema override so
-    that unqualified table names (contacts, etc.) land in ``public``,
-    matching the original hand-rolled DDL behaviour.  The rel_003 migration detects
-    that ``relationship.contacts`` does not exist and skips the consolidation step
-    (correct for this flat-schema test topology).
-
-    Adding a new migration (column, table, index) requires *no change* here —
-    the next test run picks it up automatically.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    """Return an asyncpg pool scoped to the migrated DB with clean tables.
-
-    The database schema is created once per module by ``migrated_db_url``.
-    This fixture truncates all data tables before each test so that tests
-    are independent without the overhead of re-running migrations.
-
-    All tables live in ``public`` (the relationship chain runs without a schema
-    override), so the default search_path is sufficient for unqualified names.
-    """
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-
-    # Truncate data tables in dependency order (children before parents).
-    # CASCADE handles any residual FK children automatically.
-    for table in _TRUNCATE_TABLES:
-        await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-
-    yield p
-    await p.close()
+async def flat_pool(db):
+    """Core, memory and relationship chains with no schema override: all tables in public."""
+    return await db("core", "memory", "relationship")
 
 
-async def test_export_single_contact_basic(pool):
+async def test_export_single_contact_basic(flat_pool):
     """Test exporting a single contact with basic fields."""
     from butlers.tools.relationship import contact_create, contact_export_vcard
 
     # Create a basic contact
-    contact = await contact_create(pool, "John Doe")
+    contact = await contact_create(flat_pool, "John Doe")
 
     # Export as vCard
-    vcf = await contact_export_vcard(pool, contact["id"])
+    vcf = await contact_export_vcard(flat_pool, contact["id"])
 
     # Verify vCard structure
     assert "BEGIN:VCARD" in vcf
@@ -146,15 +70,15 @@ async def test_export_single_contact_basic(pool):
     assert "VERSION:" in vcf
 
 
-async def test_export_all_contacts(pool):
+async def test_export_all_contacts(flat_pool):
     """Test exporting all contacts."""
     from butlers.tools.relationship import contact_create, contact_export_vcard
 
-    await contact_create(pool, "Alice Smith")
-    await contact_create(pool, "Bob Jones")
-    await contact_create(pool, "Charlie Brown")
+    await contact_create(flat_pool, "Alice Smith")
+    await contact_create(flat_pool, "Bob Jones")
+    await contact_create(flat_pool, "Charlie Brown")
 
-    vcf = await contact_export_vcard(pool)
+    vcf = await contact_export_vcard(flat_pool)
 
     # Should contain 3 vCards
     assert vcf.count("BEGIN:VCARD") == 3
@@ -164,22 +88,22 @@ async def test_export_all_contacts(pool):
     assert "Charlie Brown" in vcf
 
 
-async def test_export_excludes_archived(pool):
+async def test_export_excludes_archived(flat_pool):
     """Test that archived contacts are not exported."""
     from butlers.tools.relationship import contact_archive, contact_create, contact_export_vcard
 
-    await contact_create(pool, "Active User")
-    c2 = await contact_create(pool, "Archived User")
-    await contact_archive(pool, c2["id"])
+    await contact_create(flat_pool, "Active User")
+    c2 = await contact_create(flat_pool, "Archived User")
+    await contact_archive(flat_pool, c2["id"])
 
-    vcf = await contact_export_vcard(pool)
+    vcf = await contact_export_vcard(flat_pool)
 
     assert vcf.count("BEGIN:VCARD") == 1
     assert "Active User" in vcf
     assert "Archived User" not in vcf
 
 
-async def test_import_basic_vcard(pool):
+async def test_import_basic_vcard(flat_pool):
     """Test importing a basic vCard."""
     from butlers.tools.relationship import contact_import_vcard, contact_search
 
@@ -189,17 +113,17 @@ FN:John Doe
 N:Doe;John;;;
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
     assert contacts[0]["name"] == "John Doe"
 
     # Verify it's in the database
-    results = await contact_search(pool, "John Doe")
+    results = await contact_search(flat_pool, "John Doe")
     assert len(results) == 1
 
 
-async def test_import_vcard_with_address(pool):
+async def test_import_vcard_with_address(flat_pool):
     """Test importing a vCard with address."""
     from butlers.tools.relationship import contact_import_vcard
 
@@ -210,7 +134,7 @@ N:Johnson;Bob;;;
 ADR;TYPE=HOME:;;456 Oak Ave;Boston;MA;02101;USA
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
     details = contacts[0]["details"]
@@ -223,7 +147,7 @@ END:VCARD"""
     assert addr["country"] == "US"
 
 
-async def test_import_vcard_with_unrecognized_country_ignores_country(pool):
+async def test_import_vcard_with_unrecognized_country_ignores_country(flat_pool):
     """Unrecognized country names should not be truncated into invalid pseudo-codes."""
     from butlers.tools.relationship import contact_import_vcard
 
@@ -234,7 +158,7 @@ N:Lane;Casey;;;
 ADR;TYPE=HOME:;;123 Market St;San Francisco;CA;94105;United States
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
     details = contacts[0]["details"]
@@ -242,7 +166,7 @@ END:VCARD"""
     assert details["addresses"][0]["country"] is None
 
 
-async def test_import_vcard_with_birthday_no_year(pool):
+async def test_import_vcard_with_birthday_no_year(flat_pool):
     """Test importing a vCard with birthday without year."""
     from butlers.tools.relationship import contact_import_vcard, date_list
 
@@ -253,10 +177,10 @@ N:Prince;Diana;;;
 BDAY:--12-25
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
-    dates = await date_list(pool, contacts[0]["id"])
+    dates = await date_list(flat_pool, contacts[0]["id"])
     assert len(dates) == 1
     assert dates[0]["label"] == "birthday"
     assert dates[0]["month"] == 12
@@ -264,7 +188,7 @@ END:VCARD"""
     assert dates[0]["year"] is None
 
 
-async def test_import_multiple_vcards(pool):
+async def test_import_multiple_vcards(flat_pool):
     """Test importing multiple vCards in one string."""
     from butlers.tools.relationship import contact_import_vcard
 
@@ -284,7 +208,7 @@ FN:Carol Clark
 N:Clark;Carol;;;
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 3
     names = [c["name"] for c in contacts]
@@ -293,7 +217,7 @@ END:VCARD"""
     assert "Carol Clark" in names
 
 
-async def test_import_handles_missing_fields_gracefully(pool):
+async def test_import_handles_missing_fields_gracefully(flat_pool):
     """Test that import handles vCards with missing optional fields."""
     from butlers.tools.relationship import contact_import_vcard
 
@@ -302,7 +226,7 @@ VERSION:3.0
 FN:Minimal Contact
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
     assert contacts[0]["name"] == "Minimal Contact"
@@ -312,16 +236,16 @@ END:VCARD"""
     assert details["addresses"] == []
 
 
-async def test_import_invalid_vcard_raises_error(pool):
+async def test_import_invalid_vcard_raises_error(flat_pool):
     """Test that importing invalid vCard content raises an error."""
     from butlers.tools.relationship import contact_import_vcard
 
     # vobject.base.ParseError is wrapped by our ValueError
     with pytest.raises((ValueError, vobject.base.ParseError)):
-        await contact_import_vcard(pool, "NOT A VCARD")
+        await contact_import_vcard(flat_pool, "NOT A VCARD")
 
 
-async def test_round_trip_basic_contact(pool):
+async def test_round_trip_basic_contact(flat_pool):
     """Test export then import produces equivalent contact data."""
     from butlers.tools.relationship import (
         contact_create,
@@ -334,13 +258,13 @@ async def test_round_trip_basic_contact(pool):
         "phones": [{"number": "+1-555-1111", "type": "CELL"}],
         "emails": [{"address": "test@example.com", "type": "HOME"}],
     }
-    original = await contact_create(pool, "Round Trip Test", details)
+    original = await contact_create(flat_pool, "Round Trip Test", details)
 
     # Export
-    vcf = await contact_export_vcard(pool, original["id"])
+    vcf = await contact_export_vcard(flat_pool, original["id"])
 
     # Import (creates a new contact)
-    imported = await contact_import_vcard(pool, vcf)
+    imported = await contact_import_vcard(flat_pool, vcf)
 
     assert len(imported) == 1
     assert imported[0]["name"] == original["name"]
@@ -353,7 +277,7 @@ async def test_round_trip_basic_contact(pool):
     assert imported_details["emails"][0]["address"] == "test@example.com"
 
 
-async def test_round_trip_full_contact(pool):
+async def test_round_trip_full_contact(flat_pool):
     """Test round trip with all supported fields."""
     from butlers.tools.relationship import (
         contact_create,
@@ -380,13 +304,13 @@ async def test_round_trip_full_contact(pool):
             }
         ],
     }
-    original = await contact_create(pool, "Full Test", details)
-    await date_add(pool, original["id"], "birthday", 5, 10, 1988)
-    await contact_update(pool, original["id"], company="Test Corp", job_title="Test Engineer")
+    original = await contact_create(flat_pool, "Full Test", details)
+    await date_add(flat_pool, original["id"], "birthday", 5, 10, 1988)
+    await contact_update(flat_pool, original["id"], company="Test Corp", job_title="Test Engineer")
 
     # Export and import
-    vcf = await contact_export_vcard(pool, original["id"])
-    imported = await contact_import_vcard(pool, vcf)
+    vcf = await contact_export_vcard(flat_pool, original["id"])
+    imported = await contact_import_vcard(flat_pool, vcf)
 
     assert len(imported) == 1
     new_contact = imported[0]
@@ -402,24 +326,24 @@ async def test_round_trip_full_contact(pool):
     assert len(new_details["addresses"]) == 1
     assert new_details["addresses"][0]["city"] == "Portland"
 
-    new_dates = await date_list(pool, new_contact["id"])
+    new_dates = await date_list(flat_pool, new_contact["id"])
     assert len(new_dates) == 1
     assert new_dates[0]["month"] == 5
     assert new_dates[0]["day"] == 10
     assert new_dates[0]["year"] == 1988
 
     # ORG/TITLE round-trip via public.contacts
-    new_contact_full = await contact_get(pool, new_contact["id"])
+    new_contact_full = await contact_get(flat_pool, new_contact["id"])
     assert new_contact_full["company"] == "Test Corp"
     assert new_contact_full["job_title"] == "Test Engineer"
 
 
-async def test_export_produces_valid_vcard_30(pool):
+async def test_export_produces_valid_vcard_30(flat_pool):
     """Test that exported vCard is valid vCard 3.0 format."""
     from butlers.tools.relationship import contact_create, contact_export_vcard
 
-    contact = await contact_create(pool, "Valid Test")
-    vcf = await contact_export_vcard(pool, contact["id"])
+    contact = await contact_create(flat_pool, "Valid Test")
+    vcf = await contact_export_vcard(flat_pool, contact["id"])
 
     # Parse to validate
     vcards = list(vobject.readComponents(vcf))
@@ -433,7 +357,7 @@ async def test_export_produces_valid_vcard_30(pool):
     assert vcard.fn.value == "Valid Test"
 
 
-async def test_import_vcard_with_multiple_phones_emails(pool):
+async def test_import_vcard_with_multiple_phones_emails(flat_pool):
     """Test importing a vCard with multiple phones and emails."""
     from butlers.tools.relationship import contact_import_vcard
 
@@ -448,7 +372,7 @@ EMAIL;TYPE=WORK:work@example.com
 EMAIL;TYPE=HOME:home@example.com
 END:VCARD"""
 
-    contacts = await contact_import_vcard(pool, vcf)
+    contacts = await contact_import_vcard(flat_pool, vcf)
 
     assert len(contacts) == 1
     details = contacts[0]["details"]

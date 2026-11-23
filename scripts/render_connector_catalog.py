@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from butlers.connectors.catalog import public_recovery_capabilities  # noqa: E402
+from butlers.connector_catalog import public_recovery_capabilities  # noqa: E402
 
 OUTPUT = ROOT / "frontend/src/components/ingestion/connectors/connector-catalog.gen.ts"
 

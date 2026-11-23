@@ -87,6 +87,15 @@ Scope: v1-mandatory
 - **THEN** the full event is returned from the provider
 - **AND** a 404 response returns `{"status": "not_found", "event": null}`
 
+#### Scenario: Caller arguments cannot open a calendar approval gate
+
+- **WHEN** a session passes an approval-asserting argument (such as `_approval_bypass`) to a calendar mutation tool
+- **THEN** argument validation SHALL reject it, or the ordinary approval gate SHALL still park the call, and no mutation SHALL occur
+- **AND** no calendar tool input schema SHALL declare a parameter that asserts approval
+- **AND** a gated mutation SHALL run without parking only while the approvals executor replays the exact stored call, proven by the execution context for that tool and argument digest
+- **AND** a parked call SHALL store every public parameter, defaults included, so the replay executes exactly what the owner approved
+- **AND** a parked call to a tool that takes `calendar_id` SHALL bind the concrete calendar resolved at park time, so a later default-calendar change cannot redirect the approved effect; an approved row without a bound `calendar_id` SHALL be refused before effect
+
 #### Scenario: Create butler-generated event
 
 - **WHEN** `calendar_create_event` is called with title, start_at, end_at, and optional fields
@@ -724,6 +733,26 @@ When a mutation targets a recurring event, the module SHALL support operating on
 - **THEN** an impact preview reports the number of occurrences the mutation will touch: 1 for `this`, the remaining-from-boundary count for `following`, and the whole-series occurrence count for `series`
 - **AND** the count feeds the high-impact approval gate so large `series` / `following` mutations are gated while a single-occurrence `this` mutation is not
 
+#### Scenario: Large series edit requires exact approved replay
+
+- **WHEN** a series update or delete affects at least ten occurrences in the 90-day recurrence projection window
+- **THEN** it SHALL return `approval_required` and park the canonical executable call before any provider write
+- **AND** the parked call SHALL bind the resolved calendar and every public argument with its default
+- **AND** only the approvals executor replaying that exact approved call SHALL resume its pending workspace action and execute once
+- **AND** a changed default calendar SHALL NOT redirect the approved replay
+
+#### Scenario: Approval unavailable refuses high-impact mutations
+
+- **WHEN** no approval enqueuer is wired and a series or following mutation affects at least ten projected occurrences, or a workspace butler-event delete or toggle is requested
+- **THEN** the tool SHALL return `approval_unavailable` without any provider or native mutation
+- **AND** the workspace action SHALL record a terminal no-effect result so its request ID replays the refusal instead of remaining pending
+- **AND** after approvals become available a new request ID MAY request approval
+
+#### Scenario: Low-impact mutations do not require an enqueuer
+
+- **WHEN** no approval enqueuer is wired and a recurrence mutation affects only `this` or fewer than ten projected occurrences
+- **THEN** the recurrence impact gate SHALL permit the mutation while preserving permission, overlap and other applicable checks
+
 #### Scenario: Unknown recurrence scope rejected
 
 - **WHEN** `calendar_update_event` or `calendar_delete_event` is called with a `recurrence_scope` other than `this`, `following`, or `series`
@@ -1046,6 +1075,45 @@ Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programma
 - **WHEN** a caller retries or deferred execution resumes after permission-store recovery
 - **THEN** the guarded path SHALL read current permission state again
 - **AND** existing request-id idempotency and approval behavior SHALL remain in force
+
+### Requirement: Conditional Replan Move
+
+A broker-forwarded `calendar_update_event` whose verified assertion names the `replan_move` condition (RFC 0038 D13 calendar replan exception, owner decision `bu-qlx055` q12 = B) SHALL move the event only if the provider's copy of it, read at execution, carries the `butler_generated` marker the server wrote when Butlers created it, has no attendees, is neither recurring nor all-day, and the new time overlaps no other event. The tool SHALL judge the event from provider state and never from the call's arguments, and SHALL bind the write to the etag it checked. Otherwise it SHALL write nothing and return `status: "replan_declined"` with a reason, so the broker parks the call as it would have. Events made before Butlers wrote the marker carry none and SHALL count as owner-created. Without the condition the tool's behaviour SHALL be unchanged, and `calendar_respond` SHALL keep `always_per_event`.
+
+#### Scenario: A Butlers-made owner-only block moves with an undo receipt
+- **WHEN** a conditional move targets a non-recurring event the provider reports as `butler_generated` with no attendees, and the new time is free
+- **THEN** the event SHALL move under the etag that was checked
+- **AND** the result SHALL carry the pre-image (`pre_state`) and an `undo` receipt naming the exact inverse `calendar_update_event` move
+
+#### Scenario: Anything else is declined before any write
+- **WHEN** the provider reports the event unmarked, with attendees, recurring or all-day, or the event cannot be read, or the new time overlaps another event, or the overlap check cannot be read, or the call changes anything other than the event's time
+- **THEN** the tool SHALL make no provider write
+- **AND** it SHALL return `status: "replan_declined"` with the reason
+
+#### Scenario: Provider write errors are never a plain result
+- **WHEN** the provider refuses a conditional move's etag-bound write with 412 Precondition Failed
+- **THEN** the tool SHALL return `status: "replan_declined"` with reason `changed_since_check`
+- **AND** the etag-bound write SHALL be sent exactly once, never through the generic rate-limit retry, so a 412 cannot answer a retry of its own committed first attempt
+- **WHEN** the provider write fails in any other way under the condition
+- **THEN** the tool SHALL end the call as an error result, never a plain result the broker would record as committed
+
+#### Scenario: Every move that might land leaves the owner one undo card
+- **WHEN** a conditional move is about to write
+- **THEN** exactly one pending approvals card per goal and event SHALL already carry the inverse `calendar_update_event` as its call, reaching the owner on the existing approvals surfaces
+- **AND** that card SHALL return the block to the earliest pre-image the goal recorded for the event, so a retry after a failed move that in fact committed still undoes to where the block started
+- **AND** when the card cannot be parked the move SHALL write nothing and decline with reason `undo_unavailable`
+- **AND** a card past its expiry SHALL NOT be reused; the next move SHALL park a new one
+
+#### Scenario: A refused move cancels its card
+- **WHEN** the provider refuses the move's write on the etag (412)
+- **THEN** a card that attempt opened SHALL be cancelled with a summary saying nothing happened
+- **AND** after any other write failure the card SHALL remain
+
+#### Scenario: The undo is bound to the move
+- **WHEN** the owner approves the undo card and the event changed since the move, or the move never landed
+- **THEN** the tool SHALL write nothing and return `status: "undo_declined"` with reason `changed_since_move` or `not_moved`
+- **AND** the approvals record SHALL show a failed execution, never an executed one
+- **AND** the undo's write SHALL be etag-bound, sent exactly once, and a 412 SHALL also decline
 
 ## Source References
 

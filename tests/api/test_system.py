@@ -35,7 +35,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
-from butlers.api.routers.system import _commits_behind_main
+from butlers.api.routers.system import _ACTOR_REGISTRY, _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
 from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -1798,7 +1798,7 @@ async def test_egress_403_when_owner_query_fails():
 
 
 async def test_egress_happy_path_actor_mapping_and_aggregation():
-    """llm_api_call maps to anthropic.claude; duplicate rows aggregate total_calls."""
+    """llm_api_call maps to anthropic.claude; duplicates aggregate; unregistered ops excluded."""
     audit_rows = [
         {
             "operation": "llm_api_call",
@@ -1829,8 +1829,9 @@ async def test_egress_happy_path_actor_mapping_and_aggregation():
     claude = next((a for a in actors if a["actor_id"] == "anthropic.claude"), None)
     assert claude is not None
     assert claude["total_calls"] == 8  # aggregated
-    other = next((a for a in actors if a["actor_id"] == "other"), None)
-    assert other is not None
+    # Unregistered (internal) operations are not egress: no "other" bucket.
+    assert [a["actor_id"] for a in actors] == ["anthropic.claude"]
+    assert mock_db.pool.return_value.fetch.call_args.args[1] == list(_ACTOR_REGISTRY)
 
 
 async def test_egress_catalog_covers_from_oldest():
@@ -1841,14 +1842,20 @@ async def test_egress_catalog_covers_from_oldest():
             "last_seen_at": _NOW,
             "total_calls": 1,
             "first_seen_at": earliest,
-        }
+        },
+        {
+            "operation": "internal_settings_change",
+            "last_seen_at": _NOW,
+            "total_calls": 1,
+            "first_seen_at": datetime(2020, 1, 1, tzinfo=UTC),
+        },
     ]
     mock_db = _make_egress_db(has_owner=True, audit_rows=audit_rows)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
     ) as client:
         resp = await client.get("/api/system/egress")
-    assert "2025" in resp.json()["data"]["catalog_covers_from"]
+    assert "2025" in resp.json()["data"]["catalog_covers_from"]  # not the 2020 internal row
 
 
 async def test_egress_503_when_audit_fails():
@@ -2349,3 +2356,81 @@ async def test_background_jobs_never_report_storage_failure_as_an_empty_all_clea
     assert response.status_code == 200
     assert response.json()["data"]["jobs_available"] is True
     assert response.json()["data"]["jobs"][0]["state"] == "disabled"
+
+
+async def _get_owner_conditions(pool: AsyncMock, **params: str) -> httpx.Response:
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        return await client.get("/api/system/conditions", params={"ledger": "owner", **params})
+
+
+@pytest.mark.parametrize(
+    ("sphere", "predicate_sql", "predicate_args"),
+    [
+        (
+            "work",
+            "metadata ->> $1 = $2 AND metadata ->> $3 = $4",
+            ["class", "commitment", "sphere", "work"],
+        ),
+        (
+            "personal",
+            "metadata ->> $1 = $2 AND metadata ->> $3 = $4",
+            ["class", "commitment", "sphere", "personal"],
+        ),
+        (
+            "undeclared",
+            "metadata ->> $1 = $2 AND NOT (metadata ? $3)",
+            ["class", "commitment", "sphere"],
+        ),
+    ],
+)
+async def test_conditions_sphere_filters_in_sql_for_rows_and_total(
+    sphere, predicate_sql, predicate_args
+):
+    """The predicate runs in SQL on both the page and the count (no client-side undercount)."""
+    pool = _make_conditions_pool_mock(rows=[_make_condition_row()], total=7)
+    resp = await _get_owner_conditions(pool, sphere=sphere)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total"] == 7
+    for call in (pool.fetchval.await_args, pool.fetch.await_args):
+        query, *args = call.args
+        assert predicate_sql in query
+        assert args[: len(predicate_args)] == predicate_args
+
+
+async def test_conditions_without_sphere_adds_no_metadata_predicate():
+    pool = _make_conditions_pool_mock(rows=[_make_condition_row()])
+    resp = await _get_owner_conditions(pool)
+    assert resp.status_code == 200
+    assert "metadata ->>" not in pool.fetch.await_args.args[0]
+    assert "metadata ->>" not in pool.fetchval.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    ("params", "detail"),
+    [
+        ({"ledger": "infra", "sphere": "work"}, "sphere is only valid with ledger=owner"),
+        (
+            {"ledger": "owner", "sphere": "bogus"},
+            "Invalid sphere 'bogus'. Must be one of: personal, undeclared, work",
+        ),
+        (
+            {"ledger": "owner", "sphere": ""},
+            "Invalid sphere ''. Must be one of: personal, undeclared, work",
+        ),
+    ],
+)
+async def test_conditions_rejects_invalid_sphere(params, detail):
+    pool = _make_conditions_pool_mock(rows=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions", params=params)
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    pool.fetch.assert_not_awaited()

@@ -214,6 +214,8 @@ async def emit_dashboard_audit(
     error: str | None = None,
     request: Request | None = None,
     user_context: dict[str, Any] | None = None,
+    outcome: dict[str, str] | None = None,
+    metric_action: str | None = None,
 ) -> None:
     """Record one dashboard API mutation into the canonical ``public.audit_log``.
 
@@ -252,12 +254,18 @@ async def emit_dashboard_audit(
         is used to derive ``user_context`` (client IP, user agent, etc.) via
         :func:`build_user_context`.  Ignored when ``user_context`` is provided
         explicitly.
+    metric_action:
+        Bounded value for the append counter's ``action`` attribute; supply it
+        when *operation* embeds request-derived text such as a raw path.
     user_context:
         Explicit ``user_context`` payload.  When ``None`` (default), the
         helper derives one from *request* if provided, otherwise records the
         owner-only defaults.  Callers should pass this when they already have
         a richer actor identity (e.g. a background dispatcher with its own
         principal label).
+    outcome:
+        Optional fixed, server-chosen outcome labels (for example a capture
+        category). Never request content.
     """
     if db_manager is None:
         return
@@ -274,6 +282,8 @@ async def emit_dashboard_audit(
         request_summary["response_status"] = response_status
     if trace_id:
         request_summary["trace_id"] = trace_id
+    if outcome:
+        request_summary["outcome"] = outcome
 
     # Imported lazily to avoid a circular import (routers.audit pulls in API
     # models / router wiring that need not be loaded at module import time).
@@ -318,6 +328,7 @@ async def emit_dashboard_audit(
             metadata=metadata,
             result=result,
             error=error,
+            metric_action=metric_action,
         )
     except AuditTableNotAvailableError:
         logger.warning(

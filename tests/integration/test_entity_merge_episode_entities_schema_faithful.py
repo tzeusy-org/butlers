@@ -36,14 +36,19 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def chronicler_db_url(postgres_container) -> str:
-    # Faithful topology: core into public, the chronicler domain chain into its
-    # own ``chronicler`` schema (mirrors lifecycle.py provisioning chronicler).
-    return create_migrated_test_db(
+    # Preserve core in public and Chronicler in its schema; prep its private module
+    # only after the domain chain is pinned below migration 030.
+    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+
+    url = create_migrated_test_db(
         postgres_container,
         migration_db_name(),
         chains=["core", "chronicler"],
         schemas={"core": "public", "chronicler": "chronicler"},
+        revisions={"chronicler": "chronicler_029"},
     )
+    prepare_chronicler_current_head_sync(url, domain_schema="chronicler")
+    return url
 
 
 @pytest.fixture

@@ -48,13 +48,13 @@ vi.mock("@/hooks/use-sessions", () => ({
 
 // Stub ActivityStripe and DayBars to avoid SVG/canvas complexity
 vi.mock("@/components/butlers/ActivityStripe", () => ({
-  ActivityStripe: ({ counts }: { counts: number[] }) =>
-    createElement("div", { "data-testid": "activity-stripe", "aria-label": `stripe-${counts.length}` }),
+  ActivityStripe: ({ counts }: { counts: (number | null)[] }) =>
+    createElement("div", { "data-testid": "activity-stripe", "data-counts": JSON.stringify(counts) }),
 }))
 
 vi.mock("@/components/butlers/DayBars", () => ({
-  DayBars: ({ data }: { data: number[] }) =>
-    createElement("div", { "data-testid": "day-bars", "aria-label": `bars-${data.length}` }),
+  DayBars: ({ data }: { data: (number | null)[] }) =>
+    createElement("div", { "data-testid": "day-bars", "data-counts": JSON.stringify(data) }),
 }))
 
 import {
@@ -349,6 +349,31 @@ describe("ButlerActivityTab — 24h range", () => {
     expect(screen.getByTestId("activity-stripe")).toBeDefined()
     expect(screen.queryByTestId("day-bars")).toBeNull()
   })
+
+  it("places hourly buckets by hour_start and leaves uncovered hours unreported (bu-s11n0s.5.1)", () => {
+    // Shuffled rows whose hour_index lies: placement must follow hour_start.
+    vi.mocked(useButlerHourlyActivity).mockReturnValue({
+      data: {
+        data: {
+          buckets: [
+            { hour_start: "2026-05-11T12:00:00Z", sessions_count: 0, hour_index: 7 },
+            { hour_start: "2026-05-10T13:00:00Z", sessions_count: 4, hour_index: 0 },
+            { hour_start: "2026-05-11T02:00:00Z", sessions_count: 2, hour_index: 3 },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerHourlyActivity>)
+    renderTab()
+
+    const counts = JSON.parse(screen.getByTestId("activity-stripe").dataset.counts ?? "[]")
+    expect(counts).toHaveLength(24)
+    expect(counts[0]).toBe(4)
+    expect(counts[13]).toBe(2)
+    expect(counts[23]).toBe(0)
+    expect(counts.filter((v: number | null) => v === null)).toHaveLength(21)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -388,11 +413,32 @@ describe("ButlerActivityTab — 7d range", () => {
   afterEach(() => cleanup())
 
   it("switches to DayBars when 7D is selected", () => {
+    // Shuffled day keys around the fixed clock (2026-05-11); 05-09 is absent.
+    vi.mocked(useButlerDailyActivity).mockReturnValue({
+      data: {
+        data: {
+          buckets: [
+            { date: "2026-05-11", sessions_count: 1 },
+            { date: "2026-05-07", sessions_count: 5 },
+            { date: "2026-05-10", sessions_count: 0 },
+            { date: "2026-05-08", sessions_count: 3 },
+            { date: "2026-04-01", sessions_count: 9 },
+          ],
+        },
+      },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerDailyActivity>)
     renderTab()
     const btn = screen.getByRole("button", { name: "7D" })
     fireEvent.click(btn)
     expect(screen.getByTestId("day-bars")).toBeDefined()
     expect(screen.queryByTestId("activity-stripe")).toBeNull()
+    // Keyed by date (bu-s11n0s.5.1): today is the last slot, a measured zero
+    // stays 0, and a day no bucket covers stays null.
+    expect(JSON.parse(screen.getByTestId("day-bars").dataset.counts ?? "[]")).toEqual([
+      null, null, 5, 3, null, 0, 1,
+    ])
   })
 })
 

@@ -106,11 +106,15 @@ const mockMutate = vi.fn();
 
 function LocationEcho() { return <output data-testid="current-path">{useLocation().pathname}</output>; }
 
+function HeartbeatTileWithQuery() {
+  return <ButlerHeartbeatTile heartbeat={useButlerHeartbeats()} />;
+}
+
 function renderTile() {
   return render(
     <MemoryRouter initialEntries={["/system"]}>
       <LocationEcho />
-      <ButlerHeartbeatTile />
+      <HeartbeatTileWithQuery />
     </MemoryRouter>,
   );
 }
@@ -213,7 +217,7 @@ describe("ButlerHeartbeatTile -- real heartbeat query refresh", () => {
     const values = () => [...screen.getByRole("link", {name: "View overdue-butler"}).querySelectorAll("dd")].map((value) => value.textContent);
     const refresh = async () => { await act(async () => {await client.refetchQueries({queryKey: ["system-butler-heartbeats"]});}); };
     try {
-      render(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
+      render(<QueryClientProvider client={client}><MemoryRouter><HeartbeatTileWithQuery /></MemoryRouter></QueryClientProvider>);
       expect(screen.getByText("Loading heartbeat facts…").textContent).toContain("Loading");
       expect(values()[0]).toBe("unknown");
       await waitFor(() => expect(release).toBeTypeOf("function"));
@@ -225,13 +229,19 @@ describe("ButlerHeartbeatTile -- real heartbeat query refresh", () => {
       expect(values()[0]).toBe("unknown");
       response = success([known]); await refresh();
       await waitFor(() => expect(values()).toEqual(["healthy", "paused", "compatible", "paused"]));
+      response = success([{...known, administrative_policy: "active", effective_eligibility: "eligible"}]);
+      await refresh();
+      await waitFor(() => expect(values()).toEqual(["healthy", "active", "compatible", "eligible"]));
       for (const code of [401, 403, 503]) {
         response = new Response(JSON.stringify({error: {code: "UNAVAILABLE", message: "hidden server text"}}), {status: code});
         await refresh();
         await waitFor(() => expect(values()[0]).toBe("unknown"));
         expect(screen.getByText(/Last-known facts/).textContent).toContain("current observation unknown");
+        expect(screen.getByLabelText("Last known service eligibility: eligible").textContent).toBe("eligible");
+        expect(screen.queryByLabelText("Service eligibility: eligible")).toBeNull();
         expect(screen.queryByText("hidden server text")).toBeNull();
-        response = success([known]); await refresh();
+        response = success([{...known, administrative_policy: "active", effective_eligibility: "eligible"}]);
+        await refresh();
         await waitFor(() => expect(values()[0]).toBe("healthy"));
       }
       response = success([{...known, observation_state: "unavailable", administrative_policy: "active", effective_eligibility: "ineligible"}]); await refresh();

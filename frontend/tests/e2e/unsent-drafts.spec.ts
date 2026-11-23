@@ -763,7 +763,7 @@ async function siblingButlers(context: BrowserContext) {
     const board = ["switchboard", "general"].map((name): ResponseOf<"getButlersBoard">["data"]["rows"][number] => ({
       ...boardRow(name), name, type: "butler", status: "running", activity: "idle", cell_tone: "neutral",
       eligibility: "active", sessions_24h: 0, cost_today: 0, active_session_count: 0,
-      hourly_stripe: [], hourly_total: 0, heartbeat_unavailable: true, cadence_status: "unknown",
+      hourly_buckets: [], hourly_total: 0, heartbeat_unavailable: true, cadence_status: "unknown",
     }));
     await route.fulfill({ json: mockResponse("getButlersBoard", { meta: {}, data: { ...emptyBoard().data, rows: board, aggregates: { ...emptyBoard().data.aggregates, total: 2, butler_count: 2 } } }) });
   });

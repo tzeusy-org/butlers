@@ -7,10 +7,14 @@ relationship butler database.
 Scenarios:
 1. Contact creation via spawner: Trigger with contact creation request, verify contact row
 2. Note logging: Trigger with a note about a contact, verify notes table
+4. Meeting debrief free-text reply: one owner reply answers two prompted debriefs
 """
 
 from __future__ import annotations
 
+import json
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -240,3 +244,96 @@ async def test_multiple_contacts_session_tracking(
     assert len(recent_sessions) >= 2, "Should have at least 2 recent sessions"
     for session in recent_sessions:
         assert session["success"] is True, f"Session {session['id']} should be successful"
+
+
+# ---------------------------------------------------------------------------
+# Scenario 4: Free-text meeting debrief reply -> meeting_debrief_answer
+# ---------------------------------------------------------------------------
+
+
+async def test_meeting_debrief_free_text_reply(
+    butler_ecosystem: ButlerEcosystem,
+    relationship_pool: Pool,
+) -> None:
+    """A free-text reply to a debrief prompt becomes the right meeting_debrief_answer calls.
+
+    Seeds two prompted synthetic debriefs (positions 1 and 2) with one active attendee, sends
+    "1: I'll send Sam the deck by Friday. 2: nothing agreed" through a real Relationship
+    session, and asserts debrief 1 is ``captured`` with one meeting_debrief commitment
+    mentioning the deck and debrief 2 is ``none_agreed`` with none.
+
+    Limits: the model step is nondeterministic, so assertions on its output are loose (tool
+    names by suffix, summary by ILIKE) while infrastructure state is exact. Needs
+    ANTHROPIC_API_KEY and the claude CLI; the e2e suite never runs in CI.
+    """
+    daemon = butler_ecosystem.butlers["relationship"]
+    assert daemon.spawner is not None, "Relationship spawner must be initialized"
+
+    sam = await relationship_pool.fetchval(
+        """
+        INSERT INTO public.entities (canonical_name, entity_type, roles)
+        VALUES ('Sam Debrief-Fixture', 'person', '{}'::text[]) RETURNING id
+        """
+    )
+    await relationship_pool.execute(
+        """
+        INSERT INTO relationship.entity_facts (subject, predicate, object, object_kind, src)
+        VALUES ($1, 'has-email', 'sam.fixture@example.com', 'literal', 'e2e')
+        """,
+        sam,
+    )
+    attendees = json.dumps(
+        [{"entity_id": str(sam), "name": "Sam Debrief-Fixture", "email": "sam.fixture@example.com"}]
+    )
+    prompted_at = datetime.now(UTC) - timedelta(minutes=10)
+    debrief_ids: dict[int, uuid.UUID] = {}
+    for position, title in ((1, "Deck review sync"), (2, "Weekly standup")):
+        start = prompted_at - timedelta(hours=2, minutes=position)
+        debrief_ids[position] = await relationship_pool.fetchval(
+            """
+            INSERT INTO meeting_debriefs
+                (event_id, occurrence_start, occurrence_end, event_title, attendees, state,
+                 batch_position, prompted_at)
+            VALUES ($1, $2, $3, $4, $5::jsonb, 'pending', $6, $7)
+            RETURNING id
+            """,
+            uuid.uuid4(),
+            start,
+            start + timedelta(hours=1),
+            title,
+            attendees,
+            position,
+            prompted_at,
+        )
+
+    result = await daemon.spawner.trigger(
+        prompt="1: I'll send Sam the deck by Friday. 2: nothing agreed",
+        trigger_source="external",
+    )
+    assert result.success is True, f"Spawner should succeed, got error: {result.error}"
+
+    called = {str(tc.get("name") or tc.get("tool") or "") for tc in result.tool_calls or []}
+    for tool in ("meeting_debrief_pending", "meeting_debrief_answer"):
+        assert any(name.endswith(tool) for name in called), f"Expected {tool} in {called}"
+
+    states = {
+        position: await relationship_pool.fetchval(
+            "SELECT state FROM meeting_debriefs WHERE id = $1", debrief_id
+        )
+        for position, debrief_id in debrief_ids.items()
+    }
+    assert states == {1: "captured", 2: "none_agreed"}, f"Unexpected debrief states: {states}"
+
+    rows = await relationship_pool.fetch(
+        """
+        SELECT summary, metadata FROM public.owner_conditions
+        WHERE metadata->'evidence_opened'->>'source' = 'meeting_debrief'
+          AND metadata->'evidence_opened'->>'debrief_id' = ANY($1::text[])
+        """,
+        [str(i) for i in debrief_ids.values()],
+    )
+    assert len(rows) == 1, f"Exactly one commitment expected, got {len(rows)}"
+    assert "deck" in rows[0]["summary"].lower()
+    metadata = rows[0]["metadata"]
+    metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+    assert metadata["evidence_opened"]["debrief_id"] == str(debrief_ids[1])

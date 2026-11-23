@@ -54,6 +54,7 @@ import socket
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.chronicler_visibility import local_fact_visibility_condition
 from butlers.core.queue_claim import ClaimFailure, ClaimQueue, claim_batch, fail_claimed
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import parse_consolidation_output
@@ -191,6 +192,7 @@ async def run_consolidation(
     batch_size: int = DEFAULT_BATCH_SIZE,
     enable_shared_catalog: bool = False,
     source_schema: str | None = None,
+    memory_schema: str | None = None,
     retry_failed: bool = True,
 ) -> dict[str, Any]:
     """Orchestrate the full consolidation pipeline for unconsolidated episodes.
@@ -228,6 +230,8 @@ async def run_consolidation(
         source_schema: The butler schema name written to catalog rows when
             ``enable_shared_catalog=True``. When omitted, ``execute_consolidation``
             resolves it from the pool's own ``current_schema()``.
+        memory_schema: Configured local memory schema, used to keep generated
+            Chronicler facts out of the consolidation prompt while repair is pending.
         retry_failed: Whether this memory relation is eligible for automatic
             failed-episode recovery. Failed rows are claimed only when a live
             ``cc_spawner`` can execute the recovery; a no-spawner dry run never
@@ -312,6 +316,7 @@ async def run_consolidation(
                     worker=worker,
                     enable_shared_catalog=enable_shared_catalog,
                     source_schema=source_schema,
+                    memory_schema=memory_schema,
                     errors=all_errors,
                 )
                 if exec_result is None:
@@ -363,6 +368,7 @@ async def _consolidate_partition(
     worker: str,
     enable_shared_catalog: bool,
     source_schema: str | None,
+    memory_schema: str | None,
     errors: list[str],
 ) -> dict[str, Any] | None:
     """Run one authority partition through prompt, runtime, parse and execution.
@@ -381,13 +387,19 @@ async def _consolidate_partition(
         # Includes 'fading' facts (bu-5ud8p.1): they are still live,
         # and consolidation should recognize an episode that reconfirms
         # a fading fact as an update to it, not create a duplicate.
+        facts_visibility = await local_fact_visibility_condition(
+            pool, memory_schema=memory_schema, alias="facts"
+        )
+        facts_visibility_filter = f" AND {facts_visibility}" if facts_visibility is not None else ""
         facts_rows = await pool.fetch(
-            "SELECT id, subject, predicate, content, permanence, entity_id, valid_at "
-            "FROM facts "
-            "WHERE validity IN ('active', 'fading') AND source_butler = $1 "
-            "  AND tenant_id = $2 "
-            f"  AND {authority_filter} "
-            "ORDER BY created_at DESC "
+            "SELECT facts.id, facts.subject, facts.predicate, facts.content, "
+            "facts.permanence, facts.entity_id, facts.valid_at "
+            "FROM facts AS facts "
+            "WHERE facts.validity IN ('active', 'fading') AND facts.source_butler = $1 "
+            "  AND facts.tenant_id = $2 "
+            f"  AND {authority_filter}"
+            f"{facts_visibility_filter} "
+            "ORDER BY facts.created_at DESC "
             "LIMIT 100",
             butler_name,
             tenant_id,

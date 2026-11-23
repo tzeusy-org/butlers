@@ -18,7 +18,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode
 
-REQUIRED = {"check", "guards", "frontend"}
+# The ruleset's required contexts. Runs from before the bu-29wkwj.3 cutover carry the
+# legacy trio; later runs carry only the alls-green fan-in. guards is a workload in both.
+LEGACY_REQUIRED = {"check", "guards", "frontend"}
+FAN_IN_REQUIRED = {"alls-green", "guards"}
 TARGET_SECONDS = 420
 MIN_SAMPLES = 20
 HORIZON = 100
@@ -113,11 +116,14 @@ def sample(run, response):
             if job["conclusion"] != "success":
                 raise ValueError("unsuccessful shard")
             shards.append((end - start, start - ready))
-    if not REQUIRED <= lookup.keys() or not shards:
+    # A run still carrying the `check` mirror predates the cutover: the ruleset then
+    # required the legacy trio, so its required completion is theirs.
+    required = LEGACY_REQUIRED if "check" in lookup else FAN_IN_REQUIRED
+    if not required <= lookup.keys() or not shards:
         raise ValueError("missing required jobs")
-    if any(lookup[name][0]["conclusion"] != "success" for name in REQUIRED):
+    if any(lookup[name][0]["conclusion"] != "success" for name in required):
         raise ValueError("unsuccessful required context")
-    required_end = max(lookup[name][2] for name in REQUIRED)
+    required_end = max(lookup[name][2] for name in required)
     workflow_end = max(executions)
     return {
         "run": run["id"],
@@ -537,7 +543,8 @@ def write_report(report, output):
         "Actions creates a run. Counts describe latest indexed run outcomes, not every historical "
         "attempt. Retries are counted and excluded from the objective.",
         "",
-        "Required completion: created_at through max completed_at(check, guards, frontend). "
+        "Required completion: created_at through max completed_at(alls-green, guards); "
+        "runs from before the cutover use (check, guards, frontend). "
         "Workflow completion: last job completed_at, never workflow updated_at. "
         "Tail: workflow completion minus required completion. Scheduling: job started_at minus "
         "its own created_at; this includes scheduling overhead and does not prove runner quota. "

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -20,38 +21,11 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available"),
 ]
 
-_SCHEMA_SQL = """
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE TABLE episodes (
-    id UUID PRIMARY KEY,
-    butler TEXT NOT NULL,
-    session_id UUID,
-    content TEXT NOT NULL,
-    importance DOUBLE PRECISION NOT NULL DEFAULT 5.0,
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    last_referenced_at TIMESTAMPTZ,
-    expires_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    consolidated BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT NOT NULL DEFAULT 'pending',
-    consolidation_attempts INTEGER NOT NULL DEFAULT 0,
-    last_consolidation_error TEXT,
-    leased_until TIMESTAMPTZ,
-    leased_by TEXT,
-    dead_letter_reason TEXT,
-    next_consolidation_retry_at TIMESTAMPTZ
-);
-CREATE TABLE memory_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type TEXT NOT NULL,
-    actor TEXT,
-    memory_type TEXT,
-    memory_id UUID,
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
+
+@asynccontextmanager
+async def _memory_pool(db):
+    """``episodes`` and ``memory_events`` from the real memory chain, in public."""
+    yield await db("core", "memory")
 
 
 async def _dead_letter(pool) -> uuid.UUID:
@@ -69,10 +43,9 @@ async def _dead_letter(pool) -> uuid.UUID:
 
 
 async def test_concurrent_requeues_produce_exactly_one_transition_and_one_event(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA_SQL)
+    async with _memory_pool(db) as pool:
         episode_id = await _dead_letter(pool)
 
         results = await asyncio.gather(
@@ -94,9 +67,8 @@ async def test_concurrent_requeues_produce_exactly_one_transition_and_one_event(
         assert "abandoned-worker" not in str(events[0]["payload"])
 
 
-async def test_requeue_clears_the_retry_state_and_the_lease(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA_SQL)
+async def test_requeue_clears_the_retry_state_and_the_lease(db) -> None:
+    async with _memory_pool(db) as pool:
         episode_id = await _dead_letter(pool)
 
         await retry_dead_letter_episode(pool, episode_id, memory_schema="public")
@@ -111,10 +83,9 @@ async def test_requeue_clears_the_retry_state_and_the_lease(provisioned_postgres
 
 
 async def test_a_non_dead_letter_episode_changes_nothing_and_writes_no_event(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEMA_SQL)
+    async with _memory_pool(db) as pool:
         episode_id = uuid.uuid4()
         await pool.execute(
             "INSERT INTO episodes (id, butler, content, consolidation_status,"

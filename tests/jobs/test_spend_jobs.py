@@ -22,6 +22,8 @@ from butlers.jobs.spend import (
     _sum_tokens_for_all_models,
     compute_spend_rule_savings,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records, row
 
 pytestmark = pytest.mark.unit
 
@@ -44,51 +46,19 @@ def _pricing(models: dict[str, tuple[float, float]]) -> PricingConfig:
     )
 
 
-def _make_pool(
-    *,
-    rules: list[dict] | None = None,
-    baseline_row: dict | None = None,
-) -> MagicMock:
-    """Build a mock asyncpg pool for the spend job.
+def _savings_pool(*, rules: list[dict], baseline_model: str | None) -> FakePool:
+    """A switchboard pool for one savings run, answering the job's reads in order.
 
-    Parameters
-    ----------
-    rules:
-        Rows returned by ``pool.fetch("SELECT id, action …")``.
-    baseline_row:
-        Row returned by ``pool.fetchrow`` for the baseline model catalog query.
-        ``None`` means the catalog query returns None (no baseline from catalog).
-
-    Note: token totals are patched via ``_sum_tokens_for_all_models`` in tests
-    that need non-zero session data, rather than wiring through the full SQL path.
+    ``fetchrow``: the ``model_catalog`` workhorse baseline (``None``: catalog has
+    none); ``fetch``: the spend rules, then one butler session schema so schema
+    discovery does not short-circuit. Token totals are patched via
+    ``_sum_tokens_for_all_models``; ``executemany`` captures the saved_7d batch.
     """
-    pool = MagicMock()
-
-    def _fetch_side_effect(sql: str, *args, **kwargs):
-        if "information_schema" in sql:
-            # Return one dummy schema so _discover_session_schemas doesn't short-circuit
-            return [{"table_schema": "general"}]
-        if "spend_rules" in sql and "SELECT id" in sql:
-            return rules or []
-        return []
-
-    async def _async_fetch(sql: str, *args, **kwargs):
-        return _fetch_side_effect(sql, *args, **kwargs)
-
-    pool.fetch = AsyncMock(side_effect=_async_fetch)
-
-    def _fetchrow_side_effect(sql: str, *args, **kwargs):
-        if "model_catalog" in sql:
-            return baseline_row
-        return None
-
-    async def _async_fetchrow(sql: str, *args, **kwargs):
-        return _fetchrow_side_effect(sql, *args, **kwargs)
-
-    pool.fetchrow = AsyncMock(side_effect=_async_fetchrow)
-    pool.execute = AsyncMock()
-    pool.executemany = AsyncMock()
-    return pool
+    return fake_pool(
+        fetchrow=None if baseline_model is None else row(model_id=baseline_model),
+        fetch=AsyncMock(side_effect=[records(rules), records([{"table_schema": "general"}])]),
+        executemany=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +192,7 @@ async def test_compute_savings_per_rule_math(rule_model, token_totals, expected_
     """saved_7d = baseline_cost - actual_cost per rule (may be positive, negative, or zero)."""
     rule_id = uuid.uuid4()
     rules = [{"id": rule_id, "action": {"model": rule_model}}]
-    pool = _make_pool(rules=rules, baseline_row={"model_id": "workhorse-model"})
+    pool = _savings_pool(rules=rules, baseline_model="workhorse-model")
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
@@ -253,7 +223,7 @@ async def test_compute_savings_skips_rule_with_no_model(action):
     rule_id = uuid.uuid4()
     pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
     rules = [{"id": rule_id, "action": action}]
-    pool = _make_pool(rules=rules, baseline_row={"model_id": "workhorse-model"})
+    pool = _savings_pool(rules=rules, baseline_model="workhorse-model")
 
     with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
@@ -273,7 +243,7 @@ async def test_compute_savings_skips_rule_with_no_model(action):
 async def test_compute_savings_no_rules_returns_zero_counts():
     """No spend rules → all counts are zero, job completes cleanly."""
     pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
-    pool = _make_pool(rules=[], baseline_row={"model_id": "workhorse-model"})
+    pool = _savings_pool(rules=[], baseline_model="workhorse-model")
 
     with patch("butlers.jobs.spend._sum_tokens_for_all_models", return_value={}):
         result = await compute_spend_rule_savings(pool, pricing=pricing)
@@ -301,9 +271,8 @@ async def test_compute_savings_multiple_rules_all_updated():
         {"id": id_a, "action": {"model": "cheap-model"}},
         {"id": id_b, "action": {"model": "cheap-model"}},
     ]
-    baseline_row = {"model_id": "workhorse-model"}
 
-    pool = _make_pool(rules=rules, baseline_row=baseline_row)
+    pool = _savings_pool(rules=rules, baseline_model="workhorse-model")
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
@@ -330,10 +299,9 @@ async def test_compute_savings_idempotent():
         }
     )
     rules = [{"id": rule_id, "action": {"model": "cheap-model"}}]
-    baseline_row = {"model_id": "workhorse-model"}
 
-    pool1 = _make_pool(rules=rules, baseline_row=baseline_row)
-    pool2 = _make_pool(rules=rules, baseline_row=baseline_row)
+    pool1 = _savings_pool(rules=rules, baseline_model="workhorse-model")
+    pool2 = _savings_pool(rules=rules, baseline_model="workhorse-model")
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
@@ -364,10 +332,7 @@ async def test_compute_savings_falls_back_to_pricing_baseline_when_catalog_unava
     )
     rules = [{"id": rule_id, "action": {"model": "rule-model"}}]
 
-    pool = _make_pool(
-        rules=rules,
-        baseline_row=None,  # catalog returns nothing
-    )
+    pool = _savings_pool(rules=rules, baseline_model=None)  # catalog returns nothing
 
     with patch(
         "butlers.jobs.spend._sum_tokens_for_all_models",
@@ -401,7 +366,7 @@ async def test_spend_rule_savings_registry_handler_is_callable():
     handler = registry["switchboard"]["spend_rule_savings"]
 
     pricing = _pricing({"workhorse-model": (0.000003, 0.000015)})
-    pool = _make_pool(rules=[], baseline_row={"model_id": "workhorse-model"})
+    pool = _savings_pool(rules=[], baseline_model="workhorse-model")
 
     # Patch load_pricing so the handler doesn't try to read pricing.toml
     with patch("butlers.jobs.spend.load_pricing", return_value=pricing):

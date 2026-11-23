@@ -384,6 +384,58 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
     assert "action_execution_succeeded" in event_types
 
 
+async def test_owning_daemon_executes_approved_notify_over_its_proof_hop_once() -> None:
+    """An approved notify runs in its owning daemon, never re-entering notify().
+
+    RFC 0038 D13: the owning daemon's executor holds the approved row and hands
+    its authenticated approved-notify hop the exact action id, stored-call digest
+    and canonical envelope the single-use proof binds. Only then is the row
+    marked executed.
+    """
+    from butlers.core.approved_delivery import approved_notify_request
+    from butlers.modules.approvals.execution_context import approval_tool_args_digest
+
+    config = load_config(_REPO_ROOT / "roster" / "relationship")
+    config.modules["approvals"]["gated_tools"].pop("calendar_respond")
+    db = MockDB()
+    db.schema = "relationship"
+    memory = MemoryModule()
+    approvals = ApprovalsModule()
+    daemon = ButlerDaemon(_REPO_ROOT / "roster" / "relationship", db=db)
+    daemon.config = config
+    daemon.mcp = RuntimeFastMCP("relationship")
+    daemon._modules = [memory, approvals]
+    daemon._module_configs = {
+        "memory": MemoryModuleConfig(**config.modules["memory"]),
+        "approvals": ApprovalsConfig(**config.modules["approvals"]),
+    }
+    hop = AsyncMock(return_value={"status": "ok", "message_id": "m-1"})
+    daemon._approved_notify_dispatch = hop
+    daemon.switchboard_client = SimpleNamespace(call_tool=AsyncMock())
+    await daemon._register_module_tools()
+    await daemon._apply_approval_gates()
+
+    tool_args = {"intent": "send", "channel": "telegram", "message": "Approved words"}
+    action_id = db._insert_action(tool_name="notify", tool_args=tool_args, status="approved")
+    dispatch_tool = await daemon.mcp.get_tool("dispatch_approved_action")
+
+    result = await dispatch_tool.fn(action_id=str(action_id))
+
+    assert result["status"] == "executed", result
+    hop.assert_awaited_once()
+    sent_action, sent_digest, envelope = hop.await_args.args
+    assert str(sent_action) == str(action_id)
+    assert sent_digest == approval_tool_args_digest(tool_args)
+    assert envelope == approved_notify_request("relationship", tool_args)
+    daemon.switchboard_client.call_tool.assert_not_awaited()
+    assert db.pending_actions[action_id]["status"] == "executed"
+
+    # The row is executed: a second dispatch cannot replay the send.
+    replay = await dispatch_tool.fn(action_id=str(action_id))
+    assert replay.get("status") != "pending_approval"
+    hop.assert_awaited_once()
+
+
 async def test_messenger_registered_email_reply_replays_approved_parked_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

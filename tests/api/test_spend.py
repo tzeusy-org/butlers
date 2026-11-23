@@ -2140,11 +2140,23 @@ def test_projection_confidence_normal_from_three_days():
     assert projection_confidence_for(15) == "normal"
 
 
-async def test_forecast_endpoint_exposes_projection_confidence(app):
-    """GET /api/spend/forecast includes projection_confidence matching days_elapsed."""
-    from datetime import date
+@pytest.mark.parametrize(
+    ("today", "expected"),
+    [
+        (date(2026, 11, 1), "low"),
+        (date(2026, 11, 2), "low"),
+        (date(2026, 11, 3), "normal"),
+        (date(2026, 11, 30), "normal"),
+        (date(2026, 2, 28), "normal"),
+    ],
+)
+async def test_forecast_endpoint_exposes_projection_confidence(app, monkeypatch, today, expected):
+    """GET /api/spend/forecast reports projection_confidence for the (UTC) day of month.
 
-    from butlers.api.routers.spend import projection_confidence_for
+    The router derives "today" from ``_utc_today``; the clock is pinned here so the
+    result never depends on the host timezone or the real date.
+    """
+    monkeypatch.setattr("butlers.api.routers.spend._utc_today", lambda: today)
 
     configs = [ButlerConnectionInfo(name="sw", port=41100)]
     mgr = _mock_mgr({"sw": _make_tool_result({"days": []})})
@@ -2157,10 +2169,7 @@ async def test_forecast_endpoint_exposes_projection_confidence(app):
 
     assert resp.status_code == 200
     data = resp.json()["data"]
-    assert "projection_confidence" in data
-    expected = projection_confidence_for(date.today().day)
     assert data["projection_confidence"] == expected
-    assert data["projection_confidence"] in ("low", "normal")
 
 
 # ---------------------------------------------------------------------------

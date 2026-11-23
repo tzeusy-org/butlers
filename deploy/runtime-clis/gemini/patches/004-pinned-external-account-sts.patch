@@ -1,0 +1,131 @@
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -18794 +18794 @@
+-        "google-auth-library": "10.9.0",
++        "google-auth-library": "file:../../vendor/google-auth-library-10.9.0.tgz",
+@@ -19171,2 +19171,2 @@
+-      "resolved": "https://registry.npmjs.org/google-auth-library/-/google-auth-library-10.9.0.tgz",
+-      "integrity": "sha512-xtvUqvINPhTaBm7nXqlYPcrMHJPm1lCNdSovxnKKhTm+4JsvQ+KGVYJViLoH9Yxu8w+T0Qv5HubzYT9BLrppJg==",
++      "resolved": "file:vendor/google-auth-library-10.9.0.tgz",
++      "integrity": "sha512-AVye1qgOi23F8z9mXJ+/JsrJVmKn3pz+13y1hcHxM35qSzBOky9ym2iwUiBuYp2zAbRtmDo693yrbfO44v1qbw==",
+--- a/packages/core/package.json
++++ b/packages/core/package.json
+@@ -67 +67 @@
+-    "google-auth-library": "10.9.0",
++    "google-auth-library": "file:../../vendor/google-auth-library-10.9.0.tgz",
+--- a/packages/core/src/utils/butlersGoogleAuth.test.ts
++++ b/packages/core/src/utils/butlersGoogleAuth.test.ts
+@@ -1 +1 @@
+-import { beforeEach, expect, it, vi } from 'vitest';
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+@@ -2,0 +3,15 @@
++import {
++  mkdtempSync,
++  writeFileSync,
++  rmSync,
++  readlinkSync,
++  readFileSync,
++} from 'node:fs';
++import { tmpdir } from 'node:os';
++import { join } from 'node:path';
++import type { Gaxios } from 'gaxios';
++import { createRequire } from 'node:module';
++const require = createRequire(import.meta.url);
++const ActualGaxios: typeof import('gaxios').Gaxios = require('gaxios').Gaxios;
++const authRequire = createRequire(require.resolve('google-auth-library'));
++let restoreTrap: () => void;
+@@ -6 +21,5 @@
+-const state = vi.hoisted(() => ({ selected: true, requests: [] as string[] }));
++const state = vi.hoisted(() => ({
++  selected: true,
++  requests: [] as string[],
++  defaultRequests: 0,
++}));
+@@ -29 +48,30 @@
+-beforeEach(() => {
++beforeEach(async () => {
++  expect(readlinkSync('/proc/self/ns/net')).not.toBe(
++    process.env['BUTLERS_TEST_HOST_NETNS'],
++  );
++  expect(process.env['BUTLERS_TEST_HOST_NETNS']).toMatch(/^net:\[\d+\]$/);
++  expect(
++    readFileSync('/proc/net/route', 'utf8').trim().split('\n'),
++  ).toHaveLength(1);
++  expect(
++    readFileSync('/proc/net/dev', 'utf8')
++      .split('\n')
++      .filter((x) => x.includes(':'))
++      .map((x) => x.split(':')[0].trim()),
++  ).toEqual(['lo']);
++  expect(authRequire('gaxios').Gaxios).toBe(ActualGaxios);
++  expect(authRequire('google-auth-library').GoogleAuth).toBe(GoogleAuth);
++  const nativeRequest = ActualGaxios.prototype.request;
++  const trap = vi
++    .spyOn(ActualGaxios.prototype, 'request')
++    .mockImplementation(function (this: Gaxios, options) {
++      if (!this.defaults.fetchImplementation) {
++        state.defaultRequests++;
++        throw new Error('unselected synthetic transport trap');
++      }
++      return Reflect.apply(nativeRequest, this, [options]);
++    });
++  restoreTrap = () => trap.mockRestore();
++  await expect(async () =>
++    new ActualGaxios().request({ url: 'https://synthetic.invalid' }),
++  ).rejects.toThrow('unselected synthetic transport trap');
+@@ -31,0 +80 @@
++  state.defaultRequests = 0;
+@@ -32,0 +82,2 @@
++
++afterEach(() => restoreTrap?.());
+@@ -97,0 +149,50 @@
++
++it('actual external-account file subject STS exchange uses selected fetch', async () => {
++  const directory = mkdtempSync(join(tmpdir(), 'butlers-adc-synthetic-'));
++  const subject = join(directory, 'subject-token');
++  writeFileSync(subject, 'synthetic-subject-only');
++  try {
++    const auth = new GoogleAuth({
++      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
++    });
++    const client = fromJSONWithGateway(auth, {
++      type: 'external_account',
++      audience:
++        '//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fixture/providers/fixture',
++      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
++      token_url: 'https://sts.googleapis.com/v1/token',
++      credential_source: { file: subject },
++    });
++    expect((await client.getAccessToken()).token).toBe('synthetic-source');
++    expect(state.requests).toEqual(['https://sts.googleapis.com/v1/token']);
++  } finally {
++    rmSync(directory, { recursive: true });
++  }
++});
++
++it('off external-account keeps native STS default request path', async () => {
++  state.selected = false;
++  const directory = mkdtempSync(join(tmpdir(), 'butlers-adc-off-synthetic-'));
++  const subject = join(directory, 'subject-token');
++  writeFileSync(subject, 'synthetic-subject-only');
++  try {
++    const auth = new GoogleAuth();
++    const nativeFromJSON = auth.fromJSON;
++    const client = fromJSONWithGateway(auth, {
++      type: 'external_account',
++      audience:
++        '//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fixture/providers/fixture',
++      subject_token_type: 'urn:ietf:params:oauth:token-type:jwt',
++      token_url: 'https://sts.googleapis.com/v1/token',
++      credential_source: { file: subject },
++    });
++    await expect(client.getAccessToken()).rejects.toThrow(
++      'unselected synthetic transport trap',
++    );
++    expect(auth.fromJSON).toBe(nativeFromJSON);
++    expect(state.defaultRequests).toBe(1);
++    expect(state.requests).toEqual([]);
++  } finally {
++    rmSync(directory, { recursive: true });
++  }
++});

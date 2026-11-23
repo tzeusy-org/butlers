@@ -30,6 +30,14 @@ export function RelationshipEntityRedirect() {
   return <Navigate to={`/entities/${entityId ?? ''}`} replace />
 }
 
+// Redirect /chronicles/episodes/:episodeId → /chronicles?episode=:episodeId
+// Public MCP result urls are path-only (RFC 0039 D10); ChroniclesPage selects
+// its episode from the query.
+export function ChroniclesEpisodeRedirect() {
+  const { episodeId } = useParams()
+  return <Navigate to={`/chronicles?episode=${encodeURIComponent(episodeId ?? '')}`} replace />
+}
+
 // Redirect /butlers/relationship/contacts/:id → /contacts/:contactId
 // The legacy relationship-scoped contact path has been superseded by the
 // canonical contact compatibility redirect (which forwards to the entity index).

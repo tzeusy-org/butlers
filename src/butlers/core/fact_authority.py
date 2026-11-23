@@ -8,13 +8,16 @@ resolution attributes a sender, it does not authenticate external transport.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
+import importlib
 import json
 import secrets
 import time
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import wraps
 from typing import Any
@@ -25,6 +28,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from butlers.core.attention_urgency import AttentionOrigin, _current_origin, accepted_source_origin
+from butlers.core.custody_ingress import UNREAD, CustodyUnread, custody_recheck_context
+from butlers.core.switchboard_tls import switchboard_http_options
 
 AUTHORITY_TOKENS = frozenset({"owner", "owner_device", "third_party", "system", "mixed"})
 INVOCATION_HEADER = "X-Butlers-Fact-Invocation"
@@ -32,6 +37,43 @@ SOURCE_HEADER = "X-Butlers-Fact-Source"
 VERIFIER_PATH = "/internal/fact-source/verify"
 RECOVERY_PATH = "/internal/fact-source/recover"
 RECEIVER_PATH = "/internal/fact-source/receiver"
+# Capture must not consume all source connections while waiting for its owner.
+# Keep these deadlines local; other registry/resolver callers retain their policy.
+_CAPTURE_TIMEOUT_SECONDS = 5.0
+
+
+async def _owning_endpoint(pool: Any, target: str) -> str | None:
+    """Return the admitted MCP endpoint of an owning butler, or None.
+
+    Admission matches route(): under the receiver-derived cutover the legacy
+    registry liveness projection is no longer refreshed, so a quiet owner would
+    read as stale there (bu-n7zmbp.20). The receiver resolver decides instead,
+    including its single fenced recheck of a stale target. A refusal is final;
+    it never falls back to the legacy projection.
+    """
+    from butlers.tools.switchboard.registry.registry import (
+        DEFAULT_ROUTE_CONTRACT_VERSION,
+        receiver_route_cutover_enabled,
+    )
+
+    if receiver_route_cutover_enabled():
+        # The routing package re-exports a route() function under the module's
+        # name, so import the module itself explicitly.
+        route = importlib.import_module("butlers.tools.switchboard.routing.route")
+        decision, _, _ = await route._resolve_receiver_route_target(
+            pool,
+            target,
+            required_capability=None,
+            route_contract_version=DEFAULT_ROUTE_CONTRACT_VERSION,
+        )
+        if decision is None or decision.state != "ready":
+            return None
+        return decision.endpoint_url
+
+    from butlers.tools.switchboard.registry.registry import resolve_routing_target
+
+    row, _ = await resolve_routing_target(pool, target)
+    return None if row is None else row["endpoint_url"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +199,8 @@ class FactSourceContextRegistry:
         self._claims: dict[str, _SourceClaim] = {}
         self._reports: dict[uuid.UUID, FactWriteContext] = {}
         self._source_digests: dict[uuid.UUID, str] = {}
+        # The one custody verdict capture read per accepted source, for the identity step.
+        self._custody_reasons: dict[uuid.UUID, str | None] = {}
 
     async def resolve_identities(self, channel_type: str, values: list[str]) -> dict[str, Any]:
         """Call the fixed owning-role MCP resolver at an admitted registry target.
@@ -175,15 +219,12 @@ class FactSourceContextRegistry:
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
         from butlers.identity import IdentityResolutionQueryError, ResolvedContact
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity resolver unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 result = await client.call_tool(
                     "identity_resolve_channels",
@@ -220,15 +261,12 @@ class FactSourceContextRegistry:
         from fastmcp import Client
 
         from butlers.core.mcp_urls import canonical_runtime_mcp_url, resolve_cross_container_mcp_url
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
 
         try:
-            target, _ = await resolve_routing_target(self.pool, "relationship")
-            if target is None:
+            owning_url = await _owning_endpoint(self.pool, "relationship")
+            if owning_url is None:
                 raise ValueError("owning identity writer unavailable")
-            endpoint = resolve_cross_container_mcp_url(
-                canonical_runtime_mcp_url(target["endpoint_url"])
-            )
+            endpoint = resolve_cross_container_mcp_url(canonical_runtime_mcp_url(owning_url))
             async with Client(endpoint, timeout=5) as client:
                 await client.call_tool(
                     "identity_assert_sender_channel",
@@ -266,7 +304,69 @@ class FactSourceContextRegistry:
         This method is called only by the owning Pipeline after resolution, not
         exposed through MCP/HTTP. Recovery reuses the original private record.
         """
-        async with self.pool.acquire() as conn, conn.transaction():
+        loop = asyncio.get_running_loop()
+        snapshot_deadline = loop.time() + _CAPTURE_TIMEOUT_SECONDS
+        remaining = snapshot_deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError
+        # Driver content deadlines leave its cancellation/release cleanup intact.
+        async with self.pool.acquire(timeout=remaining) as conn:
+            remaining = snapshot_deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            snapshot = await conn.fetchrow(
+                "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
+                "FROM switchboard.message_inbox WHERE id=$1",
+                inbox_id,
+                timeout=remaining,
+            )
+        if snapshot is None:
+            raise ValueError("accepted source is unavailable")
+        context = snapshot["request_context"] or {}
+        sender = context.get("source_sender_identity")
+        channel = context.get("source_channel")
+        resolved = None
+        if (
+            context.get("_fact_source_report") is None
+            and isinstance(sender, str)
+            and isinstance(channel, str)
+        ):
+            # Relationship routing itself acquires from this source pool. No
+            # connection or inbox lock may span that lookup or its network I/O.
+            try:
+                async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
+                    resolved = await self.resolve_identity(
+                        None, channel, sender, raise_on_error=False
+                    )
+            except TimeoutError:
+                # Preserve unresolved attribution, never infer owner authority.
+                resolved = None
+        # REQ-endpoint-custody-holds-005: an owner reached through a held or unreadable endpoint
+        # keeps attribution but not owner authority. Asked before the inbox lock, like the
+        # lookup above. The dashboard has its own owner admission below and is not an endpoint.
+        custody_held = False
+        custody_read = False
+        if (
+            resolved is not None
+            and "owner" in (getattr(resolved, "roles", None) or ())
+            and channel != "dashboard"
+        ):
+            from butlers.core.custody_ingress import owner_source_custody_reason
+
+            custody_read = True
+            try:
+                async with asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS):
+                    custody_held = (
+                        await owner_source_custody_reason(self.pool, channel, sender) is not None
+                    )
+            except TimeoutError:
+                custody_held = True
+
+        async with (
+            asyncio.timeout(_CAPTURE_TIMEOUT_SECONDS),
+            self.pool.acquire(timeout=_CAPTURE_TIMEOUT_SECONDS) as conn,
+            conn.transaction(),
+        ):
             row = await conn.fetchrow(
                 "SELECT request_context,raw_payload,normalized_text,lifecycle_state "
                 "FROM switchboard.message_inbox WHERE id=$1 FOR UPDATE",
@@ -274,21 +374,19 @@ class FactSourceContextRegistry:
             )
             if row is None:
                 raise ValueError("accepted source is unavailable")
+            if (
+                accepted_source_digest(row) != accepted_source_digest(snapshot)
+                or row["lifecycle_state"] != snapshot["lifecycle_state"]
+            ):
+                raise ValueError("accepted source changed during identity resolution")
             context = row["request_context"] or {}
             stored = context.get("_fact_source_report")
             if stored is not None:
                 report = FactWriteContext.from_record(stored)
             else:
-                # Resolve from the source-owning durable accepted request, not
-                # the public process argument's sender/entity fields. The
-                # Pipeline result is only a consistency witness.
-                sender = context.get("source_sender_identity")
-                channel = context.get("source_channel")
-                resolved = None
-                if isinstance(sender, str) and isinstance(channel, str):
-                    resolved = await self.resolve_identity(
-                        conn, channel, sender, raise_on_error=False
-                    )
+                # The locked source still matches the resolved snapshot. A
+                # concurrent stored winner above always takes precedence; the
+                # Pipeline argument remains only a consistency witness.
                 actual_entity_id = resolved.entity_id if resolved is not None else None
                 if resolved_entity_id is not None and actual_entity_id != resolved_entity_id:
                     raise ValueError("canonical accepted sender resolution mismatch")
@@ -300,7 +398,12 @@ class FactSourceContextRegistry:
                         actual_entity_id,
                     )
                 authority = "mixed" if mixed else "third_party"
-                if not mixed and entity is not None and "owner" in (entity["roles"] or []):
+                if (
+                    not mixed
+                    and not custody_held
+                    and entity is not None
+                    and "owner" in (entity["roles"] or [])
+                ):
                     authority = "owner"
                 report = FactWriteContext(
                     authority,
@@ -357,7 +460,13 @@ class FactSourceContextRegistry:
                 )
         self._reports[inbox_id] = report
         self._source_digests[inbox_id] = accepted_source_digest(row)
+        if custody_read:
+            self._custody_reasons[inbox_id] = "endpoint_held" if custody_held else None
         return report
+
+    def captured_custody(self, inbox_id: uuid.UUID) -> str | None | CustodyUnread:
+        """The custody verdict capture read for this source, or ``UNREAD`` if it read none."""
+        return self._custody_reasons.get(inbox_id, UNREAD)
 
     def issue(self, request_id: uuid.UUID, target: str) -> str:
         report = self._reports.get(request_id)
@@ -405,12 +514,10 @@ class FactSourceContextRegistry:
         # Receiver addresses come from this source's actual registry, never the
         # request body. The ephemeral receiver claim proves possession of its
         # own durable, source-verified acceptance, rather than a copied UUID.
-        from butlers.tools.switchboard.registry.registry import resolve_routing_target
-
-        receiver, _ = await resolve_routing_target(self.pool, target)
-        if receiver is None:
+        receiver_url = await _owning_endpoint(self.pool, target)
+        if receiver_url is None:
             raise ValueError("registered receiver is unavailable")
-        parts = urlsplit(receiver["endpoint_url"])
+        parts = urlsplit(receiver_url)
         url = urlunsplit((parts.scheme, parts.netloc, RECEIVER_PATH, "", ""))
         async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
             response = await client.post(url, json={"capability": receiver_capability})
@@ -525,7 +632,8 @@ class FactReceiverContextRegistry:
         try:
             parts = urlsplit(source_endpoint)
             url = urlunsplit((parts.scheme, parts.netloc, RECOVERY_PATH, "", ""))
-            async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+            options = switchboard_http_options(url, require_origin=True, trust_env=False)
+            async with httpx.AsyncClient(timeout=5, **options) as client:
                 response = await client.post(url, json={"target": self.target, "capability": token})
                 response.raise_for_status()
                 fresh_source = response.json()["capability"]
@@ -550,6 +658,10 @@ class _Invocation:
     source_request: uuid.UUID | None
     deadline: float
     attention_origin: AttentionOrigin | None = None
+    # The recheck's projection of a sender-naming routing context, and a pool to recheck its
+    # endpoint's custody at each write (REQ-endpoint-custody-holds-005, slice 3b).
+    custody_context: Mapping[str, Any] | None = None
+    custody_pool: Any = None
 
 
 # The registries hold private producer objects, not copies from public routing
@@ -605,7 +717,8 @@ async def admit_incoming_source(
     if parts.scheme not in {"http", "https"} or not parts.netloc:
         raise ValueError("configured source verifier is unavailable")
     url = urlunsplit((parts.scheme, parts.netloc, VERIFIER_PATH, "", ""))
-    async with httpx.AsyncClient(trust_env=False, timeout=5) as client:
+    options = switchboard_http_options(url, require_origin=True, trust_env=False)
+    async with httpx.AsyncClient(timeout=5, **options) as client:
         response = await client.post(
             url,
             json={
@@ -628,6 +741,8 @@ async def register_invocation(
     *,
     source_endpoint: str | None,
     routed: bool,
+    routing_context: Mapping[str, Any] | None = None,
+    custody_pool: Any = None,
 ) -> str:
     report = _current_report.get()
     attention_origin = _current_origin.get()
@@ -664,6 +779,8 @@ async def register_invocation(
         _pipeline_source.get(),
         time.monotonic() + 3600,
         attention_origin,
+        custody_recheck_context(routing_context),
+        custody_pool,
     )
     return token
 
@@ -680,6 +797,23 @@ def resolve_invocation(token: str | None, target: str) -> _Invocation | None:
     return None
 
 
+async def current_invocation_report(invocation: _Invocation) -> FactWriteContext:
+    """The invocation's report, rechecked at write time for endpoint custody.
+
+    An owner report from a routed sender keeps its attribution but is demoted to
+    ``third_party`` when that sender's endpoint is now held or its custody is unreadable, so
+    a hold that commits after the report froze still demotes later writes in the session.
+    """
+    report = invocation.report
+    if report.authority != "owner" or invocation.custody_context is None:
+        return report
+    from butlers.core.custody_ingress import routing_context_custody_reason
+
+    if await routing_context_custody_reason(invocation.custody_pool, invocation.custody_context):
+        return replace(report, authority="third_party")
+    return report
+
+
 def accepted_source_scope(operation: Any) -> Any:
     @wraps(operation)
     async def isolated(*args: Any, **kwargs: Any) -> Any:
@@ -693,16 +827,30 @@ def accepted_source_scope(operation: Any) -> Any:
             _current_origin.reset(origin_token)
             if source_id is not None and _source_registry is not None:
                 _source_registry._reports.pop(source_id, None)
+                _source_registry._custody_reasons.pop(source_id, None)
                 _source_registry._source_digests.pop(source_id, None)
 
     return isolated
 
 
 def current_fact_write_context() -> FactWriteContext:
-    """No HTTP/MCP admission means internal SYSTEM, never inferred owner."""
+    """No HTTP/MCP admission means internal SYSTEM, never inferred owner.
+
+    A broker-forwarded call reads authority from its verified goal lineage
+    only, and an owner-class report under an exposed lineage is refused.
+    """
+    from butlers.core.goal_lineage import current_lineage, refuse_owner_authority_under_exposure
+
     context = _current_report.get()
     if context is not None:
+        refuse_owner_authority_under_exposure(context.authority)
         return context
+    lineage = current_lineage()
+    if lineage is not None:
+        if lineage.exposed or lineage.origin == "third_party":
+            return FactWriteContext("third_party")
+        # Owner origin carries no sender entity, like the owner surface.
+        return FactWriteContext("owner_device" if lineage.origin == "owner" else "system")
     from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
     if in_http_request.get():

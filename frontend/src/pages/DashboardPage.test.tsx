@@ -30,6 +30,9 @@ import * as overviewModel from "@/components/overview/model";
 
 vi.mock("@/hooks/use-briefing", () => ({ useBriefing: vi.fn() }));
 vi.mock("@/hooks/use-butlers", () => ({ useButlersBoard: vi.fn() }));
+vi.mock("@/hooks/use-calendar-workspace", () => ({
+  useDaySheet: () => ({ data: undefined, isLoading: true, isError: false, error: null }),
+}));
 vi.mock("@/hooks/use-spend", () => ({
   useSpendSummary: vi.fn(),
   useTopSessions: vi.fn(),
@@ -116,7 +119,7 @@ function boardRow(overrides: Partial<BoardRow> = {}): BoardRow {
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
-    hourly_stripe: [],
+    hourly_buckets: [],
     hourly_total: 0,
     cadence_seconds: null,
     cadence_label: null,

@@ -1,0 +1,585 @@
+"""Image protocol controls use synthetic Docker metadata, never OCI execution credit."""
+
+import hashlib
+import importlib.util
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import types
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+SPEC = importlib.util.spec_from_file_location(
+    "_test_image_chain", ROOT / "scripts/runtime_clis/build_image_chain.py"
+)
+assert SPEC is not None and SPEC.loader is not None
+producer = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(producer)
+
+
+class Commands:
+    def __init__(self, failure=None, loaded=None, built=None):
+        self.calls = []
+        self.failure = failure
+        self.loaded = loaded
+        self.built = built
+
+    def run(self, argv, *, cwd, timeout=1800):
+        self.calls.append((argv, timeout))
+        if argv[0] in {"git", "bash"}:
+            return subprocess.check_output(argv, cwd=cwd, text=True)
+        if argv[:3] == ["docker", "buildx", "build"]:
+            metadata = Path(argv[argv.index("--metadata-file") + 1])
+            if self.failure == metadata.stem:
+                raise RuntimeError("positioned build failure")
+            if self.built is not None and "--load" in argv:
+                metadata.write_text(json.dumps(self.built))
+                return ""
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "containerimage.digest": "sha256:" + "a" * 64,
+                        "containerimage.config.digest": "sha256:" + "b" * 64,
+                    }
+                )
+            )
+            return ""
+        if argv[:3] == ["docker", "image", "inspect"]:
+            if self.loaded is not None:
+                return json.dumps([self.loaded])
+            return json.dumps(
+                [
+                    {
+                        "Id": "sha256:" + ("c" if self.failure == "loaded" else "b") * 64,
+                        "Os": "linux",
+                        "Architecture": "amd64",
+                    }
+                ]
+            )
+        raise AssertionError(argv)
+
+
+@pytest.fixture
+def recipe(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(project)], check=True)
+    files = {
+        *producer.BASE_INPUTS,
+        "Dockerfile",
+        "scripts/base-image-input-fingerprint.sh",
+        producer.REGISTRY_INPUT,
+    }
+    for name in files:
+        target = project / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((ROOT / name).read_bytes())
+    subprocess.run(["git", "add", "."], cwd=project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+        cwd=project,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=project, text=True).strip()
+    helpers = producer.shared()
+    frozen = tmp_path / "context-source"
+    identity = helpers.freeze(project, frozen, Commands())
+    contexts = tmp_path / "contexts"
+    contexts.mkdir()
+    helpers.write_json(contexts / "source-inputs.json", identity)
+    for name in ("system", "runtime", "python/default", "python/live-listener", "go"):
+        (contexts / name).mkdir(parents=True)
+    (contexts / "runtime/inputs.json").write_bytes(
+        (project / "deploy/runtime-clis/runtime-inputs.json").read_bytes()
+    )
+    helpers.write_json(
+        contexts / "verification.json",
+        {
+            "schema": "butlers.image-contexts/v1",
+            "status": "CLOSED_CONTEXTS",
+            "source_inputs_sha256": helpers.digest(contexts / "source-inputs.json"),
+            "runtime_inputs_sha256": helpers.digest(contexts / "runtime/inputs.json"),
+            "producers": [build.name for build in helpers.builds()],
+        },
+    )
+    events = []
+
+    class Registry:
+        def __init__(self, commands, source, image):
+            assert image == json.loads((project / producer.REGISTRY_INPUT).read_text())["image"]
+
+        def start(self):
+            events.append("start")
+            return "127.0.0.1:32321/butlers-base"
+
+        def cleanup(self):
+            events.append("cleanup")
+
+    monkeypatch.setattr(producer, "Registry", Registry)
+    monkeypatch.setattr(producer, "local_manifest", lambda reference: events.append(reference))
+    return project, contexts, revision, helpers, events
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "base", "live-listener-production", "loaded", "manifest"]
+)
+def test_complete_chain_requires_real_manifest_all_profiles_and_owned_cleanup(
+    recipe, tmp_path, monkeypatch, failure
+):
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(failure=failure)
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    if failure == "manifest":
+
+        def refuse(_reference):
+            raise ValueError("positioned manifest refusal")
+
+        monkeypatch.setattr(producer, "local_manifest", refuse)
+    if failure:
+        with pytest.raises(
+            (RuntimeError, ValueError), match="build failure|identity|manifest refusal"
+        ):
+            producer.build(project, contexts, work, output, revision, helpers, commands)
+        assert not output.exists()
+        assert events[-1] == "cleanup"
+        assert not list(tmp_path.glob("image-chain-*"))
+        return
+    result = producer.build(project, contexts, work, output, revision, helpers, commands)
+    assert result["status"] == "BUILT_LOCAL_IMAGES"
+    assert result["base_manifest"] == "sha256:" + "a" * 64
+    assert events == ["start", "127.0.0.1:32321/butlers-base@sha256:" + "a" * 64, "cleanup"]
+    builds = [argv for argv, _ in commands.calls if argv[:3] == ["docker", "buildx", "build"]]
+    assert len(builds) == 5
+    base, *apps = builds
+    assert "runtime-artifacts=" + str(contexts / "runtime") in base
+    assert "system-artifacts=" + str(contexts / "system") in base
+    assert "butlers.base.input_sha=" + result["base_input_sha256"] in base
+    assert all("--load" in argv and "go-artifacts=" + str(contexts / "go") in argv for argv in apps)
+    assert all("BUTLERS_BASE_IMAGE=" + events[1] in argv for argv in apps)
+    assert {argv[argv.index("--target") + 1] for argv in apps} == {"production", "development"}
+    assert {arg for argv in apps for arg in argv if arg.startswith("EXTRAS=")} == {
+        "EXTRAS=",
+        "EXTRAS=live-listener",
+    }
+    assert result["variants"]["default-production"]["tag"] == "butlers-app:" + revision
+    assert len(result["variants"]) == 4
+    assert json.loads((output / "verification.json").read_text()) == result
+
+
+_MANIFEST = "sha256:" + "a" * 64
+_CONFIG = "sha256:" + "b" * 64
+_FOREIGN = "sha256:" + "c" * 64
+_INDEX = "application/vnd.oci.image.index.v1+json"
+_DOCKER_V2 = "application/vnd.docker.distribution.manifest.v2+json"
+_OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+_CLASSIC_BUILT = {"containerimage.digest": _MANIFEST, "containerimage.config.digest": _CONFIG}
+# Dispatch 43621341717, attestation-free: Docker 29's containerd store with the docker driver
+# reports no config digest, only the single loaded manifest (bu-kiuh8v.38).
+_CONTAINERD_BUILT = {
+    "containerimage.config.digest": None,
+    "containerimage.digest": _MANIFEST,
+    "containerimage.descriptor": {"mediaType": _DOCKER_V2, "digest": _MANIFEST, "size": 1612},
+}
+# Dispatch 43610085269, with Buildx's default provenance: an attested index.
+_INDEX_BUILT = {
+    "buildx.build.provenance": {},
+    "containerimage.config.digest": None,
+    "containerimage.digest": _MANIFEST,
+    "containerimage.descriptor": {"mediaType": _INDEX, "digest": _MANIFEST, "size": 856},
+}
+
+
+def _image(identity, descriptor=None, *, arch="amd64", os_name="linux"):
+    image = {"Id": identity, "Os": os_name, "Architecture": arch}
+    if descriptor is not None:
+        image["Descriptor"] = descriptor
+        image["RepoDigests"] = ["butlers-app@" + identity]
+    return image
+
+
+def _desc(media, digest):
+    return {"mediaType": media, "digest": digest, "size": 1612}
+
+
+@pytest.mark.parametrize(
+    ("built", "loaded", "image_id"),
+    [
+        # Classic store: Id is the config digest Buildx reports.
+        (_CLASSIC_BUILT, _image(_CONFIG), _CONFIG),
+        # Docker 29 containerd store, exactly as observed: null config, one v2 manifest named by
+        # Buildx's digest and descriptor and by inspect's Id and Descriptor.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)), _MANIFEST),
+        # Containerd store when Buildx does report a config digest: Id is still the manifest.
+        (_CLASSIC_BUILT, _image(_MANIFEST, _desc(_OCI_MANIFEST, _MANIFEST)), _MANIFEST),
+        # The attested index stays refused: it is not one platform image.
+        (_INDEX_BUILT, _image(_MANIFEST, _desc(_INDEX, _MANIFEST)), None),
+        (_CLASSIC_BUILT, _image(_MANIFEST, _desc(_INDEX, _MANIFEST)), None),
+        # Every digest must be this build's own.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _FOREIGN)), None),
+        (_CONTAINERD_BUILT, _image(_FOREIGN, _desc(_DOCKER_V2, _MANIFEST)), None),
+        (_CONTAINERD_BUILT, _image(_FOREIGN, _desc(_DOCKER_V2, _FOREIGN)), None),
+        (
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": _desc(_DOCKER_V2, _FOREIGN)},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        (
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": _desc(_INDEX, _MANIFEST)},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        (
+            {**_CONTAINERD_BUILT, "containerimage.descriptor": "sha256:" + "a" * 64},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _MANIFEST), None),
+        # Without a Descriptor only the classic binding exists: Id must be the config digest.
+        (_CLASSIC_BUILT, _image(_MANIFEST), None),
+        (_CLASSIC_BUILT, _image(_FOREIGN), None),
+        (_CONTAINERD_BUILT, _image(_MANIFEST), None),
+        # Neither binding is available.
+        (
+            {"containerimage.config.digest": None, "containerimage.digest": None},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        (
+            {"containerimage.config.digest": "sha256:short", "containerimage.digest": _MANIFEST},
+            _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST)),
+            None,
+        ),
+        # Platform.
+        (_CONTAINERD_BUILT, _image(_MANIFEST, _desc(_DOCKER_V2, _MANIFEST), arch="arm64"), None),
+        (_CLASSIC_BUILT, _image(_CONFIG, os_name="windows"), None),
+    ],
+)
+def test_loaded_application_identity_holds_under_both_image_stores(
+    recipe, tmp_path, built, loaded, image_id
+):
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(loaded=loaded, built=built)
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    if image_id is None:
+        with pytest.raises(ValueError, match="loaded application identity differs"):
+            producer.build(project, contexts, work, output, revision, helpers, commands)
+        assert not output.exists() and events[-1] == "cleanup"
+        return
+    result = producer.build(project, contexts, work, output, revision, helpers, commands)
+    # The recorded identity is the bound local image Id: the config digest in the classic store,
+    # the single loaded manifest digest in the containerd store.
+    assert {variant["image_id"] for variant in result["variants"].values()} == {image_id}
+
+
+def test_application_builds_load_one_attestation_free_manifest(recipe, tmp_path):
+    """Docker 29 + Buildx provenance loads an OCI index with no config digest (dispatch 43610085269).
+
+    The app builds turn attestations off so ``--load`` yields one platform manifest that Buildx's
+    digest and inspect's Id and Descriptor all name; the base push is untouched. The index shape
+    itself stays refused (``_INDEX_BUILT`` above).
+    """
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands()
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    producer.build(project, contexts, work, output, revision, helpers, commands)
+    builds = [argv for argv, _ in commands.calls if argv[:3] == ["docker", "buildx", "build"]]
+    base, *apps = builds
+    assert len(apps) == 4
+    assert all("--provenance=false" in argv and "--sbom=false" in argv for argv in apps)
+    assert "--provenance=false" not in base and "--sbom=false" not in base
+
+
+def test_identity_refusal_reports_digest_evidence_only(recipe, tmp_path):
+    """A runner-shape mismatch must be diagnosable from the job log alone."""
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands(
+        loaded={
+            "Id": _FOREIGN,
+            "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+            "RepoDigests": ["butlers-app@" + _FOREIGN],
+            "Config": {"Env": ["TOKEN=not-a-digest"]},
+            "Os": "linux",
+            "Architecture": "amd64",
+            "Variant": "TOKEN=also-not-a-digest",
+        }
+    )
+    work, output = tmp_path / "work", tmp_path / "output"
+    work.mkdir()
+    with pytest.raises(ValueError) as refusal:
+        producer.build(project, contexts, work, output, revision, helpers, commands)
+    message = str(refusal.value)
+    assert message.startswith("loaded application identity differs from Buildx output: ")
+    evidence = json.loads(message.split(": ", 1)[1])
+    assert evidence == {
+        "buildx": {
+            "keys": ["containerimage.config.digest", "containerimage.digest"],
+            "containerimage.config.digest": _CONFIG,
+            "containerimage.digest": _MANIFEST,
+            "containerimage.descriptor": None,
+        },
+        "inspect": [
+            {
+                "Id": _FOREIGN,
+                "Descriptor": {"mediaType": _INDEX, "digest": _FOREIGN, "size": 856},
+                "RepoDigests": ["butlers-app@" + _FOREIGN],
+                "Os": "linux",
+                "Architecture": "amd64",
+                "Variant": "<unexpected str>",
+            }
+        ],
+    }
+    assert "not-a-digest" not in message
+
+
+@pytest.mark.parametrize("drift", ["source", "runtime", "verification", "context-link", "revision"])
+def test_context_or_revision_mismatch_refuses_before_registry_with_healthy_companion(
+    recipe, tmp_path, drift
+):
+    project, contexts, revision, helpers, events = recipe
+    commands = Commands()
+    frozen = tmp_path / "healthy"
+    identity = helpers.freeze(project, frozen, commands)
+    producer.contexts_identity(frozen, contexts, identity, helpers)
+    if drift == "source":
+        (project / "Dockerfile").write_text("changed source")
+    elif drift == "runtime":
+        (contexts / "runtime/inputs.json").write_text("foreign bytes")
+    elif drift == "verification":
+        (contexts / "verification.json").write_text("{}")
+    elif drift == "context-link":
+        (contexts / "go").rmdir()
+        (contexts / "go").symlink_to(tmp_path / "healthy")
+    else:
+        revision = "f" * 40
+    work = tmp_path / "work"
+    work.mkdir()
+    with pytest.raises(ValueError, match="contexts|context|manifest|revision"):
+        producer.build(project, contexts, work, tmp_path / "output", revision, helpers, commands)
+    assert events == []
+
+
+@pytest.mark.parametrize("status,wrong", [(200, False), (302, False), (200, True)])
+def test_owned_manifest_reader_binds_actual_response_bytes_and_refuses_redirect(status, wrong):
+    payload = b'{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}'
+    digest = hashlib.sha256(payload).hexdigest()
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            self.send_response(status)
+            self.send_header("Docker-Content-Digest", "sha256:" + digest)
+            self.send_header("Location", "/forbidden-follow")
+            self.end_headers()
+            self.wfile.write(b"wrong bytes" if wrong else payload)
+
+        def log_message(self, *_args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        reference = f"127.0.0.1:{server.server_port}/butlers-base@sha256:{digest}"
+        if status != 200 or wrong:
+            with pytest.raises(ValueError, match="registry"):
+                producer.local_manifest(reference)
+        else:
+            assert producer.local_manifest(reference) == "sha256:" + digest
+        assert requests == ["/v2/butlers-base/manifests/sha256:" + digest]
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_nightly_consumes_closed_contexts_before_unchanged_installed_export():
+    import yaml
+
+    job = yaml.safe_load((ROOT / ".github/workflows/nightly.yml").read_text())["jobs"][
+        "exact-image-sandbox"
+    ]
+    steps = job["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index("Produce complete closed image contexts") < names.index(
+        "Build butlers-app exact image"
+    )
+    assert names.index("Build butlers-app exact image") < names.index(
+        "Export installed runtime image files"
+    )
+    context = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Produce complete closed image contexts"
+    )
+    chain = next(
+        step["run"] for step in steps if step.get("name") == "Build butlers-app exact image"
+    )
+    assert "scripts/runtime_clis/produce_image_contexts.py" in context
+    assert "scripts/runtime_clis/build_image_chain.py" in chain
+    assert (
+        '--revision "${GIT_SHA}"' in chain
+        and '--contexts "${IMAGE_SCRATCH}/image-contexts-' in chain
+    )
+    # bu-kiuh8v.24: the runner has one disk (/mnt is a directory on /), so scratch is RUNNER_TEMP
+    # and docker is never moved; the producer prunes each finished producer's build cache.
+    assert '--work "${IMAGE_SCRATCH}/image-context-work-' in context
+    assert '--output "${IMAGE_SCRATCH}/image-contexts-' in context
+    assert "RUNNER_TEMP}/image-" not in context + chain
+    assert "--prune-build-cache" in context
+    scratch = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Image scratch on the runner's single disk"
+    )
+    assert names.index("Image scratch on the runner's single disk") < names.index(
+        "Produce complete closed image contexts"
+    )
+    assert "IMAGE_SCRATCH=${RUNNER_TEMP}" in scratch and "findmnt" in scratch
+    workflow_text = (ROOT / ".github/workflows/nightly.yml").read_text()
+    assert '"data-root"' not in workflow_text and "mount --bind" not in workflow_text
+    # The watchdog beside the producer stops it below a floor on /.
+    assert (
+        "python3 -u -I -B scripts/nightly_disk_watchdog.py watch" in context
+        and "setsid python3" in context
+    )
+    assert "--floor-mb 3072" in context and "--pid" in context
+    stop = next(
+        step
+        for step in steps
+        if step.get("name") == "Stop the disk sampler and show the final disk state"
+    )
+    assert stop["if"] == "always()" and "disk-sampler.pid" in stop["run"]
+    assert names.index(stop["name"]) == names.index("Produce complete closed image contexts") + 1
+    start = next(
+        step for step in steps if step.get("name") == "Disk and docker storage at job start"
+    )
+    assert "df -h / /mnt" in start["run"]
+    # Evidence must survive a runner that dies and loses its logs: annotations, not log lines.
+    assert "::notice title=docker storage::" in start["run"] and "driver-type" in start["run"]
+    assert names.index("Image scratch on the runner's single disk") > names.index(start["name"])
+    assert "disk-watchdog" in context and 'wait "${producer}"' in context
+    upload = next(step for step in steps if step.get("name") == "Upload the disk sampler log")
+    assert upload["if"] == "always()" and "disk-watchdog" in upload["with"]["path"]
+    assert "nightly_disk_watchdog.py summarize" in stop["run"]
+    assert "butlers-base:latest" not in context + chain
+    row = next(
+        row
+        for row in json.loads((ROOT / "scripts/ci-job-timeouts.json").read_text())["jobs"]
+        if row["workflow"] == ".github/workflows/nightly.yml"
+        and row["job"] == "exact-image-sandbox"
+    )
+    assert row["installed_timeout_minutes"] == job["timeout-minutes"] == 330
+    assert row["source_build_envelope"]["codex_actual_seconds"] == 5111.299
+    assert row["successful_sample_n"] == 0 and "provisional" in row["state"]
+
+
+@pytest.mark.parametrize("foreign", [False, True])
+def test_registry_cleanup_requires_exact_owner_and_never_removes_foreign_container(
+    tmp_path, foreign
+):
+    # Real child commands exercise the cleanup transaction, using a finite fake
+    # Docker protocol ledger. This is neither Docker nor container execution.
+    commands = type("Commands", (), {})()
+    commands.boundary = types.ModuleType("boundary")
+    path = ROOT / "scripts/runtime_clis/produce_default_plugin_artifact.py"
+    exec(compile(path.read_bytes(), str(path), "exec"), commands.boundary.__dict__)
+    commands.environment = {"PATH": str(tmp_path), "HOME": os.environ["HOME"]}
+    registry = producer.Registry(commands, tmp_path, "unused")
+    identifier = "d" * 64
+    value = {
+        "Id": identifier,
+        "Name": "/" + registry.name,
+        "Config": {"Labels": {producer.OWNER_LABEL: "foreign" if foreign else registry.owner}},
+    }
+    marker = tmp_path / "removed"
+    executable = tmp_path / "docker"
+    executable.write_text(
+        f"#!{sys.executable}\nimport pathlib,sys\n"
+        f"value={json.dumps(json.dumps([value]))}\n"
+        f"if sys.argv[1]=='ps': print({identifier!r})\n"
+        "elif sys.argv[1]=='inspect': print(value)\n"
+        f"elif sys.argv[1]=='rm': pathlib.Path({str(marker)!r}).write_text('removed')\n"
+        "else: raise SystemExit(4)\n"
+    )
+    executable.chmod(0o755)
+    if foreign:
+        with pytest.raises(ValueError, match="foreign registry"):
+            registry.cleanup()
+        assert not marker.exists()
+    else:
+        registry.cleanup()
+        assert marker.read_text() == "removed"
+
+
+@pytest.mark.parametrize("number", [signal.SIGINT, signal.SIGTERM])
+def test_cleanup_defers_cancellation_until_owned_remove_child_settles(tmp_path, number):
+    started, removed = tmp_path / "started", tmp_path / "removed"
+    executable = tmp_path / "docker"
+    executable.write_text(
+        f"#!{sys.executable}\nimport json,os,pathlib,sys,time\n"
+        "if sys.argv[1]=='ps': print('d'*64)\n"
+        "elif sys.argv[1]=='inspect': print(pathlib.Path('container.json').read_text())\n"
+        f"elif sys.argv[1]=='rm':\n pathlib.Path({str(started)!r}).write_text(str(os.getpid()))\n"
+        f" time.sleep(.3)\n pathlib.Path({str(removed)!r}).write_text('removed')\n"
+        "else: raise SystemExit(4)\n"
+    )
+    executable.chmod(0o755)
+    driver = tmp_path / "driver.py"
+    driver.write_text(f"""
+import importlib.util,json,os,pathlib,signal,types
+spec=importlib.util.spec_from_file_location('_chain_signal', {str(Path(producer.__file__).resolve())!r})
+module=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+boundary=types.ModuleType('_boundary')
+path=pathlib.Path({str(ROOT / "scripts/runtime_clis/produce_default_plugin_artifact.py")!r})
+exec(compile(path.read_bytes(),str(path),'exec'),boundary.__dict__)
+commands=types.SimpleNamespace(boundary=boundary,environment={{'PATH':{str(tmp_path)!r},'HOME':os.environ['HOME']}})
+registry=module.Registry(commands,pathlib.Path({str(tmp_path)!r}),'unused')
+pathlib.Path({str(tmp_path / "container.json")!r}).write_text(json.dumps([{{'Id':'d'*64,'Name':'/'+registry.name,'Config':{{'Labels':{{module.OWNER_LABEL:registry.owner}}}}}}]))
+try:
+    with boundary.owner_signals():
+        registry.cleanup()
+except boundary.OwnerSignal as error:
+    signal.signal(error.number,signal.SIG_DFL)
+    os.kill(os.getpid(),error.number)
+""")
+    child = subprocess.Popen([sys.executable, "-B", str(driver)])
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline and child.poll() is None:
+            time.sleep(0.01)
+        assert started.exists(), (
+            "the actual cleanup remove child must be active before cancellation"
+        )
+        remove_pid = int(started.read_text())
+        child.send_signal(number)
+        assert child.wait(timeout=5) == -number
+        assert removed.exists(), "owned removal must finish before cancellation settles"
+        assert removed.read_text() == "removed"
+        with pytest.raises(ProcessLookupError):
+            os.kill(remove_pid, 0)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()

@@ -1,0 +1,25 @@
+{
+  "schema": "butlers.vendor-build-inputs/v1",
+  "artifacts": [
+    {
+      "name": "genai-sdk",
+      "path": "vendor/google-genai-1.30.0.tgz",
+      "sha256": "90b6c717bb129da68ef1e386eb85519331ce4405a2f00fb50a72fc53b418dba5",
+      "mode": 420,
+      "integrity": "sha512-XTJCx/k+l7z5qDyIyFM70YAe8jyyJ8x8a2FhKvEmwWyAypbqyjbx+atpBtiNYxLmcEulYr+pbgL662JmOvdtNA==",
+      "source_series": "../js-genai/series.json",
+      "source_series_sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486",
+      "source_tree_sha256": "806d397085acaaa39677f9607d947332d5f982da74f1439f948b24be75000b52"
+    },
+    {
+      "name": "google-auth-core",
+      "path": "vendor/google-auth-library-10.9.0.tgz",
+      "sha256": "8f34332e7d10e9292118e3deb99f4752391015d12f57df85208a788708dab258",
+      "mode": 420,
+      "integrity": "sha512-AVye1qgOi23F8z9mXJ+/JsrJVmKn3pz+13y1hcHxM35qSzBOky9ym2iwUiBuYp2zAbRtmDo693yrbfO44v1qbw==",
+      "source_series": "../google-auth-library/series.json",
+      "source_series_sha256": "0289b29e2ef500b6b639a2b3389d84f506f08f23c78b635baf7022de9321c690",
+      "source_tree_sha256": "656c79ecb519356064ce810b95e525120569d382981d4fd0c7f3a9d08a3115c3"
+    }
+  ]
+}

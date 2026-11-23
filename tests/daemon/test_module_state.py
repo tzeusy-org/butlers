@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -26,9 +26,12 @@ from butlers.daemon import (
     ButlerDaemon,
     ModuleRuntimeState,
 )
+from butlers.module_state import ModuleStartupStatus
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.daemon import write_butler_config
 from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.tool_host import host_tools
 
 pytestmark = pytest.mark.unit
 
@@ -195,10 +198,22 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     # daemon code paths (e.g. contact_info resolution). Provide a context
     # manager that yields a no-op connection so those paths don't crash.
     mock_conn = AsyncMock()
+    transaction_depth = 0
+
+    async def enter_transaction() -> None:
+        nonlocal transaction_depth
+        transaction_depth += 1
+
+    async def exit_transaction(*_exc: object) -> bool:
+        nonlocal transaction_depth
+        transaction_depth -= 1
+        return False
+
     transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
-    transaction.__aexit__ = AsyncMock(return_value=False)
+    transaction.__aenter__ = AsyncMock(side_effect=enter_transaction)
+    transaction.__aexit__ = AsyncMock(side_effect=exit_transaction)
     mock_conn.transaction = MagicMock(return_value=transaction)
+    mock_conn.is_in_transaction = MagicMock(side_effect=lambda: transaction_depth > 0)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
@@ -211,87 +226,61 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     return pool
 
 
-def _patch_infra(mock_pool: AsyncMock | None = None):
-    if mock_pool is None:
-        mock_pool = _make_mock_pool()
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    mock_adapter = MagicMock()
-    mock_adapter.binary_name = "claude"
-    mock_adapter_builder = MagicMock(return_value=mock_adapter)
-
-    return {
-        "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "configure_logging": patch("butlers.core.logging.configure_logging"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "mock_db": mock_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
-
-
-async def _start_daemon(
+async def _init_states(
     butler_dir: Path,
-    registry: ModuleRegistry | None = None,
+    *modules: Module,
     state_store: dict | None = None,
+    failed: dict[str, str] | None = None,
 ) -> ButlerDaemon:
-    mock_pool = _make_mock_pool(state_store)
-    patches = _patch_infra(mock_pool)
+    """Run the daemon's own ``_init_module_runtime_states`` phase on a DB-free host.
 
-    with (
-        patches["db_from_env"],
-        patches["run_migrations"],
-        patches["validate_credentials"],
-        patches["validate_module_credentials"],
-        patches["init_telemetry"],
-        patches["sync_schedules"],
-        patches["FastMCP"],
-        patches["Spawner"],
-        patches["build_runtime_adapter"],
-        patches["shutil_which"],
-        patches["start_mcp_server"],
-        patches["connect_switchboard"],
-        patches["recover_route_inbox"],
-    ):
-        daemon = ButlerDaemon(butler_dir, registry=registry)
-        await daemon.start()
-
+    *failed* maps a module to the startup error the startup phase recorded for it.
+    The subject is how startup results and sticky state combine, not the boot; the
+    first case in this file boots for real (bu-rvgzmf.2).
+    """
+    pool = _make_mock_pool(state_store)
+    daemon = (await host_tools(butler_dir, pool=pool)).daemon
+    daemon._modules = list(modules)
+    daemon._module_statuses = {
+        name: ModuleStartupStatus(status="failed", phase="startup", error=error)
+        for name, error in (failed or {}).items()
+    }
+    await daemon._init_module_runtime_states(pool)
     return daemon
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_real_boot_initialises_and_persists_module_states(
+    booted_daemon, tmp_path: Path
+) -> None:
+    """Startup enables healthy modules in the real state table; a toggle persists there."""
+    from butlers.testing.db import open_pool
+
+    config_dir = write_butler_config(
+        tmp_path, "general", extra_toml="[modules.stub_a]\n\n[modules.stub_b]\n"
+    )
+    booted = await booted_daemon(config_dir, registry=_make_registry(StubModuleA, StubModuleB))
+    daemon = booted.daemon
+
+    states = daemon.get_module_states()
+    assert {name: (s.health, s.enabled) for name, s in states.items()} == {
+        "stub_a": ("active", True),
+        "stub_b": ("active", True),
+    }
+    await daemon.set_module_enabled("stub_a", False)
+
+    admin = await open_pool(booted.admin_url)
+    try:
+        rows = await admin.fetch(
+            "SELECT key, value FROM general.state WHERE key LIKE 'module::stub_a::%'"
+        )
+    finally:
+        await admin.close()
+    assert {row["key"]: row["value"] for row in rows} == {
+        "module::stub_a::enabled": False,
+        "module::stub_a::disabled_by": "user",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -328,22 +317,16 @@ async def test_init_module_states_startup_behavior(tmp_path: Path) -> None:
     d1 = tmp_path / "d1"
     d1.mkdir()
     butler_dir = _make_butler_toml(d1, modules={"stub_a": {}})
-    registry = _make_registry(StubModuleA)
-    daemon = await _start_daemon(butler_dir, registry=registry, state_store={})
+    daemon = await _init_states(butler_dir, StubModuleA(), state_store={})
     states = daemon.get_module_states()
     assert states["stub_a"].health == "active"
     assert states["stub_a"].enabled is True
 
-    class FailingModuleA(StubModuleA):
-        async def on_startup(
-            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-        ) -> None:
-            raise RuntimeError("startup exploded")
-
     # Failed startup: disabled + persisted
     store: dict = {}
-    registry2 = _make_registry(FailingModuleA)
-    daemon2 = await _start_daemon(butler_dir, registry=registry2, state_store=store)
+    daemon2 = await _init_states(
+        butler_dir, StubModuleA(), state_store=store, failed={"stub_a": "startup exploded"}
+    )
     states2 = daemon2.get_module_states()
     assert states2["stub_a"].health == "failed"
     assert states2["stub_a"].enabled is False
@@ -356,8 +339,9 @@ async def test_init_module_states_startup_behavior(tmp_path: Path) -> None:
     d2.mkdir()
     butler_dir2 = _make_butler_toml(d2, modules={"stub_a": {}, "stub_b": {}})
     store_disabled = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "user"}
-    registry3 = _make_registry(StubModuleA, StubModuleB)
-    daemon3 = await _start_daemon(butler_dir2, registry=registry3, state_store=store_disabled)
+    daemon3 = await _init_states(
+        butler_dir2, StubModuleA(), StubModuleB(), state_store=store_disabled
+    )
     states3 = daemon3.get_module_states()
     assert set(states3.keys()) == {"stub_a", "stub_b"}
     assert states3["stub_a"].enabled is False
@@ -368,18 +352,14 @@ async def test_init_module_states_startup_behavior(tmp_path: Path) -> None:
     d3.mkdir()
     butler_dir3 = _make_butler_toml(d3, modules={"stub_a": {}})
     store_failure = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "failure"}
-    daemon4 = await _start_daemon(
-        butler_dir3, registry=_make_registry(StubModuleA), state_store=store_failure
-    )
+    daemon4 = await _init_states(butler_dir3, StubModuleA(), state_store=store_failure)
     assert daemon4.get_module_states()["stub_a"].enabled is True  # heals
 
     d4 = tmp_path / "d4"
     d4.mkdir()
     butler_dir4 = _make_butler_toml(d4, modules={"stub_a": {}})
     store_user = {"module::stub_a::enabled": False, "module::stub_a::disabled_by": "user"}
-    daemon5 = await _start_daemon(
-        butler_dir4, registry=_make_registry(StubModuleA), state_store=store_user
-    )
+    daemon5 = await _init_states(butler_dir4, StubModuleA(), state_store=store_user)
     assert daemon5.get_module_states()["stub_a"].enabled is False  # stays disabled
 
 
@@ -393,14 +373,8 @@ async def test_get_module_states_behavior(tmp_path: Path) -> None:
     butler_dir = _make_butler_toml(tmp_path, modules={"stub_a": {}})
     assert ButlerDaemon(butler_dir).get_module_states() == {}
 
-    class FailingModuleA(StubModuleA):
-        async def on_startup(
-            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-        ) -> None:
-            raise RuntimeError("db connection refused")
-
-    daemon = await _start_daemon(
-        butler_dir, registry=_make_registry(FailingModuleA), state_store={}
+    daemon = await _init_states(
+        butler_dir, StubModuleA(), state_store={}, failed={"stub_a": "db connection refused"}
     )
     states = daemon.get_module_states()
     states.clear()
@@ -421,8 +395,7 @@ async def test_set_module_enabled_lifecycle_and_errors(tmp_path: Path) -> None:
     store: dict = {}
     (tmp_path / "a").mkdir()
     butler_dir = _make_butler_toml(tmp_path / "a", modules={"stub_a": {}})
-    registry = _make_registry(StubModuleA)
-    daemon = await _start_daemon(butler_dir, registry=registry, state_store=store)
+    daemon = await _init_states(butler_dir, StubModuleA(), state_store=store)
 
     assert await daemon.set_module_enabled("stub_a", False) is True
     assert daemon.get_module_states()["stub_a"].enabled is False
@@ -442,16 +415,11 @@ async def test_set_module_enabled_lifecycle_and_errors(tmp_path: Path) -> None:
     assert enabled_key in store and disabled_by_key in store
 
     # Error cases: unknown/failed/cascade_failed raise ValueError
-    class FailingModuleA(StubModuleA):
-        async def on_startup(
-            self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
-        ) -> None:
-            raise RuntimeError("startup failed")
-
     (tmp_path / "b").mkdir()
     butler_dir2 = _make_butler_toml(tmp_path / "b", modules={"stub_a": {}})
-    registry2 = _make_registry(FailingModuleA)
-    daemon2 = await _start_daemon(butler_dir2, registry=registry2, state_store={})
+    daemon2 = await _init_states(
+        butler_dir2, StubModuleA(), state_store={}, failed={"stub_a": "startup failed"}
+    )
 
     with pytest.raises(ValueError, match="Unknown module"):
         await daemon2.set_module_enabled("nonexistent", True)

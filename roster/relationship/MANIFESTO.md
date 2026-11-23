@@ -34,6 +34,10 @@ These aren't failures of character; they're failures of memory systems. The Rela
 - **Care around loss and distance:** Tell the butler once that someone has died, that you are leaving them alone for now, or that they must not be contacted. Birthday reminders, gift asks, reconnection nudges and outbound messages for that person change or stop everywhere in the system. Nothing is deleted, so the memories stay, and setting the person back to active restores everything.
 - **Flexible organization:** Group contacts by role (family, close friends, colleagues), label them by context, and search by relationship.
 
+## Duty of Care
+
+Duties and carers are declared by the owner, kept owner-private, and carers and dependents are entities, never users, and are never contacted without per-event owner approval.
+
 ## The Philosophy
 
 The Relationship Butler is built on the belief that good relationships require attention, but attention shouldn't be a burden. It shouldn't require spreadsheets, elaborate note-taking systems, or constant cognitive overhead. The butler handles the memory work. You handle the connection work.

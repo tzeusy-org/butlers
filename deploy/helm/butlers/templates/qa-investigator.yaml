@@ -1,0 +1,264 @@
+{{- /*
+bu-ejow5p.11: the machinery for per-attempt QA investigator Jobs. Dark behind
+qaInvestigator.enabled. The chart creates no Job: the daemon creates one per attempt from
+src/butlers/core/qa/investigator_job.py, and the ValidatingAdmissionPolicy below refuses any
+Job the launcher (butlers-up) creates, and any Job or Pod that claims the investigator identity
+(its ServiceAccount or its component label), unless it has exactly that template's isolation
+invariants. Matching on the requester is what keeps the launcher's jobs:create from becoming a
+general workload-create right: it can only ever create the pinned investigator shape.
+*/ -}}
+{{- if .Values.qaInvestigator.enabled }}
+{{- if not (include "butlers.egressProfilesEnabled" .) }}
+{{- fail "qaInvestigator.enabled needs egressProfiles.enabled: an investigator pod must start with no egress, and the predecessor tracker policy admits every public address" }}
+{{- end }}
+{{- if not (and .Values.servicePlaneAuth.enabled .Values.butlersControl.enabled) }}
+{{- fail "qaInvestigator.enabled binds its Job-launch Role to the butlers-up ServiceAccount: set servicePlaneAuth.enabled and butlersControl.enabled" }}
+{{- end }}
+{{- if not (has (toString .Values.qaInvestigator.admissionAction) (list "Deny" "Audit")) }}
+{{- fail "qaInvestigator.admissionAction must be Deny or Audit" }}
+{{- end }}
+{{- $uid := int .Values.qaInvestigator.uid }}
+{{- if lt $uid 1000 }}
+{{- fail "qaInvestigator.uid must be a non-root UID of at least 1000" }}
+{{- end }}
+{{- $release := .Release.Name }}
+{{- $claim := printf "%s-qa-exchange" $release }}
+{{- $digest := toString .Values.qaInvestigator.imageDigest }}
+{{- if not (regexMatch "^sha256:[0-9a-f]{64}$" $digest) }}
+{{- fail "qaInvestigator.imageDigest must be the sha256:<64 hex> digest of the daemon image: the policy admits the investigator image by digest only" }}
+{{- end }}
+{{- $image := printf "%s@%s" .Values.image.repository $digest }}
+{{- $requester := printf "system:serviceaccount:%s:butlers-up" .Release.Namespace }}
+# The investigator's own account: no token, no RBAC. Nothing is ever bound to it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qa-investigator
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+# What the daemon may do to Jobs: create, observe and delete its own attempt Jobs, and read
+# their pods' logs. Nothing else: no pods/exec, no secrets, no other workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: qa-investigator-launcher
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qa-investigator-launcher
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qa-investigator-launcher
+subjects:
+  - kind: ServiceAccount
+    name: butlers-up
+    namespace: {{ .Release.Namespace }}
+---
+# The exchange: one claim, mounted by each pod only at attempts/<attempt uuid>.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim }}
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: {{ .Values.storage.storageClassName }}
+  resources:
+    requests:
+      storage: {{ .Values.qaInvestigator.exchangeSize }}
+{{- range $kind := list "job" "pod" }}
+{{- $s := ternary "object.spec.template.spec" "object.spec" (eq $kind "job") }}
+{{- $labels := ternary "object.spec.template.metadata.labels" "object.metadata.labels" (eq $kind "job") }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ $release }}-qa-investigator-{{ $kind }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      {{- if eq $kind "job" }}
+      - apiGroups: [batch]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [jobs]
+      {{- else }}
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+      # Pods match on CREATE only (plus the ephemeral-container update below): the launcher and the
+      # investigator hold no pods update/patch verb (the launcher Role grants get/list/watch), so
+      # the only way a pod's spec comes to exist is the Job controller creating it from the
+      # validated template.
+      # An ephemeral container is the way to add a container to a running pod.
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [UPDATE]
+        resources: [pods/ephemeralcontainers]
+      {{- end }}
+  # Judged: everything the launcher creates, and anything claiming the investigator identity.
+  matchConditions:
+    - name: launcher-or-claims-investigator-identity
+      expression: >-
+        request.userInfo.username == '{{ $requester }}' ||
+        (has({{ $s }}.serviceAccountName) && {{ $s }}.serviceAccountName == 'qa-investigator') ||
+        (has({{ $labels }}) && 'app.kubernetes.io/component' in {{ $labels }} &&
+        {{ $labels }}['app.kubernetes.io/component'] == 'qa-investigator')
+  variables:
+    - name: spec
+      expression: {{ $s }}
+    - name: labels
+      expression: >-
+        has({{ $labels }}) ? {{ $labels }} : {}
+  validations:
+    - message: the identity labels are exactly the investigator's, and the attempt label is a uuid
+      expression: >-
+        'app.kubernetes.io/component' in variables.labels &&
+        variables.labels['app.kubernetes.io/component'] == 'qa-investigator' &&
+        'butlers.io/qa-attempt' in variables.labels &&
+        variables.labels['butlers.io/qa-attempt'].matches('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+    - message: the investigator runs as its own ServiceAccount, with no token mounted
+      expression: >-
+        has(variables.spec.serviceAccountName) && variables.spec.serviceAccountName == 'qa-investigator' &&
+        has(variables.spec.automountServiceAccountToken) && variables.spec.automountServiceAccountToken == false
+    - message: the pod has no host namespace, node pinning, scheduling override or extra process sharing
+      expression: >-
+        !(has(variables.spec.hostNetwork) && variables.spec.hostNetwork) &&
+        !(has(variables.spec.hostPID) && variables.spec.hostPID) &&
+        !(has(variables.spec.hostIPC) && variables.spec.hostIPC) &&
+        !(has(variables.spec.shareProcessNamespace) && variables.spec.shareProcessNamespace) &&
+        !has(variables.spec.nodeName) && !has(variables.spec.nodeSelector) &&
+        !has(variables.spec.affinity) &&
+        {{- if eq $kind "pod" }}
+        {{- /* The DefaultTolerationSeconds admission plugin (mutating, runs before this policy) adds these two to every pod; no other toleration is admitted. */}}
+        (!has(variables.spec.tolerations) || variables.spec.tolerations.all(t,
+          has(t.key) && t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] &&
+          has(t.operator) && t.operator == 'Exists' &&
+          has(t.effect) && t.effect == 'NoExecute' &&
+          has(t.tolerationSeconds) && t.tolerationSeconds <= 300)) &&
+        {{- else }}
+        !has(variables.spec.tolerations) &&
+        {{- end }}
+        !has(variables.spec.priorityClassName) && !has(variables.spec.hostAliases) &&
+        !has(variables.spec.runtimeClassName) &&
+        has(variables.spec.enableServiceLinks) && variables.spec.enableServiceLinks == false
+    - message: the pod has exactly one container, and no init or ephemeral container
+      expression: >-
+        variables.spec.containers.size() == 1 &&
+        (!has(variables.spec.initContainers) || variables.spec.initContainers.size() == 0) &&
+        (!has(variables.spec.ephemeralContainers) || variables.spec.ephemeralContainers.size() == 0)
+    - message: the container starts under the egress gate, from the daemon image's own venv interpreter
+      expression: >-
+        variables.spec.containers.all(c,
+          has(c.command) && c.command.size() >= 6 &&
+          c.command[0] == '/app/.venv/bin/python' && c.command[1] == '-I' &&
+          c.command[2] == '-m' && c.command[3] == 'butlers.core.qa.egress_gate' &&
+          c.command[4] == '--')
+    - message: the pod runs under the runtime-default seccomp profile as the pinned non-root user and group
+      expression: >-
+        has(variables.spec.securityContext) &&
+        has(variables.spec.securityContext.seccompProfile) &&
+        variables.spec.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        has(variables.spec.securityContext.runAsNonRoot) && variables.spec.securityContext.runAsNonRoot == true &&
+        has(variables.spec.securityContext.runAsUser) && variables.spec.securityContext.runAsUser == {{ $uid }} &&
+        has(variables.spec.securityContext.runAsGroup) && variables.spec.securityContext.runAsGroup == {{ $uid }} &&
+        has(variables.spec.securityContext.fsGroup) && variables.spec.securityContext.fsGroup == {{ $uid }} &&
+        !has(variables.spec.securityContext.supplementalGroups) &&
+        (!has(variables.spec.securityContext.appArmorProfile) ||
+         variables.spec.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+        !has(variables.spec.securityContext.sysctls)
+    - message: the container is the exact daemon image by digest, unprivileged, read-only and capability-free
+      expression: >-
+        variables.spec.containers.all(c,
+          c.image == '{{ $image }}' &&
+          has(c.securityContext) &&
+          has(c.securityContext.runAsUser) && c.securityContext.runAsUser == {{ $uid }} &&
+          has(c.securityContext.runAsGroup) && c.securityContext.runAsGroup == {{ $uid }} &&
+          has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot == true &&
+          has(c.securityContext.allowPrivilegeEscalation) && c.securityContext.allowPrivilegeEscalation == false &&
+          has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem == true &&
+          !(has(c.securityContext.privileged) && c.securityContext.privileged) &&
+          (!has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
+          !has(c.securityContext.procMount) &&
+          (!has(c.securityContext.appArmorProfile) || c.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+          has(c.resources) && has(c.resources.limits) &&
+          'memory' in c.resources.limits && 'cpu' in c.resources.limits &&
+          'ephemeral-storage' in c.resources.limits &&
+          has(c.securityContext.capabilities) && has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop == ['ALL'] &&
+          !has(c.securityContext.capabilities.add) &&
+          (!has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
+    - message: the container environment is the allowlisted plain names only, with no envFrom and no valueFrom
+      expression: >-
+        variables.spec.containers.all(c,
+          (!has(c.envFrom) || c.envFrom.size() == 0) &&
+          (!has(c.env) || c.env.all(e,
+            e.name in ['HOME', 'TMPDIR', 'PATH', 'ANTHROPIC_BASE_URL', 'GIT_TERMINAL_PROMPT', 'LANG'] &&
+            !has(e.valueFrom))))
+    - message: volumes are emptyDir or the exchange claim only, and the exchange mounts only this attempt's own directory
+      expression: >-
+        has(variables.spec.volumes) &&
+        variables.spec.volumes.all(v,
+          (has(v.emptyDir) && has(v.emptyDir.sizeLimit) && !has(v.emptyDir.medium)) ||
+          (has(v.persistentVolumeClaim) && v.persistentVolumeClaim.claimName == '{{ $claim }}')) &&
+        variables.spec.containers.all(c,
+          !has(c.volumeMounts) || c.volumeMounts.all(m,
+            !variables.spec.volumes.exists(v, v.name == m.name && has(v.persistentVolumeClaim)) ||
+            (has(m.subPath) && m.subPath == 'attempts/' + variables.labels['butlers.io/qa-attempt'])))
+    {{- if eq $kind "job" }}
+    - message: an investigator Job never retries, has a deadline, is named for its attempt, and its template carries the same labels
+      expression: >-
+        has(object.spec.backoffLimit) && object.spec.backoffLimit == 0 &&
+        has(object.spec.parallelism) && object.spec.parallelism == 1 &&
+        has(object.spec.completions) && object.spec.completions == 1 &&
+        has(object.spec.activeDeadlineSeconds) && object.spec.activeDeadlineSeconds > 0 &&
+        object.spec.activeDeadlineSeconds <= 14400 &&
+        object.metadata.name == 'qa-' + variables.labels['butlers.io/qa-attempt'] &&
+        has(object.metadata.labels) &&
+        'butlers.io/qa-attempt' in object.metadata.labels &&
+        object.metadata.labels['butlers.io/qa-attempt'] == variables.labels['butlers.io/qa-attempt'] &&
+        'app.kubernetes.io/component' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/component'] == 'qa-investigator' &&
+        has(object.spec.template.spec.restartPolicy) && object.spec.template.spec.restartPolicy == 'Never'
+    {{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ $release }}-qa-investigator-{{ $kind }}
+  labels:
+    {{- include "butlers.labels" $ | nindent 4 }}
+spec:
+  policyName: {{ $release }}-qa-investigator-{{ $kind }}
+  validationActions: [{{ $.Values.qaInvestigator.admissionAction }}]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}

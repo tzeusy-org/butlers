@@ -73,7 +73,7 @@ The manual trigger API SHALL accept an optional complexity parameter for operato
 ### Requirement: Tick Trigger Complexity
 The `tick` and `classification` trigger sources cover two distinct internal paths, each of which SHALL resolve its own complexity tier as described below. The system SHALL NOT apply a single fixed low-cost tier to every tick/classification-triggered session.
 
-1. The scheduler tick handler (`tick()` in `src/butlers/core/scheduler.py`) dispatches each due scheduled task at that task's own configured complexity, defaulting to `workhorse` (`_DEFAULT_COMPLEXITY`) when the row specifies none or an unrecognized value. These sessions carry a `schedule:<name>` or `deadline:<name>` trigger source, not a fixed low-cost tier.
+1. The scheduler tick handler (`tick()` in `src/butlers/core/scheduler/dispatch.py`) dispatches each due scheduled task at that task's own configured complexity, defaulting to `workhorse` (`_DEFAULT_COMPLEXITY`) when the row specifies none or an unrecognized value. These sessions carry a `schedule:<name>` or `deadline:<name>` trigger source, not a fixed low-cost tier.
 2. The Switchboard routing-classification spawn (`src/butlers/modules/pipeline.py`) is the only session literally tagged `trigger_source="classification"` (historical rows carry `"tick"` for this call site, so spend rules and QA/chronicler consumers that key off it SHALL match both values); it uses the `cheap` tier for its lightweight routing-LLM decision.
 
 #### Scenario: Scheduler tick uses each task's complexity, default workhorse

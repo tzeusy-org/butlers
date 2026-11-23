@@ -428,4 +428,11 @@ async def _write_subscription(
             write_source,
         )
 
+    if write_source == "extracted" and cancellation_url:
+        # Dark until VENDOR_DOORS_LIVE: an extracted link is also offered to the owner as an
+        # inert proposal. The column write above is unchanged and stays the fallback.
+        from butlers.core.vendor_door_proposer import propose_extracted_link
+
+        await propose_extracted_link(pool, url=cancellation_url, subscription_id=row["id"])
+
     return _row_to_dict(row)

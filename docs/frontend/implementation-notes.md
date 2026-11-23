@@ -15,6 +15,10 @@ Moved verbatim from `AGENTS.md` (Frontend traps).
   `UseQueryResult` cast fails on the discriminated union).
 - Radix `Dialog` renders through a portal: jsdom tests query `document`, not the mounted container,
   and drive controlled inputs with the native value setter plus an `input` event.
+- In jsdom, `getByRole(..., { name })` over the whole document computes accessibility and visibility
+  for every node and dominates test CPU under parallel load: scope role queries with
+  `within(<labelled landmark>)` and use `userEvent.setup({ delay: null })` rather than raising a
+  test timeout.
 - Recharts `Tooltip` formatters take `value: string | number | undefined`; narrower signatures fail
   the build.
 - MapLibre: call `map.addSource` / `addLayer` only once `map.isStyleLoaded()` (or on `load`), or the

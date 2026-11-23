@@ -23,16 +23,12 @@ import asyncio
 import json
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import (
-    ENTITY_GRAPH_EDGES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
 from butlers.tools.relationship.fact_evidence import EvidencePacket
 from butlers.tools.relationship.fact_temporal import (
     CORRECTION_REQUIRED,
@@ -50,7 +46,6 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
 )
 from roster.relationship.tests.evidence_schema import (
-    apply_evidence_schema,
     simulate_temporal_cutover,
 )
 from roster.relationship.tests.fact_authority_fixtures import (
@@ -84,82 +79,9 @@ _UNKNOWN_PRED = "has-feet"  # not in predicate_registry
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with relationship.entity_facts and relationship.entity_predicate_registry."""
-    async with provisioned_postgres_pool() as p:
-        # 1. public.entities (FK target for relationship.entity_facts.subject)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 2. relationship schema
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-
-        # 3. relationship.entity_predicate_registry
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        # Seed the predicates used in tests
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
-            VALUES
-                ('has-email',  'contact',   'literal', 'Email address for the entity.'),
-                ('has-phone',  'contact',   'literal', 'Phone number for the entity.'),
-                ('has-handle', 'contact',   'literal', 'Channel-scoped handle.'),
-                ('knows',      'relational','entity',  'Generic acquaintance or social connection.'),
-                ('friend-of',  'relational','entity',  'Close friendship.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-
-        # 4. relationship.entity_facts
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-
-        # 5. pending_actions (for owner carve-out)
-        await p.execute(PENDING_ACTIONS.ddl())
-
-        # 6. public.entity_graph_edges (RFC 0031 Slice 2, bu-8cdl1.8): the
-        # central writer projects entity-kind facts here in the same
-        # transaction as the fact write.
-        await p.execute(ENTITY_GRAPH_EDGES.ddl())
-
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship + approvals chains (flat; entity_facts in ``relationship``)."""
+    return await db("core", "memory", "relationship", "approvals")
 
 
 # ---------------------------------------------------------------------------
@@ -168,9 +90,9 @@ async def pool(provisioned_postgres_pool):
 
 
 @pytest.fixture
-async def entity(pool: asyncpg.Pool) -> uuid.UUID:
+async def entity(rel_pool: asyncpg.Pool) -> uuid.UUID:
     """Insert a regular (non-owner) entity and return its id."""
-    eid = await pool.fetchval(
+    eid = await rel_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Alice Foo', 'person', '{}')
@@ -181,9 +103,9 @@ async def entity(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 @pytest.fixture
-async def owner_entity(pool: asyncpg.Pool) -> uuid.UUID:
+async def owner_entity(rel_pool: asyncpg.Pool) -> uuid.UUID:
     """Insert the owner entity (roles contains 'owner') and return its id."""
-    eid = await pool.fetchval(
+    eid = await rel_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Owner User', 'person', '{owner}')
@@ -199,9 +121,9 @@ async def owner_entity(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 class TestInsertNewFact:
-    async def test_insert_returns_inserted_outcome(self, pool, entity):
+    async def test_insert_returns_inserted_outcome(self, rel_pool, entity):
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.com",
@@ -211,15 +133,15 @@ class TestInsertNewFact:
         assert result.fact_id is not None
         assert result.action_id is None
 
-    async def test_insert_stores_row_in_entity_facts(self, pool, entity):
+    async def test_insert_stores_row_in_entity_facts(self, rel_pool, entity):
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.com",
             src="test",
         )
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
@@ -233,11 +155,11 @@ class TestInsertNewFact:
         assert row["verified"] is False
         assert row["validity"] == "active"
 
-    async def test_insert_stores_provenance_fields(self, pool, entity):
+    async def test_insert_stores_provenance_fields(self, rel_pool, entity):
         ts = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
-        async with synthetic_owner(pool):
+        async with synthetic_owner(rel_pool):
             result = await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_HAS_EMAIL,
                 "alice@example.com",
@@ -249,7 +171,7 @@ class TestInsertNewFact:
                 primary=True,
             )
         assert result.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT * FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
@@ -260,16 +182,16 @@ class TestInsertNewFact:
         assert row["verified"] is True
         assert row["primary"] is True
 
-    async def test_insert_entity_predicate(self, pool, entity):
+    async def test_insert_entity_predicate(self, rel_pool, entity):
         """Relational predicates with object_kind='entity' are stored correctly."""
-        other_entity_id = await pool.fetchval(
+        other_entity_id = await rel_pool.fetchval(
             """
             INSERT INTO public.entities (canonical_name, entity_type, roles)
             VALUES ('Bob Bar', 'person', '{}') RETURNING id
             """
         )
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_KNOWS,
             str(other_entity_id),
@@ -277,14 +199,14 @@ class TestInsertNewFact:
             object_kind="entity",
         )
         assert result.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT object_kind FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
         assert row["object_kind"] == "entity"
         # RFC 0031 Slice 2 (bu-8cdl1.8): an entity-kind assert projects a live
         # edge in the same transaction as the fact write.
-        edge = await pool.fetchrow(
+        edge = await rel_pool.fetchrow(
             "SELECT subject_entity_id, predicate, object_entity_id, sensitivity, withheld_reason"
             " FROM public.entity_graph_edges"
             " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
@@ -305,14 +227,14 @@ class TestInsertNewFact:
 
 
 class TestEntityGraphEdgeProjection:
-    async def test_supersession_moves_the_projected_edge(self, pool, entity):
+    async def test_supersession_moves_the_projected_edge(self, rel_pool, entity):
         """A supersession deletes the old row's edge and projects the new one."""
-        other_entity_id = await pool.fetchval(
+        other_entity_id = await rel_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Other Entity', 'person', '{}') RETURNING id"
         )
         first = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_KNOWS,
             str(other_entity_id),
@@ -325,7 +247,7 @@ class TestEntityGraphEdgeProjection:
         # Same (subject, predicate, object) identity, different provenance
         # (conf) -- triggers supersession, not a fresh insert.
         second = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_KNOWS,
             str(other_entity_id),
@@ -335,13 +257,13 @@ class TestEntityGraphEdgeProjection:
         )
         assert second.outcome == AssertOutcome.superseded
 
-        old_edge = await pool.fetchrow(
+        old_edge = await rel_pool.fetchrow(
             "SELECT 1 FROM public.entity_graph_edges"
             " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
             " AND source_id = $1",
             first.fact_id,
         )
-        new_edge = await pool.fetchrow(
+        new_edge = await rel_pool.fetchrow(
             "SELECT object_entity_id FROM public.entity_graph_edges"
             " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
             " AND source_id = $1",
@@ -353,12 +275,12 @@ class TestEntityGraphEdgeProjection:
 
     # REQ-entity-graph-002: actual source transaction/projection effect asserted here.
     async def test_projection_failure_rolls_back_the_fact_write(
-        self, pool, entity, monkeypatch: pytest.MonkeyPatch
+        self, rel_pool, entity, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """RFC 0031 write-behind contract: a projection failure fails the whole write."""
         from butlers.core import entity_graph_edges
 
-        other_entity_id = await pool.fetchval(
+        other_entity_id = await rel_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Failure Target', 'person', '{}') RETURNING id"
         )
@@ -370,7 +292,7 @@ class TestEntityGraphEdgeProjection:
 
         with pytest.raises(RuntimeError, match="simulated entity_graph_edges projection failure"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_KNOWS,
                 str(other_entity_id),
@@ -378,7 +300,7 @@ class TestEntityGraphEdgeProjection:
                 object_kind="entity",
             )
 
-        survived = await pool.fetchval(
+        survived = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1 AND object = $2",
             entity,
             str(other_entity_id),
@@ -387,31 +309,31 @@ class TestEntityGraphEdgeProjection:
 
     # REQ-entity-graph-001: natural-key rerun assertions only.
     # REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.
-    async def test_backfill_is_idempotent(self, pool, entity) -> None:
+    async def test_backfill_is_idempotent(self, rel_pool, entity) -> None:
         """Backfilling the same pre-existing active row twice never duplicates its edge."""
         from butlers.core.entity_graph_edges import backfill_relationship_entity_facts_edges
 
-        other_entity_id = await pool.fetchval(
+        other_entity_id = await rel_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Backfill Target', 'person', '{}') RETURNING id"
         )
         result = await relationship_assert_fact(
-            pool, entity, _PRED_KNOWS, str(other_entity_id), src="test", object_kind="entity"
+            rel_pool, entity, _PRED_KNOWS, str(other_entity_id), src="test", object_kind="entity"
         )
         assert result.outcome == AssertOutcome.inserted
         # Simulate a historical row written before this projection existed --
         # remove the edge the live writer just projected.
-        await pool.execute(
+        await rel_pool.execute(
             "DELETE FROM public.entity_graph_edges"
             " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
             " AND source_id = $1",
             result.fact_id,
         )
 
-        first_count = await backfill_relationship_entity_facts_edges(pool)
-        second_count = await backfill_relationship_entity_facts_edges(pool)
+        first_count = await backfill_relationship_entity_facts_edges(rel_pool)
+        second_count = await backfill_relationship_entity_facts_edges(rel_pool)
 
-        total_rows = await pool.fetchval(
+        total_rows = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM public.entity_graph_edges"
             " WHERE source_schema = 'relationship' AND source_table = 'entity_facts'"
             " AND source_id = $1",
@@ -428,7 +350,7 @@ class TestEntityGraphEdgeProjection:
 
 
 class TestIdempotency:
-    async def test_same_call_twice_returns_unchanged(self, pool, entity):
+    async def test_same_call_twice_returns_unchanged(self, rel_pool, entity):
         kwargs = dict(
             src="test",
             conf=1.0,
@@ -436,21 +358,21 @@ class TestIdempotency:
             last_seen=None,
         )
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", **kwargs
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", **kwargs
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", **kwargs
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", **kwargs
         )
         assert r1.outcome == AssertOutcome.inserted
         assert r2.outcome == AssertOutcome.unchanged
         assert r2.fact_id == r1.fact_id
 
-    async def test_unchanged_produces_exactly_one_active_row(self, pool, entity):
+    async def test_unchanged_produces_exactly_one_active_row(self, rel_pool, entity):
         for _ in range(3):
             await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
             )
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = $2 AND object = $3
@@ -469,31 +391,37 @@ class TestIdempotency:
 
 
 class TestSupersession:
-    async def test_changed_src_triggers_supersession(self, pool, entity):
+    async def test_changed_src_triggers_supersession(self, rel_pool, entity):
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="source-a"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="source-a"
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="source-b"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="source-b"
         )
         assert r1.outcome == AssertOutcome.inserted
         assert r2.outcome == AssertOutcome.superseded
         assert r2.fact_id != r1.fact_id
 
-    async def test_superseded_row_has_validity_superseded(self, pool, entity):
+    async def test_superseded_row_has_validity_superseded(self, rel_pool, entity):
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="a"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="a"
         )
-        await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b")
-        old_row = await pool.fetchrow(
+        await relationship_assert_fact(
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b"
+        )
+        old_row = await rel_pool.fetchrow(
             "SELECT validity FROM relationship.entity_facts WHERE id = $1", r1.fact_id
         )
         assert old_row["validity"] == "superseded"
 
-    async def test_only_one_active_row_after_supersession(self, pool, entity):
-        await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="a")
-        await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b")
-        count = await pool.fetchval(
+    async def test_only_one_active_row_after_supersession(self, rel_pool, entity):
+        await relationship_assert_fact(
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="a"
+        )
+        await relationship_assert_fact(
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="b"
+        )
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = $2 AND object = $3
@@ -505,33 +433,33 @@ class TestSupersession:
         )
         assert count == 1
 
-    async def test_changed_conf_triggers_supersession(self, pool, entity):
+    async def test_changed_conf_triggers_supersession(self, rel_pool, entity):
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=1.0
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=1.0
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.7
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.7
         )
         assert r2.outcome == AssertOutcome.superseded
 
-    async def test_changed_verified_triggers_supersession(self, pool, entity):
+    async def test_changed_verified_triggers_supersession(self, rel_pool, entity):
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=False
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=False
         )
-        async with synthetic_owner(pool):
+        async with synthetic_owner(rel_pool):
             r2 = await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", verified=True
             )
         assert r2.outcome == AssertOutcome.superseded
 
-    async def test_changed_last_seen_triggers_supersession(self, pool, entity):
+    async def test_changed_last_seen_triggers_supersession(self, rel_pool, entity):
         ts1 = datetime(2026, 1, 1, tzinfo=UTC)
         ts2 = datetime(2026, 6, 1, tzinfo=UTC)
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", last_seen=ts1
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", last_seen=ts1
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", last_seen=ts2
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", last_seen=ts2
         )
         assert r2.outcome == AssertOutcome.superseded
 
@@ -542,25 +470,29 @@ class TestSupersession:
 
 
 class TestPredicateValidation:
-    async def test_unknown_predicate_raises_value_error(self, pool, entity):
+    async def test_unknown_predicate_raises_value_error(self, rel_pool, entity):
         with pytest.raises(ValueError, match="Unknown predicate.*not registered"):
-            await relationship_assert_fact(pool, entity, _UNKNOWN_PRED, "some-value", src="test")
+            await relationship_assert_fact(
+                rel_pool, entity, _UNKNOWN_PRED, "some-value", src="test"
+            )
 
-    async def test_unknown_predicate_writes_no_row(self, pool, entity):
+    async def test_unknown_predicate_writes_no_row(self, rel_pool, entity):
         try:
-            await relationship_assert_fact(pool, entity, _UNKNOWN_PRED, "some-value", src="test")
+            await relationship_assert_fact(
+                rel_pool, entity, _UNKNOWN_PRED, "some-value", src="test"
+            )
         except ValueError:
             pass
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.entity_facts WHERE predicate = $1",
             _UNKNOWN_PRED,
         )
         assert count == 0
 
-    async def test_invalid_object_kind_raises_value_error(self, pool, entity):
+    async def test_invalid_object_kind_raises_value_error(self, rel_pool, entity):
         with pytest.raises(ValueError, match="Invalid object_kind"):
             await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_HAS_EMAIL,
                 "alice@example.com",
@@ -568,10 +500,10 @@ class TestPredicateValidation:
                 object_kind="bad-kind",
             )
 
-    async def test_conf_out_of_range_raises_value_error(self, pool, entity):
+    async def test_conf_out_of_range_raises_value_error(self, rel_pool, entity):
         with pytest.raises(ValueError, match="conf must be in"):
             await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test", conf=1.5
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test", conf=1.5
             )
 
 
@@ -581,19 +513,19 @@ class TestPredicateValidation:
 
 
 class TestOwnerCarveOut:
-    async def test_owner_subject_returns_pending_approval(self, pool, owner_entity):
+    async def test_owner_subject_returns_pending_approval(self, rel_pool, owner_entity):
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
         )
         assert result.outcome == AssertOutcome.pending_approval
         assert result.fact_id is None
         assert result.action_id is not None
 
-    async def test_owner_subject_writes_no_fact_row(self, pool, owner_entity):
+    async def test_owner_subject_writes_no_fact_row(self, rel_pool, owner_entity):
         await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
         )
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND validity = 'active'
@@ -602,11 +534,11 @@ class TestOwnerCarveOut:
         )
         assert count == 0
 
-    async def test_owner_subject_writes_pending_action_row(self, pool, owner_entity):
+    async def test_owner_subject_writes_pending_action_row(self, rel_pool, owner_entity):
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
         )
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT * FROM pending_actions WHERE id = $1",
             result.action_id,
         )
@@ -620,35 +552,39 @@ class TestOwnerCarveOut:
         assert row["evidence"]
         assert all(set(item) == {"type", "ref", "note"} for item in row["evidence"])
 
-    async def test_non_owner_subject_writes_fact_directly(self, pool, entity):
+    async def test_non_owner_subject_writes_fact_directly(self, rel_pool, entity):
         """Regression: non-owner entities MUST NOT trigger the carve-out."""
         result = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
         )
         assert result.outcome == AssertOutcome.inserted
         assert result.fact_id is not None
         assert result.action_id is None
 
-    async def test_owner_carve_out_repeated_calls_dedup_same_action_id(self, pool, owner_entity):
+    async def test_owner_carve_out_repeated_calls_dedup_same_action_id(
+        self, rel_pool, owner_entity
+    ):
         """Repeated calls with the same (subject, predicate, object) return the same
         pending_action row — dedup prevents duplicate approvals for the same identity
         triple (introduced in fix: dedup owner approvals + populate why/evidence).
         """
         r1 = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
         )
         r2 = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
         )
         assert r1.action_id == r2.action_id
 
-    async def test_owner_carve_out_different_object_creates_new_action(self, pool, owner_entity):
+    async def test_owner_carve_out_different_object_creates_new_action(
+        self, rel_pool, owner_entity
+    ):
         """Different object value must produce a distinct pending_action row."""
         r1 = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="a"
         )
         r2 = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "other@example.com", src="a"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "other@example.com", src="a"
         )
         assert r1.action_id != r2.action_id
 
@@ -656,7 +592,7 @@ class TestOwnerCarveOut:
     # Self-identity exemption (bu-oluyt.4)
     # ------------------------------------------------------------------
 
-    async def test_owner_self_source_writes_directly(self, pool, owner_entity):
+    async def test_owner_self_source_writes_directly(self, rel_pool, owner_entity):
         """Owner registering own handle with src='owner-self' bypasses pending_actions.
 
         Acceptance criterion: owner self-registering a telegram/email/phone handle
@@ -668,7 +604,7 @@ class TestOwnerCarveOut:
         assert "owner-self" in _OWNER_SELF_SOURCES
 
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="owner-self"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="owner-self"
         )
 
         # Direct write: inserted outcome, fact_id present, no action
@@ -677,7 +613,7 @@ class TestOwnerCarveOut:
         assert result.action_id is None
 
         # Fact row exists in entity_facts
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND predicate = $2 AND object = $3 AND validity = 'active'
@@ -689,27 +625,27 @@ class TestOwnerCarveOut:
         assert count == 1
 
         # No pending_actions row was created
-        pa_count = await pool.fetchval(
+        pa_count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM pending_actions WHERE (tool_args->>'subject')::uuid = $1",
             owner_entity,
         )
         assert pa_count == 0
 
-    async def test_owner_bootstrap_source_writes_directly(self, pool, owner_entity):
+    async def test_owner_bootstrap_source_writes_directly(self, rel_pool, owner_entity):
         """Owner handle seeded with src='owner-bootstrap' bypasses pending_actions.
 
         Daemon startup path uses 'owner-bootstrap' to seed identity facts on first
         boot — must write directly without requiring human approval.
         """
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "boot@example.com", src="owner-bootstrap"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "boot@example.com", src="owner-bootstrap"
         )
 
         assert result.outcome == AssertOutcome.inserted
         assert result.fact_id is not None
         assert result.action_id is None
 
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             """
             SELECT src FROM relationship.entity_facts
             WHERE id = $1
@@ -719,7 +655,7 @@ class TestOwnerCarveOut:
         assert row is not None
         assert row["src"] == "owner-bootstrap"
 
-    async def test_third_party_source_about_owner_still_parks(self, pool, owner_entity):
+    async def test_third_party_source_about_owner_still_parks(self, rel_pool, owner_entity):
         """Third-party assertions about the owner still route to pending_actions.
 
         Acceptance criterion: src='relationship' (used by channel_add and
@@ -727,7 +663,7 @@ class TestOwnerCarveOut:
         from untrusted paths still require human approval.
         """
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="relationship"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="relationship"
         )
 
         assert result.outcome == AssertOutcome.pending_approval
@@ -735,7 +671,7 @@ class TestOwnerCarveOut:
         assert result.action_id is not None
 
         # No fact row written
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND validity = 'active'
@@ -744,7 +680,9 @@ class TestOwnerCarveOut:
         )
         assert count == 0
 
-    async def test_trusted_internal_source_about_owner_writes_directly(self, pool, owner_entity):
+    async def test_trusted_internal_source_about_owner_writes_directly(
+        self, rel_pool, owner_entity
+    ):
         """Owner writes from a trusted internal-derivation job auto-apply.
 
         interaction_sync / memory_curation / fact_retraction_curation derive facts
@@ -758,14 +696,14 @@ class TestOwnerCarveOut:
         assert "interaction_sync" in _TRUSTED_INTERNAL_SOURCES
 
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="interaction_sync"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="interaction_sync"
         )
 
         assert result.outcome == AssertOutcome.inserted
         assert result.fact_id is not None
         assert result.action_id is None
 
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             """
             SELECT COUNT(*) FROM relationship.entity_facts
             WHERE subject = $1 AND validity = 'active'
@@ -774,7 +712,7 @@ class TestOwnerCarveOut:
         )
         assert count == 1
 
-        pa_count = await pool.fetchval(
+        pa_count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM pending_actions WHERE (tool_args->>'subject')::uuid = $1",
             owner_entity,
         )
@@ -787,11 +725,11 @@ class TestOwnerCarveOut:
 
 
 class TestTransactionSafety:
-    async def test_accepts_caller_conn_without_panic(self, pool, entity):
+    async def test_accepts_caller_conn_without_panic(self, rel_pool, entity):
         """Passing conn= must not raise or deadlock."""
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             result = await relationship_assert_fact(
-                pool,
+                rel_pool,
                 entity,
                 _PRED_HAS_EMAIL,
                 "alice@example.com",
@@ -800,12 +738,12 @@ class TestTransactionSafety:
             )
         assert result.outcome == AssertOutcome.inserted
 
-    async def test_caller_conn_inside_transaction(self, pool, entity):
+    async def test_caller_conn_inside_transaction(self, rel_pool, entity):
         """relationship_assert_fact must be safe inside an open transaction."""
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             async with conn.transaction():
                 result = await relationship_assert_fact(
-                    pool,
+                    rel_pool,
                     entity,
                     _PRED_HAS_EMAIL,
                     "alice@example.com",
@@ -813,41 +751,41 @@ class TestTransactionSafety:
                     conn=conn,
                 )
         assert result.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT id FROM relationship.entity_facts WHERE id = $1", result.fact_id
         )
         assert row is not None
 
-    async def test_caller_conn_idempotent(self, pool, entity):
+    async def test_caller_conn_idempotent(self, rel_pool, entity):
         """Idempotency works when conn is supplied."""
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             r1 = await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conn=conn
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conn=conn
             )
             r2 = await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conn=conn
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conn=conn
             )
         assert r1.outcome == AssertOutcome.inserted
         assert r2.outcome == AssertOutcome.unchanged
         assert r1.fact_id == r2.fact_id
 
-    async def test_pool_and_conn_paths_write_same_schema(self, pool, entity):
-        """Both pool-path and conn-path write to relationship.entity_facts."""
+    async def test_pool_and_conn_paths_write_same_schema(self, rel_pool, entity):
+        """Both rel_pool-path and conn-path write to relationship.entity_facts."""
         # Pool path
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="pool-path"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="pool-path"
         )
         # Mark old row as superseded so the conn path creates a new row.
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.entity_facts SET validity='superseded' WHERE id=$1", r1.fact_id
         )
         # Conn path
-        async with pool.acquire() as conn:
+        async with rel_pool.acquire() as conn:
             r2 = await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="conn-path", conn=conn
+                rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="conn-path", conn=conn
             )
         assert r2.outcome == AssertOutcome.inserted
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT src FROM relationship.entity_facts WHERE id = $1", r2.fact_id
         )
         assert row["src"] == "conn-path"
@@ -859,18 +797,18 @@ class TestTransactionSafety:
 
 
 class TestAssertResultDict:
-    async def test_inserted_as_dict(self, pool, entity):
+    async def test_inserted_as_dict(self, rel_pool, entity):
         result = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
         )
         d = result.as_dict()
         assert d["outcome"] == "inserted"
         assert d["fact_id"] is not None
         assert d["action_id"] is None
 
-    async def test_pending_approval_as_dict(self, pool, owner_entity):
+    async def test_pending_approval_as_dict(self, rel_pool, owner_entity):
         result = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, "owner@example.com", src="test"
         )
         d = result.as_dict()
         assert d["outcome"] == "pending_approval"
@@ -886,14 +824,14 @@ class TestAssertResultDict:
 class TestObservedAt:
     """Central writer stamps observed_at; default now(), explicit honoured."""
 
-    async def test_default_stamps_now(self, pool, entity):
+    async def test_default_stamps_now(self, rel_pool, entity):
         """Asserting without observed_at stamps the assertion time (~now)."""
         before = datetime.now(UTC)
         result = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="test"
         )
         after = datetime.now(UTC)
-        observed_at = await pool.fetchval(
+        observed_at = await rel_pool.fetchval(
             "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
@@ -901,30 +839,30 @@ class TestObservedAt:
         # Stamped to "now" — within the wall-clock window of the call.
         assert before <= observed_at <= after
 
-    async def test_explicit_observed_at_is_honored(self, pool, entity):
+    async def test_explicit_observed_at_is_honored(self, rel_pool, entity):
         """A backdated import value is written verbatim, NOT overwritten by now()."""
         backdated = datetime(2024, 3, 1, 9, 30, 0, tzinfo=UTC)
         result = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.com",
             src="import",
             observed_at=backdated,
         )
-        observed_at = await pool.fetchval(
+        observed_at = await rel_pool.fetchval(
             "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
             result.fact_id,
         )
         assert observed_at == backdated
 
-    async def test_supersession_preserves_superseded_row_observed_at(self, pool, entity):
+    async def test_supersession_preserves_superseded_row_observed_at(self, rel_pool, entity):
         """On supersession each row carries its OWN observed_at; the old row keeps its."""
         old_observed = datetime(2024, 1, 1, tzinfo=UTC)
         new_observed = datetime(2026, 1, 1, tzinfo=UTC)
 
         r1 = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.com",
@@ -932,7 +870,7 @@ class TestObservedAt:
             observed_at=old_observed,
         )
         r2 = await relationship_assert_fact(
-            pool,
+            rel_pool,
             entity,
             _PRED_HAS_EMAIL,
             "alice@example.com",
@@ -943,14 +881,14 @@ class TestObservedAt:
         assert r2.fact_id != r1.fact_id
 
         # Superseded (old) row keeps its own observed_at — NOT overwritten.
-        old_observed_at = await pool.fetchval(
+        old_observed_at = await rel_pool.fetchval(
             "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
             r1.fact_id,
         )
         assert old_observed_at == old_observed
 
         # New active row carries the new observed_at.
-        new_observed_at = await pool.fetchval(
+        new_observed_at = await rel_pool.fetchval(
             "SELECT observed_at FROM relationship.entity_facts WHERE id = $1",
             r2.fact_id,
         )
@@ -969,43 +907,43 @@ class TestConfImmutability:
     ``test_conf_immutability_guardrail.py``.
     """
 
-    async def test_changed_conf_supersedes_not_mutates(self, pool, entity):
+    async def test_changed_conf_supersedes_not_mutates(self, rel_pool, entity):
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
         )
         assert r2.outcome == AssertOutcome.superseded
         # New row inserted (different id), old row retained.
         assert r2.fact_id != r1.fact_id
 
-    async def test_original_row_conf_unchanged_after_resupersede(self, pool, entity):
+    async def test_original_row_conf_unchanged_after_resupersede(self, rel_pool, entity):
         """The superseded row's stored conf is byte-identical to its write-time value."""
         r1 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
         )
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
         )
-        old_conf = await pool.fetchval(
+        old_conf = await rel_pool.fetchval(
             "SELECT conf FROM relationship.entity_facts WHERE id = $1", r1.fact_id
         )
-        old_validity = await pool.fetchval(
+        old_validity = await rel_pool.fetchval(
             "SELECT validity FROM relationship.entity_facts WHERE id = $1", r1.fact_id
         )
         # conf on the prior row is unchanged; only validity flipped to superseded.
         assert abs(float(old_conf) - 0.9) < 1e-6
         assert old_validity == "superseded"
 
-    async def test_new_active_row_carries_new_conf(self, pool, entity):
+    async def test_new_active_row_carries_new_conf(self, rel_pool, entity):
         await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.9
         )
         r2 = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
+            rel_pool, entity, _PRED_HAS_EMAIL, "alice@example.com", src="x", conf=0.4
         )
-        new_conf = await pool.fetchval(
+        new_conf = await rel_pool.fetchval(
             "SELECT conf FROM relationship.entity_facts WHERE id = $1", r2.fact_id
         )
         assert abs(float(new_conf) - 0.4) < 1e-6
@@ -1022,65 +960,10 @@ class TestConfImmutability:
 # overwrites conf/observed_at on the row that already holds the active slot.
 
 
-def _bigger_pool(provisioned_postgres_pool):
-    """Provision a pool with enough connections for concurrent writers."""
-    return provisioned_postgres_pool(min_pool_size=2, max_pool_size=8)
-
-
-async def _provision_schema(p: asyncpg.Pool) -> None:
-    """Create the minimal relationship schema used by these tests.
-
-    Mirrors the per-test ``pool`` fixture above so the concurrency tests can run
-    on a higher-capacity pool.
-    """
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL DEFAULT '',
-            name           TEXT        NOT NULL DEFAULT '',
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            aliases        TEXT[]      NOT NULL DEFAULT '{}',
-            metadata       JSONB       DEFAULT '{}'::jsonb,
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-    await p.execute("""
-        INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
-        VALUES ('has-email', 'contact', 'literal', 'Email address for the entity.')
-        ON CONFLICT (predicate) DO NOTHING
-    """)
-    await p.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL,
-            conf        FLOAT       NOT NULL DEFAULT 1.0
-                            CHECK (conf >= 0.0 AND conf <= 1.0),
-            last_seen   TIMESTAMPTZ,
-            observed_at TIMESTAMPTZ,
-            metadata    JSONB,
-            weight      INT,
-            verified    BOOL        NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT        NOT NULL DEFAULT 'active'
-                            CHECK (validity IN ('active', 'retracted', 'superseded')),
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    await p.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-            ON relationship.entity_facts (subject, predicate, object)
-            WHERE validity = 'active'
-    """)
-    await apply_evidence_schema(p)
+@asynccontextmanager
+async def _bigger_pool(db):
+    """A pool on the real chains with enough connections for concurrent writers."""
+    yield await db("core", "memory", "relationship", "approvals", min_size=2, max_size=8)
 
 
 class TestConcurrentWriterRace:
@@ -1089,9 +972,7 @@ class TestConcurrentWriterRace:
     and every row keeps its own observed_at.
     """
 
-    async def test_forced_race_supersedes_without_mutating_active_row(
-        self, provisioned_postgres_pool
-    ):
+    async def test_forced_race_supersedes_without_mutating_active_row(self, db):
         """Deterministically force the read-then-insert race.
 
         Sequence (single asyncio task, interleaved by hand):
@@ -1106,8 +987,7 @@ class TestConcurrentWriterRace:
         original observed_at; the superseded row keeps conf=0.9, the active row
         carries conf=0.4.
         """
-        async with _bigger_pool(provisioned_postgres_pool) as p:
-            await _provision_schema(p)
+        async with _bigger_pool(db) as p:
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name, roles) "
                 "VALUES ('Alice Foo', '{}') RETURNING id"
@@ -1196,9 +1076,7 @@ class TestConcurrentWriterRace:
             assert abs(float(active["conf"]) - 0.4) < 1e-6
             assert active["observed_at"] == obs_b
 
-    async def test_concurrent_double_assert_one_active_one_superseded(
-        self, provisioned_postgres_pool
-    ):
+    async def test_concurrent_double_assert_one_active_one_superseded(self, db):
         """Two real concurrent writers (gather) on the same triple, different conf.
 
         The unique partial index on the active slot serialises the writers; the
@@ -1206,8 +1084,7 @@ class TestConcurrentWriterRace:
         state: exactly one active + one superseded row, both retaining their
         original observed_at, regardless of which writer wins the slot first.
         """
-        async with _bigger_pool(provisioned_postgres_pool) as p:
-            await _provision_schema(p)
+        async with _bigger_pool(db) as p:
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name, roles) "
                 "VALUES ('Alice Foo', '{}') RETURNING id"
@@ -1322,43 +1199,43 @@ class TestEffectiveTimeTransition:
         ids=["bounds", "period-id", "unbounded-only", "correction", "owner-before-parking"],
     )
     async def test_temporal_intent_fails_before_parking_or_any_write(
-        self, pool, entity, owner_entity, subject_kind, temporal
+        self, rel_pool, entity, owner_entity, subject_kind, temporal
     ):
         subject = owner_entity if subject_kind == "owner" else entity
         existing = await relationship_assert_fact(
-            pool, subject, _PRED_HAS_EMAIL, _ALICE, src="owner-self"
+            rel_pool, subject, _PRED_HAS_EMAIL, _ALICE, src="owner-self"
         )
         if temporal.get("corrects_fact_id") == "existing":
             temporal = {"corrects_fact_id": existing.fact_id}
-        before = await _effect_counts(pool)
+        before = await _effect_counts(rel_pool)
 
         with pytest.raises(TemporalError) as caught:
             await relationship_assert_fact(
-                pool, subject, _PRED_HAS_EMAIL, _ALICE, src="relationship", **temporal
+                rel_pool, subject, _PRED_HAS_EMAIL, _ALICE, src="relationship", **temporal
             )
 
         assert caught.value.code == CUTOVER_PENDING
-        assert await _effect_counts(pool) == before
+        assert await _effect_counts(rel_pool) == before
 
-    async def test_omitted_and_explicit_null_are_one_request(self, pool, entity, owner_entity):
+    async def test_omitted_and_explicit_null_are_one_request(self, rel_pool, entity, owner_entity):
         """Same idempotency, park, dedup and canonical parked shape for both spellings."""
         nulls = dict.fromkeys(WIRE_KEYS)
-        first = await relationship_assert_fact(pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t")
+        first = await relationship_assert_fact(rel_pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t")
         second = await relationship_assert_fact(
-            pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t", **nulls
+            rel_pool, entity, _PRED_HAS_EMAIL, _ALICE, src="t", **nulls
         )
         assert second.outcome == AssertOutcome.unchanged
         assert second.fact_id == first.fact_id
-        assert await _packet(pool, first.fact_id) == ("active", TemporalPacket())
+        assert await _packet(rel_pool, first.fact_id) == ("active", TemporalPacket())
 
         parked = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship"
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship"
         )
         parked_again = await relationship_assert_fact(
-            pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship", **nulls
+            rel_pool, owner_entity, _PRED_HAS_EMAIL, _ALICE, src="relationship", **nulls
         )
         assert parked_again.action_id == parked.action_id
-        wire, ctx = await _parked(pool, parked.action_id)
+        wire, ctx = await _parked(rel_pool, parked.action_id)
         assert wire == nulls
         assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == ("ordinary", None)
 
@@ -1370,14 +1247,14 @@ class TestEffectiveTimeAfterCutover:
     post-cutover paths are ready without shipping that cutover.
     """
 
-    async def test_occurrences_replay_and_compare_and_swap_corrections(self, pool, entity):
-        await simulate_temporal_cutover(pool)
+    async def test_occurrences_replay_and_compare_and_swap_corrections(self, rel_pool, entity):
+        await simulate_temporal_cutover(rel_pool)
         period = uuid.uuid4()
         cited = [{"type": "url", "ref": "https://example.test/cv", "note": "CV"}]
 
         async def assert_(**kwargs):
             return await relationship_assert_fact(
-                pool, entity, _PRED_HAS_EMAIL, _ALICE, **{"src": "t", **kwargs}
+                rel_pool, entity, _PRED_HAS_EMAIL, _ALICE, **{"src": "t", **kwargs}
             )
 
         default = await assert_()
@@ -1388,7 +1265,7 @@ class TestEffectiveTimeAfterCutover:
         assert (replay.outcome, replay.fact_id) == (AssertOutcome.unchanged, explicit.fact_id)
 
         # A different packet for an occupied occurrence is never a silent correction.
-        before = await _effect_counts(pool)
+        before = await _effect_counts(rel_pool)
         with pytest.raises(TemporalError) as caught:
             await assert_(
                 effective_period_id=period,
@@ -1396,7 +1273,7 @@ class TestEffectiveTimeAfterCutover:
                 **{"effective_from_precision": "year"},
             )
         assert caught.value.code == CORRECTION_REQUIRED
-        assert await _effect_counts(pool) == before
+        assert await _effect_counts(rel_pool) == before
 
         # CAS correction: the old version keeps its packet, evidence is carried,
         # and a closed interval in the past stays assertion-current.
@@ -1409,16 +1286,16 @@ class TestEffectiveTimeAfterCutover:
         )
         corrected = await assert_(**correction)
         assert corrected.outcome == AssertOutcome.superseded
-        assert await _packet(pool, explicit.fact_id) == (
+        assert await _packet(rel_pool, explicit.fact_id) == (
             "superseded",
             TemporalPacket(period, _utc(2024, 3, 1), "month", _utc(2024, 6, 1), "month"),
         )
-        assert await _packet(pool, corrected.fact_id) == (
+        assert await _packet(rel_pool, corrected.fact_id) == (
             "active",
             TemporalPacket(period, _utc(2024, 3, 1), "month", _utc(2024, 4, 16), "day"),
         )
         assert (
-            await pool.fetchval(
+            await rel_pool.fetchval(
                 "SELECT carried_from FROM relationship.fact_evidence WHERE fact_id = $1",
                 corrected.fact_id,
             )
@@ -1434,7 +1311,7 @@ class TestEffectiveTimeAfterCutover:
 
         # corrects_fact_id alone replaces the bounds with unknown, same occurrence.
         to_unknown = await assert_(corrects_fact_id=corrected.fact_id)
-        assert await _packet(pool, to_unknown.fact_id) == ("active", TemporalPacket(period))
+        assert await _packet(rel_pool, to_unknown.fact_id) == ("active", TemporalPacket(period))
 
         # An ordinary provenance change preserves a known default packet.
         known = await assert_(
@@ -1444,27 +1321,29 @@ class TestEffectiveTimeAfterCutover:
         )
         bumped = await assert_(src="another-source")
         assert bumped.outcome == AssertOutcome.superseded
-        _, known_packet = await _packet(pool, known.fact_id)
-        assert await _packet(pool, bumped.fact_id) == ("active", known_packet)
+        _, known_packet = await _packet(rel_pool, known.fact_id)
+        assert await _packet(rel_pool, bumped.fact_id) == ("active", known_packet)
         assert known_packet.effective_from == _utc(2019, 1, 1)
         again = await assert_(src="another-source")
         assert (again.outcome, again.fact_id) == (AssertOutcome.unchanged, bumped.fact_id)
 
-    async def test_owner_approval_freezes_the_resolved_temporal_request(self, pool, owner_entity):
-        await simulate_temporal_cutover(pool)
+    async def test_owner_approval_freezes_the_resolved_temporal_request(
+        self, rel_pool, owner_entity
+    ):
+        await simulate_temporal_cutover(rel_pool)
         value = "owner@example.test"
 
         async def propose(**kwargs):
             result = await relationship_assert_fact(
-                pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship", **kwargs
+                rel_pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship", **kwargs
             )
             assert result.outcome == AssertOutcome.pending_approval
-            await approve_fixture(pool, result.action_id)
+            await approve_fixture(rel_pool, result.action_id)
             return result.action_id
 
         async def replay(action_id, wire, **overrides):
             return await replay_fixture(
-                pool,
+                rel_pool,
                 relationship_assert_fact,
                 owner_entity,
                 _PRED_HAS_EMAIL,
@@ -1476,7 +1355,7 @@ class TestEffectiveTimeAfterCutover:
 
         # An explicit packet parks in canonical form with its frozen mode.
         explicit_id = await propose(effective_from="2024-03", effective_from_precision="month")
-        wire, ctx = await _parked(pool, explicit_id)
+        wire, ctx = await _parked(rel_pool, explicit_id)
         assert wire == {
             **dict.fromkeys(WIRE_KEYS),
             "effective_from": "2024-03-01T00:00:00+00:00",
@@ -1485,18 +1364,18 @@ class TestEffectiveTimeAfterCutover:
         assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == ("explicit", None)
 
         # A dispatch that alters the reviewed packet writes nothing at all.
-        before = await _effect_counts(pool)
+        before = await _effect_counts(rel_pool)
         with pytest.raises(ValueError, match="effective-time packet"):
             await replay(explicit_id, wire, effective_to_precision="unbounded")
-        assert await _effect_counts(pool) == before
+        assert await _effect_counts(rel_pool) == before
         landed = await replay(explicit_id, wire)
         assert landed.outcome == AssertOutcome.inserted
-        _, landed_packet = await _packet(pool, landed.fact_id)
+        _, landed_packet = await _packet(rel_pool, landed.fact_id)
         assert landed_packet.effective_from == _utc(2024, 3, 1)
 
         # An ordinary reassertion parks the STORED packet against its base ...
         preserve_id = await propose(conf=0.9)
-        wire, ctx = await _parked(pool, preserve_id)
+        wire, ctx = await _parked(rel_pool, preserve_id)
         assert wire["effective_from"] == "2024-03-01T00:00:00+00:00"
         assert (ctx["temporal_request_mode"], ctx["temporal_base_fact_id"]) == (
             "ordinary",
@@ -1504,7 +1383,7 @@ class TestEffectiveTimeAfterCutover:
         )
         # ... so once that base is corrected underneath it, replay is stale and atomic.
         await relationship_assert_fact(
-            pool,
+            rel_pool,
             owner_entity,
             _PRED_HAS_EMAIL,
             value,
@@ -1513,31 +1392,30 @@ class TestEffectiveTimeAfterCutover:
             effective_from="2024-02",
             effective_from_precision="month",
         )
-        before = await _effect_counts(pool)
+        before = await _effect_counts(rel_pool)
         with pytest.raises(TemporalError) as caught:
             await replay(preserve_id, wire)
         assert caught.value.code == CORRECTION_STALE
-        assert await _effect_counts(pool) == before
+        assert await _effect_counts(rel_pool) == before
 
         # A fresh ordinary approval preserves the corrected packet on replay.
         fresh_id = await propose(conf=0.8)
-        fresh_wire, _ = await _parked(pool, fresh_id)
+        fresh_wire, _ = await _parked(rel_pool, fresh_id)
         replaced = await replay(fresh_id, fresh_wire)
         assert replaced.outcome == AssertOutcome.superseded
-        _, replaced_packet = await _packet(pool, replaced.fact_id)
+        _, replaced_packet = await _packet(rel_pool, replaced.fact_id)
         assert replaced_packet.effective_from == _utc(2024, 2, 1)
 
-    async def test_owner_bootstrap_seed_never_adds_a_default_sibling(self, pool, owner_entity):
+    async def test_owner_bootstrap_seed_never_adds_a_default_sibling(self, rel_pool, owner_entity):
         from butlers.owner_bootstrap import _seed_owner_telegram_handle
 
-        await simulate_temporal_cutover(pool)
-        await pool.execute(
-            "CREATE TABLE public.entity_info (entity_id UUID, type TEXT, value TEXT)"
+        await simulate_temporal_cutover(rel_pool)
+        await rel_pool.execute(
+            "INSERT INTO public.entity_info (entity_id, type, value) "
+            "VALUES ($1, 'telegram_chat_id', '4242')",
+            owner_entity,
         )
-        await pool.execute(
-            "INSERT INTO public.entity_info VALUES ($1, 'telegram_chat_id', '4242')", owner_entity
-        )
-        explicit = await pool.fetchval(
+        explicit = await rel_pool.fetchval(
             """
             INSERT INTO relationship.entity_facts
                 (subject, predicate, object, object_kind, src, effective_period_id)
@@ -1549,29 +1427,26 @@ class TestEffectiveTimeAfterCutover:
         )
 
         async def seed_and_list():
-            async with pool.acquire() as conn:
+            async with rel_pool.acquire() as conn:
                 await conn.execute("SET search_path TO relationship, public")
                 await _seed_owner_telegram_handle(conn, owner_entity)
                 await conn.execute("RESET search_path")
-            return await pool.fetch(
+            return await rel_pool.fetch(
                 f"SELECT id, {PACKET_COLUMNS} FROM relationship.entity_facts "
                 "WHERE subject = $1 AND validity = 'active'",
                 owner_entity,
             )
 
         assert [r["id"] for r in await seed_and_list()] == [explicit]
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.entity_facts SET validity = 'retracted' WHERE id = $1", explicit
         )
         seeded = await seed_and_list()
         assert [TemporalPacket.from_row(r) for r in seeded] == [TemporalPacket()]
         assert await seed_and_list() == seeded
 
-    async def test_concurrent_corrections_have_one_winner_and_a_clean_loser(
-        self, provisioned_postgres_pool
-    ):
-        async with _bigger_pool(provisioned_postgres_pool) as p:
-            await _provision_schema(p)
+    async def test_concurrent_corrections_have_one_winner_and_a_clean_loser(self, db):
+        async with _bigger_pool(db) as p:
             await simulate_temporal_cutover(p)
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name) VALUES ('Alice') RETURNING id"
@@ -1651,20 +1526,20 @@ class TestEffectiveTimeAfterCutover:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: pool seeded with relational predicates needed for alias tests
+# Fixture: rel_pool seeded with relational predicates needed for alias tests
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
-    """Extend the base pool fixture with relational predicates for alias resolution tests.
+async def pool_with_relational_predicates(rel_pool: asyncpg.Pool) -> asyncpg.Pool:
+    """Extend the base rel_pool fixture with relational predicates for alias resolution tests.
 
     Seeds:
     - Original relational predicates from rel_024 (works-at, member-of) and other
       alias targets from rel_014 that may not be in the base fixture.
     - Long-tail relational predicates from rel_026 (bu-kgh8g).
     """
-    await pool.execute("""
+    await rel_pool.execute("""
         INSERT INTO relationship.entity_predicate_registry (predicate, kind, object_kind, description)
         VALUES
             ('works-at',         'relational', 'entity', 'Employment relationship.'),
@@ -1683,7 +1558,7 @@ async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
             ('rental-location',  'relational', 'entity', 'Rental relationship.')
         ON CONFLICT (predicate) DO NOTHING
     """)
-    return pool
+    return rel_pool
 
 
 # ---------------------------------------------------------------------------
@@ -1691,10 +1566,10 @@ async def pool_with_relational_predicates(pool: asyncpg.Pool) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 
-async def _alias_object(pool: asyncpg.Pool) -> str:
+async def _alias_object(rel_pool: asyncpg.Pool) -> str:
     """Plant a real object for a positive entity-valued alias assertion."""
     entity_id = uuid.uuid4()
-    await pool.execute(
+    await rel_pool.execute(
         "INSERT INTO public.entities(id, canonical_name, entity_type) VALUES($1, $2, 'person')",
         entity_id,
         f"Synthetic alias object {entity_id}",

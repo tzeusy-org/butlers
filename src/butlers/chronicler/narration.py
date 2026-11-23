@@ -20,18 +20,21 @@ failed/degraded LLM call never blocks or corrupts them; it only leaves the
 
 Honesty doctrine (classify-before-flagging, applied to narration): a day
 with nothing genuine to narrate must skip cleanly and write nothing, never a
-fabricated label. Two skip conditions, both distinguishable in the returned
-``status``:
+fabricated label. Gating is per lane, read from the frozen
+``day_source_availability`` snapshot. Skip conditions, distinguishable in the
+returned ``status``:
 
 - ``skipped_no_rollup_data`` — no ``daily_rollups`` rows exist yet for the
-  local date (bead 3's job has not materialized it — e.g. it ran before
-  bead 3's cron tick, or the day genuinely has no rows yet).
-- ``skipped_feeder_dark`` — a ``feeder_dark`` anomaly flag is present for
-  the day. A day with a known feeder outage has compromised/incomplete
-  rollup data; narrating confidently over it risks reading as a genuine
-  behavioral account ("the owner did nothing all day") when the truth is
-  "a source stopped reporting." The deterministic flag itself already says
-  this; the LLM pass simply defers rather than paraphrasing over it.
+  local date.
+- ``skipped_all_lanes_dark`` — every rolled-up lane was uncaptured (dark,
+  retired or configured-absent) that day.
+- ``skipped_availability_unknown`` — the day was never snapshotted (or the
+  snapshot is unreadable), so lane capture cannot be established.
+
+A day with some uncaptured lanes is still narrated: the prompt carries
+``uncaptured_lanes`` and the model is forbidden to describe activity or its
+absence there; ``parse_narration_response`` rejects a summary that pairs a
+negation with a keyword of an uncaptured lane (``llm_output_invalid``).
 
 A further-degraded outcome, distinct from both skips, is surfaced if the
 LLM call itself fails or returns unusable output (``llm_unavailable`` /
@@ -49,6 +52,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
@@ -58,14 +62,23 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import asyncpg
 
 from butlers.chronicler.aggregations import lane_for_activity
-from butlers.chronicler.flags import FLAG_FEEDER_DARK
+from butlers.chronicler.flags import (
+    load_day_availability,
+    load_day_retired_since,
+    uncaptured_lanes,
+)
+from butlers.chronicler.history_repair import (
+    RepairAdmissionError,
+    capture_fact_write_token,
+    make_fact_write_guard,
+)
 from butlers.chronicler.storage import (
     list_daily_rollup_flags,
     list_daily_rollups,
     set_daily_rollup_day_narrative,
     set_daily_rollup_flag_narrative,
 )
-from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core.discretion_dispatcher import DiscretionDispatcher
 from butlers.core.model_routing import Complexity
 from butlers.core.tool_call_capture import get_current_codex_auth_authority
 
@@ -126,6 +139,11 @@ matching exactly this shape:
 {"day_summary": "one sentence, max 40 words, or empty string if nothing notable",
  "flag_labels": {"<flag_type>": "one short clause, max 20 words", ...}}
 
+The input's "uncaptured_lanes" lists lanes whose data source was dark or not captured \
+that day. For those lanes the data says nothing: never describe activity in them, and \
+never describe its absence (no "skipped", "no meals", "without"). Their absence is a \
+capture gap, not behavior. You may say plainly that such a lane was "not captured".
+
 Include a key in "flag_labels" ONLY for flag_type values that appear in the input's \
 "flags" list. Never invent a flag_type not present in the input. If a field has \
 nothing worth saying, use an empty string for it rather than omitting the key.
@@ -146,18 +164,86 @@ def narration_enabled() -> bool:
 def should_skip_narration(
     rollup_rows: Sequence[Any],
     flag_rows: Sequence[Any],
+    *,
+    uncaptured: Sequence[Mapping[str, Any]] | None,
 ) -> tuple[bool, str | None]:
     """Whether the labeling pass has nothing genuine to narrate.
 
     Returns ``(True, reason)`` for a clean skip, ``(False, None)`` otherwise.
-    See the module docstring for what each skip reason means. Pure function:
-    no I/O, no LLM, no side effects.
+    Gating is per lane: a day is skipped only when it has no rollup rows
+    (``no_rollup_data``), when its frozen availability is unreadable
+    (``availability_unknown``; ``uncaptured is None``), or when every rolled-up
+    lane was uncaptured (``all_lanes_dark``). A ``feeder_dark`` flag alone does
+    not skip the day; the prompt tells the model which lanes it must not
+    describe. Pure function: no I/O, no LLM, no side effects.
     """
     if not rollup_rows:
         return True, "no_rollup_data"
-    if any(f.flag_type == FLAG_FEEDER_DARK for f in flag_rows):
-        return True, "feeder_dark"
+    if uncaptured is None:
+        return True, "availability_unknown"
+    dark_lanes = {u["lane"] for u in uncaptured}
+    if all(r.lane in dark_lanes for r in rollup_rows):
+        return True, "all_lanes_dark"
     return False, None
+
+
+# Fixed per-lane keywords for the absence guard. A summary that pairs a negation with one of
+# these for an uncaptured lane asserts absence the data cannot support.
+_LANE_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "sleep": ("sleep", "slept", "nap", "bed"),
+    "exercise": ("exercise", "workout", "run", "ran", "gym", "walk"),
+    "work": ("work", "worked", "meeting", "office"),
+    "butler_ops": ("butler", "session", "task"),
+    "play": ("play", "played", "game", "gaming"),
+    "social": ("social", "message", "messages", "call", "chat"),
+    "travel": ("travel", "trip", "commute", "moved", "location"),
+    "eat": ("meal", "meals", "eat", "ate", "eaten", "lunch", "dinner", "breakfast", "food"),
+    "rest": ("rest", "relax", "idle"),
+}
+_NEGATION_WORDS = frozenset(
+    {"no", "not", "never", "none", "nothing", "without", "skipped", "skip", "missed", "zero",
+     "lacked", "absent", "cannot"}
+)  # fmt: skip
+#: Honest capture wording: a clause using it says the data is missing, not that nothing happened.
+_CAPTURE_WORDS = frozenset(
+    {"captured", "capture", "recorded", "record", "logged", "tracked", "data", "available",
+     "unavailable", "visible", "evidence", "known", "unknown", "reported", "measured", "seen",
+     "observed", "collected", "detected", "dark", "offline"}
+)  # fmt: skip
+#: A negation reaches this many words ahead, or this many words back ("meals skipped").
+_REACH_AHEAD = 3
+_REACH_BACK = 2
+_CLAUSE_SPLIT = re.compile(r"[.;!?,:()\n]|\b(?:but|and|while|though|although|so|because)\b")
+
+
+def _is_negation(word: str) -> bool:
+    return word in _NEGATION_WORDS or word.endswith("n't")
+
+
+def _asserts_absence(text: str, uncaptured: Sequence[Mapping[str, Any]]) -> bool:
+    """Does any clause negate an uncaptured lane's keyword close by, without capture wording?
+
+    Matching is per clause and by proximity, so "didn't sleep before a work day" does not
+    assert absence of work, and "the rest of the day" is not the rest lane. Curly apostrophes
+    are folded. A clause that says the data was not captured, recorded or available is honest.
+    """
+    keywords = {kw for u in uncaptured for kw in _LANE_KEYWORDS.get(u["lane"], ())}
+    if not keywords:
+        return False
+    folded = text.lower().replace("\u2019", "'").replace("\u2018", "'").replace("\u02bc", "'")
+    folded = folded.replace("rest of", "remainder of")
+    for clause in _CLAUSE_SPLIT.split(folded):
+        words = re.findall(r"[a-z']+", clause)
+        if not words or _CAPTURE_WORDS & set(words):
+            continue
+        for index, word in enumerate(words):
+            if not _is_negation(word):
+                continue
+            ahead = words[index + 1 : index + 1 + _REACH_AHEAD]
+            back = words[max(0, index - _REACH_BACK) : index]
+            if keywords & set(ahead) or keywords & set(back):
+                return True
+    return False
 
 
 def _local_day_bounds_utc(local_date: date, tzinfo: ZoneInfo) -> tuple[datetime, datetime]:
@@ -227,6 +313,7 @@ def build_narration_prompt(
     rollup_rows: Sequence[Any],
     flag_rows: Sequence[Any],
     top_episode_titles: Mapping[str, list[str]],
+    uncaptured: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """Render the reduced-output user message the LLM narrates over.
 
@@ -247,6 +334,9 @@ def build_narration_prompt(
             {"flag_type": f.flag_type, "severity": f.severity, "detail": f.detail}
             for f in flag_rows
         ],
+        "uncaptured_lanes": [
+            {"lane": u["lane"], "state": u["state"], "since": u.get("since")} for u in uncaptured
+        ],
     }
     return json.dumps(payload, default=str)
 
@@ -255,6 +345,7 @@ def parse_narration_response(
     response_text: str,
     *,
     known_flag_types: Sequence[str],
+    uncaptured: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[str, dict[str, str]] | None:
     """Parse and validate the LLM's JSON response.
 
@@ -294,6 +385,10 @@ def parse_narration_response(
     day_summary = day_summary.strip() if isinstance(day_summary, str) else ""
 
     if not day_summary and not flag_labels:
+        return None
+
+    # A summary or label asserting absence in a lane that was never captured is rejected whole.
+    if any(_asserts_absence(t, uncaptured) for t in (day_summary, *flag_labels.values())):
         return None
 
     return day_summary, flag_labels
@@ -336,6 +431,24 @@ async def _fetch_top_episode_titles(
     return select_top_episode_titles(episodes, day_start_utc=day_start_utc, day_end_utc=day_end_utc)
 
 
+async def _load_uncaptured(
+    pool: asyncpg.Pool, *, local_date: date, timezone: str
+) -> list[dict[str, Any]] | None:
+    """Uncaptured lanes from the frozen availability snapshot, or ``None`` when unreadable."""
+    try:
+        async with pool.acquire() as conn:
+            availability = await load_day_availability(
+                conn, local_date=local_date, timezone=timezone
+            )
+            if availability is None:
+                return None
+            retired = await load_day_retired_since(conn, local_date=local_date, timezone=timezone)
+    except Exception:
+        logger.warning("chronicler narration: availability unreadable for %s", local_date)
+        return None
+    return uncaptured_lanes(availability, retired_since=retired)
+
+
 async def narrate_daily_rollup(
     pool: asyncpg.Pool,
     *,
@@ -355,16 +468,32 @@ async def narrate_daily_rollup(
 
     Returns a plain summary dict suitable as a scheduled-job result payload.
     ``status`` is one of: ``disabled``, ``skipped_no_rollup_data``,
-    ``skipped_feeder_dark``, ``llm_unavailable``, ``llm_output_invalid``,
-    ``labeled``.
+    ``skipped_all_lanes_dark``, ``skipped_availability_unknown``, ``llm_unavailable``,
+    ``llm_output_invalid``, ``labeled``.
     """
     if not narration_enabled():
         return {"local_date": local_date.isoformat(), "status": "disabled"}
 
+    try:
+        token = await capture_fact_write_token(
+            pool,
+            day_date=local_date,
+            timezone=timezone,
+            baseline_lookback_days=28,
+        )
+    except RepairAdmissionError as exc:
+        logger.info("chronicler narration waiting for repair of %s: %s", local_date, exc)
+        return {
+            "local_date": local_date.isoformat(),
+            "status": "waiting_repair",
+            "reason": str(exc),
+        }
+
     rollup_rows = await list_daily_rollups(pool, local_date=local_date)
     flag_rows = await list_daily_rollup_flags(pool, local_date=local_date)
 
-    skip, reason = should_skip_narration(rollup_rows, flag_rows)
+    uncaptured = await _load_uncaptured(pool, local_date=local_date, timezone=timezone)
+    skip, reason = should_skip_narration(rollup_rows, flag_rows, uncaptured=uncaptured)
     if skip:
         return {"local_date": local_date.isoformat(), "status": f"skipped_{reason}"}
 
@@ -382,6 +511,7 @@ async def narrate_daily_rollup(
         rollup_rows=rollup_rows,
         flag_rows=flag_rows,
         top_episode_titles=top_episode_titles,
+        uncaptured=uncaptured or (),
     )
 
     dispatcher = DiscretionDispatcher(
@@ -399,7 +529,9 @@ async def narrate_daily_rollup(
         return {"local_date": local_date.isoformat(), "status": "llm_unavailable"}
 
     parsed = parse_narration_response(
-        response_text, known_flag_types=[f.flag_type for f in flag_rows]
+        response_text,
+        known_flag_types=[f.flag_type for f in flag_rows],
+        uncaptured=uncaptured or (),
     )
     if parsed is None:
         logger.warning("chronicler narration: unusable LLM output for local_date=%s", local_date)
@@ -408,19 +540,33 @@ async def narrate_daily_rollup(
     day_summary, flag_labels = parsed
 
     day_summary_written = False
-    if day_summary:
-        rows_updated = await set_daily_rollup_day_narrative(
-            pool, local_date=local_date, narrative=day_summary
-        )
-        day_summary_written = rows_updated > 0
-
     flags_labeled: list[str] = []
-    for flag_type, label in flag_labels.items():
-        updated = await set_daily_rollup_flag_narrative(
-            pool, local_date=local_date, flag_type=flag_type, narrative=label
-        )
-        if updated is not None:
-            flags_labeled.append(flag_type)
+    if day_summary or flag_labels:
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await make_fact_write_guard(token)(conn)
+                    if day_summary:
+                        rows_updated = await set_daily_rollup_day_narrative(
+                            conn, local_date=local_date, narrative=day_summary
+                        )
+                        day_summary_written = rows_updated > 0
+
+                    for flag_type, label in flag_labels.items():
+                        updated = await set_daily_rollup_flag_narrative(
+                            conn, local_date=local_date, flag_type=flag_type, narrative=label
+                        )
+                        if updated is not None:
+                            flags_labeled.append(flag_type)
+        except RepairAdmissionError as exc:
+            logger.info(
+                "chronicler narration discarded for changed repair state %s: %s", local_date, exc
+            )
+            return {
+                "local_date": local_date.isoformat(),
+                "status": "waiting_repair",
+                "reason": str(exc),
+            }
 
     return {
         "local_date": local_date.isoformat(),

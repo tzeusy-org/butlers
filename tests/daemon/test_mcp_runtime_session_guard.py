@@ -176,7 +176,11 @@ async def test_runtime_session_guard_maps_request_mcp_session_header() -> None:
 # ---------------------------------------------------------------------------
 
 _OWNER_ENTITY_ID = "11111111-1111-1111-1111-111111111111"
-_OWNER_CONTEXT = {"source_entity_id": _OWNER_ENTITY_ID}
+# Route producers name the sender's endpoint for the write-time custody recheck (slice 3b).
+_OWNER_CONTEXT = {
+    "source_entity_id": _OWNER_ENTITY_ID,
+    "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+}
 
 
 @pytest.fixture
@@ -190,7 +194,11 @@ def owner_session(monkeypatch: pytest.MonkeyPatch):
     async def _owner(_pool: Any) -> uuid.UUID:
         return uuid.UUID(_OWNER_ENTITY_ID)
 
+    async def _unheld(_pool: Any, _targets: Any) -> bool:
+        return False
+
     monkeypatch.setattr(content_authority, "fetch_owner_entity_id", _owner)
+    monkeypatch.setattr("butlers.core.custody_ingress.custody_targets_held", _unheld)
     session_id = f"owner-session-{uuid.uuid4().hex}"
     tool_call_capture.set_runtime_session_routing_context(session_id, _OWNER_CONTEXT)
     yield session_id
@@ -533,3 +541,87 @@ async def test_initialize_response_cannot_rebind_a_transport_bound_elsewhere(
 
     assert context == _OWNER_CONTEXT
     assert authority == "owner"
+
+
+async def test_runtime_session_guard_marks_first_mcp_request_stage_once() -> None:
+    """The CLI's first request to a known runtime session stamps its stage clock (bu-dhloi1.180)."""
+    from butlers.core import session_timing
+
+    session_timing._reset_for_tests()
+    session_timing.begin("timed-session", origin=0.0)
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="health")
+    scope = _http_scope(query_string=b"runtime_session_id=timed-session")
+    await guard(scope, _empty_receive, _discard_send)
+    first = session_timing.snapshot("timed-session")["first_mcp_request_ms"]
+    await guard(scope, _empty_receive, _discard_send)
+
+    assert session_timing.snapshot("timed-session")["first_mcp_request_ms"] == first
+
+
+async def test_runtime_session_guard_never_creates_timing_state_for_unknown_ids() -> None:
+    from butlers.core import session_timing
+
+    session_timing._reset_for_tests()
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    guard = _McpRuntimeSessionGuard(app, butler_name="health")
+    await guard(
+        _http_scope(query_string=b"runtime_session_id=attacker-chosen"),
+        _empty_receive,
+        _discard_send,
+    )
+
+    assert session_timing.tracked_session_count() == 0
+
+
+async def test_admitted_owner_session_is_demoted_once_its_endpoint_is_held() -> None:
+    """REQ-endpoint-custody-holds-005 / slice 3b: each request rechecks custody, so a hold
+    that commits after the session was admitted demotes its next write."""
+    from butlers.core import fact_authority
+
+    held: set[tuple[str, str]] = set()
+
+    class CustodyPool:
+        async def fetchval(self, _sql, predicates, objects):
+            return any(target in held for target in zip(predicates, objects, strict=True))
+
+    seen: list[str | None] = []
+
+    async def report_app(scope, receive, send):
+        seen.append(fact_authority.current_fact_write_context().authority)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    synthetic = fact_authority._current_report.set(fact_authority.FactWriteContext("owner"))
+    try:
+        token = await fact_authority.register_invocation(
+            "relationship",
+            "held-runtime",
+            source_endpoint=None,
+            routed=True,
+            routing_context={
+                "request_context": {"source_channel": "telegram_bot"},
+                "source_entity_id": "00000000-0000-0000-0000-000000000001",
+                "source_endpoint": {"channel": "telegram_bot", "identity": "111"},
+            },
+            custody_pool=CustodyPool(),
+        )
+    finally:
+        fact_authority._current_report.reset(synthetic)
+    guarded = _McpRuntimeSessionGuard(report_app, butler_name="relationship")
+    scope = _http_scope(headers=[(fact_authority.INVOCATION_HEADER.encode(), token.encode())])
+    try:
+        await guarded(scope, _empty_receive, _discard_send)
+        held.add(("has-handle", "telegram:111"))  # the hold commits mid-session
+        await guarded(scope, _empty_receive, _discard_send)
+        assert seen == ["owner", "third_party"]
+    finally:
+        fact_authority.settle_invocation(token)

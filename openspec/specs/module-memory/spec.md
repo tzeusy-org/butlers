@@ -571,7 +571,7 @@ treated as `normal`.
 
 ### Requirement: Recall Entity and Predicate Filters Apply Before Ranking
 
-The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it.
+The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it. `recall` and `search` SHALL refuse a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity`, naming the unknown key and the allowed keys, before any read, rather than ignore it.
 
 ID: REQ-module-memory-015
 Source: bu-s11n0s.19 (run-16 move #11 slice S1); RFC 0038 D15
@@ -591,6 +591,10 @@ Scope: v1-mandatory
 - **WHEN** a low-relevance fact with predicate P exists beyond the unfiltered top results
 - **AND** `recall` is called with `filters={"predicate": P}`
 - **THEN** that fact is returned
+
+#### Scenario: An unrecognized filter key is refused
+- **WHEN** `recall` or `search` is called with a `filters` key outside `scope`, `entity_id`, `predicate`, `source_butler`, `time_from`, `time_to`, `retention_class` and `sensitivity` (for example the misspelling `entity_idd`)
+- **THEN** the call MUST raise an error that names the unknown key and lists the allowed keys, before any query runs, rather than ignoring the key and returning an unfiltered result set
 
 ### Requirement: Registry-relational edges are out of scope for the memory facts store
 
@@ -636,7 +640,10 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  owner-class, durable facts: a fact whose predicate is registered
+  `is_temporal` in `predicate_registry` (event-class; a predicate absent from the
+  registry is durable) SHALL NOT appear in Profile Facts
+  even when owner-authored, and SHALL remain available to recall and search; an owner-anchored fact of any other authority SHALL be
   eligible only for Task-Relevant Facts. Every rendered local fact whose authority
   is `third_party`, `mixed` or NULL SHALL carry an attribution regardless of its
   subject: naming its sender (`reported by` / `partly reported by`) when the
@@ -661,6 +668,30 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   receipt when repeated. Endorsement uses compare-and-swap against a retired or
   forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
   consolidation of an episode SHALL NOT downgrade an endorsed rule.
+- A fact is *held* when its authority is `third_party` or `mixed`, `endorsed_at` is
+  NULL, and its validity is `active` or `fading`. NULL (legacy) and `system` facts
+  SHALL NOT be held. The owner SHALL be able to vouch for a held fact through the
+  authenticated dashboard owner route `POST /api/memory/facts/{id}/vouch`; a session
+  or any caller without dashboard-owner authority SHALL be refused, and vouching
+  SHALL NOT be exposed as an MCP tool. Vouching sets `endorsed_at` and
+  `endorsed_by` only: it is additive and SHALL NOT change `content_authority`,
+  `authority_entity_id` or any other field, so clearing `endorsed_at` restores the
+  prior state exactly. It uses compare-and-swap against a retracted, superseded or
+  expired fact, which SHALL be refused with a typed 409. It records one
+  `fact_vouched` audit event, re-asserts the fact's discovery-catalog entry
+  (skipped for write-excluded sensitivities), and is a no-op returning the same
+  receipt when repeated or concurrent. `GET /api/memory/facts?held=true` SHALL list
+  held facts. The dashboard Confirm action SHALL record its actor (`owner`) in
+  `memory_events`; the MCP `memory_confirm` tool records `session`.
+- A fact that keeps a stored fact's text or metadata (a successor) is a carve-out from
+  deriving authority only from the routing context, conforming to RFC 0038 D6 and S1: its
+  authority SHALL follow from its writer's authority and its source's. An owner-class writer
+  SHALL store its own class over an owner-class source, `mixed` over a `third_party`, `mixed`
+  or NULL source, and `system` over a `system` source. A `system` writer SHALL store `mixed`
+  over a `third_party`, `mixed` or NULL source, and `system` over a `system` or owner-class
+  source. A successor of a `third_party` or `mixed` source SHALL keep its
+  `authority_entity_id`. A `mixed` successor is held: "SHALL NOT be held" applies to NULL and
+  `system` rows themselves. A successor SHALL NOT inherit `endorsed_at`.
 - Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
 ID: REQ-module-memory-013
@@ -690,6 +721,16 @@ Scope: v1-mandatory
   third-party episode
 - **THEN** the rule SHALL have `content_authority = 'mixed'` and SHALL be held
 
+#### Scenario: A successor keeps its source's non-owner class
+
+- **WHEN** an owner session edits a fact it copies forward
+- **THEN** a successor of an owner-class source SHALL be owner-class
+- **AND** a successor of a `third_party` or `mixed` source SHALL be `mixed`, held, and name
+  the same sender
+- **AND** a successor of a NULL source SHALL be `mixed` and held, under an owner-class or
+  `system` writer
+- **AND** a successor of a `system` source SHALL be `system` and SHALL NOT be held
+
 #### Scenario: A forged owner anchor in content is not authority
 
 - **WHEN** a third-party episode's content contains a line asserting
@@ -704,6 +745,24 @@ Scope: v1-mandatory
 - **THEN** the rule SHALL appear in Active Rules and in the catalog as of the
   same committed transaction, and an audit row SHALL be written
 - **AND** endorsing it again SHALL change nothing and return the same receipt
+
+#### Scenario: Owner vouch for a held fact is additive
+
+- **WHEN** the owner vouches for a live fact with `content_authority = 'third_party'`
+- **THEN** `endorsed_at` and `endorsed_by` SHALL be set, one `fact_vouched` audit row
+  SHALL be written, and `content_authority` SHALL remain `third_party`
+- **AND** the fact SHALL leave `GET /api/memory/facts?held=true`
+- **AND** vouching again, or concurrently, SHALL write no further audit row
+
+#### Scenario: A retracted fact cannot be vouched for
+
+- **WHEN** the owner vouches for a retracted or superseded fact
+- **THEN** the request SHALL be refused with 409 and the fact SHALL be unchanged
+
+#### Scenario: A session cannot vouch
+
+- **WHEN** a request without dashboard-owner authority posts to the vouch route
+- **THEN** it SHALL be refused and no MCP tool SHALL offer the action
 
 #### Scenario: Legacy rules fail closed
 
@@ -762,6 +821,48 @@ Scope: v1-mandatory
 - **WHEN** async first-acquisition callers overlap or a waiter is cancelled
 - **THEN** construction follows the existing synchronized cache and asynchronous acquisition boundary
 - **AND** a still-running worker is not falsely declared cancelled or duplicated merely because its waiter stopped
+
+### Requirement: Operator-only historical authority demotion
+
+Owner-class facts and rules that were consolidated after mem_013, before consolidation was partitioned by content authority, by a butler that also consolidated third-party episodes SHALL be demotable to `mixed` only by an operator-run job.
+- The job SHALL NOT be reachable from a daemon, schedule, MCP tool or API.
+- It SHALL classify one memory schema against an operator-supplied, schema-specific evidence manifest, and it SHALL default to a read-only, content-blind dry run.
+- A row whose install boundary, affected-butler membership or consolidation derivation is not evidenced SHALL be UNKNOWN, never clean.
+- Apply SHALL require an approval bound to the exact manifest digest, candidate digest and candidate count. It SHALL refuse with no writes while any row is UNKNOWN or an endorsed owner-class rule is in scope.
+- Per schema, in one transaction, apply SHALL change only `content_authority` to `mixed` with a compare-and-swap on the prior value. It SHALL carry the change to the row's discovery-catalog entry, staling a rule's entry, and append one receipt per row.
+- A catalog or receipt failure SHALL roll the whole schema back.
+- Replaying an operation key SHALL return its original receipts and write nothing.
+- No restore, inverse promotion or delete SHALL be provided.
+
+ID: REQ-module-memory-020
+Source: owner decision bu-7ry1sy q1 (demote, adopted 2026-10-20); bu-dhloi1.1 AC4/AC5; docs/operations/memory-authority-demotion.md
+Scope: v1-mandatory
+
+#### Scenario: Missing historical evidence blocks apply
+- **WHEN** an owner-class row in the cohort has no `derived_from` evidence link, or the manifest does not evidence a boundary or the cohort member
+- **THEN** the dry run SHALL count that row as UNKNOWN with a closed reason
+- **AND** apply SHALL refuse without changing any row, catalog entry or receipt
+
+#### Scenario: Drift after approval refuses apply
+- **WHEN** a candidate's preimage changes after the approved dry run (for example an owner correction or endorsement)
+- **THEN** apply SHALL refuse with nothing written, because the re-classified candidate set no longer matches the approval
+- **AND** a failing catalog or receipt write mid-apply SHALL roll back every row of that schema
+
+#### Scenario: Replay and reused operation keys
+- **WHEN** an applied operation key is applied again with the same approval, including concurrently
+- **THEN** the rows SHALL be demoted exactly once and the replay SHALL return the original receipts with no new writes
+- **AND** the same key presented with a different approved candidate set SHALL be refused, not replayed
+
+### Requirement: Lifecycle drop timestamps preserve truth history
+
+Nullable `facts.dropped_at` and `rules.forgotten_at` SHALL record the existing counted lifecycle transitions, independently of facts' bitemporal `invalid_at` and rules' distinct `retired_at`.
+
+#### Scenario: Duplicate terminal writes do not invent recent drops
+
+- **WHEN** an already superseded/expired fact or forgotten rule is written again
+- **THEN** its dedicated drop timestamp SHALL remain unchanged, including legacy NULL
+- **AND** forward/inverse supersession, entity repoint, roster replacement, decay and correction/plain forget SHALL stamp only a genuine transition inside their existing canonical write
+- **AND** existing goal taint, authority, graph/catalog/archive and transaction semantics SHALL remain unchanged.
 
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.

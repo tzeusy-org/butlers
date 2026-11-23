@@ -14,6 +14,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import Client
 from fastmcp import FastMCP as RuntimeFastMCP
 from pydantic import BaseModel
 
@@ -482,6 +483,7 @@ class TestLifecycle:
             enable_shared_catalog=True,
             source_schema="private_memory",
             retry_failed=True,
+            memory_schema=None,
         )
 
     async def test_consolidation_hook_excludes_private_memory_from_failed_recovery(
@@ -583,6 +585,8 @@ EXPECTED_TOOL_NAMES = {
     "memory_search",
     "memory_recall",
     "memory_get",
+    # Service-only twin, the memory.catalog_fetch relay target (RFC 0038 D7).
+    "memory_get_service",
     "memory_confirm",
     "memory_mark_helpful",
     "memory_mark_harmful",
@@ -951,6 +955,56 @@ class TestRegisterTools:
         )
         assert set(array_variant["items"]["enum"]) == {"episode", "fact", "rule"}
 
+    async def test_unknown_filters_are_tool_errors_before_policy_or_embeddings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """REQ-module-memory-015: registered tools refuse typos before any read."""
+        from butlers.modules.memory import search as memory_search
+
+        for tool, query_arg in (("memory_search", "query"), ("memory_recall", "topic")):
+            mod = MemoryModule()
+            runtime_mcp = RuntimeFastMCP("test-memory-filters")
+            pool = AsyncMock()
+            pool.fetch.return_value = []
+            accessor = AsyncMock(return_value=SimpleNamespace(catalog_read_sensitivity="normal"))
+            fake_db = SimpleNamespace(
+                pool=pool,
+                schema="test-butler",
+                runtime_config_accessor=SimpleNamespace(get=accessor),
+            )
+            engine = make_embedding_engine_mock(mod._config.embedding_model)
+            factory = MagicMock(return_value=engine)
+            monkeypatch.setattr(mod, "_get_embedding_engine", factory)
+            await mod.register_tools(
+                mcp=runtime_mcp, config=None, db=fake_db, butler_name="test-butler"
+            )
+
+            async with Client(runtime_mcp) as client:
+                refused = await client.call_tool(
+                    tool,
+                    {query_arg: "work", "filters": {"entity_idd": "typo"}},
+                    raise_on_error=False,
+                )
+                assert refused.is_error
+                message = "\n".join(block.text for block in refused.content if block.type == "text")
+                assert "entity_idd" in message
+                for allowed in memory_search._KNOWN_FILTER_KEYS:
+                    assert allowed in message
+                accessor.assert_not_awaited()
+                for method in (pool.fetch, pool.fetchrow, pool.fetchval, pool.execute):
+                    method.assert_not_awaited()
+                factory.assert_not_called()
+                engine.embed.assert_not_called()
+
+                accepted = await client.call_tool(
+                    tool, {query_arg: "work", "filters": {"predicate": "works_at"}}
+                )
+                assert not accepted.is_error
+                accessor.assert_awaited_once_with()
+                factory.assert_called_once_with()
+                engine.embed.assert_called_once_with("work")
+                pool.fetch.assert_awaited()
+
 
 # ---------------------------------------------------------------------------
 # Tool delegation — verify closures call underlying impls correctly
@@ -1163,6 +1217,7 @@ class TestToolDelegation:
             min_confidence=0.2,
             filters=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
@@ -1189,17 +1244,20 @@ class TestToolDelegation:
             filters=None,
             request_context=None,
             read_policy=held_policy,
+            memory_schema="chronicler_mem",
         )
         mod._catalog_read_policy.assert_awaited_once_with()
         private_memory_pool.fetchval.assert_not_awaited()
 
-    async def test_memory_get_delegates_with_module_held_policy(self):
+    @pytest.mark.parametrize("tool_name", ["memory_get", "memory_get_service"])
+    async def test_memory_get_delegates_with_module_held_policy(self, tool_name):
+        """The relay twin reads exactly as memory_get, under this butler's own ceiling."""
         mod, tools, pool, _, reading, *_ = await self._setup_and_register()
         held_policy = object()
         mod._catalog_read_policy = AsyncMock(return_value=held_policy)
         reading.memory_get = AsyncMock(return_value=None)
 
-        result = await tools["memory_get"](
+        result = await tools[tool_name](
             memory_type="fact",
             memory_id="550e8400-e29b-41d4-a716-446655440000",
         )
@@ -1211,6 +1269,7 @@ class TestToolDelegation:
             "fact",
             "550e8400-e29b-41d4-a716-446655440000",
             read_policy=held_policy,
+            memory_schema=None,
         )
 
     @pytest.mark.parametrize(
@@ -1416,14 +1475,16 @@ class TestToolGroups:
         assert len(tools) == len(EXPECTED_TOOL_NAMES)
 
     async def test_core_only(self):
-        """groups=['core'] registers only the 9 core tools."""
+        """groups=['core'] registers only the 10 core tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 9
+        assert len(tools) == 10
+        # The relay twin travels with memory_get, so a catalog fetch always lands.
+        assert "memory_get_service" in tool_names
         assert "memory_search" in tool_names
         assert "memory_store_fact" in tool_names
         assert "memory_context" in tool_names
@@ -1432,14 +1493,14 @@ class TestToolGroups:
         assert "memory_stats" not in tool_names
 
     async def test_core_plus_entity(self):
-        """groups=['core', 'entity'] registers 16 tools."""
+        """groups=['core', 'entity'] registers 17 tools."""
         mod = MemoryModule()
         mcp = RuntimeFastMCP("test")
         config = MemoryModuleConfig(groups=["core", "entity"])
         await mod.register_tools(mcp, config, MagicMock(), "test-butler")
         tools = await mcp.list_tools()
         tool_names = {t.name for t in tools}
-        assert len(tools) == 16  # 9 core + 7 entity
+        assert len(tools) == 17  # 10 core + 7 entity
         assert "memory_entity_create" in tool_names
         assert "memory_catalog_search" in tool_names
         assert "memory_stats" not in tool_names  # admin
@@ -1711,7 +1772,9 @@ class TestOwnedRuntimePools:
         try:
             await module.on_startup(MemoryModuleConfig(memory_schema="chronicler_mem"), primary)
             assert module._memory_db.role == "butler_chronicler_rw"
-            assert pools[1][1]["server_settings"] == {"search_path": "chronicler_mem,public"}
+            settings = pools[1][1]["server_settings"]
+            assert settings["search_path"] == "chronicler_mem,public"
+            assert {"tcp_keepalives_idle", "tcp_user_timeout"} <= settings.keys()
             connection.reset_mock()
             await pools[1][1]["setup"](connection)
             await pools[1][1]["setup"](connection)

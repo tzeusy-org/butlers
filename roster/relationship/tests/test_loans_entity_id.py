@@ -14,8 +14,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from butlers.testing.schema_standins import CONTACT_ENTITY_MAP
-
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="session"),
@@ -24,130 +22,9 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with relationship and facts tables."""
-    async with provisioned_postgres_pool() as p:
-        # public.entities: required by store_fact entity_id FK and entity_create
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name VARCHAR NOT NULL DEFAULT '',
-                name TEXT NOT NULL DEFAULT '',
-                entity_type VARCHAR NOT NULL DEFAULT 'other',
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                metadata JSONB DEFAULT '{}'::jsonb,
-                roles TEXT[] NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        # contacts: full relationship schema (unqualified = public in test context).
-        # Includes entity_id FK so resolve_contact_entity_id() works, and all name
-        # fields so contact_create() can set first_name/last_name.
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS contacts (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                first_name TEXT,
-                last_name TEXT,
-                nickname TEXT,
-                company TEXT,
-                job_title TEXT,
-                gender TEXT,
-                pronouns TEXT,
-                avatar_url TEXT,
-                entity_id UUID REFERENCES public.entities(id),
-                stay_in_touch_days INT,
-                listed BOOLEAN NOT NULL DEFAULT true,
-                metadata JSONB NOT NULL DEFAULT '{}',
-                created_at TIMESTAMPTZ DEFAULT now(),
-                updated_at TIMESTAMPTZ DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts (first_name, last_name)
-        """)
-        # contact_entity_map (rel_029) — contact_id → entity_id bridge.
-        # contact_create() writes here best-effort; resolve_contact_entity_id() reads here.
-        # Without this table, contact_create silently no-ops and entity_id stays None.
-        await p.execute(CONTACT_ENTITY_MAP.ddl())
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS predicate_registry (
-                name TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type TEXT,
-                is_edge BOOLEAN NOT NULL DEFAULT false,
-                is_temporal BOOLEAN NOT NULL DEFAULT false,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                status TEXT NOT NULL DEFAULT 'active',
-                superseded_by TEXT,
-                deprecated_at TIMESTAMPTZ,
-                inverse_of TEXT,
-                is_symmetric BOOLEAN NOT NULL DEFAULT false,
-                aliases TEXT[] NOT NULL DEFAULT '{}',
-                usage_count INTEGER NOT NULL DEFAULT 0,
-                last_used_at TIMESTAMPTZ
-            )
-        """)
-        await p.execute("""
-            INSERT INTO predicate_registry (name, is_temporal) VALUES
-                ('loan', false),
-                ('activity', true)
-            ON CONFLICT (name) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS facts (
-                content_authority TEXT, authority_entity_id UUID,
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                subject TEXT NOT NULL,
-                predicate TEXT NOT NULL,
-                content TEXT NOT NULL,
-                embedding TEXT,
-                search_vector TSVECTOR,
-                importance FLOAT NOT NULL DEFAULT 5.0,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                decay_rate FLOAT NOT NULL DEFAULT 0.008,
-                permanence TEXT NOT NULL DEFAULT 'standard',
-                source_butler TEXT,
-                source_episode_id UUID,
-                supersedes_id UUID REFERENCES facts(id) ON DELETE SET NULL,
-                validity TEXT NOT NULL DEFAULT 'active',
-                scope TEXT NOT NULL DEFAULT 'global',
-                reference_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_confirmed_at TIMESTAMPTZ,
-                tags JSONB DEFAULT '[]'::jsonb,
-                metadata JSONB DEFAULT '{}'::jsonb,
-                entity_id UUID REFERENCES public.entities(id),
-                object_entity_id UUID REFERENCES public.entities(id),
-                valid_at TIMESTAMPTZ DEFAULT NULL,
-                tenant_id TEXT NOT NULL DEFAULT 'owner',
-                request_id TEXT,
-                idempotency_key TEXT,
-                observed_at TIMESTAMPTZ DEFAULT now(),
-                invalid_at TIMESTAMPTZ,
-                retention_class TEXT NOT NULL DEFAULT 'operational',
-                sensitivity TEXT NOT NULL DEFAULT 'normal',
-                embedding_model_version TEXT DEFAULT 'unknown'
-            )
-        """)
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate
-                ON facts (subject, predicate)
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS memory_links (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                source_type TEXT NOT NULL,
-                source_id UUID NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id UUID NOT NULL,
-                relation TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (source_type, source_id, target_type, target_id)
-            )
-        """)
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship chains, flat in ``public`` (as contact tools expect)."""
+    return await db("core", "memory", "relationship")
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -168,11 +45,11 @@ def patch_embedding_engine_loans():
         yield engine
 
 
-async def _make_contact_with_entity(pool, name: str) -> dict:
+async def _make_contact_with_entity(rel_pool, name: str) -> dict:
     """Create a contact row with a linked entity, returning the contact dict."""
     from butlers.tools.relationship import contact_create
 
-    return await contact_create(pool, name)
+    return await contact_create(rel_pool, name)
 
 
 # ------------------------------------------------------------------
@@ -180,15 +57,15 @@ async def _make_contact_with_entity(pool, name: str) -> dict:
 # ------------------------------------------------------------------
 
 
-async def test_loan_create_stores_entity_id(pool):
+async def test_loan_create_stores_entity_id(rel_pool):
     """loan_create passes the contact's entity_id to store_fact (not None)."""
-    lender = await _make_contact_with_entity(pool, "Entity-Lender")
-    borrower = await _make_contact_with_entity(pool, "Entity-Borrower")
+    lender = await _make_contact_with_entity(rel_pool, "Entity-Lender")
+    borrower = await _make_contact_with_entity(rel_pool, "Entity-Borrower")
 
     from butlers.tools.relationship import loan_create
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Entity anchor test",
@@ -197,7 +74,7 @@ async def test_loan_create_stores_entity_id(pool):
     )
 
     # Verify entity_id is stored on the facts row (not NULL)
-    row = await pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
+    row = await rel_pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
     assert row is not None
     assert row["entity_id"] is not None, "entity_id must not be NULL on loan fact"
 
@@ -208,14 +85,14 @@ async def test_loan_create_stores_entity_id(pool):
     assert row["entity_id"] == lender_entity
 
 
-async def test_loan_create_contact_id_resolves_entity(pool):
+async def test_loan_create_contact_id_resolves_entity(rel_pool):
     """loan_create with contact_id sets entity_id from that contact."""
-    contact = await _make_contact_with_entity(pool, "Loan-Contact-Direct")
+    contact = await _make_contact_with_entity(rel_pool, "Loan-Contact-Direct")
 
     from butlers.tools.relationship import loan_create
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         contact_id=contact["id"],
         direction="lent",
         amount_cents=1500,
@@ -223,7 +100,7 @@ async def test_loan_create_contact_id_resolves_entity(pool):
         currency="USD",
     )
 
-    row = await pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
+    row = await rel_pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
     assert row is not None
     assert row["entity_id"] is not None
 
@@ -236,15 +113,15 @@ async def test_loan_create_contact_id_resolves_entity(pool):
 # ------------------------------------------------------------------
 
 
-async def test_loan_settle_preserves_entity_id(pool):
+async def test_loan_settle_preserves_entity_id(rel_pool):
     """loan_settle passes the existing entity_id to the superseding fact."""
-    lender = await _make_contact_with_entity(pool, "Settle-Lender")
-    borrower = await _make_contact_with_entity(pool, "Settle-Borrower")
+    lender = await _make_contact_with_entity(rel_pool, "Settle-Lender")
+    borrower = await _make_contact_with_entity(rel_pool, "Settle-Borrower")
 
     from butlers.tools.relationship import loan_create, loan_settle
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Settle preserve entity test",
@@ -253,42 +130,46 @@ async def test_loan_settle_preserves_entity_id(pool):
     )
 
     # Get entity_id from the original fact
-    original_row = await pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
+    original_row = await rel_pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", loan["id"])
     original_entity_id = original_row["entity_id"]
     assert original_entity_id is not None
 
-    settled = await loan_settle(pool, loan["id"])
+    settled = await loan_settle(rel_pool, loan["id"])
 
     # The settled fact must carry the same entity_id
-    settled_row = await pool.fetchrow("SELECT entity_id FROM facts WHERE id = $1", settled["id"])
+    settled_row = await rel_pool.fetchrow(
+        "SELECT entity_id FROM facts WHERE id = $1", settled["id"]
+    )
     assert settled_row is not None
     assert settled_row["entity_id"] == original_entity_id, (
         "Settled fact entity_id must match the original loan's entity_id"
     )
 
 
-async def test_loan_settle_settled_flag_set(pool):
+async def test_loan_settle_settled_flag_set(rel_pool):
     """loan_settle marks the settled flag and preserves active validity."""
-    lender = await _make_contact_with_entity(pool, "Settle-Flag-Lender")
-    borrower = await _make_contact_with_entity(pool, "Settle-Flag-Borrower")
+    lender = await _make_contact_with_entity(rel_pool, "Settle-Flag-Lender")
+    borrower = await _make_contact_with_entity(rel_pool, "Settle-Flag-Borrower")
 
     from butlers.tools.relationship import loan_create, loan_settle
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Flag test",
         amount_cents=2000,
         currency="USD",
     )
-    settled = await loan_settle(pool, loan["id"])
+    settled = await loan_settle(rel_pool, loan["id"])
 
     assert settled["settled"] is True
     assert settled["settled_at"] is not None
 
     # The new fact row should have validity = 'active' (supersession deactivates old)
-    row = await pool.fetchrow("SELECT validity, metadata FROM facts WHERE id = $1", settled["id"])
+    row = await rel_pool.fetchrow(
+        "SELECT validity, metadata FROM facts WHERE id = $1", settled["id"]
+    )
     assert row is not None
     assert row["validity"] == "active"
 
@@ -298,15 +179,15 @@ async def test_loan_settle_settled_flag_set(pool):
 # ------------------------------------------------------------------
 
 
-async def test_loan_create_multi_currency(pool):
+async def test_loan_create_multi_currency(rel_pool):
     """loan_create stores and returns non-USD currency accurately."""
-    lender = await _make_contact_with_entity(pool, "Multicurrency-Lender")
-    borrower = await _make_contact_with_entity(pool, "Multicurrency-Borrower")
+    lender = await _make_contact_with_entity(rel_pool, "Multicurrency-Lender")
+    borrower = await _make_contact_with_entity(rel_pool, "Multicurrency-Borrower")
 
     from butlers.tools.relationship import loan_create, loan_list
 
     loan = await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="EUR loan",
@@ -319,7 +200,7 @@ async def test_loan_create_multi_currency(pool):
     assert loan["amount"] == Decimal("50.00")
 
     # Verify round-trip via loan_list
-    loans = await loan_list(pool, lender["id"])
+    loans = await loan_list(rel_pool, lender["id"])
     eur_loans = [loan for loan in loans if loan.get("currency") == "EUR"]
     assert len(eur_loans) == 1
     assert eur_loans[0]["amount_cents"] == 5000
@@ -330,19 +211,19 @@ async def test_loan_create_multi_currency(pool):
 # ------------------------------------------------------------------
 
 
-async def test_loan_list_multiple_loans_same_lender(pool):
+async def test_loan_list_multiple_loans_same_lender(rel_pool):
     """loan_list returns all active loans for a lender, including multiple loans.
 
     With temporal fact storage, each loan coexists independently — two loans
     from the same lender entity are both active and both returned by loan_list.
     """
-    lender = await _make_contact_with_entity(pool, "ListQuery-Lender")
-    borrower = await _make_contact_with_entity(pool, "ListQuery-Borrower")
+    lender = await _make_contact_with_entity(rel_pool, "ListQuery-Lender")
+    borrower = await _make_contact_with_entity(rel_pool, "ListQuery-Borrower")
 
     from butlers.tools.relationship import loan_create, loan_list
 
     await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="First loan",
@@ -350,7 +231,7 @@ async def test_loan_list_multiple_loans_same_lender(pool):
         currency="USD",
     )
     await loan_create(
-        pool,
+        rel_pool,
         lender_contact_id=lender["id"],
         borrower_contact_id=borrower["id"],
         description="Second loan",
@@ -358,7 +239,7 @@ async def test_loan_list_multiple_loans_same_lender(pool):
         currency="USD",
     )
 
-    loans = await loan_list(pool, lender["id"])
+    loans = await loan_list(rel_pool, lender["id"])
     assert len(loans) == 2, "Both loans must be active — temporal facts do not supersede each other"
     descriptions = {loan["description"] for loan in loans}
     assert descriptions == {"First loan", "Second loan"}

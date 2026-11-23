@@ -142,6 +142,24 @@ if [[ "$HAS_CAPTURE" == true ]]; then
 
 fi
 
+# Explicit complete coverage is a format declaration, not inferred from
+# restored catalog absence. Validate all framing before any target mutation.
+PERCEPTION_COVERAGE=$(gunzip -c "$BACKUP_FILE" | awk '
+ /^-- Butlers private-history coverage: perception-v1 export$/ { declared++ }
+ /^-- Butlers canonical perception history \(all ten fixed populations\)$/ { starts++ }
+ /^-- Butlers canonical perception history end$/ { ends++ }
+ /^CREATE TEMP TABLE butlers_perception_restore_rows / { stages++ }
+ END { print declared+0,starts+0,ends+0,stages+0 }')
+read -r PERCEPTION_COMPLETE PERCEPTION_STARTS PERCEPTION_ENDS PERCEPTION_STAGES <<< "$PERCEPTION_COVERAGE"
+PERCEPTION_HISTORY_DECLARED=false
+if [[ "$PERCEPTION_COMPLETE" != 0 || "$PERCEPTION_STARTS" != 0 || "$PERCEPTION_ENDS" != 0 || "$PERCEPTION_STAGES" != 0 ]]; then
+  if [[ "$PERCEPTION_COMPLETE" != 1 || "$PERCEPTION_STARTS" != 1 || "$PERCEPTION_ENDS" != 1 || "$PERCEPTION_STAGES" != 1 ]]; then
+    echo "[restore] ERROR: declared complete perception companion framing is missing or inconsistent" >&2
+    exit 1
+  fi
+  PERCEPTION_HISTORY_DECLARED=true
+fi
+
 # ── Drop existing target if requested ───────────────────────────────────
 if [[ "$DROP_EXISTING" == "true" ]]; then
   echo "[restore] Dropping existing database '${TARGET_DB}' (--drop-existing)"
@@ -352,6 +370,134 @@ if [[ -s "$AUDIT_DIR/inverted" ]]; then
   exit 1
 fi
 echo "[restore]   no SECURITY DEFINER function in 'public' fell to '${PG_USER}'"
+# The public-only audit cannot see a failed handoff in this fixed namespace.
+# Check the actual catalog, not only the owners declared by an untrusted dump.
+# Legacy artifacts with neither the namespace nor its declaration stay supported.
+DND_DECLARED=false
+if gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA dnd_generation_backup;/ { found=1 }
+  END { exit !found }'; then
+  DND_DECLARED=true
+fi
+PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+  --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+  --set=dnd_declared="$DND_DECLARED" --quiet <<'DND_AUDIT_SQL'
+SELECT :'dnd_declared'::boolean OR to_regnamespace('dnd_generation_backup') IS NOT NULL AS dnd_audit_needed \gset
+\if :dnd_audit_needed
+DO $dnd_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='dnd_generation_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='dnd_generation_backup'
+         AND n.nspowner=to_regrole('dnd_generation_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='dnd_generation_backup' AND p.proowner=to_regrole('dnd_generation_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('dnd_generation_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'DND backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$dnd_boundary$;
+\endif
+DND_AUDIT_SQL
+
+# Closed ten-relation perception companion has its own namespace/owner audit.
+PERCEPTION_DECLARED=false
+if gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA perception_backup;/ { found=1 }
+  END { exit !found }'; then
+  PERCEPTION_DECLARED=true
+fi
+PGPASSWORD="$PG_PASSWORD" psql --host="$PG_HOST" --port="$PG_PORT" \
+  --username="$PG_USER" --dbname="$TARGET_DB" --no-password --set=ON_ERROR_STOP=1 \
+  --set=perception_declared="$PERCEPTION_DECLARED" \
+  --set=perception_history_declared="$PERCEPTION_HISTORY_DECLARED" --quiet <<'PERCEPTION_AUDIT_SQL'
+SELECT :'perception_history_declared'::boolean OR :'perception_declared'::boolean
+  OR to_regnamespace('perception_backup') IS NOT NULL
+  OR to_regnamespace('perception_private') IS NOT NULL OR EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relname IN
+      ('timeline','situation_slots','owner_modes','perception_conditions','perception_suppressions'))
+  AS perception_audit_needed \gset
+\if :perception_audit_needed
+DO $perception_boundary$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname='perception_owner'
+      AND NOT r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreaterole
+      AND NOT r.rolcreatedb AND NOT r.rolreplication AND NOT r.rolbypassrls
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members m WHERE m.roleid=r.oid OR m.member=r.oid))
+     OR (SELECT count(*) FROM pg_roles WHERE rolname IN ('butlers_backup_export','butlers_backup_restore')
+         AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreaterole
+         AND NOT rolcreatedb AND NOT rolreplication AND NOT rolbypassrls) <> 2
+     OR NOT EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname='perception_backup'
+         AND n.nspowner=to_regrole('perception_owner') AND NOT EXISTS (
+           SELECT 1 FROM aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a
+           WHERE a.is_grantable OR NOT (a.grantee=n.nspowner OR
+             (a.grantee IN (to_regrole('butlers_backup_export'),to_regrole('butlers_backup_restore'))
+              AND a.privilege_type='USAGE'))))
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup') <> 3
+     OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+         WHERE n.nspname='perception_backup' AND p.proowner=to_regrole('perception_owner')
+           AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp','row_security=on']
+           AND ((p.proname='export_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=2249 AND p.provolatile='s')
+             OR (p.proname='export_schema_v1' AND p.pronargs=0 AND p.proretset AND p.prorettype=25 AND p.provolatile='s')
+             OR (p.proname='restore_v1' AND p.proargtypes='3802'::oidvector
+                 AND NOT p.proretset AND p.prorettype=2278 AND p.provolatile='v'))
+           AND NOT EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+             WHERE a.is_grantable OR NOT (a.grantee=p.proowner OR
+               (a.grantee=CASE WHEN p.proname='restore_v1' THEN to_regrole('butlers_backup_restore')
+                               ELSE to_regrole('butlers_backup_export') END AND a.privilege_type='EXECUTE')))
+           AND has_function_privilege(CASE WHEN p.proname='restore_v1' THEN 'butlers_backup_restore'
+                                           ELSE 'butlers_backup_export' END,p.oid,'EXECUTE')) <> 3
+     OR NOT coalesce(has_schema_privilege('butlers_backup_export',to_regnamespace('perception_backup'),'USAGE'),false)
+     OR NOT coalesce(has_schema_privilege('butlers_backup_restore',to_regnamespace('perception_backup'),'USAGE'),false)
+  THEN
+    RAISE EXCEPTION 'PERCEPTION backup authority is untrusted; restore is not certified';
+  END IF;
+END
+$perception_boundary$;
+SELECT :'perception_history_declared'::boolean =
+  (to_regnamespace('perception_private') IS NOT NULL OR EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='public' AND c.relname IN
+      ('timeline','situation_slots','owner_modes','perception_conditions','perception_suppressions')))
+  AS perception_coverage_matches \gset
+\if :perception_coverage_matches
+\if :perception_history_declared
+SELECT count(*) FROM perception_backup.export_schema_v1();
+\else
+\echo '[restore] perception history absent: ordinary/dark artifact, not complete private-history certification'
+\endif
+\else
+DO $$ BEGIN RAISE EXCEPTION 'declared perception history/schema is absent or inconsistent'; END $$;
+\endif
+\endif
+PERCEPTION_AUDIT_SQL
+
 # A strict scoped importer failure still cannot skip the existing ownership
 # diagnosis. Preserve that audit, then refuse certification of incomplete data.
 if [[ "$RESTORE_DATA_FAILED" == true ]]; then
@@ -545,8 +691,8 @@ BEGIN
    AND 3=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid AND p.proowner=boot.oid
     AND p.proname IN('install_interface','finalize_interface','deactivate_interface')
     AND p.pronargs=0 AND p.prorettype='void'::regtype AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[])
-   AND 10=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid)
-   AND 7=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
+   AND 15=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid)
+   AND 12=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
     WHERE p.pronamespace=n.oid AND own.rolname='dashboard_attention_owner' AND p.prosecdef AND p.provolatile='v'
      AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
      AND (p.oid,p.prorettype) IN (VALUES
@@ -556,10 +702,16 @@ BEGIN
       (to_regprocedure('dashboard_attention.evaluate(jsonb)'),'jsonb'::regtype),
       (to_regprocedure('dashboard_attention.final_claim(text,uuid,timestamp with time zone)'),'boolean'::regtype),
       (to_regprocedure('dashboard_attention.remember(uuid,jsonb)'),'boolean'::regtype),
-      (to_regprocedure('dashboard_attention.candidate_origin(uuid)'),'jsonb'::regtype)))
-   AND 5=(SELECT count(*) FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
+      (to_regprocedure('dashboard_attention.candidate_origin(uuid)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.owner_channel_list()'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.owner_channel_revoke(uuid)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.owner_channel_propose(jsonb)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.decay_clauses()'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.decay_apply(jsonb)'),'jsonb'::regtype)))
+   AND 7=(SELECT count(*) FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
     WHERE c.oid IN(to_regclass('dashboard_attention.tickets'),to_regclass('dashboard_attention.stamps'),
-     to_regclass('dashboard_attention.candidate_causes'),to_regclass('dashboard_attention.final_claims'),to_regclass('public.break_through_clauses'))
+     to_regclass('dashboard_attention.candidate_causes'),to_regclass('dashboard_attention.final_claims'),to_regclass('public.break_through_clauses'),
+     to_regclass('dashboard_attention.reach_proposals'),to_regclass('dashboard_attention.clause_decay'))
      AND c.relkind='r' AND own.rolname='dashboard_attention_owner'
      AND (c.oid<>to_regclass('dashboard_attention.final_claims') OR
       (SELECT string_agg(attname,',' ORDER BY attnum) FROM pg_attribute

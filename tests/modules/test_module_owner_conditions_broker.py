@@ -194,7 +194,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_resolves_active_condition(
         self, module, mock_mcp, monkeypatch
     ):
-        """REQ-005 scenario "Resolving a condition via MCP"."""
+        """REQ-owner-condition-ledger-005 scenario "Resolving a condition via MCP"."""
         from butlers.core import owner_conditions as owner_conditions_module
         from butlers.core.condition_ledger import ConditionTransition
 
@@ -241,7 +241,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_missing_condition_is_not_found(
         self, module, mock_mcp, monkeypatch
     ):
-        """REQ-005 scenario "Resolving a condition that does not exist"."""
+        """REQ-owner-condition-ledger-005 scenario "Resolving a condition that does not exist"."""
         from butlers.core import owner_conditions as owner_conditions_module
 
         async def _fake_resolve(pool, **kwargs):
@@ -268,7 +268,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_invalid_reason_rejected_without_db_write(
         self, module, mock_mcp, bad_reason
     ):
-        """REQ-005 scenario "Invalid resolution reason is rejected".
+        """REQ-owner-condition-ledger-005 scenario "Invalid resolution reason is rejected".
 
         The rejection must happen before any pool access, so the assertion is
         on the pool mock itself rather than on the returned envelope alone.
@@ -294,7 +294,7 @@ class TestResolveOwnerConditionTool:
     async def test_req_owner_condition_ledger_005_spec_vocabulary_is_accepted(
         self, module, mock_mcp, monkeypatch, reason
     ):
-        """Every reason REQ-005 names is accepted and echoed back."""
+        """Every reason REQ-owner-condition-ledger-005 names is accepted and echoed back."""
         from butlers.core import owner_conditions as owner_conditions_module
 
         async def _fake_resolve(pool, **kwargs):

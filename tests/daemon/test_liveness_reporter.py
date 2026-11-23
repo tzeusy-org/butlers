@@ -28,6 +28,7 @@ import pytest
 
 from butlers.config import ButlerConfig, ConfigError, SchedulerConfig, load_config
 from butlers.daemon import ButlerDaemon
+from butlers.testing.daemon import write_butler_config
 
 pytestmark = pytest.mark.unit
 
@@ -66,125 +67,6 @@ def _make_butler_toml(
         lines += ["", "[butler.scheduler]"] + scheduler_lines
     (tmp_path / "butler.toml").write_text("\n".join(lines))
     return tmp_path
-
-
-def _make_runtime_config_row(butler_name: str = "test-butler") -> dict:
-    """Return a dict-like row for the runtime_config table, as returned by asyncpg.fetchrow."""
-    return {
-        "butler_name": butler_name,
-        "core_groups": None,
-        "catalog_read_sensitivity": "normal",
-        "max_concurrent": 3,
-        "max_queued": 10,
-        "seeded_at": None,
-        "updated_at": None,
-    }
-
-
-def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
-    """Return an async side_effect for pool.fetchrow that returns runtime_config rows
-    for runtime_config queries and None for all other queries."""
-
-    async def _fetchrow(query: str, *args, **kwargs):
-        if "runtime_config" in query:
-            return _make_runtime_config_row(butler_name)
-        return None
-
-    return _fetchrow
-
-
-def _patch_infra():
-    """Return patches for all infrastructure dependencies used by ButlerDaemon.start()."""
-    mock_conn = AsyncMock()
-    # asyncpg uses synchronous factories for both asynchronous contexts.
-    transaction = MagicMock()
-    transaction.__aenter__ = AsyncMock(return_value=None)
-    transaction.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=transaction)
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock()
-    # Support `async with pool.acquire() as conn:` pattern
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.execute = AsyncMock(return_value=None)
-    mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
-    mock_pool.fetchval = AsyncMock(return_value=None)
-    mock_pool.fetch = AsyncMock(return_value=[])
-
-    mock_db = MagicMock()
-    mock_db.provision = AsyncMock()
-    mock_db.connect = AsyncMock(return_value=mock_pool)
-    mock_db.close = AsyncMock()
-    mock_db.pool = mock_pool
-    mock_db.user = "postgres"
-    mock_db.password = "postgres"
-    mock_db.host = "localhost"
-    mock_db.port = 5432
-    mock_db.db_name = "butlers"
-
-    mock_audit_db = MagicMock()
-    mock_audit_db.connect = AsyncMock()
-    mock_audit_db.close = AsyncMock()
-    mock_audit_db.pool = AsyncMock()
-
-    _db_call_count = 0
-
-    def _db_from_env_factory(db_name: str) -> MagicMock:
-        nonlocal _db_call_count
-        _db_call_count += 1
-        # First call is the main butler DB; second is the audit pool
-        if _db_call_count == 1:
-            return mock_db
-        return mock_audit_db
-
-    mock_spawner = MagicMock()
-    mock_spawner.stop_accepting = MagicMock()
-    mock_spawner.drain = AsyncMock()
-
-    return {
-        "db_from_env": patch(
-            "butlers.lifecycle.Database.from_env", side_effect=_db_from_env_factory
-        ),
-        "run_migrations": patch("butlers.lifecycle.run_migrations", new_callable=AsyncMock),
-        "validate_credentials": patch("butlers.lifecycle.validate_credentials"),
-        "validate_module_credentials": patch(
-            "butlers.lifecycle.validate_module_credentials_async",
-            new_callable=AsyncMock,
-            return_value={},
-        ),
-        "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
-        "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "FastMCP": patch("butlers.lifecycle.FastMCP"),
-        "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "build_runtime_adapter": patch(
-            "butlers.lifecycle.build_runtime_adapter",
-            return_value=type(
-                "MockAdapter",
-                (),
-                {
-                    "binary_name": "claude",
-                    "__init__": lambda self, **kwargs: None,
-                },
-            )(),
-        ),
-        "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
-        "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
-        "connect_switchboard": patch.object(
-            ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
-        ),
-        "recover_route_inbox": patch.object(
-            ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
-        ),
-        "mock_db": mock_db,
-        "mock_audit_db": mock_audit_db,
-        "mock_pool": mock_pool,
-        "mock_spawner": mock_spawner,
-    }
 
 
 def _ok_response() -> httpx.Response:
@@ -261,49 +143,56 @@ class TestLivenessReporterConfig:
 # ---------------------------------------------------------------------------
 
 
-class TestLivenessReporterLifecycle:
-    """Verify liveness reporter task creation and cancellation."""
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_real_boot_starts_the_reporter_and_shutdown_clears_it(
+    booted_daemon, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In legacy mode the real startup launches the reporter; the real shutdown clears it."""
+    monkeypatch.delenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", raising=False)
+    booted = await booted_daemon(write_butler_config(tmp_path, "general"))
+    daemon = booted.daemon
+    assert isinstance(daemon._liveness_reporter_task, asyncio.Task)
 
-    async def _start_daemon(self, butler_dir: Path) -> ButlerDaemon:
-        patches = _patch_infra()
-        with (
-            patches["db_from_env"],
-            patches["run_migrations"],
-            patches["validate_credentials"],
-            patches["validate_module_credentials"],
-            patches["init_telemetry"],
-            patches["sync_schedules"],
-            patches["FastMCP"],
-            patches["Spawner"],
-            patches["build_runtime_adapter"],
-            patches["shutil_which"],
-            patches["start_mcp_server"],
-            patches["connect_switchboard"],
-            patches["recover_route_inbox"],
-        ):
-            daemon = ButlerDaemon(butler_dir)
-            await daemon.start()
-        return daemon
+    await booted.shutdown()
 
-    async def test_liveness_reporter_task_lifecycle(self, tmp_path: Path) -> None:
-        """Task created on start (for any butler); cleared to None after shutdown."""
-        # Regular butler
-        daemon = await self._start_daemon(_make_butler_toml(tmp_path))
-        try:
-            assert daemon._liveness_reporter_task is not None
-            assert isinstance(daemon._liveness_reporter_task, asyncio.Task)
-        finally:
-            await daemon.shutdown()
-        assert daemon._liveness_reporter_task is None
+    assert daemon._liveness_reporter_task is None
 
-        # Switchboard also gets a liveness reporter
-        subdir = tmp_path / "sb"
-        subdir.mkdir()
-        daemon2 = await self._start_daemon(_make_butler_toml(subdir, name="switchboard"))
-        try:
-            assert daemon2._liveness_reporter_task is not None
-        finally:
-            await daemon2.shutdown()
+
+async def _run_readiness(
+    butler_dir: Path, *, registered: bool
+) -> tuple[ButlerDaemon, AsyncMock, AsyncMock]:
+    """Run the daemon's own readiness phase on a DB-free host.
+
+    The reporter loop and the epoch registration are the phase's collaborators, so
+    they are stand-ins on this daemon; the phase's choices are the subject
+    (bu-rvgzmf.2).
+    """
+    import butlers.lifecycle as lifecycle
+    from butlers.testing.tool_host import host_tools
+
+    daemon = (await host_tools(butler_dir, pool=AsyncMock())).daemon
+    reporter = AsyncMock()
+    registration = AsyncMock(return_value=registered)
+    daemon._liveness_reporter_loop = reporter
+    daemon._register_boot_epoch = registration
+    daemon._retry_boot_registration = AsyncMock()
+    state = lifecycle.StartupState()
+    state.pool = daemon.db.pool
+    await lifecycle._startup_readiness(daemon, state)
+    await asyncio.sleep(0)
+    return daemon, reporter, registration
+
+
+async def _cancel(*tasks: asyncio.Task | None) -> None:
+    for task in tasks:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+class TestLivenessReporterReadiness:
+    """The readiness phase picks the liveness writer by mode, for any butler."""
 
     # Spec: REQ-butler-control-plane-liveness-006
     async def test_receiver_mode_retires_legacy_writer_without_changing_boot_admission(
@@ -311,55 +200,41 @@ class TestLivenessReporterLifecycle:
     ) -> None:
         flag = "BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER"
         # Only the exact routing cutover value selects receiver authority.
-        # A planted reporter must actually execute in each retained legacy mode.
-        for index, value in enumerate(("0", "true", "")):
+        # A planted reporter must actually execute in each retained legacy mode,
+        # for an ordinary butler and the Switchboard alike.
+        for index, (value, name) in enumerate(
+            (("0", "test-butler"), ("true", "test-butler"), ("", "switchboard"))
+        ):
             monkeypatch.setenv(flag, value)
             legacy_dir = tmp_path / f"legacy-{index}"
             legacy_dir.mkdir()
-            reporter = AsyncMock()
-            with patch.object(ButlerDaemon, "_liveness_reporter_loop", reporter):
-                legacy = await self._start_daemon(_make_butler_toml(legacy_dir))
-                try:
-                    assert isinstance(legacy._liveness_reporter_task, asyncio.Task)
-                    await asyncio.sleep(0)
-                    reporter.assert_awaited_once()
-                finally:
-                    await legacy.shutdown()
-                assert legacy._liveness_reporter_task is None
+            legacy, reporter, _ = await _run_readiness(
+                _make_butler_toml(legacy_dir, name=name), registered=True
+            )
+            assert isinstance(legacy._liveness_reporter_task, asyncio.Task)
+            reporter.assert_awaited_once()
+            await _cancel(legacy._liveness_reporter_task)
 
         # The obsolete writer is absent for both kinds of daemon in receiver mode.
-        # Successful and failed boot admission still determine readiness, and the
-        # internal scheduler starts independently of either liveness writer.
+        # Successful and failed boot admission still determine readiness.
         monkeypatch.setenv(flag, "1")
         for index, (name, registered) in enumerate(
             (("test-butler", True), ("switchboard", True), ("test-butler", False))
         ):
             receiver_dir = tmp_path / f"receiver-{index}"
             receiver_dir.mkdir()
-            reporter = AsyncMock()
-            registration = AsyncMock(return_value=registered)
-            with (
-                patch.object(ButlerDaemon, "_liveness_reporter_loop", reporter),
-                patch.object(ButlerDaemon, "_register_boot_epoch", registration),
-            ):
-                receiver = await self._start_daemon(_make_butler_toml(receiver_dir, name=name))
-                try:
-                    assert receiver._liveness_reporter_task is None
-                    registration.assert_awaited_once()
-                    assert receiver._accepting_connections is registered
-                    assert isinstance(receiver._scheduler_loop_task, asyncio.Task)
-                    assert not receiver._scheduler_loop_task.done()
-                    if registered:
-                        assert receiver._boot_registration_task is None
-                    else:
-                        assert isinstance(receiver._boot_registration_task, asyncio.Task)
-                    await asyncio.sleep(0)
-                    reporter.assert_not_awaited()
-                finally:
-                    await receiver.shutdown()
-                assert receiver._liveness_reporter_task is None
-                assert receiver._scheduler_loop_task is None
+            receiver, reporter, registration = await _run_readiness(
+                _make_butler_toml(receiver_dir, name=name), registered=registered
+            )
+            assert receiver._liveness_reporter_task is None
+            registration.assert_awaited_once()
+            assert receiver._accepting_connections is registered
+            if registered:
                 assert receiver._boot_registration_task is None
+            else:
+                assert isinstance(receiver._boot_registration_task, asyncio.Task)
+            reporter.assert_not_awaited()
+            await _cancel(receiver._boot_registration_task)
 
 
 # ---------------------------------------------------------------------------
