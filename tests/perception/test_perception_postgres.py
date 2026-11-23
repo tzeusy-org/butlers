@@ -756,6 +756,31 @@ def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
             "effect_id": str(EVIDENCE),
             "status_set": ["succeeded", "failed", "cancelled", "unknown"],
         },
+        # REQ-owner-watches-001: the M7 leaves, accepted and refused as the Python validator does.
+        {
+            "tag": "expectation",
+            "expectation_kind": "expect.window",
+            "subject": str(OWNER),
+            "deviation": "missed",
+        },
+        {"tag": "routine_deviation", "routine_id": str(OWNER)},
+        {"tag": "condition", "source": "finance:bill-overdue", "state": "opened"},
+        {"tag": "mode", "mode": "asleep", "change": "entered"},
+        {
+            "tag": "read_check",
+            "capability": "finance.balance",
+            "field": "available",
+            "op": "lt",
+            "value": 100,
+        },
+        {
+            "tag": "read_check",
+            "capability": "finance.balance",
+            "field": "flagged",
+            "op": "eq",
+            "value": True,
+        },
+        {"tag": "bundle", "bundle_id": "delay-commitment"},
     ]
     for predicate in [
         *leaves,
@@ -777,9 +802,19 @@ def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
                 # the separate non-null UUID variant above must still pass.
                 if predicate["tag"] == "transition" and field == "subject" and invalid is None:
                     continue
+                # A read_check compares against a number, boolean or string.
+                if predicate["tag"] == "read_check" and field == "value" and invalid in (False, 1):
+                    continue
                 invalid_predicates.append({**predicate, field: invalid})
         for field in predicate:
-            if field not in {"subject", "subject_id", "goal_id", "binding_ref", "effect_id"}:
+            if field not in {
+                "subject",
+                "subject_id",
+                "goal_id",
+                "binding_ref",
+                "effect_id",
+                "routine_id",
+            }:
                 continue
             invalid_predicates.append({**predicate, field: "not-a-uuid"})
     invalid_predicates.extend(
@@ -787,6 +822,20 @@ def test_bindings_remain_dark_immutable_finite_and_source_bound(db):
             {**leaves[1], "from": "not-a-state"},
             {**leaves[1], "to": "not-a-state"},
             {**leaves[3], "outcome": "not-an-outcome"},
+            {**leaves[6], "deviation": "late"},
+            {**leaves[6], "expectation_kind": "Has Spaces"},
+            {**leaves[8], "state": "open"},
+            {**leaves[8], "source": "x" * 129},
+            {**leaves[9], "mode": "party"},
+            {**leaves[9], "change": "toggled"},
+            {**leaves[10], "op": "like"},
+            {**leaves[10], "capability": "select 1; --"},
+            {**leaves[10], "value": True},  # an ordered comparison needs a number
+            {**leaves[10], "value": "100"},
+            {**leaves[11], "value": "x" * 129},
+            {**leaves[11], "value": {"k": 1}},
+            {**leaves[10], "template": "free text"},
+            {**leaves[12], "bundle_id": ""},
             *[
                 {**leaves[5], "status_set": value}
                 for value in (
@@ -1088,3 +1137,30 @@ def test_fixed_backup_catalog_rejects_drift_and_exports_all_ten(db):
     assert call(
         db, "SELECT count(*) FROM perception_backup.export_schema_v1()", {}, "butlers_backup_export"
     ) == len(ddl)
+
+
+def test_sql_and_python_predicate_validators_give_the_same_verdict(db):
+    """REQ-owner-watches-001: valid_predicate and ast.validate agree on every corpus document.
+
+    Includes 18 leaves via all -> 2 x any -> 9, the largest valid document (jsonb text spaces
+    every ':' and ',' while Python measures compact bytes) and non-canonical UUID spellings.
+    """
+    from butlers.conditions import predicate as ast
+    from tests.perception.predicate_corpus import Raw, corpus, text_of
+
+    for name, document, valid in corpus():
+        try:
+            ast.loads(document) if isinstance(document, Raw) else ast.validate(document)
+            python = True
+        except ast.PredicateError:
+            python = False
+        try:
+            with db.begin_nested():
+                sql = db.execute(
+                    text("SELECT perception_private.valid_predicate(CAST(:p AS jsonb))"),
+                    {"p": text_of(document)},
+                ).scalar_one()
+        except DBAPIError:
+            sql = False  # a refusing raise (e.g. a malformed instant) is a refusal
+        assert python is valid, f"{name}: Python verdict drifted from the corpus"
+        assert bool(sql) is python, f"{name}: SQL={sql} Python={python}"
