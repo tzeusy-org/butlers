@@ -91,8 +91,8 @@ class WatchRunner:
         instance = await self.service.instance(watch)
         snapshot = self.snapshot_for(now)
         if instance is None:
-            await self.service._register(watch, snapshot)
-            report.repaired += 1
+            if await self.service.repair(watch, snapshot):
+                report.repaired += 1
             return
         if instance.state is not State.FIRED:
             return
