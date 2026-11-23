@@ -583,3 +583,64 @@ class TestRegistrationRefusal:
             guarded.propose_create({"predicate": predicate(op="lt")}, now=NOW)
         card = guarded.propose_create({"predicate": predicate()}, now=NOW)
         assert card.sources == (SOURCE,)
+
+
+class TestHealthSets:
+    async def test_a_failed_poll_marks_the_capability_unhealthy_never_healthy(self, service):
+        await make_watch(service)
+        report = await ReadFeed(Transport(error=ConnectionError("down"))).poll(service, NOW)
+        assert report.healthy == frozenset() and report.unhealthy == {CAP}
+
+
+class HealthPool(Pool):
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, sql, *args):
+        self.calls.append((" ".join(sql.split())[:40], args))
+        return "OK"
+
+
+class TestFeedHealthPublish:
+    async def test_the_tick_publishes_healthy_and_clears_unhealthy_capabilities(self, service):
+        from butlers.watches import tick
+
+        await make_watch(service)
+        pool = HealthPool()
+        feed = ReadFeed(Transport())
+        await tick.run_tick(
+            pool,
+            now=NOW,
+            live=True,
+            providers=providers_with(service, feed),
+            deliver_for=lambda p: Recorder(),
+        )
+        assert any(a == ("owner_watch:feed_health", [CAP]) for _, a in pool.calls)
+        bad = HealthPool()
+        await tick.run_tick(
+            bad,
+            now=NOW,
+            live=True,
+            providers=providers_with(service, ReadFeed(Transport(error=OSError("x")))),
+            deliver_for=lambda p: Recorder(),
+        )
+        cleared = [c for c in bad.calls if c[0].startswith("UPDATE state SET value")]
+        assert cleared and cleared[0][1] == ("owner_watch:feed_health", [CAP])
+        assert not any(c[0].startswith("INSERT INTO state") for c in bad.calls)
+
+    async def test_a_health_publish_failure_never_stops_the_tick(self, service):
+        from butlers.watches import tick
+
+        class Broken(Pool):
+            async def execute(self, sql, *args):
+                raise OSError("state unavailable")
+
+        await make_watch(service)
+        result = await tick.run_tick(
+            Broken(),
+            now=NOW,
+            live=True,
+            providers=providers_with(service, ReadFeed(Transport())),
+            deliver_for=lambda p: Recorder(),
+        )
+        assert result["status"] == "ok"

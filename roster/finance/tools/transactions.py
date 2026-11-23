@@ -1032,7 +1032,12 @@ async def _record_transaction(
         _alert_config = await get_large_transaction_alert_config(executor)
         _alert = evaluate_large_transaction_alert(stored_amount, merchant, _alert_config)
         if _alert is not None:
-            result["large_transaction_alert"] = _alert
+            # An owner watch that covers this amount tells the owner once, so the legacy flag
+            # is dropped only on a positive answer; anything else keeps the flag.
+            from butlers.tools.finance.alerts import owner_watch_covers  # noqa: PLC0415
+
+            if not await owner_watch_covers(executor, currency, stored_amount):
+                result["large_transaction_alert"] = _alert
     except Exception:  # noqa: BLE001
         logger.debug(
             "record_transaction: large_transaction alert evaluation failed for txn %s "

@@ -21,6 +21,8 @@ subscription's next renewal -- see finance.obligation_ledger.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 from datetime import UTC, date, datetime, timedelta
@@ -339,6 +341,107 @@ def evaluate_large_transaction_alert(
         "merchant": merchant,
         "exceeds_by": float(amount_abs - threshold_dec),
     }
+
+
+# ---------------------------------------------------------------------------
+# Owner-watch cover (bu-4c7nvp.1.5 S7)
+# ---------------------------------------------------------------------------
+#
+# Trust: the Switchboard is the watch trust root. Finance trusts the cover answer and fails open
+# on anything else, so the legacy flag still fires when the answer is missing, wrong-typed, late
+# or an error. The check never raises into the caller.
+
+_COVER_TIMEOUT_S = 2.0
+_COVER_SQL = "SELECT public.owner_watch_covers_large_transaction($1::text, $2::numeric)"
+
+
+def _count_cover_failure() -> None:
+    try:
+        from opentelemetry import metrics
+
+        metrics.get_meter("butlers").create_counter(
+            name="butlers.finance.owner_watch_cover_failed",
+            description="Owner-watch cover reads that failed (the legacy alert fired instead)",
+            unit="reads",
+        ).add(1)
+    except Exception:  # noqa: BLE001
+        logger.debug("owner_watch_cover_failed counter unavailable", exc_info=True)
+
+
+async def owner_watch_covers(executor: Any, currency: str, amount: Decimal | float | int) -> bool:
+    """True only when the Switchboard says a live owner watch covers this transaction.
+
+    Any other outcome (false, NULL, error, timeout, missing function or grant) is ``False``: the
+    caller keeps its flag. A connection runs the read in a savepoint, so a failure cannot poison
+    the caller's transaction.
+    """
+    try:
+        args = (str(currency), Decimal(str(abs(Decimal(str(amount))))))
+        if hasattr(executor, "transaction"):
+
+            async def _read() -> Any:
+                async with executor.transaction():
+                    return await executor.fetchval(_COVER_SQL, *args)
+
+            answer = await asyncio.wait_for(_read(), _COVER_TIMEOUT_S)
+        else:
+            answer = await asyncio.wait_for(executor.fetchval(_COVER_SQL, *args), _COVER_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "owner_watch_cover_unavailable error=%s; legacy alert fires", type(exc).__name__
+        )
+        _count_cover_failure()
+        return False
+    return answer is True
+
+
+#: Alert types that an owner watch supersedes: the watch is the one voice for them.
+_SUPERSEDED_ALERT_TYPES = ("price_change", "budget_exceeded", "new_merchant")
+
+
+def _proposal_digest(watch: dict[str, Any]) -> str:
+    canonical = json.dumps(watch, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def alert_watch_proposals(pool: asyncpg.Pool) -> dict[str, Any]:
+    """Propose owner watches for the configured alerts. Read-only; creates nothing.
+
+    An enabled ``large_transaction`` alert with a numeric threshold proposes one ``read_check``
+    watch (same threshold and currency) for the Switchboard to park as an owner card. A disabled
+    alert proposes nothing. The other alert types are superseded and propose no watch. ``digest``
+    is stable for the same proposal, so parking it twice is idempotent.
+    """
+    listing = await alert_list(pool)
+    proposals: list[dict[str, Any]] = []
+    for alert in listing["alerts"]:
+        kind = alert["type"]
+        entry: dict[str, Any] = {"type": kind, "fact_id": alert["fact_id"]}
+        if kind in _SUPERSEDED_ALERT_TYPES:
+            entry.update(status="superseded", watch=None, digest=None)
+        elif kind != "large_transaction" or not alert.get("enabled", True):
+            entry.update(status="not_proposed", watch=None, digest=None)
+        else:
+            threshold = alert.get("threshold")
+            currency = str(alert.get("currency") or "").lower()
+            if (
+                isinstance(threshold, bool)
+                or not isinstance(threshold, int | float)
+                or len(currency) != 3
+                or not currency.isalpha()
+            ):
+                entry.update(status="not_proposed", watch=None, digest=None)
+            else:
+                watch = {
+                    "tag": "read_check",
+                    "capability": f"finance.transaction_amount.{currency}",
+                    "field": "amount",
+                    "op": "gt",
+                    "value": threshold,
+                }
+                entry.update(status="proposed", watch=watch, digest=_proposal_digest(watch))
+        proposals.append(entry)
+    return {"proposals": proposals, "total": len(proposals)}
 
 
 # ---------------------------------------------------------------------------

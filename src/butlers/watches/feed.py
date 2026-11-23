@@ -317,3 +317,42 @@ def _sound_for(cap: ReadCapability, instance: Instance) -> bool:
         for leaf in leaves(instance.predicate)
         if leaf.tag == "read_check" and leaf.body["capability"] == cap.name
     )
+
+
+FEED_HEALTH_KEY = "owner_watch:feed_health"
+
+
+class FeedHealthWriter:
+    """Publishes which capabilities polled fully OK, on the database's clock (never ours).
+
+    One Switchboard ``state`` row maps a capability to the time of its last fully successful
+    poll. Finance's cover answer (core_380) reads it and treats a stale or missing time as "not
+    live", so a dead feed stops suppressing the legacy flag within the window. A capability that
+    fails a poll is removed at once. The row holds only capability names and times.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def publish(self, healthy: frozenset[str], unhealthy: frozenset[str]) -> None:
+        if unhealthy:
+            await self._pool.execute(
+                "UPDATE state SET value = value - $2::text[], updated_at = now(), "
+                "version = version + 1 WHERE key = $1",
+                FEED_HEALTH_KEY,
+                sorted(unhealthy),
+            )
+        if healthy:
+            await self._pool.execute(
+                """
+                INSERT INTO state (key, value, updated_at, version)
+                SELECT $1, jsonb_object_agg(c, to_char(now() AT TIME ZONE 'UTC',
+                           'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')), now(), 1
+                FROM unnest($2::text[]) AS c
+                ON CONFLICT (key) DO UPDATE
+                   SET value = state.value || EXCLUDED.value,
+                       updated_at = now(), version = state.version + 1
+                """,
+                FEED_HEALTH_KEY,
+                sorted(healthy),
+            )

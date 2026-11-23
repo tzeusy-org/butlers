@@ -1357,6 +1357,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         )
 
     @_tool("intelligence")
+    async def alert_watch_proposals() -> dict[str, Any]:
+        """Propose owner watches for the configured alerts (read-only, creates nothing).
+
+        An enabled "large_transaction" alert proposes one watch with the same threshold and
+        currency; price_change, budget_exceeded and new_merchant are superseded by watches and
+        propose none. Each proposal carries a stable digest so parking it twice is a no-op.
+
+        Returns: {proposals: [{type, fact_id, status, watch, digest}], total}
+        """
+        return await _alerts.alert_watch_proposals(module._get_pool())
+
+    @_tool("intelligence")
     async def alert_list() -> dict[str, Any]:
         """List all configured alert rules.
 

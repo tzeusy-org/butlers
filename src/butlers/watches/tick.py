@@ -20,6 +20,7 @@ from typing import Any, Protocol
 
 from butlers.watches.approval import PROVIDERS, Providers, sweep_card_state
 from butlers.watches.delivery import InsightDelivery
+from butlers.watches.feed import FeedHealthWriter
 from butlers.watches.health import (
     DEGRADED,
     FEED_UNREADABLE,
@@ -65,7 +66,7 @@ async def run_tick(
         await _degrade(reporter, reason)
         return {"status": BLIND}
     await _sweep_cards(pool, moment)
-    feed_ok = await _poll_feed(providers, service, moment)
+    feed_ok = await _poll_feed(providers, service, moment, pool)
     delivery = deliver_for(pool)
     runner = WatchRunner(service, delivery, lambda _now: snapshot)
     report = await runner.tick(moment)
@@ -76,7 +77,7 @@ async def run_tick(
     return {"status": "ok", **asdict(report), "feed_ok": feed_ok}
 
 
-async def _poll_feed(providers: Providers, service: Any, now: datetime) -> bool:
+async def _poll_feed(providers: Providers, service: Any, now: datetime, pool: Any) -> bool:
     """Poll the read feed so a reading can fire a watch before the runner claims fires.
 
     False when any poll failed or was skipped for the call budget (the watches reading it are
@@ -90,6 +91,10 @@ async def _poll_feed(providers: Providers, service: Any, now: datetime) -> bool:
     except Exception:
         logger.warning("owner_watch_feed_failed", exc_info=True)
         return False
+    try:
+        await FeedHealthWriter(pool).publish(report.healthy, report.unhealthy)
+    except Exception:
+        logger.warning("owner_watch_feed_health_unpublished", exc_info=True)
     return report.failed == 0 and report.skipped == 0
 
 
