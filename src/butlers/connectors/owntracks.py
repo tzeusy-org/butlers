@@ -58,6 +58,7 @@ import base64
 import binascii
 import hmac
 import logging
+import math
 import os
 import re
 import signal
@@ -67,6 +68,7 @@ from datetime import UTC, date, datetime
 from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal
 
+import asyncpg.exceptions
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -828,6 +830,73 @@ def build_waypoints_envelope(
 _LOCATION_EVIDENCE_TABLE = "connectors.owntracks_points"
 
 
+class LocationPointRejected(Exception):
+    """A location point that can never be stored: invalid or refused as data.
+
+    Carries a reason category only, never content. The caller acknowledges the point without
+    ingesting it, because a resend would be rejected identically and OwnTracks resends in
+    order, so one bad point would otherwise stall every later one (bu-uhbhzq.4).
+    """
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
+def _strip_nul(value: Any) -> Any:
+    """Return ``value`` with NUL characters removed from every string, key and element.
+
+    PostgreSQL text and jsonb cannot hold U+0000; a phone can send one in a free-text field.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        cleaned = {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+        unchanged = all(
+            k is ck and value[k] is cv
+            for (k, cv), ck in zip(cleaned.items(), value.keys(), strict=True)
+        )
+        return value if unchanged else cleaned
+    if isinstance(value, list):
+        cleaned_list = [_strip_nul(v) for v in value]
+        same = all(a is b for a, b in zip(cleaned_list, value, strict=True))
+        return value if same else cleaned_list
+    return value
+
+
+def location_point_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """Validate and cast the numeric fields of a location payload.
+
+    Raises ``LocationPointRejected`` (category ``malformed_numeric`` or ``out_of_range``).
+    """
+    tst, lat, lon, acc = (
+        body.get("tst"),
+        body.get("lat", 0.0),
+        body.get("lon", 0.0),
+        body.get("acc"),
+    )
+    for raw in (tst, lat, lon, acc):
+        if isinstance(raw, bool):
+            raise LocationPointRejected("malformed_numeric")
+    try:
+        tst_i = int(tst)  # type: ignore[arg-type]
+        lat_f, lon_f = float(lat), float(lon)
+        acc_f = float(acc) if acc is not None else None
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise LocationPointRejected("malformed_numeric") from exc
+    if not all(math.isfinite(v) for v in (lat_f, lon_f) if v is not None) or (
+        acc_f is not None and not math.isfinite(acc_f)
+    ):
+        raise LocationPointRejected("malformed_numeric")
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lon_f <= 180.0):
+        raise LocationPointRejected("out_of_range")
+    try:
+        datetime.fromtimestamp(tst_i, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LocationPointRejected("out_of_range") from exc
+    return {"tst": tst_i, "lat": lat_f, "lon": lon_f, "accuracy": acc_f}
+
+
 async def persist_location_point(
     pool: asyncpg.Pool,
     *,
@@ -847,8 +916,11 @@ async def persist_location_point(
     This table is the Chronicler-readable evidence surface for
     ``owntracks.points`` (RFC 0014 §D9).  The connector writes here
     directly (connector_writer role) on every accepted location event.
-    Errors are caught and logged; failure to persist does NOT abort the
-    ingest submission path.
+    The caller commits this row before it submits, checkpoints or
+    acknowledges (bu-uhbhzq.4). NUL characters are stripped from text first.
+    A point the server refuses as data (SQLSTATE class 22) raises
+    ``LocationPointRejected``; any other error, including a client-side encode error,
+    propagates, so the webhook answers 503. A scrub failure is logged and skipped.
 
     Args:
         pool: asyncpg connection pool (connector_writer role).
@@ -864,16 +936,34 @@ async def persist_location_point(
         True if a new row was inserted; False if a duplicate was skipped.
     """
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
-    ts = datetime.fromtimestamp(tst, tz=UTC)
+    try:
+        ts = datetime.fromtimestamp(tst, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise LocationPointRejected("out_of_range") from exc
+    raw_payload = _strip_nul(raw_payload)
+    trigger = _strip_nul(trigger)
     try:
         raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
     except Exception:
         logger.warning("owntracks: bearer scrub failed; evidence write skipped")
         return False
 
-    result = await pool.fetchval(
-        f"""
-        INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+    try:
+        result = await pool.fetchval(
+            f"""
+            INSERT INTO {_LOCATION_EVIDENCE_TABLE} (
+                idempotency_key,
+                ts,
+                lat,
+                lon,
+                accuracy,
+                trigger,
+                endpoint_identity,
+                raw_payload
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (idempotency_key) DO NOTHING
+            RETURNING id
+            """,
             idempotency_key,
             ts,
             lat,
@@ -881,20 +971,16 @@ async def persist_location_point(
             accuracy,
             trigger,
             endpoint_identity,
-            raw_payload
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING id
-        """,
-        idempotency_key,
-        ts,
-        lat,
-        lon,
-        accuracy,
-        trigger,
-        endpoint_identity,
-        raw_payload,
-    )
+            raw_payload,
+        )
+    except asyncpg.exceptions.PostgresError as exc:
+        # Only a server-side class 22 (data exception) is the point's fault: a resend would
+        # fail the same way. A client-side encode error (empty ``__dict__``, no server
+        # fields) is a code or codec bug, and every other error (connection, serialization,
+        # missing table, privilege) is transient or operator-fixable: both propagate (503).
+        if str(vars(exc).get("sqlstate", "")).startswith("22"):
+            raise LocationPointRejected("data_rejected") from exc
+        raise
     return result is not None
 
 
@@ -1420,6 +1506,34 @@ class OwnTracksConnector:
             )
             return
 
+        # Commit the durable location evidence (RFC 0014 §D9) BEFORE the submit, the
+        # checkpoint and the acknowledgement. A write failure propagates: the webhook
+        # answers 503, nothing is submitted, and the phone keeps the point. A submit
+        # failure below keeps the row; it is evidence, not a replay queue (bu-uhbhzq.4).
+        if payload_type == "location":
+            try:
+                fields = location_point_fields(body)  # validated whether or not a pool exists
+                if self._db_pool is not None:
+                    await persist_location_point(
+                        self._db_pool,
+                        endpoint_identity=device.endpoint_identity,
+                        trigger=body.get("t") or None,
+                        raw_payload=body,
+                        **fields,
+                    )
+            except LocationPointRejected as rejected:
+                # Content-blind: the reason category only. Acknowledged, not ingested.
+                device.metrics.record_error(
+                    f"point_rejected_{rejected.category}", "persist_location"
+                )
+                logger.warning(
+                    "OwnTracksConnector: location point rejected; acknowledged, not ingested "
+                    "(reason=%s endpoint=%s)",
+                    rejected.category,
+                    device.endpoint_identity,
+                )
+                return
+
         # Build envelope based on payload type
         envelope: dict[str, Any]
         if payload_type == "location":
@@ -1515,25 +1629,6 @@ class OwnTracksConnector:
         # Update checkpoint (timestamp-based)
         if tst is not None:
             await self._save_checkpoint(device, int(tst))
-
-        # Persist durable location evidence for Chronicler (RFC 0014 §D9)
-        if payload_type == "location" and self._db_pool is not None and tst is not None:
-            try:
-                await persist_location_point(
-                    self._db_pool,
-                    endpoint_identity=device.endpoint_identity,
-                    tst=int(tst),
-                    lat=float(body.get("lat", 0.0)),
-                    lon=float(body.get("lon", 0.0)),
-                    accuracy=float(body["acc"]) if body.get("acc") is not None else None,
-                    trigger=body.get("t") or None,
-                    raw_payload=body,
-                )
-            except Exception:
-                logger.warning(
-                    "OwnTracksConnector: failed to persist location evidence (non-fatal)",
-                    exc_info=True,
-                )
 
         # Flush filtered event buffer (task 6.4) and drain replay queue (task 6.5)
         # in the background: the webhook waits on this method, and a slow drain
@@ -1928,8 +2023,8 @@ async def run_owntracks_connector() -> None:
         pool_kwargs["setup"] = connector_setup_role
         # Register the JSONB codec so dict payloads encode for jsonb columns
         # (e.g. owntracks_points.raw_payload). Without this, every evidence
-        # INSERT raises a DataError that persist_location_point swallows,
-        # silently dropping all location points. Mirrors steam/home_assistant.
+        # INSERT raises a DataError; the webhook now answers 503 on it (bu-uhbhzq.4),
+        # so the phone keeps every point. Mirrors steam/home_assistant.
         pool_kwargs["init"] = register_jsonb_codec
         try:
             db_pool = await asyncpg.create_pool(**pool_kwargs)

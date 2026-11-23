@@ -195,3 +195,207 @@ async def test_a_slow_ingest_answers_503_without_cancelling_the_ingest(monkeypat
         await asyncio.wait_for(finished.wait(), 1)
     finally:
         await _stop(connector)
+
+
+async def test_the_location_row_is_written_before_the_submit(monkeypatch) -> None:
+    order: list[str] = []
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        order.append("persist")
+        return True
+
+    async def call_tool(tool: str, payload: dict | None = None) -> dict:
+        if tool == "ingest":
+            order.append(tool)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(side_effect=call_tool), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 200
+        assert order == ["persist", "ingest"]
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_location_write_acknowledges_nothing(monkeypatch) -> None:
+    async def broken_persist(pool: Any, **kwargs: Any) -> bool:
+        raise OSError("connectors database unreachable")
+
+    monkeypatch.setattr(owntracks, "persist_location_point", broken_persist)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FakePool())
+    saved = AsyncMock()
+    connector._save_checkpoint = saved  # type: ignore[method-assign]
+    try:
+        response = await _post(connector, _POINT)
+
+        assert response.status_code == 503  # the phone keeps the point
+        assert _ingests(call_tool) == []  # nothing submitted
+        saved.assert_not_awaited()  # checkpoint unchanged
+    finally:
+        await _stop(connector)
+
+
+async def test_a_failed_submit_keeps_the_location_row(monkeypatch) -> None:
+    persisted: list[int] = []
+
+    async def fake_persist(pool: Any, **kwargs: Any) -> bool:
+        persisted.append(kwargs["tst"])
+        return True
+
+    monkeypatch.setattr(owntracks, "persist_location_point", fake_persist)
+    connector = _connector(AsyncMock(side_effect=_always_unreachable), _FakePool())
+    try:
+        assert (await _post(connector, _POINT)).status_code == 503
+        assert persisted == [_POINT["tst"]]  # evidence kept although the submit failed
+    finally:
+        await _stop(connector)
+
+
+def _asyncpg_exc(name: str) -> Exception:
+    import asyncpg.exceptions as pgx
+
+    cls = getattr(pgx, name)
+    if name in {"UntranslatableCharacterError", "DataError"}:
+        # As the server raises it: SQLSTATE and message fields set.
+        return cls.new({"M": "synthetic", "S": "ERROR", "C": cls.sqlstate})
+    return cls("synthetic")
+
+
+class _FailingPool(_FakePool):
+    """A pool whose evidence INSERT (``fetchval``) raises ``error``."""
+
+    def __init__(self, error: Exception | None) -> None:
+        super().__init__()
+        self.error = error
+        self.args_seen: list[tuple[Any, ...]] = []
+
+    async def fetchval(self, *args: Any) -> Any:
+        self.args_seen.append(args)
+        if self.error is not None:
+            raise self.error
+        return 1
+
+
+@pytest.mark.parametrize(
+    "error_name",
+    ["ConnectionDoesNotExistError", "SerializationError", "DeadlockDetectedError",
+     "UndefinedTableError", "UndefinedColumnError", "InsufficientPrivilegeError"],
+)  # fmt: skip
+async def test_transient_schema_and_privilege_errors_answer_503(error_name: str) -> None:
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FailingPool(_asyncpg_exc(error_name)))
+    try:
+        assert (await _post(connector, _POINT)).status_code == 503
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
+
+
+async def test_a_connection_error_answers_503() -> None:
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FailingPool(ConnectionError("down")))
+    try:
+        assert (await _post(connector, _POINT)).status_code == 503
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
+
+
+@pytest.mark.parametrize("error_name", ["UntranslatableCharacterError", "DataError"])
+async def test_a_data_rejected_point_is_acknowledged_not_ingested(error_name: str) -> None:
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, _FailingPool(_asyncpg_exc(error_name)))
+    recorded: list[tuple[str, str]] = []
+    try:
+        original = owntracks.ConnectorMetrics.record_error
+        owntracks.ConnectorMetrics.record_error = lambda self, t, o: recorded.append((t, o))  # type: ignore[method-assign]
+        try:
+            response = await _post(connector, _POINT)
+        finally:
+            owntracks.ConnectorMetrics.record_error = original  # type: ignore[method-assign]
+        assert response.status_code == 200 and response.json() == []
+        assert _ingests(call_tool) == []
+        assert ("point_rejected_data_rejected", "persist_location") in recorded
+    finally:
+        await _stop(connector)
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"tst": "soon"},
+        {"tst": None},
+        {"tst": True},
+        {"lat": "north"},
+        {"lat": 91.0},
+        {"acc": "bad"},
+    ],
+)
+async def test_a_malformed_point_is_acknowledged_not_ingested_and_counted(
+    patch: dict[str, Any],
+) -> None:
+    pool = _FailingPool(None)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, pool)
+    recorded: list[str] = []
+    original = owntracks.ConnectorMetrics.record_error
+    owntracks.ConnectorMetrics.record_error = lambda self, t, o: recorded.append(t)  # type: ignore[method-assign]
+    try:
+        response = await _post(connector, {**_POINT, **patch})
+    finally:
+        owntracks.ConnectorMetrics.record_error = original  # type: ignore[method-assign]
+        await _stop(connector)
+    assert response.status_code == 200 and response.json() == []
+    assert _ingests(call_tool) == [] and pool.args_seen == []
+    assert recorded and recorded[0].startswith("point_rejected_")
+
+
+async def test_a_nul_in_free_text_is_stripped_and_the_point_persisted() -> None:
+    pool = _FailingPool(None)
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, pool)
+    try:
+        body = {**_POINT, "SSID": "Cafe\x00Wifi", "inregions": ["Ho\x00me"], "t": "p\x00"}
+        assert (await _post(connector, body)).status_code == 200
+        (call,) = pool.args_seen
+        raw = next(a for a in call if isinstance(a, dict))
+        assert raw["SSID"] == "CafeWifi" and raw["inregions"] == ["Home"]
+        assert not any(isinstance(a, str) and "\x00" in a for a in call)
+        assert len(_ingests(call_tool)) == 1
+    finally:
+        await _stop(connector)
+
+
+def test_a_non_finite_coordinate_is_rejected() -> None:
+    for bad in (float("nan"), float("inf")):
+        with pytest.raises(owntracks.LocationPointRejected):
+            owntracks.location_point_fields({**_POINT, "lon": bad})
+
+
+async def test_a_client_side_encode_error_answers_503() -> None:
+    import asyncpg.exceptions as pgx
+
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    # Raised by asyncpg itself while encoding an argument: no server fields.
+    for error in (pgx.DataError("invalid input for query argument $8"), ValueError("x"),
+                  TypeError("x"), OverflowError("x")):  # fmt: skip
+        connector = _connector(call_tool, _FailingPool(error))
+        try:
+            assert (await _post(connector, _POINT)).status_code == 503
+            assert _ingests(call_tool) == []
+        finally:
+            await _stop(connector)
+
+
+async def test_a_malformed_point_is_rejected_even_without_a_database() -> None:
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, None)
+    try:
+        for bad in ({"tst": None}, {"tst": "soon"}, {"lat": 95.0}):
+            response = await _post(connector, {**_POINT, **bad})
+            assert response.status_code == 200
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)
