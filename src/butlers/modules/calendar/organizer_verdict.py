@@ -10,10 +10,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal
 
-VERDICT_VERSION: Final = 1
+VERDICT_VERSION: Final = 2
 SWEEP_BATCH: Final = 200  # events stamped per sync pass
 
-Verdict = Literal["owner", "known_entity", "known_domain", "first_contact", "blocked", "unknown"]
+Verdict = Literal[
+    "owner", "known_entity", "known_domain", "vouched", "first_contact", "blocked", "unknown"
+]
 IdentityClass = Literal["known_entity", "known_domain", "none"]
 LureBadge = Literal[
     "hidden_guest_list_large",
@@ -90,11 +92,14 @@ def organizer_verdict(
     event_type: str | None,
     conference_host: str | None,
     external_link_count: int,
+    owner_vouched: bool = False,
 ) -> OrganizerVerdict:
     """Return the organizer's verdict and lure badges.
 
     ``identity_class`` and ``policy_blocked`` are the results of the owner-owned lookups; ``None``
     means the lookup could not be read, which yields ``unknown`` rather than any ``known_*`` value.
+    ``owner_vouched`` is the owner's own Vouch on this address; it never overrides a block and
+    ranks below a known contact or domain, so it only lifts an otherwise first-contact organizer.
     """
     badges = lure_badges(
         organizer_email=organizer_email,
@@ -118,4 +123,6 @@ def organizer_verdict(
         return OrganizerVerdict("known_entity", badges)
     if identity_class == "known_domain":
         return OrganizerVerdict("known_domain", badges)
+    if owner_vouched:
+        return OrganizerVerdict("vouched", badges)
     return OrganizerVerdict("first_contact", badges)

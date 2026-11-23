@@ -50,6 +50,7 @@ _CASES: list[dict[str, Any] | None] = [
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "owner"},
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "blocked"},
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "first_contact"},
+    {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "vouched"},
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "unknown"},
     {"organizer": "sam@example.org", "attendees": [_att()], "organizer_verdict": "bogus"},
     {},

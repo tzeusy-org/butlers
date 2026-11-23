@@ -43,6 +43,7 @@ KEPT = {
     (f"{_W}/parse-quick-add", "post"),
     (f"{_W}/responses/{{command_id}}", "get"),
     (f"{_W}/respond", "post"),
+    (f"{_W}/organizer-decision", "post"),
     (f"{_W}/user-events", "post"),
     (f"{_W}/butler-events", "post"),
     (f"{_W}/butler-events/preview", "post"),

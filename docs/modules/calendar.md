@@ -152,7 +152,7 @@ holidays and birthdays sit beside the owner's own. Each `calendar_sources` row t
 Every provider event carries one trust verdict for its organizer, stamped into the event's
 `metadata` as `organizer_verdict`, `lure_badges` and `verdict_version`
 (REQ-module-calendar-039/040). The verdict is `owner`, `known_entity`, `known_domain`,
-`first_contact`, `blocked` or `unknown`. `organizer_verdict()` in
+`vouched`, `first_contact`, `blocked` or `unknown`. `organizer_verdict()` in
 `src/butlers/modules/calendar/organizer_verdict.py` is pure: it takes server-verified provider
 fields and the results of two owner-owned lookups, and has no parameter for a title, description,
 location or any other free text, so third-party text can never raise an invitation's trust.
@@ -187,6 +187,18 @@ location or any other free text, so third-party text can never raise an invitati
   time, verdict and lure badges only, and reports `issues_available = false` when a row has no
   verdict. Provider free/busy (`calendar_find_free_slots`) is the provider's own answer and is not
   affected.
+- **Vouch and Block.** `POST /api/calendar/workspace/organizer-decision` (owner-only; body is the
+  entry id and `vouch` or `block`, never an address) writes calendar-connector ingestion rules,
+  one per registered calendar endpoint in one transaction, and re-stamps the organizer's stored
+  events at once (REQ-module-calendar-042). The organizer address is read from the stored event.
+  Block writes `block` and Vouch writes `pass_through` in `connector:google_calendar:<endpoint>`
+  scopes only, so the same sender's email is never blocked. A verb is idempotent and removes the
+  opposite rules it wrote and keeps manual rules. The Vouch (priority 10) is evaluated first: a
+  same-scope block at a lower priority number, or at 10 and older, still wins, and a global block
+  always wins. Concurrent verbs on one organizer serialise on an advisory lock. A Vouch only lifts an
+  otherwise first-contact organizer to `vouched` (trusted). A calendar endpoint registered later is
+  covered for trust, because the verdict reads every calendar scope; only the connector's
+  ingest-time suppression of a Block is per endpoint.
 - **Not yet stamped.** The lure badges that need hidden-guest-list, conference-host and link facts
   (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
   for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.

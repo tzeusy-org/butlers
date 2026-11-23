@@ -958,6 +958,27 @@ class CalendarRespondRequest(BaseModel):
     send_updates: Literal["none", "all", "externalOnly"] = "none"
 
 
+class CalendarOrganizerDecisionRequest(BaseModel):
+    """Vouch for or Block the organizer of one stored invitation (REQ-module-calendar-042).
+
+    Only the entry id and the verb come from the caller; the organizer address is read from the
+    stored event, never from the request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    entry_id: UUID
+    verb: Literal["vouch", "block"]
+
+
+class CalendarOrganizerDecisionResponse(BaseModel):
+    verb: Literal["vouch", "block"]
+    endpoints: int
+    rules_written: int
+    rules_removed: int
+    events_restamped: int
+    restamp_degraded: bool = False
+
+
 class CalendarRespondResponse(BaseModel):
     status: Literal[
         "pending_approval", "approved", "rejected", "uncertain", "noop", "applied", "failed"
