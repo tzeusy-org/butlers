@@ -256,7 +256,11 @@ async def test_a_failed_submit_keeps_the_location_row(monkeypatch) -> None:
 def _asyncpg_exc(name: str) -> Exception:
     import asyncpg.exceptions as pgx
 
-    return getattr(pgx, name)("synthetic")
+    cls = getattr(pgx, name)
+    if name in {"UntranslatableCharacterError", "DataError"}:
+        # As the server raises it: SQLSTATE and message fields set.
+        return cls.new({"M": "synthetic", "S": "ERROR", "C": cls.sqlstate})
+    return cls("synthetic")
 
 
 class _FailingPool(_FakePool):
@@ -368,3 +372,30 @@ def test_a_non_finite_coordinate_is_rejected() -> None:
     for bad in (float("nan"), float("inf")):
         with pytest.raises(owntracks.LocationPointRejected):
             owntracks.location_point_fields({**_POINT, "lon": bad})
+
+
+async def test_a_client_side_encode_error_answers_503() -> None:
+    import asyncpg.exceptions as pgx
+
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    # Raised by asyncpg itself while encoding an argument: no server fields.
+    for error in (pgx.DataError("invalid input for query argument $8"), ValueError("x"),
+                  TypeError("x"), OverflowError("x")):  # fmt: skip
+        connector = _connector(call_tool, _FailingPool(error))
+        try:
+            assert (await _post(connector, _POINT)).status_code == 503
+            assert _ingests(call_tool) == []
+        finally:
+            await _stop(connector)
+
+
+async def test_a_malformed_point_is_rejected_even_without_a_database() -> None:
+    call_tool = AsyncMock(return_value={"status": "accepted"})
+    connector = _connector(call_tool, None)
+    try:
+        for bad in ({"tst": None}, {"tst": "soon"}, {"lat": 95.0}):
+            response = await _post(connector, {**_POINT, **bad})
+            assert response.status_code == 200
+        assert _ingests(call_tool) == []
+    finally:
+        await _stop(connector)

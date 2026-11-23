@@ -8,12 +8,13 @@ renaming, normalizing, or synthesizing optional fields. The evidence row is comm
 before the Switchboard submit, the checkpoint and the webhook acknowledgement: a
 failed evidence write raises, the webhook answers 503 and the phone keeps the
 point, with nothing submitted. A failed submit keeps the row. A point that is still
-invalid after NUL characters are stripped from its text (a non-numeric or out-of-range
-`tst`, `lat`, `lon` or `acc`) or that the database refuses as data (class 22) is
+invalid after NUL characters are stripped from its text (a missing or malformed `tst`, or a
+non-numeric or out-of-range `lat`, `lon` or `acc`), whether or not a database is configured, or
+that the server refuses as data (SQLSTATE class 22) is
 acknowledged and not ingested, counted and logged by reason category only, because a resend
 would fail identically and OwnTracks resends in order. Transient, schema and privilege
 errors (connection, serialization, deadlock, missing table or column, insufficient
-privilege) propagate and answer 503. The only exception to payload
+privilege) and client-side encoding errors propagate and answer 503. The only exception to payload
 fidelity is bearer material in free-text string fields, which the connector-base
 placeholder replaces before the write; a detector failure skips the evidence
 write. This evidence store is distinct
@@ -48,7 +49,7 @@ Scope: v1-mandatory
 
 #### Scenario: A point that can never be stored does not stall later points
 
-- **WHEN** a location payload has a malformed `tst`, an out-of-range coordinate, or a database data error
+- **WHEN** a location payload has a missing or malformed `tst`, an out-of-range coordinate, or a database data error
 - **THEN** the webhook answers 200 without ingesting it and records a rejected-point count with a reason category only
 - **AND** a NUL character in a text field is stripped and the point is stored
 

@@ -918,8 +918,8 @@ async def persist_location_point(
     directly (connector_writer role) on every accepted location event.
     The caller commits this row before it submits, checkpoints or
     acknowledges (bu-uhbhzq.4). NUL characters are stripped from text first.
-    A point the database refuses as data (class 22) or that cannot be encoded
-    raises ``LocationPointRejected``; a transient, schema or privilege error
+    A point the server refuses as data (SQLSTATE class 22) raises
+    ``LocationPointRejected``; any other error, including a client-side encode error,
     propagates, so the webhook answers 503. A scrub failure is logged and skipped.
 
     Args:
@@ -973,11 +973,14 @@ async def persist_location_point(
             endpoint_identity,
             raw_payload,
         )
-    except (asyncpg.exceptions.DataError, ValueError, TypeError, OverflowError) as exc:
-        # Refused as data (e.g. a character the encoding cannot hold): a resend would fail
-        # the same way. Everything else (connection, serialization, missing table, missing
-        # privilege) propagates and answers 503.
-        raise LocationPointRejected("data_rejected") from exc
+    except asyncpg.exceptions.PostgresError as exc:
+        # Only a server-side class 22 (data exception) is the point's fault: a resend would
+        # fail the same way. A client-side encode error (empty ``__dict__``, no server
+        # fields) is a code or codec bug, and every other error (connection, serialization,
+        # missing table, privilege) is transient or operator-fixable: both propagate (503).
+        if str(vars(exc).get("sqlstate", "")).startswith("22"):
+            raise LocationPointRejected("data_rejected") from exc
+        raise
     return result is not None
 
 
@@ -1507,16 +1510,17 @@ class OwnTracksConnector:
         # checkpoint and the acknowledgement. A write failure propagates: the webhook
         # answers 503, nothing is submitted, and the phone keeps the point. A submit
         # failure below keeps the row; it is evidence, not a replay queue (bu-uhbhzq.4).
-        if payload_type == "location" and self._db_pool is not None:
+        if payload_type == "location":
             try:
-                fields = location_point_fields(body)
-                await persist_location_point(
-                    self._db_pool,
-                    endpoint_identity=device.endpoint_identity,
-                    trigger=body.get("t") or None,
-                    raw_payload=body,
-                    **fields,
-                )
+                fields = location_point_fields(body)  # validated whether or not a pool exists
+                if self._db_pool is not None:
+                    await persist_location_point(
+                        self._db_pool,
+                        endpoint_identity=device.endpoint_identity,
+                        trigger=body.get("t") or None,
+                        raw_payload=body,
+                        **fields,
+                    )
             except LocationPointRejected as rejected:
                 # Content-blind: the reason category only. Acknowledged, not ingested.
                 device.metrics.record_error(
