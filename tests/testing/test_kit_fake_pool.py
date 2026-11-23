@@ -45,13 +45,14 @@ async def test_async_context_exits_once_without_suppressing_body(outcome):
 
 
 @pytest.mark.asyncio
-async def test_fake_pool_configured_calls_share_connection_and_release_once():
+@pytest.mark.parametrize("transaction_options", [{}, {"isolation": "read_committed"}])
+async def test_fake_pool_configured_calls_share_connection_and_release_once(transaction_options):
     queued = AsyncMock(side_effect=[{"id": 1}, {"id": 2}])
     pool = fake_pool(
         fetch=[{"id": 1}], fetchrow=queued, fetchval=None, execute="UPDATE 1", executemany=None
     )
     async with pool.acquire() as conn:
-        async with conn.transaction() as transaction:
+        async with conn.transaction(**transaction_options) as transaction:
             assert transaction is None
             assert await conn.fetch("SELECT", 1) == [{"id": 1}]
             assert await conn.fetchrow("FIRST") == {"id": 1}
@@ -65,7 +66,7 @@ async def test_fake_pool_configured_calls_share_connection_and_release_once():
     pool.execute.assert_awaited_once_with("UPDATE", 2)
     pool.release.assert_awaited_once_with(conn)
     pool.acquire.assert_called_once_with()
-    conn.transaction.assert_called_once_with()
+    conn.transaction.assert_called_once_with(**transaction_options)
 
 
 @pytest.mark.asyncio

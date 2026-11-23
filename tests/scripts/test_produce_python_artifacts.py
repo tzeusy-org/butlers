@@ -117,9 +117,11 @@ def command_owner(work: Path) -> None:
     operations = producer.Operations.__new__(producer.Operations)
     operations.work, operations.sequence, operations.nested = work, 0, False
     operations.environment = producer.isolated_environment(os.environ["HOME"])
+    # Publish readiness only after the complete PID is readable.
     child = (
         "import os,sys,time; from pathlib import Path; "
-        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(20)"
+        "ready = Path(sys.argv[1]); pending = ready.with_suffix('.tmp'); "
+        "pending.write_text(str(os.getpid())); pending.replace(ready); time.sleep(20)"
     )
     operations.run([sys.executable, "-I", "-c", child, str(work / "child.pid")], work, timeout=25)
 
@@ -604,11 +606,11 @@ class ProducerTests(unittest.TestCase):
                 str(work),
                 str(signum),
             ],
-            check=True,
             capture_output=True,
             text=True,
             timeout=20,
         )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
         self.assertFalse(result["child_survived"], result)
         self.assertEqual(result["owner_exit"], -signum)
