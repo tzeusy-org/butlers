@@ -142,7 +142,11 @@ recipient, URL, template or action refuses. At most 50 watches are active, each 
 days after approval unless the owner approves a renewal card in the last seven (a renewal registers the next
 generation, then cancels the old one), delivery defaults to `digest`, and `pause` (`never`,
 disable) cancels the instance without deleting the watch, its receipts or anything it observed.
-A create, renew or resume approval is refused unless the live grant still has the digest and
+Every transition of one watch is serialized by a per-watch lock held across the read, the
+condition side effects and the CAS write, in an undoable order: a new generation registers
+before ACTIVE commits (and is cancelled if the write loses), and a pause or delete commits before
+it cancels. A replayed approval repairs an interrupted transition, so ACTIVE implies a live
+condition and PAUSED or DELETED implies none. A create, renew or resume approval is refused unless the live grant still has the digest and
 sources on the card. A resume, an update or a delete needs a card; a replayed approval returns the committed watch.
 The store here is in-memory (`InMemoryWatchStore`); the Postgres store, the approval-card and
 reply surfaces and delivery through the insight broker are later slices.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Mapping
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol
@@ -40,6 +41,10 @@ GrantFor = Callable[[str], Grant]
 
 
 class WatchStore(Protocol):
+    def serialized(self, watch_id: str) -> AbstractAsyncContextManager[None]:
+        """Hold the one lock for this watch across a read, its side effects and the CAS write."""
+        ...
+
     async def get(self, watch_id: str) -> Watch | None: ...
 
     async def list_all(self) -> list[Watch]: ...
@@ -167,6 +172,12 @@ class WatchService:
             raise WatchRefused("only the owner approves a watch")
         if approval.card_digest != card.digest:
             raise WatchRefused("the approval is for a different card")
+        # Every transition of one watch is serialized: the read, the condition side effects and
+        # the CAS write happen under one lock, so no two transitions interleave.
+        async with self.store.serialized(card.watch_id):
+            return await self._approve(card, snapshot)
+
+    async def _approve(self, card: WatchCard, snapshot: Snapshot) -> Watch:
         now = snapshot.now
         if card.action is Action.CREATE:
             self._grant_is_current(card.watch_id, card.grant_digest, card.sources)
@@ -175,7 +186,8 @@ class WatchService:
         if current is None:
             raise WatchRefused("unknown watch")
         if current.approval_digest == card.digest:
-            return current  # a replayed approval
+            await self._reconcile(current, snapshot)  # a replay repairs an interrupted transition
+            return current
         if current.state in (WatchState.EXPIRED, WatchState.DELETED):
             raise WatchRefused("the watch is closed")
         if card.target_version != current.version + 1:
@@ -248,6 +260,34 @@ class WatchService:
         except KeyError:
             pass  # never registered: nothing to stop
 
+    async def _has_instance(self, watch: Watch) -> bool:
+        async with self.evaluator.store.transaction() as tx:
+            return await tx.get_instance(watch.instance_id) is not None
+
+    async def _reconcile(self, watch: Watch, snapshot: Snapshot) -> None:
+        """Make the condition match the committed state: ACTIVE has a live one, others none."""
+        if watch.state is WatchState.ACTIVE:
+            if not await self._has_instance(watch):
+                await self._register(watch, snapshot)
+        else:
+            await self._cancel(watch, snapshot.now)
+
+    async def _commit_with_registration(
+        self, watch: Watch, expected_version: int, snapshot: Snapshot
+    ) -> Watch:
+        """Register the new generation, then commit it; undo the registration if the CAS loses.
+
+        Register-before-commit means a committed ACTIVE watch always has its condition.
+        """
+        await self._register(watch, snapshot)
+        try:
+            return await self.store.write(watch, expected_version=expected_version, cap=self.cap)
+        except BaseException:
+            committed = await self.store.get(watch.id)
+            if committed is None or committed.generation != watch.generation:
+                await self._cancel(watch, snapshot.now)  # nothing committed owns this generation
+            raise
+
     async def _delete(self, current: Watch, card: WatchCard, now: datetime) -> Watch:
         closed = replace(
             current,
@@ -255,30 +295,23 @@ class WatchService:
             version=current.version + 1,
             approval_digest=card.digest,
         )
-        # Stop the instance first: a recorded deletion must never leave a live instance behind.
+        # Commit first, then stop the condition; a replay of the approval finishes a stop that
+        # was interrupted, so a recorded deletion never keeps a live condition for long.
+        written = await self.store.write(closed, expected_version=current.version, cap=self.cap)
         await self._cancel(current, now)
-        return await self.store.write(closed, expected_version=current.version, cap=self.cap)
+        return written
 
     async def _renew(self, current: Watch, card: WatchCard, snapshot: Snapshot) -> Watch:
         if not current.due_for_renewal(snapshot.now):
             raise WatchRefused("a renewal is approved only in the last seven days")
-        expires_at = snapshot.now + (card.lifetime or LIFETIME)
         renewed = replace(
             current,
             version=current.version + 1,
             generation=current.generation + 1,
-            expires_at=expires_at,
+            expires_at=snapshot.now + (card.lifetime or LIFETIME),
             approval_digest=card.digest,
         )
-        # Register the next generation before stopping the old one, so a failure loses no watch.
-        await self._register(renewed, snapshot)
-        try:
-            written = await self.store.write(
-                renewed, expected_version=current.version, cap=self.cap
-            )
-        except BaseException:
-            await self._cancel(renewed, snapshot.now)  # the lost CAS leaves no second instance
-            raise
+        written = await self._commit_with_registration(renewed, current.version, snapshot)
         await self._cancel(current, snapshot.now)
         return written
 
@@ -293,11 +326,7 @@ class WatchService:
         )
         if card.resume and current.state is WatchState.PAUSED:
             changed = replace(changed, state=WatchState.ACTIVE, generation=current.generation + 1)
-            written = await self.store.write(
-                changed, expected_version=current.version, cap=self.cap
-            )
-            await self._register(written, snapshot)
-            return written
+            return await self._commit_with_registration(changed, current.version, snapshot)
         return await self.store.write(changed, expected_version=current.version, cap=self.cap)
 
     # -- narrowing and housekeeping ---------------------------------------------------------
@@ -306,17 +335,19 @@ class WatchService:
         """``never`` or disable: stop the watch, keep everything it observed (a narrowing)."""
         if origin != OWNER:
             raise WatchRefused("only the owner pauses a watch")
-        watch = await self.store.get(watch_id)
-        if watch is None:
-            raise WatchRefused("unknown watch")
-        if watch.state is WatchState.PAUSED:
-            return watch
-        if watch.state is not WatchState.ACTIVE:
-            raise WatchRefused("the watch is closed")
-        paused = replace(watch, state=WatchState.PAUSED, version=watch.version + 1)
-        written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
-        await self._cancel(watch, now)
-        return written
+        async with self.store.serialized(watch_id):
+            watch = await self.store.get(watch_id)
+            if watch is None:
+                raise WatchRefused("unknown watch")
+            if watch.state is WatchState.PAUSED:
+                await self._cancel(watch, now)  # a repeat finishes an interrupted stop
+                return watch
+            if watch.state is not WatchState.ACTIVE:
+                raise WatchRefused("the watch is closed")
+            paused = replace(watch, state=WatchState.PAUSED, version=watch.version + 1)
+            written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
+            await self._cancel(watch, now)
+            return written
 
     async def renewal_due(self, now: datetime) -> list[Watch]:
         return [w for w in await self.store.list_all() if w.due_for_renewal(now)]
@@ -324,17 +355,23 @@ class WatchService:
     async def expire_due(self, now: datetime) -> list[Watch]:
         """Close every unrenewed watch past its expiry; observations and receipts stay."""
         expired = []
-        for watch in await self.store.list_all():
-            if watch.state not in (WatchState.ACTIVE, WatchState.PAUSED) or now < watch.expires_at:
-                continue
-            closed = replace(watch, state=WatchState.EXPIRED, version=watch.version + 1)
-            expired.append(
-                await self.store.write(closed, expected_version=watch.version, cap=self.cap)
-            )
-            try:
-                await self.evaluator.evaluate(watch.instance_id, [], now=now)
-            except KeyError:
-                pass
+        for listed in await self.store.list_all():
+            async with self.store.serialized(listed.id):
+                watch = await self.store.get(listed.id)  # re-read: it may have changed
+                if (
+                    watch is None
+                    or watch.state not in (WatchState.ACTIVE, WatchState.PAUSED)
+                    or now < watch.expires_at
+                ):
+                    continue
+                closed = replace(watch, state=WatchState.EXPIRED, version=watch.version + 1)
+                expired.append(
+                    await self.store.write(closed, expected_version=watch.version, cap=self.cap)
+                )
+                try:
+                    await self.evaluator.evaluate(watch.instance_id, [], now=now)
+                except KeyError:
+                    pass
         return expired
 
     async def view(self, watch_id: str) -> WatchView:

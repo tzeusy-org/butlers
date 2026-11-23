@@ -258,6 +258,9 @@ class TestCap:
         card = await service.propose_update(first.id, resume=True)
         with pytest.raises(CapExceeded):
             await service.approve(card, approve(card), snap())
+        # The refused resume leaves PAUSED with no condition open for the generation it tried.
+        assert (await store.get(first.id)).state is WatchState.PAUSED
+        assert conditions.instances[f"{first.id}:2"].state is State.CANCELLED
 
 
 class TestExpiryAndRenewal:
@@ -355,7 +358,9 @@ class TestNeverAndDelete:
         assert deleted.state is WatchState.DELETED and watch.id in store.watches
         assert conditions.instances[watch.instance_id].state is State.CANCELLED
 
-    async def test_delete_cancels_the_instance_before_it_records_deleted(self, conditions):
+    async def test_delete_commits_before_it_cancels_and_a_replay_finishes_a_missed_cancel(
+        self, conditions
+    ):
         seen = []
 
         class Watching(InMemoryWatchStore):
@@ -368,7 +373,8 @@ class TestNeverAndDelete:
         _, watch = await create(service)
         card = await service.propose_delete(watch.id)
         await service.approve(card, approve(card), snap())
-        assert seen == [State.CANCELLED]
+        assert seen == [State.OPEN]  # the commit came first
+        assert conditions.instances[watch.instance_id].state is State.CANCELLED
 
     async def test_a_stale_card_refuses(self, service):
         _, watch = await create(service)
