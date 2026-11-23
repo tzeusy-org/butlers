@@ -1129,6 +1129,38 @@ class TestCircuitBreakerCause:
         assert data["dominant_cause"] is None
         assert data["next_probe_at"] is None
 
+    async def test_reason_text_never_carries_a_credential(self) -> None:
+        secret = "Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.abc"
+        data = await self._get(self._rows([f"provider auth failed\n{secret}"] * 5))
+        assert {a["reason_text"] for a in data["recent_attempts"]} == {"provider auth failed"}
+        data = await self._get(self._rows([f"{secret} rejected"] * 5))
+        assert "eyJhbGci" not in data["recent_attempts"][0]["reason_text"]
+
+    async def test_attempt_closed_at_is_a_timestamp_and_opened_at_names_the_trip(self) -> None:
+        data = await self._get(self._rows([None] * 5))
+        assert data["recent_attempts"][0]["closed_at"] == "2026-04-05T12:00:00Z"
+        assert data["opened_at"] == "2026-04-05T12:00:00Z"
+
+    async def test_the_summary_breaker_carries_opened_at_with_the_cause(self) -> None:
+        from datetime import timedelta
+
+        rows = [
+            _r(
+                {
+                    "id": uuid.uuid4(),
+                    "status": "failed",
+                    "error_detail": None,
+                    "closed_at": _NOW - timedelta(minutes=i),
+                }
+            )
+            for i in range(5)
+        ]
+        app, _ = _build_summary_app(cb_rows=rows)
+        breaker = (await _call(app, "get", "/api/qa/summary")).json()["data"]["circuit_breaker"]
+        assert breaker["tripped"] is True
+        assert breaker["opened_at"] == "2026-04-05T12:00:00Z"
+        assert breaker["dominant_cause"] == "execution_failure"
+
     async def test_failed_probes_push_the_next_probe_out(self) -> None:
         data = await self._get(self._rows([None] * 7))  # trip plus two failed probes
         assert data["next_probe_at"] == "2026-04-05T13:00:00Z"  # 60 minute backoff

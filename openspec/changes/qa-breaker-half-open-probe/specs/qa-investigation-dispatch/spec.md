@@ -41,3 +41,13 @@ Scope: v1-mandatory
 
 - **WHEN** the breaker rows or the active-attempt count cannot be read
 - **THEN** no probe is admitted
+
+#### Scenario: A refused probe leaves no probe record
+
+- **WHEN** the finding chosen as the probe is refused by a per-finding gate
+- **THEN** no `breaker_probe` event or metric is recorded
+
+#### Scenario: The halt event names the real cause
+
+- **WHEN** the breaker holds a patrol
+- **THEN** the event says whether the breaker was unreadable, a probe was already in progress, or the failures tripped it

@@ -78,6 +78,7 @@ from butlers.core.healing.constants import (
     QA_BREAKER_WHERE_SQL,
 )
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
+from butlers.core.logging import redact_text
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
@@ -604,7 +605,8 @@ class QaCircuitBreaker(BaseModel):
     # ``None`` while it is closed. ``cause_counts`` carries the per-cause counts.
     dominant_cause: str | None = None
     cause_counts: dict[str, int] = Field(default_factory=dict)
-    # When the next half-open probe is admitted (None while closed).
+    # When the breaker tripped, and when the next half-open probe is admitted (None while closed).
+    opened_at: datetime | None = None
     next_probe_at: datetime | None = None
 
 
@@ -892,7 +894,7 @@ class CircuitBreakerAttempt(BaseModel):
 
     id: str
     status: str
-    closed_at: str
+    closed_at: datetime
     # The cause code (``classify_cause``) and the first line of the attempt's own error text, so
     # the owner can see why each counted attempt failed without opening it.
     reason_class: str | None = None
@@ -1387,8 +1389,8 @@ def _breaker_cause_fields(rows: list[Any], *, threshold: int) -> dict[str, Any]:
 
 
 def _reason_text(error_detail: str | None) -> str | None:
-    """First non-empty line of an attempt's error text, bounded."""
-    for line in (error_detail or "").splitlines():
+    """First non-empty line of an attempt's error text, credential-redacted and bounded."""
+    for line in redact_text(error_detail or "").splitlines():
         if line.strip():
             return line.strip()[:_REASON_TEXT_MAX]
     return None
@@ -1833,6 +1835,7 @@ async def get_qa_summary(
         threshold=_CIRCUIT_BREAKER_THRESHOLD,
         dominant_cause=cb_cause["dominant_cause"],
         cause_counts=cb_cause["cause_counts"],
+        opened_at=cb_cause["opened_at"],
         next_probe_at=cb_cause["next_probe_at"],
     )
 
@@ -3551,7 +3554,7 @@ async def get_circuit_breaker_status(
                 CircuitBreakerAttempt(
                     id=str(row["id"]),
                     status=row["status"],
-                    closed_at=row["closed_at"].isoformat(),
+                    closed_at=row["closed_at"],
                     reason_class=classify_cause(row.get("error_detail")),
                     reason_text=_reason_text(row.get("error_detail")),
                 )
