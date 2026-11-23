@@ -127,6 +127,20 @@ refuses while rows exist.
 
 ---
 
+### `connectors.calendar_event_revisions`
+
+**Decision: KEEP, append-only, never pruned until a per-source retention contract exists (bu-uhbhzq.7)**
+
+The Google Calendar connector's own history: one row per provider event version, keyed on
+`(endpoint_identity, calendar_id, event_id, etag)`, with `observation` of `baseline`, `change` or
+`resync`. Google keeps no edit history, so this is the only record of what a day's plan looked
+like when it was observed. UPDATE, DELETE and TRUNCATE are refused by trigger. Titles, locations,
+times and attendees are kept verbatim (descriptions are scrubbed of links and passcodes), so only
+`connector_writer` (insert, select) and `butler_chronicler_rw` (select) hold any privilege. A
+policy-blocked event keeps structure and times only. Its downgrade refuses while rows exist.
+
+---
+
 ### `public.insight_candidates`
 
 **Decision: STATUS-GATED — terminal rows after 90 days; pruner [C], disabled by default**

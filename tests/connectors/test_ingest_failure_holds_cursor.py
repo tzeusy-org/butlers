@@ -436,6 +436,8 @@ def _calendar_runtime(submit: AsyncMock) -> Any:
     runtime._global_ingestion_policy = MagicMock()
     runtime._global_ingestion_policy.evaluate = MagicMock(return_value=None)
     runtime._submit_to_ingest_api = submit  # type: ignore[method-assign]
+    # The revision journal has its own tests; these cases are about the ingest failure.
+    runtime._journal_events = AsyncMock(return_value=True)  # type: ignore[method-assign]
     runtime._save_sync_token = AsyncMock()  # type: ignore[method-assign]
     runtime._flush_filtered_events = AsyncMock()  # type: ignore[method-assign]
     runtime._check_starting_soon = AsyncMock()  # type: ignore[method-assign]
