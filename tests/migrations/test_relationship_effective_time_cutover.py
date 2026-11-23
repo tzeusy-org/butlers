@@ -10,7 +10,7 @@ import asyncpg
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, make_url
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy.pool import NullPool
 
 from alembic import command
@@ -120,6 +120,30 @@ def test_missing_visibility_refuses_while_different_role_is_connected(cutover):
     finally:
         with admin.begin() as conn:
             conn.exec_driver_sql(f"GRANT pg_read_all_stats TO {role} WITH INHERIT TRUE")
+
+
+def test_activity_read_permission_denial_refuses_without_sql(cutover):
+    url, migration, admin = cutover
+    before = _snapshot(migration)
+    with admin.begin() as conn:
+        conn.exec_driver_sql("REVOKE SELECT ON pg_catalog.pg_stat_activity FROM PUBLIC")
+    try:
+        with migration.connect() as conn:
+            assert conn.exec_driver_sql(
+                "SELECT pg_catalog.pg_has_role(current_user, 'pg_read_all_stats', 'USAGE')"
+            ).scalar_one()
+            with pytest.raises(ProgrammingError) as denied:
+                conn.exec_driver_sql("SELECT 1 FROM pg_catalog.pg_stat_activity")
+            assert denied.value.orig.pgcode == "42501"
+        with pytest.raises(RuntimeError, match=r"^db_activity_unverifiable$") as refusal:
+            _upgrade(url)
+        assert refusal.value.__suppress_context__
+        assert _snapshot(migration) == before
+    finally:
+        with admin.begin() as conn:
+            conn.exec_driver_sql("GRANT SELECT ON pg_catalog.pg_stat_activity TO PUBLIC")
+    _upgrade(url)
+    check_chain_at_head(url, "relationship", schema="relationship")
 
 
 def test_nowait_lock_refuses_before_other_client_check(cutover):

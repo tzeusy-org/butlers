@@ -10,6 +10,8 @@ afterward is the owner's rollout procedure.
 
 from __future__ import annotations
 
+from sqlalchemy.exc import DBAPIError
+
 from alembic import op
 
 revision = "rel_047"
@@ -52,6 +54,21 @@ def _guard():
             raise RuntimeError("cutover_index_state_invalid") from None
         raise
 
+    try:
+        unreadable, target_clients = _activity_counts(connection)
+    except DBAPIError as exc:
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if sqlstate == "42501":
+            raise RuntimeError("db_activity_unverifiable") from None
+        raise
+    if unreadable:
+        raise RuntimeError(f"db_activity_unverifiable unreadable_rows={unreadable}")
+    if target_clients:
+        raise RuntimeError(f"active_writer target_clients={target_clients}")
+    return connection
+
+
+def _activity_counts(connection) -> tuple[int, int]:
     visible = connection.exec_driver_sql(
         """
         SELECT current_user = session_user
@@ -98,11 +115,7 @@ def _guard():
         FROM activity
         """
     ).one()
-    if unreadable:
-        raise RuntimeError(f"db_activity_unverifiable unreadable_rows={unreadable}")
-    if target_clients:
-        raise RuntimeError(f"active_writer target_clients={target_clients}")
-    return connection
+    return unreadable, target_clients
 
 
 def _check_indexes(connection, *, legacy_expected: bool) -> None:

@@ -60,7 +60,7 @@ database at `rel_046`.
 | --- | --- | --- |
 | Another session holds a lock on `relationship.entity_facts` | `lock_unavailable` | No DDL; stop the holder and retry. |
 | Any other client connected to the database | `active_writer` | No DDL; stop the client and retry. |
-| Migration login lacks effective statistics access, or an activity row is masked, incomplete or unknown | `db_activity_unverifiable` | Check the login's access and resolve unidentified activity. |
+| Migration login lacks effective statistics access, the activity read is denied, or an activity row is masked, incomplete or unknown | `db_activity_unverifiable` | Check the login's access and resolve unidentified activity. |
 | Legacy or occurrence index missing, changed or invalid | `cutover_index_state_invalid` | No DDL. |
 | Offline SQL generation reaches G | `offline_cutover_unsupported` | The cutover requires an online migration. |
 
