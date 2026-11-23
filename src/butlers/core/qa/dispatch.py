@@ -2301,6 +2301,16 @@ async def _dispatch_pr_review_followup(
     bool
         ``True`` if a follow-up agent task was dispatched, ``False`` otherwise.
     """
+    if config.job_isolation is not None:
+        # A follow-up checks the PR branch out into a shared-.git worktree and runs the agent
+        # in the daemon. With isolation configured that is exactly what must not happen, and
+        # the isolated follow-up is not built yet: refuse rather than run un-isolated.
+        logger.warning(
+            "PR review follow-up refused (follow_up_isolation_unavailable): attempt=%s",
+            attempt_id,
+        )
+        return False
+
     if not pr_branch_name:
         logger.warning(
             "PR review follow-up: no existing branch recorded for attempt=%s — skipping",

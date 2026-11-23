@@ -262,3 +262,29 @@ async def test_a_planted_notes_symlink_never_reaches_the_daemon_scratch(tmp_path
 
     iso, attempt, *_ = await _session(tmp_path, trusted, pod=pod)
     assert not (iso.scratch_dir(attempt) / ".qa" / "investigation_notes.json").exists()
+
+
+async def test_pr_review_followup_is_refused_when_isolation_is_configured(tmp_path) -> None:
+    """The follow-up path runs the agent in the daemon, so it must never run when isolated."""
+    from butlers.core.qa.dispatch import _dispatch_pr_review_followup
+
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock()
+    with patch("butlers.core.qa.dispatch.anonymize") as anonymize:
+        dispatched = await _dispatch_pr_review_followup(
+            pool=MagicMock(),
+            repo_root=tmp_path,
+            attempt_id=uuid.uuid4(),
+            pr_number=1,
+            pr_url="https://example.invalid/pr/1",
+            fingerprint="f" * 64,
+            butler_name="finance",
+            pr_branch_name="qa/finance/abc",
+            feedback_summary="please fix",
+            config=QaDispatchConfig(job_isolation=_iso(tmp_path)),
+            spawner=spawner,
+            gh_token="t",
+        )
+    assert dispatched is False
+    spawner.trigger.assert_not_awaited()
+    anonymize.assert_not_called()
