@@ -3550,7 +3550,11 @@ class _SourceRoleLockError(Exception):
 
 @contextlib.asynccontextmanager
 async def _source_role_lock(pool: Any, source_key: str):
-    """Hold ``pg_advisory_lock`` for one source's role write on a single held connection."""
+    """Hold ``pg_advisory_lock`` for one source's role write; yields the holding connection.
+
+    The caller must run that pool's own write on the yielded connection: asking the same pool
+    for a second connection while holding one deadlocks a small pool under concurrent requests.
+    """
     key = f"calendar_source_role:{source_key}"
     try:
         context = pool.acquire()
@@ -3563,7 +3567,7 @@ async def _source_role_lock(pool: Any, source_key: str):
         except Exception as exc:
             raise _SourceRoleLockError from exc
         try:
-            yield
+            yield conn
         finally:
             try:
                 await conn.execute("SELECT pg_advisory_unlock(hashtextextended($1, 0))", key)
@@ -3598,26 +3602,28 @@ async def set_calendar_source_role(
     # One owner decision must land in every schema or in none of the interleavings: hold a
     # cluster-wide advisory lock for this source across the whole fan-out, so two concurrent
     # requests (even on different API replicas) cannot leave schemas on different roles.
+    update_sql = f"""
+        UPDATE calendar_sources
+        SET time_role = $1, role_basis = '{basis}', updated_at = now()
+        WHERE source_key = $2
+        RETURNING id
+        """
     try:
-        async with _source_role_lock(db.pool(targets[0]), request.source_key):
-            for butler in targets:
-                try:
-                    rows = await db.pool(butler).fetch(
-                        f"""
-                        UPDATE calendar_sources
-                        SET time_role = $1, role_basis = '{basis}', updated_at = now()
-                        WHERE source_key = $2
-                        RETURNING id
-                        """,
-                        role,
-                        request.source_key,
-                    )
-                except Exception:
-                    logger.warning("set_calendar_source_role failed in %s", butler, exc_info=True)
-                    failed.append(butler)
-                    continue
-                if rows:
-                    updated.append(butler)
+        if targets:
+            async with _source_role_lock(db.pool(targets[0]), request.source_key) as lock_conn:
+                for butler in targets:
+                    try:
+                        # The lock-holding connection serves its own schema's write.
+                        runner = lock_conn if butler == targets[0] else db.pool(butler)
+                        rows = await runner.fetch(update_sql, role, request.source_key)
+                    except Exception:
+                        logger.warning(
+                            "set_calendar_source_role failed in %s", butler, exc_info=True
+                        )
+                        failed.append(butler)
+                        continue
+                    if rows:
+                        updated.append(butler)
     except _SourceRoleLockError as exc:
         raise HTTPException(
             status_code=503, detail="Could not lock the calendar source. Try again."

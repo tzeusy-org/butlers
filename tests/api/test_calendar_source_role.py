@@ -180,3 +180,56 @@ async def test_an_unavailable_lock_is_a_503_and_writes_nothing(app):
 
     assert resp.status_code == 503
     general.fetch.assert_not_awaited()
+
+
+async def test_no_calendar_schemas_is_a_404_not_a_500(app):
+    _wire(app, {}, audit=fake_pool(execute=None))
+    assert (await _post(app, {"source_key": KEY, "role": "team"})).status_code == 404
+
+
+class _CappedPool:
+    """A pool with one connection: a second acquire while one is held waits forever."""
+
+    def __init__(self):
+        import asyncio
+
+        self._slots = asyncio.Semaphore(1)
+        self.writes = 0
+        outer = self
+
+        class Conn:
+            async def execute(self, *_a):
+                return None
+
+            async def fetch(self, *_a):
+                outer.writes += 1
+                return [_updated()]
+
+        class Ctx:
+            async def __aenter__(self_inner):
+                await outer._slots.acquire()
+                return Conn()
+
+            async def __aexit__(self_inner, *_exc):
+                outer._slots.release()
+
+        self._ctx = Ctx
+
+    def acquire(self):
+        return self._ctx()
+
+    async def fetch(self, *args):
+        async with self.acquire() as conn:
+            return await conn.fetch(*args)
+
+
+async def test_the_lock_holding_connection_serves_its_own_schemas_write(app):
+    """A second acquire from the lock's pool would deadlock a small pool."""
+    import asyncio
+
+    general = _CappedPool()
+    _wire(app, {"general": general}, audit=fake_pool(execute=None))
+
+    resp = await asyncio.wait_for(_post(app, {"source_key": KEY, "role": "team"}), timeout=3)
+
+    assert resp.status_code == 200 and general.writes == 1
