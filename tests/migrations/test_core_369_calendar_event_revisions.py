@@ -1,4 +1,4 @@
-"""core_366: ``connectors.calendar_event_revisions`` is append-only, keyed and narrowly granted.
+"""core_369: ``connectors.calendar_event_revisions`` is append-only, keyed and narrowly granted.
 
 Real PostgreSQL. Covers the baseline/change/replay/resync write path through
 ``record_calendar_revisions``, the unique identity key, policy-blocked and cancelled rows, the
@@ -29,14 +29,14 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
 ]
 
-_CORE_366 = Path(__file__).resolve().parents[2] / (
-    "alembic/versions/core/core_366_calendar_event_revisions.py"
+_CORE_369 = Path(__file__).resolve().parents[2] / (
+    "alembic/versions/core/core_369_calendar_event_revisions.py"
 )
 _ENDPOINT = "google_calendar:user:synthetic@example.test"
 
 
-def _below_core_366() -> str:
-    spec = importlib.util.spec_from_file_location("core_366_under_test", _CORE_366)
+def _below_core_369() -> str:
+    spec = importlib.util.spec_from_file_location("core_369_under_test", _CORE_369)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -176,7 +176,7 @@ def test_the_downgrade_refuses_while_rows_exist(fresh_db) -> None:
             )
         config = _build_alembic_config(url, chains=["core"])
         with pytest.raises(DBAPIError, match="downgrade refused"):
-            command.downgrade(config, _below_core_366())
+            command.downgrade(config, _below_core_369())
     finally:
         engine.dispose()
 
@@ -207,7 +207,7 @@ _EXACT = {
 
 def _upgrade(db_url: str, schema: str):
     config = _build_alembic_config(db_url, chains=["core"], target_schema=schema)
-    command.upgrade(config, "core_366")
+    command.upgrade(config, "core_369")
     return config
 
 
@@ -243,14 +243,33 @@ def test_a_second_schema_is_catalog_only_and_a_downgrade_keeps_the_shared_table(
                 admin.execute(text(f'ALTER DATABASE "{db_name}" RESET lock_timeout'))
         assert _acl(engine) == _EXACT
 
-        command.downgrade(first, "core_362")
+        command.downgrade(first, "core_368")
         with engine.connect() as conn:
             assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is not None
-        command.downgrade(second, "core_362")
+        command.downgrade(second, "core_368")
         with engine.connect() as conn:
             assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is None
     finally:
         holder.close()
+        engine.dispose()
+
+
+def test_a_peer_schema_still_below_this_revision_does_not_keep_the_journal(
+    postgres_container,
+) -> None:
+    """The rollback guard counts only chains AT this revision: a peer at core_368 does not."""
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _upgrade(db_url, "general")
+    peer = _build_alembic_config(db_url, chains=["core"], target_schema="travel")
+    command.upgrade(peer, "core_368")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is not None
+        command.downgrade(first, "core_368")
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass(:t)"), {"t": _TABLE}).scalar() is None
+    finally:
         engine.dispose()
 
 

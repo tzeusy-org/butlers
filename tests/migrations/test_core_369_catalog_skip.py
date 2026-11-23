@@ -1,4 +1,4 @@
-"""core_366: a later schema's upgrade finds the journal installed and issues no DDL (bu-uhbhzq.1).
+"""core_369: a later schema's upgrade finds the journal installed and issues no DDL (bu-uhbhzq.1).
 
 The core chain runs once per butler schema over the one shared ``connectors.calendar_event_revisions``.
 ``CREATE OR REPLACE TRIGGER`` and ``CREATE INDEX IF NOT EXISTS`` lock the table even as no-ops,
@@ -17,12 +17,12 @@ import pytest
 pytestmark = pytest.mark.unit
 
 _PATH = Path(__file__).resolve().parents[2] / (
-    "alembic/versions/core/core_366_calendar_event_revisions.py"
+    "alembic/versions/core/core_369_calendar_event_revisions.py"
 )
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location("core_366_catalog_skip", _PATH)
+    spec = importlib.util.spec_from_file_location("core_369_catalog_skip", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -113,7 +113,8 @@ def test_the_catalog_check_reads_every_installed_object_and_takes_no_table_lock(
         "ix_calendar_event_revisions_observed",
         "aclexplode",
         "tgenabled = 'O'",
-        "'baseline'",
+        "strpos(pg_get_constraintdef(oid), 'baseline') > 0",
+        "strpos(pg_get_constraintdef(oid), 'resync') > 0",
     ):
         assert fragment in sql
     # Catalog-only: it never names the table in a FROM clause that would lock it.

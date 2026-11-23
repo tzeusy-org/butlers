@@ -841,7 +841,7 @@ BEGIN
     END IF;
 
     -- connectors.calendar_event_revisions keeps verbatim titles, locations and attendees and is
-    -- append-only history (core_366): connector_writer inserts and reads it, butler_chronicler_rw
+    -- append-only history (core_369): connector_writer inserts and reads it, butler_chronicler_rw
     -- reads it, and no other role holds any privilege.
     IF to_regclass('connectors.calendar_event_revisions') IS NOT NULL THEN
         EXECUTE 'REVOKE ALL ON TABLE connectors.calendar_event_revisions FROM PUBLIC';

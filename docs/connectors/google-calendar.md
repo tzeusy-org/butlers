@@ -31,7 +31,7 @@ submits event changes to Switchboard as `ingest.v1` envelopes.
 ## Revision journal
 
 Google keeps no edit history, so the connector appends every event version it observes to
-`connectors.calendar_event_revisions` (core_366) before it submits anything or saves the sync
+`connectors.calendar_event_revisions` (core_369) before it submits anything or saves the sync
 token. A row is keyed on `(endpoint_identity, calendar_id, event_id, etag)`: Google changes the
 etag on every modification, RSVPs included, so a replayed page adds nothing and an edit adds a row.
 `observation` says why it was seen: `baseline` (first full sync, routed nowhere), `change`

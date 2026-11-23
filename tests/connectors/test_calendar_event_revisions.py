@@ -1,7 +1,7 @@
 """Calendar revision journal: row mapping, fail-closed writes and the connector's commit point.
 
 No database: the write path is exercised against a fake pool, and the connector is driven over a
-fake Calendar API. The real-Postgres behaviour is in tests/migrations/test_core_366_*.
+fake Calendar API. The real-Postgres behaviour is in tests/migrations/test_core_369_*.
 Synthetic ids and text only (bu-uhbhzq.1 slice 2).
 """
 

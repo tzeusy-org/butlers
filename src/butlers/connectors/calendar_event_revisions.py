@@ -1,6 +1,6 @@
 """Append every observed Google Calendar event version to a journal (bu-uhbhzq.1 slice 2).
 
-``connectors.calendar_event_revisions`` (core_366) is the calendar's own evidence row: one row per
+``connectors.calendar_event_revisions`` (core_369) is the calendar's own evidence row: one row per
 provider event version, keyed on ``(endpoint_identity, calendar_id, event_id, etag)``. Google
 changes the etag on every modification, RSVPs included, so a replayed page adds nothing and an
 edit adds a row. The connector calls :func:`record_calendar_revisions` for each fetched batch

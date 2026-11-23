@@ -1,7 +1,7 @@
 """connectors.calendar_event_revisions: an append-only journal of every observed event version.
 
-Revision ID: core_366
-Revises: core_362
+Revision ID: core_369
+Revises: core_368
 Create Date: 2026-11-23 00:00:00.000000
 
 bu-uhbhzq.1 slice 2.  Google keeps no edit history and the per-butler calendar projections
@@ -29,7 +29,7 @@ too, and scripts/init-db.sql re-asserts the revokes after its blanket grants.
 
 The relation is shared across schema-local core chains, so the migration is replay-safe: an advisory
 lock serialises installs, a chain that finds everything installed does no DDL, and the downgrade
-drops the shared table only when no other schema-local chain is still at core_366 or later, and
+drops the shared table only when no other schema-local chain is still at core_369 or later, and
 refuses while the table has rows (core_361 pattern).
 """
 
@@ -37,8 +37,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_366"
-down_revision = "core_362"
+revision = "core_369"
+down_revision = "core_368"
 branch_labels = None
 depends_on = None
 
@@ -47,7 +47,7 @@ _CHRONICLER_ROLE = "butler_chronicler_rw"
 _TABLE = "connectors.calendar_event_revisions"
 _GUARD = "connectors.calendar_event_revisions_append_only"
 _LOCK = (
-    "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_366:calendar-event-revisions', 0))"
+    "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_369:calendar-event-revisions', 0))"
 )
 
 
@@ -60,7 +60,7 @@ def _quote_literal(value: str) -> str:
 
 
 def _installation_count() -> int:
-    """Count schema-local core chains still at core_366 or later (includes this one)."""
+    """Count schema-local core chains still at core_369 or later (includes this one)."""
     bind = op.get_bind()
     schemas = bind.exec_driver_sql(
         """
@@ -81,7 +81,7 @@ def _installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 366
+                    THEN substring(version_num FROM 6)::integer >= 369
                     ELSE false END
             )
             """
