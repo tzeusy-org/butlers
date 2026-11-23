@@ -153,5 +153,21 @@ Two stores implement `WatchStore`: `InMemoryWatchStore` and `PostgresWatchStore`
 `public.owner_watches` (core_364). The table is Switchboard-only behind row-level security (the
 core_323 posture), never deleted or truncated, with an immutable boundary, a version that rises
 by one, expiry that moves forward only with a new generation, closed rows frozen, and a trigger
-that backstops the cap of 50 active under one advisory lock. The approval-card and `never`-reply
-surfaces and delivery through the insight broker are later slices.
+that backstops the cap of 50 active under one advisory lock. `WatchRunner` (`butlers.watches.runner`) is the loop an evaluator instance's single fire needs: a
+tick claims a fired instance's intent, delivers one notice, then registers the next generation with
+the fired one's cursors as its floor. Delivery is `InsightDelivery`, a proposal to the insight
+broker keyed `owner_watch:<watch>:g<generation>` with a fixed, content-free line; `right_away` raises
+the candidate's priority (70, against 40 for the digest) and never interrupts quiet hours. A failed
+delivery leaves the watch fired and retried, never rearmed past a lost notice; a crash after delivery
+replays to the same key and the same next generation. Each tick step holds the watch's transition
+lock and re-reads the committed row and the live grant first, so a paused, deleted, expired or
+re-granted watch sends nothing. Generation 1 may fire on the current snapshot; every later one (a
+re-arm, a renewal, a resume or a repair) is registered with seeding off and the watch's last fire
+cursor as its floor, so a condition that stays true fires again only on a new event past the
+cursor, and an event that arrived during a pause still counts on resume. Delivery runs its duplicate check and insert on one
+connection under a session advisory lock keyed by the dedup key, so racing runners queue one
+candidate. Pause, delete and expiry withdraw the watch's pending, unclaimed candidates
+(`InsightDelivery.withdraw`); a replayed close finishes an interrupted withdrawal, and every tick
+(so also the first one after a restart) sweeps the pending candidates of all paused, deleted and
+expired watches. The approval-card and `never`-reply surfaces
+and the scheduled tick that runs the loop are a later slice.

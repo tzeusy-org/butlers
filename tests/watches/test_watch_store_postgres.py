@@ -8,7 +8,10 @@ backstop below the Python store, and the per-schema two-chain install.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -168,6 +171,128 @@ class TestNoPoolDeadlock:
         finally:
             for p in (store_pool, lock_pool, condition_pool):
                 await p.close()
+
+
+class _SlowLookup:
+    """A pool whose connections pause after the duplicate lookup, forcing the race window open."""
+
+    def __init__(self, pool):
+        self._pool = pool
+
+    def __getattr__(self, name):
+        return getattr(self._pool, name)
+
+    @asynccontextmanager
+    async def acquire(self):
+        async with self._pool.acquire() as connection:
+            yield _SlowConnection(connection)
+
+
+class _SlowConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    async def fetchval(self, query, *args):
+        result = await self._connection.fetchval(query, *args)
+        if query.startswith("SELECT id FROM insight_candidates WHERE dedup_key"):
+            await asyncio.sleep(0.3)
+        return result
+
+
+class TestInsightDeliveryOnPostgres:
+    """The broker adapter against the real insight table: one proposal per fire, and withdrawal."""
+
+    @pytest.fixture(autouse=True)
+    def _bind(self, watches_url):
+        self.url = watches_url
+
+    @pytest.fixture
+    async def broker_pool(self):
+        from butlers.db import register_jsonb_codec
+        from butlers.tools.switchboard.insight.broker import create_insight_tables
+
+        schema = f"watch_broker_{uuid4().hex[:8]}"
+        admin = await asyncpg.connect(self.url)
+        try:
+            await admin.execute(f"CREATE SCHEMA {schema}")
+        finally:
+            await admin.close()
+        async with asyncpg.create_pool(
+            self.url,
+            init=register_jsonb_codec,
+            server_settings={"search_path": schema},
+            min_size=1,
+            max_size=4,
+        ) as pool:
+            await create_insight_tables(pool)
+            yield pool
+
+    def notice(self, key="owner_watch:race:g1"):
+        from butlers.watches.runner import WatchNotice
+
+        return WatchNotice(
+            "11111111-1111-1111-1111-111111111111", 1, "digest", key, datetime.now(UTC)
+        )
+
+    async def test_two_concurrent_deliveries_of_one_fire_queue_one_candidate(self, broker_pool):
+        from butlers.watches.delivery import InsightDelivery
+
+        deliver = InsightDelivery(_SlowLookup(broker_pool))
+        notice = self.notice()
+        await asyncio.wait_for(asyncio.gather(*(deliver(notice) for _ in range(4))), timeout=30)
+        count = await broker_pool.fetchval(
+            "SELECT count(*) FROM insight_candidates WHERE dedup_key = $1", notice.dedup_key
+        )
+        assert count == 1
+
+    async def test_withdraw_takes_back_only_pending_unclaimed_candidates(self, broker_pool):
+        from butlers.watches.delivery import InsightDelivery
+
+        deliver = InsightDelivery(broker_pool)
+        watch_id = "11111111-1111-1111-1111-111111111111"
+        await deliver(self.notice(f"owner_watch:{watch_id}:g1"))
+        await deliver(self.notice(f"owner_watch:{watch_id}:g2"))
+        await broker_pool.execute(
+            "UPDATE insight_candidates SET claim_id = gen_random_uuid() WHERE dedup_key LIKE $1",
+            f"owner_watch:{watch_id}:g2",
+        )
+        await deliver.withdraw(type("W", (), {"id": watch_id})())  # only .id is read
+        rows = {
+            r["dedup_key"]: r["status"]
+            for r in await broker_pool.fetch("SELECT dedup_key, status FROM insight_candidates")
+        }
+        assert rows == {
+            f"owner_watch:{watch_id}:g1": "withdrawn",
+            f"owner_watch:{watch_id}:g2": "pending",  # claimed for sending: left alone
+        }
+
+    async def test_withdraw_matches_the_exact_watch_id_even_for_free_text_ids(self, broker_pool):
+        from types import SimpleNamespace
+
+        from butlers.watches.delivery import InsightDelivery
+        from butlers.watches.runner import WatchNotice
+
+        deliver = InsightDelivery(broker_pool)
+        ids = ["a", "a:g1", "x_y", "xzy", "100%"]
+        for watch_id in ids:
+            await deliver(
+                WatchNotice(watch_id, 1, "digest", f"owner_watch:{watch_id}:g1", datetime.now(UTC))
+            )
+
+        async def pending() -> set[str]:
+            rows = await broker_pool.fetch(
+                "SELECT metadata->>'watch_id' AS id FROM insight_candidates "
+                "WHERE status = 'pending'"
+            )
+            return {r["id"] for r in rows}
+
+        assert await pending() == set(ids)
+        for closing in ("a", "x_y", "100%"):
+            await deliver.withdraw(SimpleNamespace(id=closing))
+        assert await pending() == {"a:g1", "xzy"}  # a neighbour is never matched by a wildcard
 
 
 class TestTableGuards:

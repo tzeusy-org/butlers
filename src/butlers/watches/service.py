@@ -13,13 +13,21 @@ anything it observed. Delivery is not here: a fire is the evaluator's intent.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from butlers.conditions import ConditionEvaluator, Grant, RegistrationRefused, Snapshot, State, Tri
+from butlers.conditions import (
+    ConditionEvaluator,
+    Grant,
+    Instance,
+    RegistrationRefused,
+    Snapshot,
+    State,
+    Tri,
+)
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.service import check_registration
 from butlers.core.goal_labels import CATEGORIES, Label
@@ -65,6 +73,9 @@ def _label(categories: tuple[str, ...]) -> Label:
     return Label(frozenset({OWNER}), frozenset({OWNER}), frozenset(categories))
 
 
+Withdraw = Callable[[Watch], Awaitable[None]]
+
+
 class WatchService:
     def __init__(
         self,
@@ -73,7 +84,11 @@ class WatchService:
         grant_for: GrantFor,
         *,
         cap: int = MAX_ACTIVE,
+        withdraw: Withdraw | None = None,
     ) -> None:
+        # ``withdraw`` takes back a notice the owner has not yet been shown, for a watch that is
+        # paused, deleted or expired: a closed watch must not leave a pending candidate behind.
+        self.withdraw = withdraw
         self.store = store
         self.evaluator = evaluator
         self.grant_for = grant_for
@@ -254,14 +269,30 @@ class WatchService:
             return False
         return True
 
+    async def _withdraw(self, watch: Watch) -> None:
+        if self.withdraw is not None:
+            await self.withdraw(watch)
+
     def _grant_is_current(self, watch_id: str, grant_digest: str, sources: tuple[str, ...]) -> None:
         """Refuse unless the live grant is the one the owner approved (digest and sources)."""
         grant = self.grant_for(watch_id)
         if grant.digest != grant_digest or tuple(sorted(grant.sources)) != tuple(sorted(sources)):
             raise WatchRefused("the grant changed since the card was proposed")
 
-    async def _register(self, watch: Watch, snapshot: Snapshot) -> None:
+    async def _register(
+        self,
+        watch: Watch,
+        snapshot: Snapshot,
+        cursors: Mapping[str, int] | None = None,
+    ) -> None:
+        """Register this generation. Generation 1 may fire on the snapshot; every later one
+        (a re-arm, a renewal, a resume or a repair) is edge-triggered: it starts unknown with the
+        watch's last fire cursor as its floor, so only an event past it can fire it.
+        """
         self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
+        seed = watch.generation == 1
+        if not seed and cursors is None:
+            cursors = await self._last_fire_cursors(watch)
         await self.evaluator.register(
             instance_id=watch.instance_id,
             predicate=watch.predicate,
@@ -270,7 +301,18 @@ class WatchService:
             label=_label(watch.categories),
             snapshot=snapshot,
             expires_at=watch.expires_at,
+            cursors=dict(cursors) if cursors else None,
+            seed=seed,
         )
+
+    async def _last_fire_cursors(self, watch: Watch) -> dict[str, int]:
+        """Cursors of the latest earlier generation that fired; empty when none ever did."""
+        async with self.evaluator.store.transaction() as tx:
+            for generation in range(watch.generation - 1, 0, -1):
+                prior = await tx.get_instance(f"{watch.id}:{generation}")
+                if prior is not None and prior.state is State.FIRED:
+                    return dict(prior.cursors)
+        return {}
 
     async def _cancel(self, watch: Watch, now: datetime) -> None:
         try:
@@ -300,6 +342,7 @@ class WatchService:
                 await self._cancel(replace(watch, generation=watch.generation - 1), snapshot.now)
             return watch
         await self._cancel(watch, snapshot.now)
+        await self._withdraw(watch)
         return watch
 
     async def _pause_for_grant(self, watch: Watch, now: datetime) -> Watch:
@@ -310,16 +353,21 @@ class WatchService:
             written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
         except WatchConflict:
             return await self.store.get(watch.id) or watch  # changed meanwhile: that row stands
+        await self._withdraw(watch)
         return written
 
     async def _commit_with_registration(
-        self, watch: Watch, expected_version: int, snapshot: Snapshot
+        self,
+        watch: Watch,
+        expected_version: int,
+        snapshot: Snapshot,
+        cursors: Mapping[str, int] | None = None,
     ) -> Watch:
         """Register the new generation, then commit it; undo the registration if the CAS loses.
 
         Register-before-commit means a committed ACTIVE watch always has its condition.
         """
-        await self._register(watch, snapshot)
+        await self._register(watch, snapshot, cursors)
         try:
             return await self.store.write(watch, expected_version=expected_version, cap=self.cap)
         except BaseException:
@@ -339,6 +387,7 @@ class WatchService:
         # was interrupted, so a recorded deletion never keeps a live condition for long.
         written = await self.store.write(closed, expected_version=current.version, cap=self.cap)
         await self._cancel(current, now)
+        await self._withdraw(current)
         return written
 
     async def _renew(self, current: Watch, card: WatchCard, snapshot: Snapshot) -> Watch:
@@ -386,6 +435,7 @@ class WatchService:
                 raise WatchRefused("unknown watch")
             if watch.state is WatchState.PAUSED:
                 await self._cancel(watch, now)  # a repeat finishes an interrupted stop
+                await self._withdraw(watch)
                 return watch
             if watch.state is not WatchState.ACTIVE:
                 raise WatchRefused("the watch is closed")
@@ -394,10 +444,78 @@ class WatchService:
             )
             written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
             await self._cancel(watch, now)
+            await self._withdraw(watch)
             return written
+
+    async def instance(self, watch: Watch) -> Instance | None:
+        """The evaluator instance of this watch's current generation."""
+        async with self.evaluator.store.transaction() as tx:
+            return await tx.get_instance(watch.instance_id)
+
+    async def rearm(
+        self, watch: Watch, cursors: Mapping[str, int], snapshot: Snapshot
+    ) -> Watch | None:
+        """Register the next generation after a fire; its floor is the fired one's cursors.
+
+        Serialized with every other transition of the watch and judged against the committed row,
+        so a runner holding a stale read, a racing runner or a replay arms at most one next
+        generation. An expired or no longer ACTIVE watch is not rearmed.
+        """
+        async with self.store.serialized(watch.id):
+            current = await self.store.get(watch.id)
+            if (
+                current is None
+                or current.state is not WatchState.ACTIVE
+                or current.generation != watch.generation
+                or snapshot.now >= current.expires_at
+            ):
+                return None
+            following = replace(
+                current, generation=current.generation + 1, version=current.version + 1
+            )
+            return await self._commit_with_registration(
+                following, current.version, snapshot, cursors
+            )
+
+    async def repair(self, watch: Watch, snapshot: Snapshot) -> bool:
+        """Register the condition of an ACTIVE watch that has none; True when it did."""
+        async with self.store.serialized(watch.id):
+            current = await self.store.get(watch.id)
+            if current is None or current.state is not WatchState.ACTIVE:
+                return False
+            return await self.repair_locked(current, snapshot)
+
+    async def repair_locked(self, current: Watch, snapshot: Snapshot) -> bool:
+        """``repair`` for a caller that already holds this watch's transition lock."""
+        if await self._has_instance(current):
+            return False
+        if not self.grant_is_current(current):
+            await self._pause_for_grant(current, snapshot.now)  # never ACTIVE without one
+            return True
+        await self._register(current, snapshot)
+        return True
 
     async def renewal_due(self, now: datetime) -> list[Watch]:
         return [w for w in await self.store.list_all() if w.due_for_renewal(now)]
+
+    async def sweep_closed(self) -> int:
+        """Withdraw pending notices of every watch that is paused, deleted or expired.
+
+        Idempotent, so it runs at startup and on every tick: a crash between a close and its
+        withdrawal, or a candidate proposed by a runner that lost the race, never outlives the
+        next sweep. Each watch is re-read under its transition lock, so a watch that was resumed
+        meanwhile keeps its notices. Returns how many closed watches it swept.
+        """
+        swept = 0
+        for listed in await self.store.list_all():
+            if listed.state is WatchState.ACTIVE:
+                continue
+            async with self.store.serialized(listed.id):
+                current = await self.store.get(listed.id)
+                if current is not None and current.state is not WatchState.ACTIVE:
+                    await self._withdraw(current)
+                    swept += 1
+        return swept
 
     async def expire_due(self, now: datetime) -> list[Watch]:
         """Close every unrenewed watch past its expiry; observations and receipts stay."""
@@ -419,6 +537,7 @@ class WatchService:
                     await self.evaluator.evaluate(watch.instance_id, [], now=now)
                 except KeyError:
                     pass
+                await self._withdraw(watch)
         return expired
 
     async def view(self, watch_id: str) -> WatchView:
