@@ -47,6 +47,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarProposalActionResponse,
     CalendarRespondRequest,
     CalendarRespondResponse,
+    CalendarSourceRoleRequest,
+    CalendarSourceRoleResponse,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
@@ -365,6 +367,8 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         error_kind=classify_sync_error_kind(row.get("last_error")),
         sync_enabled=sync_enabled,
         sync_applicable=row["source_kind"] == "provider_event",
+        time_role=row.get("time_role") or "unclassified",
+        role_basis=row.get("role_basis") or "provider_inferred",
     )
 
 
@@ -3535,5 +3539,63 @@ async def toggle_calendar_source(
             source_id=row["id"],
             calendar_id=row["calendar_id"],
             enabled=request.enabled,
+        )
+    )
+
+
+@accounts_router.post("/sources/role", response_model=ApiResponse[CalendarSourceRoleResponse])
+async def set_calendar_source_role(
+    request: CalendarSourceRoleRequest,
+    *,
+    db: Db,
+) -> ApiResponse[CalendarSourceRoleResponse]:
+    """Set whose time a calendar source's events are (REQ-module-calendar-037).
+
+    The same provider calendar is a source in every calendar butler schema, and every reader joins
+    its own schema's row, so the role is written to all of them. A role is the owner's word
+    (``owner_confirmed``) and discovery never overwrites it; ``role: null`` clears it back to
+    ``unclassified`` for the next discovery to infer. A schema whose write failed is reported.
+    """
+    names = db.butlers_with_module("calendar")
+    targets = sorted(names if isinstance(names, list) else db.butler_names)
+    role = request.role or "unclassified"
+    basis = "owner_confirmed" if request.role is not None else "provider_inferred"
+
+    updated: list[str] = []
+    failed: list[str] = []
+    for butler in targets:
+        try:
+            rows = await db.pool(butler).fetch(
+                f"""
+                UPDATE calendar_sources
+                SET time_role = $1, role_basis = '{basis}', updated_at = now()
+                WHERE source_key = $2
+                RETURNING id
+                """,
+                role,
+                request.source_key,
+            )
+        except Exception:
+            logger.warning("set_calendar_source_role failed in %s", butler, exc_info=True)
+            failed.append(butler)
+            continue
+        if rows:
+            updated.append(butler)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Requested calendar source was not found")
+
+    await log_audit_entry(
+        db,
+        updated[0],
+        "calendar.workspace.source_role",
+        {"source_key": request.source_key, "role": role, "basis": basis},
+    )
+    return ApiResponse[CalendarSourceRoleResponse](
+        data=CalendarSourceRoleResponse(
+            source_key=request.source_key,
+            role=role,  # type: ignore[arg-type]
+            role_basis=basis,  # type: ignore[arg-type]
+            updated_butlers=updated,
+            failed_butlers=failed,
         )
     )

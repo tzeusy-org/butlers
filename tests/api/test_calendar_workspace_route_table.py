@@ -50,6 +50,7 @@ KEPT = {
     (f"{_W}/audit", "get"),
     ("/api/calendar/accounts", "get"),
     ("/api/calendar/sources", "post"),
+    ("/api/calendar/sources/role", "post"),
 }
 
 

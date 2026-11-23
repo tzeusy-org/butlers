@@ -517,6 +517,7 @@ OP POST /api/butlers/{name}/schedules/{schedule_id}/trigger 426e92cac18f
 OP POST /api/butlers/{name}/tick 3260d226c6ac
 OP POST /api/butlers/{name}/trigger 73b0bc420792
 OP POST /api/calendar/sources 826a2a3474a4
+OP POST /api/calendar/sources/role 1592dbfae1d6
 OP POST /api/calendar/workspace/butler-events fd45e6adb5e5
 OP POST /api/calendar/workspace/butler-events/preview 3bc6419a8ea8
 OP POST /api/calendar/workspace/parse-quick-add 51365e18b667
@@ -1226,6 +1227,7 @@ ROUTE APIRoute POST '/api/butlers/{name}/schedules/{schedule_id}/trigger' name=t
 ROUTE APIRoute POST '/api/butlers/{name}/tick' name=force_butler_tick op=force_butler_tick_api_butlers__name__tick_post tags=butlers schema=True
 ROUTE APIRoute POST '/api/butlers/{name}/trigger' name=trigger_butler op=trigger_butler_api_butlers__name__trigger_post tags=butlers schema=True
 ROUTE APIRoute POST '/api/calendar/sources' name=toggle_calendar_source op=toggle_calendar_source_api_calendar_sources_post tags=calendar,accounts schema=True
+ROUTE APIRoute POST '/api/calendar/sources/role' name=set_calendar_source_role op=set_calendar_source_role_api_calendar_sources_role_post tags=calendar,accounts schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/butler-events' name=mutate_butler_event op=mutate_butler_event_api_calendar_workspace_butler_events_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/butler-events/preview' name=preview_butler_event_recurrence op=preview_butler_event_recurrence_api_calendar_workspace_butler_events_preview_post tags=calendar,workspace schema=True
 ROUTE APIRoute POST '/api/calendar/workspace/parse-quick-add' name=parse_quick_add_event op=parse_quick_add_event_api_calendar_workspace_parse_quick_add_post tags=calendar,workspace schema=True
@@ -1500,6 +1502,7 @@ SCHEMA ApiResponse_CalendarInvitationsResponse_ af0da9e833e9
 SCHEMA ApiResponse_CalendarPrepResponse_ 940aed7ba325
 SCHEMA ApiResponse_CalendarProposalActionResponse_ f6a5952208f8
 SCHEMA ApiResponse_CalendarRespondResponse_ e52144b94585
+SCHEMA ApiResponse_CalendarSourceRoleResponse_ 3b304edacc3b
 SCHEMA ApiResponse_CalendarSourceToggleResponse_ a53dac2616f4
 SCHEMA ApiResponse_CalendarWorkspaceMetaResponse_ a12fe83e0b05
 SCHEMA ApiResponse_CalendarWorkspaceMutationResponse_ 8d018749e078
@@ -1828,6 +1831,8 @@ SCHEMA CalendarProposalAcceptRequest 944a5f67aea1
 SCHEMA CalendarProposalActionResponse 166d3f5e0c01
 SCHEMA CalendarRespondRequest 8603b1271b4b
 SCHEMA CalendarRespondResponse ff107009f6d1
+SCHEMA CalendarSourceRoleRequest 113f98a00a13
+SCHEMA CalendarSourceRoleResponse 9e386c5cfebd
 SCHEMA CalendarSourceToggleRequest 9e24d7b3c527
 SCHEMA CalendarSourceToggleResponse a8e2ac569c3d
 SCHEMA CalendarSuggestedSlot a41cfdb65ca7
@@ -1839,7 +1844,7 @@ SCHEMA CalendarWorkspaceMetaResponse 63ef63600192
 SCHEMA CalendarWorkspaceMutationResponse 40fbcc0e56de
 SCHEMA CalendarWorkspaceReadResponse 2c9cf774cdbd
 SCHEMA CalendarWorkspaceSearchResponse eb81afe68de7
-SCHEMA CalendarWorkspaceSourceFreshness ef396be67e9e
+SCHEMA CalendarWorkspaceSourceFreshness 23ba4e07ee3c
 SCHEMA CalendarWorkspaceSyncRequest 4bd483f76465
 SCHEMA CalendarWorkspaceSyncResponse f6f0072f23a5
 SCHEMA CalendarWorkspaceSyncTarget a010ea065d21

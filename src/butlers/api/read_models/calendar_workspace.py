@@ -322,6 +322,8 @@ SOURCE_COLUMNS: str = (
     " s.display_name,"
     " s.writable,"
     " s.metadata AS source_metadata,"
+    " s.time_role AS source_time_role,"
+    " s.role_basis AS source_role_basis,"
     " c.cursor_name,"
     " c.last_synced_at,"
     " c.last_success_at,"
@@ -471,6 +473,8 @@ class CalendarSourceRow:
     full_sync_required: bool
     #: The butler schema this row was fetched from (set by the query function).
     db_butler: str = ""
+    time_role: str = "unclassified"
+    role_basis: str = "provider_inferred"
 
 
 @dataclass
@@ -681,6 +685,8 @@ def row_to_source(row: asyncpg.Record, *, db_butler: str) -> CalendarSourceRow:
         last_error=row["last_error"],
         full_sync_required=bool(row["full_sync_required"] or False),
         db_butler=db_butler,
+        time_role=row.get("source_time_role") or "unclassified",
+        role_basis=row.get("source_role_basis") or "provider_inferred",
     )
 
 
