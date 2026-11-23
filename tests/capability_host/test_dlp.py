@@ -135,6 +135,23 @@ def test_a_booking_code_is_redacted():
         ("https://x.example/d/" + ENTROPIC, "url_path"),
         (ENTROPIC, "entropy"),
     ],
+    ids=[
+        "iban",
+        "identity-document",
+        "account-number",
+        "one-time-password",
+        "aws-access-key",
+        "github-pat",
+        "slack-token",
+        "api-key",
+        "jwt",
+        "pem",
+        "url-userinfo",
+        "url-query-secret",
+        "url-fragment-secret",
+        "url-path-secret",
+        "high-entropy-string",
+    ],
 )
 def test_each_rule_redacts_its_shape(text, rule):
     out, scan = _text("search", None, text)
