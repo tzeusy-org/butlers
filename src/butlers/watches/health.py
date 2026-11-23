@@ -42,7 +42,7 @@ class StateReporter:
         await self._pool.execute(
             """
             INSERT INTO state (key, value, updated_at, version)
-            VALUES ($1, $2::jsonb, now(), 1)
+            VALUES ($1, $2::text::jsonb, now(), 1)
             ON CONFLICT (key) DO UPDATE
                SET value = EXCLUDED.value, updated_at = now(), version = state.version + 1
             """,

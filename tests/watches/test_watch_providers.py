@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import (
     create_migrated_test_db,
     migration_bootstrap_db_url,
@@ -71,7 +72,9 @@ async def world(url, postgres_container):
             )
             await admin.execute("DELETE FROM switchboard.state WHERE key LIKE 'owner_watch:card:%'")
         async with (
-            asyncpg.create_pool(url, setup=_as_switchboard, min_size=1, max_size=6) as runtime,
+            asyncpg.create_pool(
+                url, setup=_as_switchboard, init=register_jsonb_codec, min_size=1, max_size=6
+            ) as runtime,
             asyncpg.create_pool(url, setup=_as_switchboard, min_size=1, max_size=3) as locks,
             asyncpg.create_pool(url, min_size=1, max_size=2) as outsider,
         ):
