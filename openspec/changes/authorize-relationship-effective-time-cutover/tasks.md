@@ -16,10 +16,10 @@
 
 ## 3. Future implementation owned by bu-h3b7t
 
-- [ ] 3.1 Allocate then-free G after the actual current Relationship head; meeting-debrief `rel_036`
+- [x] 3.1 Allocate then-free G after the actual current Relationship head; meeting-debrief `rel_036`
       stays untouched. Implement the lock-and-refuse check and index-state checks before DDL, and
       the offline refusal.
-- [ ] 3.2 Add real-PostgreSQL tests: G refuses `active_writer` with index and revision unchanged
+- [x] 3.2 Add real-PostgreSQL tests: G refuses `active_writer` with index and revision unchanged
       while a second client, logged in as a different role, is connected; G refuses
       `db_activity_unverifiable` when the migrating role lacks `pg_read_all_stats`; G refuses
       `lock_unavailable` under lock contention; G

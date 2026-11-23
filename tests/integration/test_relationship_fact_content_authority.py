@@ -47,6 +47,7 @@ from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.operations import approve_action
 from butlers.testing.migration import (
     _bootstrap_migration_prerequisites,
+    _upgrade_chain_to_revision,
     create_migrated_test_db,
     migration_bootstrap_db_url,
     migration_db_name,
@@ -116,7 +117,7 @@ def admitted_standing_rule_boundary(monkeypatch):
 
 
 @pytest.fixture(scope="module")
-async def env(postgres_container):
+async def env(postgres_container, request):
     # Real lifecycle topology: core in public and both daemons, then their
     # actual module/roster chains. No copied table or foreign grant.
     url = await asyncio.to_thread(
@@ -128,9 +129,19 @@ async def env(postgres_container):
         ("memory", "relationship"),
         ("approvals", "relationship"),
         ("switchboard", "switchboard"),
-        ("relationship", "relationship"),
     ):
         await run_migrations(url, chain=chain, schema=schema)
+    predecessor = getattr(request, "param", None)
+    if predecessor is None:
+        await run_migrations(url, chain="relationship", schema="relationship")
+    else:
+        await asyncio.to_thread(
+            _upgrade_chain_to_revision,
+            url,
+            chain="relationship",
+            schema="relationship",
+            revision=predecessor,
+        )
     # Replay the genuine privileged bootstrap against this disposable database
     # after all chains, so its grant loop cannot be mistaken for an ACL boundary.
     # Domain controls below still execute under the actual runtime SET ROLE pools.
@@ -792,7 +803,7 @@ async def test_protected_adoption_rejection_and_unknown_ack_readback(env, monkey
 
 
 # REQ-relationship-facts-001: real triple-store reference/retention/null seam;
-# held effective-time cutover/index admission remains outside this proof.
+# Temporal behavior has a separate transition and cutover suite.
 # REQ-dashboard-relationship-003: durable reporter/confirmation read-model states.
 async def test_report_versions_birth_witness_and_author_deletion(env):
     subject, first, second = await _person(env), await _person(env), await _person(env)
@@ -1036,8 +1047,9 @@ async def test_held_owner_endpoint_report_cannot_confirm_an_identity_fact(env):
 
 
 # REQ-relationship-facts-002: ordinary writer versus temporal legacy-index
-# refusal and packet preservation; no held G/index cutover delivery is claimed.
+# refusal and packet preservation under the actual pre-cutover schema.
 # REQ-relationship-facts-005: actual executor lineage and frozen replay arguments.
+@pytest.mark.parametrize("env", ["rel_046"], indirect=True)
 async def test_approval_replay_original_args_and_legacy_normalization(env, monkeypatch):
     from butlers.modules.approvals.executor import execute_approved_action
 
@@ -1196,7 +1208,7 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
         await resolve_contact_by_channel(env.rel, "email", rule_args["object"])
     ).entity_id == subject
 
-    # Ordinary standing permission above works before the held cutover.
+    # Ordinary standing permission above works before the cutover.
     # Actual admitted rules with explicit/correction input must still refuse
     # at the same bridge, before a pending/context/evidence/use-count effect.
     from butlers.tools.relationship.fact_temporal import CUTOVER_PENDING, TemporalError

@@ -47,8 +47,11 @@ backends on `current_database()` other than its own (`pg_stat_activity`), and re
 if any exists. It runs as the migration login role, never a `butler_*_rw` runtime role, and that
 role needs `pg_read_all_stats` (or superuser): without it PostgreSQL masks other roles' sessions, so a
 naive count could see zero clients beside live writers. G therefore refuses
-`db_activity_unverifiable` when the privilege is missing or any other row's database, user or
-backend type is unreadable. It holds the lock through the DDL and commit, so a client that connects after the check
+`db_activity_unverifiable` when the privilege is missing or another row's identity is
+unreadable. The normal PostgreSQL autovacuum launcher, background writer, checkpointer, logical
+replication launcher and WAL writer have no database or client socket as cluster-global server
+processes. G checks those positive identities alongside the rest of the census. It holds the lock
+through the DDL and commit, so a client that connects after the check
 cannot touch the table until G commits. Session counting cannot tell readers from writers, so any
 other client refuses G, and the rollout stops every client of the database first. That stops every
 butler: whole-assistant downtime for the migration is accepted.
@@ -92,9 +95,10 @@ transaction. Otherwise it refuses `temporal_rollback_prohibited`; recovery rolls
 | --- | --- |
 | `lock_unavailable` | The `NOWAIT` lock on `relationship.entity_facts` fails |
 | `active_writer` | Another client backend is connected to the target database |
-| `db_activity_unverifiable` | Migrating role lacks `pg_read_all_stats`, or another session row is masked |
+| `db_activity_unverifiable` | Migration login lacks effective statistics access, or a row's identity is masked, incomplete or unknown |
 | `cutover_index_state_invalid` | The legacy index or occurrence index is missing, changed or invalid |
 | `temporal_rollback_prohibited` | Downgrade after the first temporal write |
+| `offline_cutover_unsupported` | An offline migration reaches G |
 
 Every refusal happens before DDL and leaves indexes, data and the applied revision unchanged.
 

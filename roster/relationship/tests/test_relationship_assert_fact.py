@@ -45,9 +45,6 @@ from butlers.tools.relationship.relationship_assert_fact import (
     _insert_active_fact,
     relationship_assert_fact,
 )
-from roster.relationship.tests.evidence_schema import (
-    simulate_temporal_cutover,
-)
 from roster.relationship.tests.fact_authority_fixtures import (
     approve_fixture,
     replay_fixture,
@@ -1187,6 +1184,13 @@ _MARCH_TO_MAY = dict(
 class TestEffectiveTimeTransition:
     """While uq_ef_spo_active exists the transition writer refuses temporal intent."""
 
+    @pytest.fixture
+    async def rel_pool(self, db):
+        """Build the pre-cutover schema through its ordinary predecessor."""
+        return await db(
+            "core", "memory", "relationship", "approvals", revisions={"relationship": "rel_046"}
+        )
+
     @pytest.mark.parametrize(
         ("subject_kind", "temporal"),
         [
@@ -1241,14 +1245,9 @@ class TestEffectiveTimeTransition:
 
 
 class TestEffectiveTimeAfterCutover:
-    """The same transition code, on a disposable schema with the legacy index gone.
-
-    No repository migration drops ``uq_ef_spo_active`` yet; these tests prove the
-    post-cutover paths are ready without shipping that cutover.
-    """
+    """Exercise the transition writer against the fully migrated schema."""
 
     async def test_occurrences_replay_and_compare_and_swap_corrections(self, rel_pool, entity):
-        await simulate_temporal_cutover(rel_pool)
         period = uuid.uuid4()
         cited = [{"type": "url", "ref": "https://example.test/cv", "note": "CV"}]
 
@@ -1330,7 +1329,6 @@ class TestEffectiveTimeAfterCutover:
     async def test_owner_approval_freezes_the_resolved_temporal_request(
         self, rel_pool, owner_entity
     ):
-        await simulate_temporal_cutover(rel_pool)
         value = "owner@example.test"
 
         async def propose(**kwargs):
@@ -1409,7 +1407,6 @@ class TestEffectiveTimeAfterCutover:
     async def test_owner_bootstrap_seed_never_adds_a_default_sibling(self, rel_pool, owner_entity):
         from butlers.owner_bootstrap import _seed_owner_telegram_handle
 
-        await simulate_temporal_cutover(rel_pool)
         await rel_pool.execute(
             "INSERT INTO public.entity_info (entity_id, type, value) "
             "VALUES ($1, 'telegram_chat_id', '4242')",
@@ -1447,7 +1444,6 @@ class TestEffectiveTimeAfterCutover:
 
     async def test_concurrent_corrections_have_one_winner_and_a_clean_loser(self, db):
         async with _bigger_pool(db) as p:
-            await simulate_temporal_cutover(p)
             entity = await p.fetchval(
                 "INSERT INTO public.entities (canonical_name) VALUES ('Alice') RETURNING id"
             )

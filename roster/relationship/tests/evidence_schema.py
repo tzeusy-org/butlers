@@ -48,10 +48,8 @@ def rel_035() -> ModuleType:
 async def simulate_temporal_cutover(pool: asyncpg.Pool | asyncpg.Connection) -> None:
     """Drop the legacy active-SPO index in a DISPOSABLE test schema.
 
-    This is the post-cutover layout the transition writer must already handle.
-    The real cutover migration deliberately does not exist yet (it needs proof
-    that no old writer is live); tests use this only to exercise the future
-    code path, never as a model for a repository migration.
+    Use this only for narrow historical or hand-built schema fixtures. Tests
+    with the full migration chain get the post-cutover layout from Alembic.
     """
     await pool.execute(f"DROP INDEX IF EXISTS relationship.{rel_035().LEGACY_SPO_INDEX}")
 

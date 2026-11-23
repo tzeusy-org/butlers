@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 
 from butlers.migrations import run_migrations
 from butlers.testing.migration import (
@@ -338,9 +339,10 @@ def public_mcp_topology():
     """Real migrations in all nine schemas, with no publication/subscription yet."""
     with public_mcp_cluster() as postgres:
         url = create_migration_db(postgres, "butlers")
-        engine = create_engine(url)
+        # Release each target session before running the Relationship revision.
+        engine = create_engine(url, poolclass=NullPool)
         admin_url = migration_bootstrap_db_url(postgres, "butlers")
-        admin = create_engine(admin_url)
+        admin = create_engine(admin_url, poolclass=NullPool)
         cluster = create_engine(postgres.get_connection_url(), isolation_level="AUTOCOMMIT")
         try:
             with engine.connect() as conn:

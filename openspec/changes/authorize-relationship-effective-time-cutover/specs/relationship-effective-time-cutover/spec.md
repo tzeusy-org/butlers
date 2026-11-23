@@ -82,10 +82,15 @@ session's current role is a superuser or has the privileges of `pg_read_all_stat
 `uq_ef_spo_active` exists with its original definition and that the occurrence index exists and is
 valid. It SHALL hold the lock through the DDL and the commit. Lock contention SHALL refuse
 `lock_unavailable`. A missing `pg_read_all_stats` privilege SHALL refuse `db_activity_unverifiable`.
-Any row whose database, user or backend type is NULL or otherwise unreadable SHALL refuse
-`db_activity_unverifiable`, whatever database it might belong to. Any readable client backend on
-`current_database()`, whatever its role or purpose, SHALL refuse `active_writer`. An unexpected
-index state SHALL refuse `cutover_index_state_invalid`.
+Rows missing readable database, user or backend identity SHALL refuse `db_activity_unverifiable`.
+PostgreSQL's autovacuum launcher, background writer, checkpointer, logical replication launcher
+and WAL writer are cluster-global processes. A row positively identified as one of those built-in
+types SHALL be accepted with intrinsically absent database and user identities when it has no
+client address or port. The logical replication launcher can also show a complete registered user
+identity. Unknown backend types, partially visible identities and incomplete client transport
+identities SHALL fail closed. Any readable client connected to `current_database()`, whatever its
+role or purpose, SHALL refuse `active_writer`. An unexpected index state SHALL refuse
+`cutover_index_state_invalid`.
 Every refusal SHALL leave indexes, data and the applied Relationship revision unchanged. Refusal
 error output SHALL carry the stable code and counts only, never fact content or SQL text.
 Before G runs on a database with existing clients, the rollout SHALL stop every database client of
@@ -125,9 +130,17 @@ Scope: v1-mandatory
 #### Scenario: Unreadable session activity fails closed
 
 - **WHEN** the migrating role is neither a superuser nor has the privileges of `pg_read_all_stats`,
-  or any other `pg_stat_activity` row has a NULL or unreadable database, user or backend type
+  or a `pg_stat_activity` row is masked, incomplete or has an unknown backend type outside the
+  positively identified cluster-global cases
 - **THEN** the upgrade MUST refuse `db_activity_unverifiable` with no change
 - **AND** it MUST NOT treat a masked row as belonging to another database
+
+#### Scenario: Cluster-global activity and other databases permit G
+
+- **WHEN** the migration login can read all activity, no other client is connected to the target
+  database, and other rows are readable sessions or identified built-in non-client processes
+- **THEN** normal cluster-global processes with intrinsically absent database or user identities,
+  and clients connected to a different database, MUST permit G's index checks to proceed
 
 #### Scenario: The refusal test is required
 

@@ -1,15 +1,11 @@
 # Relationship Effective-Time Cutover
 
-> **Status:** unimplemented. Symbolic migration G does not exist yet (`bu-h3b7t`). Nothing on this
-> page can be executed today, and nothing here authorizes a deployment, client stop or start,
-> migration, or temporal activation. Rolling out G is an owner act.
+> `rel_047` is the cutover revision G, after `rel_046` (`bu-h3b7t`). Rolling out a release
+> carrying G is an owner act.
 > **Contract:** [`authorize-relationship-effective-time-cutover`](../../openspec/changes/authorize-relationship-effective-time-cutover/design.md)
 > on top of [`relationship-fact-effective-time`](../../openspec/changes/relationship-fact-effective-time/design.md).
 > **Decision:** plain hard cutover, owner answer B on `bu-4awqyt` (2026-10-20). The earlier signed
 > receipt, root signer, isolated test runtime, Compose fence and Kubernetes extension are dropped.
-
-Actual `rel_036` is the immutable meeting-debrief migration. G is a then-free cutover revision
-after the actual then-current Relationship head, not a reserved number or replacement for `rel_036`.
 
 ## What the cutover does
 
@@ -21,8 +17,9 @@ enables temporal assertions, corrections, and repeated periods.
 Old code must be gone first: pre-transition writers and unfenced mutators collapse or overwrite
 occurrences once the index is absent. The database proves it: before any DDL, G takes an exclusive
 no-wait lock on `relationship.entity_facts` and refuses while any other client is connected to the
-database. Every writer ships in the Relationship release, and the release that carries G carries
-the complete compatible mutator inventory
+database. The check accepts readable clients of other databases and the identified PostgreSQL
+cluster-global processes whose rows have no target database or client socket. The release
+carrying G includes the complete compatible mutator inventory
 (`tests/contracts/test_entity_facts_mutator_inventory.py`).
 
 ## Rollout
@@ -33,8 +30,8 @@ because it is the chart's desired state, Helm keeps it that way until it is turn
 
 1. **Check the release.** The release carrying G passed its required checks, and the migration
    login role (the database user of the migration connection, never a `butler_*_rw` role) has
-   `pg_read_all_stats`. Without it G refuses `db_activity_unverifiable`.
-2. **Take and verify a backup.** After G, recovery is roll-forward only. Take a fresh backup of the
+   effective `pg_read_all_stats` access, either through an inherited grant or as superuser.
+2. **Take and verify a backup.** Take a fresh backup of the
    target database and prove it restores, per [Backup and Restore](backup-restore.md) (the
    [managed restore drill](backup-restore.md#managed-restore-drill) or an equivalent scratch
    restore). Do not continue on an unverified backup.
@@ -47,14 +44,15 @@ because it is the chart's desired state, Helm keeps it that way until it is turn
    outside it.
 4. **Run the migration once, alone.** Nothing in the chart runs while suspended, including the
    `dashboard-api` `migrations` initContainer. Run `butlers db migrate` once as a one-shot pod or
-   Job using the same image, environment and Secrets as that initContainer. If G refuses, read
-   the code in the table below, fix the cause and rerun; nothing has changed.
+   Job using the same image, environment and Secrets as that initContainer. A daemon can open its
+   runtime pool before fallback migration, so use the one-shot command without retained target
+   connections. If G refuses, address the reported code and rerun.
 5. **Start the release.** Deploy the same release with `suspend=false` and resume what step 3
    paused. The `dashboard-api` initContainer's `butlers db migrate` is now a no-op at head. Never
    start an image older than G afterward: that is unsupported and outside what G can prove.
 
-Until the rollout runs, any automatic migration path that reaches G while clients are connected
-refuses and leaves the database at G's predecessor. That is expected, not a fault to work around.
+An automatic migration path that reaches G while clients are connected refuses and leaves the
+database at `rel_046`.
 
 ## Refusals
 
@@ -62,11 +60,15 @@ refuses and leaves the database at G's predecessor. That is expected, not a faul
 | --- | --- | --- |
 | Another session holds a lock on `relationship.entity_facts` | `lock_unavailable` | No DDL; stop the holder and retry. |
 | Any other client connected to the database | `active_writer` | No DDL; stop the client and retry. |
-| Migrating role lacks `pg_read_all_stats`, or a session row is masked | `db_activity_unverifiable` | No DDL; grant the privilege and retry. |
+| Migration login lacks effective statistics access, or an activity row is masked, incomplete or unknown | `db_activity_unverifiable` | Check the login's access and resolve unidentified activity. |
 | Legacy or occurrence index missing, changed or invalid | `cutover_index_state_invalid` | No DDL. |
-| Offline SQL generation reaches G | refusal | No SQL emitted. |
+| Offline SQL generation reaches G | `offline_cutover_unsupported` | The cutover requires an online migration. |
 
 Every refusal leaves indexes, data and the applied revision unchanged.
+
+A database-scoped autovacuum worker can report a database without a login identity. G refuses
+that incomplete row as `db_activity_unverifiable`. Retry the one-shot command after the worker
+finishes.
 
 ## Rollback
 
