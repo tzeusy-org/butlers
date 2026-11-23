@@ -116,6 +116,11 @@ from butlers.core.purpose_lane import (
     PurposeLane,
     purpose_lane_from_routing_context,
 )
+from butlers.core.qa.executor_profile import (
+    EXECUTOR_ENV_UNFIT_OUTCOME,
+    executor_prompt_receipt,
+    is_executor_trigger,
+)
 from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
@@ -1694,6 +1699,9 @@ class Spawner:
                     self._pool,
                     self._config.name,
                     complexity,
+                    # An executor resolves at its exact rung: no silent downgrade to a
+                    # cheaper, specialty or local entry (RFC 0038 D16/D18, bu-ejow5p.5).
+                    allow_tier_fallthrough=not is_executor_trigger(trigger_source),
                     quota_aware=True,
                     intent=dispatch_intent,
                     receipt_sink=_resolution_receipts,
@@ -2399,96 +2407,114 @@ class Spawner:
             if span.is_recording():
                 trace_id = format(span.get_span_context().trace_id, "032x")
 
-            # Read system prompt. The live override (HEAD of
-            # public.system_prompt_history, set via the dashboard prompt editor)
-            # takes precedence over the on-disk CLAUDE.md seed when present.
-            shared_pool = (
-                self._credential_store.shared_pool if self._credential_store is not None else None
+            # Engineering executors (QA) get one core-owned profile: no persona, DB prompt
+            # override, memory, situational/timezone preamble or blind-spot disclosure
+            # (RFC 0038 D18). A missing profile refuses the launch (fail closed).
+            executor_receipt = (
+                executor_prompt_receipt() if is_executor_trigger(trigger_source) else None
             )
-            prompt_override = await fetch_system_prompt_override(
-                shared_pool or self._pool, self._config.name
-            )
-            resolved_system_prompt = read_system_prompt_with_sources(
-                self._config_dir, self._config.name, db_override=prompt_override
-            )
-            system_prompt = resolved_system_prompt.prompt
 
             # Pre-row stage readings (the session clock starts at row creation).
             pre_row_marks: dict[str, float] = {}
 
-            # Fetch situational context preamble (fail-open)
-            context_preamble_ctx = await fetch_situational_context_preamble(
-                self._pool, self._config.name
-            )
-            general_timezone_instruction = await fetch_general_timezone_instruction(
-                self._pool,
-                self._config.name,
-                self._credential_store,
-            )
+            # An executor neither recalls memory nor stores an episode from its session.
+            memory_enabled = executor_receipt is None and _memory_module_enabled(self._config)
+            if executor_receipt is not None:
+                prompt_receipt = executor_receipt
+                system_prompt = prompt_receipt.prompt
+                _composed_prompt_digest = compose_prompt_digest(system_prompt, None)
+                now_mark = time.monotonic()
+                for stage in ("prompt_context_ms", "memory_context_ms", "blind_spot_ms"):
+                    pre_row_marks[stage] = now_mark
+            else:
+                # Read system prompt. The live override (HEAD of
+                # public.system_prompt_history, set via the dashboard prompt editor)
+                # takes precedence over the on-disk CLAUDE.md seed when present.
+                shared_pool = (
+                    self._credential_store.shared_pool
+                    if self._credential_store is not None
+                    else None
+                )
+                prompt_override = await fetch_system_prompt_override(
+                    shared_pool or self._pool, self._config.name
+                )
+                resolved_system_prompt = read_system_prompt_with_sources(
+                    self._config_dir, self._config.name, db_override=prompt_override
+                )
+                system_prompt = resolved_system_prompt.prompt
 
-            # Fetch owner routing instructions (switchboard only)
-            # Intentional name check: routing instructions are the switchboard's classifier
-            # context. No other staffer or domain butler uses this context injection.
-            routing_ctx: str | None = None
-            if self._config.name == "switchboard":
-                routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
-            pre_row_marks["prompt_context_ms"] = time.monotonic()
-
-            memory_ctx: str | None = None
-            memory_enabled = _memory_module_enabled(self._config)
-            # A consolidation session's dedup context is already partition-filtered
-            # in its prompt. Recall-based injection would show an owner-partition
-            # session facts of every authority, which it could restate as
-            # owner-evidenced new facts.
-            if memory_enabled and trigger_source != "schedule:consolidation":
-                memory_ctx = await fetch_memory_context(
+                # Fetch situational context preamble (fail-open)
+                context_preamble_ctx = await fetch_situational_context_preamble(
+                    self._pool, self._config.name
+                )
+                general_timezone_instruction = await fetch_general_timezone_instruction(
                     self._pool,
                     self._config.name,
-                    final_prompt,
-                    token_budget=_memory_context_token_budget(self._config),
+                    self._credential_store,
                 )
-            pre_row_marks["memory_context_ms"] = time.monotonic()
 
-            blind_spot_preamble_enabled = True
-            if self._runtime_config_accessor is not None:
-                try:
-                    blind_spot_preamble_enabled = (
-                        await self._runtime_config_accessor.get()
-                    ).blind_spot_preamble_enabled
-                except Exception:
-                    logger.warning(
-                        "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                # Fetch owner routing instructions (switchboard only)
+                # Intentional name check: routing instructions are the switchboard's classifier
+                # context. No other staffer or domain butler uses this context injection.
+                routing_ctx: str | None = None
+                if self._config.name == "switchboard":
+                    routing_ctx = await fetch_routing_instructions(self._pool, self._config.name)
+                pre_row_marks["prompt_context_ms"] = time.monotonic()
+
+                memory_ctx: str | None = None
+                # A consolidation session's dedup context is already partition-filtered
+                # in its prompt. Recall-based injection would show an owner-partition
+                # session facts of every authority, which it could restate as
+                # owner-evidenced new facts.
+                if memory_enabled and trigger_source != "schedule:consolidation":
+                    memory_ctx = await fetch_memory_context(
+                        self._pool,
                         self._config.name,
-                        exc_info=True,
+                        final_prompt,
+                        token_budget=_memory_context_token_budget(self._config),
                     )
-            blind_spot_preamble = await fetch_blind_spot_preamble(
-                self._pool,
-                self._config.name,
-                self._config,
-                enabled=blind_spot_preamble_enabled,
-            )
-            pre_row_marks["blind_spot_ms"] = time.monotonic()
+                pre_row_marks["memory_context_ms"] = time.monotonic()
 
-            _composed_prompt_digest = compose_prompt_digest(
-                system_prompt,
-                memory_ctx,
-                general_timezone_instruction=general_timezone_instruction,
-                routing_instructions=routing_ctx,
-                context_preamble=context_preamble_ctx,
-            )
-            prompt_receipt = compose_effective_system_prompt_receipt(
-                system_prompt,
-                memory_ctx,
-                base_sources=[
-                    (source.source, source.status, source.content)
-                    for source in resolved_system_prompt.sources
-                ],
-                general_timezone_instruction=general_timezone_instruction,
-                routing_instructions=routing_ctx,
-                context_preamble=context_preamble_ctx,
-                blind_spot_preamble=blind_spot_preamble,
-            )
-            system_prompt = prompt_receipt.prompt
+                blind_spot_preamble_enabled = True
+                if self._runtime_config_accessor is not None:
+                    try:
+                        blind_spot_preamble_enabled = (
+                            await self._runtime_config_accessor.get()
+                        ).blind_spot_preamble_enabled
+                    except Exception:
+                        logger.warning(
+                            "Failed to read blind_spot_preamble_enabled for %s; defaulting to on",
+                            self._config.name,
+                            exc_info=True,
+                        )
+                blind_spot_preamble = await fetch_blind_spot_preamble(
+                    self._pool,
+                    self._config.name,
+                    self._config,
+                    enabled=blind_spot_preamble_enabled,
+                )
+                pre_row_marks["blind_spot_ms"] = time.monotonic()
+
+                _composed_prompt_digest = compose_prompt_digest(
+                    system_prompt,
+                    memory_ctx,
+                    general_timezone_instruction=general_timezone_instruction,
+                    routing_instructions=routing_ctx,
+                    context_preamble=context_preamble_ctx,
+                )
+                prompt_receipt = compose_effective_system_prompt_receipt(
+                    system_prompt,
+                    memory_ctx,
+                    base_sources=[
+                        (source.source, source.status, source.content)
+                        for source in resolved_system_prompt.sources
+                    ],
+                    general_timezone_instruction=general_timezone_instruction,
+                    routing_instructions=routing_ctx,
+                    context_preamble=context_preamble_ctx,
+                    blind_spot_preamble=blind_spot_preamble,
+                )
+                system_prompt = prompt_receipt.prompt
 
             # effective_request_id was minted before the quota-skip loop above
             # (non-null for both connector-sourced and internal triggers).
@@ -2987,6 +3013,8 @@ class Spawner:
                         exception=_attempt_exc,
                         tool_calls=_attempt_tool_calls,
                         process_info=runtime.last_process_info,
+                        executor_env=is_executor_trigger(trigger_source)
+                        and env_override is not None,
                     )
                 )
 
@@ -3155,7 +3183,13 @@ class Spawner:
                         self._pool,
                         catalog_entry_id=_failed_catalog_entry_id,
                         butler=self._config.name,
-                        outcome=ALLOWANCE_OUTCOME if _is_usage_limit else "runtime_failure",
+                        outcome=(
+                            ALLOWANCE_OUTCOME
+                            if _is_usage_limit
+                            else EXECUTOR_ENV_UNFIT_OUTCOME
+                            if _failover_decision.reason.startswith("executor_env_unfit")
+                            else "runtime_failure"
+                        ),
                         attempt_index=_failed_attempt_index,
                         session_id=session_id,
                         failure_reason=_failover_decision.reason,

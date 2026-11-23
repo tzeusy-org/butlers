@@ -290,7 +290,11 @@ async def test_dispatch_qa_gate_rejections():
             new_callable=AsyncMock,
             return_value=False,
         ),
-        patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=None),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
     ):
         r4 = await dispatch_qa_investigation(
@@ -456,7 +460,7 @@ async def test_dispatch_qa_success_and_never_raises():
             return_value=False,
         ),
         patch(
-            "butlers.core.qa.dispatch.resolve_model",
+            "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ),
@@ -1785,3 +1789,58 @@ def test_pr_title_keeps_code_identity_after_publisher_sanitizing() -> None:
     assert not isinstance(sanitized, str)
     assert "[REDACTED-HOST]" not in sanitized.title
     assert "builtins.ValueError in src/butlers/core/spawner.py:spawn" in sanitized.title
+
+
+@pytest.mark.asyncio
+async def test_gate_10_resolves_the_exact_executor_rung_under_the_launch_intent():
+    """bu-ejow5p.5: admission resolves what launch resolves: workhorse, no fallthrough, qa intent."""
+    from butlers.core.dispatch_intent import Consequence
+    from butlers.core.model_capabilities import ModelFeature
+    from butlers.core.model_routing import Complexity
+
+    resolve = AsyncMock(return_value=None)
+    spawner = MagicMock()
+    spawner._config.name = "qa"
+    with (
+        patch(
+            "butlers.core.qa.dispatch.create_or_join_attempt",
+            new_callable=AsyncMock,
+            return_value=(uuid.uuid4(), True),
+        ),
+        patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch.get_recent_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts", new_callable=AsyncMock, return_value=1
+        ),
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("butlers.core.qa.dispatch.resolve_model_with_effective_tier", resolve),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+    ):
+        result = await dispatch_qa_investigation(
+            pool=_qa_pool(),
+            triaged_finding=_make_triaged(_make_finding(severity=1)),
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=spawner,
+            gh_token=None,
+        )
+
+    assert result.reason == "no_model"
+    args, kwargs = resolve.call_args
+    assert args[1] == "qa" and args[2] is Complexity.WORKHORSE
+    assert kwargs["allow_tier_fallthrough"] is False
+    intent = kwargs["intent"]
+    assert intent.required_features == frozenset({ModelFeature.WORKSPACE_AGENT})
+    assert intent.consequence is Consequence.REVERSIBLE

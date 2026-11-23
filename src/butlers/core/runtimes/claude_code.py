@@ -367,7 +367,10 @@ class ClaudeCodeAdapter(RuntimeAdapter):
     supports_resume = False
 
     #: The CLI receives the butler's MCP server config and executes its tools.
-    declared_capabilities: ClassVar[Mapping[str, bool]] = {"tool_use": True}
+    declared_capabilities: ClassVar[Mapping[str, bool]] = {
+        "tool_use": True,
+        "workspace_agent": True,
+    }
 
     def __init__(
         self,

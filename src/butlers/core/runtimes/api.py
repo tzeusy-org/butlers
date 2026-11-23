@@ -137,6 +137,7 @@ class ApiAdapter(RuntimeAdapter):
     declared_capabilities: ClassVar[Mapping[str, bool]] = {
         "tool_use": False,
         "structured_output": True,
+        "workspace_agent": False,
     }
 
     @property

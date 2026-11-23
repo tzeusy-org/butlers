@@ -332,12 +332,18 @@ class FailoverContext:
     trigger_context:
         Optional free-form trigger metadata.  Reserved for future classifiers;
         not currently used for eligibility decisions.
+    executor_env:
+        True when the failed session is an engineering executor running in a
+        sandbox environment (``env_override``). A provider auth rejection there
+        says the sandbox cannot reach the credential, not that the model is
+        unhealthy, so it is labelled ``executor_env_unfit`` (bu-ejow5p.5).
     """
 
     exception: BaseException
     tool_calls: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     process_info: dict[str, Any] | None = None
     trigger_context: dict[str, Any] | None = None
+    executor_env: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -508,6 +514,12 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
         # Provider / auth failures — genuine identity/credential rejections.
         if _matches_any(exc_msg, _PROVIDER_AUTH_MARKERS):
             logger.debug("Failover eligible: RuntimeError — provider/auth failure")
+            if ctx.executor_env:
+                return FailoverDecision(
+                    eligible=True,
+                    reason="executor_env_unfit: provider credential unavailable in the "
+                    "executor sandbox before session work started",
+                )
             return FailoverDecision(
                 eligible=True,
                 reason="provider_auth_error: provider or authentication failure "

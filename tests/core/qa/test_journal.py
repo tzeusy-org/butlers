@@ -283,7 +283,11 @@ async def test_flagged_event_emitted_for_novel_finding_after_attempt_claim() -> 
             new_callable=AsyncMock,
             return_value=False,
         ),
-        patch("butlers.core.qa.dispatch.resolve_model", new_callable=AsyncMock, return_value=None),
+        patch(
+            "butlers.core.qa.dispatch.resolve_model_with_effective_tier",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(
             "butlers.core.qa.dispatch._fetch_patrol_started_at",

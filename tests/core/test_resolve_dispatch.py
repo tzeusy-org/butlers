@@ -498,3 +498,69 @@ async def test_an_unverified_pinned_candidate_is_still_excluded(
         "UPDATE public.model_catalog SET last_verified_ok = false WHERE id = $1", broken
     )
     assert set(await _winners(dispatch_pool, 4)) == {ok}
+
+
+QA_INTENT = derive_dispatch_intent("qa", Complexity.WORKHORSE)
+
+
+async def test_qa_executor_resolves_the_workhorse_cli_entry_not_the_api_entry(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
+    """bu-ejow5p.5: a higher-priority api entry cannot win the executor rung; the receipt says why."""
+    api_id = await _insert_entry(
+        dispatch_pool, alias="qa-api", runtime_type="api", complexity_tier="workhorse", priority=30
+    )
+    sonnet_id = await _insert_entry(
+        dispatch_pool,
+        alias="qa-sonnet",
+        runtime_type="claude",
+        complexity_tier="workhorse",
+        priority=10,
+    )
+
+    # Control: without the intent the legacy resolver picks the api entry.
+    legacy = await resolve_model_with_effective_tier(
+        dispatch_pool, BUTLER, Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    assert legacy is not None and legacy[3] == api_id
+
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, QA_INTENT, allow_tier_fallthrough=False
+    )
+
+    assert resolution.selection is not None
+    assert resolution.selection[3] == sonnet_id
+    assert resolution.effective_tier == "workhorse"
+    assert _outcome(resolution, api_id) is CandidateOutcome.EXCLUDED_HARD_FIT
+    assert FitCode.CAPABILITY_UNSUPPORTED in _codes(resolution, api_id)
+
+
+async def test_qa_executor_exact_rung_has_no_silent_downgrade(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
+    """With no workhorse entry the exact-rung resolution selects nothing, even if cheaper exist."""
+    await _insert_entry(
+        dispatch_pool, alias="qa-cheap", runtime_type="claude", complexity_tier="cheap", priority=9
+    )
+    await _insert_entry(
+        dispatch_pool,
+        alias="qa-local",
+        runtime_type="claude",
+        complexity_tier="local",
+        priority=9,
+    )
+
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, QA_INTENT, allow_tier_fallthrough=False
+    )
+    assert resolution.selection is None
+    assert (
+        await resolve_model_with_effective_tier(
+            dispatch_pool,
+            BUTLER,
+            Complexity.WORKHORSE,
+            allow_tier_fallthrough=False,
+            intent=QA_INTENT,
+        )
+        is None
+    )
