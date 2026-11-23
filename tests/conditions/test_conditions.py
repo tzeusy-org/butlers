@@ -33,10 +33,23 @@ SUBJECT = str(uuid5(NS, "subject"))
 EFFECT = str(uuid5(NS, "effect"))
 BINDING = str(uuid5(NS, "binding"))
 PLACE = str(uuid5(NS, "place"))
+EXPECTED = str(uuid5(NS, "expectation-subject"))
+ROUTINE = str(uuid5(NS, "routine"))
 NOW = datetime(2026, 11, 9, 12, 0, tzinfo=UTC)
 EXPIRES = NOW + timedelta(hours=2)
 SOURCES = frozenset(
-    {"goal.decision", "goal.inbox", "goal.effect", "clock", "perception:owner.place"}
+    {
+        "goal.decision",
+        "goal.inbox",
+        "goal.effect",
+        "clock",
+        "perception:owner.place",
+        "perception:expect.window",
+        "perception:owner.mode",
+        "condition:finance:bill-overdue",
+        "read_check:finance.balance",
+        "bundle:delay-commitment",
+    }
 )
 GRANT = Grant(
     goal_id=GOAL,
@@ -44,7 +57,7 @@ GRANT = Grant(
     decisions=frozenset({SUBJECT}),
     effects=frozenset({EFFECT}),
     bindings=frozenset({BINDING}),
-    subjects=frozenset({PLACE}),
+    subjects=frozenset({PLACE, EXPECTED, ROUTINE}),
 )
 
 DECISION = {"tag": "decision", "subject_id": SUBJECT, "outcome": "approved"}
@@ -58,6 +71,23 @@ TRANSITION = {
     "from": "known",
     "to": "unknown",
 }
+EXPECTATION = {
+    "tag": "expectation",
+    "expectation_kind": "routine.window",
+    "subject": EXPECTED,
+    "deviation": "missed",
+}
+ROUTINE_DEVIATION = {"tag": "routine_deviation", "routine_id": ROUTINE}
+CONDITION = {"tag": "condition", "source": "finance:bill-overdue", "state": "opened"}
+MODE = {"tag": "mode", "mode": "asleep", "change": "entered"}
+READ_CHECK = {
+    "tag": "read_check",
+    "capability": "finance.balance",
+    "field": "available",
+    "op": "lt",
+    "value": 100,
+}
+BUNDLE = {"tag": "bundle", "bundle_id": "delay-commitment"}
 
 
 def event(tag, source, position, data, *, at=NOW, **flags):
@@ -112,6 +142,47 @@ def evaluator(store):
     return ConditionEvaluator(store)
 
 
+def expectation_ev(position=1, deviation="missed", **kw):
+    data = {"expectation_kind": "routine.window", "subject": EXPECTED, "deviation": deviation}
+    return event("expectation", "perception:expect.window", position, data, **kw)
+
+
+def routine_ev(position=1, deviation="missed", **kw):
+    data = {"routine_id": ROUTINE, "deviation": deviation}
+    return event("routine_deviation", "perception:expect.window", position, data, **kw)
+
+
+def condition_ev(position=1, state="opened", **kw):
+    data = {"source": "finance:bill-overdue", "state": state}
+    return event("condition", "condition:finance:bill-overdue", position, data, **kw)
+
+
+def mode_ev(position=1, change="entered", **kw):
+    return event(
+        "mode", "perception:owner.mode", position, {"mode": "asleep", "change": change}, **kw
+    )
+
+
+def read_ev(position: int = 1, value: object = 50, **kw):
+    data = {"capability": "finance.balance", "field": "available", "value": value}
+    return event("read_check", "read_check:finance.balance", position, data, **kw)
+
+
+def bundle_ev(position=1, **kw):
+    return event(
+        "bundle", "bundle:delay-commitment", position, {"bundle_id": "delay-commitment"}, **kw
+    )
+
+
+M7_OCCURRENCES = {
+    "expectation": (EXPECTATION, expectation_ev, "perception:expect.window"),
+    "routine_deviation": (ROUTINE_DEVIATION, routine_ev, "perception:expect.window"),
+    "condition": (CONDITION, condition_ev, "condition:finance:bill-overdue"),
+    "mode": (MODE, mode_ev, "perception:owner.mode"),
+    "read_check": (READ_CHECK, read_ev, "read_check:finance.balance"),
+    "bundle": (BUNDLE, bundle_ev, "bundle:delay-commitment"),
+}
+
 # (leaf, firing event factory, non-firing event factory, source name)
 LEAVES = {
     "decision": (
@@ -132,6 +203,37 @@ LEAVES = {
         lambda: transition_ev(),
         lambda: transition_ev(to="known"),
         "perception:owner.place",
+    ),
+    "expectation": (
+        EXPECTATION,
+        lambda: expectation_ev(),
+        lambda: expectation_ev(deviation="within"),
+        "perception:expect.window",
+    ),
+    "routine_deviation": (
+        ROUTINE_DEVIATION,
+        lambda: routine_ev(),
+        lambda: routine_ev(deviation="within"),
+        "perception:expect.window",
+    ),
+    "condition": (
+        CONDITION,
+        lambda: condition_ev(),
+        lambda: condition_ev(state="resolved"),
+        "condition:finance:bill-overdue",
+    ),
+    "mode": (MODE, lambda: mode_ev(), lambda: mode_ev(change="exited"), "perception:owner.mode"),
+    "read_check": (
+        READ_CHECK,
+        lambda: read_ev(),
+        lambda: read_ev(value=500),
+        "read_check:finance.balance",
+    ),
+    "bundle": (
+        BUNDLE,
+        lambda: bundle_ev(),
+        lambda: bundle_ev(measurable=False),
+        "bundle:delay-commitment",
     ),
 }
 
@@ -173,8 +275,8 @@ class TestLeafMatrix:
             inputs=frozenset({BINDING}),
             effects={EFFECT: "succeeded"},
         )
-        if name == "transition":
-            pytest.skip("a transition is an edge; a snapshot cannot witness it")
+        if name == "transition" or name in M7_OCCURRENCES:
+            pytest.skip("an occurrence is an edge; a snapshot cannot witness it")
         out = await register(evaluator, leaf, snapshot=snap)
         assert out.instance.state is State.FIRED and out.intent.reason == "fired:registration"
         retry = await register(evaluator, leaf, snapshot=snap)
@@ -323,6 +425,25 @@ class TestRefusal:
             {"tag": "any", "children": [DECISION] * 17},
             {"tag": "effect_settled", "effect_id": EFFECT, "status_set": []},
             {"tag": "decision", "subject_id": "not-a-uuid", "outcome": "approved"},
+            {**EXPECTATION, "deviation": "late"},
+            {**EXPECTATION, "subject": "not-a-uuid"},
+            {**EXPECTATION, "expectation_kind": "Has Spaces"},
+            {**ROUTINE_DEVIATION, "routine_id": "not-a-uuid"},
+            {**CONDITION, "state": "open"},
+            {**CONDITION, "source": "x" * 129},
+            {**MODE, "mode": "party"},
+            {**MODE, "change": "toggled"},
+            {**READ_CHECK, "op": "like"},
+            {**READ_CHECK, "value": None},
+            {**READ_CHECK, "value": [1]},
+            {**READ_CHECK, "value": True},  # ordered comparison against a boolean
+            {**READ_CHECK, "value": float("inf")},
+            {**READ_CHECK, "op": "eq", "value": {"k": 1}},
+            {**READ_CHECK, "capability": "select 1; --"},
+            {**READ_CHECK, "field": "A" * 65},
+            {**READ_CHECK, "template": "free text"},
+            {**BUNDLE, "bundle_id": ""},
+            {"tag": "bundle"},
         ],
     )
     async def test_invalid_predicate_refuses_without_side_effect(self, evaluator, store, bad):
@@ -783,3 +904,135 @@ class TestLabelledEvidence:
         await register(evaluator, either)
         out = await evaluator.evaluate("c1", [], now=self.LATER)
         assert out.intent is not None and out.intent.label == LABEL
+
+
+class TestM7Leaves:
+    """REQ-owner-watches-001/002: the extended AST on the one evaluator."""
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    @pytest.mark.parametrize(
+        "flags",
+        [{"late": True}, {"retracted": True}, {"record": True}],
+        ids=["late", "retracted", "record"],
+    )
+    async def test_late_retracted_or_record_never_fires(self, evaluator, name, flags):
+        leaf, make, _ = M7_OCCURRENCES[name]
+        await register(evaluator, leaf)
+        out = await evaluator.evaluate("c1", [make(**flags)], now=NOW)
+        assert out.instance.state is State.OPEN and out.intent is None
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    async def test_stale_event_is_never_realtime(self, evaluator, name):
+        leaf, make, _ = M7_OCCURRENCES[name]
+        await register(evaluator, leaf)
+        stale = make(at=NOW - timedelta(minutes=11))
+        out = await evaluator.evaluate("c1", [stale], now=NOW)
+        assert out.instance.state is State.OPEN and out.intent is None
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    async def test_future_dated_event_is_ignored_and_does_not_move_the_cursor(
+        self, evaluator, name
+    ):
+        leaf, make, _ = M7_OCCURRENCES[name]
+        await register(evaluator, leaf)
+        out = await evaluator.evaluate("c1", [make(at=NOW + timedelta(minutes=5))], now=NOW)
+        assert out.instance.state is State.OPEN and not out.instance.cursors
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    async def test_unmeasurable_event_is_unknown_never_true(self, evaluator, name):
+        leaf, make, _ = M7_OCCURRENCES[name]
+        await register(evaluator, leaf)
+        out = await evaluator.evaluate("c1", [make(measurable=False)], now=NOW)
+        assert out.instance.result is Tri.UNKNOWN and out.intent is None
+
+    @pytest.mark.parametrize(
+        ("op", "want", "read", "fires"),
+        [
+            ("lt", 100, 99, True),
+            ("lt", 100, 100, False),
+            ("le", 100, 100, True),
+            ("gt", 100, 101, True),
+            ("ge", 100, 99.5, False),
+            ("eq", 100, 100.0, True),
+            ("ne", 100, 100, False),
+            ("eq", "ok", "ok", True),
+            ("ne", "ok", "bad", True),
+            ("eq", True, True, True),
+            ("ne", True, True, False),
+        ],
+    )
+    async def test_read_check_compares_typed_values(self, evaluator, op, want, read, fires):
+        await register(evaluator, {**READ_CHECK, "op": op, "value": want})
+        out = await evaluator.evaluate("c1", [read_ev(value=read)], now=NOW)
+        assert (out.intent is not None) is fires
+
+    @pytest.mark.parametrize(
+        "read",
+        ["50", True, None, [50], {"v": 50}, float("nan")],
+        ids=["string", "bool", "null", "list", "object", "nan"],
+    )
+    async def test_read_check_output_outside_its_schema_is_unknown(self, evaluator, read):
+        await register(evaluator, READ_CHECK)
+        out = await evaluator.evaluate("c1", [read_ev(value=read)], now=NOW)
+        assert out.instance.result is Tri.UNKNOWN and out.intent is None
+
+    async def test_read_check_for_another_field_is_ignored(self, evaluator):
+        await register(evaluator, READ_CHECK)
+        other = event(
+            "read_check",
+            "read_check:finance.balance",
+            1,
+            {"capability": "finance.balance", "field": "pending", "value": 1},
+        )
+        out = await evaluator.evaluate("c1", [other], now=NOW)
+        assert out.instance.result is Tri.FALSE and out.intent is None
+
+    async def test_unknown_read_propagates_through_all_and_any(self, evaluator):
+        await register(evaluator, {"tag": "all", "children": [READ_CHECK, DECISION]})
+        out = await evaluator.evaluate("c1", [read_ev(value="50"), decision_ev()], now=NOW)
+        assert out.instance.result is Tri.UNKNOWN and out.intent is None
+        any_out = await register(
+            evaluator, {"tag": "any", "children": [READ_CHECK, DECISION]}, instance_id="c2"
+        )
+        assert any_out.instance.result is Tri.FALSE
+        out = await evaluator.evaluate("c2", [decision_ev()], now=NOW)
+        assert out.intent is not None
+
+    async def test_a_known_false_leaf_beats_an_unknown_one_in_all(self, evaluator):
+        await register(evaluator, {"tag": "all", "children": [READ_CHECK, MODE]})
+        out = await evaluator.evaluate(
+            "c1", [read_ev(value="50"), mode_ev(change="exited")], now=NOW
+        )
+        assert out.instance.result is Tri.FALSE
+
+    @pytest.mark.parametrize(
+        "leaf",
+        [
+            {**EXPECTATION, "subject": str(uuid5(NS, "elsewhere"))},
+            {**ROUTINE_DEVIATION, "routine_id": str(uuid5(NS, "elsewhere"))},
+            {**CONDITION, "source": "finance:other"},
+            {**READ_CHECK, "capability": "health.vitals"},
+            {**BUNDLE, "bundle_id": "other"},
+        ],
+        ids=["expectation", "routine", "condition", "read_check", "bundle"],
+    )
+    async def test_identity_or_source_outside_the_grant_refuses(self, evaluator, store, leaf):
+        with pytest.raises(RegistrationRefused):
+            await register(evaluator, leaf)
+        assert not store.instances
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    async def test_leaf_event_of_another_tag_does_not_touch_it(self, evaluator, name):
+        leaf, _, source = M7_OCCURRENCES[name]
+        await register(evaluator, leaf)
+        spoof = event("transition", source, 1, {"kind": "owner.place", "subject": PLACE})
+        out = await evaluator.evaluate("c1", [spoof], now=NOW)
+        assert out.instance.state is State.OPEN and out.intent is None
+
+    @pytest.mark.parametrize("name", M7_OCCURRENCES)
+    def test_every_m7_leaf_validates_and_has_a_stable_source(self, name):
+        leaf, _, source = M7_OCCURRENCES[name]
+        assert validate(leaf) == leaf
+        from butlers.conditions.predicate import sources
+
+        assert sources(leaf) == {source}

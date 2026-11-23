@@ -9336,6 +9336,48 @@ BEGIN
                 OR EXISTS(SELECT 1 FROM jsonb_array_elements(p->'status_set') entries(value)
                     WHERE jsonb_typeof(value) IS DISTINCT FROM 'string'
                         OR NOT COALESCE((value#>>'{}') IN ('succeeded','failed','cancelled','unknown'),false)) THEN RETURN false; END IF;
+        WHEN 'expectation' THEN
+            fields:=ARRAY['tag','expectation_kind','subject','deviation'];
+            IF jsonb_typeof(p->'expectation_kind') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'subject') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'deviation') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'expectation_kind' ~ '^[a-z0-9_.:-]{1,128}$',false)
+                OR NOT COALESCE(p->>'deviation' IN ('pending','within','missed'),false) THEN RETURN false; END IF;
+            PERFORM (p->>'subject')::uuid;
+        WHEN 'routine_deviation' THEN
+            fields:=ARRAY['tag','routine_id'];
+            IF jsonb_typeof(p->'routine_id') IS DISTINCT FROM 'string' THEN RETURN false; END IF;
+            PERFORM (p->>'routine_id')::uuid;
+        WHEN 'condition' THEN
+            fields:=ARRAY['tag','source','state'];
+            IF jsonb_typeof(p->'source') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'state') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'source' ~ '^[a-z0-9_.:-]{1,128}$',false)
+                OR NOT COALESCE(p->>'state' IN ('opened','resolved'),false) THEN RETURN false; END IF;
+        WHEN 'mode' THEN
+            fields:=ARRAY['tag','mode','change'];
+            IF jsonb_typeof(p->'mode') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'change') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'mode' IN ('asleep','travel','house_unattended','sick','focus','hosting','holiday','emergency'),false)
+                OR NOT COALESCE(p->>'change' IN ('entered','exited'),false) THEN RETURN false; END IF;
+        WHEN 'read_check' THEN
+            fields:=ARRAY['tag','capability','field','op','value'];
+            IF jsonb_typeof(p->'capability') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'field') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(p->'op') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'capability' ~ '^[a-z0-9_.:-]{1,128}$',false)
+                OR NOT COALESCE(p->>'field' ~ '^[a-z0-9_.-]{1,64}$',false)
+                OR NOT COALESCE(p->>'op' IN ('eq','ne','lt','le','gt','ge'),false) THEN RETURN false; END IF;
+            IF p->>'op' IN ('lt','le','gt','ge') THEN
+                IF jsonb_typeof(p->'value') IS DISTINCT FROM 'number' THEN RETURN false; END IF;
+            ELSIF jsonb_typeof(p->'value')='string' THEN
+                IF octet_length(p->>'value')>128 THEN RETURN false; END IF;
+            ELSIF NOT COALESCE(jsonb_typeof(p->'value') IN ('number','boolean'),false) THEN RETURN false;
+            END IF;
+        WHEN 'bundle' THEN
+            fields:=ARRAY['tag','bundle_id'];
+            IF jsonb_typeof(p->'bundle_id') IS DISTINCT FROM 'string'
+                OR NOT COALESCE(p->>'bundle_id' ~ '^[a-z0-9_.:-]{1,128}$',false) THEN RETURN false; END IF;
         ELSE RETURN false;
         END CASE;
         RETURN p-fields='{}'::jsonb AND (SELECT count(*) FROM jsonb_object_keys(p))=cardinality(fields);

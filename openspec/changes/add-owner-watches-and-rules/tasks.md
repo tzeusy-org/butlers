@@ -6,7 +6,7 @@
 
 ## 2. Follow-up slices (blocked on 1.2, tracked on bu-4c7nvp.1.5)
 
-- [ ] 2.1 Extend the closed AST and evaluator matrix, Python and `perception_private.valid_predicate`
+- [x] 2.1 Extend the closed AST and evaluator matrix, Python and `perception_private.valid_predicate`
   together, with the per-schema migration rules.
 - [ ] 2.2 Owner watch store and lifecycle.
 - [ ] 2.3 Finance `alert_config` migration.

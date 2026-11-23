@@ -127,6 +127,10 @@ def check_registration(
             raise RegistrationRefused("effect does not belong to the bound goal")
         if leaf.tag == "transition" and body["subject"] not in grant.subjects:
             raise RegistrationRefused("transition subject is outside the grant")
+        if leaf.tag == "expectation" and body["subject"] not in grant.subjects:
+            raise RegistrationRefused("expectation subject is outside the grant")
+        if leaf.tag == "routine_deviation" and body["routine_id"] not in grant.subjects:
+            raise RegistrationRefused("routine is outside the grant")
     return canonical
 
 
