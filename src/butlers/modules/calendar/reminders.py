@@ -119,13 +119,14 @@ class RemindersMixin:
             title = row["title"] or "Reminder"
             instance_starts_at = row["instance_starts_at"]
 
+            from butlers.jobs.owner_notify import owner_notify_request
+
             envelope = {
-                "schema_version": "notify.v1",
-                "origin_butler": source_butler,
-                "delivery": {
-                    "intent": "send",
-                    "message": f"Reminder: {title}",
-                },
+                **owner_notify_request(
+                    origin_butler=source_butler,
+                    message=f"Reminder: {title}",
+                    channel=None,
+                ),
                 "reminder_event_id": str(event_id),
                 "reminder_instance_id": str(instance_id),
                 "due_at": (
@@ -144,8 +145,7 @@ class RemindersMixin:
                         "instance %s (event %s): %s",
                         instance_id,
                         event_id,
-                        exc,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
             else:
                 logger.info(
@@ -214,13 +214,14 @@ class RemindersMixin:
             title = row["title"] or "Reminder"
             starts_at = row["starts_at"]
 
+            from butlers.jobs.owner_notify import owner_notify_request
+
             envelope = {
-                "schema_version": "notify.v1",
-                "origin_butler": source_butler,
-                "delivery": {
-                    "intent": "send",
-                    "message": f"Reminder: {title}",
-                },
+                **owner_notify_request(
+                    origin_butler=source_butler,
+                    message=f"Reminder: {title}",
+                    channel=None,
+                ),
                 "reminder_event_id": str(event_id),
                 "due_at": starts_at.isoformat() if starts_at is not None else None,
             }
@@ -234,8 +235,7 @@ class RemindersMixin:
                     logger.error(
                         "CalendarModule.tick: notify_fn failed for one-time reminder %s: %s",
                         event_id,
-                        exc,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
             else:
                 logger.info(
@@ -261,8 +261,7 @@ class RemindersMixin:
                         "CalendarModule.tick: failed to record last_notified_at "
                         "for one-time reminder %s: %s",
                         event_id,
-                        exc,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
 
         return dispatched

@@ -59,6 +59,56 @@ async def test_a_sent_question_is_presented_once() -> None:
     assert final[2] == "presented"
 
 
+@pytest.mark.parametrize(
+    ("receipt", "outcome"),
+    [
+        ({"status": "sent", "notification_id": "n1"}, "presented"),
+        ({"status": "failed", "error_class": "endpoint_held"}, "unavailable"),
+        ({"status": "failed", "partial_delivery": True}, "ambiguous"),
+        ({"status": "sent", "telegram_effect_uncertain": True}, "ambiguous"),
+        (RuntimeError("sentinel-private-question-transport-data"), "ambiguous"),
+    ],
+)
+async def test_registered_question_transport_preserves_one_claim_and_safe_classification(
+    receipt, outcome, monkeypatch, caplog
+) -> None:
+    import importlib
+
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    row = _row()
+    pool = _pool([row])
+    deliver = AsyncMock()
+    if isinstance(receipt, Exception):
+        deliver.side_effect = receipt
+    else:
+        deliver.return_value = receipt
+    monkeypatch.setenv("DASHBOARD_URL", URL)
+    monkeypatch.setattr(sq, "admit_missing", AsyncMock(return_value=0))
+    monkeypatch.setattr(sq, "record_answered_cases", AsyncMock(return_value=0))
+    monkeypatch.setattr(
+        "butlers.credential_store.resolve_owner_telegram_recipient",
+        AsyncMock(return_value="owner-chat"),
+    )
+    deliver_module = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+    monkeypatch.setattr(deliver_module, "deliver", deliver)
+
+    handler = get_deterministic_schedule_job_registry()["switchboard"]["security_question_cycle"]
+    result = await handler(pool, None)
+
+    assert result[outcome] == 1
+    assert sum(result[key] for key in ("presented", "unavailable", "ambiguous")) == 1
+    deliver.assert_awaited_once()
+    kwargs = deliver.await_args.kwargs
+    assert kwargs["source_butler"] == "switchboard"
+    delivery = kwargs["notify_request"]["delivery"]
+    assert delivery["recipient"] == "owner-chat" and delivery["intent"] == "send"
+    assert f"{URL}/security/{row['event_id']}" in delivery["message"]
+    assert "sentinel-private-question-transport-data" not in caplog.text
+    if isinstance(receipt, Exception):
+        assert "RuntimeError" in caplog.text
+
+
 async def test_a_lost_claim_sends_nothing() -> None:
     notify = AsyncMock()
     counts = await sq.present_pending(_pool([_row()], claim=None), notify=notify, dashboard_url=URL)

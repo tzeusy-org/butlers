@@ -13,6 +13,7 @@ outcome.
 
 from __future__ import annotations
 
+import importlib
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -159,3 +160,38 @@ async def test_a_failing_terminal_transition_neither_aborts_the_cycle_nor_reclas
     text = caplog.text
     assert "RuntimeError" in text, "the failure is reported by exception type"
     assert "sentinel-outbox-detail" not in text, "no exception message reaches the log"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"status": "failed", "partial_delivery": True}, TransportOutcome.UNCERTAIN),
+        ({"status": "failed", "telegram_effect_uncertain": True}, TransportOutcome.UNCERTAIN),
+        (
+            {
+                "status": "failed",
+                "telegram_effect_uncertain": True,
+                "transport": {"outcome": "confirmed"},
+            },
+            TransportOutcome.UNCERTAIN,
+        ),
+        ({"status": "unknown", "transport": {"outcome": "confirmed"}}, TransportOutcome.UNCERTAIN),
+        (None, TransportOutcome.UNCERTAIN),
+        ({"status": "failed"}, TransportOutcome.NOT_ATTEMPTED),
+        ({"status": "sent"}, TransportOutcome.CONFIRMED),
+    ],
+)
+async def test_messenger_transport_requires_an_acknowledged_delivery(
+    payload, expected, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    worker = importlib.import_module("butlers.tools.switchboard.runtime_attention.worker")
+    deliver = AsyncMock(return_value=payload)
+    monkeypatch.setattr(worker, "deliver", deliver)
+    send = worker.build_messenger_transport(
+        object(), resolve_recipient=AsyncMock(return_value="owner")
+    )
+    result = await send(_episode())
+    assert result.outcome is expected
+    deliver.assert_awaited_once()
