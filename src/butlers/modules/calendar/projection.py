@@ -10,6 +10,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
+from butlers.core.temporal.calendar_source_roles import normalize_role
+
 from .constants import (
     _INVALID_PROBE_CALENDAR_IDS,
     _OBSOLETE_INTERNAL_SOURCE_KEYS,
@@ -276,6 +278,7 @@ class ProjectionMixin:
         display_name: str | None = None,
         writable: bool = False,
         metadata: dict[str, Any] | None = None,
+        time_role: str | None = None,
     ) -> uuid.UUID | None:
         # Never register a source for a probe/sentinel calendar id — a
         # credential/health check that reaches this path must not leave a bogus
@@ -299,13 +302,19 @@ class ProjectionMixin:
             return None
 
         metadata_json = self._encode_jsonb(metadata or {})
+        # A caller that names no role leaves an existing row's role alone, and a new row gets the
+        # fail-safe default, except a butler-lane internal source, which is the butler's own time.
+        # A provider-inferred role never overwrites an owner-confirmed one
+        # (REQ-module-calendar-034).
+        role = normalize_role(time_role) if time_role is not None else None
         row = await pool.fetchrow(
             """
             INSERT INTO calendar_sources (
                 source_key, source_kind, lane, provider, calendar_id, butler_name,
-                display_name, writable, metadata
+                display_name, writable, metadata, time_role
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                COALESCE($10::text, CASE WHEN $3 = 'butler' THEN 'butler' ELSE 'unclassified' END))
             ON CONFLICT (source_key) DO UPDATE SET
                 source_kind = EXCLUDED.source_kind,
                 lane = EXCLUDED.lane,
@@ -319,6 +328,11 @@ class ProjectionMixin:
                 -- discovery/sync upsert instead of being clobbered.
                 metadata = COALESCE(calendar_sources.metadata, '{}'::jsonb)
                     || EXCLUDED.metadata,
+                time_role = CASE
+                    WHEN calendar_sources.role_basis = 'owner_confirmed' OR $10::text IS NULL
+                        THEN calendar_sources.time_role
+                    ELSE $10::text
+                END,
                 updated_at = now()
             RETURNING id
             """,
@@ -331,6 +345,7 @@ class ProjectionMixin:
             display_name,
             writable,
             metadata_json,
+            role,
         )
         return row["id"] if row is not None else None
 

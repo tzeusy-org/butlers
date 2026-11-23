@@ -40,8 +40,8 @@ async def test_meeting_card_and_prep_selectors_skip_status_events(
 ) -> None:
     async with migrated_core_postgres_pool() as pool:
         source = await pool.fetchval(
-            """INSERT INTO calendar_sources (source_key,source_kind,lane,provider,calendar_id)
-               VALUES ('provider:google:primary','provider_event','user','google','primary')
+            """INSERT INTO calendar_sources (source_key,source_kind,lane,provider,calendar_id,time_role)
+               VALUES ('provider:google:primary','provider_event','user','google','primary','owner')
                RETURNING id"""
         )
         module = CalendarModule()

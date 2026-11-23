@@ -95,11 +95,11 @@ from butlers.core.state import state_get
 from butlers.core.temporal.calendar_provenance import (
     FOCUS_TIME,
     OUT_OF_OFFICE,
-    counts_toward_owner_load,
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_status_event,
 )
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time, counts_as_owner_time
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -158,18 +158,23 @@ async def run_calendar_context_producer(
     del job_args
     rows = await pool.fetch(
         """
-        SELECT title, starts_at, ends_at, timezone, all_day, metadata, event_type
-        FROM calendar_events
-        WHERE status = 'confirmed'
-          AND (all_day = false OR event_type = 'outOfOffice')
-          AND starts_at <= now()
-          AND ends_at > now()
-        ORDER BY starts_at DESC
+        SELECT ce.title, ce.starts_at, ce.ends_at, ce.timezone, ce.all_day, ce.metadata,
+               ce.event_type, cs.time_role
+        FROM calendar_events ce
+        JOIN calendar_sources cs ON cs.id = ce.source_id
+        WHERE ce.status = 'confirmed'
+          AND (ce.all_day = false OR ce.event_type = 'outOfOffice')
+          AND ce.starts_at <= now()
+          AND ce.ends_at > now()
+        ORDER BY ce.starts_at DESC
         """
     )
+    # Only an event on a source whose role asserts the owner's time counts (REQ-context-bus-018):
+    # another person's meeting or out of office is not the owner's state.
     out_of_office = any(
         candidate.get("event_type") == OUT_OF_OFFICE
         and not is_explicit_butler_generated(candidate["metadata"])
+        and asserts_owner_time(candidate.get("time_role"), candidate["metadata"])
         for candidate in rows
     )
     # (row, signal) for every attended meeting/focus candidate, latest start first.
@@ -184,7 +189,7 @@ async def run_calendar_context_producer(
             ends_at=candidate["ends_at"],
             timezone=candidate["timezone"],
         )
-        and counts_toward_owner_load(candidate["metadata"])
+        and counts_as_owner_time(candidate.get("time_role"), candidate["metadata"])
     ]
     if out_of_office:
         # Out of office suppresses focus, but an attended meeting is the owner's own,

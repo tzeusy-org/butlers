@@ -58,6 +58,8 @@ def _prep_reads(
     tiers, notes and last-met; then one owner_conditions commitment read per
     resolved attendee, in event attendee order.
     """
+    # The job reads each event's source role (REQ-module-calendar-035); these are the owner's.
+    events = [{"time_role": "owner", "metadata": {}, **event} for event in events]
     if not any(event["entity_ids"] for event in events):
         return source_reads(events)
     return source_reads(
@@ -138,8 +140,8 @@ async def _seed_linked_event(
         "VALUES ('Alice Tan', 'person') RETURNING id"
     )
     source_id = await pool.fetchval(
-        "INSERT INTO calendar_sources (source_key, source_kind) "
-        "VALUES ('prep-test', 'provider_event') RETURNING id"
+        "INSERT INTO calendar_sources (source_key, source_kind, time_role) "
+        "VALUES ('prep-test', 'provider_event', 'owner') RETURNING id"
     )
     event_id = await pool.fetchval(
         """

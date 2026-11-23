@@ -76,8 +76,8 @@ async def _person(pool, name: str, email: str, *, posture: str = "active", owner
 async def _source(pool) -> uuid.UUID:
     return await pool.fetchval(
         """
-        INSERT INTO calendar_sources (source_key, source_kind)
-        VALUES ($1, 'provider_event') RETURNING id
+        INSERT INTO calendar_sources (source_key, source_kind, time_role)
+        VALUES ($1, 'provider_event', 'owner') RETURNING id
         """,
         f"test-{uuid.uuid4().hex[:8]}",
     )

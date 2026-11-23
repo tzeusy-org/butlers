@@ -23,17 +23,19 @@ from butlers.core.temporal.calendar_provenance import (
     is_explicit_butler_generated,
     is_owner_attending,
 )
+from butlers.core.temporal.calendar_source_roles import asserts_owner_time
 from butlers.modules.calendar.google_mapping import WORKING_LOCATION_EVENT_TYPE
 
 _ACTIVE_DECLARATIONS_SQL = f"""
-SELECT id, status, event_type, starts_at, ends_at, all_day, metadata,
-       working_location_type, working_location_label
-FROM calendar_events
-WHERE status = 'confirmed'
-  AND event_type = '{WORKING_LOCATION_EVENT_TYPE}'
-  AND working_location_type IS NOT NULL
-  AND starts_at <= $1
-  AND ends_at > $1
+SELECT ce.id, ce.status, ce.event_type, ce.starts_at, ce.ends_at, ce.all_day, ce.metadata,
+       ce.working_location_type, ce.working_location_label, cs.time_role
+FROM calendar_events ce
+JOIN calendar_sources cs ON cs.id = ce.source_id
+WHERE ce.status = 'confirmed'
+  AND ce.event_type = '{WORKING_LOCATION_EVENT_TYPE}'
+  AND ce.working_location_type IS NOT NULL
+  AND ce.starts_at <= $1
+  AND ce.ends_at > $1
 """
 
 
@@ -75,6 +77,8 @@ def _is_eligible(row: Mapping[str, Any], now: datetime) -> bool:
         and row["starts_at"] <= now < row["ends_at"]
         and not is_explicit_butler_generated(row.get("metadata"))
         and is_owner_attending(row.get("metadata"))
+        # Another person's declared location is not where the owner is (REQ-module-calendar-035).
+        and asserts_owner_time(row.get("time_role"), row.get("metadata"))
     )
 
 

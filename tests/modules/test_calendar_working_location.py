@@ -47,6 +47,7 @@ def _row(
         "ends_at": ends_at,
         "all_day": all_day,
         "metadata": {},
+        "time_role": "owner",
         "working_location_type": location_type,
         "working_location_label": label,
         **extra,
@@ -187,6 +188,7 @@ async def test_the_read_is_one_bounded_select_and_applies_the_rule() -> None:
     [(sql, args)] = conn.calls
     assert sql.lstrip().upper().startswith("SELECT")
     assert "calendar_events" in sql and "workingLocation" in sql
+    assert "JOIN calendar_sources cs ON cs.id = ce.source_id" in sql
     assert args == (NOW,)
 
 
@@ -195,3 +197,23 @@ async def test_an_unusable_clock_is_refused_before_any_read() -> None:
     with pytest.raises(ValueError):
         await current_working_location(conn, now=NOW, zone="Not/AZone")
     assert conn.calls == []
+
+
+# -- source roles: another person's declared location is not the owner's (bu-5ii4gj.1) ----------
+
+
+@pytest.mark.parametrize("role", ["unclassified", "household_member", "other_person", "team"])
+def test_another_persons_declared_location_is_not_the_owners(role: str) -> None:
+    row = _row(starts_at=NOW - timedelta(hours=1), ends_at=NOW + timedelta(hours=3), time_role=role)
+    assert select_working_location([row], now=NOW, zone=ZONE) is None
+
+
+def test_an_invited_declaration_on_another_calendar_counts() -> None:
+    row = _row(
+        starts_at=NOW - timedelta(hours=1),
+        ends_at=NOW + timedelta(hours=3),
+        time_role="household_member",
+        metadata={"attendees": [{"self": True, "response_status": "accepted"}]},
+    )
+    chosen = select_working_location([row], now=NOW, zone=ZONE)
+    assert chosen is not None and chosen.label == "Client site"

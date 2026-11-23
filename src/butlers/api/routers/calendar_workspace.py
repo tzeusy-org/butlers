@@ -1642,7 +1642,11 @@ async def get_workspace_conflicts(
     ]
     return ApiResponse[ConflictScanResponse](
         data=ConflictScanResponse(
-            issues=issues, scan_window=window, issues_available=scan.available
+            issues=issues,
+            scan_window=window,
+            issues_available=scan.available,
+            unclassified_sources=scan.unclassified_sources,
+            unclassified_events=scan.unclassified_events,
         )
     )
 

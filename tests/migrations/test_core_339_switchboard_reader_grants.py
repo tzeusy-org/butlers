@@ -193,6 +193,7 @@ async def _exercise_calendar_prep_readers(db_url: str) -> None:
                 calendar_id=f"sv13-native-{schema}",
                 butler_name=schema,
                 writable=False,
+                time_role="owner",  # an unclassified source's events are not the owner's time
             )
             assert source_id is not None
             event = CalendarEvent(

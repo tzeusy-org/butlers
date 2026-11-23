@@ -57,11 +57,8 @@ import asyncpg
 from butlers.core.dashboard_links import dashboard_link
 from butlers.core.delivery_rendering import defang_delivery_text
 from butlers.core.state import state_get
-from butlers.core.temporal.calendar_provenance import (
-    is_explicit_butler_generated,
-    is_owner_attending,
-    is_transparent,
-)
+from butlers.core.temporal.calendar_provenance import is_explicit_butler_generated
+from butlers.core.temporal.calendar_source_roles import counts_as_owner_time
 from butlers.jobs.briefing import SGT
 from butlers.jobs.calendar_prep import prep_key
 from butlers.jobs.meeting_debrief import (
@@ -121,8 +118,9 @@ _STILL_SCHEDULED_SQL = """
 
 _OCCURRENCE_SQL = """
     SELECT ce.id AS event_id, ce.title AS title, ce.location AS location,
-           ce.starts_at AS starts_at, ce.metadata AS metadata
+           ce.starts_at AS starts_at, ce.metadata AS metadata, cs.time_role AS time_role
     FROM calendar_events ce
+    JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NULL
       AND ce.status <> 'cancelled'
       AND ce.all_day = false
@@ -130,9 +128,10 @@ _OCCURRENCE_SQL = """
       AND ce.starts_at > $1
       AND ce.starts_at <= $2
     UNION ALL
-    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata
+    SELECT ce.id, ce.title, ce.location, ci.starts_at, ce.metadata || ci.metadata, cs.time_role
     FROM calendar_event_instances ci
     JOIN calendar_events ce ON ce.id = ci.event_id
+    JOIN calendar_sources cs ON cs.id = ce.source_id
     WHERE ce.recurrence_rule IS NOT NULL
       AND ce.status <> 'cancelled'
       AND ci.status <> 'cancelled'
@@ -335,10 +334,10 @@ async def run_meeting_card(
     emails: set[str] = set()
     for row in rows:
         meta = _decode_metadata(row["metadata"])
-        if (
-            is_explicit_butler_generated(meta)
-            or is_transparent(meta)
-            or not is_owner_attending(meta)
+        # Only the owner's own time gets a card: not another person's calendar, not a declined or
+        # free event (REQ-module-calendar-035).
+        if is_explicit_butler_generated(meta) or not counts_as_owner_time(
+            row.get("time_role"), meta
         ):
             continue
         others = _other_attendees(meta)

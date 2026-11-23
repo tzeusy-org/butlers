@@ -557,6 +557,10 @@ class ConflictScanResponse(BaseModel):
     issues: list[ConflictIssue] = Field(default_factory=list)
     scan_window: ConflictScanWindow
     issues_available: bool = True
+    #: Calendars (and their events) the scan skipped because their source role is unclassified
+    #: and the owner is not invited. Non-zero means "not everything was checked", not "clear".
+    unclassified_sources: int = 0
+    unclassified_events: int = 0
 
 
 class CalendarInvitationEntry(BaseModel):

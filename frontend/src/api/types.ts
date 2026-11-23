@@ -1544,6 +1544,9 @@ export interface ConflictScanResponse {
   issues: ConflictIssue[];
   scan_window: { start: string; end: string };
   issues_available: boolean;
+  /** Calendars/events skipped because their source role is unclassified and the owner is not invited. */
+  unclassified_sources?: number;
+  unclassified_events?: number;
 }
 
 /** Query params for GET /api/calendar/workspace/conflicts. */

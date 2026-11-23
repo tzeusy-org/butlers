@@ -206,9 +206,11 @@ def _ws_row(
     all_day: bool = False,
     timezone: str = "UTC",
     event_metadata: object | None = None,
+    time_role: str = "owner",
 ) -> dict:
     """A workspace event-instance row (shape ``row_to_workspace`` consumes)."""
     return {
+        "source_time_role": time_role,
         "instance_id": entry_id,
         "origin_instance_ref": str(uuid4()),
         "instance_timezone": timezone,
@@ -1188,3 +1190,82 @@ async def test_invitation_response_capability_belongs_to_physical_entry_owner(ap
     assert (await _get_invitations(app)).json()["data"]["entries"][0][
         "response_configured"
     ] is False
+
+
+# -- source roles: whose time is this (bu-5ii4gj.1, REQ-calendar-conflict-overcommitment-radar-002) --
+
+_SELF = {"self": True, "response_status": "accepted"}
+
+
+async def test_conflicts_endpoint_ignores_another_persons_calendar(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    partner = _ws_row(
+        entry_id="partner",
+        title="Partner appointment",
+        start=_DAY + timedelta(minutes=30),
+        time_role="household_member",
+    )
+    unknown = _ws_row(
+        entry_id="unknown",
+        title="Shared calendar block",
+        start=_DAY + timedelta(minutes=15),
+        minutes=8 * 60,
+        time_role="unclassified",
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, partner, unknown]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["issues_available"] is True
+    assert data["issues"] == []
+
+
+async def test_conflicts_endpoint_counts_an_invited_event_on_another_calendar(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    invited = _ws_row(
+        entry_id="invited",
+        title="Joint review",
+        start=_DAY + timedelta(minutes=30),
+        time_role="other_person",
+        event_metadata={"source_type": "provider_event", "attendees": [_SELF]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, invited]})
+
+    overlaps = [i for i in (await _get(app)).json()["data"]["issues"] if i["kind"] == "overlap"]
+
+    assert len(overlaps) == 1
+    assert {e["entry_id"] for e in overlaps[0]["events"]} == {"mine", "invited"}
+
+
+async def test_conflicts_endpoint_never_counts_holidays_or_birthdays(app):
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY)
+    holiday = _ws_row(
+        entry_id="holiday",
+        title="Public holiday",
+        start=_DAY,
+        time_role="holidays",
+        event_metadata={"source_type": "provider_event", "attendees": [_SELF]},
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [mine, holiday]})
+
+    assert (await _get(app)).json()["data"]["issues"] == []
+
+
+async def test_conflicts_endpoint_reports_how_many_unclassified_calendars_were_skipped(app):
+    """The coverage line: an unclassified source's solo events are left out, and said so."""
+    shared_a = _ws_row(entry_id="a", title="Block A", start=_DAY, time_role="unclassified")
+    shared_b = _ws_row(
+        entry_id="b", title="Block B", start=_DAY + timedelta(hours=3), time_role="unclassified"
+    )
+    mine = _ws_row(entry_id="mine", title="Owner 1:1", start=_DAY + timedelta(hours=5))
+    holiday = _ws_row(
+        entry_id="holiday", title="Holiday", start=_DAY + timedelta(hours=7), time_role="holidays"
+    )
+    app, _ = _build_app(app, workspace_rows={"general": [shared_a, shared_b, mine, holiday]})
+
+    data = (await _get(app)).json()["data"]
+
+    assert data["unclassified_events"] == 2
+    # Every synthetic row gets its own source id, so two events are two calendars here.
+    assert data["unclassified_sources"] == 2
+    assert data["issues"] == []
