@@ -1367,6 +1367,25 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         """
         return await _alerts.alert_list(module._get_pool())
 
+    @_tool("intelligence")
+    async def transaction_amounts_since(
+        currency: str, after_us: int, limit: int = 100
+    ) -> dict[str, Any]:
+        """Read the largest absolute amount recorded at each instant, for the owner-watch feed.
+
+        Read-only and content-blind: no merchant, description or account. Rows page by insertion
+        time after `after_us` (microseconds since the epoch), oldest first.
+
+        currency: Three-letter currency code.
+        after_us: Exclusive cursor, microseconds since the epoch.
+        limit: Rows to return, 1 to 100 (default 100).
+
+        Returns: {rows: [{id, amount, currency, recorded_us}]}
+        """
+        return await _alerts.transaction_amounts_since(
+            module._get_pool(), currency, after_us, limit
+        )
+
     @_tool("subscriptions")
     async def detect_price_changes(
         days_back: int = 60,

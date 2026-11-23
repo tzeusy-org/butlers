@@ -212,8 +212,8 @@ never write.
   no-op (additive, read-only).
 - The grant is re-derived from that read on every call: sources `clock` and `perception:<kind>` for every
   registered kind, subjects the owner entity and the null subject, and never a decision, effect or inbox
-  source. Bundles, conditions, read checks and routines have no registry to derive from yet, so a watch that
-  names one is refused as an undeclared source. A card and a replay compare only the watch's own read set, so the
+  source. Bundles, conditions and routines have no registry to derive from yet, so a watch that names one is
+  refused as an undeclared source. Read checks are offered only for the registered read feeds (below). A card and a replay compare only the watch's own read set, so the
   registry growing does not pause anything; a source the watch reads disappearing pauses a replayed watch.
 - The snapshot carries `now` and the kinds nothing has ever written as unmeasurable. It has no decisions,
   inputs, effects or label, because a snapshot cannot witness an occurrence leaf.
@@ -221,3 +221,37 @@ never write.
   single owner entity, makes both providers answer unknown (`GrantUnavailable`, which is never "the grant
   changed"): a card is refused, the tick is blind, and a watch whose cache expires mid-tick is skipped for that tick
   with its fire kept for the next. Nothing is paused, consumed, fired or changed on unknown.
+
+### Read feed (`butlers.watches.feed`, dark)
+
+A `read_check` leaf waits on one registered read capability. Nothing pushes a reading to a watch: the owner-watch
+tick asks the capability's butler for the readings newer than each watch's own cursor, over the Switchboard's own
+route, as the owner and read-only. It is not the goal capability broker, because a watch is not a goal session.
+
+- **Registry.** `capability()` is the whole allowlist: `finance.transaction_amount.<ccy>` for a fixed set of
+  currencies, calling the finance tool `transaction_amounts_since`. The currency is in the capability name (a
+  dimension), the threshold is the leaf's typed comparison value, and only `gt` and `ge` over the `amount` field are
+  accepted, because one reading per instant (the largest) can answer nothing else. A card naming anything else is
+  refused at proposal, and the production grant offers only these read sources.
+- **Finance tool.** `transaction_amounts_since(currency, after_us, limit <= 100)` returns
+  `{rows: [{id, amount, currency, recorded_us}]}` and nothing else: no merchant, description, account or category.
+  Rows page by insertion time (`created_at`), never by transaction date, so a late import of an old-dated
+  transaction is not skipped. Rows created in the same instant are one reading, the largest absolute amount.
+  Deleted rows and rows inside a 60 s settle lag are excluded.
+- **Window and cadence.** The event position is `recorded_us`. Each poll re-reads the whole realtime horizon (10
+  minutes) past the watch's floor, ignoring its cursor, because a long or concurrent finance transaction can commit
+  late with an earlier `created_at` (`now()` is the transaction start). The overlap is harmless: a non-firing
+  reading is idempotent on its leaf, a firing one closes the instance, and the floor excludes what an earlier
+  generation consumed, so a fire that stops a batch short is replayed to the next generation. Older rows are
+  historical and never wake a watch. One call set is made per capability and distinct window start, paged at 100
+  rows with up to 10 pages (a larger window reads blind, never partial), at most 10 call sets per tick, 10 s per
+  call. The keys are ordered and rotated by the wall-clock minute, so a tail that does not fit is a different tail
+  next tick and no key is starved (with 12 currencies, none is skipped on more than 2 of 12 ticks). Event ids are a UUIDv5 of the capability and the position.
+- **One trust path.** `reading_event` is the only place a trusted event is built, only from a `Reading` that passed
+  the strict schema check in `parse_readings` (exact fields, ascending positions past the cursor, the declared
+  currency, a bounded non-negative decimal). A guard test fails if any other source constructs one. The events carry
+  the unknown (widest) label: the values derive from third-party mail.
+- **Blind, never fired.** A transport error, timeout, off-schema or out-of-bound payload fails the whole poll: the
+  watches reading that capability stay blind (nothing fires, nothing is consumed), the tick still runs, and it
+  reports `degraded` / `feed_unreadable`. A key skipped for the call budget counts the same: the watches reading it
+  are as deaf as after a failure, so the capability is unhealthy for that tick, which the capability-health collector publishes as `signal_unmeasurable`.

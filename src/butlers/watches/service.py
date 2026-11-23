@@ -87,10 +87,13 @@ class WatchService:
         *,
         cap: int = MAX_ACTIVE,
         withdraw: Withdraw | None = None,
+        validate_reads: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         # ``withdraw`` takes back a notice the owner has not yet been shown, for a watch that is
         # paused, deleted or expired: a closed watch must not leave a pending candidate behind.
         self.withdraw = withdraw
+        # Refuses a read_check no registered feed can measure (unregistered, field, op).
+        self.validate_reads = validate_reads
         self.store = store
         self.evaluator = evaluator
         self.grant_for = grant_for
@@ -129,6 +132,8 @@ class WatchService:
             )
         except RegistrationRefused as exc:
             raise WatchRefused(str(exc)) from None
+        if self.validate_reads is not None:
+            self.validate_reads(predicate)
         narrowed = self._narrow(grant, predicate)
         return WatchCard(
             action=Action.CREATE,

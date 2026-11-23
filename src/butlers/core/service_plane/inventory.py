@@ -180,6 +180,14 @@ ROUTE_CALLERS: tuple[RouteCaller, ...] = (
         "call. No relay or twin; the switch depends on that slice.",
     ),
     RouteCaller(
+        "src/butlers/watches/feed.py",
+        "SwitchboardReadTransport.read",
+        "control_plane_internal",
+        "The owner-watch read feed: Switchboard's own tick reads one registered, read-only "
+        "capability tool (an allowlist in watches/feed.py, today one fixed Finance read) as the "
+        "owner. Not a goal session and not model-reachable; dark behind OWNER_WATCHES_LIVE.",
+    ),
+    RouteCaller(
         "src/butlers/modules/contacts/owner.py",
         "ContactsOwner._call",
         "named_relay",

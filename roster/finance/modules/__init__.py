@@ -44,7 +44,7 @@ class FinanceModuleConfig(ToolGroupMixin, BaseModel):
                 compute_baselines, anomaly_scan, detect_duplicates
     intelligence : learn_merchant_categories, suggest_categories,
                    recall_merchant_mappings, flag_tax_deductible,
-                   alert_configure, alert_list
+                   alert_configure, alert_list, transaction_amounts_since
     """
 
 

@@ -22,6 +22,7 @@ from butlers.testing.migration import (
 )
 from butlers.watches import WatchState, providers, tick
 from butlers.watches.approval import apply_watch_card, canonical
+from butlers.watches.feed import registered_sources
 from butlers.watches.providers import GrantUnavailable, OwnerWatchRuntime
 
 pytestmark = [pytest.mark.integration, pytest.mark.db, pytest.mark.asyncio(loop_scope="session")]
@@ -105,7 +106,9 @@ async def test_the_grant_is_derived_from_the_live_read_never_from_the_model(worl
     assert await runtime.prepare()
     grant = runtime.grant_for("w1")
     assert grant.goal_id == "w1"
-    assert grant.sources == frozenset({"clock", *(f"perception:{k}" for k in KINDS)})
+    assert grant.sources == frozenset(
+        {"clock", *(f"perception:{k}" for k in KINDS), *registered_sources()}
+    )  # the registered read feeds are offered; no other read source is
     assert grant.subjects == frozenset({world["owner"], None})
     assert not grant.decisions and not grant.effects and not grant.bindings  # goal-own: never
     narrowed = replace(runtime._sources, kinds=tuple(KINDS[:-1]))
@@ -304,3 +307,60 @@ async def test_a_real_blind_tick_reports_through_the_reporter(world):
     assert result == {"status": tick.BLIND}
     value = json.loads(await pool.fetchval("SELECT value::text FROM state WHERE key = $1", KEY))
     assert (value["state"], value["reason"]) == ("degraded", "no_snapshot_provider")
+
+
+class _Readings:
+    """The finance side of the feed: one large reading, a fixed shape."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = 0
+
+    async def read(self, butler, tool, args):
+        self.calls += 1
+        return {"rows": [r for r in self.rows if r["recorded_us"] > args["after_us"]]}
+
+
+async def test_a_large_reading_fires_one_notice_end_to_end_on_postgres(world):
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from butlers.watches.feed import micros
+
+    read_check = {
+        "tag": "read_check",
+        "capability": "finance.transaction_amount.usd",
+        "field": "amount",
+        "op": "gt",
+        "value": 500,
+    }
+    transport = _Readings(
+        [
+            {
+                "id": str(uuid4()),
+                "amount": "900.00",
+                "currency": "USD",
+                "recorded_us": micros(NOW - timedelta(minutes=1)),
+            }
+        ]
+    )
+    runtime = _runtime(world, transport=transport)
+    card, body = await _parked(world, runtime, predicate=read_check)
+    assert card.sources == ("read_check:finance.transaction_amount.usd",)
+    provider = runtime.providers()
+    applied = await apply_watch_card(
+        world["pool"],
+        card_json=body,
+        digest=card.digest,
+        service_for=provider.service_for,
+        snapshot_for=provider.snapshot_for,
+        prepare=provider.prepare,
+        now=NOW,
+    )
+    assert applied["status"] == "applied", applied
+    first = await tick.run_tick(world["pool"], now=NOW, live=True, providers=provider)
+    assert (first["delivered"], first["rearmed"], first["feed_ok"]) == (1, 1, True)
+    second = await tick.run_tick(world["pool"], now=NOW, live=True, providers=provider)
+    assert second["delivered"] == 0  # the same reading is not delivered twice
+    watch = await runtime.service.store.get(applied["watch_id"])
+    assert watch is not None and watch.generation == 2 and transport.calls == 2
