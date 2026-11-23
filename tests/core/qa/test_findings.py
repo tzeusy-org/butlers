@@ -22,6 +22,7 @@ from butlers.core.qa.findings import (
     get_dispatch_queued_findings,
     get_findings_by_fingerprint,
     get_findings_by_patrol,
+    hold_findings_for_retry,
     insert_finding,
     update_finding_attempt,
     update_finding_dispatch_queued,
@@ -199,3 +200,17 @@ async def test_get_dispatch_queued_findings_clears_flag():
     assert "dispatch_queued = FALSE" in update_sql
     assert id1 in ids_arg
     assert id2 in ids_arg
+
+
+@pytest.mark.asyncio
+async def test_hold_findings_for_retry_is_one_statement_and_skips_empty():
+    pool = _pool()
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    await hold_findings_for_retry(pool, ids, "circuit_breaker")
+    pool.execute.assert_called_once()
+    assert ids in pool.execute.call_args.args
+    assert "circuit_breaker" in pool.execute.call_args.args
+
+    empty = _pool()
+    await hold_findings_for_retry(empty, [], "circuit_breaker")
+    empty.execute.assert_not_called()

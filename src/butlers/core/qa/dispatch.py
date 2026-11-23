@@ -98,9 +98,9 @@ from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
+    hold_findings_for_retry,
     update_finding_attempt,
     update_finding_dedup_reason,
-    update_finding_dispatch_queued,
 )
 from butlers.core.qa.job_isolation import (
     LIVE_ATTEMPTS,
@@ -3091,46 +3091,9 @@ async def dispatch_qa_investigation(
                 fp[:12],
             )
 
-        # ---------------------------------------------------------------
-        # Gate 9: Circuit breaker
-        # ---------------------------------------------------------------
-        if config.circuit_breaker_threshold > 0:
-            tripped = await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
-            if tripped:
-                logger.warning(
-                    "QA dispatch skipped: circuit breaker tripped (threshold=%d, fingerprint=%s)",
-                    config.circuit_breaker_threshold,
-                    fp[:12],
-                )
-                await delete_orphaned_attempt(pool, attempt_id)
-                try:
-                    await update_finding_dedup_reason(pool, finding_id, "circuit_breaker")
-                except Exception as _dr_exc:
-                    logger.debug("QA dispatch: failed to update finding dedup_reason: %s", _dr_exc)
-                try:
-                    await create_dispatch_event(
-                        pool,
-                        fingerprint=fp,
-                        butler_name=finding.source_butler,
-                        decision="circuit_breaker",
-                        reason=(
-                            f"Circuit breaker tripped:"
-                            f" {config.circuit_breaker_threshold} consecutive failures"
-                        ),
-                    )
-                except Exception as _evt_exc:
-                    logger.debug(
-                        "QA dispatch: failed to record circuit_breaker event: %s", _evt_exc
-                    )
-                if metrics is not None:
-                    metrics.record_recovery_dispatch_decision(
-                        workflow="qa", decision="circuit_breaker"
-                    )
-                return QaDispatchResult(
-                    accepted=False,
-                    fingerprint=fp,
-                    reason="circuit_breaker",
-                )
+        # Gate 9 (circuit breaker) is the batch dispatcher's: ``dispatch_novel_findings`` reads the
+        # breaker before each launch and holds the rest of the patrol as one decision, so a
+        # tripped breaker never reaches a claim here.
 
         # ---------------------------------------------------------------
         # Gate 10: Model resolution
@@ -3340,6 +3303,76 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
+async def _hold_for_retry(
+    pool: asyncpg.Pool,
+    findings: list[TriagedFinding],
+    reason: str,
+    metrics: ButlerMetrics | None,
+) -> bool:
+    """Stamp ``reason`` on the findings and queue them for the next patrol.
+
+    Returns whether the hold was written. A failed hold is counted as its own dispatch decision
+    so the loss is visible, and the caller must not report the findings as held.
+    """
+    try:
+        await hold_findings_for_retry(pool, [t.finding_id for t in findings], reason)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "QA dispatch: failed to hold %d finding(s) (%s): %s", len(findings), reason, exc
+        )
+        if metrics is not None:
+            metrics.record_recovery_dispatch_decision(workflow="qa", decision="hold_failed")
+        return False
+
+
+async def _halt_batch(
+    pool: asyncpg.Pool,
+    remaining: list[TriagedFinding],
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> list[QaDispatchResult]:
+    """Hold the rest of a patrol behind an open breaker: no claims, one event.
+
+    The breaker is read before this write, so an owner reset in between leaves the findings
+    held for one patrol; the next patrol admits them. The worst case is a one-patrol delay.
+    """
+    logger.warning(
+        "QA dispatch halted: circuit breaker tripped (threshold=%d, findings=%d)",
+        config.circuit_breaker_threshold,
+        len(remaining),
+    )
+    if not await _hold_for_retry(pool, remaining, "circuit_breaker", metrics):
+        return [
+            QaDispatchResult(
+                accepted=False, fingerprint=t.finding.fingerprint, reason="hold_failed"
+            )
+            for t in remaining
+        ]
+    lead = remaining[0].finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=lead.fingerprint,
+            butler_name=lead.source_butler,
+            decision="circuit_breaker",
+            reason=(
+                f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
+                f"failures; {len(remaining)} finding(s) held for a later patrol"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record circuit_breaker event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="circuit_breaker")
+    return [
+        QaDispatchResult(
+            accepted=False, fingerprint=t.finding.fingerprint, reason="circuit_breaker"
+        )
+        for t in remaining
+    ]
+
+
 async def dispatch_novel_findings(
     pool: asyncpg.Pool,
     novel_findings: list[TriagedFinding],
@@ -3385,17 +3418,36 @@ async def dispatch_novel_findings(
     """
     results: list[QaDispatchResult] = []
     cap_skipped = 0
+    held: list[TriagedFinding] = []
 
-    for triaged in novel_findings:
-        active_count = await count_active_attempts(pool, qa_only=True)
-        if config.job_isolation is not None:
-            # Jobs the cluster still runs count too: a restart may have orphaned one. An
-            # unreadable fleet reads as "at cap", never as empty.
-            job_count = await active_job_count(config.job_isolation)
-            active_count = (
-                config.max_concurrent if job_count is None else max(active_count, job_count)
-            )
-        if active_count >= config.max_concurrent:
+    for index, triaged in enumerate(novel_findings):
+        # An open breaker is a property of the patrol, not of each finding, and it outranks the
+        # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
+        # the rest as one decision instead of dropping them. Once the cap has been reached
+        # nothing more launches, so the remainder stays a cap hold.
+        if (
+            cap_skipped == 0
+            and config.circuit_breaker_threshold > 0
+            and await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
+        ):
+            results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
+            break
+
+        # Once the cap is reached, stop calling dispatch for the remaining findings.
+        # Continuing would insert a claim row per finding before rejecting it, and those
+        # orphaned 'failed' rows would trigger cooldown on the next patrol.
+        at_cap = cap_skipped > 0
+        if not at_cap:
+            active_count = await count_active_attempts(pool, qa_only=True)
+            if config.job_isolation is not None:
+                # Jobs the cluster still runs count too: a restart may have orphaned one. An
+                # unreadable fleet reads as "at cap", never as empty.
+                job_count = await active_job_count(config.job_isolation)
+                active_count = (
+                    config.max_concurrent if job_count is None else max(active_count, job_count)
+                )
+            at_cap = active_count >= config.max_concurrent
+        if at_cap:
             results.append(
                 QaDispatchResult(
                     accepted=False,
@@ -3404,37 +3456,7 @@ async def dispatch_novel_findings(
                 )
             )
             cap_skipped += 1
-            continue
-
-        # Once the concurrency cap is reached, stop calling dispatch for remaining
-        # findings.  Continuing would cause each subsequent finding to go through
-        # create_or_join_attempt (inserting a new row) before being rejected — these
-        # orphaned 'failed' rows can then trigger cooldown for the next patrol cycle.
-        if cap_skipped > 0:
-            results.append(
-                QaDispatchResult(
-                    accepted=False,
-                    fingerprint=triaged.finding.fingerprint,
-                    reason="concurrency_cap",
-                )
-            )
-            cap_skipped += 1
-            # Record authoritative suppression reason and queue finding for retry
-            # in the next patrol cycle.  Without this the qa_findings row stays
-            # with dedup_reason=NULL (misleading) and the finding is silently lost
-            # for one-shot errors that won't be re-discovered by a source.
-            try:
-                await update_finding_dedup_reason(pool, triaged.finding_id, "concurrency_cap")
-            except Exception as _dr_exc:
-                logger.debug(
-                    "QA dispatch: failed to update finding dedup_reason (cap skip): %s", _dr_exc
-                )
-            try:
-                await update_finding_dispatch_queued(pool, triaged.finding_id, True)
-            except Exception as _dq_exc:
-                logger.debug(
-                    "QA dispatch: failed to mark finding dispatch_queued (cap skip): %s", _dq_exc
-                )
+            held.append(triaged)
             continue
 
         result = await dispatch_qa_investigation(
@@ -3454,6 +3476,18 @@ async def dispatch_novel_findings(
 
         if result.reason == "concurrency_cap":
             cap_skipped += 1
+
+    if held:
+        # Record the authoritative reason and queue every capped finding for the next patrol:
+        # a one-shot error that no source rediscovers would otherwise be lost.
+        if not await _hold_for_retry(pool, held, "concurrency_cap", metrics):
+            lost = {t.finding.fingerprint for t in held}
+            results = [
+                QaDispatchResult(accepted=False, fingerprint=r.fingerprint, reason="hold_failed")
+                if (r.reason == "concurrency_cap" and r.fingerprint in lost)
+                else r
+                for r in results
+            ]
 
     if cap_skipped > 0:
         logger.info(

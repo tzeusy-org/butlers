@@ -1844,3 +1844,69 @@ async def test_gate_10_resolves_the_exact_executor_rung_under_the_launch_intent(
     intent = kwargs["intent"]
     assert intent.required_features == frozenset({ModelFeature.WORKSPACE_AGENT})
     assert intent.consequence is Consequence.REVERSIBLE
+
+
+@pytest.mark.asyncio
+async def test_open_breaker_holds_the_whole_batch_without_a_claim_per_finding():
+    """One breaker read, one stamp, one event; no claim, delete or per-finding write."""
+    findings = [_make_triaged() for _ in range(3)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as tripped,
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
+        patch("butlers.core.qa.dispatch.create_or_join_attempt", new_callable=AsyncMock) as claim,
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    assert tripped.await_count == 1
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings]
+    assert hold.await_args.args[2] == "circuit_breaker"
+    event.assert_awaited_once()
+    claim.assert_not_called()
+    run.assert_not_called()
+    assert [r.reason for r in results] == ["circuit_breaker"] * 3
+    assert not any(r.accepted for r in results)
+
+
+@pytest.mark.asyncio
+async def test_cap_queues_every_leftover_including_the_first_one_over():
+    """The finding that first meets the cap is queued like the ones after it."""
+    findings = [_make_triaged() for _ in range(4)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch.count_active_attempts",
+            new_callable=AsyncMock,
+            side_effect=[1, 2, 2, 2],
+        ),
+        patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation",
+            new_callable=AsyncMock,
+            return_value=QaDispatchResult(accepted=True, fingerprint="x" * 64, reason="dispatched"),
+        ),
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+    ):
+        await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(max_concurrent=2),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    hold.assert_awaited_once()
+    assert hold.await_args.args[1] == [f.finding_id for f in findings[1:]]
+    assert hold.await_args.args[2] == "concurrency_cap"
