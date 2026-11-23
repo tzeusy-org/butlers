@@ -115,3 +115,31 @@ def test_the_receipt_digest_is_stable_and_pass_is_all_or_nothing() -> None:
     assert probe.receipt([a, b])["passed"] is False
     assert probe.receipt([a, b])["digest"] == probe.receipt([a, b])["digest"]
     assert probe.receipt([a])["digest"] != probe.receipt([a, b])["digest"]
+
+
+def test_the_recheck_repeats_refused_checks_after_the_policy_settles(monkeypatch) -> None:
+    slept: list[float] = []
+    monkeypatch.setattr(probe.time, "sleep", slept.append)
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    server.listen()
+    try:
+        results = _by_name(
+            probe.run_checks(
+                _args("--refused-tcp", f"api=127.0.0.1:{port}", "--recheck-after", "7")
+            )
+        )
+    finally:
+        server.close()
+    assert slept == [7]
+    # Open both times here: the first pass is the one that counts, the second says whether it
+    # was a start-up race. Both are recorded, both fail.
+    assert results["tcp_refused:api"].passed is False
+    assert results["tcp_refused:api:after_settle"].passed is False
+
+
+def test_no_recheck_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(probe.time, "sleep", lambda _s: pytest.fail("must not sleep"))
+    results = _by_name(probe.run_checks(_args("--refused-tcp", "api=127.0.0.1:1")))
+    assert "tcp_refused:api:after_settle" not in results

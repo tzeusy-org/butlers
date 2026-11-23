@@ -120,3 +120,21 @@ def test_a_dry_run_passes_only_when_the_probe_is_admitted_and_every_control_refu
     verdict = iv.judge_dry_run(policies_valid=True, probe_admitted=True, refused=one_open)
     assert verdict.unrefused_controls == ("host_pid",) and not verdict.ok
     assert not iv.judge_dry_run(policies_valid=True, probe_admitted=True, refused={}).ok
+
+
+def test_a_restored_probe_that_fails_any_other_check_is_not_green() -> None:
+    control = next(c for c in iv.INVERSE_CONTROLS if c.name == "run_as_root")
+    restored = _receipt(uid_not_root="pass", tcp_refused_tracker="fail")
+    verdict = iv.judge_control(control, _receipt(uid_not_root="fail"), restored)
+    assert verdict.red_when_removed and not verdict.green_when_restored and not verdict.ok
+
+
+def test_the_baseline_names_every_failing_check_not_only_the_core_ones() -> None:
+    receipt = _receipt(**{c: "pass" for c in iv.BASELINE_CHECKS}, **{"tcp_refused:tracker": "fail"})
+    assert iv.baseline_verdict(receipt) == ["tcp_refused:tracker"]
+
+
+def test_probe_command_carries_the_recheck_delay_only_when_asked() -> None:
+    assert "--recheck-after" not in iv.probe_command()
+    command = iv.probe_command(recheck_after=20)
+    assert command[command.index("--recheck-after") + 1] == "20"

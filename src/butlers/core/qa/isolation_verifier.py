@@ -40,9 +40,12 @@ def probe_command(
     forbidden_path: Sequence[str] = (),
     forbidden_env: Sequence[str] = (),
     readable_path: Sequence[str] = (),
+    recheck_after: int = 0,
 ) -> list[str]:
     """The pinned probe command: ``python -I -m`` the probe module with its targets."""
     command = ["python", "-I", "-m", PROBE_MODULE]
+    if recheck_after:
+        command += ["--recheck-after", str(recheck_after)]
     for flag, values in (
         ("--refused-tcp", refused_tcp),
         ("--reachable-tcp", reachable_tcp),
@@ -171,7 +174,13 @@ def judge_control(
         caught_by = "probe"
     else:
         caught_by = None
-    green = restored is not None and _outcome(restored, control.expect) == "pass"
+    # The restored template is the production one: every check must pass, not only the one this
+    # control watches, or a probe that is red for another reason would hide behind a green control.
+    green = (
+        restored is not None
+        and restored.get("passed") is True
+        and _outcome(restored, control.expect) == "pass"
+    )
     return ControlVerdict(control.name, caught_by is not None, green, caught_by)
 
 
@@ -206,7 +215,14 @@ def baseline_verdict(receipt: Mapping[str, Any] | None) -> list[str]:
     """Names of baseline checks that did not pass on the unmodified template (empty = good)."""
     if receipt is None:
         return list(BASELINE_CHECKS)
-    return [check for check in BASELINE_CHECKS if _outcome(receipt, check) != "pass"]
+    missing = [check for check in BASELINE_CHECKS if _outcome(receipt, check) != "pass"]
+    # Every other check on the unmodified template (network, paths) must pass too.
+    others = [
+        str(row.get("check"))
+        for row in receipt.get("checks", [])
+        if row.get("outcome") != "pass" and row.get("check") not in BASELINE_CHECKS
+    ]
+    return [*missing, *others]
 
 
 def canary_pod(*, name: str, namespace: str, image: str, canary_secret: str) -> dict[str, Any]:

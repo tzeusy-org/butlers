@@ -22,6 +22,7 @@ import json
 import os
 import socket
 import sys
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Final
@@ -142,6 +143,16 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
             POSITIVE,
             lambda s=spec: _tcp_connects(*_parse_target(s)[1:]),
         )
+    if args.recheck_after > 0:
+        # A refusal that only holds after the network policy has settled is a start-up race, not
+        # isolation: the first pass above is the one that counts, this one says which it was.
+        time.sleep(args.recheck_after)
+        for spec in args.refused_tcp:
+            check(
+                f"tcp_refused:{spec.partition('=')[0]}:after_settle",
+                NEGATIVE,
+                lambda s=spec: not _tcp_connects(*_parse_target(s)[1:]),
+            )
     return results
 
 
@@ -174,6 +185,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--refused-tcp", action="append", default=[], metavar="NAME=HOST:PORT")
     parser.add_argument("--readable-path", action="append", default=[])
     parser.add_argument("--reachable-tcp", action="append", default=[], metavar="NAME=HOST:PORT")
+    parser.add_argument("--recheck-after", type=int, default=0, metavar="SECONDS")
     return parser
 
 

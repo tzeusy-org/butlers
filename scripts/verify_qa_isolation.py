@@ -82,8 +82,10 @@ def _probe_job(args: argparse.Namespace, canary_host: str) -> dict[str, Any]:
         ],
         reachable_tcp=args.reachable_tcp,
         forbidden_env=["QA_ISOLATION_CANARY"],
-        forbidden_path=["/canary/value", "/proc/1/environ"],
+        # Not /proc/1/environ: the probe is PID 1, so its own uid can always read it.
+        forbidden_path=["/canary/value", "/etc/shadow"],
         readable_path=args.readable_path,
+        recheck_after=_RECHECK_AFTER_S,
     )
     return iv.build_probe_job(
         uuid.uuid4(),
@@ -94,6 +96,10 @@ def _probe_job(args: argparse.Namespace, canary_host: str) -> dict[str, Any]:
         command=command,
         deadline_s=300,
     )
+
+
+#: Seconds the probe waits before repeating its refused-connection checks (start-up race tell).
+_RECHECK_AFTER_S = 20
 
 
 class VerifierError(RuntimeError):
