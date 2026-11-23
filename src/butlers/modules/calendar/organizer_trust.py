@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -151,6 +152,8 @@ async def stamp_for(
         "verdict_version": VERDICT_VERSION,
         # A transient read failure stamps ``unknown`` and asks the sweep to evaluate it again.
         "lookup_failed": bool(key) and result.verdict == "unknown",
+        # When this attempt ran; failed rows are retried oldest attempt first.
+        "stamped_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -219,7 +222,9 @@ async def sweep_organizer_verdicts(pool: asyncpg.Pool, *, limit: int = SWEEP_BAT
               OR e.metadata ->> 'lookup_failed' = 'true'
           )
         -- unstamped and stale rows first, so a persistent outage cannot starve them
-        ORDER BY (COALESCE(e.metadata ->> 'lookup_failed', 'false') = 'true'), e.id
+        -- among failed rows the oldest attempt goes first, so they rotate rather than stick on id
+        ORDER BY (COALESCE(e.metadata ->> 'lookup_failed', 'false') = 'true'),
+                 e.metadata ->> 'stamped_at' ASC NULLS FIRST, e.id
         LIMIT $2
         """,
         VERDICT_VERSION,

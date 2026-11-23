@@ -236,6 +236,40 @@ def test_a_later_run_converges_a_stray_grantee_away(postgres_container) -> None:
         engine.dispose()
 
 
+def test_a_listed_role_loses_a_grant_option_it_holds(postgres_container) -> None:
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(db_url, chains=["core"], target_schema="general")
+    command.upgrade(first, "core_370")
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            role = conn.execute(
+                text("SELECT rolname FROM pg_roles WHERE rolname = 'butler_finance_rw'")
+            ).scalar()
+            if role is None:
+                pytest.skip("the finance butler role does not exist in this cluster")
+            conn.execute(text(f"GRANT EXECUTE ON FUNCTION {_RULES} TO {role} WITH GRANT OPTION"))
+
+        def grantable() -> list[bool]:
+            with engine.connect() as conn:
+                rows = conn.execute(
+                    text(
+                        "SELECT a.is_grantable FROM pg_proc p, aclexplode(p.proacl) a "
+                        "JOIN pg_roles r ON r.oid = a.grantee "
+                        "WHERE p.oid = to_regprocedure(:s) AND r.rolname = :r"
+                    ),
+                    {"s": _RULES, "r": role},
+                )
+                return [row[0] for row in rows]
+
+        assert grantable() == [True]
+        second = _build_alembic_config(db_url, chains=["core"], target_schema="travel")
+        command.upgrade(second, "core_370")
+        assert grantable() == [False]  # still executable, no longer able to pass it on
+    finally:
+        engine.dispose()
+
+
 def test_every_calendar_hosting_butler_is_granted_execute() -> None:
     """A butler that hosts the calendar module must be in the migration's role list."""
     import importlib.util

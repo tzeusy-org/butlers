@@ -152,6 +152,7 @@ def _grants(signature: str) -> list[str]:
             DO $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN
+                    REVOKE GRANT OPTION FOR EXECUTE ON FUNCTION {signature} FROM {role};
                     GRANT EXECUTE ON FUNCTION {signature} TO {role};
                 END IF;
             END $$

@@ -222,6 +222,42 @@ async def test_a_transient_lookup_failure_is_retried_until_it_reads(db) -> None:
     assert await sweep_organizer_verdicts(pool) == 0
 
 
+async def test_failed_rows_rotate_by_oldest_attempt_not_by_id(db) -> None:
+    pool = await _pool(db)
+    await _seed(pool)
+    await pool.execute("DROP FUNCTION public.organizer_identity_class(text)")
+    await sweep_organizer_verdicts(pool)
+    # All three lookups failed. Give them known attempt times, newest first by id order.
+    for ref, when in (
+        ("known", "2026-11-03T00:00:00+00:00"),
+        ("stranger", "2026-11-02T00:00:00+00:00"),
+        ("blocked", "2026-11-01T00:00:00+00:00"),
+    ):
+        await pool.execute(
+            "UPDATE calendar_events SET metadata = jsonb_set(metadata, '{stamped_at}', "
+            "to_jsonb($2::text)) WHERE origin_ref = $1",
+            ref,
+            when,
+        )
+    seen: list[str] = []
+    for _ in range(3):
+        before = {
+            r["origin_ref"]: r["at"]
+            for r in await pool.fetch(
+                "SELECT origin_ref, metadata ->> 'stamped_at' AS at FROM calendar_events"
+            )
+        }
+        assert await sweep_organizer_verdicts(pool, limit=1) == 1
+        after = {
+            r["origin_ref"]: r["at"]
+            for r in await pool.fetch(
+                "SELECT origin_ref, metadata ->> 'stamped_at' AS at FROM calendar_events"
+            )
+        }
+        seen.append(next(ref for ref in after if after[ref] != before[ref]))
+    assert seen == ["blocked", "stranger", "known"]  # oldest attempt first, each exactly once
+
+
 async def test_a_non_integer_verdict_version_is_stale_not_a_crash(db) -> None:
     pool = await _pool(db)
     await _seed(pool)
