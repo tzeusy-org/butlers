@@ -17,7 +17,15 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
-from butlers.conditions import ConditionEvaluator, Grant, RegistrationRefused, Snapshot, State, Tri
+from butlers.conditions import (
+    ConditionEvaluator,
+    Grant,
+    Instance,
+    RegistrationRefused,
+    Snapshot,
+    State,
+    Tri,
+)
 from butlers.conditions.predicate import digest as predicate_digest
 from butlers.conditions.service import check_registration
 from butlers.core.goal_labels import CATEGORIES, Label
@@ -230,7 +238,9 @@ class WatchService:
         if grant.digest != grant_digest or tuple(sorted(grant.sources)) != tuple(sorted(sources)):
             raise WatchRefused("the grant changed since the card was proposed")
 
-    async def _register(self, watch: Watch, snapshot: Snapshot) -> None:
+    async def _register(
+        self, watch: Watch, snapshot: Snapshot, cursors: Mapping[str, int] | None = None
+    ) -> None:
         self._grant_is_current(watch.id, watch.grant_digest, watch.sources)
         await self.evaluator.register(
             instance_id=watch.instance_id,
@@ -240,6 +250,7 @@ class WatchService:
             label=_label(watch.categories),
             snapshot=snapshot,
             expires_at=watch.expires_at,
+            cursors=dict(cursors) if cursors else None,
         )
 
     async def _cancel(self, watch: Watch, now: datetime) -> None:
@@ -317,6 +328,26 @@ class WatchService:
         written = await self.store.write(paused, expected_version=watch.version, cap=self.cap)
         await self._cancel(watch, now)
         return written
+
+    async def instance(self, watch: Watch) -> Instance | None:
+        """The evaluator instance of this watch's current generation."""
+        async with self.evaluator.store.transaction() as tx:
+            return await tx.get_instance(watch.instance_id)
+
+    async def rearm(
+        self, watch: Watch, cursors: Mapping[str, int], snapshot: Snapshot
+    ) -> Watch | None:
+        """Register the next generation after a fire; its floor is the fired one's cursors.
+
+        Registering is idempotent and the store write is a version CAS, so a crash between the two
+        or a racing runner replays to the same single next generation. An expired watch is not
+        rearmed (``expire_due`` closes it).
+        """
+        if snapshot.now >= watch.expires_at or watch.state is not WatchState.ACTIVE:
+            return None
+        following = replace(watch, generation=watch.generation + 1, version=watch.version + 1)
+        await self._register(following, snapshot, cursors)
+        return await self.store.write(following, expected_version=watch.version, cap=self.cap)
 
     async def renewal_due(self, now: datetime) -> list[Watch]:
         return [w for w in await self.store.list_all() if w.due_for_renewal(now)]
