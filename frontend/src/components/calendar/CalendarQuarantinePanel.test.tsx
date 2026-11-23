@@ -131,11 +131,10 @@ it("moves focus to the panel after a confirmed Block", async () => {
 it("says a vouch did not lift a global block, from the refetched verdict", async () => {
   vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok());
   const blocked = { ...item, verdict: "blocked" as const };
-  const { rerender } = render(<CalendarQuarantinePanel items={[blocked]} unavailable={false} />);
+  render(<CalendarQuarantinePanel items={[blocked]} unavailable={false} />);
   await userEvent.click(screen.getByRole("button", { name: /Vouch for the sender/ }));
   await waitFor(() => expect(live().textContent).toContain("Still blocked by a global rule"));
   expect(live().textContent).not.toContain("Block undoes this");
-  rerender(<CalendarQuarantinePanel items={[blocked]} unavailable={false} />);
 });
 
 it("announces a vouch whose row left the list and moves focus to the panel", async () => {
@@ -152,4 +151,32 @@ it("announces a vouch whose row left the list and moves focus to the panel", asy
   const panel = await screen.findByRole("region", { name: "Quarantined invitations" });
   await waitFor(() => expect(live().textContent).toContain("Sender vouched"));
   expect(document.activeElement).toBe(panel);
+});
+
+it("does not steal focus from another row's button at settle", async () => {
+  vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok());
+  const other = { ...item, entry_id: "11111111-1111-4111-8111-111111111111" };
+  render(<CalendarQuarantinePanel items={[item, other]} unavailable={false} />);
+  const vouches = screen.getAllByRole("button", { name: /Vouch for the sender/ });
+  await userEvent.click(vouches[0]);
+  const elsewhere = screen.getAllByRole("button", { name: /Block the sender/ })[1];
+  elsewhere.focus();
+  await waitFor(() => expect(live().textContent).toContain("Sender vouched"));
+  expect(document.activeElement).toBe(elsewhere);
+});
+
+it("announces a repeated identical outcome again", async () => {
+  vi.mocked(decideCalendarOrganizer).mockResolvedValue(ok());
+  const other = { ...item, entry_id: "11111111-1111-4111-8111-111111111111" };
+  render(<CalendarQuarantinePanel items={[item, other]} unavailable={false} />);
+  const vouches = screen.getAllByRole("button", { name: /Vouch for the sender/ });
+  await userEvent.click(vouches[0]);
+  await waitFor(() => expect(live().textContent).toContain("Sender vouched"));
+  const seen: string[] = [];
+  const observer = new MutationObserver(() => seen.push(live().textContent ?? ""));
+  observer.observe(live(), { childList: true, characterData: true, subtree: true });
+  await userEvent.click(vouches[1]);
+  await waitFor(() => expect(seen).toContain(""));
+  await waitFor(() => expect(live().textContent).toContain("Sender vouched"));
+  observer.disconnect();
 });

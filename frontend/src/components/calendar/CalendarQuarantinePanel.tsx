@@ -74,6 +74,13 @@ export function CalendarQuarantinePanel({
   const closedBy = useRef<"cancel" | "confirm">("cancel");
   const returnTo = useRef<string | null>(null);
   const announced = useRef(new Set<string>());
+  const announceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (announceTimer.current) clearTimeout(announceTimer.current);
+    },
+    [],
+  );
   const [announcement, setAnnouncement] = useState("");
 
   useEffect(() => {
@@ -84,11 +91,19 @@ export function CalendarQuarantinePanel({
       if (decision.phase !== "settled" || announced.current.has(entryId)) continue;
       announced.current.add(entryId);
       const row = items.find((item) => item.entry_id === entryId);
-      setAnnouncement(outcomeText(decision, row));
+      // Clear first so an identical outcome is announced again.
+      const text = outcomeText(decision, row);
+      setAnnouncement("");
+      if (announceTimer.current) clearTimeout(announceTimer.current);
+      announceTimer.current = setTimeout(() => setAnnouncement(text), 50);
+      // Only rescue focus that has been lost; never take it from a control the user is on.
       const active = document.activeElement;
-      if (!active || active === document.body || regionRef.current?.contains(active)) {
-        regionRef.current?.focus();
-      }
+      const lost =
+        !active ||
+        active === document.body ||
+        !active.isConnected ||
+        (active as HTMLButtonElement).disabled === true;
+      if (lost) regionRef.current?.focus();
     }
   }, [decisions, items]);
 
@@ -156,7 +171,7 @@ export function CalendarQuarantinePanel({
           const decision = decisions.get(item.entry_id);
           const when = quarantineTime(item);
           const error = errors.get(item.entry_id);
-          const locked = unavailable || decision?.phase === "pending";
+          const locked = unavailable || decision?.phase === "pending" || decision?.phase === "saved";
           return (
             <li
               key={item.entry_id}
