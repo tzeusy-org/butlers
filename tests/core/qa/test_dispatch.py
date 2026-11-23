@@ -2029,7 +2029,7 @@ async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
             side_effect=RuntimeError("db down"),
         ),
         patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
-        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock) as event,
         patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
     ):
         results = await dispatch_novel_findings(
@@ -2045,6 +2045,9 @@ async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
     hold.assert_awaited_once()
     assert hold.await_args.args[2] == "circuit_breaker"
     assert [r.reason for r in results] == ["circuit_breaker"] * 3
+    # The event says the state was unreadable, never that failures were counted.
+    reason = event.await_args.kwargs["reason"]
+    assert "unreadable" in reason and "consecutive" not in reason
 
 
 def _probe_patches(*, due, lock="conn"):

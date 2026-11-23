@@ -3308,17 +3308,17 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
-async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> bool:
-    """Whether dispatch must halt: the breaker is open, or its state cannot be read.
+async def _breaker_halt_state(pool: asyncpg.Pool, threshold: int) -> str | None:
+    """``"open"``, ``"unreadable"`` or ``None``: whether dispatch must halt, and why.
 
     Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
     rather than raising out of the batch or launching with the safeguard unreadable.
     """
     try:
-        return await _is_circuit_breaker_tripped(pool, threshold)
+        return "open" if await _is_circuit_breaker_tripped(pool, threshold) else None
     except Exception as exc:
         logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
-        return True
+        return "unreadable"
 
 
 #: Session advisory lock that serializes the half-open probe across dispatchers and daemons.
@@ -3423,6 +3423,8 @@ async def _halt_batch(
     remaining: list[TriagedFinding],
     config: QaDispatchConfig,
     metrics: ButlerMetrics | None,
+    *,
+    unreadable: bool = False,
 ) -> list[QaDispatchResult]:
     """Hold the rest of a patrol behind an open breaker: no claims, one event.
 
@@ -3452,7 +3454,10 @@ async def _halt_batch(
             butler_name=lead.source_butler,
             decision="circuit_breaker",
             reason=(
-                f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
+                f"Circuit breaker state unreadable; {len(remaining)} finding(s) held for a "
+                "later patrol"
+                if unreadable
+                else f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
                 f"failures; {len(remaining)} finding(s) held for a later patrol"
             ),
         )
@@ -3521,15 +3526,26 @@ async def dispatch_novel_findings(
         # the rest as one decision instead of dropping them. Once the cap has been reached
         # nothing more launches, so the remainder stays a cap hold.
         probing = False
-        if (
-            cap_skipped == 0
-            and config.circuit_breaker_threshold > 0
-            and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
-        ):
+        halt_state = (
+            await _breaker_halt_state(pool, config.circuit_breaker_threshold)
+            if cap_skipped == 0 and config.circuit_breaker_threshold > 0
+            else None
+        )
+        if halt_state is not None:
             # Open. Once its backoff has elapsed this finding may go through as the one probe;
-            # otherwise the rest of the patrol is held.
-            if not await _breaker_probe_due(pool, config.circuit_breaker_threshold):
-                results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
+            # otherwise the rest of the patrol is held. An unreadable breaker never probes.
+            if halt_state == "unreadable" or not await _breaker_probe_due(
+                pool, config.circuit_breaker_threshold
+            ):
+                results.extend(
+                    await _halt_batch(
+                        pool,
+                        novel_findings[index:],
+                        config,
+                        metrics,
+                        unreadable=halt_state == "unreadable",
+                    )
+                )
                 break
             probing = True
 
