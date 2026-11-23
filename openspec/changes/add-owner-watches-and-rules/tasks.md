@@ -8,7 +8,10 @@
 
 - [x] 2.1 Extend the closed AST and evaluator matrix, Python and `perception_private.valid_predicate`
   together, with the per-schema migration rules.
-- [ ] 2.2 Owner watch store and lifecycle.
+- [x] 2.2a Owner watch lifecycle on the evaluator (`butlers.watches`): exact cards, cap, expiry,
+  renewal, pause, delete, in-memory store. Dark; no table, tool or delivery.
+- [ ] 2.2b Postgres watch store (table, migration, grants manifest, two-schema test) and the owner
+  approval-card and `never` reply surfaces that call the service.
 - [ ] 2.3 Finance `alert_config` migration.
 - [ ] 2.4 Guards, wake_when and automatic tighten-only modes.
 - [ ] 2.5 Correlation rule and graduation card.
