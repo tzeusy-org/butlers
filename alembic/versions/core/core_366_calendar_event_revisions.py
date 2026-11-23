@@ -1,7 +1,7 @@
 """connectors.calendar_event_revisions: an append-only journal of every observed event version.
 
 Revision ID: core_366
-Revises: core_361
+Revises: core_362
 Create Date: 2026-11-23 00:00:00.000000
 
 bu-uhbhzq.1 slice 2.  Google keeps no edit history and the per-butler calendar projections
@@ -36,7 +36,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_366"
-down_revision = "core_361"
+down_revision = "core_362"
 branch_labels = None
 depends_on = None
 
