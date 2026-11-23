@@ -273,9 +273,11 @@ def test_system_prompt_forbids_describing_uncaptured_lanes() -> None:
     "summary",
     [
         "The owner skipped lunch.",
-        "No meals were logged.",
+        "No meals today.",
         "The day went without dinner.",
         "Breakfast didn't happen.",
+        "You didn\u2019t eat much, but work went well.",
+        "Meals skipped.",
     ],
 )
 def test_parse_rejects_absence_claim_about_uncaptured_lane(summary: str) -> None:
@@ -284,11 +286,32 @@ def test_parse_rejects_absence_claim_about_uncaptured_lane(summary: str) -> None
 
 
 def test_parse_rejects_absence_claim_inside_a_flag_label() -> None:
-    raw = json.dumps({"day_summary": "Fine.", "flag_labels": {"sleep_missing": "No meal data."}})
+    raw = json.dumps({"day_summary": "Fine.", "flag_labels": {"sleep_missing": "No meals today."}})
     assert (
         parse_narration_response(raw, known_flag_types=["sleep_missing"], uncaptured=_EATING_DARK)
         is None
     )
+
+
+_DARK = [{"lane": lane, "state": "dark", "since": None} for lane in ("eat", "work", "rest")]
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "Meals were not captured.",
+        "No meals were logged.",
+        "Meal data is missing for today.",
+        "Lunch wasn\u2019t recorded.",
+        "There is no data on work today.",
+        "You didn't sleep before a work day, and slept in later.",
+        "Nothing else happened for the rest of the day.",
+        "Not a lot of movement; the rest of the day was at home.",
+    ],
+)
+def test_parse_accepts_honest_capture_wording_and_unrelated_negations(summary: str) -> None:
+    raw = json.dumps({"day_summary": summary, "flag_labels": {}})
+    assert parse_narration_response(raw, known_flag_types=[], uncaptured=_DARK) == (summary, {})
 
 
 def test_parse_allows_other_lane_negations_and_positive_mentions() -> None:
@@ -488,7 +511,7 @@ async def test_narrate_rejects_absence_claim_about_uncaptured_lane(monkeypatch) 
     monkeypatch.setattr(
         "butlers.chronicler.narration.DiscretionDispatcher",
         lambda *a, **kw: _FakeDispatcher(
-            response='{"day_summary": "No meals were logged.", "flag_labels": {}}'
+            response='{"day_summary": "No meals today.", "flag_labels": {}}'
         ),
     )
     result = await narrate_daily_rollup(_NarrationPool(), local_date=_LOCAL_DATE)

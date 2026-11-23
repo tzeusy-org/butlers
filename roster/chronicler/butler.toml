@@ -267,6 +267,12 @@ run — your job is to narrate over that result, not to re-derive it.
    - `reconciliation.plan_producer="butler"` (or `plan_producer` on a dropped
      intent) marks a plan a butler wrote, not your own calendar entry. Phrase
      it as "a butler-made plan had X", never as your schedule or as attended.
+   - Source gaps: `owner_day.unknowns` may list lanes that were not captured.
+     Mention a gap ONLY through `owner_day.recap_mention` (one plain clause per
+     entry, using its wording: a dark lane appears on its first dark day and
+     weekly after, a retired lane once). If `recap_mention` is absent or empty,
+     say nothing about gaps. Never describe activity or its absence in a lane
+     that was not captured, and never infer inactivity from a gap.
    - Does not mention bundle internals such as episodes_truncated,
      events_truncated, "token-bounded", or "capped inventory". If the user
      explicitly asks about completeness, explain plainly that a very busy day

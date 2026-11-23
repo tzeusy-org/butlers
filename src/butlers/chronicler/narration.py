@@ -142,7 +142,7 @@ matching exactly this shape:
 The input's "uncaptured_lanes" lists lanes whose data source was dark or not captured \
 that day. For those lanes the data says nothing: never describe activity in them, and \
 never describe its absence (no "skipped", "no meals", "without"). Their absence is a \
-capture gap, not behavior.
+capture gap, not behavior. You may say plainly that such a lane was "not captured".
 
 Include a key in "flag_labels" ONLY for flag_type values that appear in the input's \
 "flags" list. Never invent a flag_type not present in the input. If a field has \
@@ -200,23 +200,49 @@ _LANE_KEYWORDS: dict[str, tuple[str, ...]] = {
     "eat": ("meal", "meals", "eat", "ate", "eaten", "lunch", "dinner", "breakfast", "food"),
     "rest": ("rest", "relax", "idle"),
 }
-_NEGATION = re.compile(
-    r"\b(no|not|never|none|nothing|without|skipped|skip|missed|zero|didn't|did not|wasn't|"
-    r"weren't|hadn't|lacked|absent)\b",
-    re.IGNORECASE,
-)
+_NEGATION_WORDS = frozenset(
+    {"no", "not", "never", "none", "nothing", "without", "skipped", "skip", "missed", "zero",
+     "lacked", "absent", "cannot"}
+)  # fmt: skip
+#: Honest capture wording: a clause using it says the data is missing, not that nothing happened.
+_CAPTURE_WORDS = frozenset(
+    {"captured", "capture", "recorded", "record", "logged", "tracked", "data", "available",
+     "unavailable", "visible", "evidence", "known", "unknown", "reported", "measured", "seen",
+     "observed", "collected", "detected", "dark", "offline"}
+)  # fmt: skip
+#: A negation reaches this many words ahead, or this many words back ("meals skipped").
+_REACH_AHEAD = 3
+_REACH_BACK = 2
+_CLAUSE_SPLIT = re.compile(r"[.;!?,:()\n]|\b(?:but|and|while|though|although|so|because)\b")
+
+
+def _is_negation(word: str) -> bool:
+    return word in _NEGATION_WORDS or word.endswith("n't")
 
 
 def _asserts_absence(text: str, uncaptured: Sequence[Mapping[str, Any]]) -> bool:
+    """Does any clause negate an uncaptured lane's keyword close by, without capture wording?
+
+    Matching is per clause and by proximity, so "didn't sleep before a work day" does not
+    assert absence of work, and "the rest of the day" is not the rest lane. Curly apostrophes
+    are folded. A clause that says the data was not captured, recorded or available is honest.
+    """
     keywords = {kw for u in uncaptured for kw in _LANE_KEYWORDS.get(u["lane"], ())}
     if not keywords:
         return False
-    for sentence in re.split(r"[.;!?]", text):
-        if not _NEGATION.search(sentence):
+    folded = text.lower().replace("\u2019", "'").replace("\u2018", "'").replace("\u02bc", "'")
+    folded = folded.replace("rest of", "remainder of")
+    for clause in _CLAUSE_SPLIT.split(folded):
+        words = re.findall(r"[a-z']+", clause)
+        if not words or _CAPTURE_WORDS & set(words):
             continue
-        words = set(re.findall(r"[a-z']+", sentence.lower()))
-        if words & keywords:
-            return True
+        for index, word in enumerate(words):
+            if not _is_negation(word):
+                continue
+            ahead = words[index + 1 : index + 1 + _REACH_AHEAD]
+            back = words[max(0, index - _REACH_BACK) : index]
+            if keywords & set(ahead) or keywords & set(back):
+                return True
     return False
 
 

@@ -586,47 +586,49 @@ def uncaptured_lanes(
     return result
 
 
-#: A dark lane's streak is walked back at most this far. The weekly recap cadence needs the
-#: exact streak, so the bound is generous; a lane still dark past it reads as ``0`` (phase
-#: unknown) and is never mentioned in the recap, while its unknowns line is still stored.
-MAX_STREAK_LOOKBACK_DAYS = 400
-
-
 async def load_uncaptured_with_streaks(
     conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     *,
     local_date: date,
     timezone: str,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Uncaptured lanes for a frozen day plus each lane's consecutive-day streak.
+    """Uncaptured lanes for a frozen day plus each lane's streak in calendar days.
 
-    ``([], {})`` when the day was never snapshotted. The streak walks back through earlier
-    frozen days while the lane stays uncaptured, stopping at the first unsnapshotted day. Only
-    a dark lane's weekly cadence needs the exact count; a lane that is not captured for another
-    reason (retired, not configured) is mentioned once, so it stops at ``2`` (not the first day).
+    ``([], {})`` when the day was never snapshotted. One query reads every frozen day up to
+    ``local_date``; a lane's streak runs back through the snapshotted days on which it stayed
+    uncaptured, to the first snapshotted day on which it was captured. A day with no snapshot
+    neither counts nor resets the run, and the streak is the calendar span from the run's first
+    day through ``local_date`` (1 on the first day). There is no cutoff.
     """
-    availability = await load_day_availability(conn, local_date=local_date, timezone=timezone)
-    if availability is None:
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (local_date, source_name) local_date, source_name, state, retired_at "
+        "FROM chronicler.day_source_availability WHERE timezone = $2 AND local_date <= $1 "
+        "ORDER BY local_date DESC, source_name, revision DESC",
+        local_date,
+        timezone,
+    )
+    days: dict[date, dict[str, str]] = {}
+    for row in rows:
+        days.setdefault(row["local_date"], {})[row["source_name"]] = row["state"]
+    if local_date not in days:
         return [], {}
-    retired = await load_day_retired_since(conn, local_date=local_date, timezone=timezone)
-    today = uncaptured_lanes(availability, retired_since=retired)
-    streaks = {entry["lane"]: 1 for entry in today}
-    dark = {entry["lane"] for entry in today if entry["state"] == DARK}
-    open_lanes = set(streaks)
-    for back in range(1, MAX_STREAK_LOOKBACK_DAYS + 1):
+    retired = {
+        r["source_name"]: r["retired_at"]
+        for r in rows
+        if r["local_date"] == local_date and r["retired_at"] is not None
+    }
+    today = uncaptured_lanes(days[local_date], retired_since=retired)
+    start: dict[str, date] = {entry["lane"]: local_date for entry in today}
+    open_lanes = set(start)
+    for day in sorted((d for d in days if d < local_date), reverse=True):
         if not open_lanes:
-            return today, streaks
-        earlier = await load_day_availability(
-            conn, local_date=local_date - timedelta(days=back), timezone=timezone
-        )
-        still = {e["lane"] for e in uncaptured_lanes(earlier)} if earlier is not None else set()
-        open_lanes &= still
+            break
+        still = {e["lane"] for e in uncaptured_lanes(days[day])}
+        for lane in open_lanes - still:
+            open_lanes.discard(lane)
         for lane in open_lanes:
-            streaks[lane] += 1
-        open_lanes -= {lane for lane in open_lanes if lane not in dark}
-    for lane in open_lanes:
-        streaks[lane] = 0
-    return today, streaks
+            start[lane] = day
+    return today, {lane: (local_date - first).days + 1 for lane, first in start.items()}
 
 
 async def correct_retired_feeder_dark(

@@ -399,75 +399,89 @@ def test_uncaptured_lanes_marks_dark_over_retired() -> None:
 
 
 class _AvailabilityConn:
-    """Fake conn: ``days`` maps local_date -> {source: state}; a missing day was never frozen."""
+    """Fake conn for the one streak query: ``days`` maps local_date -> {source: state}."""
 
-    def __init__(self, days: dict[date, dict[str, str]]) -> None:
+    def __init__(self, days: dict[date, dict[str, str]], retired_at: date | None = None) -> None:
         self.days = days
+        self.retired_at = retired_at
+        self.queries: list[str] = []
 
     async def fetch(self, query: str, local_date: date, _tz: str) -> list[dict[str, Any]]:
-        if "retired_at" in query:
-            return []
-        return [{"source_name": k, "state": v} for k, v in self.days.get(local_date, {}).items()]
+        self.queries.append(query)
+        return [
+            {
+                "local_date": day,
+                "source_name": source,
+                "state": state,
+                "retired_at": self.retired_at if state == RETIRED else None,
+            }
+            for day, states in sorted(self.days.items(), reverse=True)
+            if day <= local_date
+            for source, state in states.items()
+        ]
 
 
-async def test_streak_counts_consecutive_uncaptured_days_and_stops_at_a_gap() -> None:
+_TODAY = date(2026, 11, 20)
+
+
+async def _streaks(days: dict[date, dict[str, str]], retired_at: date | None = None):
     from butlers.chronicler.flags import load_uncaptured_with_streaks
 
-    today = date(2026, 11, 20)
+    conn = _AvailabilityConn(days, retired_at)
+    result = await load_uncaptured_with_streaks(conn, local_date=_TODAY, timezone="Asia/Singapore")
+    assert len(conn.queries) == 1  # one query, whatever the streak length
+    return result
+
+
+async def test_streak_counts_calendar_days_and_stops_at_a_captured_day() -> None:
     dark = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
     days = {
-        today: dark,
-        today - timedelta(days=1): dark,
-        today - timedelta(days=2): dark,
-        today - timedelta(days=3): _availability_by_state(AVAILABLE),
-        today - timedelta(days=4): dark,
+        _TODAY: dark,
+        _TODAY - timedelta(days=1): dark,
+        _TODAY - timedelta(days=2): dark,
+        _TODAY - timedelta(days=3): _availability_by_state(AVAILABLE),
+        _TODAY - timedelta(days=4): dark,
     }
-    lanes, streaks = await load_uncaptured_with_streaks(
-        _AvailabilityConn(days), local_date=today, timezone="Asia/Singapore"
-    )
+    lanes, streaks = await _streaks(days)
     assert [e["lane"] for e in lanes] == ["eat"]
     assert streaks == {"eat": 3}
 
 
-async def test_unsnapshotted_day_has_no_uncaptured_lanes() -> None:
-    from butlers.chronicler.flags import load_uncaptured_with_streaks
-
-    assert await load_uncaptured_with_streaks(
-        _AvailabilityConn({}), local_date=date(2026, 11, 20), timezone="Asia/Singapore"
-    ) == ([], {})
-
-
-async def test_a_retired_lane_stops_at_its_second_day_without_walking_back() -> None:
-    from butlers.chronicler.flags import load_uncaptured_with_streaks
-
-    today = date(2026, 11, 20)
-    retired = _availability_by_state(AVAILABLE, **{"health.meals": RETIRED})
-    days = {today - timedelta(days=n): retired for n in range(0, 50)}
-    conn = _AvailabilityConn(days)
-    reads: list[date] = []
-    original = conn.fetch
-
-    async def counting(query: str, local_date: date, tz: str) -> list[dict[str, Any]]:
-        if "retired_at" not in query:
-            reads.append(local_date)
-        return await original(query, local_date, tz)
-
-    conn.fetch = counting  # type: ignore[method-assign]
-    _lanes, streaks = await load_uncaptured_with_streaks(
-        conn, local_date=today, timezone="Asia/Singapore"
-    )
-    assert streaks == {"eat": 2}
-    assert len(reads) == 2
-
-
-async def test_a_dark_lane_longer_than_the_lookback_reads_as_unknown_phase(monkeypatch) -> None:
-    from butlers.chronicler import flags as flags_module
-
-    monkeypatch.setattr(flags_module, "MAX_STREAK_LOOKBACK_DAYS", 5)
-    today = date(2026, 11, 20)
+async def test_a_day_with_no_snapshot_does_not_reset_the_streak() -> None:
     dark = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
-    days = {today - timedelta(days=n): dark for n in range(0, 30)}
-    _lanes, streaks = await flags_module.load_uncaptured_with_streaks(
-        _AvailabilityConn(days), local_date=today, timezone="Asia/Singapore"
-    )
-    assert streaks == {"eat": 0}
+    days = {_TODAY: dark, _TODAY - timedelta(days=3): dark, _TODAY - timedelta(days=4): dark}
+    _lanes, streaks = await _streaks(days)
+    assert streaks == {"eat": 5}  # calendar span from the run's first snapshotted day
+
+
+async def test_a_long_streak_has_no_cutoff_and_keeps_its_weekly_phase() -> None:
+    from butlers.chronicler.day_close_composition import recap_mention
+
+    dark = _availability_by_state(AVAILABLE, **{"health.meals": DARK})
+    days = {_TODAY - timedelta(days=n): dark for n in range(0, 800)}
+    lanes, streaks = await _streaks(days)
+    assert streaks == {"eat": 800}
+    assert recap_mention(lanes[0], streak=streaks["eat"]) is (799 % 7 == 0)
+
+
+async def test_a_retired_lane_is_mentioned_exactly_once() -> None:
+    from butlers.chronicler.day_close_composition import recap_mention
+
+    retired = _availability_by_state(AVAILABLE, **{"health.meals": RETIRED})
+    first_day = _TODAY - timedelta(days=49)
+    days = {first_day + timedelta(days=n): retired for n in range(0, 50)}
+    mentions = []
+    for offset in range(0, 50):
+        from butlers.chronicler.flags import load_uncaptured_with_streaks
+
+        today = first_day + timedelta(days=offset)
+        lanes, streaks = await load_uncaptured_with_streaks(
+            _AvailabilityConn(days, date(2026, 8, 13)), local_date=today, timezone="Asia/Singapore"
+        )
+        mentions.append(recap_mention(lanes[0], streak=streaks["eat"]))
+    assert mentions.count(True) == 1 and mentions[0] is True
+
+
+async def test_unsnapshotted_day_has_no_uncaptured_lanes() -> None:
+    assert await _streaks({}) == ([], {})
+    assert await _streaks({_TODAY - timedelta(days=1): _availability_by_state(DARK)}) == ([], {})

@@ -227,8 +227,6 @@ def recap_mention(entry: Mapping[str, Any], *, streak: int) -> bool:
     first dark day and weekly after (day 8, 15, ...); a retired or unconfigured lane only once.
     The unknowns line is stored every day regardless.
     """
-    if streak == 0:
-        return False  # a streak longer than the lookback: phase unknown, the line is still stored
     if streak <= 1:
         return True
     return entry.get("state") == "dark" and (streak - 1) % 7 == 0
