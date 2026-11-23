@@ -74,3 +74,20 @@ def test_mixed_causes_are_mixed_with_their_counts() -> None:
 def test_unparseable_detail_is_an_execution_failure_never_a_named_structural_cause() -> None:
     state = derive_breaker_state([_row(i, detail="???") for i in range(1, 6)], 5)
     assert state.dominant_cause == "execution_failure"
+
+
+def test_the_page_copy_of_the_cause_labels_matches_the_canonical_file() -> None:
+    """The /qa page and the API must use the same words (frontend copy of the JSON)."""
+    import json
+    from pathlib import Path
+
+    from butlers.core.qa.breaker_state import CAUSE_LABELS, cause_label
+
+    root = Path(__file__).resolve().parents[3]
+    page_copy = json.loads(
+        (root / "frontend" / "src" / "lib" / "qa-breaker-cause-labels.json").read_text()
+    )
+    assert page_copy == CAUSE_LABELS
+    assert cause_label("publisher_unconfigured") == "no publisher configured"
+    assert cause_label("some_new_cause") == "some new cause"
+    assert cause_label(None) is None

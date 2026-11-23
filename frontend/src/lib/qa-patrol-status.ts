@@ -1,4 +1,5 @@
 import type { QaPatrolReadStatus, QaPatrolStatus } from "@/api/types";
+import { haltReasonLabel } from "@/lib/qa-breaker-cause";
 
 export type QaPatrolStatusTone = "healthy" | "attention" | "destructive" | "muted";
 
@@ -48,9 +49,13 @@ const UNKNOWN_PATROL_STATUS_PRESENTATION: QaPatrolStatusPresentation = {
  */
 export function getQaPatrolStatusPresentation(
   status: QaPatrolReadStatus,
+  haltReason?: string | null,
 ): QaPatrolStatusPresentation {
   if (Object.prototype.hasOwnProperty.call(PATROL_STATUS_PRESENTATIONS, status)) {
-    return PATROL_STATUS_PRESENTATIONS[status as QaPatrolStatus];
+    const presentation = PATROL_STATUS_PRESENTATIONS[status as QaPatrolStatus];
+    // A halted patrol names the gate that stopped it.
+    const gate = status === "halted" ? haltReasonLabel(haltReason) : null;
+    return gate ? { ...presentation, label: `${presentation.label}: ${gate}` } : presentation;
   }
   return UNKNOWN_PATROL_STATUS_PRESENTATION;
 }

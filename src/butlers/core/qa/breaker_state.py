@@ -13,10 +13,12 @@ to it, which doubles the wait up to :data:`PROBE_BACKOFF_CAP` (at most about 12 
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
@@ -82,3 +84,17 @@ def derive_breaker_state(
         last_failure_at=newest,
         next_probe_at=None if newest is None else newest + probe_backoff(streak - threshold),
     )
+
+
+#: Plain-words causes for human-facing text. ``frontend/src/lib/qa-breaker-cause-labels.json`` is a
+#: copy for the /qa page; ``tests/core/qa/test_breaker_state.py`` fails if the two differ.
+CAUSE_LABELS: dict[str, str] = json.loads(
+    Path(__file__).with_name("breaker_cause_labels.json").read_text(encoding="utf-8")
+)
+
+
+def cause_label(cause: str | None) -> str | None:
+    """Plain-words cause; an unknown code reads as its own text, never silently dropped."""
+    if not cause:
+        return None
+    return CAUSE_LABELS.get(cause, cause.replace("_", " "))

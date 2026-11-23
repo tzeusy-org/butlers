@@ -186,8 +186,14 @@ interface PatrolStripeProps {
   isLoading: boolean;
 }
 
-function PatrolStatusChip({ status }: { status: QaPatrolSummary["status"] }) {
-  const presentation = getQaPatrolStatusPresentation(status);
+function PatrolStatusChip({
+  status,
+  haltReason,
+}: {
+  status: QaPatrolSummary["status"];
+  haltReason?: string | null;
+}) {
+  const presentation = getQaPatrolStatusPresentation(status, haltReason);
 
   switch (presentation.tone) {
     case "healthy":
@@ -252,7 +258,7 @@ function PatrolCadenceStripe({ patrols, isLoading }: PatrolStripeProps) {
                 <span className="text-xs text-muted-foreground tabular-nums min-w-[72px]">
                   <Time value={patrol.started_at} mode="relative" />
                 </span>
-                <PatrolStatusChip status={patrol.status} />
+                <PatrolStatusChip status={patrol.status} haltReason={patrol.halt_reason} />
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {patrol.findings_count} finding{patrol.findings_count !== 1 ? "s" : ""}
                   {patrol.novel_count > 0 && (
