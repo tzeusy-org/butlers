@@ -9650,7 +9650,7 @@ SELECT jsonb_build_object('tables',(SELECT jsonb_object_agg(name,value) FROM tab
         -- major reports a different hash. Recompute on a migrated postgres:17 database with
         -- SELECT encode(sha256(convert_to(perception_private.backup_catalog()::text,'UTF8')),'hex')
         -- run as perception_owner.
-        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'1fa34ae16009bc205e2b5657cca667b563d48ff3f5e3a7c1ca6c29afef30e94f'
+        IF encode(sha256(convert_to(catalog::text,'UTF8')),'hex')<>'ae70f5cdee2c221b250b69596f0a4d2d7117a926d529557d33649806506133dc'
             OR (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 WHERE n.nspname='perception_private' AND c.relkind IN ('r','v','m','f','p'))<>5
             OR (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
