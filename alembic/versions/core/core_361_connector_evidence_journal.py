@@ -243,10 +243,15 @@ def downgrade() -> None:
         f"""
         DO $$
         BEGIN
-            IF to_regclass({_quote_literal(_TABLE)}) IS NOT NULL
-               AND EXISTS (SELECT 1 FROM {_TABLE}) THEN
-                RAISE EXCEPTION
-                    'connectors.evidence_journal holds evidence; downgrade refused (bu-uhbhzq.4)';
+            IF to_regclass({_quote_literal(_TABLE)}) IS NOT NULL THEN
+                -- Wait out every uncommitted connector insert first: a row the check cannot see
+                -- yet would otherwise commit while the DROP waits, and the DROP would erase it.
+                LOCK TABLE {_TABLE} IN ACCESS EXCLUSIVE MODE;
+                IF EXISTS (SELECT 1 FROM {_TABLE}) THEN
+                    RAISE EXCEPTION
+                        'connectors.evidence_journal holds evidence; '
+                        'downgrade refused (bu-uhbhzq.4)';
+                END IF;
             END IF;
         END;
         $$

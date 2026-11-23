@@ -89,3 +89,27 @@ def test_the_catalog_check_reads_every_installed_object_and_takes_no_table_lock(
         assert fragment in sql
     # Catalog-only: it never names the table in a FROM clause that would lock it.
     assert "FROM connectors.evidence_journal" not in sql
+
+
+def test_the_last_downgrade_locks_the_table_before_it_looks_for_rows(monkeypatch) -> None:
+    """An uncommitted insert is invisible to EXISTS; the lock must wait it out first."""
+    module = _load()
+    fake = _Op(installed=True)
+    monkeypatch.setattr(module, "op", fake)
+    monkeypatch.setattr(module, "_installation_count", lambda: 1)
+    module.downgrade()
+
+    check = next(s for s in fake.executed if "downgrade refused" in s)
+    lock = check.index("LOCK TABLE connectors.evidence_journal IN ACCESS EXCLUSIVE MODE")
+    assert lock < check.index("EXISTS (SELECT 1 FROM connectors.evidence_journal)")
+    drop = next(i for i, s in enumerate(fake.executed) if s.startswith("DROP TABLE"))
+    assert fake.executed.index(check) < drop
+
+
+def test_an_earlier_schema_downgrade_takes_no_table_lock(monkeypatch) -> None:
+    module = _load()
+    fake = _Op(installed=True)
+    monkeypatch.setattr(module, "op", fake)
+    monkeypatch.setattr(module, "_installation_count", lambda: 2)
+    module.downgrade()
+    assert fake.executed == [module._LOCK]
