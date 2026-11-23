@@ -10,8 +10,10 @@
   together, with the per-schema migration rules.
 - [x] 2.2a Owner watch lifecycle on the evaluator (`butlers.watches`): exact cards, cap, expiry,
   renewal, pause, delete, in-memory store. Dark; no table, tool or delivery.
-- [ ] 2.2b Postgres watch store (table, migration, grants manifest, two-schema test) and the owner
-  approval-card and `never` reply surfaces that call the service.
+- [x] 2.2b Postgres watch store: `public.owner_watches` (core_364), grants manifest, two-schema
+  migration test, store contract on both stores.
+- [ ] 2.2c The owner approval-card and `never` reply surfaces that call the service, and delivery
+  through the insight broker.
 - [ ] 2.3 Finance `alert_config` migration.
 - [ ] 2.4 Guards, wake_when and automatic tighten-only modes.
 - [ ] 2.5 Correlation rule and graduation card.
