@@ -245,11 +245,13 @@ route, as the owner and read-only. It is not the goal capability broker, because
   generation consumed, so a fire that stops a batch short is replayed to the next generation. Older rows are
   historical and never wake a watch. One call set is made per capability and distinct window start, paged at 100
   rows with up to 10 pages (a larger window reads blind, never partial), at most 10 call sets per tick, 10 s per
-  call. Event ids are a UUIDv5 of the capability and the position.
+  call. The keys are ordered and rotated by the wall-clock minute, so a tail that does not fit is a different tail
+  next tick and no key is starved (with 12 currencies, none is skipped on more than 2 of 12 ticks). Event ids are a UUIDv5 of the capability and the position.
 - **One trust path.** `reading_event` is the only place a trusted event is built, only from a `Reading` that passed
   the strict schema check in `parse_readings` (exact fields, ascending positions past the cursor, the declared
   currency, a bounded non-negative decimal). A guard test fails if any other source constructs one. The events carry
   the unknown (widest) label: the values derive from third-party mail.
 - **Blind, never fired.** A transport error, timeout, off-schema or out-of-bound payload fails the whole poll: the
   watches reading that capability stay blind (nothing fires, nothing is consumed), the tick still runs, and it
-  reports `degraded` / `feed_unreadable`, which the capability-health collector publishes as `signal_unmeasurable`.
+  reports `degraded` / `feed_unreadable`. A key skipped for the call budget counts the same: the watches reading it
+  are as deaf as after a failure, so the capability is unhealthy for that tick, which the capability-health collector publishes as `signal_unmeasurable`.

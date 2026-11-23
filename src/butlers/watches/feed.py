@@ -211,7 +211,8 @@ class FeedReport:
     events: int = 0
     failed: int = 0
     skipped: int = 0
-    healthy: frozenset[str] = frozenset()
+    healthy: frozenset[str] = frozenset()  # polled, and no key of it failed or was skipped
+    unhealthy: frozenset[str] = frozenset()
 
 
 def _window_start(instance: Instance, source: str, now: datetime) -> int:
@@ -232,10 +233,15 @@ class ReadFeed:
         self.transport = transport
 
     async def poll(self, service: Any, now: datetime) -> FeedReport:
-        """One poll of every capability an open watch reads; failures leave watches blind."""
+        """One poll of every capability an open watch reads; failures leave watches blind.
+
+        A call budget bounds one tick. The distinct (capability, window) keys are ordered and
+        rotated by the wall-clock minute, so a tail that does not fit is a different tail next
+        tick and no key is starved. A key left unpolled is never healthy: the watches reading it
+        are as deaf as after a failure, and the report says so (``skipped``, ``unhealthy``).
+        """
         report = FeedReport()
-        healthy: set[str] = set()
-        calls: dict[tuple[str, int], list[Reading] | None] = {}
+        work: list[tuple[Instance, str, ReadCapability, tuple[str, int]]] = []
         for watch in await service.store.list_all():
             if watch.state is not WatchState.ACTIVE:
                 continue
@@ -248,28 +254,40 @@ class ReadFeed:
                     if source.startswith(SOURCE_PREFIX)
                     else None
                 )
-                if cap is None:
-                    continue
-                after = _window_start(instance, source, now)
-                key = (cap.name, after)
-                if key not in calls:
-                    if len(calls) >= MAX_CALLS_PER_TICK:
-                        report.skipped += 1
-                        continue
-                    calls[key] = await self._read(cap, after)
-                    report.polled += 1
-                readings = calls[key]
-                if readings is None:
-                    report.failed += 1
-                    continue
-                healthy.add(cap.name)
-                if not readings:
-                    continue
-                sound = _sound_for(cap, instance)
-                events = [reading_event(cap, r, measurable=sound) for r in readings]
-                await service.evaluator.evaluate(instance.id, events, now=now)
-                report.events += len(events)
-        report.healthy = frozenset(healthy)
+                if cap is not None:
+                    work.append(
+                        (instance, source, cap, (cap.name, _window_start(instance, source, now)))
+                    )
+        keys = sorted({key for *_, key in work})
+        if keys:
+            turn = int(now.timestamp() // 60) % len(keys)
+            keys = keys[turn:] + keys[:turn]
+        calls: dict[tuple[str, int], list[Reading] | None] = {}
+        by_name = {cap.name: cap for _, _, cap, _ in work}
+        for key in keys[:MAX_CALLS_PER_TICK]:
+            calls[key] = await self._read(by_name[key[0]], key[1])
+            report.polled += 1
+        healthy: set[str] = set()
+        unhealthy: set[str] = set()
+        for instance, _source, cap, key in work:
+            if key not in calls:
+                report.skipped += 1
+                unhealthy.add(cap.name)
+                continue
+            readings = calls[key]
+            if readings is None:
+                report.failed += 1
+                unhealthy.add(cap.name)
+                continue
+            healthy.add(cap.name)
+            if not readings:
+                continue
+            sound = _sound_for(cap, instance)
+            events = [reading_event(cap, r, measurable=sound) for r in readings]
+            await service.evaluator.evaluate(instance.id, events, now=now)
+            report.events += len(events)
+        report.healthy = frozenset(healthy - unhealthy)
+        report.unhealthy = frozenset(unhealthy)
         return report
 
     async def _read(self, cap: ReadCapability, after: int) -> list[Reading] | None:

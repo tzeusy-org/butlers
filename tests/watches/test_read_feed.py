@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import re
+import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -264,6 +265,79 @@ class TestBlind:
         assert report.polled == 1 and report.skipped == 0
 
 
+def _wide_service():
+    sources = frozenset(
+        f"{feedmod.SOURCE_PREFIX}finance.transaction_amount.{c}" for c in sorted(feedmod.CURRENCIES)
+    )
+    return WatchService(
+        InMemoryWatchStore(),
+        ConditionEvaluator(InMemoryConditionStore()),
+        lambda watch_id: Grant(goal_id=watch_id, sources=sources),
+    )
+
+
+class TestCallBudget:
+    async def _twelve(self):
+        service = _wide_service()
+        for code in sorted(feedmod.CURRENCIES):
+            await make_watch(service, predicate(capability=f"finance.transaction_amount.{code}"))
+        return service
+
+    async def test_twelve_currencies_under_a_ten_call_budget_skip_two_and_never_cover_them(self):
+        service = await self._twelve()
+        assert len(feedmod.CURRENCIES) == 12 and feedmod.MAX_CALLS_PER_TICK == 10
+        transport = Transport()
+        report = await ReadFeed(transport).poll(service, NOW)
+        assert (report.polled, report.skipped, report.failed) == (10, 2, 0)
+        polled = {args["currency"] for _, _, args in transport.calls}
+        assert len(report.healthy) == 10 and len(report.unhealthy) == 2
+        assert {c.rsplit(".", 1)[1] for c in report.unhealthy}.isdisjoint(polled)
+        assert report.healthy.isdisjoint(report.unhealthy)
+
+    async def test_a_skipped_key_degrades_the_tick(self):
+        from butlers.watches import tick
+
+        service = await self._twelve()
+        providers = SimpleNamespace(feed_for=lambda: ReadFeed(Transport()))
+        assert await tick._poll_feed(providers, service, NOW) is False
+
+    async def test_the_start_rotates_so_every_key_is_reached_within_twelve_ticks(self):
+        service = await self._twelve()
+        reached: set[str] = set()
+        for minute in range(12):
+            transport = Transport()
+            await ReadFeed(transport).poll(service, NOW + timedelta(minutes=minute))
+            reached |= {args["currency"] for _, _, args in transport.calls}
+        assert reached == set(feedmod.CURRENCIES)
+
+    async def test_no_key_is_skipped_on_more_than_two_of_twelve_ticks(self):
+        service = await self._twelve()
+        skipped: dict[str, int] = {}
+        for minute in range(12):
+            report = await ReadFeed(Transport()).poll(service, NOW + timedelta(minutes=minute))
+            for name in report.unhealthy:
+                skipped[name] = skipped.get(name, 0) + 1
+        assert max(skipped.values()) == 2
+
+    async def test_a_skipped_watch_is_not_evaluated(self):
+        service = await self._twelve()
+
+        class Echo(Transport):
+            async def read(self, butler, tool, args):
+                self.calls.append((butler, tool, dict(args)))
+                return {
+                    "rows": [row(NOW - timedelta(minutes=2), currency=args["currency"].upper())]
+                }
+
+        await ReadFeed(Echo()).poll(service, NOW)
+        fired = [
+            w
+            for w in await service.store.list_all()
+            if (await service.instance(w)).state is not State.OPEN
+        ]
+        assert len(fired) == 10  # the ten polled currencies fire, the two skipped stay open
+
+
 class TestSchema:
     cap = _cap()
 
@@ -338,18 +412,73 @@ class TestRegistry:
         assert feedmod._sound_for(_cap(), instance)
 
 
+def _trusted_sites(source: str) -> list[str]:
+    """Every way a source can set ``trusted`` to anything but a literal False."""
+    sites = []
+    mints = {"ConditionEvent", "replace", "evolve"}
+    names_event = "ConditionEvent" in source
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call):
+            callee = ast.unparse(node.func).rsplit(".", 1)[-1]
+            for keyword in node.keywords:
+                if keyword.arg == "trusted" and (callee in mints or names_event):
+                    if not (
+                        isinstance(keyword.value, ast.Constant) and keyword.value.value is False
+                    ):
+                        sites.append(f"{callee}(trusted=...)")
+                elif keyword.arg is None and callee in mints:
+                    sites.append(f"{callee}(**...)")  # an unpacked mapping can carry trusted
+            if callee == "setattr" and len(node.args) >= 2:
+                name = node.args[1]
+                if isinstance(name, ast.Constant) and name.value == "trusted":
+                    sites.append("setattr(..., 'trusted', ...)")
+        elif isinstance(node, ast.Dict) and names_event:
+            for key, value in zip(node.keys, node.values, strict=True):
+                if isinstance(key, ast.Constant) and key.value == "trusted":
+                    if not (isinstance(value, ast.Constant) and value.value is False):
+                        sites.append("{'trusted': ...}")
+    return sites
+
+
 def test_trusted_events_are_constructed_in_exactly_one_place():
-    """No other module may mint a trusted event: one trust path (REQ-owner-watches-002)."""
+    """No other module may mint a trusted event: one trust path (REQ-owner-watches-002).
+
+    The scan reads every source file's AST, not only files that name ``ConditionEvent``, so
+    ``dataclasses.replace(event, trusted=True)``, a ``**kwargs`` construction, ``setattr`` and a
+    dict carrying the key are all findings.
+    """
     root = Path(__file__).resolve().parents[2]
-    pattern = re.compile(r"\btrusted\s*=\s*(?!False\b)")
     found = {}
     for base in ("src", "roster"):
         for path in (root / base).rglob("*.py"):
-            text = path.read_text(encoding="utf-8")
-            count = len(pattern.findall(text)) if "ConditionEvent" in text else 0
-            if count:
-                found[path.relative_to(root).as_posix()] = count
-    assert found == {"src/butlers/watches/feed.py": 1}
+            if "/tests/" in path.as_posix():
+                continue
+            sites = _trusted_sites(path.read_text(encoding="utf-8"))
+            if sites:
+                found[path.relative_to(root).as_posix()] = sites
+    assert found == {"src/butlers/watches/feed.py": ["ConditionEvent(trusted=...)"]}
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "dataclasses.replace(ev, trusted=True)",
+        "replace(ev, trusted=flag)",
+        "ConditionEvent(**fields)",
+        "replace(ev, **fields)",
+        "setattr(ev, 'trusted', True)",
+        "ConditionEvent\nfields = {'trusted': True}",
+    ],
+)
+def test_the_trust_scan_catches_every_construction_shape(source):
+    assert _trusted_sites(source)
+
+
+@pytest.mark.parametrize(
+    "source", ["ConditionEvent(trusted=False)", "fields = {'trusted': False}", "f(x=1)"]
+)
+def test_the_trust_scan_ignores_an_untrusted_event(source):
+    assert _trusted_sites(source) == []
 
 
 class Reporter:

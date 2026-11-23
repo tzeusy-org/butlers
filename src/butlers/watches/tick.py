@@ -79,8 +79,8 @@ async def run_tick(
 async def _poll_feed(providers: Providers, service: Any, now: datetime) -> bool:
     """Poll the read feed so a reading can fire a watch before the runner claims fires.
 
-    False when any poll failed (the watches reading it are blind) or the feed itself broke; the
-    rest of the tick still runs. No feed, or no watch reading one, is fine.
+    False when any poll failed or was skipped for the call budget (the watches reading it are
+    blind) or the feed itself broke; the rest of the tick still runs. No feed, or no watch reading one, is fine.
     """
     feed = providers.feed_for()
     if feed is None:
@@ -90,7 +90,7 @@ async def _poll_feed(providers: Providers, service: Any, now: datetime) -> bool:
     except Exception:
         logger.warning("owner_watch_feed_failed", exc_info=True)
         return False
-    return report.failed == 0
+    return report.failed == 0 and report.skipped == 0
 
 
 async def _sweep_cards(pool: Any, now: datetime) -> None:
