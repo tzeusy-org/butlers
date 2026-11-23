@@ -4,8 +4,8 @@
  *
  * Covers:
  *  - Populated: grouped by butler/kind with chips for each underlying item.
- *  - has_domain_context=false → honest "tomorrow is clear" empty-state.
- *  - has_domain_context=true but no entries → "clear" (coverage ran).
+ *  - has_domain_context=false → honest "no domain context" empty-state (never "clear").
+ *  - has_domain_context=true but no entries → "nothing scheduled" (coverage ran).
  *  - Loading state.
  *  - Chip click links to the underlying item (onSelectEntry fired).
  */
@@ -99,6 +99,7 @@ describe("DayBriefingCard", () => {
 
     const clear = screen.getByTestId("day-briefing-clear");
     expect(clear.textContent).toMatch(/no domain context/i);
+    expect(clear.textContent).not.toMatch(/clear/i);
     expect(screen.queryByText("Electric Co")).toBeNull();
   });
 
@@ -113,7 +114,8 @@ describe("DayBriefingCard", () => {
     );
 
     const clear = screen.getByTestId("day-briefing-clear");
-    expect(clear.textContent).toMatch(/clear/i);
+    expect(clear.textContent).toMatch(/nothing scheduled/i);
+    expect(clear.textContent).not.toMatch(/clear/i);
     // Distinct from the "no domain context" copy.
     expect(clear.textContent).not.toMatch(/no domain context/i);
   });

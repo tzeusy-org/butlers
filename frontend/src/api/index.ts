@@ -38,6 +38,7 @@ export {
   dismissCalendarProposal,
   getCalendarAccounts,
   getCalendarDayBriefing,
+  getCalendarDaySheet,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,

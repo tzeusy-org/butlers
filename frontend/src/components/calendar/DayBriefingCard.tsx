@@ -13,10 +13,12 @@
  *
  * Honest empty/degraded state:
  * - `has_domain_context === false` (no specialist contributed, or the cached
- *   view is absent/unreadable) → render an explicit "Tomorrow is clear" /
- *   "No domain context for this day" line rather than omitting the card.
+ *   view is absent/unreadable) → render an explicit "No domain context for this
+ *   day" line rather than omitting the card. This card reads the overlay view
+ *   only, so it never claims the day is clear: that belongs to the day sheet.
  * - `has_domain_context === true` with zero entries → the specialist contributed
- *   but had nothing for the day; still rendered as "clear" with that distinction.
+ *   but had nothing for the day; rendered as "Nothing scheduled across your
+ *   domains" (coverage ran).
  */
 
 import type { UnifiedCalendarEntry } from "@/api/types.ts";
@@ -162,13 +164,13 @@ export function DayBriefingCard({
         // Honest empty/degraded state — no specialist contributed (or the cached
         // view is unavailable). Render explicitly rather than omitting the card.
         <p data-testid="day-briefing-clear" className="font-mono text-[11px] text-[var(--mfg)]">
-          No domain context for this day. Tomorrow is clear.
+          No domain context for this day.
         </p>
       ) : !hasEntries ? (
         // A specialist contributed but had nothing for the day: still "clear",
         // but we know coverage ran (distinct from "no domain context").
         <p data-testid="day-briefing-clear" className="font-mono text-[11px] text-[var(--mfg)]">
-          Nothing scheduled across your domains. Tomorrow is clear.
+          Nothing scheduled across your domains.
         </p>
       ) : (
         <div className="flex flex-col gap-2.5">

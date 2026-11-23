@@ -10,6 +10,7 @@ import {
   acceptCalendarProposal,
   dismissCalendarProposal,
   getCalendarDayBriefing,
+  getCalendarDaySheet,
   getCalendarMeetingPrep,
   getCalendarWorkspace,
   getCalendarWorkspaceAudit,
@@ -167,6 +168,24 @@ export function useCalendarDayBriefing(
         timezone: params.timezone,
         butlers: params.butlers,
     }),
+    enabled: options?.enabled ?? true,
+    refetchInterval: options?.refetchInterval ?? busAwareInterval,
+    placeholderData: (previousData) => previousData,
+  });
+}
+
+/**
+ * Fetch the owner's day sheet (today by default): the deterministic projection also used for the
+ * nightly Telegram message. An error or `unreadable` state is surfaced, never shown as a clear day.
+ */
+export function useDaySheet(
+  params: { date?: string; timezone?: string } = {},
+  options?: CalendarWorkspaceQueryOptions,
+) {
+  const busAwareInterval = useBusAwarePollInterval();
+  return useQuery({
+    queryKey: ["calendar-day-sheet", params],
+    queryFn: () => getCalendarDaySheet(params),
     enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? busAwareInterval,
     placeholderData: (previousData) => previousData,
