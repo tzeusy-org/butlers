@@ -3303,6 +3303,19 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
+async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> bool:
+    """Whether dispatch must halt: the breaker is open, or its state cannot be read.
+
+    Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
+    rather than raising out of the batch or launching with the safeguard unreadable.
+    """
+    try:
+        return await _is_circuit_breaker_tripped(pool, threshold)
+    except Exception as exc:
+        logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
+        return True
+
+
 async def _hold_for_retry(
     pool: asyncpg.Pool,
     findings: list[TriagedFinding],
@@ -3428,7 +3441,7 @@ async def dispatch_novel_findings(
         if (
             cap_skipped == 0
             and config.circuit_breaker_threshold > 0
-            and await _is_circuit_breaker_tripped(pool, config.circuit_breaker_threshold)
+            and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
         ):
             results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
             break
@@ -3473,9 +3486,6 @@ async def dispatch_novel_findings(
             metrics=metrics,
         )
         results.append(result)
-
-        if result.reason == "concurrency_cap":
-            cap_skipped += 1
 
     if held:
         # Record the authoritative reason and queue every capped finding for the next patrol:

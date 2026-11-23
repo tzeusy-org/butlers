@@ -5,7 +5,9 @@
 An open QA circuit breaker SHALL halt the rest of a patrol's dispatch as one decision. The batch
 dispatcher SHALL read the breaker before each launch, and the halt SHALL run before and take
 precedence over the per-finding gates. It SHALL hold every remaining finding for a later patrol,
-record one dispatch event for the patrol, and claim or delete no attempt.
+record one dispatch event for the patrol, and claim or delete no attempt. After the concurrency cap
+is reached the breaker SHALL NOT be read again, because the remainder is already held. A breaker
+whose state cannot be read SHALL count as tripped.
 
 ID: REQ-qa-investigation-dispatch-014
 Source: bu-ejow5p.3 (run 25 move 3), slice S1; owner decision on bu-ejow5p.3 adopting the bead design

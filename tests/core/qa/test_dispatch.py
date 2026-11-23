@@ -2014,3 +2014,32 @@ async def test_a_failed_cap_hold_is_not_reported_as_capped():
 
     assert [r.reason for r in results] == ["hold_failed"] * 3
     assert metrics.record_recovery_dispatch_decision.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_breaker_holds_the_patrol_instead_of_raising():
+    """A database error on the breaker read counts as tripped: nothing launches, nothing raises."""
+    findings = [_make_triaged() for _ in range(3)]
+    with (
+        patch(
+            "butlers.core.qa.dispatch._is_circuit_breaker_tripped",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("db down"),
+        ),
+        patch("butlers.core.qa.dispatch.hold_findings_for_retry", new_callable=AsyncMock) as hold,
+        patch("butlers.core.qa.dispatch.create_dispatch_event", new_callable=AsyncMock),
+        patch("butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock) as run,
+    ):
+        results = await dispatch_novel_findings(
+            pool=_qa_pool(),
+            novel_findings=findings,
+            patrol_id=uuid.uuid4(),
+            config=QaDispatchConfig(),
+            repo_root=Path("/tmp/repo"),
+            spawner=MagicMock(),
+        )
+
+    run.assert_not_called()
+    hold.assert_awaited_once()
+    assert hold.await_args.args[2] == "circuit_breaker"
+    assert [r.reason for r in results] == ["circuit_breaker"] * 3
