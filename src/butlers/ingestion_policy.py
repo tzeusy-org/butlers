@@ -650,6 +650,17 @@ class IngestionPolicyEvaluator:
         """Current cached rule set (read-only snapshot)."""
         return self._rules
 
+    def seed_rules(self, rules: list[dict[str, Any]]) -> None:
+        """Install an already-loaded rule list and mark the cache fresh (never refreshed).
+
+        For callers that cannot read ``switchboard.ingestion_rules`` themselves and fetch the rows
+        through another path; unlike ``_load_rules`` the caller owns failure handling.
+        """
+        self._rules = rules
+        self._superseded_legacy_rule_ids = _superseded_legacy_promotion_rule_ids(rules)
+        self._legacy_rule_cache_source = rules
+        self._last_loaded_at = None  # no TTL refresh: there is no pool to refresh from
+
     # ------------------------------------------------------------------
     # DB loading
     # ------------------------------------------------------------------

@@ -147,6 +147,36 @@ holidays and birthdays sit beside the owner's own. Each `calendar_sources` row t
   prep, working location and the default free-slot search.
 - An `owner_confirmed` role is never overwritten by discovery.
 
+## Organizer verdict
+
+Every provider event carries one trust verdict for its organizer, stamped into the event's
+`metadata` as `organizer_verdict`, `lure_badges` and `verdict_version`
+(REQ-module-calendar-039/040). The verdict is `owner`, `known_entity`, `known_domain`,
+`first_contact`, `blocked` or `unknown`. `organizer_verdict()` in
+`src/butlers/modules/calendar/organizer_verdict.py` is pure: it takes server-verified provider
+fields and the results of two owner-owned lookups, and has no parameter for a title, description,
+location or any other free text, so third-party text can never raise an invitation's trust.
+
+- **Inputs.** The projection runs under the hosting butler's role, which cannot read the identity
+  tables or Switchboard's ingestion rules, so it calls two read-only SECURITY DEFINER functions
+  from core_370: `public.organizer_identity_class(email)` (one exact address in, a class out, no
+  names or ids) and `public.organizer_policy_rules()` (the enabled global and Google Calendar
+  connector rules, evaluated with the connector's own first-match engine).
+- **Failure never admits.** An unreadable lookup stamps `unknown` with `lookup_failed: true`, which
+  quarantines like `first_contact`; the sweep re-selects those rows (still bounded, after unstamped
+  and stale ones) so they are evaluated again once the store reads. Only the owner's own address
+  needs no lookup. The policy definer returns only the matchable rule types and columns.
+- **Stamping.** The projection stamps each provider event as it writes it. A bounded sweep
+  (`SWEEP_BATCH` events per sync pass) stamps rows with no stamp or an older `verdict_version`, so
+  events projected before the verdict existed are covered without a backfill migration.
+- **Quarantine.** `first_contact`, `blocked`, `unknown` and unstamped `needsAction` invitations are
+  quarantined (REQ-module-calendar-041): no time held, no load or conflict, no prep, card or
+  debrief, and no title or description in a prompt. The owner's own accept or decline always wins.
+  The readers that apply this ship in the next slice; this slice stamps only.
+- **Not yet stamped.** The lure badges that need hidden-guest-list, conference-host and link facts
+  (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
+  for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync

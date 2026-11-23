@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 from butlers.core.temporal.calendar_source_roles import normalize_role
+from butlers.modules.calendar.organizer_trust import (
+    stamp_provider_metadata,
+    sweep_organizer_verdicts,
+)
 
 from .constants import (
     _INVALID_PROBE_CALENDAR_IDS,
@@ -431,6 +435,12 @@ class ProjectionMixin:
             last_error_at,
             last_error,
         )
+        if last_success_at is not None and last_error is None:
+            # A successful provider sync also stamps events projected before the verdict existed.
+            try:
+                await sweep_organizer_verdicts(pool)
+            except Exception as exc:  # a sweep failure never fails the sync
+                logger.warning("Organizer verdict sweep failed: %s", type(exc).__name__)
 
     async def _record_projection_action(
         self,
@@ -522,6 +532,12 @@ class ProjectionMixin:
         pool = getattr(self._db, "pool", None) if self._db is not None else None
         if pool is None:
             raise RuntimeError("Projection writes require a database pool")
+        if metadata is not None and metadata.get("source_type") == SOURCE_KIND_PROVIDER:
+            # Every provider event carries its organizer verdict from the moment it is written.
+            metadata = {
+                **metadata,
+                **await stamp_provider_metadata(pool, metadata, event_type=event_type),
+            }
 
         effective_source_butler = self._resolve_effective_butler_name(source_butler)
         normalized_source_session_id = _normalize_optional_string(source_session_id)
