@@ -59,6 +59,13 @@ own `pool` method, or hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fi
 `scripts/test-db-fixtures-baseline.json` and fails on any new one (bu-rvgzmf.1). After removing
 some, lower the baseline with `python3 scripts/check_test_db_fixtures.py --update-baseline`.
 
+For HTTP behavior under `tests/api/`, the additive `api` fixture uses the production app,
+real owner authentication and a per-test migrated clone. Insert rows through `api_db.pool`
+or a domain factory and assert HTTP JSON. Its session-loop, resource lifetime and API-role
+limits are documented in [API HTTP fixtures](markers-and-fixtures.md#api-http-fixtures).
+This first seam does not complete the existing router-family migrations or all-route
+success/error/source/pagination obligations; existing focused tests remain authoritative.
+
 ### End-to-End Tests (`@pytest.mark.e2e`)
 
 Full-stack tests that require an authenticated `claude` CLI, `ANTHROPIC_API_KEY`, and Docker. These test the complete trigger-to-response flow; see the [E2E suite](e2e/README.md).

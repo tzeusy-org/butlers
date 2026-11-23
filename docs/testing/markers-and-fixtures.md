@@ -33,6 +33,63 @@ read them there. The semantics that matter:
 - **`smoke`** is the fast operational gate with no real LLM; **`contract`** marks architectural
   invariant tests drawn from doctrine and RFCs.
 
+## API HTTP fixtures
+
+`tests/api/conftest.py` exports the additive HTTP seam in `tests/api/http_fixtures.py`:
+
+- `production_api_app` calls the production `create_app` once per session/xdist worker,
+  including real router discovery, middleware, error handlers and a synthetic static mount.
+- `api_db` owns a fresh clone from `butlers.testing.db.migrated_url`, real pools and a real
+  `DatabaseManager`. Its default migrates core and Switchboard into `switchboard`, with a
+  separate public credential pool. Indirect parametrization with `ApiDatabaseSpec` selects
+  chains, revisions, butler schemas, module intent and private memory-schema mappings.
+- `api` leases the application exclusively, binds the manager singleton (including direct
+  wrapper calls), synthetic butler configuration and a real restricted owner-auth service,
+  and yields an authenticated `httpx.AsyncClient`. An unregistered MCP manager prevents live
+  peer calls. Tests needing provider/runtime/MCP behavior supply doubles at those boundaries.
+
+Use the session asyncio loop with these pools:
+
+```python
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_state_over_http(api, api_db):
+    await api_db.pool.execute("INSERT INTO state(key,value) VALUES($1,$2)", "example", {"n": 1})
+    response = await api.get("/api/butlers/switchboard/state/example")
+    assert response.json()["data"]["value"] == {"n": 1}
+```
+
+The fixture does **not** run or replace lifespan. Starting health/readiness responses remain
+starting, and dedicated lifespan tests retain startup/shutdown evidence. API pools match
+production's ordinary non-superuser login and search path with `SET ROLE` disabled; these
+HTTP tests earn no runtime-role, FORCE-RLS or row-boundary credit. The auth path has its own
+unique restricted LOGIN, validated with production connection initialization. Only privileged
+synthetic setup may grant its clone CONNECT/auth membership or reconcile auth mode.
+
+Clients and MCP peers close before pools. Pool close has a finite timeout with termination
+on failure; the unique auth role and clone are then removed. A canceled clone request joins
+its provisioning thread before dropping the clone. The template's shared migration role is
+never dropped. Leases restore exact previous singleton, app-state and override identities
+after body failure or cancellation. Tests cover cleanup and committed JSONB readback.
+
+`test_http_route_table.py` reconciles every running route with the existing registration
+snapshot, then checks real missing-authority and unavailable-store requests, domain non-entry,
+unread bodies, framework/static/probe policy, websocket refusal, OpenAPI registration and the
+outer-ASGI ceremony boundary. Its positive control reads a planted row through the same app.
+The public probes are exact GET `/health`, `/api/health` and `/ready`; the last follows
+the current [RFC 0007 semantic-readiness amendment](../../about/legends-and-lore/rfcs/0007-dashboard-and-api-surface.md).
+Their HEAD/OPTIONS requests still require authority.
+It does not establish every route's successful payload, source-failure behavior, pagination or
+positive callback/stream contract; dedicated owners remain in place.
+
+Full bu-rvgzmf.3 S1 remains unfinished. A real-HTTP diagnostic found that
+`GET /api/butlers/switchboard/state/missing-synthetic-key` returns HTTP 404 with
+`{"detail": "State key 'missing-synthetic-key' not found"}`, whereas dashboard-api's Standard
+Response Envelopes/ErrorResponse requires `{"error": ...}`. Successful unwrapped payload
+exceptions do not authorize that error shape. This test-only seam changes no product behavior
+and adds no blanket error exception. Per-route error/source/positive-owner work, the five family
+migrations and the SQL-text assertion ratchet remain separate unfinished acceptance obligations.
+
 ## Root Conftest Fixtures
 
 The root `conftest.py` (at the repository root) provides fixtures visible to all test trees.
