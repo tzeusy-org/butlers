@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS public.owner_watches (
     created_at      TIMESTAMPTZ NOT NULL,
     expires_at      TIMESTAMPTZ NOT NULL,
     approval_digest TEXT NOT NULL CHECK (approval_digest ~ {_HEX64}),
+    pause_reason    TEXT CHECK (pause_reason IN ('owner', 'grant')),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CHECK (created_at < expires_at)
 );

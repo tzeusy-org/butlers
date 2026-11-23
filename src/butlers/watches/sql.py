@@ -22,7 +22,7 @@ from butlers.watches.model import CapExceeded, Watch, WatchConflict, WatchState
 
 _COLUMNS = (
     "id, version, generation, predicate::text AS predicate, predicate_digest, grant_digest, "
-    "sources, categories, delivery, state, created_at, expires_at, approval_digest"
+    "sources, categories, delivery, state, created_at, expires_at, approval_digest, pause_reason"
 )
 _CAP_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:owner-watch-cap', 0))"
 
@@ -42,6 +42,7 @@ def _watch(row: asyncpg.Record) -> Watch:
         created_at=row["created_at"],
         expires_at=row["expires_at"],
         approval_digest=row["approval_digest"],
+        pause_reason=row["pause_reason"],
     )
 
 
@@ -60,6 +61,7 @@ def _values(watch: Watch) -> tuple[Any, ...]:
         watch.created_at,
         watch.expires_at,
         watch.approval_digest,
+        watch.pause_reason,
     )
 
 
@@ -190,14 +192,14 @@ class PostgresWatchStore:
             await connection.execute(
                 "INSERT INTO public.owner_watches (id, version, generation, predicate, "
                 "predicate_digest, grant_digest, sources, categories, delivery, state, "
-                "created_at, expires_at, approval_digest) VALUES ($1, $2, $3, $4::text::jsonb, "
-                "$5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                "created_at, expires_at, approval_digest, pause_reason) VALUES ($1, $2, $3, "
+                "$4::text::jsonb, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
                 *_values(watch),
             )
         else:
             await connection.execute(
                 "UPDATE public.owner_watches SET version = $2, generation = $3, delivery = $4, "
-                "state = $5, expires_at = $6, approval_digest = $7 WHERE id = $1",
+                "state = $5, expires_at = $6, approval_digest = $7, pause_reason = $8 WHERE id = $1",
                 watch.id,
                 watch.version,
                 watch.generation,
@@ -205,5 +207,6 @@ class PostgresWatchStore:
                 watch.state.value,
                 watch.expires_at,
                 watch.approval_digest,
+                watch.pause_reason,
             )
         return watch

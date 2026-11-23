@@ -51,6 +51,18 @@ class WatchStoreContract:
         assert await store.get("missing") is None
         assert [w.id for w in await store.list_all()] == ["w1"]
 
+    async def test_the_pause_reason_round_trips_and_clears_on_resume(self):
+        store = self.make_store()
+        await store.write(make_watch("w1"), expected_version=None, cap=50)
+        paused = make_watch("w1", state=WatchState.PAUSED, version=2, pause_reason="owner")
+        assert await store.write(paused, expected_version=1, cap=50) == paused
+        stored = await store.get("w1")
+        assert stored is not None and stored.pause_reason == "owner"
+        resumed = make_watch("w1", version=3, pause_reason=None)
+        await store.write(resumed, expected_version=2, cap=50)
+        stored = await store.get("w1")
+        assert stored is not None and stored.pause_reason is None
+
     async def test_a_replayed_insert_returns_the_committed_watch_unchanged(self):
         store = self.make_store()
         first = make_watch("w1")
