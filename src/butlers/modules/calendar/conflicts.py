@@ -25,6 +25,7 @@ from .constants import (
 )
 from .errors import CalendarAuthError, _build_structured_error
 from .google_mapping import _coerce_zoneinfo
+from .invitation_guard import guard_provider_events, pool_of
 from .models import BusyWindow, CalendarEvent, CalendarEventCreate
 from .provider import CalendarProvider
 
@@ -292,7 +293,9 @@ class ConflictsMixin:
                 if not (conflict.start_at == ignore_start_at and conflict.end_at == ignore_end_at)
             ]
 
-        conflict_payload = [self._conflict_to_payload(conflict) for conflict in conflicts]
+        conflict_payload = await guard_provider_events(
+            pool_of(self), conflicts, self._conflict_to_payload
+        )
         if not conflict_payload:
             return {"status": "clear", "conflicts": [], "suggested_slots": []}
 
@@ -332,7 +335,7 @@ class ConflictsMixin:
         return False
 
     @staticmethod
-    def _conflict_to_payload(conflict: CalendarEvent) -> dict[str, str]:
+    def _conflict_to_payload(conflict: CalendarEvent) -> dict[str, Any]:
         return {
             "event_id": conflict.event_id,
             "title": conflict.title,

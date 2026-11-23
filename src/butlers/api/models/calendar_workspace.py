@@ -619,8 +619,24 @@ class CalendarInvitationEntry(BaseModel):
     response_configured: bool = False
 
 
+class CalendarQuarantinedInvitation(BaseModel):
+    """An unanswered invitation from an untrusted organizer: time and verdict only.
+
+    Deliberately carries no title, description, location, organizer or attendee: third-party text
+    is data, and the owner decides about the sender, not the content (REQ-module-calendar-041).
+    """
+
+    entry_id: UUID
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    verdict: Literal["first_contact", "blocked", "unknown"]
+    lure_badges: list[str] = Field(default_factory=list)
+
+
 class CalendarInvitationsResponse(BaseModel):
     entries: list[CalendarInvitationEntry] = Field(default_factory=list)
+    quarantined: list[CalendarQuarantinedInvitation] = Field(default_factory=list)
     issues_available: bool = True
     conflicts_available: bool = True
     sources_degraded: list[str] = Field(default_factory=list)

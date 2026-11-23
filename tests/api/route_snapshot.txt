@@ -1833,7 +1833,7 @@ SCHEMA CalendarButlerEventPreviewResponse 70865507f5c1
 SCHEMA CalendarConflictEntry cc439ab2fa5a
 SCHEMA CalendarDayBriefingResponse 9df6794dd69e
 SCHEMA CalendarInvitationEntry 7154fadc8eb3
-SCHEMA CalendarInvitationsResponse fdb55c205dd7
+SCHEMA CalendarInvitationsResponse 4e56ff95948f
 SCHEMA CalendarLinkedPerson 096b8fb48e79
 SCHEMA CalendarPrepAttendee b8c409a021f9
 SCHEMA CalendarPrepCommitment 556e64e17f20
@@ -1841,6 +1841,7 @@ SCHEMA CalendarPrepNote 250dc7baa977
 SCHEMA CalendarPrepResponse dccf25c197c2
 SCHEMA CalendarProposalAcceptRequest 944a5f67aea1
 SCHEMA CalendarProposalActionResponse 166d3f5e0c01
+SCHEMA CalendarQuarantinedInvitation 7b045287051d
 SCHEMA CalendarRespondRequest 8603b1271b4b
 SCHEMA CalendarRespondResponse ff107009f6d1
 SCHEMA CalendarSourceRoleRequest 75fa90b3902a

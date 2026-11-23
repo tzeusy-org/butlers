@@ -172,7 +172,21 @@ location or any other free text, so third-party text can never raise an invitati
 - **Quarantine.** `first_contact`, `blocked`, `unknown` and unstamped `needsAction` invitations are
   quarantined (REQ-module-calendar-041): no time held, no load or conflict, no prep, card or
   debrief, and no title or description in a prompt. The owner's own accept or decline always wins.
-  The readers that apply this ship in the next slice; this slice stamps only.
+  One predicate gates every reader: `is_quarantined_invitation` (Python) is folded into
+  `is_owner_attending` and `asserts_owner_time`, so the radar, day load, day sheet, prep, meeting
+  card, debrief, household context, context producers, working location and the relationship
+  interaction sync all skip a quarantined invitation, including one on the owner's own calendar.
+  Readers that filter in SQL before a `LIMIT` (the Chronicler calendar adapter) use the twin
+  `QUARANTINED_INVITATION_SQL`; a parity test runs both on a real Postgres, and a contract test
+  fails when a SQL statement reading `calendar_events` carries neither the predicate nor an inline
+  `-- quarantine-exempt: <reason>` comment. The provider-direct tools `calendar_list_events` and
+  `calendar_get_event` read the provider, so each event is checked against the verdict stamped on
+  its stored row (one batched lookup, the series row for a recurring instance): a quarantined,
+  unstamped or unreadable-stamp invitation comes back as a stub with its time, `organizer_verdict`
+  and the fixed title `[quarantined invitation]`, never its description, attendees or location. `GET /api/calendar/workspace/invitations` returns a separate `quarantined` list with
+  time, verdict and lure badges only, and reports `issues_available = false` when a row has no
+  verdict. Provider free/busy (`calendar_find_free_slots`) is the provider's own answer and is not
+  affected.
 - **Not yet stamped.** The lure badges that need hidden-guest-list, conference-host and link facts
   (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
   for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.

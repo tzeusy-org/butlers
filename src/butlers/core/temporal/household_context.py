@@ -171,6 +171,7 @@ def _overlap_sql(start: str, end: str) -> str:
     all-day included, cancelled excluded.
     """
     return f"""
+    -- quarantine-exempt: filtered in Python by asserts_owner_time and counts_toward_owner_load
     SELECT cs.time_role AS time_role, ce.metadata AS metadata, ce.starts_at AS starts_at,
            ce.ends_at AS ends_at, ce.all_day AS all_day, cs.id AS source_id,
            cs.role_subject_entity_id AS subject_entity_id, ce.event_type AS event_type,

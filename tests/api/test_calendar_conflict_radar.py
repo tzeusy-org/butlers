@@ -13,6 +13,7 @@ Covers the two halves the bead's acceptance criteria require:
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
@@ -825,12 +826,13 @@ async def test_conflicts_endpoint_rejects_oversized_window(app):
     assert resp.status_code == 400
 
 
-def _invitation_row(status="needsAction", *, explicit=True, **overrides):
+def _invitation_row(status="needsAction", *, explicit=True, verdict="known_entity", **overrides):
     row = _ws_row(entry_id=uuid4(), title="Invitation", start=_DAY)
     row["title"] = f"Invitation {row['instance_id']}"
     row["event_metadata"] = {
         "source_type": "provider_event",
         "organizer": "organizer@example.test",
+        **({"organizer_verdict": verdict} if verdict else {}),
         "attendees": [
             {
                 "email": "owner@example.test",
@@ -1367,3 +1369,57 @@ async def test_household_time_endpoint_groups_by_subject_and_leaks_nothing(app):
     assert by_subject == {"Alex": 2, "Sam": 1}
     for leaked in ("Synthetic A1", "Synthetic S1", "Owner", "Unclassified"):
         assert leaked not in response.text
+
+
+async def test_untrusted_invitations_are_quarantined_with_time_and_verdict_only(app):
+    """REQ-module-calendar-041: no title, organizer or text reaches the quarantine section."""
+    trusted = _invitation_row()
+    stranger = _invitation_row(verdict="first_contact")
+    blocked = _invitation_row(verdict="blocked")
+    unstamped = _invitation_row(verdict=None)
+    accepted_blocked = _invitation_row("accepted", verdict="blocked")
+    app, _db = _build_app(
+        app, workspace_rows={"general": [trusted, stranger, blocked, unstamped, accepted_blocked]}
+    )
+    response = await _get_invitations(app)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert [e["entry_id"] for e in data["entries"]] == [str(trusted["instance_id"])]
+    quarantined = {q["entry_id"]: q for q in data["quarantined"]}
+    assert set(quarantined) == {
+        str(stranger["instance_id"]),
+        str(blocked["instance_id"]),
+        str(unstamped["instance_id"]),
+    }
+    assert quarantined[str(stranger["instance_id"])]["verdict"] == "first_contact"
+    assert quarantined[str(blocked["instance_id"])]["verdict"] == "blocked"
+    assert quarantined[str(unstamped["instance_id"])]["verdict"] == "unknown"
+    forbidden = {"title", "organizer", "description", "location", "attendees", "summary"}
+    for item in quarantined.values():
+        assert not forbidden & set(item)
+    body = response.text
+    for row in (stranger, blocked, unstamped):
+        assert row["title"] not in body
+    assert "organizer@example.test" not in json.dumps(data["quarantined"])
+    # An unstamped row means the verdict could not be read: the envelope says so.
+    assert data["issues_available"] is False
+    assert "calendar organizer verdict" in data["sources_degraded"]
+
+
+async def test_a_quarantined_invitation_adds_no_conflict_or_load(app):
+    held = _ws_row(entry_id=uuid4(), title="Accepted standup", start=_DAY)
+    held["event_metadata"] = {
+        "source_type": "provider_event",
+        "organizer_verdict": "known_entity",
+        "attendees": [{"email": "owner@example.test", "self": True, "response_status": "accepted"}],
+    }
+    spam = _invitation_row(verdict="blocked")
+    spam["instance_starts_at"] = _DAY
+    spam["instance_ends_at"] = _DAY + timedelta(hours=1)
+    app, _db = _build_app(app, workspace_rows={"general": [held, spam]})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/calendar/workspace/conflicts", params=_PARAMS)
+    assert response.status_code == 200
+    assert response.json()["data"]["issues"] == []

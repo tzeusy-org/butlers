@@ -48,6 +48,7 @@ from butlers.core.temporal.calendar_provenance import (
     is_calendar_analysis_candidate,
     is_explicit_butler_generated,
     is_owner_attending,
+    is_quarantined_invitation,
     is_status_event,
 )
 from butlers.core.temporal.calendar_source_roles import (
@@ -93,6 +94,7 @@ READ_MODEL_VERSION = "calendar_workspace_v1"
 #: pass; ``balanced`` (default) adds the title/start collapse pass; ``aggressive``
 #: additionally strips non-alphanumerics from titles before comparing.
 DEDUP_STRATEGIES: tuple[str, ...] = ("exact", "balanced", "aggressive")
+QUARANTINE_LIST_LIMIT = 50
 DEDUP_DEFAULT_STRATEGY = "balanced"
 DEDUP_DEFAULT_NOISY_THRESHOLD = 2
 
@@ -987,6 +989,7 @@ async def query_calendar_workspace_entry(
     not-found (a misleading 404 would otherwise mask a 503, bu-sn71y).
     """
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard entry read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1119,6 +1122,7 @@ async def query_calendar_workspace(
         args.append(limit)
         idx += 1
     sql = f"""
+        -- quarantine-exempt: owner-facing dashboard window read; no prompt
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1368,6 +1372,9 @@ class CalendarInvitationRead:
     rows: list[dict[str, Any]]
     failed_butlers: list[str]
     status_available: bool = True
+    #: Unanswered invitations from untrusted organizers (REQ-module-calendar-041), bounded and
+    #: never paged; the route exposes their time and verdict only.
+    quarantined: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _invitation_metadata(value: Any) -> Mapping[str, Any]:
@@ -1451,6 +1458,7 @@ async def _query_invitation_copies(
 ) -> tuple[list[CalendarWorkspaceRow], list[str]]:
     """Read only relevant provider copies, without pre-dedup eligibility filters."""
     sql = f"""
+        -- quarantine-exempt: split in Python by is_quarantined_invitation into the quarantine panel
         SELECT {WORKSPACE_COLUMNS}
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
@@ -1539,6 +1547,7 @@ async def query_calendar_invitations(
     pins = await load_keep_separate_keys(db)
     deduped, _ = _dedup_workspace_rows(flattened, strategy=rules.match_strategy, keep_separate=pins)
     eligible: list[dict[str, Any]] = []
+    quarantined: list[dict[str, Any]] = []
     available = True
     for row in deduped:
         if row["instance_starts_at"] >= end or row["instance_ends_at"] <= start:
@@ -1547,9 +1556,13 @@ async def query_calendar_invitations(
         if state == "unknown":
             available = False
         elif state == "eligible":
-            if cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
+            if is_quarantined_invitation(row.get("event_metadata")):
+                quarantined.append(row)
+            elif cursor is None or (row["instance_starts_at"], row["instance_id"]) > cursor:
                 eligible.append(row)
-    return CalendarInvitationRead(eligible[:limit], failed, available)
+    return CalendarInvitationRead(
+        eligible[:limit], failed, available, quarantined[:QUARANTINE_LIST_LIMIT]
+    )
 
 
 async def query_calendar_conflicts(
@@ -1986,6 +1999,7 @@ def _build_search_sql(
 
     where = " AND ".join(conditions)
     return f"""
+        -- quarantine-exempt: owner-facing dashboard search; no prompt
         SELECT {WORKSPACE_COLUMNS}, {rank_expr} AS search_rank
         FROM calendar_event_instances AS i
         JOIN calendar_events AS e ON e.id = i.event_id
