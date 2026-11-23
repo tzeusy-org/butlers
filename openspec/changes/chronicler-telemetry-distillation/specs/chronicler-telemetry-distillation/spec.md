@@ -174,6 +174,30 @@ Scope: v1-mandatory
 - **AND** a source that projected successfully before going inactive, or an
   inactive non-optional source, SHALL still produce `feeder_dark`
 
+#### Scenario: Retired source is not an outage
+
+- **WHEN** a source is declared retired in git (`retired_at`, seeded to
+  `source_adapter_state`) and the day is on or after that date
+- **THEN** it SHALL NOT produce a `feeder_dark` flag and SHALL be listed under
+  `retired_sources` in the flag detail
+- **AND** it SHALL still count as unavailable, so no behavioral flag that
+  depends on its data SHALL be emitted
+- **AND** before its `retired_at` date the same source SHALL be judged as
+  usual, so past outages are not erased
+
+#### Scenario: Availability is frozen per local day
+
+- **WHEN** `chronicler_rollup_daily` first processes a closed local day within
+  36 hours of its end
+- **THEN** it SHALL record one `day_source_availability` row per monitored
+  source (`available`, `dark`, `configured_absent` or `retired`) in an
+  append-only table, and flag evaluation SHALL read that record, never the
+  current source state
+- **AND** a source that recovers later SHALL NOT change that day's flags
+- **AND** a closed day with no record that is past the 36-hour horizon SHALL be
+  reported `historical_health_unknown` and its existing flag rows SHALL NOT be
+  recomputed
+
 #### Scenario: Genuine behavioral anomaly flags when the feeder is healthy
 
 - **WHEN** a lane's tracked time is zero or its share deviates sharply from

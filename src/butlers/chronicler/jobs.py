@@ -684,7 +684,12 @@ async def run_rollup_daily(
     re-processes the trailing ``lookback_days`` window and upserts
     idempotently on ``(local_date, lane)`` / ``(local_date, flag_type)``.
     """
-    from butlers.chronicler.flags import evaluate_and_write_daily_flags
+    from butlers.chronicler.flags import (
+        correct_retired_feeder_dark,
+        evaluate_and_write_daily_flags,
+        freeze_day_availability,
+        load_day_availability,
+    )
     from butlers.chronicler.rollups import (
         DEFAULT_LOOKBACK_DAYS,
         DEFAULT_TIMEZONE,
@@ -744,20 +749,20 @@ async def run_rollup_daily(
             result = await materialize_daily_rollups(
                 conn, timezone=timezone, lookback_days=lookback_days
             )
+            now = datetime.now(UTC)
             flags_by_day: dict[str, Any] = {}
             for day_str in result.get("days_processed", []):
                 day = date.fromisoformat(day_str)
-                repaired = await conn.fetchval(
-                    "SELECT built_generation > 0 FROM chronicler.daily_repair_days "
-                    "WHERE local_date = $1",
-                    day,
-                )
-                if repaired:
+                await freeze_day_availability(conn, local_date=day, timezone=timezone, now=now)
+                availability = await load_day_availability(conn, local_date=day, timezone=timezone)
+                if availability is None:
+                    # Never recomputed from the current state: that would erase past outages.
                     flags_by_day[day_str] = {"status": "historical_health_unknown"}
                 else:
                     flags_by_day[day_str] = await evaluate_and_write_daily_flags(
-                        conn, local_date=day, timezone=timezone
+                        conn, local_date=day, timezone=timezone, availability=availability
                     )
+            result["retired_flag_correction"] = await correct_retired_feeder_dark(conn)
             result["flags"] = flags_by_day
             return result
 

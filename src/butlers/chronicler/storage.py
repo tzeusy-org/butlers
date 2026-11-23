@@ -496,15 +496,17 @@ async def register_source(
         INSERT INTO source_adapter_state (
             source_name, chronicler_compatibility, read_surface,
             boundary_semantics, optional_schema, schema_version,
-            registered_at, updated_at
+            registered_at, updated_at, retired_at, retired_reason
         )
-        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), now())
+        VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, now()), now(), $8, $9)
         ON CONFLICT (source_name) DO UPDATE SET
             chronicler_compatibility = EXCLUDED.chronicler_compatibility,
             read_surface = EXCLUDED.read_surface,
             boundary_semantics = EXCLUDED.boundary_semantics,
             optional_schema = EXCLUDED.optional_schema,
             schema_version = EXCLUDED.schema_version,
+            retired_at = EXCLUDED.retired_at,
+            retired_reason = EXCLUDED.retired_reason,
             updated_at = now()
         """,
         state.source_name,
@@ -514,6 +516,8 @@ async def register_source(
         state.optional_schema,
         state.schema_version,
         state.registered_at,
+        state.retired_at,
+        state.retired_reason,
     )
 
 
@@ -560,6 +564,8 @@ async def get_source_state(
         schema_version=row["schema_version"],
         registered_at=row["registered_at"],
         updated_at=row["updated_at"],
+        retired_at=row.get("retired_at"),
+        retired_reason=row.get("retired_reason"),
     )
 
 

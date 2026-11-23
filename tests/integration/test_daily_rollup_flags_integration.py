@@ -130,7 +130,9 @@ async def test_feeder_dark_suppresses_sleep_missing_end_to_end(chronicler_pool) 
     flags_by_type = {f.flag_type: f for f in flags}
     assert set(flags_by_type) == {FLAG_FEEDER_DARK}
     assert flags_by_type[FLAG_FEEDER_DARK].detail == {
-        "dark_sources": ["google_health.measurements"]
+        "dark_sources": ["google_health.measurements"],
+        "retired_sources": [],
+        "configured_absent_sources": [],
     }
     assert flags_by_type[FLAG_FEEDER_DARK].severity == "warning"
 

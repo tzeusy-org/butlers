@@ -103,7 +103,7 @@ def test_fleet_context_catalog_probe_preserves_guarded_errors_and_disappearance(
     from butlers.modules.memory.tools import context as context_impl
     from butlers.modules.memory.tools.context import _fetch_fleet_knowledge
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     source_id = uuid4()
     catalog_id = None
     engine = create_engine(url)
@@ -460,7 +460,7 @@ def test_old_spotify_cache_repair_preserves_steam_unrelated_prose_and_health(pos
                     {"d": spotify.date(), "k": kind, "detail": '{"historical": true}'},
                 )
         config = _build_alembic_config(url, chains=["chronicler"], target_schema="chronicler")
-        command.upgrade(config, "chronicler@chronicler_030")
+        command.upgrade(config, "chronicler@chronicler_042")
 
         async def scenario():
             from butlers.chronicler.adapters import situation as mod
@@ -673,7 +673,7 @@ def test_quantitative_repair_respects_dst_and_blocks_mixed_zones(
     from butlers.chronicler.history_repair import acknowledge_replay, replay_epoch, run_rebuild
     from butlers.chronicler.rollups import _local_day_bounds_utc
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     async def scenario():
         pool = await asyncpg.create_pool(
@@ -757,7 +757,7 @@ def test_base_edit_under_unchanged_winning_override_dirties_effective_day(
     """Raw A and effective B must share the source transaction's invalidation."""
     from butlers.chronicler.history_repair import rebuild_day, try_lock
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     async def scenario():
         async def runtime_connection(conn):
@@ -930,7 +930,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
     """Privacy cleanup is synchronous, projection-wide, and idempotent by owned inventory."""
     from zoneinfo import ZoneInfo
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     now = datetime(2026, 7, 15, 12, tzinfo=UTC)
     # The entire D..D28 generated-fact horizon must be closed at fixed now,
@@ -1277,7 +1277,7 @@ def test_source_privacy_disposes_generated_fact_and_retries_redacted_projection_
 
 def test_pending_fact_inventory_reconciles_only_the_exact_source_generation(postgres_container):
     """A same-generation no-match is sufficient; a later generation cannot reuse it."""
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     day = (now - timedelta(days=10)).date()
     start = datetime.combine(day, datetime.min.time(), UTC) + timedelta(hours=12)
@@ -1511,7 +1511,7 @@ def test_source_redaction_tombstone_survives_no_match_and_cleans_late_archive_co
     postgres_container,
 ):
     """A source-ID tombstone survives empty fact inventory and cleared privacy flags."""
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     old_start = (now - timedelta(days=10)).replace(hour=12, minute=0, second=0)
     open_start = (now + timedelta(days=2)).replace(hour=12, minute=0, second=0)
@@ -1650,7 +1650,7 @@ def test_expired_source_retention_scan_redacts_and_rebuilds_without_default_ttl(
     postgres_container,
 ):
     """The real bounded rebuild scans only explicit retention_days and is idempotent."""
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     start = (now - timedelta(days=8)).replace(hour=12, minute=0, second=0)
     expiry_days = 10
@@ -1862,7 +1862,7 @@ def test_retention_redacts_stale_projections_for_missing_canonical_redacted_id(
     postgres_container,
 ):
     """Prior exact redaction IDs clean projections even after canonical purge."""
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     day = (datetime.now(UTC) - timedelta(days=20)).date()
     source_start = datetime.combine(day, datetime.min.time(), UTC) + timedelta(hours=12)
     source_id, missing_fact_id, unrelated_id = uuid4(), uuid4(), uuid4()
@@ -2029,7 +2029,7 @@ def test_retention_cursor_timeout_respects_existing_ceiling_and_restores(postgre
     """The cursor limit is numeric milliseconds and preserves the prior GUC exactly."""
     from butlers.chronicler.history_repair import _set_retention_cursor_statement_timeout
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     async def scenario():
         pool = await asyncpg.create_pool(
@@ -2082,7 +2082,7 @@ def test_retention_cursor_keeps_old_copies_invalid_while_long_span_is_pending(
     from butlers.chronicler import history_repair
     from butlers.chronicler.history_repair import RepairAdmissionError, capture_fact_write_token
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     start = (now - timedelta(days=300)).replace(hour=12, minute=0, second=0)
     end = start + timedelta(days=100)
@@ -2468,7 +2468,7 @@ def test_real_fact_writer_and_source_edit_share_transaction_fence(postgres_conta
     from butlers.chronicler.writeback import build_chronicler_fact_writer
     from butlers.modules.memory import storage as memory_storage
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     class _Embedding:
         model_name = "f1-native-fence-test"
@@ -2661,7 +2661,7 @@ def test_real_narration_discards_delayed_result_after_source_edit(postgres_conta
 
     from butlers.chronicler.narration import narrate_daily_rollup
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     monkeypatch.setenv("CHRONICLER_NARRATION_ENABLED", "true")
 
     async def scenario():
@@ -2779,7 +2779,7 @@ def test_real_steam_status_to_play_rollup_keeps_spotify_uncounted(postgres_conta
     )
     from butlers.connectors.steam import AccountPollerState, SteamAccountPoller
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     try:
         with engine.begin() as conn:
@@ -3540,7 +3540,7 @@ def test_source_change_disposes_exact_D_through_D28_and_preserves_D29_survivors(
     import json
     from zoneinfo import ZoneInfo
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     try:
         with engine.connect() as conn:
@@ -3839,7 +3839,7 @@ def test_mandatory_projection_failure_rolls_back_source_and_fact_disposition(pos
     import json
     from zoneinfo import ZoneInfo
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     try:
         with engine.connect() as conn:
@@ -4095,7 +4095,7 @@ def test_admission_deadline_never_cancels_the_commit_after_it(postgres_container
     """
     import butlers.chronicler.history_repair as history_repair
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     url = url.replace("postgresql+psycopg2://", "postgresql://")
     monkeypatch.setattr(history_repair, "MAX_RETENTION_ADMISSION_TIMEOUT_MS", 500)
     deadlines: list[asyncio.Timeout] = []
@@ -4155,7 +4155,7 @@ def test_retention_first_admission_has_total_deadline_and_read_barrier(postgres_
     import time
     from zoneinfo import ZoneInfo
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     # Model an expired legacy source that predates migration 030's insert trigger.
     start = (now - timedelta(days=75)).replace(hour=8, minute=0, second=0)
@@ -4504,7 +4504,7 @@ def test_retention_first_admission_respects_stricter_existing_statement_timeout(
 
     from butlers.chronicler.history_repair import RepairAdmissionError, capture_fact_write_token
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     start = (now - timedelta(days=10)).replace(hour=3, minute=0, second=0)
     end = start + timedelta(hours=2)
@@ -4822,7 +4822,7 @@ def test_retention_first_admission_external_cancellation_rolls_back_prior_writes
 
     from butlers.chronicler.history_repair import RepairAdmissionError, capture_fact_write_token
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     now = datetime.now(UTC).replace(microsecond=0)
     start = (now - timedelta(days=10)).replace(hour=3, minute=0, second=0)
     end = start + timedelta(hours=2)
@@ -5101,7 +5101,7 @@ def test_chronicler_local_reader_keeps_current_generated_fact_and_hides_invalid_
     postgres_container,
 ):
     """Keep finalized generated facts and hide pending or disposed rows."""
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     projection_ids = {"catalog": {}, "graph": {}}
     boundary_id, later_id = uuid4(), uuid4()
@@ -5423,7 +5423,7 @@ def test_chronicler_readers_withhold_pending_fact_before_search_limit_and_graph_
     )
     from butlers.testing.db_manager import db_manager
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     admin_url = (
         urlparse(postgres_container.get_connection_url())._replace(path=urlparse(url).path).geturl()
@@ -6601,7 +6601,7 @@ def test_drop_transition_count_uses_actual_schema_runtime_role_and_inclusive_win
     """Dedicated nullable times are queried on actual migrated tables, not mocked SQL."""
     from butlers.core_tools._memory_access import _query_drops_7d
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
     try:
         with engine.connect() as conn:
@@ -6692,7 +6692,7 @@ def test_rule_transition_writers_preserve_initial_duplicate_concurrent_and_rollb
     """Real storage operations preserve OLD persisted state, including legacy NULL."""
     from butlers.modules.memory import storage
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
     engine = create_engine(url)
 
     class Embedding:
@@ -6872,7 +6872,7 @@ def test_counted_fact_writers_and_decay_stamp_actual_transition_rows(
     from butlers.tools.relationship import facts as quick_facts
     from butlers.tools.relationship import gifts, loans
 
-    url = _migrated_chronicler_db(postgres_container, "chronicler_030")
+    url = _migrated_chronicler_db(postgres_container, "chronicler_042")
 
     class Embedding:
         model_name = "native-writer-transition"

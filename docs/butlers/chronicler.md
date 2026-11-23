@@ -68,6 +68,22 @@ The generic balance API retains its zero-filled response shape.
   raise `feeder_dark` (`flags.is_source_configured_absent`). It still gates the behavioral flags
   that depend on it, so a missing sleep feeder never produces `sleep_missing`. A source that fed
   the chronicler before and then went inactive, or any inactive required source, is still dark.
+- **Retired sources are not outages, and availability is frozen per day.** A source declared
+  retired in `contracts.INITIAL_SOURCES` (`retired_at`, seeded to `source_adapter_state`;
+  `health.meals` since 2026-08-13) never raises `feeder_dark` from that date, though it still
+  gates the behavioral flags that depend on it. `chronicler_rollup_daily` records each closed
+  local day's source availability once, in the append-only `day_source_availability` table
+  (`available | dark | configured_absent | retired`), on its first run after the day closes
+  (within 36 hours). Flags read that record instead of current state, so a source that recovers
+  no longer erases the days it was down. A closed day with no record past the horizon reports
+  `historical_health_unknown` and its flags are left as they were. The feeder-dark flag detail
+  lists `dark_sources`, `retired_sources` and `configured_absent_sources`. Each run also drops a
+  retired source from past `feeder_dark` flags dated on or after its `retired_at` (idempotent;
+  `corrected_by = 'retired_source'`); every correction, including a flag deleted because the
+  retired source was its only dark one, is first logged in the append-only
+  `retired_flag_corrections` with the original severity and detail. `day_source_availability` and
+  `retired_flag_corrections` also refuse `TRUNCATE`. `daily_repair_days.availability_snapshot` is
+  superseded by the table and unused.
 - **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
   usual, so a long night never yields both "slept more than usual" and "debt building".
 - **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to
