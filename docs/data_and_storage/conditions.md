@@ -280,6 +280,10 @@ boolean and nothing else: no watch id, predicate, threshold or time.
   `public.owner_watches` (no runtime role bypasses or assumes it, so none can replace or alter it), revoked from
   PUBLIC, executable by `butler_finance_rw` alone, and it refuses any other caller itself. The migration repairs a
   drifted ACL, body or owner instead of skipping it.
+- **Covered is not delivered.** The owner approves the watch to replace the alert, so the watch's delivery settings
+  (cooldown, verbosity) govern what the owner sees, not the alert's. The proposal card says so: "Notices follow this
+  watch's delivery settings; the old alert stops while it is active." When the watch is paused, expires or its feed
+  goes stale, the legacy flag fires again.
 - **Proposal card.** The Finance read tool `alert_watch_proposals` turns an enabled `large_transaction` alert into a
   proposed `read_check` watch (same threshold and currency, `gt`) for the Switchboard to park as an owner card, with
   a stable digest so parking twice is idempotent. A disabled alert proposes nothing. `price_change`,

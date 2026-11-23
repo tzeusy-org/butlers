@@ -114,6 +114,9 @@ async def test_an_enabled_large_alert_proposes_one_matching_read_check(monkeypat
         "value": 500.0,
     }
     assert len(proposal["digest"]) == 64
+    assert proposal["note"] == (
+        "Notices follow this watch's delivery settings; the old alert stops while it is active."
+    )
 
 
 async def test_the_digest_is_stable_so_parking_twice_is_idempotent(monkeypatch):

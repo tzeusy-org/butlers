@@ -12,6 +12,7 @@ import json
 import shutil
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -34,6 +35,7 @@ _SWITCHBOARD_SCHEMA, _SECOND = "switchboard", "health"
 _FINANCE = "butler_finance_rw"
 _CAP = "finance.transaction_amount.usd"
 _FN = "public.owner_watch_covers_large_transaction"
+_SIGNATURE = f"{_FN}(text, numeric)"
 
 
 def _module():
@@ -351,3 +353,33 @@ def test_a_changed_body_is_repaired(postgres_container):
     command.downgrade(config, "core_368")
     command.upgrade(config, "core_380")
     assert _admin(bootstrap, installed) is True
+
+
+@pytest.mark.parametrize(
+    "setup",
+    [
+        "CREATE ROLE {role} NOLOGIN; GRANT {owner} TO {role}",
+        "CREATE ROLE {role} NOLOGIN BYPASSRLS",
+        "CREATE ROLE {role} NOLOGIN SUPERUSER",
+    ],
+    ids=["member of the owner", "bypasses RLS", "superuser"],
+)
+def test_the_install_refuses_when_a_runtime_role_could_assume_the_owner(postgres_container, setup):
+    url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(url, chains=["core"], target_schema=_SWITCHBOARD_SCHEMA)
+    command.upgrade(config, "core_380")
+    bootstrap = migration_bootstrap_db_url(postgres_container, urlparse(url).path.lstrip("/"))
+    owner = _admin(
+        bootstrap,
+        "SELECT pg_get_userbyid(relowner) FROM pg_class "
+        "WHERE oid = to_regclass('public.owner_watches')",
+    )
+    role = "rt_probe_" + uuid4().hex[:8]
+    for statement in setup.format(role=role, owner=f'"{owner}"').split("; "):
+        _admin(bootstrap, statement)
+    _admin(bootstrap, f"DROP FUNCTION {_FN}(text, numeric)")
+    with pytest.raises(Exception, match="may not bypass or assume"):
+        _admin(bootstrap, _module()._install_sql((role,)))
+    assert _admin(bootstrap, f"SELECT to_regprocedure('{_SIGNATURE}') IS NULL") is True
+    _admin(bootstrap, _module()._install_sql(("butler_finance_rw",)))  # the real roles install
+    assert _admin(bootstrap, _module()._INSTALLED) is True

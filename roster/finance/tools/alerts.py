@@ -395,6 +395,11 @@ async def owner_watch_covers(executor: Any, currency: str, amount: Decimal | flo
     return answer is True
 
 
+#: Shown on the proposal card: covered is not delivered, the owner approves the replacement.
+_PROPOSAL_NOTE = (
+    "Notices follow this watch's delivery settings; the old alert stops while it is active."
+)
+
 #: Alert types that an owner watch supersedes: the watch is the one voice for them.
 _SUPERSEDED_ALERT_TYPES = ("price_change", "budget_exceeded", "new_merchant")
 
@@ -410,7 +415,9 @@ async def alert_watch_proposals(pool: asyncpg.Pool) -> dict[str, Any]:
     An enabled ``large_transaction`` alert with a numeric threshold proposes one ``read_check``
     watch (same threshold and currency) for the Switchboard to park as an owner card. A disabled
     alert proposes nothing. The other alert types are superseded and propose no watch. ``digest``
-    is stable for the same proposal, so parking it twice is idempotent.
+    is stable for the same proposal, so parking it twice is idempotent. A proposed entry carries
+    ``note``: the watch's delivery settings (cooldown, verbosity) govern notices, and the old
+    alert stops while the watch is active.
     """
     listing = await alert_list(pool)
     proposals: list[dict[str, Any]] = []
@@ -439,7 +446,12 @@ async def alert_watch_proposals(pool: asyncpg.Pool) -> dict[str, Any]:
                     "op": "gt",
                     "value": threshold,
                 }
-                entry.update(status="proposed", watch=watch, digest=_proposal_digest(watch))
+                entry.update(
+                    status="proposed",
+                    watch=watch,
+                    digest=_proposal_digest(watch),
+                    note=_PROPOSAL_NOTE,
+                )
         proposals.append(entry)
     return {"proposals": proposals, "total": len(proposals)}
 

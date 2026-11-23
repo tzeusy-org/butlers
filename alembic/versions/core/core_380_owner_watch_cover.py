@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 
 from alembic import op
+from butlers.db_authority.roles import runtime_roles
 
 revision = "core_380"
 down_revision = "core_368"
@@ -40,7 +41,7 @@ branch_labels = None
 depends_on = None
 
 _FINANCE = "butler_finance_rw"
-_RUNTIME = ("butler_switchboard_rw", "butler_finance_rw")
+_RUNTIME = runtime_roles()
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_380:owner-watch-cover', 0))"
 _WINDOW = "7 minutes"
 
@@ -150,14 +151,10 @@ def _installation_count() -> int:
     return count
 
 
-def upgrade() -> None:
-    op.execute(_LOCK)
-    bind = op.get_bind()
-    if bind.exec_driver_sql(_INSTALLED).scalar():
-        return
-    roles = ",".join(f"'{role}'" for role in _RUNTIME)
-    op.execute(
-        f"""
+def _install_sql(runtime: tuple[str, ...]) -> str:
+    """The install block; it refuses when any of ``runtime`` could assume the owner."""
+    roles = ",".join(f"'{role}'" for role in runtime)
+    return f"""
         DO $install$
         DECLARE
             v_owner oid;
@@ -195,7 +192,14 @@ def upgrade() -> None:
         END
         $install$
         """
-    )
+
+
+def upgrade() -> None:
+    op.execute(_LOCK)
+    bind = op.get_bind()
+    if bind.exec_driver_sql(_INSTALLED).scalar():
+        return
+    op.execute(_install_sql(_RUNTIME))
     if not bind.exec_driver_sql(_INSTALLED).scalar():
         raise RuntimeError("owner watch cover answer was not installed as pinned")
 
