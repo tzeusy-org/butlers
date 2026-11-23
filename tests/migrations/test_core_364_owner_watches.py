@@ -114,3 +114,113 @@ def test_the_catalog_check_is_true_once_installed_and_false_when_a_piece_is_miss
     assert installed() is True
     _run(bootstrap, "ALTER TABLE public.owner_watches FORCE ROW LEVEL SECURITY")
     assert installed() is False  # a forced RLS flag is not the installed posture
+    _run(bootstrap, "ALTER TABLE public.owner_watches NO FORCE ROW LEVEL SECURITY")
+    assert installed() is True
+
+    # Grant-option drift: the same privileges, now re-grantable, is not the installed posture.
+    _run(
+        bootstrap,
+        "GRANT SELECT, INSERT, UPDATE ON public.owner_watches TO butler_switchboard_rw"
+        " WITH GRANT OPTION",
+    )
+    assert installed() is False
+    _run(
+        bootstrap,
+        "REVOKE GRANT OPTION FOR SELECT, INSERT, UPDATE ON public.owner_watches"
+        " FROM butler_switchboard_rw",
+    )
+    assert installed() is True
+
+    # Policy drift: a same-named policy with another expression, command or role set is drift.
+    for drifted in (
+        "USING (true) WITH CHECK (current_user = 'butler_switchboard_rw')",
+        "USING (current_user = 'butler_switchboard_rw') WITH CHECK (true)",
+    ):
+        _run(bootstrap, "DROP POLICY owner_watches_switchboard ON public.owner_watches")
+        _run(
+            bootstrap,
+            "CREATE POLICY owner_watches_switchboard ON public.owner_watches FOR ALL TO PUBLIC "
+            + drifted,
+        )
+        assert installed() is False, drifted
+    for drifted in (
+        "FOR SELECT TO PUBLIC USING (current_user = 'butler_switchboard_rw')",
+        "FOR ALL TO butler_switchboard_rw USING (current_user = 'butler_switchboard_rw')"
+        " WITH CHECK (current_user = 'butler_switchboard_rw')",
+    ):
+        _run(bootstrap, "DROP POLICY owner_watches_switchboard ON public.owner_watches")
+        _run(
+            bootstrap, "CREATE POLICY owner_watches_switchboard ON public.owner_watches " + drifted
+        )
+        assert installed() is False, drifted
+    _run(bootstrap, "DROP POLICY owner_watches_switchboard ON public.owner_watches")
+    _run(
+        bootstrap,
+        "CREATE POLICY owner_watches_switchboard ON public.owner_watches FOR ALL TO PUBLIC"
+        " USING (current_user = 'butler_switchboard_rw')"
+        " WITH CHECK (current_user = 'butler_switchboard_rw')",
+    )
+    assert installed() is True
+
+
+def test_last_downgrade_preserves_a_concurrent_committing_writer(postgres_container):
+    from concurrent.futures import ThreadPoolExecutor
+    from time import monotonic, sleep
+
+    url = create_migration_db(postgres_container, migration_db_name())
+    config = _build_alembic_config(url, chains=["core"], target_schema=_FIRST)
+    command.upgrade(config, "core_364")
+    engine = create_engine(url)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor, engine.connect() as observer:
+            with engine.begin() as writer:
+                writer.execute(text(_ROW))
+                downgrade = executor.submit(command.downgrade, config, "core_363")
+                deadline = monotonic() + 8
+                waiters = text(
+                    """
+                    SELECT count(*)
+                    FROM pg_locks
+                    WHERE relation = to_regclass('public.owner_watches')
+                      AND mode = 'AccessExclusiveLock'
+                      AND NOT granted
+                    """
+                )
+                while not observer.execute(waiters).scalar_one():
+                    if downgrade.done() or monotonic() >= deadline:
+                        raise AssertionError("downgrade never waited for the writer's table lock")
+                    sleep(0.03)
+            failure = downgrade.exception(timeout=15)
+            assert table_exists(url, "owner_watches"), "downgrade dropped a committed watch"
+            assert failure is not None
+            assert "cannot drop the owner watches" in str(failure), type(failure)
+            assert (
+                observer.execute(text("SELECT count(*) FROM public.owner_watches")).scalar_one()
+                == 1
+            )
+    finally:
+        engine.dispose()
+
+
+def test_already_installed_watch_does_not_lock_out_a_reader(postgres_container):
+    from sqlalchemy.engine import make_url
+
+    url = create_migration_db(postgres_container, migration_db_name())
+    first = _build_alembic_config(url, chains=["core"], target_schema=_FIRST)
+    second = _build_alembic_config(url, chains=["core"], target_schema=_SECOND)
+    command.upgrade(first, "core_364")
+    command.upgrade(second, "core_363")
+
+    timed_url = make_url(url).update_query_dict({"options": "-c lock_timeout=1200ms"})
+    timed_second = _build_alembic_config(
+        timed_url.render_as_string(hide_password=False), chains=["core"], target_schema=_SECOND
+    )
+    engine = create_engine(url)
+    try:
+        with engine.begin() as reader:
+            reader.execute(text("SELECT count(*) FROM public.owner_watches"))
+            command.upgrade(timed_second, "core_364")
+            version = reader.execute(text("SELECT version_num FROM health.alembic_version"))
+            assert version.scalar_one() == "core_364"
+    finally:
+        engine.dispose()

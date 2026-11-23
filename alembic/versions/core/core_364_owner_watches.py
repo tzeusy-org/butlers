@@ -208,6 +208,8 @@ def _installation_count() -> int:
 # other grantee) are all in place. A later schema's chain that finds them returns without DDL,
 # because CREATE OR REPLACE TRIGGER and CREATE INDEX IF NOT EXISTS lock the table even as a no-op.
 # ``to_regclass`` takes no relation lock.
+# How the database prints the policy expression ``current_user = 'butler_switchboard_rw'``.
+_POLICY_EXPR = "'^\\(?CURRENT_USER = ''" + _SWITCHBOARD + "''(::name)?\\)?$'"
 _ALREADY_INSTALLED = f"""
 SELECT to_regclass('public.owner_watches') IS NOT NULL
 AND (
@@ -224,10 +226,19 @@ AND EXISTS (
     SELECT 1 FROM pg_indexes
     WHERE schemaname = 'public' AND indexname = 'owner_watches_state_idx'
 )
+AND (
+    SELECT count(*) FROM pg_policy
+    WHERE polrelid = to_regclass('public.owner_watches')
+) = 1
 AND EXISTS (
     SELECT 1 FROM pg_policy
     WHERE polrelid = to_regclass('public.owner_watches')
       AND polname = 'owner_watches_switchboard'
+      AND polcmd = '*'
+      AND polpermissive
+      AND polroles = ARRAY[0::oid]
+      AND pg_get_expr(polqual, polrelid) ~ {_POLICY_EXPR}
+      AND pg_get_expr(polwithcheck, polrelid) ~ {_POLICY_EXPR}
 )
 AND EXISTS (
     SELECT 1 FROM pg_class
@@ -240,7 +251,8 @@ AND NOT EXISTS (
     LEFT JOIN pg_roles r ON r.oid = a.grantee
     WHERE c.oid = to_regclass('public.owner_watches') AND a.grantee <> c.relowner
       AND (r.rolname IS DISTINCT FROM '{_SWITCHBOARD}'
-           OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE'))
+           OR a.privilege_type NOT IN ('SELECT', 'INSERT', 'UPDATE')
+           OR a.is_grantable)
 )
 AND (
     NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{_SWITCHBOARD}')
@@ -251,6 +263,7 @@ AND (
         WHERE c.oid = to_regclass('public.owner_watches')
           AND r.rolname = '{_SWITCHBOARD}'
           AND a.privilege_type IN ('SELECT', 'INSERT', 'UPDATE')
+          AND NOT a.is_grantable
     ) = 3
 )
 """
