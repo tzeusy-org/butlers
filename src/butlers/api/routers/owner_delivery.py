@@ -254,11 +254,12 @@ def _callback_authenticated(request: Request) -> bool:
 async def _receipt_pools(db_mgr: Any) -> list[tuple[str, Any]]:
     """S6 receipts also belong to Switchboard, which need not load approvals."""
     pools = list(await _find_named_approvals_pools(db_mgr, "pending_actions"))
-    if not any(name == "switchboard" for name, _ in pools):
-        try:
-            pools.append(("switchboard", db_mgr.pool("switchboard")))
-        except KeyError:
-            pass
+    try:
+        switchboard_pool = db_mgr.pool("switchboard")
+    except KeyError:
+        return pools
+    if not any(pool is switchboard_pool for _, pool in pools):
+        pools.append(("switchboard", switchboard_pool))
     return pools
 
 
