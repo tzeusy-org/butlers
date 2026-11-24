@@ -19,6 +19,7 @@ from butlers.connectors import google_calendar, google_drive, spotify
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.core.goal_admission import EvidenceRefused
 from butlers.ingestion_spans import effective_channel_kind
+from butlers.testing.source_guard import parse_file
 from butlers.tools.switchboard.connector.heartbeat import (
     parse_connector_heartbeat,
     registered_channel_kind,
@@ -95,7 +96,7 @@ async def test_unreadable_registry_refuses_admission() -> None:
 
 def _heartbeat_kinds(module: str) -> list[str | None]:
     """The ``channel_kind=`` argument of every ``ConnectorHeartbeat(...)`` call in a module."""
-    tree = ast.parse((_CONNECTORS / f"{module}.py").read_text())
+    tree = parse_file(_CONNECTORS / f"{module}.py")
     kinds: list[str | None] = []
     for node in ast.walk(tree):
         if (

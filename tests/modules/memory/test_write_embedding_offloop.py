@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.modules.memory import storage
+from butlers.testing.source_guard import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -142,7 +143,7 @@ def test_nothing_calls_the_sync_embed_directly():
         for path in sorted((repo / root).rglob("*.py")):
             if path == engine:
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_file(path)
             offenders += [
                 f"{path.relative_to(repo)}:{node.lineno}"
                 for node in ast.walk(tree)

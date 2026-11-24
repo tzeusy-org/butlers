@@ -24,6 +24,7 @@ from butlers.core.commitments import (
 )
 from butlers.core.condition_ledger import ESCALATION_ADVANCE
 from butlers.jobs import commitment_escalation as job
+from butlers.testing.source_guard import imported_module_names
 from butlers.tools.switchboard.insight.broker import _DEDUP_KEY_PATTERN
 
 _NOW = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
@@ -50,17 +51,6 @@ def _referenced_names(module: object) -> set[str]:
         elif isinstance(node, ast.alias):
             names.add((node.asname or node.name).split(".")[0])
     return names
-
-
-def _imported_modules(module: object) -> set[str]:
-    """Return every module this module imports, at top level or inside a function."""
-    modules: set[str] = set()
-    for node in ast.walk(_module_ast(module)):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
-    return modules
 
 
 def _row(
@@ -385,7 +375,7 @@ class TestInsightEngineComposition:
         injected proposer, so the composition boundary stays visible in the
         signature.
         """
-        imported = _imported_modules(job)
+        imported = set(imported_module_names(_module_ast(job)))
         assert not any("insight" in module for module in imported), imported
         assert imported == {
             "__future__",
