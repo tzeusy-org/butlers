@@ -236,6 +236,11 @@ async def test_api_database_joins_clone_thread_before_cancelled_setup_cleanup(
     try:
         assert await asyncio.to_thread(started.wait, timeout=10)
         entering.cancel()
+        # Let setup begin cleanup while the clone worker is still paused.
+        await asyncio.sleep(0)
+        entering.cancel()
+        await asyncio.sleep(0)
+        retained_cleanup = not entering.done()
         resume.set()
         with pytest.raises(asyncio.CancelledError):
             await entering
@@ -248,8 +253,12 @@ async def test_api_database_joins_clone_thread_before_cancelled_setup_cleanup(
     assert len(created) == 1
     admin = await _connect(postgres_container.get_connection_url())
     try:
-        assert not await admin.fetchval(
+        clone_exists = await admin.fetchval(
             "SELECT EXISTS(SELECT FROM pg_database WHERE datname=$1)", created[0]
         )
     finally:
         await admin.close()
+    if clone_exists:
+        await asyncio.to_thread(migration.drop_test_db, postgres_container, created[0])
+    assert not clone_exists
+    assert retained_cleanup

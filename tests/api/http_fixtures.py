@@ -124,11 +124,20 @@ async def api_database(postgres_container, production_api_app, spec: ApiDatabase
         url = await asyncio.shield(provisioning)
     except asyncio.CancelledError:
         # Cancellation cannot stop a migration/clone thread. Join it before
-        # deleting its clone, otherwise it could create a database after cleanup.
-        url = await asyncio.shield(provisioning)
-        await asyncio.to_thread(
-            drop_test_db, postgres_container, unquote(urlparse(url).path.lstrip("/"))
-        )
+        # deleting its clone, even if the caller cancels again during cleanup.
+        async def release_clone():
+            cloned_url = await provisioning
+            await asyncio.to_thread(
+                drop_test_db, postgres_container, unquote(urlparse(cloned_url).path.lstrip("/"))
+            )
+
+        cleanup = asyncio.create_task(release_clone())
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                continue
+        cleanup.result()
         raise
     name = unquote(urlparse(url).path.lstrip("/"))
     role = "api_auth_" + uuid4().hex

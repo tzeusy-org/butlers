@@ -7,7 +7,6 @@ are generated from the routes on the leased production application itself.
 
 from __future__ import annotations
 
-import ast
 import re
 from collections import Counter
 from pathlib import Path
@@ -40,7 +39,12 @@ def _routes(routes):
 
 
 def _identity(route):
-    return (type(route).__name__, tuple(sorted(getattr(route, "methods", ()) or ())), route.path)
+    # The registration snapshot prints paths with repr, including the empty mount path.
+    return (
+        type(route).__name__,
+        tuple(sorted(getattr(route, "methods", ()) or ())),
+        repr(route.path),
+    )
 
 
 def _snapshot_inventory():
@@ -50,8 +54,8 @@ def _snapshot_inventory():
             continue
         match = re.match(r"ROUTE (\S+) (\S*) ('[^']*') ", line)
         assert match is not None, line
-        kind, methods, path = match.groups()
-        rows.append((kind, tuple(methods.split(",")) if methods else (), ast.literal_eval(path)))
+        kind, methods, path_repr = match.groups()
+        rows.append((kind, tuple(methods.split(",")) if methods else (), path_repr))
     assert rows, "The complete registration survivor must not be empty"
     return Counter(rows)
 
