@@ -335,7 +335,15 @@ owners, without keeping a second engine. Every Calendar package Python file is l
 - `CalendarConfig` requires `provider`; `calendar_id` is optional and resolved at startup.
 - Core `scheduled_tasks` carries calendar-linkage columns (`timezone`, `start_at`, `end_at`,
   `until_at`, `display_title`, `calendar_event_id`) with bounds checks and a partial unique index on
-  `calendar_event_id`.
+  `calendar_event_id`. `calendar_event_id` is only ever the id Google returned; a butler-authored
+  task's stable handle lives in `calendar_link_id` (core_377). Each mirrored task records
+  `mirror_state` (`pending`, `mirrored`, `failed`, `retiring`), its last error and attempt count: a
+  failed push or delete keeps the provider id and is retried every sync, an unchanged task sends
+  nothing, and calendar sync health reports the failing counts and marks the internal scheduler
+  source failed.
+- `calendar_set_primary` writes the fleet-shared default-target key first (an error, with nothing
+  changed, if it cannot) and every calendar butler re-reads that key when it resolves a tool call,
+  so one change applies to all without a restart.
 - `CalendarModule._sync_calendar` materializes unified projection rows: provider deltas upsert into
   `calendar_events` + `calendar_event_instances`, and internal scheduler/reminder sources refresh
   into the same tables with deterministic `origin_ref` linkage. Checkpoints live in

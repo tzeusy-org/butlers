@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -32,8 +33,50 @@ from .models import (
 from .time_helpers import _cron_next_occurrence, _cron_occurrences_in_window
 
 
+def _mirror_fingerprint(*parts: Any) -> str:
+    """A stable digest of what a mirrored task sends, so an unchanged task sends nothing."""
+    return hashlib.sha256(
+        json.dumps([str(part) for part in parts], ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
 class InternalProjectionMixin:
     """Existing Calendar internal projection behavior on the owning module instance."""
+
+    @staticmethod
+    async def _mirror_done(
+        pool: Any, task_id: Any, provider_event_id: str, fingerprint: str
+    ) -> None:
+        await pool.execute(
+            "UPDATE scheduled_tasks SET calendar_event_id = $2, mirror_state = 'mirrored', "
+            "mirror_error = NULL, mirror_attempts = 0, mirror_attempted_at = now(), "
+            "mirror_fingerprint = $3 WHERE id = $1",
+            task_id,
+            provider_event_id,
+            fingerprint,
+        )
+
+    @staticmethod
+    async def _mirror_failed(pool: Any, task_id: Any, state: str, exc: BaseException) -> None:
+        """Record a failed mirror push so health shows it and the next pass retries it."""
+        logger.warning(
+            "Calendar mirror %s for scheduled task %s failed (will retry next sync): %s",
+            state,
+            task_id,
+            exc,
+        )
+        detail = f"{type(exc).__name__}: {exc}"[:300]
+        try:
+            await pool.execute(
+                "UPDATE scheduled_tasks SET mirror_state = $2, mirror_error = $3, "
+                "mirror_attempts = mirror_attempts + 1, mirror_attempted_at = now() "
+                "WHERE id = $1",
+                task_id,
+                state,
+                detail,
+            )
+        except Exception:
+            logger.warning("Could not record mirror failure for task %s", task_id, exc_info=True)
 
     async def _push_internal_events_to_provider(self) -> None:
         """Push butler-generated events (scheduled tasks, reminders) to the Butlers Google Calendar.
@@ -90,7 +133,8 @@ class InternalProjectionMixin:
                 """
                 SELECT id, name, cron, timezone, start_at, end_at, until_at,
                        display_title, description, location,
-                       calendar_event_id, enabled, updated_at
+                       calendar_event_id, enabled, updated_at,
+                       mirror_state, mirror_fingerprint
                 FROM scheduled_tasks
                 WHERE dispatch_mode != 'job'
                 """
@@ -126,51 +170,41 @@ class InternalProjectionMixin:
                     continue
 
                 if not enabled and google_event_id:
-                    # Delete from Google
+                    # The provider copy must be gone before the link is dropped: a delete that
+                    # failed keeps the id and the row says so, and the next pass retries it.
                     try:
                         await provider.delete_event(
                             calendar_id=cal_id, event_id=str(google_event_id)
                         )
+                    except CalendarRequestError as exc:
+                        if exc.status_code != 404:
+                            await self._mirror_failed(pool, task_id, "retiring", exc)
+                            continue
                     except Exception as exc:
-                        logger.debug("Failed to delete Google event for task %s: %s", task_id, exc)
+                        await self._mirror_failed(pool, task_id, "retiring", exc)
+                        continue
                     await pool.execute(
-                        "UPDATE scheduled_tasks SET calendar_event_id = NULL WHERE id = $1",
+                        "UPDATE scheduled_tasks SET calendar_event_id = NULL, "
+                        "mirror_state = 'pending', mirror_error = NULL, mirror_attempts = 0, "
+                        "mirror_fingerprint = NULL WHERE id = $1",
                         task_id,
                     )
                     deleted += 1
-                elif not enabled:
                     continue
-                elif google_event_id is None:
-                    # Create in Google
-                    try:
-                        event = await provider.create_event(
-                            calendar_id=cal_id,
-                            payload=CalendarEventCreate(
-                                title=title,
-                                start_at=occ_start,
-                                end_at=occ_end,
-                                timezone=timezone,
-                                description=event_description,
-                                location=task_location,
-                                private_metadata={
-                                    "butler_generated": "true",
-                                    "butler_name": self._butler_name,
-                                    "task_id": str(task_id),
-                                },
-                            ),
-                        )
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET calendar_event_id = $1 WHERE id = $2",
-                            event.event_id,
-                            task_id,
-                        )
-                        pushed += 1
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to push task %s to Google Calendar: %s", task_id, exc
-                        )
-                else:
-                    # Update existing Google event
+                if not enabled:
+                    continue
+
+                fingerprint = _mirror_fingerprint(
+                    title, occ_start, occ_end, timezone, event_description, task_location
+                )
+                if (
+                    google_event_id is not None
+                    and record.get("mirror_state") == "mirrored"
+                    and record.get("mirror_fingerprint") == fingerprint
+                ):
+                    continue  # the provider copy already matches; nothing to send
+
+                if google_event_id is not None:
                     try:
                         await provider.update_event(
                             calendar_id=cal_id,
@@ -184,9 +218,42 @@ class InternalProjectionMixin:
                                 location=task_location,
                             ),
                         )
-                        updated += 1
+                    except CalendarRequestError as exc:
+                        if exc.status_code != 404:
+                            await self._mirror_failed(pool, task_id, "failed", exc)
+                            continue
+                        # The provider copy is gone: fall through and create it again.
+                        google_event_id = None
                     except Exception as exc:
-                        logger.debug("Failed to update Google event for task %s: %s", task_id, exc)
+                        await self._mirror_failed(pool, task_id, "failed", exc)
+                        continue
+                    else:
+                        await self._mirror_done(pool, task_id, str(google_event_id), fingerprint)
+                        updated += 1
+                        continue
+
+                try:
+                    event = await provider.create_event(
+                        calendar_id=cal_id,
+                        payload=CalendarEventCreate(
+                            title=title,
+                            start_at=occ_start,
+                            end_at=occ_end,
+                            timezone=timezone,
+                            description=event_description,
+                            location=task_location,
+                            private_metadata={
+                                "butler_generated": "true",
+                                "butler_name": self._butler_name,
+                                "task_id": str(task_id),
+                            },
+                        ),
+                    )
+                except Exception as exc:
+                    await self._mirror_failed(pool, task_id, "failed", exc)
+                    continue
+                await self._mirror_done(pool, task_id, event.event_id, fingerprint)
+                pushed += 1
 
         # --- Push calendar-native reminders ---
         # The local calendar_events row is authoritative.  Its provider event id

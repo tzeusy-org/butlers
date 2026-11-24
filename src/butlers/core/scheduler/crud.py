@@ -187,6 +187,7 @@ async def schedule_create(
     description: str | None = None,
     location: str | None = None,
     calendar_event_id: str | None = None,
+    calendar_link_id: str | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     # deadline-specific fields (required when task_type='deadline')
@@ -208,6 +209,8 @@ async def schedule_create(
     Args:
         pool: asyncpg connection pool.
         name: Human-readable task name.
+        calendar_link_id: The caller's stable handle for a calendar-mirrored task. Never a
+            provider id: ``calendar_event_id`` is reserved for the id Google returns.
         cron: Cron expression (5-field). Required for cron tasks; ignored for
             deadline tasks (a default daily cron is used internally).
         prompt: Prompt text for prompt-mode schedules.
@@ -319,13 +322,14 @@ async def schedule_create(
                 description,
                 location,
                 calendar_event_id,
+                calendar_link_id,
                 source,
                 enabled,
                 next_run_at
             )
             VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                'db', true, $16
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                'db', true, $17
             )
             RETURNING id
             """,
@@ -344,6 +348,7 @@ async def schedule_create(
             description,
             location,
             calendar_event_id,
+            calendar_link_id,
             next_run_at,
         )
     except asyncpg.UniqueViolationError as exc:
