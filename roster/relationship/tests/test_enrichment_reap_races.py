@@ -89,6 +89,7 @@ _EXCUSED: set[tuple[str, str]] = {
     # Accounts and money belong to an entity the owner already identified, and live in schemas
     # a relationship role cannot read (calendar, finance, credentials).
     ("calendar_event_entities", "entity_id"),
+    ("calendar_event_participants", "entity_id"),
     ("cost_claims", "counterparty_entity_id"),
     ("google_accounts", "entity_id"),
     ("steam_accounts", "entity_id"),

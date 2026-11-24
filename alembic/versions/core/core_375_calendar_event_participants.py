@@ -176,12 +176,37 @@ def _installation_count() -> int:
     return count
 
 
+def _own_by_database_owner() -> None:
+    """Make the database owner own the table and the definer function, whoever ran the upgrade.
+
+    A managed bootstrap login can re-run this revision (a downgrade then upgrade round trip); the
+    objects must end up owned and visible exactly as a run by the database's own migration login
+    leaves them, or that login cannot see the table or run the function as its owner.
+    """
+    op.execute(
+        f"""
+        DO $$
+        DECLARE db_owner TEXT;
+        BEGIN
+            SELECT r.rolname INTO db_owner FROM pg_database AS d
+                JOIN pg_roles AS r ON r.oid = d.datdba WHERE d.datname = current_database();
+            IF db_owner IS NOT NULL AND db_owner <> current_user
+               AND pg_has_role(current_user, db_owner, 'MEMBER') THEN
+                EXECUTE format('ALTER TABLE calendar_event_participants OWNER TO %I', db_owner);
+                EXECUTE format('ALTER FUNCTION {_CLAIMS} OWNER TO %I', db_owner);
+            END IF;
+        END $$
+        """
+    )
+
+
 def upgrade() -> None:
     op.execute(_LOCK)
     op.execute(_TABLE_DDL)
     for ddl in _INDEXES:
         op.execute(ddl)
     op.execute(_CLAIMS_DDL)
+    _own_by_database_owner()
     for statement in _grants(_CLAIMS):
         op.execute(statement)
 
