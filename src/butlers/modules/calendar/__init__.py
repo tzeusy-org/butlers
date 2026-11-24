@@ -964,7 +964,12 @@ class CalendarModule(
         except Exception as exc:
             logger.warning("CalendarModule: failed to re-read default-target calendar: %s", exc)
             return
-        if not stored or not isinstance(stored, str) or stored == snapshot:
+        if not stored or not isinstance(stored, str):
+            if not stored and snapshot is not None and self._default_target_calendar_id == snapshot:
+                # The shared key was cleared: follow it back to "no explicit default".
+                self._default_target_calendar_id = None
+            return
+        if stored == snapshot:
             return
         if self._all_provider_calendar_ids and stored not in self._all_provider_calendar_ids:
             # Another butler may have been told about a calendar this process has not seen yet:

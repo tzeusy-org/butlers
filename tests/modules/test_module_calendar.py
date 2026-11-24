@@ -1674,6 +1674,14 @@ class TestCalendarIdRoleSeparation:
         await peer._refresh_default_target_calendar_id()
         assert peer._default_target_calendar_id == "other@example.com"
 
+    async def test_a_cleared_shared_default_is_followed(self):
+        store = AsyncMock()
+        store.load_shared.return_value = None
+        peer, _ = await self._peer(store)
+        peer._default_target_calendar_id = "other@example.com"
+        await peer._refresh_default_target_calendar_id()
+        assert peer._default_target_calendar_id is None
+
     async def test_a_failed_shared_read_keeps_the_last_known_default(self):
         store = AsyncMock()
         store.load_shared.side_effect = RuntimeError("store down")
