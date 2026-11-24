@@ -117,6 +117,8 @@ export interface DayBriefingCardProps {
   error?: Error | null;
   /** Grouped overlay entries by butler/kind (from the day-briefing response). */
   groups: import("@/api/types.ts").DayBriefingButlerGroup[];
+  /** The overlay view could not be read; this is not the same as "no domain context". */
+  unavailable?: boolean;
   /** Whether at least one specialist contributed for the date. */
   hasDomainContext: boolean;
   /** Whether any overlay entry exists for the date. */
@@ -137,6 +139,7 @@ export function DayBriefingCard({
   isError = false,
   error = null,
   groups,
+  unavailable = false,
   hasDomainContext,
   hasEntries,
   onSelectEntry,
@@ -160,6 +163,14 @@ export function DayBriefingCard({
         <p role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
           Couldn&apos;t load this day briefing. {error?.message ?? "Unknown error"}
         </p>
+      ) : unavailable && !(hasDomainContext && hasEntries) ? (
+        <p
+          data-testid="day-briefing-unavailable"
+          role="status"
+          className="font-mono text-[11px] text-[var(--red-text)]"
+        >
+          Domain context unavailable. The overlay source could not be read.
+        </p>
       ) : !hasDomainContext ? (
         // Honest empty/degraded state — no specialist contributed (or the cached
         // view is unavailable). Render explicitly rather than omitting the card.
@@ -174,6 +185,15 @@ export function DayBriefingCard({
         </p>
       ) : (
         <div className="flex flex-col gap-2.5">
+          {unavailable ? (
+            <p
+              data-testid="day-briefing-partial"
+              role="status"
+              className="font-mono text-[11px] text-[var(--red-text)]"
+            >
+              Some domain context couldn&apos;t be loaded; this list may be incomplete.
+            </p>
+          ) : null}
           {groups.map((group) => (
             <div key={group.source_butler} data-day-briefing-group={group.source_butler}>
               <div className="mb-1 flex items-center gap-1.5">

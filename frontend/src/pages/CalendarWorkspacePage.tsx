@@ -251,7 +251,9 @@ export default function CalendarWorkspacePage() {
         selectedCalendarId={selectedCalendarId}
         selectedSourceKey={selectedSourceKey}
         overlaysEnabled={overlaysEnabled}
-        overlaysError={overlaysQuery.isError}
+        overlaysError={
+          overlaysQuery.isError || overlaysQuery.data?.data.overlays_available === false
+        }
         overlaysFetched={overlaysQuery.isFetched}
         hasDomainContext={context.hasDomainContext}
         userSources={userSources}
@@ -281,6 +283,7 @@ export default function CalendarWorkspacePage() {
             isError={dayBriefingQuery.isError}
             error={dayBriefingQuery.error instanceof Error ? dayBriefingQuery.error : null}
             groups={dayBriefing?.groups ?? []}
+            unavailable={dayBriefing?.overlays_available === false}
             hasDomainContext={dayBriefing?.has_domain_context ?? false}
             hasEntries={dayBriefing?.has_entries ?? false}
             onSelectEntry={selection.handleBriefingSelect}
@@ -308,6 +311,8 @@ export default function CalendarWorkspacePage() {
             error={
               panels.proposalsQuery.error instanceof Error ? panels.proposalsQuery.error : null
             }
+            unavailable={panels.proposalsUnavailable}
+            droppedRows={panels.proposalsDroppedRows}
             acceptMutation={panels.acceptProposalMutation}
             dismissMutation={panels.dismissProposalMutation}
             timezone={defaultTimezone}

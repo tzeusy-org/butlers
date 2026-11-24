@@ -95,6 +95,8 @@ function renderPanel(
       isLoading={props.isLoading}
       isError={props.isError}
       error={props.error}
+      unavailable={props.unavailable}
+      droppedRows={props.droppedRows}
       acceptMutation={acceptMutation}
       dismissMutation={dismissMutation}
       timezone={props.timezone ?? "UTC"}
@@ -104,6 +106,33 @@ function renderPanel(
 }
 
 describe("CalendarProposalsPanel", () => {
+  it("never calls an unreadable proposals source 'nothing awaiting your review'", () => {
+    renderPanel({ entries: [], unavailable: true });
+    expect(screen.getByTestId("proposals-unavailable").textContent).toMatch(
+      /Proposals unavailable/,
+    );
+    expect(screen.getByTestId("proposals-unavailable").getAttribute("role")).toBe("status");
+    expect(screen.queryByTestId("proposals-empty")).toBeNull();
+    expect(screen.queryByText(/Nothing awaiting your review/)).toBeNull();
+  });
+
+  it("keeps the calm empty sentence only for a confirmed-empty read", () => {
+    renderPanel({ entries: [], unavailable: false });
+    expect(screen.getByTestId("proposals-empty").textContent).toMatch(/Nothing awaiting/);
+    expect(screen.queryByTestId("proposals-unavailable")).toBeNull();
+  });
+
+  it("still lists what it could read and discloses dropped rows", () => {
+    renderPanel({ unavailable: true, droppedRows: 2 });
+    expect(screen.getByText("Dentist appointment")).toBeTruthy();
+    const banner = screen.getByTestId("proposals-unavailable");
+    expect(banner.textContent).toBe(
+      "Some proposals couldn't be loaded; this list may be incomplete.",
+    );
+    expect(banner.getAttribute("role")).toBe("status");
+    expect(screen.getByTestId("proposals-dropped").textContent).toContain("2 proposals");
+  });
+
   it("renders a pending proposal with confidence chip and provenance", () => {
     renderPanel();
     expect(screen.getByText("Dentist appointment")).toBeTruthy();

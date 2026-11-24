@@ -179,6 +179,14 @@ class CalendarWorkspaceReadResponse(BaseModel):
     #: Always ``False`` for the user/butler/proposals views (additive — clients
     #: that ignore it observe the prior shape).
     has_domain_context: bool = False
+    #: Overlays lane degraded signal. ``False`` when the cached view could not be read, so the
+    #: FE shows "overlays unavailable" instead of the "no domain context" empty state.
+    overlays_available: bool = True
+    #: Proposals lane degraded signal and count of rows dropped as malformed. ``False`` when
+    #: any butler schema's proposals read failed; the FE renders "Proposals unavailable", never
+    #: "Nothing awaiting your review".
+    proposals_available: bool = True
+    proposals_dropped_rows: int = 0
     #: Linked-people resolution honesty flag (bu-qs64f). ``True`` when the
     #: ``calendar_event_entities`` → ``public.entities`` resolution ran cleanly
     #: (including "no links" — genuinely empty). ``False`` only when at least one
@@ -258,6 +266,8 @@ class CalendarDayBriefingResponse(BaseModel):
     date: str
     timezone: str
     has_domain_context: bool = False
+    #: ``False`` when the overlay view could not be read (not the same as "no context").
+    overlays_available: bool = True
     has_entries: bool = False
     groups: list[DayBriefingButlerGroup] = Field(default_factory=list)
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)

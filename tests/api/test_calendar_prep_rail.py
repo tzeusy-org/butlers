@@ -125,7 +125,7 @@ def _build_prep_app(
             return rows_to_scan
         return {}
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         return await _fan_out(query, args, butler_names), []
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)

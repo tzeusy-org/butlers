@@ -301,7 +301,7 @@ def _build_app(app, *, workspace_rows=None, proposal_rows=None, workspace_failed
             rows = {k: v for k, v in rows.items() if k in butler_names}
         return rows
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         rows = await _fan_out(query, args, butler_names)
         # Only the events fan-out carries the simulated partial failure.
         failed = list(workspace_failed) if "FROM calendar_event_instances AS i" in query else []

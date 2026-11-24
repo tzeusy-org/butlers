@@ -61,6 +61,8 @@ export function useCalendarPanels({ queryStart, queryEnd, timezone }: CalendarPa
     auditQuery,
     proposalsQuery,
     proposalEntries,
+    proposalsUnavailable: proposalsOpen && proposalsQuery.data?.data.proposals_available === false,
+    proposalsDroppedRows: proposalsOpen ? proposalsQuery.data?.data.proposals_dropped_rows : undefined,
     acceptProposalMutation,
     dismissProposalMutation,
   };

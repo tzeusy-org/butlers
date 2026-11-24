@@ -41,6 +41,8 @@ from butlers.api.read_models.calendar_workspace import (
     row_to_proposal,
     row_to_source,
     row_to_workspace,
+    scan_calendar_overlays,
+    scan_calendar_proposals,
     shallow_asdict,
 )
 from butlers.testing.records import Record
@@ -875,3 +877,60 @@ def test_shallow_asdict_shares_metadata_reference_where_stdlib_deep_copies():
     assert shallow["source_metadata"] is dto.source_metadata
     assert deep["source_metadata"] is not dto.source_metadata
     assert deep["source_metadata"] == dto.source_metadata
+
+
+async def test_scan_calendar_proposals_flags_a_failed_schema_and_a_raised_fan_out():
+    db = _make_db({"assistant": [Record(_proposal_dict())]}, failed=["relationship"])
+    scan = await scan_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    assert len(scan.rows) == 1 and scan.available is False
+
+    db = _make_db({})
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("down"))
+    scan = await scan_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    assert scan.rows == [] and scan.available is False
+
+    scan = await scan_calendar_proposals(_make_db({}), start=_NOW, end=_NOW + timedelta(hours=1))
+    assert scan.rows == [] and scan.available is True
+
+
+async def test_a_bad_proposal_row_is_counted_and_keeps_the_good_rows():
+    broken = _proposal_dict()
+    del broken["title"]
+    db = _make_db({"assistant": [Record(broken), Record(_proposal_dict())]})
+    scan = await scan_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    assert len(scan.rows) == 1
+    assert scan.unreadable_rows == 1
+
+
+async def test_a_hung_schema_is_marked_failed_instead_of_hanging_the_fan_out():
+    import asyncio
+
+    from butlers.api.db import DatabaseManager
+
+    class _Pool:
+        def __init__(self, hang: bool):
+            self.hang = hang
+
+        async def fetch(self, *_args):
+            if self.hang:
+                await asyncio.sleep(30)
+            return [1]
+
+    manager = DatabaseManager()
+    manager._pools = {"slow": _Pool(True), "fast": _Pool(False)}
+    results, failed = await asyncio.wait_for(
+        manager.fan_out_with_status("SELECT 1", (), deadline_seconds=0.05), timeout=5
+    )
+    assert failed == ["slow"]
+    assert results == {"slow": [], "fast": [1]}
+
+
+async def test_scan_calendar_overlays_distinguishes_failed_from_empty():
+    rows, available = await scan_calendar_overlays(_make_db({}))
+    assert rows == [] and available is True
+    rows, available = await scan_calendar_overlays(_make_db({}, failed=["assistant"]))
+    assert available is False
+    db = _make_db({})
+    db.butlers_with_module = MagicMock(return_value=None)
+    db.butler_names = []
+    assert await scan_calendar_overlays(db) == ([], False)

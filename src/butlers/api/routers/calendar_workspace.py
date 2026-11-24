@@ -102,14 +102,14 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_entry_people,
     query_calendar_event_search,
     query_calendar_invitations,
-    query_calendar_overlays,
     query_calendar_prep,
     query_calendar_proposal_by_id,
-    query_calendar_proposals,
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
     query_household_time,
+    scan_calendar_overlays,
+    scan_calendar_proposals,
     shallow_asdict,
     update_calendar_proposal_status,
 )
@@ -796,26 +796,29 @@ async def _fetch_proposal_entries(
     end: datetime,
     butlers: list[str] | None,
     display_tz: ZoneInfo | None,
-) -> list[UnifiedCalendarEntry]:
-    """Fetch + project pending proposals, failing open to an empty list.
+) -> tuple[list[UnifiedCalendarEntry], bool, int]:
+    """Fetch + project pending proposals: ``(entries, available, dropped_rows)``.
 
-    The read MUST NEVER surface an HTTP 500: a missing
-    ``calendar_event_proposals`` table or any query failure degrades to an
-    empty entries list (the failure is logged in the read-model layer).
+    The read MUST NEVER surface an HTTP 500, but a failure is no longer an empty list that
+    reads as "nothing to review": ``available`` is ``False`` when any schema's read failed, and
+    ``dropped_rows`` counts rows that could not be normalised (bu-5ii4gj.4).
     """
     try:
-        proposals = await query_calendar_proposals(db, start=start, end=end, butlers=butlers)
+        scan = await scan_calendar_proposals(db, start=start, end=end, butlers=butlers)
     except Exception:
-        logger.warning("proposals projection query failed; returning empty", exc_info=True)
-        return []
+        logger.warning("proposals projection query failed", exc_info=True)
+        return [], False, 0
 
     entries: list[UnifiedCalendarEntry] = []
-    for proposal in proposals:
+    dropped = scan.unreadable_rows
+    for proposal in scan.rows:
         try:
             entries.append(_normalize_proposal_entry(proposal, display_tz=display_tz))
         except ValueError:
-            continue
-    return entries
+            dropped += 1
+    if dropped:
+        logger.warning("proposals projection dropped %d malformed row(s)", dropped)
+    return entries, scan.available, dropped
 
 
 def _normalize_overlay_envelope(
@@ -936,17 +939,18 @@ async def _fetch_overlay_entries(
     end: datetime,
     butlers: list[str] | None,
     display_tz: ZoneInfo | None,
-) -> tuple[list[UnifiedCalendarEntry], bool]:
-    """Fetch + project cached overlay contributions, failing open.
+) -> tuple[list[UnifiedCalendarEntry], bool, bool]:
+    """Fetch + project cached overlay contributions, never raising.
 
-    Returns ``(entries, has_domain_context)``. ``has_domain_context`` is ``True``
-    when at least one **valid** contribution envelope exists for a date within
-    ``[start, end)`` — even when that envelope has no entries (``has_entries``
+    Returns ``(entries, has_domain_context, available)``; ``available`` is ``False`` when the
+    view could not be read, which is not the same as "no domain context" (bu-5ii4gj.4).
+    ``has_domain_context`` is ``True`` when at least one **valid** contribution envelope exists
+    for a date within ``[start, end)`` — even when that envelope has no entries (``has_entries``
     false) — so the FE can distinguish "no domain context for this range" from
     "context temporarily unavailable". A missing view, a missing specialist
-    ``state`` table, or any query failure yields ``([], False)`` — never a 500.
+    ``state`` table, or any query failure yields ``([], False, False)`` — never a 500.
     """
-    overlays = await query_calendar_overlays(db, butlers=butlers)
+    overlays, available = await scan_calendar_overlays(db, butlers=butlers)
 
     entries: list[UnifiedCalendarEntry] = []
     has_domain_context = False
@@ -963,7 +967,7 @@ async def _fetch_overlay_entries(
             # when it projects zero entries (has_entries=false → honest empty-state).
             has_domain_context = True
             entries.extend(projected_entries)
-    return entries, has_domain_context
+    return entries, has_domain_context, available
 
 
 def _group_overlay_entries_by_butler_kind(
@@ -1190,7 +1194,7 @@ async def get_day_briefing(
     start_at = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
     end_at = start_at + timedelta(days=1)
 
-    overlay_entries, has_domain_context = await _fetch_overlay_entries(
+    overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
         db, start=start_at, end=end_at, butlers=butlers, display_tz=display_tz
     )
 
@@ -1199,6 +1203,7 @@ async def get_day_briefing(
         date=target_date.isoformat(),
         timezone=tz.key,
         has_domain_context=has_domain_context,
+        overlays_available=overlays_available,
         has_entries=bool(overlay_entries),
         groups=groups,
         entries=overlay_entries,
@@ -1261,7 +1266,7 @@ async def get_workspace(
         # read fails open — a missing table or query failure yields an empty
         # entries list, never an HTTP 500. There are no provider sources or
         # lanes for inferred proposals, so freshness/lanes are empty.
-        proposal_entries = await _fetch_proposal_entries(
+        proposal_entries, proposals_available, proposals_dropped = await _fetch_proposal_entries(
             db, start=start, end=end, butlers=butlers, display_tz=display_tz
         )
         data = CalendarWorkspaceReadResponse(
@@ -1270,6 +1275,8 @@ async def get_workspace(
             lanes=[],
             next_cursor=None,
             has_more=False,
+            proposals_available=proposals_available,
+            proposals_dropped_rows=proposals_dropped,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 
@@ -1282,7 +1289,7 @@ async def get_workspace(
         # empty entries list with ``has_domain_context=false``, never a 500.
         # Overlays are read-only domain context, not provider/butler sources, so
         # freshness/lanes are empty.
-        overlay_entries, has_domain_context = await _fetch_overlay_entries(
+        overlay_entries, has_domain_context, overlays_available = await _fetch_overlay_entries(
             db, start=start, end=end, butlers=butlers, display_tz=display_tz
         )
         data = CalendarWorkspaceReadResponse(
@@ -1292,6 +1299,7 @@ async def get_workspace(
             next_cursor=None,
             has_more=False,
             has_domain_context=has_domain_context,
+            overlays_available=overlays_available,
         )
         return ApiResponse[CalendarWorkspaceReadResponse](data=data)
 

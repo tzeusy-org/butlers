@@ -87,6 +87,37 @@ describe("DayBriefingCard", () => {
     expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
   });
 
+  it("renders a failed overlay read as unavailable, not as no domain context", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow · Mon, Feb 23"
+        groups={[]}
+        unavailable
+        hasDomainContext={false}
+        hasEntries={false}
+      />,
+    );
+    expect(screen.getByTestId("day-briefing-unavailable").textContent).toMatch(/unavailable/i);
+    expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
+  });
+
+  it("keeps visible context and says the list may be incomplete when the read was partial", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow · Mon, Feb 23"
+        groups={[financeGroup()]}
+        unavailable
+        hasDomainContext
+        hasEntries
+      />,
+    );
+    const note = screen.getByTestId("day-briefing-partial");
+    expect(note.textContent).toContain("may be incomplete");
+    expect(note.getAttribute("role")).toBe("status");
+    expect(screen.getByText("Electric Co")).toBeTruthy();
+    expect(screen.queryByTestId("day-briefing-unavailable")).toBeNull();
+  });
+
   it("shows an honest empty-state when no specialist contributed", () => {
     render(
       <DayBriefingCard
