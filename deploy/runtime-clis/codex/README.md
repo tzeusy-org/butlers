@@ -153,6 +153,8 @@ peer close). These are source-bound results, not a fixed-builder release or imag
 
 The fixed-builder release hashes (`native-package-artifacts/build-inputs.json`
 `codex.binary_sha256` / `tree_sha256`, `runtime-inputs.json` `components.codex` and
-`native_artifacts.codex`) still carry the 0.159.2 values. They are recorded, not enforced,
-so the producers log drift rather than refuse; replace them with the values the first
-fixed-builder 0.170.0 build reports.
+`native_artifacts.codex`) carry the first 0.170.0 build. They were read from the installed
+`usr/local/lib/node_modules/@openai/codex` tree of the deployed butlers-dev image
+`butlers-app:d3321e8e01b9` and digested with `runtime_artifacts.inventory`/`tree_digest`.
+They are recorded, not enforced: the compile is not bit-reproducible across hosts, so a
+later build that logs drift is expected, not a failure.

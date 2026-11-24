@@ -25,7 +25,7 @@
       "tree_sha256": "c430cd45c2ba69db759b141419c822d3d72e316f7802e69cf6787e812e627b57"
     },
     "codex": {
-      "tree_sha256": "cd0cb462da5375d7eefee3b43bab18f083352618ea58a044755712ec4d3c7b3f"
+      "tree_sha256": "59bfba9d9b6eefbfcb68d673f8151056d17ca47dceb4a7c9824f8685748f1667"
     },
     "gemini": {
       "tree_sha256": "4d9a90d40b84d35db811ad5d69056137bf279bf249bf06962fcd6048ff604777"
@@ -134,7 +134,7 @@
         "sha256": "8e1aa9b4c4e60cb92562a1efa6ec9061d52c8bdcb246d8f0ed1ce129cfa4c486"
       },
       "deploy/runtime-clis/native-package-artifacts/build-inputs.json": {
-        "sha256": "c6ce1a247c43317cdb41a11f821d17305e1c46b466faafa9dbd8db7150de5fe6"
+        "sha256": "2818dc205cd9ce8f33ba9d4c071be2010d7bfd2a41c635fd30174428f767266a"
       },
       "deploy/runtime-clis/npm-artifacts/build-inputs.json": {
         "sha256": "dbef47f206c369c9c67186f6c79c8d4027b1e6541d619e134d478fc21ba7ed01"
@@ -276,7 +276,7 @@
         "sha256": "4d704a8aecbe038affa3000f498ae17c1b4f753add8facb8764120affc99b658"
       },
       "codex": {
-        "sha256": "4b42c0febe80a136dc32757f70cde09ac3888996d9eaf9e0639a0ea19044deab"
+        "sha256": "4c51e03790771771746dc3b00e1135d79b657cbe359d9dbfcc751ab91e4a0886"
       },
       "opencode": {
         "sha256": "b950a8688d5ebd38fd3eedae9b8d392796c2906b4a4aa5737d6ccd773f9f6c02"
