@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import outermost_matches
+
 pytestmark = pytest.mark.contract
 
 # ---------------------------------------------------------------------------
@@ -1648,9 +1650,8 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
     and relation names obtained through arbitrary Python dataflow are outside a
     literal scan's authority (they are not silently certified as local).
     """
-    result: list[tuple[int, str]] = []
     if not _SQL_KEYWORD_RE.search(source):
-        return result
+        return []
     tree = ast.parse(source)
     constants: dict[str, str] = {}
     for node in tree.body:
@@ -1697,51 +1698,43 @@ def _sql_nodes(source: str) -> list[tuple[int, str]]:
                     stores[name] += 1
         constants = {name: value for name, value in constants.items() if stores[name] == 1}
 
-    class Visitor(ast.NodeVisitor):
-        def visit_Expr(self, node: ast.Expr) -> None:
-            if not isinstance(node.value, ast.Constant):
-                self.generic_visit(node)
+    def render(part: ast.AST) -> str:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            return part.value
+        if isinstance(part, ast.BinOp) and isinstance(part.op, ast.Add):
+            return render(part.left) + render(part.right)
+        if isinstance(part, ast.Name) and part.id in constants:
+            return constants[part.id]
+        return "{" + ast.unparse(part) + "}"
 
-        def visit_Constant(self, node: ast.Constant) -> None:
+    def extract(node: ast.AST) -> tuple[tuple[int, str], ...] | None:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            return ()
+        if isinstance(node, ast.Constant):
             if isinstance(node.value, str) and _is_sql_fragment(node.value):
-                result.append((node.lineno, node.value))
-
-        def visit_BinOp(self, node: ast.BinOp) -> None:
-            first = node
+                return ((node.lineno, node.value),)
+            return ()
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            first = node.left
             while isinstance(first, ast.BinOp) and isinstance(first.op, ast.Add):
                 first = first.left
-            if not (
-                isinstance(node.op, ast.Add)
-                and isinstance(first, ast.Constant)
+            if (
+                isinstance(first, ast.Constant)
                 and isinstance(first.value, str)
                 and _is_sql_fragment(first.value)
             ):
-                self.generic_visit(node)
-                return
-
-            def render(part: ast.AST) -> str:
-                if isinstance(part, ast.Constant) and isinstance(part.value, str):
-                    return part.value
-                if isinstance(part, ast.BinOp) and isinstance(part.op, ast.Add):
-                    return render(part.left) + render(part.right)
-                if isinstance(part, ast.Name) and part.id in constants:
-                    return constants[part.id]
-                return "{" + ast.unparse(part) + "}"
-
-            result.append((node.lineno, render(node)))
-
-        def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+                return ((node.lineno, render(node)),)
+        if isinstance(node, ast.JoinedStr):
             sql = "".join(
                 part.value
                 if isinstance(part, ast.Constant)
                 else constants.get(ast.unparse(part.value), "{" + ast.unparse(part.value) + "}")
                 for part in node.values
             )
-            if _is_sql_fragment(sql):
-                result.append((node.lineno, sql))
+            return ((node.lineno, sql),) if _is_sql_fragment(sql) else ()
+        return None
 
-    Visitor().visit(tree)
-    return result
+    return list(outermost_matches(tree, extract))
 
 
 def _mask_sql_noncode(sql: str) -> str:

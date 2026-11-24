@@ -31,7 +31,7 @@ from __future__ import annotations
 import ast
 import copy
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from pathlib import Path
@@ -193,6 +193,22 @@ def calls_with_owner(tree: ast.Module) -> Iterator[tuple[str, ast.Call]]:
         yield owner or "<module>", call
 
 
+def outermost_matches[T](
+    node: ast.AST, extract: Callable[[ast.AST], tuple[T, ...] | None]
+) -> Iterator[T]:
+    """Yield matches in AST preorder, pruning handled subtrees.
+
+    An extractor returns None to visit children, an empty tuple to skip the
+    subtree, or the matches for a subtree already handled as a whole.
+    """
+    matches = extract(node)
+    if matches is not None:
+        yield from matches
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from outermost_matches(child, extract)
+
+
 def sql_literals(tree: ast.Module) -> Iterator[str]:
     """Yield maximal SQL-verb literals, folding ``+`` and f-string static parts.
 
@@ -211,16 +227,15 @@ def sql_literals(tree: ast.Module) -> Iterator[str]:
                 return (left or "{...}") + (right or "{...}")
         return None
 
-    def walk(node: ast.AST) -> Iterator[str]:
+    def extract(node: ast.AST) -> tuple[str, ...] | None:
         value = fold(node)
-        if value is not None:
-            if re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b", value, re.I):
-                yield value
-            return
-        for child in ast.iter_child_nodes(node):
-            yield from walk(child)
+        if value is None:
+            return None
+        if re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b", value, re.I):
+            return (value,)
+        return ()
 
-    yield from walk(strip_docstrings(tree))
+    yield from outermost_matches(strip_docstrings(tree), extract)
 
 
 def import_edges(tree: ast.Module) -> Iterator[tuple[int, str, bool]]:
