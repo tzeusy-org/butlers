@@ -14,11 +14,41 @@ from butlers.connectors import telegram_bot as telegram_bot_module
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
 from butlers.core.owner_delivery import mint_token
+from butlers.perception import flags
 
 _CONNECTOR_TOKEN = "test-only-approval-callback-connector-token"
 _API = "http://dashboard-api:41200"
 _STALE_ID = "aaaaaaaa-0000-4000-8000-000000000001"
 _BROKEN_ID = "aaaaaaaa-0000-4000-8000-000000000002"
+
+
+async def test_owner_activity_is_dark_and_only_reports_private_primary_owner(monkeypatch):
+    connector = _connector()
+    connector._http_client = AsyncMock()
+    connector._is_primary_owner_callback = AsyncMock(return_value=True)
+    update = {
+        "message": {
+            "from": {"id": 9001},
+            "chat": {"id": 9001, "type": "private"},
+            "text": "Private content must not leave in activity",
+        }
+    }
+    await connector._record_owner_delivery_activity(update)
+    connector._http_client.post.assert_not_called()
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await connector._record_owner_delivery_activity(update)
+    connector._http_client.post.assert_awaited_once()
+    call = connector._http_client.post.call_args
+    assert call.kwargs["json"] == {}
+    assert call.args[0] == f"{_API}/api/owner-delivery/activity"
+    connector._http_client.post.reset_mock()
+    connector._is_primary_owner_callback.return_value = False
+    await connector._record_owner_delivery_activity(update)
+    connector._http_client.post.assert_not_called()
+    connector._is_primary_owner_callback.return_value = True
+    update["message"]["chat"]["type"] = "group"
+    await connector._record_owner_delivery_activity(update)
+    connector._http_client.post.assert_not_called()
 
 
 def _response(*, status_code: int = 200, body: dict | None = None) -> MagicMock:

@@ -18,10 +18,10 @@ from typing import Any
 
 from butlers.core import owner_delivery as od
 from butlers.core import owner_delivery_holds as holds
+from butlers.core import owner_delivery_selection as selection
 from butlers.modules.approvals.previews import args_digest
 
-#: Card actions minted for an approval presentation. ``ack`` exists in the ledger for
-#: later surfaces; no approval card offers it.
+#: Decision actions; M7 dashboard presentations additionally offer canonical acknowledgement.
 APPROVAL_ACTIONS: tuple[od.Action, ...] = ("approve", "reject")
 #: Bound for a token whose action has no expiry of its own.
 _DEFAULT_TOKEN_TTL = timedelta(hours=72)
@@ -214,12 +214,16 @@ async def present_on_dashboard(conn: Any, action: Mapping[str, Any]) -> od.Prese
         defers_push=False,
     )
     now = await conn.fetchval("SELECT clock_timestamp()")
+    if selection.live():
+        await selection.plan(conn, subject, sensitivity=selection.action_sensitivity(action))
     presentation = await od.present(
         conn,
         subject.id,
         surface="dashboard",
         route_ref=_DASHBOARD_ROUTE,
-        actions=APPROVAL_ACTIONS,
+        actions=(*APPROVAL_ACTIONS, "ack")
+        if selection.live() and subject.state != "acknowledged"
+        else APPROVAL_ACTIONS,
         expires_at=token_expiry(action, now),
     )
     await _map(conn, store="approval_action", source_id=str(action["id"]), subject_id=subject.id)

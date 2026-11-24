@@ -49,6 +49,7 @@ from butlers.api.routers.decision_sets import (
 )
 from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisionRefused
 from butlers.core import owner_delivery
+from butlers.core import owner_delivery_selection as selection
 from butlers.modules.approvals.decision_set_delivery import Resolver, redeem_set_token
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,156 @@ class OwnerDeliveryActionRequest(BaseModel):
     # Dashboard only: the call the owner was shown (required to approve) and a denial note.
     displayed_call: DisplayedApprovalCall | None = None
     reason: str | None = None
+
+
+class OwnerDeliveryActivity(BaseModel):
+    focused: bool = Field(default=True, strict=True)
+
+
+@router.get("/presentations/{presentation_id}/why")
+async def read_persisted_owner_why(
+    presentation_id: UUID,
+    http_request: Request,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[dict[str, Any]]:
+    """Owner-only history read; an opaque presentation ref never authorizes an action."""
+    if _callback_authenticated(http_request):
+        raise HTTPException(status_code=403, detail="Dashboard owner authentication required")
+    failed = False
+    for _, pool in await _find_named_approvals_pools(db_mgr, "pending_actions"):
+        try:
+            async with pool.acquire() as conn, conn.transaction():
+                owner = await owner_delivery.owner_entity_id(conn)
+                result = await selection.why(conn, presentation_id, owner=owner) if owner else None
+            if result is not None:
+                return ApiResponse(data=result)
+        except Exception:
+            failed = True
+    raise HTTPException(status_code=503 if failed else 404, detail="Delivery receipt unavailable")
+
+
+@router.post("/activity")
+async def record_owner_activity(
+    http_request: Request,
+    request: OwnerDeliveryActivity,
+    *,
+    db_mgr: Db,
+    callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
+) -> ApiResponse[dict[str, bool]]:
+    """Server-timed focus or verified primary-owner inbound; never acknowledgement."""
+    if not selection.live():
+        raise HTTPException(status_code=404, detail="Not Found")
+    callback = _callback_authenticated(http_request)
+    _decision_actor_id(callback_actor, callback_authenticated=callback)
+    pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    if not pools:
+        raise HTTPException(status_code=503, detail="Owner activity unavailable")
+    async with pools[0][1].acquire() as conn, conn.transaction():
+        owner = await owner_delivery.owner_entity_id(conn)
+        if owner is None:
+            raise HTTPException(status_code=503, detail="Owner unavailable")
+        await selection.activity(
+            conn,
+            owner=owner,
+            surface="telegram" if callback else "dashboard",
+            active=True if callback else request.focused,
+        )
+    return ApiResponse(data={"recorded": True})
+
+
+@router.post("/why")
+async def read_owner_why(
+    http_request: Request,
+    request: OwnerDeliveryActionRequest,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[dict[str, Any]]:
+    """An authenticated presentation token reads evidence without consuming or acting."""
+    if _callback_authenticated(http_request):
+        raise HTTPException(status_code=403, detail="Dashboard owner authentication required")
+    verifier = owner_delivery.token_verifier(request.token)
+    located = await _locate(db_mgr, verifier) if verifier else None
+    if located is None:
+        raise HTTPException(
+            status_code=409, detail={"error": "owner_delivery_refused", "reason": "token_unknown"}
+        )
+    _, pool, _ = located
+    async with pool.acquire() as conn, conn.transaction():
+        # Subject lock serializes a receipt read with ack/decision. No authority row is
+        # touched, so this cannot invert the authority -> subject lock order.
+        row = await conn.fetchrow(
+            "SELECT s.*, t.presentation_id, t.surface AS token_surface, "
+            "t.owner_entity AS token_owner, t.expires_at, t.generation AS token_generation, "
+            "t.action_digest AS token_digest, t.consumed_at "
+            "FROM public.owner_delivery_tokens t JOIN public.owner_delivery_subjects s "
+            "ON s.id = t.subject_id WHERE t.verifier = $1 "
+            "AND s.owning_schema = current_schema() FOR UPDATE OF s",
+            verifier,
+        )
+        owner = await owner_delivery.owner_entity_id(conn)
+        moment = await conn.fetchval("SELECT clock_timestamp()")
+        if row is None or owner != row["owner_entity"] or owner != row["token_owner"]:
+            reason = "wrong_owner"
+        elif row["token_surface"] != "dashboard":
+            reason = "wrong_surface"
+        elif moment >= row["expires_at"]:
+            reason = "token_expired"
+        elif (
+            row["token_generation"] != row["generation"]
+            or row["state"] in owner_delivery.RESOLVED
+            or row["consumed_at"] is not None
+            or row["token_digest"] != row["action_digest"]
+        ):
+            reason = "stale_generation"
+        else:
+            result = await selection.why(conn, row["presentation_id"], owner=owner)
+            if result is not None:
+                return ApiResponse(data=result)
+            reason = "presentation_unavailable"
+        raise HTTPException(
+            status_code=409, detail={"error": "owner_delivery_refused", "reason": reason}
+        )
+
+
+async def _acknowledge(pool: Any, token_row: Any, token: str, surface: owner_delivery.Surface):
+    async with pool.acquire() as conn, conn.transaction():
+        owner = await owner_delivery.owner_entity_id(conn)
+        if owner is None:
+            raise HTTPException(status_code=409, detail="Owner unavailable")
+        # Ack does not approve: it only fences competing presentations and escalation.
+        if token_row["kind"] == "approval":
+            from butlers.modules.approvals.owner_delivery_bridge import approval_digests
+
+            action = await conn.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1 FOR UPDATE",
+                UUID(token_row["source_ref"]),
+            )
+            if action is None:
+                raise HTTPException(status_code=409, detail="Subject unavailable")
+            _, digest = approval_digests(action["tool_name"], action["tool_args"])
+        else:
+            digest = await conn.fetchval(
+                "SELECT action_digest FROM public.owner_delivery_subjects "
+                "WHERE kind = $1 AND source_ref = $2 AND owning_schema = current_schema()",
+                token_row["kind"],
+                token_row["source_ref"],
+            )
+        result = await owner_delivery.redeem(
+            conn,
+            token,
+            kind=token_row["kind"],
+            source_ref=token_row["source_ref"],
+            expected_action="ack",
+            owner_entity=owner,
+            surface=surface,
+            current_action_digest=digest,
+        )
+        if result.outcome == "refused":
+            raise HTTPException(
+                status_code=409, detail={"error": "owner_delivery_refused", "reason": result.reason}
+            )
+        return ApiResponse(data={"status": "acknowledged", "outcome": result.outcome})
 
 
 class OwnerDeliveryRetraction(BaseModel):
@@ -221,7 +372,11 @@ async def redeem_owner_action(
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
     set_resolver: Resolver | None = Depends(get_decision_set_resolver),
-) -> ApiResponse[ApprovalAction] | ApiResponse[DecisionSetDecisionResult]:
+) -> (
+    ApiResponse[ApprovalAction]
+    | ApiResponse[DecisionSetDecisionResult]
+    | ApiResponse[dict[str, str]]
+):
     """Decide one owner card through its single-use token."""
     callback = _callback_authenticated(http_request)
     actor_id = _decision_actor_id(callback_actor, callback_authenticated=callback)
@@ -238,6 +393,8 @@ async def redeem_owner_action(
         )
     set_row = await _locate_set(db_mgr, verifier)
     if set_row is not None:
+        if set_row["action"] == "ack":
+            return await _acknowledge(db_mgr.pool("switchboard"), set_row, request.token, surface)
         return await _redeem_set_card(
             db_mgr,
             request,
@@ -251,7 +408,9 @@ async def redeem_owner_action(
         raise HTTPException(
             status_code=409, detail={"error": "owner_delivery_refused", "reason": "token_unknown"}
         )
-    _, _, token_row = located
+    _, pool, token_row = located
+    if token_row["action"] == "ack":
+        return await _acknowledge(pool, token_row, request.token, surface)
     if token_row["kind"] != "approval" or token_row["action"] not in ("approve", "reject"):
         raise HTTPException(
             status_code=409,

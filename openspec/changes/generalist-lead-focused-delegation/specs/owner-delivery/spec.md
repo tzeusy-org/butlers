@@ -94,3 +94,37 @@ Scope: v1-mandatory
 #### Scenario: Both gates verify an owner break-through rule
 - **WHEN** the verified origin matches a current owner-authored rule at the quiet-hours and the context gate
 - **THEN** the subject is `interrupt` with reason `owner_clause`, and a later replay returns that same pair
+
+### Requirement: M7 chooses admissible owner surfaces deterministically
+The M7 selector SHALL remain dark behind a separate default-off activation flag. It SHALL consume canonical subject identity, stored derived urgency, declared sensitivity, trusted finite surface activity and existing owner-mode holds. Fresh authenticated dashboard focus SHALL select dashboard first for alerts and decisions, with one Telegram fallback eligible three minutes after the persisted selection time unless acknowledged or resolved. The plan and deadline SHALL survive process restart and replay in the canonical receipt ledger. Acknowledgement and the final provider handoff marker SHALL serialize on the canonical subject fence; acknowledgement SHALL NOT approve an effect. Provider ambiguity SHALL remain unknown and SHALL NOT initiate another send. Sensitive or unclassified content SHALL remain on the owner-authenticated dashboard; absent, future or stale surface activity SHALL NOT assert presence or acknowledgement. Answers SHALL keep their originating trusted reply surface, or hold if that surface is unsuitable. Existing quiet-hours and owner-mode policy SHALL retain their authority and SHALL NOT raise urgency.
+
+ID: REQ-owner-delivery-006
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md S6; bu-4c7nvp.1.8
+Scope: v1-mandatory
+
+#### Scenario: An at-desk decision is not acknowledged
+- **WHEN** an ordinary subject selects dashboard first and three minutes pass without acknowledgement
+- **THEN** one Telegram presentation at the same canonical generation becomes eligible, including after restart, and no provider send occurs earlier
+
+#### Scenario: Acknowledgement races the timer
+- **WHEN** acknowledgement wins the subject lock before the final handoff marker
+- **THEN** the timer cannot send, competing tokens become stale and the effect remains undecided
+
+#### Scenario: Activity is absent or content is sensitive
+- **WHEN** surface activity is unknown or a surface cannot safely carry the subject
+- **THEN** the selector uses only an admissible surface without inventing presence or raising urgency
+
+### Requirement: Why reads persisted evidence through an authenticated presentation
+An owner presentation SHALL expose a keyboard-accessible Why disclosure using its existing authenticated token family. The read SHALL validate owner, surface, generation and finite expiry without consuming the token or causing an effect. It SHALL render persisted selection cause, source labels, evidence age and freshness, stored urgency, canonical decision/delivery state and available hold/effect references. Missing origin, plan, budget or effect evidence SHALL be explicitly unknown; stale tokens SHALL refuse. A copied reference SHALL confer no authority. No PWA, household surface, new callback token family, deployment or automatic owner-mode activation SHALL be introduced.
+
+ID: REQ-owner-delivery-007
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md S6; bu-4c7nvp.1.8
+Scope: v1-mandatory
+
+#### Scenario: The owner opens Why
+- **WHEN** the owner opens the disclosure for a current authenticated presentation
+- **THEN** persisted typed evidence is shown without a model call, acknowledgement, decision or token consumption
+
+#### Scenario: Evidence is missing or stale
+- **WHEN** a receipt is absent, a signal has aged out or the presentation token is stale
+- **THEN** the UI reports unknown, stale or refused, without claiming healthy state or performing an action

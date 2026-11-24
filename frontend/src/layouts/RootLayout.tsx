@@ -22,6 +22,7 @@ import { useMediaQuery } from '../hooks/use-media-query'
 import { readBooleanSetting, writeBooleanSetting } from '../lib/local-settings'
 import { announce, useShellAnnouncement } from '../lib/shell-announcer'
 import { useShellScrollMemory } from '../hooks/use-shell-scroll-memory'
+import { useOwnerDeliveryFocus } from '../hooks/use-owner-delivery-focus'
 
 // Tailwind's default `xl` breakpoint (1280px) — the docked chat rail's
 // default posture threshold (bu-0ynlk.11 behavior matrix).
@@ -82,6 +83,7 @@ export default function RootLayout() {
 
 function RootLayoutInner() {
   useKeyboardShortcuts()
+  useOwnerDeliveryFocus()
 
   // `status` is threaded down into PageHeader so the shell's Live indicator
   // reflects actual socket health.

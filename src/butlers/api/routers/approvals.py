@@ -85,7 +85,7 @@ from butlers.api.models.approval import (
 from butlers.api.owner_auth.service import AuthError
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
-from butlers.core import owner_delivery
+from butlers.core import owner_delivery, owner_delivery_selection
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.mcp_liveness import LivenessClient as MCPClient
@@ -3491,6 +3491,8 @@ async def _dashboard_owner_delivery_card(pool: Any, action_id: UUID) -> OwnerDel
         generation=presentation.generation,
         approve_token=presentation.tokens["approve"],
         reject_token=presentation.tokens["reject"],
+        presentation_id=str(presentation.id) if owner_delivery_selection.live() else None,
+        ack_token=presentation.tokens.get("ack"),
     )
 
 
@@ -3600,6 +3602,24 @@ async def get_approval_detail(
                     and not getattr(http_request.state, "approval_callback_authenticated", False)
                 ):
                     detail.owner_delivery = await _dashboard_owner_delivery_card(pool, pa.id)
+                if (
+                    review_source is None
+                    and present
+                    and owner_delivery_selection.live()
+                    and not getattr(http_request.state, "approval_callback_authenticated", False)
+                ):
+                    # Resolved or acknowledged cards retain their truthful read-only receipt;
+                    # this lookup never creates a presentation or revives an action token.
+                    async with pool.acquire() as conn:
+                        receipt = await conn.fetchval(
+                            "SELECT p.id FROM public.owner_delivery_presentations p "
+                            "JOIN public.owner_delivery_subjects s ON s.id = p.subject_id "
+                            "WHERE s.kind = 'approval' AND s.source_ref = $1 "
+                            "AND s.owning_schema = current_schema() "
+                            "ORDER BY p.generation DESC, p.surface LIMIT 1",
+                            str(pa.id),
+                        )
+                    detail.owner_delivery_receipt = str(receipt) if receipt else None
                 return ApiResponse(data=detail)
         except Exception as exc:
             if calendar_expected_args is not None:

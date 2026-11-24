@@ -1116,6 +1116,7 @@ class TelegramBotConnector:
             _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
             envelope = None
             try:
+                await self._record_owner_delivery_activity(update)
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
@@ -1650,6 +1651,41 @@ class TelegramBotConnector:
 
     def _wake_owner_delivery_sweep(self) -> None:
         self._owner_delivery_sweep_wake.set()
+
+    async def _record_owner_delivery_activity(self, update: dict[str, Any]) -> None:
+        """Finite liveness from an authenticated private primary-owner inbound only.
+
+        Never copy text/room/location or interpret this signal as an acknowledgement.
+        An activity outage must not block ingest or a decision callback.
+        """
+        from butlers.perception import flags
+
+        if not flags.OWNER_DELIVERY_SELECTION_LIVE:
+            return
+        message = update.get("message") or update.get("callback_query")
+        if not isinstance(message, dict):
+            return
+        chat_message = message.get("message", message)
+        chat = chat_message.get("chat") if isinstance(chat_message, dict) else None
+        if not isinstance(chat, dict) or chat.get("type") != "private":
+            return
+        if not await self._is_primary_owner_callback(message):
+            return
+        credential = self._config.approval_callback_connector_token
+        if not credential or not self._config.internal_api_url:
+            return
+        try:
+            await self._http_client.post(
+                f"{self._config.internal_api_url.rstrip('/')}/api/owner-delivery/activity",
+                json={},
+                timeout=2,
+                headers={
+                    _APPROVAL_CALLBACK_DECISION_HEADER: _APPROVAL_CALLBACK_DECISION_ACTOR,
+                    APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: credential,
+                },
+            )
+        except Exception:
+            logger.warning("Owner-delivery activity unavailable")
 
     async def _submit_owner_delivery_action(self, token: str) -> str | None:
         """POST the token; returns the terminal card status, or ``None`` when refused."""

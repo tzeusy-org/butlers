@@ -71,6 +71,13 @@ class OwnerDeliveryHeld(Exception):
     """
 
 
+class OwnerDeliveryDeferred(Exception):
+    """M7 selected another surface; recheck at the durable deadline, without a send."""
+
+    def __init__(self, deadline: datetime | None = None) -> None:
+        self.deadline = deadline
+
+
 def mint_token() -> tuple[str, str]:
     """A fresh ``(token, verifier)``; persist only the verifier."""
     nonce = secrets.token_bytes(TOKEN_NONCE_BYTES)

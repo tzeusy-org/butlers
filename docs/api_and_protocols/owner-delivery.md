@@ -49,8 +49,9 @@ ledger, so it has to be checked at rollout.
 - API only: `redeem`, `pending_retractions`, `record_retraction` and the dashboard card.
 - Both: closing a subject (`close_for_authority`, through `transition_pending_action`). The
   daemon's approval paths call it, and so does the API, including its expiry sweep.
-- No production path: acknowledgement. The API passes only approve or reject, and
-  `/api/owner-delivery/actions` refuses an ack token as `action_unsupported`.
+- M7 acknowledgement: the dashboard offers an ack token only behind the separate
+  default-off selection flag. `/api/owner-delivery/actions` acknowledges through the
+  canonical subject transaction without approving or dispatching the pending action.
 
 In the API the schema fence is code: `_locate` and the retraction queries filter on
 `current_schema()`, the retraction report checks ownership before calling `record_retraction`,
@@ -277,7 +278,64 @@ unrecorded.
   `always_ask` term is what parked the action, so its card is not held. A mode receipt takes
   the slot when both apply.
 
-## Later-owned inputs (not active here)
+## M7 surface selection and Why (dark)
+
+`perception.flags.OWNER_DELIVERY_SELECTION_LIVE` defaults to false. The owner release permits
+scheduling source work, not activation, deployment or live delivery. It adds no PWA or household
+surface and no new callback token family. The owner-delivery rollout flag is still required.
+
+The pure selector accepts existing subject kinds, stored urgency, declared sensitivity, typed
+surface activity and posture. It never accepts a model-provided room or recipient. The approval
+worker uses it before preparing the Telegram card and rechecks under the subject lock at its
+final handoff marker. Quiet hours and owner-mode holds still apply before a push. Unknown mode
+posture retains the existing `.22` contract; M7 does not answer its pending policy decision.
+
+Fresh owner-authenticated dashboard focus selects dashboard first, including for interrupts.
+One append-only `selected` receipt per subject/generation records the selection and a deadline
+three minutes later. The worker releases its queue claim with `surface_wait` until that exact
+deadline; an ordinary subject then gets the existing Telegram presentation at the same
+generation. Reclaim, restart and replay reuse both identities. The dashboard is not falsely
+marked delivered by selection: only its actual authenticated dossier read presents it.
+Acknowledgement bumps the canonical generation and stales competing tokens. Acknowledgement
+that commits before the provider handoff marker suppresses fallback; a handoff already committed
+retains its possible delivery and honest provider receipts. It cannot be recalled by an ack.
+
+Sensitive or unclassified content stays on the authenticated dashboard. Approval sensitivity
+comes from the checked-in tool descriptor, conservatively including its categories; it is not
+a caller flag. Unknown surface liveness chooses dashboard, while verified interrupts may use
+the trusted Telegram route if content is ordinary. Initial answers retain their originating
+surface; the selector never moves an answer to a more convenient surface. Count-only legacy
+digests have no canonical subject and are held while M7 is enabled, leaving their actions in
+the dashboard queue; they cannot bypass acknowledgement or sensitivity via a digest.
+
+`POST /api/owner-delivery/activity {focused: boolean}` records only server time, a closed source
+label and finite freshness. The owner browser sends focus every 30 seconds only while visible
+and focused; freshness is 90 seconds. The primary-owner Telegram connector reports private
+owner inbound through the same narrow credential path, with ten-minute freshness. A group,
+secondary sender or unauthenticated request cannot assert owner activity. Activity is never
+acknowledgement. `public.owner_delivery_surface_evidence` permits runtime SELECT only through
+RLS; the dashboard login writes it. No location, message or provider identity is retained.
+
+The dossier's native Why disclosure posts its current existing token to
+`POST /api/owner-delivery/why {token}`. Normal owner authentication is required; the connector
+credential cannot read this route. The route checks owner, surface, expiry, digest and generation
+under the subject lock without consuming or acting. It follows the persisted presentation to
+its subject, plan, source ages, urgency, decision and holding receipt. Available schema-local
+approval effect identity/status is shown; missing origin/budget/plan evidence is explicitly
+unknown. It never runs a model, reads raw place values or treats a missing receipt as healthy.
+Stale tokens return `409 owner_delivery_refused`, and no decision fallback is attempted.
+After acknowledgement or resolution the dossier retains its receipt reference.
+`GET /api/owner-delivery/presentations/{id}/why` is an owner-authenticated history read,
+showing the original presentation as stale and the canonical outcome without reviving any
+action token. The opaque reference confers no authority and the connector credential is denied.
+The shared receipt includes every surface's persisted presentation state; the Telegram card's
+existing authenticated dashboard door reaches the same subject's disclosure.
+
+Rollback turns off the selection flag to stop activity and planning, preserving receipts and
+existing token/retraction behavior. Both migrations retain evidence on downgrade. Source
+publication is separate from runtime activation and the owner release's operational holds.
+
+## Delivery inputs
 
 `owner_delivery.delivery_inputs(conn, subject_id)` exposes the typed inputs later lanes read:
 `urgency_class` / `urgency_reason` (see [Derived urgency](#derived-urgency)), `holding_reason` (the broker's

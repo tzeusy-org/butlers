@@ -11,9 +11,10 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal, Protocol
 
-from butlers.core.owner_delivery import OwnerDeliveryHeld
+from butlers.core.owner_delivery import OwnerDeliveryDeferred, OwnerDeliveryHeld
 from butlers.core.scheduler.cancel import raise_if_task_cancelled
 from butlers.metrics_registry import get_or_create_counter
 
@@ -27,6 +28,7 @@ SAFE_REASON_CODES: frozenset[str] = frozenset(
     {
         "quiet_hours",
         "owner_mode",
+        "surface_wait",
         "owner_recipient_unavailable",
         "callback_secret_unavailable",
         "transport_unavailable",
@@ -142,6 +144,8 @@ class ApprovalDeliveryRepository(Protocol):
     async def load_render_subject(self, claim: DeliveryClaim) -> Any | None: ...
 
     async def record_prestart_retry(self, claim: DeliveryClaim, reason_code: str) -> bool: ...
+
+    async def defer_surface(self, claim: DeliveryClaim, deadline: datetime | None) -> None: ...
 
     async def mark_handoff_started(self, claim: DeliveryClaim) -> bool: ...
 
@@ -336,6 +340,9 @@ class ApprovalDeliveryWorker:
                     subject,
                     owner_recipient=owner_recipient,
                 )
+        except OwnerDeliveryDeferred as deferred:
+            await self._repository.defer_surface(claim, deferred.deadline)
+            return True
         except OwnerDeliveryHeld:
             # An owner mode holds the push. The subject keeps its urgency and the card is
             # rechecked on the next attempt.
