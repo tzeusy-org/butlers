@@ -171,7 +171,7 @@ def main() -> int:
     root = args.root.resolve()
     registry = args.registry or root / "scripts/retired_surfaces.toml"
     try:
-        text = registry.read_text(encoding="utf-8")
+        text = registry.read_bytes().decode("utf-8")
         surfaces = load_registry(text)
     except (OSError, ValueError, re.error) as exc:
         print(f"{registry}:1: invalid registry: {exc}", file=sys.stderr)
@@ -204,7 +204,7 @@ def main() -> int:
         try:
             updated = tighten(text, surfaces, counts)
             if updated != text:
-                registry.write_text(updated, encoding="utf-8")
+                registry.write_bytes(updated.encode("utf-8"))
         except (OSError, ValueError) as exc:
             print(f"{registry}:1: cannot tighten ({exc})", file=sys.stderr)
             return 1

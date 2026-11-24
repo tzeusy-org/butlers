@@ -203,3 +203,10 @@ def test_tighten_only_lowers_ceilings_and_preserves_registry_text(repo: Path) ->
     source.write_text("live\n")
     assert _run(repo, registry, "--tighten").returncode == 0
     assert tomllib.loads(registry.read_text())["surface"][0]["ceiling"] == 0
+
+    source.write_text("OLD\n")
+    registry = _deprecated(repo, ceiling=3)
+    before = registry.read_bytes().replace(b"\n", b"\r\n")
+    registry.write_bytes(before)
+    assert _run(repo, registry, "--tighten").returncode == 0
+    assert registry.read_bytes() == before.replace(b"ceiling = 3", b"ceiling = 1")
