@@ -6,6 +6,8 @@ push or delete is recorded on the row and retried, and an unchanged task sends n
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -13,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from butlers.core.scheduler.crud import schedule_create
+from butlers.core.scheduler.crud import schedule_create, schedule_delete, schedule_list
 from butlers.modules.calendar import CalendarEvent, CalendarEventCreate, CalendarProvider
 from butlers.modules.calendar.errors import CalendarRequestError
 from butlers.modules.calendar.sync import read_mirror_health
@@ -42,8 +44,10 @@ class _Provider(CalendarProvider):
     async def create_event(self, *, calendar_id, payload: CalendarEventCreate):
         if self.fail_create is not None:
             raise self.fail_create
+        event_id = payload.event_id or f"g{uuid.uuid4().hex[:24]}"
+        if event_id in self.events:
+            raise CalendarRequestError(status_code=409, message="duplicate")
         self.creates += 1
-        event_id = f"g{uuid.uuid4().hex[:24]}"
         event = CalendarEvent(
             event_id=event_id,
             title=payload.title,
@@ -117,6 +121,16 @@ async def _task(pool, *, link: str | None = None) -> uuid.UUID:
     )
 
 
+async def _age(pool, task_id, *, seconds: int = 7200) -> None:
+    """Move the last attempt into the past so the retry backoff has elapsed."""
+    await pool.execute(
+        "UPDATE scheduled_tasks SET mirror_attempted_at = now() - make_interval(secs => $2) "
+        "WHERE id = $1",
+        task_id,
+        float(seconds),
+    )
+
+
 async def _row(pool, task_id):
     return await pool.fetchrow(
         "SELECT calendar_event_id, calendar_link_id, mirror_state, mirror_error, mirror_attempts, "
@@ -159,6 +173,7 @@ async def test_a_failed_create_is_recorded_then_retried_not_erased(db_pool):
     assert health["failed"] == 1 and health["retiring"] == 0
 
     provider.fail_create = None
+    await _age(db_pool, task_id)
     await mod._push_internal_events_to_provider()
     row = await _row(db_pool, task_id)
     assert row["mirror_state"] == "mirrored"
@@ -197,6 +212,7 @@ async def test_a_failed_update_is_recorded_and_the_provider_id_kept(db_pool):
     assert row["mirror_state"] == "failed" and row["calendar_event_id"] == provider_id
 
     provider.fail_update = None
+    await _age(db_pool, task_id)
     await mod._push_internal_events_to_provider()
     assert (await _row(db_pool, task_id))["mirror_state"] == "mirrored"
 
@@ -217,7 +233,7 @@ async def test_a_missing_provider_copy_is_created_again(db_pool):
 
     row = await _row(db_pool, task_id)
     assert provider.creates == 2
-    assert row["calendar_event_id"] != gone and row["mirror_state"] == "mirrored"
+    assert row["calendar_event_id"] in provider.events and row["mirror_state"] == "mirrored"
 
 
 async def test_a_failed_delete_of_a_disabled_task_keeps_the_link_and_retries(db_pool):
@@ -237,6 +253,7 @@ async def test_a_failed_delete_of_a_disabled_task_keeps_the_link_and_retries(db_
     assert (await read_mirror_health(db_pool))["retiring"] == 1
 
     provider.fail_delete = None
+    await _age(db_pool, task_id)
     await mod._push_internal_events_to_provider()
     row = await _row(db_pool, task_id)
     assert row["calendar_event_id"] is None and row["mirror_state"] == "pending"
@@ -260,3 +277,286 @@ async def test_failing_mirrors_make_the_internal_source_report_failed(db_pool):
     assert internal and internal[0]["sync_state"] == "failed"
     assert "calendar mirror(s) failing" in internal[0]["last_error"]
     assert freshness["mirror"]["failed"] == 1
+
+
+async def _exists(pool, task_id) -> bool:
+    return await pool.fetchval("SELECT count(*) FROM scheduled_tasks WHERE id = $1", task_id) == 1
+
+
+# ---------------------------------------------------------------------------
+# Deleting a mirrored task retires it instead of stranding a provider event
+# ---------------------------------------------------------------------------
+
+
+async def test_deleting_a_mirrored_task_retires_it_then_the_mirror_purges_it(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    provider_id = (await _row(db_pool, task_id))["calendar_event_id"]
+
+    await schedule_delete(db_pool, task_id)
+
+    row = await _row(db_pool, task_id)
+    assert row["mirror_state"] == "retiring" and row["enabled"] is False
+    assert provider_id in provider.events, "the provider copy is deleted by the mirror, not here"
+    assert task_id not in [t["id"] for t in await schedule_list(db_pool)]
+
+    await mod._push_internal_events_to_provider()
+    assert provider_id not in provider.events
+    assert not await _exists(db_pool, task_id)
+
+
+async def test_a_failed_provider_delete_keeps_the_retired_row_until_it_succeeds(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    provider_id = (await _row(db_pool, task_id))["calendar_event_id"]
+    await schedule_delete(db_pool, task_id)
+
+    provider.fail_delete = RuntimeError("503")
+    await mod._push_internal_events_to_provider()
+    assert (await _row(db_pool, task_id))["mirror_state"] == "retiring"
+    assert (await read_mirror_health(db_pool))["retiring"] == 1
+
+    provider.fail_delete = CalendarRequestError(status_code=410, message="gone")
+    await _age(db_pool, task_id)
+    await mod._push_internal_events_to_provider()
+    assert not await _exists(db_pool, task_id), "410 means the copy is already gone"
+    assert provider_id in provider.events  # the double kept it; the row is purged regardless
+
+
+async def test_a_task_that_was_never_mirrored_is_deleted_outright(db_pool):
+    task_id = await _task(db_pool)
+    await schedule_delete(db_pool, task_id)
+    assert not await _exists(db_pool, task_id)
+
+
+async def test_a_retired_task_gives_its_name_back(db_pool):
+    task_id = await _task(db_pool)
+    name = await db_pool.fetchval("SELECT name FROM scheduled_tasks WHERE id = $1", task_id)
+    provider = _Provider()
+    await _module(db_pool, provider)._push_internal_events_to_provider()
+    await schedule_delete(db_pool, task_id)
+    start = datetime.now(UTC) + timedelta(days=2)
+    await schedule_create(db_pool, name, "0 9 * * *", "Again", start_at=start, timezone="UTC")
+
+
+async def test_a_deadline_with_a_mirror_is_retired_not_dropped(db_pool):
+    from butlers.core.temporal.deadlines_db import deadline_delete
+
+    task_id = await _task(db_pool)
+    await db_pool.execute(
+        "UPDATE scheduled_tasks SET task_type = 'deadline' WHERE id = $1", task_id
+    )
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    assert (await _row(db_pool, task_id))["calendar_event_id"]
+
+    await deadline_delete(db_pool, task_id)
+
+    assert (await _row(db_pool, task_id))["mirror_state"] == "retiring"
+    await mod._push_internal_events_to_provider()
+    assert not await _exists(db_pool, task_id) and provider.events == {}
+
+
+async def test_a_task_deleted_while_its_create_is_in_flight_leaves_no_ghost(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    real_create = provider.create_event
+
+    async def create_then_owner_deletes(**kw):
+        event = await real_create(**kw)
+        await schedule_delete(db_pool, task_id)  # attempted_at is stamped: retired, not purged
+        return event
+
+    provider.create_event = create_then_owner_deletes
+    await mod._push_internal_events_to_provider()
+    await mod._push_internal_events_to_provider()
+    assert not await _exists(db_pool, task_id) and provider.events == {}
+
+
+# ---------------------------------------------------------------------------
+# Idempotent creates
+# ---------------------------------------------------------------------------
+
+
+async def test_overlapping_passes_create_one_provider_event(db_pool):
+    await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+
+    await asyncio.gather(
+        mod._push_internal_events_to_provider(), mod._push_internal_events_to_provider()
+    )
+
+    assert provider.creates == 1 and len(provider.events) == 1
+
+
+async def test_the_provider_id_is_derived_from_the_task(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    await _module(db_pool, provider)._push_internal_events_to_provider()
+    assert (await _row(db_pool, task_id))["calendar_event_id"] == task_id.hex
+
+
+async def test_a_crash_after_the_create_adopts_the_event_instead_of_duplicating(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    real_done = mod._mirror_done
+
+    async def crash(*_a, **_kw):
+        raise RuntimeError("process died before the row was written")
+
+    mod._mirror_done = crash
+    await mod._push_internal_events_to_provider()
+    assert provider.creates == 1 and (await _row(db_pool, task_id))["calendar_event_id"] is None
+
+    mod._mirror_done = real_done
+    await mod._push_internal_events_to_provider()
+
+    row = await _row(db_pool, task_id)
+    assert provider.creates == 1, "the retry got a 409 and adopted the existing event"
+    assert row["calendar_event_id"] == task_id.hex and row["mirror_state"] == "mirrored"
+    assert len(provider.events) == 1
+
+
+async def test_one_row_failing_to_record_does_not_stop_the_others(db_pool):
+    first = await _task(db_pool)
+    second = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    real_done = mod._mirror_done
+    calls = 0
+
+    async def flaky(pool, task_id, *rest):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("write failed")
+        return await real_done(pool, task_id, *rest)
+
+    mod._mirror_done = flaky
+    await mod._push_internal_events_to_provider()
+
+    states = {(await _row(db_pool, t))["mirror_state"] for t in (first, second)}
+    assert states == {"pending", "mirrored"}
+
+
+# ---------------------------------------------------------------------------
+# Backoff, parking and log volume
+# ---------------------------------------------------------------------------
+
+
+async def test_a_failing_row_is_not_retried_before_its_backoff_elapses(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    provider.fail_create = RuntimeError("quota")
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    attempts_seen = (await _row(db_pool, task_id))["mirror_attempts"]
+
+    attempts = 0
+    real_create = provider.create_event
+
+    async def counting(**kw):
+        nonlocal attempts
+        attempts += 1
+        return await real_create(**kw)
+
+    provider.create_event = counting
+    await mod._push_internal_events_to_provider()
+    assert attempts == 0 and (await _row(db_pool, task_id))["mirror_attempts"] == attempts_seen
+
+    await _age(db_pool, task_id)
+    await mod._push_internal_events_to_provider()
+    assert attempts == 1  # retried once the wait had passed
+
+
+async def test_the_backoff_grows_and_is_capped(db_pool):
+    wait = _module(db_pool, _Provider())._mirror_backoff_wait
+    assert wait(1) < wait(2) < wait(3)
+    assert wait(50) == wait(40) == timedelta(hours=1)
+
+
+async def test_a_row_parks_as_failed_after_repeated_attempts_until_the_task_changes(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await db_pool.execute(
+        "UPDATE scheduled_tasks SET mirror_state = 'failed', mirror_attempts = 8, "
+        "mirror_error = 'boom', mirror_attempted_at = now() - interval '1 day', "
+        "updated_at = now() - interval '2 days' WHERE id = $1",
+        task_id,
+    )
+
+    await mod._push_internal_events_to_provider()
+    assert provider.creates == 0, "parked rows are not retried"
+    assert (await read_mirror_health(db_pool))["failed"] == 1, "but they still count as failed"
+
+    await db_pool.execute("UPDATE scheduled_tasks SET updated_at = now() WHERE id = $1", task_id)
+    await mod._push_internal_events_to_provider()
+    assert provider.creates == 1
+
+
+async def test_a_repeating_failure_warns_once_not_every_pass(db_pool, caplog):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    provider.fail_create = RuntimeError("quota")
+    mod = _module(db_pool, provider)
+    with caplog.at_level(logging.DEBUG, logger="butlers.modules.calendar"):
+        await mod._push_internal_events_to_provider()
+        for _ in range(3):
+            await _age(db_pool, task_id)
+            await mod._push_internal_events_to_provider()
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "mirror" in r.message]
+    assert len(warnings) == 1
+
+
+async def test_a_gone_provider_copy_on_a_disabled_task_counts_as_deleted(db_pool):
+    task_id = await _task(db_pool)
+    provider = _Provider()
+    mod = _module(db_pool, provider)
+    await mod._push_internal_events_to_provider()
+    await db_pool.execute("UPDATE scheduled_tasks SET enabled = false WHERE id = $1", task_id)
+    provider.fail_delete = CalendarRequestError(status_code=410, message="gone")
+
+    await mod._push_internal_events_to_provider()
+
+    row = await _row(db_pool, task_id)
+    assert row["calendar_event_id"] is None and row["mirror_state"] == "pending"
+
+
+async def test_the_dashboard_source_freshness_reports_failing_mirrors(db_pool):
+
+    from butlers.api.models.calendar_workspace import CalendarWorkspaceSourceFreshness
+    from butlers.api.routers.calendar_workspace import _with_mirror_health
+
+    await _task(db_pool)
+    provider = _Provider()
+    provider.fail_create = RuntimeError("boom")
+    await _module(db_pool, provider)._push_internal_events_to_provider()
+
+    class _Db:
+        def butlers_with_module(self, _name):
+            return ["general"]
+
+        async def fan_out_with_status(self, sql, args=(), butler_names=None):
+            return {"general": await db_pool.fetch(sql, *args)}, []
+
+    item = CalendarWorkspaceSourceFreshness(
+        source_id=uuid.uuid4(),
+        source_key="internal:sched",
+        source_kind="internal_scheduler",
+        lane="butler",
+        butler_name="general",
+        sync_state="fresh",
+    )
+    (shown,) = await _with_mirror_health(_Db(), [item], butlers=None)
+
+    assert shown.sync_state == "failed" and shown.mirror_failed == 1

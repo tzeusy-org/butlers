@@ -144,6 +144,11 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: get a cursor, so their null ``last_synced_at`` is normal, not "never
     #: synced". Mirrors the sync deadman's provider-only rule (bu-ak7fij).
     sync_applicable: bool = True
+    #: Scheduled-task calendar mirrors that could not be pushed (``failed``) or whose provider copy
+    #: could not be deleted (``retiring``), for the internal scheduler source. While either is
+    #: non-zero the source reports ``sync_state="failed"``. Additive.
+    mirror_failed: int = 0
+    mirror_retiring: int = 0
     #: Whose time this calendar's events are, and whether that was inferred or the owner's word.
     time_role: str = "unclassified"
     role_basis: Literal["provider_inferred", "owner_confirmed"] = "provider_inferred"

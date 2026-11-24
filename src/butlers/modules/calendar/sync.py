@@ -45,7 +45,9 @@ async def read_mirror_health(pool: Any) -> dict[str, Any]:
     ids or titles are returned. ``available`` is ``False`` when the state cannot be read.
     """
     try:
-        if not await pool.fetchval("SELECT to_regclass('scheduled_tasks') IS NOT NULL"):
+        if not await pool.fetchval(
+            "SELECT to_regclass(quote_ident(current_schema()) || '.scheduled_tasks') IS NOT NULL"
+        ):
             return dict(_MIRROR_UNAVAILABLE)
         row = await pool.fetchrow(
             "SELECT count(*) FILTER (WHERE mirror_state = 'failed') AS failed, "
@@ -180,7 +182,8 @@ class SyncMixin:
                 # A task event that could not reach the provider is not healthy, however fresh
                 # the local projection is.
                 sync_state = PROJECTION_STATUS_FAILED
-                last_error = last_error or (
+                # The mirror failure is the current truth; an older sync error must not mask it.
+                last_error = (
                     f"{mirror['failed'] + mirror['retiring']} calendar mirror(s) failing: "
                     f"{mirror['last_error']}"
                 )

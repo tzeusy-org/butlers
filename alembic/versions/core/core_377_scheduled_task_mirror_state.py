@@ -14,7 +14,12 @@ retried instead of erased:
 * ``mirror_state``: ``pending`` (needs a push), ``mirrored`` (provider copy matches
   ``mirror_fingerprint``), ``failed`` (the last create or update failed) or ``retiring`` (the task is
   off and the provider copy still has to be deleted).
-* ``mirror_error``, ``mirror_attempts`` and ``mirror_attempted_at`` describe the last failure.
+* ``mirror_error``, ``mirror_attempts`` and ``mirror_attempted_at`` describe the last failure
+  (``mirror_attempted_at`` is also stamped just before a create, so a row that may own a provider
+  event is never hard-deleted).
+* ``delete_requested_at``: the owner deleted the task while it had, or may have had, a provider
+  copy. The row is kept disabled in ``retiring`` until the mirror has deleted that copy, then
+  purged, so a delete never leaves a ghost event.
 
 A ``calendar_event_id`` shaped like a UUID cannot be a Google id (ids are base32hex, no dashes),
 so those values are moved into ``calendar_link_id`` and the provider id is cleared, which lets the
@@ -36,6 +41,9 @@ down_revision = "core_374"
 branch_labels = None
 depends_on = None
 
+# Qualified by the schema this chain run targets, so another schema's table never answers.
+_TABLE_NAME = "quote_ident(current_schema()) || '.scheduled_tasks'"
+_TABLE_EXISTS = f"SELECT to_regclass({_TABLE_NAME}) IS NOT NULL"
 _STATE_CHECK = "scheduled_tasks_mirror_state_check"
 _LINK_INDEX = "ix_scheduled_tasks_calendar_link_id"
 _UUID_SHAPE = "'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'"
@@ -43,7 +51,9 @@ _UUID_SHAPE = "'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
 
 def upgrade() -> None:
     bind = op.get_bind()
-    if not bind.execute(text("SELECT to_regclass('scheduled_tasks') IS NOT NULL")).scalar_one():
+    if not bind.execute(
+        text("SELECT to_regclass(quote_ident(current_schema()) || '.scheduled_tasks') IS NOT NULL")
+    ).scalar_one():
         return
     op.execute(
         "ALTER TABLE scheduled_tasks "
@@ -52,12 +62,13 @@ def upgrade() -> None:
         "ADD COLUMN IF NOT EXISTS mirror_error TEXT, "
         "ADD COLUMN IF NOT EXISTS mirror_attempts INTEGER NOT NULL DEFAULT 0, "
         "ADD COLUMN IF NOT EXISTS mirror_attempted_at TIMESTAMPTZ, "
-        "ADD COLUMN IF NOT EXISTS mirror_fingerprint TEXT"
+        "ADD COLUMN IF NOT EXISTS mirror_fingerprint TEXT, "
+        "ADD COLUMN IF NOT EXISTS delete_requested_at TIMESTAMPTZ"
     )
     has_check = bind.execute(
         text(
             "SELECT EXISTS (SELECT 1 FROM pg_constraint "
-            "WHERE conrelid = to_regclass('scheduled_tasks') AND conname = :name)"
+            f"WHERE conrelid = to_regclass({_TABLE_NAME}) AND conname = :name)"
         ),
         {"name": _STATE_CHECK},
     ).scalar_one()

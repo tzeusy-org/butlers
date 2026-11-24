@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -170,6 +171,9 @@ from .time_helpers import _recurrence_lines_append_exdate as _recurrence_lines_a
 from .time_helpers import _recurrence_lines_bound_until as _recurrence_lines_bound_until
 from .time_helpers import _rrule_occurrences_in_window as _rrule_occurrences_in_window
 from .tools import register_proposal_tools, register_read_tools, register_sync_tools
+
+#: Least time between provider calendar-list re-reads triggered by an unknown shared default.
+_CALENDAR_REDISCOVERY_MIN_INTERVAL_S = 300.0
 
 
 class CalendarModule(
@@ -952,19 +956,42 @@ class CalendarModule(
         store = self._credential_store
         if store is None:
             return
+        # Snapshot first: a ``calendar_set_primary`` that finishes while this read is in flight
+        # must not be overwritten by the older value the read returned.
+        snapshot = self._default_target_calendar_id
         try:
             stored = await store.load_shared(_CREDENTIAL_KEY_DEFAULT_TARGET_CALENDAR_ID)
         except Exception as exc:
             logger.warning("CalendarModule: failed to re-read default-target calendar: %s", exc)
             return
-        if not stored or not isinstance(stored, str) or stored == self._default_target_calendar_id:
+        if not stored or not isinstance(stored, str) or stored == snapshot:
             return
         if self._all_provider_calendar_ids and stored not in self._all_provider_calendar_ids:
-            logger.warning(
-                "CalendarModule: shared default-target %s is not a known calendar", stored
-            )
-            return
+            # Another butler may have been told about a calendar this process has not seen yet:
+            # re-read the provider's list (at most every few minutes) before refusing the id.
+            await self._rediscover_calendars_for(stored)
+            if stored not in self._all_provider_calendar_ids:
+                logger.warning(
+                    "CalendarModule: shared default-target %s is not a known calendar", stored
+                )
+                return
+        if self._default_target_calendar_id != snapshot:
+            return  # changed while we were reading; the newer value wins
         self._default_target_calendar_id = stored
+
+    async def _rediscover_calendars_for(self, calendar_id: str) -> None:
+        now = time.monotonic()
+        last = getattr(self, "_last_calendar_rediscovery", None)
+        if last is not None and now - last < _CALENDAR_REDISCOVERY_MIN_INTERVAL_S:
+            return
+        self._last_calendar_rediscovery = now
+        try:
+            discovered = await self._discover_and_register_all_calendars()
+        except Exception as exc:
+            logger.warning("CalendarModule: calendar re-discovery failed: %s", exc)
+            return
+        if discovered:
+            self._all_provider_calendar_ids = discovered
 
     def _require_config(self) -> CalendarConfig:
         if self._config is None:

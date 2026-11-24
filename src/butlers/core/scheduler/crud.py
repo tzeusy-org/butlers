@@ -12,6 +12,7 @@ from croniter import croniter
 
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.owner_creation import owner_creation_transaction
+from butlers.core.scheduler.retire import delete_or_retire_scheduled_task
 from butlers.core.scheduler.rows import (
     _DEFAULT_COMPLEXITY,
     _DISPATCH_MODE_PROMPT,
@@ -148,6 +149,7 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
                next_run_at, last_run_at, last_result,
                created_at, updated_at
         FROM scheduled_tasks
+        WHERE delete_requested_at IS NULL
         ORDER BY name
         """
     )
@@ -369,11 +371,13 @@ async def schedule_delete(pool: asyncpg.Pool, task_id: uuid.UUID) -> None:
     Raises:
         ValueError: If the task is ``source='toml'`` or if ``task_id`` is not found.
     """
-    row = await pool.fetchrow("SELECT source FROM scheduled_tasks WHERE id = $1", task_id)
+    row = await pool.fetchrow(
+        "SELECT source FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NULL", task_id
+    )
     if row is None:
         raise ValueError(f"Task {task_id} not found")
     if row["source"] == "toml":
         raise ValueError(f"Cannot delete TOML-sourced task {task_id}; disable it instead")
 
-    await pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
-    logger.info("Deleted runtime schedule: %s", task_id)
+    retired = await delete_or_retire_scheduled_task(pool, task_id)
+    logger.info("%s runtime schedule: %s", "Retired" if retired else "Deleted", task_id)

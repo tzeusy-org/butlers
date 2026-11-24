@@ -109,6 +109,7 @@ from butlers.api.read_models.calendar_workspace import (
     query_calendar_workspace,
     query_calendar_workspace_entry,
     query_household_time,
+    query_scheduler_mirror_counts,
     scan_calendar_overlays,
     scan_calendar_proposals,
     shallow_asdict,
@@ -390,6 +391,36 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         time_role=row.get("time_role") or "unclassified",
         role_basis=row.get("role_basis") or "provider_inferred",
     )
+
+
+async def _with_mirror_health(
+    db: DatabaseManager,
+    freshness: list[CalendarWorkspaceSourceFreshness],
+    *,
+    butlers: list[str] | None,
+) -> list[CalendarWorkspaceSourceFreshness]:
+    """Mark a butler's internal scheduler source failed while its calendar mirrors are failing."""
+    if not any(item.source_kind == "internal_scheduler" for item in freshness):
+        return freshness
+    counts = await query_scheduler_mirror_counts(db, butlers=butlers)
+    result: list[CalendarWorkspaceSourceFreshness] = []
+    for item in freshness:
+        failed, retiring = counts.get(item.butler_name or "", (0, 0))
+        if item.source_kind != "internal_scheduler" or not (failed or retiring):
+            result.append(item)
+            continue
+        result.append(
+            item.model_copy(
+                update={
+                    "mirror_failed": failed,
+                    "mirror_retiring": retiring,
+                    "sync_state": "failed",
+                    "last_error": f"{failed + retiring} calendar mirror(s) failing",
+                    "error_kind": "transient",
+                }
+            )
+        )
+    return result
 
 
 def _calendar_source_owner_rank(
@@ -1397,6 +1428,7 @@ async def get_workspace(
         core_calendar_butlers=_calendar_core_enabled_butlers(),
     )
     source_freshness = [_to_source_freshness(row) for row in deduped_source_rows]
+    source_freshness = await _with_mirror_health(db, source_freshness, butlers=butlers)
     # Keep each entry paired with its source row so the keyset cursor can be
     # derived from the raw (un-tz-converted) ``instance_starts_at`` + id.
     pairs: list[tuple[dict[str, Any], UnifiedCalendarEntry]] = []

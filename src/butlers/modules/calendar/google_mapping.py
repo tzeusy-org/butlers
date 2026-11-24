@@ -390,6 +390,8 @@ def _attendee_info_list_to_google(attendees: list[AttendeeInfo]) -> list[dict[st
 def _build_google_event_body(payload: CalendarEventCreate) -> dict[str, Any]:
     """Translate a CalendarEventCreate payload into a Google Calendar API event body."""
     body: dict[str, Any] = {}
+    if payload.event_id:
+        body["id"] = payload.event_id
 
     # Title / summary
     body["summary"] = payload.title

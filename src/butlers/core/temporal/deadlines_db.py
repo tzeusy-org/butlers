@@ -26,6 +26,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.scheduler.retire import delete_or_retire_scheduled_task
+
 logger = logging.getLogger(__name__)
 
 
@@ -248,7 +250,8 @@ async def deadline_update(
             raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
-        "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
+        "SELECT id, task_type, source FROM scheduled_tasks "
+        "WHERE id = $1 AND delete_requested_at IS NULL",
         task_id,
     )
     if existing is None:
@@ -365,6 +368,7 @@ async def deadline_list(
                    next_run_at, last_run_at, created_at, updated_at, job_args
             FROM scheduled_tasks
             WHERE task_type = 'deadline'
+              AND delete_requested_at IS NULL
               AND deadline_status = $1
             ORDER BY target_date ASC NULLS LAST, name ASC
             """,
@@ -379,6 +383,7 @@ async def deadline_list(
                    next_run_at, last_run_at, created_at, updated_at, job_args
             FROM scheduled_tasks
             WHERE task_type = 'deadline'
+              AND delete_requested_at IS NULL
             ORDER BY target_date ASC NULLS LAST, name ASC
             """
         )
@@ -407,7 +412,8 @@ async def deadline_delete(
             raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
-        "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
+        "SELECT id, task_type, source FROM scheduled_tasks "
+        "WHERE id = $1 AND delete_requested_at IS NULL",
         task_id,
     )
     if existing is None:
@@ -419,8 +425,8 @@ async def deadline_delete(
             f"Deadline {task_id} is TOML-sourced and cannot be deleted via MCP. "
             "Remove it from butler.toml instead."
         )
-    await pool.execute("DELETE FROM scheduled_tasks WHERE id = $1", task_id)
-    logger.info("Deleted deadline task: %s", task_id)
+    retired = await delete_or_retire_scheduled_task(pool, task_id)
+    logger.info("%s deadline task: %s", "Retired" if retired else "Deleted", task_id)
 
 
 async def get_deadline_by_id(

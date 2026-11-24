@@ -125,6 +125,7 @@ def test_two_schemas_each_get_the_columns_and_a_rerun_changes_nothing(postgres_c
             "mirror_attempts",
             "mirror_attempted_at",
             "mirror_fingerprint",
+            "delete_requested_at",
         } <= columns, schema
     assert _run(db_url, "travel", "SELECT calendar_link_id FROM scheduled_tasks") == [(local,)]
     command.downgrade(

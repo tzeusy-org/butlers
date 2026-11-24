@@ -1453,6 +1453,10 @@ export interface CalendarWorkspaceSourceFreshness {
    * cursor, so their null `last_synced_at` is normal, not "never synced".
    */
   sync_applicable: boolean;
+  /** Scheduled-task calendar mirrors that failed to push (internal scheduler source only). */
+  mirror_failed?: number;
+  /** Scheduled-task mirrors whose provider copy could not be deleted yet. */
+  mirror_retiring?: number;
   /** Whose time this calendar's events are; `unclassified` until inferred or the owner says. */
   time_role?: CalendarSourceRole;
   /** `owner_confirmed` once the owner set it; discovery never overwrites that. */

@@ -338,9 +338,14 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   `calendar_event_id`. `calendar_event_id` is only ever the id Google returned; a butler-authored
   task's stable handle lives in `calendar_link_id` (core_377). Each mirrored task records
   `mirror_state` (`pending`, `mirrored`, `failed`, `retiring`), its last error and attempt count: a
-  failed push or delete keeps the provider id and is retried every sync, an unchanged task sends
-  nothing, and calendar sync health reports the failing counts and marks the internal scheduler
-  source failed.
+  failed push or delete keeps the provider id and is retried with a capped exponential backoff (a
+  create row parks after 8 attempts until the task changes), an unchanged task sends nothing, and
+  calendar sync health and the dashboard source freshness report the failing counts and mark the
+  internal scheduler source failed. Creates are idempotent: the provider id derives from the task
+  id, one pass runs at a time per module and a 409 adopts the existing event. Deleting a task that
+  has, or may have, a provider copy (`schedule_delete`, `deadline_delete`,
+  `calendar_delete_butler_event`) retires it (`delete_requested_at`, hidden, `retiring`) until the
+  mirror has deleted the copy, then purges the row.
 - `calendar_set_primary` writes the fleet-shared default-target key first (an error, with nothing
   changed, if it cannot) and every calendar butler re-reads that key when it resolves a tool call,
   so one change applies to all without a restart.

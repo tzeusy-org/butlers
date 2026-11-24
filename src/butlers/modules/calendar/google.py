@@ -669,8 +669,8 @@ class _GoogleProvider(CalendarProvider):
     ) -> None:
         """Delete a Google Calendar event.
 
-        Sends a DELETE request to the Google Calendar API.  A 404 response is
-        treated as success (the event was already deleted).  For events with
+        Sends a DELETE request to the Google Calendar API.  A 404 or 410 response
+        is treated as success (the event was already deleted).  For events with
         attendees, pass ``send_updates="all"`` to send cancellation
         notifications. ``"none"`` explicitly suppresses notifications; ``None``
         omits the provider flag and is not evidence of silence.
@@ -701,8 +701,9 @@ class _GoogleProvider(CalendarProvider):
             extra_headers={"If-Match": etag} if etag is not None else None,
         )
 
-        # 404 means the event was already deleted — treat as success.
-        if response.status_code == 404:
+        # 404 means the event was never there and 410 that it was already deleted: both leave
+        # nothing to delete, so treat them as success.
+        if response.status_code in (404, 410):
             logger.debug(
                 "delete_event: event '%s' not found (already deleted); treating as success",
                 normalized_event_id,

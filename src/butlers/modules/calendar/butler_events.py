@@ -71,7 +71,8 @@ class ButlerEventsMixin:
         for column in ("calendar_link_id", "calendar_event_id"):
             if column in columns:
                 row = await pool.fetchrow(
-                    f"SELECT id FROM scheduled_tasks WHERE {column} = $1 LIMIT 1",
+                    f"SELECT id FROM scheduled_tasks WHERE {column} = $1 "
+                    "AND delete_requested_at IS NULL LIMIT 1",
                     event_id,
                 )
                 if row is not None:
@@ -82,7 +83,7 @@ class ButlerEventsMixin:
         except ValueError:
             return None
         row = await pool.fetchrow(
-            "SELECT id FROM scheduled_tasks WHERE id = $1 LIMIT 1",
+            "SELECT id FROM scheduled_tasks WHERE id = $1 AND delete_requested_at IS NULL LIMIT 1",
             event_uuid,
         )
         if row is None:

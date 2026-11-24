@@ -1639,6 +1639,41 @@ class TestCalendarIdRoleSeparation:
         await peer._refresh_default_target_calendar_id()
         assert peer._default_target_calendar_id is None
 
+    async def test_an_unknown_shared_default_is_adopted_after_a_calendar_list_reread(self):
+        store = AsyncMock()
+        store.load_shared.return_value = "new@example.com"
+        peer, _ = await self._peer(store)
+        peer._discover_and_register_all_calendars = AsyncMock(
+            return_value=["owner@example.com", "other@example.com", "new@example.com"]
+        )
+        await peer._refresh_default_target_calendar_id()
+        assert peer._default_target_calendar_id == "new@example.com"
+
+    async def test_an_unknown_shared_default_rereads_the_calendar_list_at_most_every_few_minutes(
+        self,
+    ):
+        store = AsyncMock()
+        store.load_shared.return_value = "stranger@example.com"
+        peer, _ = await self._peer(store)
+        peer._discover_and_register_all_calendars = AsyncMock(return_value=["owner@example.com"])
+        await peer._refresh_default_target_calendar_id()
+        await peer._refresh_default_target_calendar_id()
+        assert peer._discover_and_register_all_calendars.await_count == 1
+        assert peer._default_target_calendar_id is None
+
+    async def test_a_set_primary_finishing_during_a_refresh_is_not_overwritten(self):
+        store = AsyncMock()
+        peer, _ = await self._peer(store)
+
+        async def stale_read(_key):
+            # A set_primary on this butler lands while the (older) shared value is in flight.
+            peer._default_target_calendar_id = "other@example.com"
+            return "owner@example.com"
+
+        store.load_shared.side_effect = stale_read
+        await peer._refresh_default_target_calendar_id()
+        assert peer._default_target_calendar_id == "other@example.com"
+
     async def test_a_failed_shared_read_keeps_the_last_known_default(self):
         store = AsyncMock()
         store.load_shared.side_effect = RuntimeError("store down")
