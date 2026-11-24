@@ -891,14 +891,54 @@ async def test_catalog_capabilities_outside_vocabulary_422(app, audit_append_spy
     audit_append_spy.assert_not_awaited()
 
 
-async def test_model_failures_404_on_missing_entry(app):
-    """GET /api/settings/models/{id}/failures returns 404 when catalog entry absent."""
-    _, mock_pool = _app_with_pool(app, fetchval_result=None)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/settings/models/{uuid.uuid4()}/failures")
-    assert resp.status_code == 404
+@pytest.fixture
+async def model_failure_tail(api_db: ApiDatabase) -> tuple[uuid.UUID, datetime, uuid.UUID]:
+    entry_id, unrelated_id, session_id = (uuid.uuid4() for _ in range(3))
+    db_now = await api_db.pool.fetchval("SELECT now()")
+    assert isinstance(db_now, datetime)
+    cutoff = db_now - timedelta(hours=1)
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_catalog (id, alias, runtime_type, model_id, complexity_tier)
+        VALUES ($1, $2, 'codex', 'synthetic-failure-tail-model', 'workhorse')
+        """,
+        [(entry_id, "failure-tail-target"), (unrelated_id, "failure-tail-unrelated")],
+    )
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.dispatch_failures
+            (catalog_entry_id, ts, error_code, error_message, butler, session_id)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        [
+            (entry_id, db_now - timedelta(hours=26), "Expired", None, "general", None),
+            (entry_id, cutoff, "ConnectionError", "Synthetic disconnect", "finance", None),
+            (
+                entry_id,
+                cutoff + timedelta(minutes=30),
+                "TimeoutError",
+                "Synthetic timeout",
+                "general",
+                session_id,
+            ),
+            (unrelated_id, db_now - timedelta(minutes=15), "OtherCatalog", None, "finance", None),
+            (entry_id, db_now - timedelta(hours=8), "Earlier", None, "general", None),
+        ],
+    )
+    return entry_id, cutoff, session_id
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.usefixtures("model_failure_tail")
+async def test_model_failures_404_on_missing_entry(api: httpx.AsyncClient) -> None:
+    """Other stored catalog entries do not satisfy a missing entry lookup."""
+    entry_id = uuid.uuid4()
+
+    response = await api.get(f"/api/settings/models/{entry_id}/failures")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == f"Catalog entry not found: {entry_id}"
 
 
 async def test_model_failures_empty_on_missing_table(app):
@@ -921,54 +961,73 @@ async def test_model_failures_empty_on_missing_table(app):
     assert resp.json()["data"] == []
 
 
-async def test_model_failures_422_on_bad_since(app):
-    """GET /api/settings/models/{id}/failures returns 422 on unrecognised 'since' value."""
-    entry_id = uuid.uuid4()
-    _, mock_pool = _app_with_pool(app, fetchval_result=entry_id)
-    mock_pool.fetchval = AsyncMock(return_value=entry_id)
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_model_failures_422_on_bad_since(
+    api: httpx.AsyncClient, model_failure_tail: tuple[uuid.UUID, datetime, uuid.UUID]
+) -> None:
+    """A stored catalog entry still rejects a malformed time window."""
+    entry_id, _, _ = model_failure_tail
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=badvalue")
-    assert resp.status_code == 422
+    response = await api.get(
+        f"/api/settings/models/{entry_id}/failures", params={"since": "badvalue"}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"].startswith("Invalid 'since' value 'badvalue'.")
 
 
-async def test_model_failures_returns_real_rows(app):
-    """GET /api/settings/models/{id}/failures returns real rows from dispatch_failures."""
-    from datetime import UTC, datetime
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_model_failures_returns_real_rows(
+    api: httpx.AsyncClient, model_failure_tail: tuple[uuid.UUID, datetime, uuid.UUID]
+) -> None:
+    """Check catalog selection, both time windows, descending order and the full count."""
+    entry_id, cutoff, session_id = model_failure_tail
+    route = f"/api/settings/models/{entry_id}/failures"
+    params = {"since": cutoff.isoformat(), "limit": "10"}
 
-    entry_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-    failure_ts = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)
+    response = await api.get(route, params=params)
 
-    failure_row = {
-        "ts": failure_ts,
-        "error_code": "TimeoutError",
-        "error_message": "Session timed out after 30s",
-        "butler": "general",
-        "session_id": session_id,
+    assert response.status_code == 200
+    body = response.json()
+    rows = [{**row, "ts": datetime.fromisoformat(row["ts"])} for row in body["data"]]
+    assert rows == [
+        {
+            "ts": cutoff + timedelta(minutes=30),
+            "error_code": "TimeoutError",
+            "error_message": "Synthetic timeout",
+            "butler": "general",
+            "session_id": str(session_id),
+        },
+        {
+            "ts": cutoff,
+            "error_code": "ConnectionError",
+            "error_message": "Synthetic disconnect",
+            "butler": "finance",
+            "session_id": None,
+        },
+    ]
+    assert body["meta"] == {"total": 2, "offset": 0, "limit": 10, "has_more": False}
+
+    limited = await api.get(route, params={**params, "limit": "1"})
+
+    assert limited.status_code == 200
+    assert limited.json() == {
+        "data": body["data"][:1],
+        "meta": {"total": 2, "offset": 0, "limit": 1, "has_more": True},
     }
 
-    _, mock_pool = _app_with_pool(app)
-    # fetchval: first call → entry exists (entry_id), second call → since_ts, third → total count
-    mock_pool.fetchval = AsyncMock(side_effect=[entry_id, failure_ts, 1])
-    mock_pool.fetch = AsyncMock(return_value=[_mock_record(failure_row)])
+    default_window = await api.get(route)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/settings/models/{entry_id}/failures?since=24h&limit=10")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["meta"]["total"] == 1
-    rows = body["data"]
-    assert len(rows) == 1
-    assert rows[0]["error_code"] == "TimeoutError"
-    assert rows[0]["error_message"] == "Session timed out after 30s"
-    assert rows[0]["butler"] == "general"
-    assert rows[0]["session_id"] == str(session_id)
+    assert default_window.status_code == 200
+    default_body = default_window.json()
+    assert [row["error_code"] for row in default_body["data"]] == [
+        "TimeoutError",
+        "ConnectionError",
+        "Earlier",
+    ]
+    assert default_body["meta"] == {"total": 3, "offset": 0, "limit": 50, "has_more": False}
 
 
 # ---------------------------------------------------------------------------
