@@ -800,6 +800,31 @@ async def test_suppression_does_not_hide_that_more_pages_remain(app):
     assert body["next_cursor"]
 
 
+async def test_a_page_that_dedup_shrinks_still_reports_the_rows_behind_it(app):
+    first = _paged_event_row(idx=0)
+    twin = _paged_event_row(idx=0)  # a cross-calendar copy: same title and start, other origin
+    twin["instance_starts_at"] = first["instance_starts_at"]
+    rows = [first, twin, _paged_event_row(idx=1), _paged_event_row(idx=2)]
+    app, _ = _build_paginating_app(app, rows=rows)
+
+    seen: list[str] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        cursor = None
+        for _ in range(5):
+            params = {**_PAGE_PARAMS, "limit": 2}
+            if cursor:
+                params["cursor"] = cursor
+            body = (await client.get("/api/calendar/workspace", params=params)).json()["data"]
+            seen += [e["title"] for e in body["entries"]]
+            if not body["has_more"]:
+                break
+            cursor = body["next_cursor"]
+
+    assert "Event 1" in seen and "Event 2" in seen, seen
+
+
 async def test_workspace_window_selects_events_by_interval_overlap(app):
     app, mock_db = _build_paginating_app(app, rows=[])
 

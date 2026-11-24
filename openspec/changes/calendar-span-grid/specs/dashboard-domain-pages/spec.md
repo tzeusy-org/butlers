@@ -9,8 +9,8 @@ Scope: v1-mandatory
 The calendar workspace read SHALL NOT drop events silently. A title that repeats more than 20 times
 on one display-timezone day on a page SHALL be left out of `entries` and returned in
 `suppressed_groups` with its title, day, count and entries. `has_more` and `next_cursor` SHALL be
-derived from the fetched page before suppression, so a page that loses rows to suppression still
-reports the rows behind it. The page SHALL show each suppressed group as a counted chip that expands
+derived from the raw page, before cross-source dedup, the drop of rows with unusable timestamps and
+suppression, so a page that loses rows to any of them still reports the rows behind it. The page SHALL show each suppressed group as a counted chip that expands
 to its entries, and SHALL say so when the fetch ended at its page cap with `has_more` still true,
 rather than present the window as complete.
 
@@ -18,7 +18,12 @@ rather than present the window as complete.
 
 - **WHEN** 25 events titled "Standup" fall on one day
 - **THEN** `entries` omits them and `suppressed_groups` holds one group with count 25 and those entries
-- **AND** the page shows "25 hidden: Standup x25" that expands to the 25 entries
+- **AND** the page shows "25 hidden: Standup on Tue 24 Nov" that expands to the 25 entries
+
+#### Scenario: Dedup does not end pagination
+
+- **WHEN** a full page of raw rows collapses below the page size through cross-source dedup
+- **THEN** `has_more` is true and `next_cursor` is set, and the next page continues from the last raw row
 
 #### Scenario: Suppression does not end pagination
 

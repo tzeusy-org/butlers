@@ -25,7 +25,12 @@ export function SuppressedGroups({ groups, truncated, onOpenDetail }: Suppressed
       {groups.map((group) => (
         <details key={`${group.day}|${group.title}`} data-testid="calendar-suppressed-group">
           <summary className="cursor-pointer text-fg">
-            {group.count} hidden: {group.title} x{group.count} on {group.day}
+            {group.count} hidden: {group.title} on{" "}
+            {group.entries[0] ? (
+              <Time value={group.entries[0].start_at} mode="absolute" precision="short-date" />
+            ) : (
+              group.day
+            )}
           </summary>
           <ul className="mt-1 flex flex-col gap-0.5 pl-4">
             {group.entries.map((entry) => (

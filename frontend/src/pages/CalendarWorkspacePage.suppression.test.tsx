@@ -68,7 +68,9 @@ describe("CalendarWorkspacePage suppression disclosure", () => {
     renderPage("/calendar?view=user&range=week&anchor=2026-03-01");
 
     const group = container.querySelector('[data-testid="calendar-suppressed-group"]');
-    expect(group?.textContent).toContain("3 hidden: Standup x3 on 2026-03-01");
+    expect(group?.textContent).toContain("3 hidden: Standup on");
+    expect(group?.textContent).toContain("Mar");
+    expect(group?.textContent).not.toContain("x3");
     expect(group?.querySelectorAll("li").length).toBe(3);
     expect(container.querySelector('[data-testid="calendar-truncated"]')).toBeNull();
   });
