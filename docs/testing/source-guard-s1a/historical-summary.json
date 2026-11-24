@@ -1,0 +1,73 @@
+{
+  "acceptance": "OPEN: reconstruction is not the missing historical prototype",
+  "adopted": {
+    "full": {
+      "cases": 500,
+      "lines": 8283
+    },
+    "in_scope": {
+      "cases": 326,
+      "lines": 5899
+    }
+  },
+  "buckets": {
+    "IN": {
+      "cases": 336,
+      "lines": 6120
+    },
+    "OUT CI (bu-29wkwj.3/.8)": {
+      "cases": 9,
+      "lines": 186
+    },
+    "OUT deployment (bu-dss7he.6/.14, bu-viat6h.4)": {
+      "cases": 81,
+      "lines": 1472
+    },
+    "OUT migrations (bu-dss7he.11)": {
+      "cases": 80,
+      "lines": 643
+    },
+    "OUT stand-in parity (bu-rvgzmf.1)": {
+      "cases": 1,
+      "lines": 36
+    }
+  },
+  "difference_from_adopted": {
+    "full": {
+      "cases": 7,
+      "lines": 174
+    },
+    "in_scope": {
+      "cases": 10,
+      "lines": 221
+    }
+  },
+  "full": {
+    "cases": 507,
+    "lines": 8457
+  },
+  "in_scope": {
+    "cases": 336,
+    "lines": 6120
+  },
+  "kinds": {
+    "AST/source": {
+      "cases": 146,
+      "lines": 2654
+    },
+    "config": {
+      "cases": 108,
+      "lines": 1966
+    },
+    "doc": {
+      "cases": 104,
+      "lines": 1899
+    },
+    "source-text": {
+      "cases": 149,
+      "lines": 1938
+    }
+  },
+  "method": "section-7-reconstruction-v1",
+  "unit": "static test definitions (not collected parameter cases)"
+}

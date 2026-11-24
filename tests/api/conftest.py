@@ -29,6 +29,12 @@ from butlers.api.deps import (
 from butlers.api.routers import oauth as oauth_router
 from butlers.api.routers.butlers import _get_roster_dir
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.api.http_fixtures import (  # noqa: F401 - pytest fixture exports
+    _api_lease,
+    api,
+    api_db,
+    production_api_app,
+)
 
 # ---------------------------------------------------------------------------
 # Notification row factory
