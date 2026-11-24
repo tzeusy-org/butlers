@@ -80,6 +80,17 @@ Every create/update operation runs through the conflict engine before writing:
 - **`fail`**: Rejects the operation with an error listing conflicting events.
 - **`allow_overlap`**: Proceeds with the write. When the approvals module is co-loaded, an overlap approval may be enqueued for high-impact operations.
 
+The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-046).
+The target calendar goes through the provider's free/busy. Every other owner calendar (sources
+with role `owner` or `butler`, plus the primary even before it has a source row) is read from the
+stored projection, with cancelled, free, owner-declined and quarantined-invitation rows excluded, so an outsider's
+invite cannot veto a write; an updated event is excluded by its event id. Another person's shared
+calendar is never consulted, and a source switched off in the sources toggle is left out; the result then carries `conflict_check: "partial"` and `skipped_calendars`, and a no-park replan move is declined. If an owner calendar has no successful sync within twice the configured poll
+interval (10 minutes at the 5 minute default, as the sync deadman computes it), or any read fails, the write is refused with "Couldn't
+read your calendars to check for overlaps. Try again, or allow overlap to write anyway." (a replan
+move is declined as `conflict_check_unavailable`). Under the `allow_overlap` policy an unavailable
+check does not block the owner's write and claims no conflict.
+
 ### Day sheet push
 
 The dashboard-api process also runs a supervised `day_sheet_push` loop
@@ -147,11 +158,86 @@ holidays and birthdays sit beside the owner's own. Each `calendar_sources` row t
   prep, working location and the default free-slot search.
 - An `owner_confirmed` role is never overwritten by discovery.
 
+## Organizer verdict
+
+Every provider event carries one trust verdict for its organizer, stamped into the event's
+`metadata` as `organizer_verdict`, `lure_badges` and `verdict_version`
+(REQ-module-calendar-039/040). The verdict is `owner`, `known_entity`, `known_domain`,
+`vouched`, `first_contact`, `blocked` or `unknown`. `organizer_verdict()` in
+`src/butlers/modules/calendar/organizer_verdict.py` is pure: it takes server-verified provider
+fields and the results of two owner-owned lookups, and has no parameter for a title, description,
+location or any other free text, so third-party text can never raise an invitation's trust.
+
+- **Inputs.** The projection runs under the hosting butler's role, which cannot read the identity
+  tables or Switchboard's ingestion rules, so it calls two read-only SECURITY DEFINER functions
+  from core_370: `public.organizer_identity_class(email)` (one exact address in, a class out, no
+  names or ids) and `public.organizer_policy_rules()` (the enabled global and Google Calendar
+  connector rules, evaluated with the connector's own first-match engine).
+- **Failure never admits.** An unreadable lookup stamps `unknown` with `lookup_failed: true`, which
+  quarantines like `first_contact`; the sweep re-selects those rows (still bounded, after unstamped
+  and stale ones) so they are evaluated again once the store reads. Only the owner's own address
+  needs no lookup. The policy definer returns only the matchable rule types and columns.
+- **Stamping.** The projection stamps each provider event as it writes it. A bounded sweep
+  (`SWEEP_BATCH` events per sync pass) stamps rows with no stamp or an older `verdict_version`, so
+  events projected before the verdict existed are covered without a backfill migration.
+- **Quarantine.** `first_contact`, `blocked`, `unknown` and unstamped `needsAction` invitations are
+  quarantined (REQ-module-calendar-041): no time held, no load or conflict, no prep, card or
+  debrief, and no title or description in a prompt. The owner's own accept or decline always wins.
+  One predicate gates every reader: `is_quarantined_invitation` (Python) is folded into
+  `is_owner_attending` and `asserts_owner_time`, so the radar, day load, day sheet, prep, meeting
+  card, debrief, household context, context producers, working location and the relationship
+  interaction sync all skip a quarantined invitation, including one on the owner's own calendar.
+  Readers that filter in SQL before a `LIMIT` (the Chronicler calendar adapter) use the twin
+  `QUARANTINED_INVITATION_SQL`; a parity test runs both on a real Postgres, and a contract test
+  fails when a SQL statement reading `calendar_events` carries neither the predicate nor an inline
+  `-- quarantine-exempt: <reason>` comment. The provider-direct tools `calendar_list_events` and
+  `calendar_get_event` read the provider, so each event is checked against the verdict stamped on
+  its stored row (one batched lookup, the series row for a recurring instance): a quarantined,
+  unstamped or unreadable-stamp invitation comes back as a stub with its time, `organizer_verdict`
+  and the fixed title `[quarantined invitation]`, never its description, attendees or location. `GET /api/calendar/workspace/invitations` returns a separate `quarantined` list with
+  time, verdict and lure badges only, and reports `issues_available = false` when a row has no
+  verdict. Provider free/busy (`calendar_find_free_slots`) is the provider's own answer and is not
+  affected.
+- **Vouch and Block.** `POST /api/calendar/workspace/organizer-decision` (owner-only; body is the
+  entry id and `vouch` or `block`, never an address) writes calendar-connector ingestion rules,
+  one per registered calendar endpoint in one transaction, and re-stamps the organizer's stored
+  events at once (REQ-module-calendar-042). The organizer address is read from the stored event.
+  Block writes `block` and Vouch writes `pass_through` in `connector:google_calendar:<endpoint>`
+  scopes only, so the same sender's email is never blocked. A verb is idempotent and removes the
+  opposite rules it wrote and keeps manual rules. The Vouch (priority 10) is evaluated first: a
+  same-scope block at a lower priority number, or at 10 and older, still wins, and a global block
+  always wins. Concurrent verbs on one organizer serialise on an advisory lock. A Vouch only lifts an
+  otherwise first-contact organizer to `vouched` (trusted). A calendar endpoint registered later is
+  covered for trust, because the verdict reads every calendar scope; only the connector's
+  ingest-time suppression of a Block is per endpoint. The Switchboard's 5-minute eligibility sweep copies the verbs' rules (by `created_by`,
+  never manual rules) onto endpoints registered later, idempotently.
+- **Not yet stamped.** The lure badges that need hidden-guest-list, conference-host and link facts
+  (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
+  for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync
 filters, sync-token cursor and degraded-health reasons are in
 [Google Calendar connector](../connectors/google-calendar.md).
+
+### Household context
+
+A `household_member`, `other_person` or `team` source may carry `role_subject_entity_id` (core_368,
+a reference to `public.entities`), which the owner sets with the role in `POST
+/api/calendar/sources/role`. Events on those sources that the owner is not attending are not owner
+time, but they are readable as attributed context.
+
+- `GET /api/calendar/workspace/household-time` groups them by subject. The conflict scan, the
+  free-slot result and the meeting card show the same events as context
+  (`household_context`, "Also on Alex's calendar: 14:00-15:00").
+- Opaque by construction: window, role and subject name only. No title, location, description or
+  attendee leaves the read, for any non-owner role (`HouseholdEvent` has no such field).
+- Never load: they add no conflict, day load or busy time, and `unclassified`, `subscription`,
+  `holidays`, `birthdays` and `butler` sources appear nowhere in the read. The calendar context
+  producer reports their count as `household_events` and sets no signal. Every surface (free slots,
+  meeting card, producer) selects them by overlap with its window through one shared read, so an
+  already-running event, an all-day event and a recurring occurrence are all found.
 
 ## Rate Limiting
 

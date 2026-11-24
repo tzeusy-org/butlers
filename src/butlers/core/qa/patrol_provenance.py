@@ -8,7 +8,7 @@ through :data:`LAST_QUALIFYING_PATROL_SQL`. Both sides derive the digest from
 this module so a configuration change makes every older row stop qualifying.
 
 A row qualifies only when it is ``origin='scheduled'``, finished
-``clean``/``findings_dispatched``/``suppressed``, has ``discovery_complete``
+``clean``/``findings_dispatched``/``halted``/``suppressed``, has ``discovery_complete``
 true, and carries the current configuration digest. Legacy rows keep null
 provenance and never qualify.
 """
@@ -36,8 +36,15 @@ DEFAULT_ENABLED_SOURCES: Final[tuple[str, ...]] = (
 
 #: Statuses that can end a genuine, fully discovered patrol. A ``suppressed``
 #: patrol filtered its novel findings by cooldown or severity after complete
-#: discovery, so it is healthy coverage when its row proves that discovery.
-QUALIFYING_PATROL_STATUSES: Final[tuple[str, ...]] = ("clean", "findings_dispatched", "suppressed")
+#: discovery, so it is healthy coverage when its row proves that discovery. A ``halted``
+#: patrol held its findings behind a halting gate (breaker, no model, cap): remediation
+#: stopped, but discovery ran, and the row's own ``status`` and ``halt_reason`` say so.
+QUALIFYING_PATROL_STATUSES: Final[tuple[str, ...]] = (
+    "clean",
+    "findings_dispatched",
+    "suppressed",
+    "halted",
+)
 
 #: A patrol is overdue after this many configured cadences without a
 #: qualifying completion (REQ-butler-control-plane-liveness-005).

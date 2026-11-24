@@ -954,7 +954,9 @@ class TestTickIntegration:
         )
         client = MagicMock()
         client.call_tool = AsyncMock(
-            return_value=MagicMock(is_error=False, data={"notification_id": "n-1"})
+            return_value=MagicMock(
+                is_error=False, data={"status": "sent", "notification_id": "n-1"}
+            )
         )
         switchboard: list[Any] = [None]
         monkeypatch.setattr(owner_notify, "get_current_switchboard_client", lambda: switchboard[0])
@@ -989,6 +991,7 @@ class TestTickIntegration:
         )
         switchboard[0] = client
         await tick(tick_pool, run_job)
+        client.call_tool.assert_awaited_once()
         assert await ledger() == [failed[0], ("delivered", failed[0][1])]
         assert len(await fired()) == 1
 

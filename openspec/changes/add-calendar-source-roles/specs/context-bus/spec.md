@@ -21,3 +21,19 @@ Scope: v1-mandatory
 
 - **WHEN** an active `outOfOffice` event on an `unclassified` source has no `self` attendee, and an owner focus-time event is active
 - **THEN** the producer sets `focused`
+
+### Requirement: Calendar Producer Reports Household Context
+
+The calendar context producer SHALL report how many household context events are live
+(`household_events`, present only when it is above zero) in its result and SHALL NOT assert, clear or extend any context signal
+because of them. The count SHALL come from a household-only overlap read at the database clock, so
+active all-day events and recurring occurrences that began on an earlier day are counted.
+
+ID: REQ-context-bus-019
+Source: bu-5ii4gj.1 (run 26 move 1), slice S3
+Scope: v1-mandatory
+
+#### Scenario: A household event sets no signal
+
+- **WHEN** only a household event is live
+- **THEN** the producer clears `meeting` and `focused`, and its result reports `household_events` of 1

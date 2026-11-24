@@ -127,7 +127,7 @@ Only send Telegram messages about Spotify data during **scheduled tasks** (e.g. 
 
 ## Interactive Response Mode
 
-When a message arrives from an interactive channel (a REQUEST CONTEXT JSON block with `source_channel` set to `telegram_bot`), respond interactively. For the detection rule, the five response modes (React, Affirm, Follow-up, Answer, React + Reply), and complete worked examples, consult the `interactive-response` skill (`.agents/skills/interactive-response/SKILL.md`).
+When a message arrives from an interactive channel (a REQUEST CONTEXT JSON block with `source_channel` set to `telegram_bot`), respond interactively. For the detection rule, the five response modes (React, Affirm, Follow-up, Answer, React + Reply), and complete worked examples, consult the `interactive-response` skill (`skill_read(name="interactive-response")`).
 
 **Email is NOT an interactive channel.** Do not reply to, forward, or send emails in response to routed email content. Use `notify(channel="telegram")` if the user needs to be informed about something from an email.
 
@@ -135,6 +135,6 @@ When a message arrives from an interactive channel (a REQUEST CONTEXT JSON block
 
 ## Memory Classification
 
-Uses the subject/predicate memory model. For the lifestyle domain taxonomy (predicates, permanence levels, tags) and example fact patterns, consult the `memory-taxonomy` skill (`.agents/skills/memory-taxonomy/SKILL.md`).
+Uses the subject/predicate memory model. For the lifestyle domain taxonomy (predicates, permanence levels, tags) and example fact patterns, consult the `memory-taxonomy` skill (`skill_read(name="memory-taxonomy")`).
 
 # Notes to self

@@ -790,6 +790,25 @@ Scope: v1-mandatory
   attribution on the owner fact, a third-party attribution on the third-party
   fact and an unverified mark on the legacy fact
 
+### Requirement: Exact owner endorsement of legacy guidance selections
+
+The Memory store SHALL endorse a batch of legacy rules only after the owner confirms
+the exact current selection within one verified owning source. The batch SHALL retain
+the authority and steering-class contract of REQ-module-memory-013 and commit all
+endorsement effects atomically.
+
+ID: REQ-module-memory-021
+Source: bu-q7vx1q.24
+Scope: v1-mandatory
+
+#### Scenario: Owner confirms a finite batch of legacy guidance
+
+- **WHEN** the owner confirms a current preview of 1 to 100 distinct legacy rules in one source
+- **THEN** the storage operation locks the selected rows in stable UUID order, validates the complete selection, and commits the existing endorsement effects in one transaction
+- **AND** each newly endorsed rule receives its stamp, audit event, and eligible catalog entry exactly once, without changing its content authority
+- **AND** repeating an identical selection returns the original receipts without further effects
+- **AND** stale confirmation, missing, retired, forgotten, stamped, or cross-source selections leave all rules unchanged
+
 ### Requirement: Lazy Canonical Embedding Construction
 Memory module and storage/tool imports SHALL defer sentence_transformers, torch and transformers until first actual EmbeddingEngine construction. The engine SHALL preserve the configured/default model,384-dimensional output, normalization and batch behavior, public tools and synchronized per-model cache. Sibling memory modules SHALL use canonical package identities with one body execution per process and the helper construction fake seam SHALL remain usable. Async callers SHALL acquire a first engine without newly blocking their event loop with dependency/model construction.
 

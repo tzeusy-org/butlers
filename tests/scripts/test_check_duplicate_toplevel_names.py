@@ -409,25 +409,29 @@ def test_subscript_and_attribute_targets_are_not_bindings() -> None:
 
 
 def test_scan_scope_is_the_lint_gate_scope(tmp_path: Path) -> None:
-    for directory in ("src", "tests", "roster"):
-        _write(tmp_path, f"{directory}/mod.py", "CLEAN = 1\n")
-    _write(tmp_path, "conftest.py", "CLEAN = 1\n")
-    # Outside the lint gate scope by standing repo convention.
+    paths = ("scripts/tool.py", "src/mod.py", "tests/mod.py", "roster/mod.py", "conftest.py")
+    for path in paths:
+        _write(tmp_path, path, "CLEAN = 1\n")
+    # Outside the four lint roots and the guard's additional root conftest.py.
     _write(tmp_path, "alembic/versions/0001.py", "X = 1\nX = 2\n")
-    _write(tmp_path, "scripts/tool.py", "X = 1\nX = 2\n")
     _write(tmp_path, "frontend/gen.py", "X = 1\nX = 2\n")
+    baseline = _baseline(tmp_path, {})
+
+    # Each included path must detect the intervening-use incident, then pass
+    # after restoration while the excluded paths still contain duplicates.
+    for path in paths:
+        _write(tmp_path, path, INCIDENT)
+        duplicate = _run("--root", str(tmp_path), "--baseline", str(baseline))
+        assert duplicate.returncode == 1, duplicate.stdout + duplicate.stderr
+        assert f"{path}: `_fenced_code_blocks` is bound 2 times" in duplicate.stdout
+
+        _write(tmp_path, path, "CLEAN = 1\n")
+        restored = _run("--root", str(tmp_path), "--baseline", str(baseline))
+        assert restored.returncode == 0, restored.stdout + restored.stderr
+        assert "5 Python file(s)" in restored.stdout
 
     scanned = {p.relative_to(tmp_path).as_posix() for p in gate.python_files(tmp_path)}
-    assert scanned == {"src/mod.py", "tests/mod.py", "roster/mod.py", "conftest.py"}
-
-    result = _run("--root", str(tmp_path), "--baseline", str(_baseline(tmp_path, {})))
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "4 Python file(s)" in result.stdout
-
-    # ...and the same duplicate inside the scope does fail, so the pass above is
-    # a verdict on those four files rather than an empty walk.
-    _write(tmp_path, "src/mod.py", "X = 1\nX = 2\n")
-    assert _run("--root", str(tmp_path), "--baseline", str(_baseline(tmp_path, {}))).returncode == 1
+    assert scanned == set(paths)
 
 
 def test_a_tree_with_no_python_files_fails_rather_than_passing(tmp_path: Path) -> None:

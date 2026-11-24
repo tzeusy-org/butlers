@@ -115,6 +115,7 @@ class _SqlTx:
         return None if row is None else await self._instance(row)
 
     async def insert_instance(self, instance: Instance) -> tuple[Instance, bool]:
+        # Both id and (id, generation) can arbitrate concurrent inserts.
         try:
             inserted = await self.c.fetchval(
                 "INSERT INTO public.condition_instances (id, goal_id, predicate, "
@@ -122,7 +123,7 @@ class _SqlTx:
                 "generation, state, result, leaves, floor, version, label_version, label_instr, "
                 "label_data, label_sens) VALUES ($1, $2, $3::text::jsonb, $4, $5, $6, $7, $8, "
                 "$9, $10, $11, $12::text::jsonb, $13::text::jsonb, $14, $15, $16, $17, $18) "
-                "ON CONFLICT (id) DO NOTHING RETURNING id",
+                "ON CONFLICT DO NOTHING RETURNING id",
                 instance.id,
                 instance.goal_id,
                 _text(instance.predicate),

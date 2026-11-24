@@ -78,6 +78,8 @@ Filter state that an operator would want to share or return to is URL-persisted.
 
 ## Related Pages
 
+- [D19 dark preview](d19-preview.md) -- explicitly opted-in goal and region routes, current contracts and pending acceptance
+
 - [Purpose and Single-Pane Role](purpose-and-single-pane.md) -- Why this architecture exists
 - [Data Access and Refresh](data-access-and-refresh.md) -- How routes fetch and refresh data
 - `openspec/specs/dashboard-*` -- Required behavior per page

@@ -18,7 +18,16 @@ verify delivery through the daemon health endpoint, the approval-gated adapter t
 [Truthful Delivery Observability](../../openspec/specs/butler-messenger/spec.md#requirement-truthful-delivery-observability)
 for the current contract.
 
+Shared owner-notify callers use `butlers.jobs.owner_notify` for envelope construction and one
+bounded Switchboard attempt. This helper never selects a direct provider fallback or owns retries.
+Caller quiet-hours, durable claims and attention-outcome policies remain at their existing boundaries;
+see [Notification delivery adapters](../operations/runtime-attention.md#notification-delivery-adapters).
+
 ## Implementation Notes
+
+- D19's [one-voice preview](../frontend/d19-preview.md#one-voice) is a separate
+  default-off source-prefix formatter for verified owner destinations. Exact-call
+  approval and delivery receipts retain their existing authority and provenance.
 
 - Email and Telegram native commands check the live permission matrix at their module effect seam, including deferred approval execution. An unavailable store refuses before traffic with `PermissionUnavailable`; Messenger reports a retryable `target_unavailable` and existing `not_attempted` / `pre_transport` / `policy_denied` evidence. Errors and availability logs omit content, recipients, row reasons and raw database errors. Readable missing rows remain default-allow and explicit revocation/recipient approvals remain separate. This bu-30sah4 effect stage precedes bu-svqpzo.3, which makes remaining shared callers, including spawn, fail closed. No provider-uncertain send gains retry permission.
 

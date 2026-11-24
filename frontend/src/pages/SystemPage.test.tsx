@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import SystemPage from "@/pages/SystemPage";
 import {
+  useButlerHeartbeats,
   useBackupFacts,
   useDatabaseFacts,
   useDeploymentFacts,
@@ -70,6 +71,7 @@ vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
 vi.mock("@/hooks/use-ingestion", () => ({ useConnectorSummaries: vi.fn() }));
 
 vi.mock("@/hooks/use-system", () => ({
+  useButlerHeartbeats: vi.fn(),
   useBackgroundJobs: () => ({ isPending: false, isError: false, data: { data: { jobs_available: false, jobs: [] } } }),
   useInstanceFacts: vi.fn(),
   useDatabaseFacts: vi.fn(),
@@ -191,6 +193,7 @@ function setBoardSuccess(overrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = 
 }
 
 function setAllLoading() {
+  vi.mocked(useButlerHeartbeats).mockReturnValue({isPending: true, isFetching: true, isError: false, refetch: vi.fn()} as AnyMock);
   setBoardLoading();
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
@@ -301,6 +304,7 @@ function setAllLoading() {
 }
 
 function setAllSuccess(boardOverrides: Partial<typeof BOARD_AGGREGATES_DEFAULTS> = {}) {
+  vi.mocked(useButlerHeartbeats).mockReturnValue({data: {data: {butlers: []}}, isPending: false, isFetching: false, isError: false, refetch: vi.fn()} as AnyMock);
   setBoardSuccess(boardOverrides);
 
   vi.mocked(useConnectorSummaries).mockReturnValue({
@@ -1409,10 +1413,10 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     setAllSuccess();
   });
 
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
   function renderPageDom() {
-    const queryClient = new QueryClient();
+    const queryClient = new QueryClient({defaultOptions: {queries: {retry: false, gcTime: 0}}});
     return renderDom(
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
@@ -1422,13 +1426,33 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
     );
   }
 
-  it("r refreshes butler status and connector data", () => {
+  it("r refreshes board status, connectors and visible heartbeat facts", async () => {
     const boardRefetch = vi.fn();
     vi.mocked(useButlerStatusBoard).mockReturnValue({
       rows: [],
       needsYou: [],
       aggregates: { ...BOARD_AGGREGATES_DEFAULTS, isLoading: false, isError: false, error: null, refetch: boardRefetch },
     } as AnyMock);
+    const actual = await vi.importActual<typeof import("@/hooks/use-system")>("@/hooks/use-system");
+    vi.mocked(useButlerHeartbeats).mockImplementation(actual.useButlerHeartbeats);
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push(`${init?.method ?? "GET"} ${url}`);
+      const first = requests.length === 1;
+      const butlers = [{
+        name: "general",
+        last_heartbeat_at: "2026-05-03T10:00:00Z",
+        last_probe_at: "2026-05-03T10:00:00Z",
+        last_session_at: null,
+        active_session_count: 0,
+        heartbeat_age_seconds: 60,
+        observation_state: first ? "healthy" : "unavailable",
+        administrative_policy: "active",
+        route_compatibility: "compatible",
+        effective_eligibility: first ? "eligible" : "ineligible",
+      }];
+      return new Response(JSON.stringify({ data: { butlers }, meta: {} }), { status: 200 });
+    }));
     const connectorsRefetch = vi.fn();
     vi.mocked(useConnectorSummaries).mockReturnValue({
       data: { data: { connectors: [] } },
@@ -1438,10 +1462,25 @@ describe("SystemPage -- keyboard shortcuts (bu-ep4ks.12)", () => {
       refetch: connectorsRefetch,
     } as AnyMock);
 
-    renderPageDom();
+    const page = renderPageDom();
+    await page.findByLabelText("Service eligibility: eligible");
+    expect(requests).toEqual(["GET /api/system/butlers/heartbeat"]);
     fireEvent.keyDown(window, { key: "r" });
+    await page.findByLabelText("Service eligibility: ineligible");
 
     expect(boardRefetch).toHaveBeenCalledTimes(1);
     expect(connectorsRefetch).toHaveBeenCalledTimes(1);
+    expect(requests).toEqual(["GET /api/system/butlers/heartbeat", "GET /api/system/butlers/heartbeat"]);
+    const input = document.createElement("input");
+    document.body.append(input);
+    try {
+      input.focus();
+      fireEvent.keyDown(input, { key: "r" });
+      expect(boardRefetch).toHaveBeenCalledTimes(1);
+      expect(connectorsRefetch).toHaveBeenCalledTimes(1);
+      expect(requests).toEqual(["GET /api/system/butlers/heartbeat", "GET /api/system/butlers/heartbeat"]);
+    } finally {
+      input.remove();
+    }
   });
 });

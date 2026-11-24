@@ -42,7 +42,7 @@ Check the context for a REQUEST CONTEXT JSON block. If present and its `source_c
 ### Response Mode Selection
 
 For response-mode selection and interactive General-butler examples, consult
-the `interactive-response` skill (`.agents/skills/interactive-response/SKILL.md`).
+the `interactive-response` skill (`skill_read(name="interactive-response")`).
 
 ### Guidelines
 

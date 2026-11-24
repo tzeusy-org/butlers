@@ -126,6 +126,13 @@ Steering memory is gated on that stamp:
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
+  **Guidance waiting for you** in the Rules register shows persisted provenance
+  and individual endorsement. To endorse a legacy batch, the owner explicitly
+  selects up to 100 rows in one source, previews the exact stored guidance, then
+  confirms. The preview digest binds source, ordered IDs, content, and provenance.
+  Confirmation locks and validates the whole selection before writing. A stale,
+  ineligible, or unavailable selection changes nothing. Repeating an accepted
+  selection returns original receipts without writing new stamps or audit rows.
 - **Facts** from `third_party` or `mixed` authority are *held* while live and not
   vouched for: they stay recallable as attributed reports (never Profile Facts), and
   the owner can vouch for one from the dashboard (fact detail, **Vouch**) or with
@@ -492,6 +499,29 @@ content-blind `unavailable` marker, retryable unless the relay refused with
 403. Switchboard itself keeps the in-process route.
 
 **Content authority.** Each catalog row carries the `content_authority` class of its source fact or rule (`owner`, `owner_device`, `third_party`, `system`, `mixed`, or NULL for unstamped legacy rows; core_299, REQ-module-memory-013). Only the class is public — the sender entity stays in the owning schema. Every catalog write (`store_fact`/`store_rule` write-behind, rule endorsement, the backfill) copies it in the same statement as the rest of the row, and `run_memory_catalog_backfill` re-copies it onto rows whose value drifted (for example rows cataloged before the column existed); a NULL source stays NULL. `search_catalog` and `GET /api/memory/catalog/search` return it per row; `memory_catalog_search` adds an `attribution` (`from a third party`, `partly from a third party`, or `source unverified`; none for owner/system content), and Fleet Knowledge lines show the same label.
+
+#### Restore the rule index after a Memory downgrade
+
+After the owning Memory schema has finished downgrading to `mem_012`, use
+[`RESTORE_LEGACY_RULE_CATALOG_SQL`](../../src/butlers/modules/memory/catalog_recovery.py)
+to restore discovery for active legacy rules that `mem_013` invalidated. The
+statement matches the original migration receipt and copies confidence from
+the owning rule. Retired, forgotten, previously invalid and other-schema rows
+keep their stored values. Rules and catalog copies marked `pii` or
+`confidential` stay excluded. The statement refuses to run while `mem_013` or a
+later Memory revision is applied and reports the number of rows restored. A
+repeat run reports zero unless a new migration invalidated more eligible rows.
+
+Use the migration login and its configured libpq target for the downgraded
+database. Set `memory_schema` to the affected schema. This example uses
+`general`.
+
+```bash
+restore_sql=$(uv run --no-sync python -c 'from butlers.modules.memory.catalog_recovery import RESTORE_LEGACY_RULE_CATALOG_SQL; print(RESTORE_LEGACY_RULE_CATALOG_SQL)') &&
+  printf '%s\n' 'SET TRANSACTION ISOLATION LEVEL READ COMMITTED;' 'SET LOCAL search_path TO :"memory_schema";' \
+    "SET LOCAL lock_timeout = '5s';" "$restore_sql" |
+  psql -X --single-transaction --set=ON_ERROR_STOP=1 --set=memory_schema=general --file=-
+```
 
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 

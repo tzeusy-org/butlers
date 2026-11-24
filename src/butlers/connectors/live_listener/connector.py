@@ -69,6 +69,7 @@ from butlers.connectors.filtered_event_buffer import (
 )
 from butlers.connectors.health_socket import prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
     save_voice_checkpoint,
@@ -689,16 +690,11 @@ class LiveListenerConnector:
         # --- Ingest submission ---
         submission_start = time.monotonic()
         try:
-            ingest_result = await self._mcp_client.call_tool("ingest", envelope)
+            ingest_result = await submit_ingest(self._mcp_client, envelope)
             submission_elapsed = time.monotonic() - submission_start
             ll_metrics.observe_stage_latency("submission", submission_elapsed)
 
-            # Check response
-            status = "success"
-            if isinstance(ingest_result, dict):
-                status_str = ingest_result.get("status", "")
-                if status_str == "duplicate":
-                    status = "duplicate"
+            status = "duplicate" if ingest_result.duplicate else "success"
             self._connector_metrics.record_ingest_submission(status)
             ll_metrics.inc_segments("transcribed")
 
@@ -789,7 +785,7 @@ class LiveListenerConnector:
             return
 
         async def submit(envelope: dict[str, Any]) -> None:
-            await self._mcp_client.call_tool("ingest", envelope)
+            await submit_ingest(self._mcp_client, envelope)
 
         try:
             await drain_replay_pending(

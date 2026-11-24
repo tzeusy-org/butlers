@@ -41,6 +41,13 @@ def _make_finding(fingerprint=None, severity=1, occurrence_count=1, source_type=
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_known_issue_link():
+    """These tests predate the 'tracked' gate; the gate's own tests are test_known_issue_triage."""
+    with patch("butlers.core.qa.triage.get_gating_link", new_callable=AsyncMock, return_value=None):
+        yield
+
+
 def _patch_triage(insert_side=None, active_rv=None, dismissed_rv=False, recent_rv=None):
     """Context manager stack for triage patches."""
     return (

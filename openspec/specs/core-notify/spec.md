@@ -133,6 +133,14 @@ Every terminal decision the `notify()` owner-default quiet-hours gate makes SHAL
 
 `deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
 
+The shared owner-notify implementation SHALL classify the single Switchboard attempt consistently
+for daemon and deterministic callers, without taking over caller permission, quiet/sleep, durable
+claim, defer or retry policy. A missing or malformed delivery acknowledgement SHALL NOT be recorded
+as delivered. Telegram partial and uncertain effects SHALL remain terminal and SHALL NOT advance a
+complete-delivery marker. Failure logs SHALL contain only exception types and safe classifications,
+never exception text or owner/message/recipient payload. Structured public delivery errors retain
+their existing vocabulary and response shape. RFC 0023 approval delivery remains separate.
+
 #### Scenario: A genuine delivery failure is recorded as failed, not deferred
 - **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) cannot resolve a recipient, or the underlying `deliver()` dispatch returns `status="failed"`, or an unexpected exception occurs mid-dispatch
 - **THEN** a `public.attention_ledger` row is written with `outcome="failed"` and a `reason` identifying the failure class (e.g. `"no_recipient_configured"`, `"delivery_error:<detail>"`, `"unexpected_error:<ExceptionType>"`)

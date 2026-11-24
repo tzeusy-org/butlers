@@ -19,6 +19,7 @@ from butlers.core.temporal.calendar_provenance import (
     _metadata_object,
     counts_toward_owner_load,
     is_owner_attending,
+    is_quarantined_invitation,
 )
 
 ROLES: tuple[str, ...] = (
@@ -127,6 +128,10 @@ def asserts_owner_time(time_role: Any, metadata: Any) -> bool:
     ``unclassified``. This is the role gate only: ``counts_as_owner_time`` adds the owner's own
     RSVP and transparency rule.
     """
+    if is_quarantined_invitation(metadata):
+        # An unanswered invitation from an untrusted organizer holds no time, even on the owner's
+        # own calendar, where invitations land (REQ-module-calendar-041).
+        return False
     role = normalize_role(time_role)
     if role in OWNER_TIME_ROLES:
         return True

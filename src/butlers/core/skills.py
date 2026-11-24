@@ -23,6 +23,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,20 @@ class SkillIdentity:
     canonical_source: str
     content_digest: str
     compatibility_aliases: tuple[str, ...]
+
+
+class SkillDefinition(TypedDict):
+    """Canonical roster guidance delivered to one butler session."""
+
+    name: str
+    content: str
+    content_digest: str
+
+
+class SkillReadFailure(TypedDict):
+    """Stable refusal for a session skill lookup."""
+
+    error: Literal["invalid_skill_name", "skill_not_found", "skill_unavailable"]
 
 
 def _roster_source(path: Path, roster_root: Path) -> str:
@@ -507,7 +522,29 @@ def is_valid_skill_name(name: str) -> bool:
     - Cannot start or end with a hyphen
     - Cannot have consecutive hyphens
     """
-    return _KEBAB_CASE_PATTERN.match(name) is not None
+    return _KEBAB_CASE_PATTERN.fullmatch(name) is not None
+
+
+def read_skill_definition(config_dir: Path, name: str) -> SkillDefinition | SkillReadFailure:
+    """Read one skill exposed through this butler's canonical roster."""
+    if not is_valid_skill_name(name):
+        return {"error": "invalid_skill_name"}
+
+    try:
+        butler_dir = config_dir.resolve(strict=True)
+        relative = Path(name) / "SKILL.md"
+        local = butler_dir / ".agents" / "skills" / relative
+        shared = butler_dir.parent / "shared" / "skills" / relative
+        source = local.resolve(strict=True)
+        if source not in (local, shared) or not source.is_file():
+            return {"error": "skill_not_found"}
+        content = source.read_bytes()
+        decoded = content.decode("utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        return {"error": "skill_not_found"}
+    except (OSError, RuntimeError, UnicodeError):
+        return {"error": "skill_unavailable"}
+    return {"name": name, "content": decoded, "content_digest": hashlib.sha256(content).hexdigest()}
 
 
 def list_valid_skills(skills_dir: Path) -> list[Path]:

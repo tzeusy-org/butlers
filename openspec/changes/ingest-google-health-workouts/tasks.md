@@ -14,4 +14,4 @@
 - [ ] 4.1 Upstream edit/delete reconciliation
 - [ ] 4.2 Weight/body-fat bundle with owner-dominance
 - [ ] 4.3 "Last <activity>" read path
-- [ ] 4.4 `workout_session` predicate_registry seed after `mem_013` merges
+- [x] 4.4 Seed or promote `workout_session` in the predicate registry, with reversible state and real fact-write coverage

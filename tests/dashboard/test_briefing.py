@@ -684,6 +684,7 @@ class TestFetchQaState:
         assert qa_state == {
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
+            "circuit_breaker_dominant_cause": None,
             "last_patrol_failed": True,
             "active_cases_now": 2,
         }
@@ -747,6 +748,7 @@ class TestFetchQaState:
         assert qa_state == {
             "circuit_breaker_tripped": True,
             "circuit_breaker_consecutive_failures": 5,
+            "circuit_breaker_dominant_cause": "execution_failure",
             "last_patrol_failed": False,
             "active_cases_now": 0,
         }
@@ -783,6 +785,7 @@ class TestFetchQaState:
         assert qa_state == {
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
+            "circuit_breaker_dominant_cause": None,
             "last_patrol_failed": True,
             "active_cases_now": 0,
         }
@@ -819,6 +822,7 @@ class TestFetchQaState:
         assert qa_state == {
             "circuit_breaker_tripped": False,
             "circuit_breaker_consecutive_failures": 0,
+            "circuit_breaker_dominant_cause": None,
             "last_patrol_failed": True,
             "active_cases_now": 0,
         }
@@ -922,6 +926,21 @@ class TestQaAttentionItem:
         assert "circuit breaker tripped" in item["description"]
         assert "5 consecutive failures" in item["description"]
         assert item["occurrences"] == 5
+
+    def test_circuit_breaker_names_its_cause_when_known(self):
+        state = {
+            "circuit_breaker_tripped": True,
+            "circuit_breaker_consecutive_failures": 5,
+            "circuit_breaker_dominant_cause": "publisher_unconfigured",
+        }
+        item = _qa_attention_item(state)
+        assert item["description"] == (
+            "QA circuit breaker open: no publisher configured (5 consecutive failures)"
+        )
+
+    def test_circuit_breaker_without_a_cause_keeps_the_tripped_wording(self):
+        state = {"circuit_breaker_tripped": True, "circuit_breaker_consecutive_failures": 5}
+        assert "circuit breaker tripped" in _qa_attention_item(state)["description"]
 
     def test_circuit_breaker_tripped_singular_failure_count(self):
         state = {

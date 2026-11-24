@@ -13,7 +13,7 @@ Scope: v1-mandatory
 
 #### Scenario: A partner's calendar adds no conflict or load
 
-- **WHEN** a confirmed event on a `household_member` source, with no `self` attendee, overlaps an owner-calendar event
+- **WHEN** a non-cancelled event on a `household_member` source, with no `self` attendee, overlaps an owner-calendar event
 - **THEN** no overlap or back-to-back issue is reported
 - **AND** its hours do not contribute to an overloaded-day issue
 
@@ -26,3 +26,19 @@ Scope: v1-mandatory
 
 - **WHEN** events on `unclassified` sources are left out because the owner is not invited
 - **THEN** the scan reports how many calendars and events were skipped, so an empty issue list is not read as a clear window
+
+### Requirement: Household Context Beside the Scan
+
+The conflict scan SHALL carry, beside its issues, the household context events overlapping its
+window (REQ-module-calendar-038), attributed to their subject and opaque. They SHALL NOT form
+conflicts, back-to-back gaps or overloaded-day hours, and SHALL NOT change any issue, hours total
+or coverage count.
+
+ID: REQ-calendar-conflict-overcommitment-radar-003
+Source: bu-5ii4gj.1 (run 26 move 1), slice S3
+Scope: v1-mandatory
+
+#### Scenario: Context beside an unchanged scan
+
+- **WHEN** a household event overlaps an owner meeting
+- **THEN** the scan reports no overlap and the same day-load hours as without it, and lists the event under household context

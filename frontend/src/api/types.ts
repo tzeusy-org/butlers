@@ -1592,8 +1592,36 @@ export interface CalendarResponseReceipt {
   reason: string | null;
 }
 
+/** An unanswered invitation from an untrusted organizer: time and verdict only, no text. */
+export interface CalendarQuarantinedInvitation {
+  entry_id: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  verdict: "first_contact" | "blocked" | "unknown";
+  lure_badges: string[];
+}
+
+export type CalendarOrganizerVerb = "vouch" | "block";
+
+/** The body names the entry and the verb only; the server reads the organizer from the row. */
+export interface CalendarOrganizerDecisionRequest {
+  entry_id: string;
+  verb: CalendarOrganizerVerb;
+}
+
+export interface CalendarOrganizerDecisionResponse {
+  verb: CalendarOrganizerVerb;
+  endpoints: number;
+  rules_written: number;
+  rules_removed: number;
+  events_restamped: number;
+  restamp_degraded: boolean;
+}
+
 export interface CalendarInvitationsResponse {
   entries: CalendarInvitationEntry[];
+  quarantined?: CalendarQuarantinedInvitation[];
   issues_available: boolean;
   conflicts_available: boolean;
   sources_degraded: string[];
@@ -3186,6 +3214,27 @@ export interface FactVouch {
   changed: boolean;
 }
 
+export interface RuleEndorsement {
+  rule_id: string;
+  content_authority: string | null;
+  endorsed_at: string | null;
+  endorsed_by: string | null;
+  changed: boolean;
+}
+
+export interface LegacyRuleEndorsementPreview {
+  confirmation_digest: string;
+  rules: Array<{
+    rule_id: string;
+    content: string;
+    scope: string;
+    content_authority: null;
+    source_butler: string | null;
+    source_episode_id: string | null;
+    created_at: string;
+  }>;
+}
+
 /** A behavioral rule from the long-term memory tier. */
 export interface MemoryRule {
   id: string;
@@ -3203,6 +3252,7 @@ export interface MemoryRule {
   /** Whether a source episode is still available, expired, or cannot be resolved. */
   source_episode_status?: EpisodeSourceStatus | null;
   source_butler: string | null;
+  owning_source?: string | null;
   created_at: string;
   last_applied_at: string | null;
   last_evaluated_at: string | null;
@@ -6507,7 +6557,8 @@ export type QaPatrolStatus =
   | "findings_dispatched"
   | "error"
   | "skipped_overlap"
-  | "suppressed";
+  | "suppressed"
+  | "halted";
 
 /**
  * Patrol reads stay open to a malformed or future database value so the UI can
@@ -6528,6 +6579,8 @@ export interface QaPatrolSummary {
   log_lookback_minutes: number;
   sources_polled: string[];
   error_detail: string | null;
+  /** The gate that stopped dispatch when status is "halted"; null otherwise. */
+  halt_reason?: string | null;
 }
 
 /** A single finding record from a patrol — GET /api/qa/patrols/:id/findings */
@@ -6657,6 +6710,11 @@ export interface QaSummary {
     /** Consecutive-failure threshold that trips the breaker. Optional for
      * fixture back-compat; the real endpoint always sets it (default 5). */
     threshold?: number;
+    /** Why it tripped (a cause code, or "mixed"); null while closed. */
+    dominant_cause?: string | null;
+    cause_counts?: Record<string, number>;
+    /** When the next half-open probe is admitted; null while closed. */
+    next_probe_at?: string | null;
   };
   credentials_status: {
     gh_token_present: boolean | null;
@@ -6855,6 +6913,9 @@ export interface CircuitBreakerAttempt {
   id: string;
   status: string;
   closed_at: string;
+  /** Cause code and the first line of the attempt's own error text. */
+  reason_class?: string | null;
+  reason_text?: string | null;
 }
 
 /** Current state of the QA dispatch circuit breaker — GET /api/qa/circuit-breaker */
@@ -6863,6 +6924,10 @@ export interface CircuitBreakerStatus {
   threshold: number;
   recent_statuses: string[];
   recent_attempts: CircuitBreakerAttempt[];
+  dominant_cause?: string | null;
+  cause_counts?: Record<string, number>;
+  opened_at?: string | null;
+  next_probe_at?: string | null;
 }
 
 /** Response from POST /api/qa/circuit-breaker/reset */

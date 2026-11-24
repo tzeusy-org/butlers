@@ -308,7 +308,7 @@ async def drain_replay_pending(
     pool: asyncpg.Pool,
     connector_type: str,
     endpoint_identity: str,
-    submit_fn: Callable[[dict[str, Any]], Awaitable[None]],
+    submit_fn: Callable[[dict[str, Any]], Awaitable[object]],
     drain_logger: logging.Logger | None = None,
     *,
     lease_s: float = REPLAY_LEASE_S,
@@ -350,7 +350,7 @@ async def drain_replay_pending(
         connector_type: Connector type string used to filter rows (e.g. ``"gmail"``).
         endpoint_identity: Endpoint identity used to filter rows.
         submit_fn: Async callable that accepts an ingest.v1 envelope dict and
-            submits it to the ingestion pipeline.  Raises on failure.
+            submits it to the ingestion pipeline. Raises on failure. The return value is ignored.
         drain_logger: Optional logger to use; defaults to this module's logger.
         lease_s: Seconds a claim stays exclusive to this drain.
         submit_timeout_s: Deadline for one submission; must be shorter than the lease.
@@ -469,7 +469,7 @@ async def _release_claims(
 
 async def _replay_one(
     row: Mapping[str, Any],
-    submit_fn: Callable[[dict[str, Any]], Awaitable[None]],
+    submit_fn: Callable[[dict[str, Any]], Awaitable[object]],
     _log: logging.Logger,
     submit_timeout_s: float,
 ) -> tuple[str, str | None]:

@@ -47,6 +47,9 @@ _SERVER = textwrap.dedent(
 )
 # Cleanup is fastmcp's own disconnect bound; these leave room for it on a loaded runner.
 _DEADLINE_S = 1.0
+# Setup and recovery are not what is under test: a first SSE connect to a fresh subprocess
+# can take longer than the deadline on a loaded runner, so only the frozen phase is bounded.
+_SETUP_S = 30.0
 _END_WITHIN_S = 25.0
 
 
@@ -95,11 +98,12 @@ async def test_a_frozen_server_ends_the_call_at_its_deadline(server: _Server, ca
     client = CachedMCPClient(
         server.url,
         client_name="test",
-        call_timeout_s=_DEADLINE_S,
-        connect_timeout_s=_DEADLINE_S,
+        call_timeout_s=_SETUP_S,
+        connect_timeout_s=_SETUP_S,
     )
     assert await client.call_tool("ingest", {"ok": True}) == {"status": "accepted"}
 
+    client._call_timeout_s = client._connect_timeout_s = _DEADLINE_S
     server.freeze()
     try:
         started = time.monotonic()
@@ -120,6 +124,7 @@ async def test_a_frozen_server_ends_the_call_at_its_deadline(server: _Server, ca
         assert time.monotonic() - started < _END_WITHIN_S
     finally:
         server.thaw()
+        client._call_timeout_s = client._connect_timeout_s = _SETUP_S
 
     # And the client recovers once the server does, with no restart.
     async with asyncio.timeout(_END_WITHIN_S):

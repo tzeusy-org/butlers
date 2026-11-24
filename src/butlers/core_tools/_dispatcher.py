@@ -38,7 +38,7 @@ def register_all_core_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
 
     Order follows the original daemon.py registration sequence:
       1. State tools (state_get/set/delete/list)
-      2. Infra tools (status, trigger, tick, correct)
+      2. Infra tools (status, trigger, tick, correct, skill_read)
       3. Scheduling tools (schedule_*)
       4. Session tools (sessions_*)
       5. Notification tools (remind, notify)

@@ -15,6 +15,7 @@ import {
   isSuccessfulMaintenanceEvent,
 } from "@/lib/timeline-machine-class";
 import { formatOwnerDateTime } from "@/components/ui/time";
+import { breakerCauseLabel } from "@/lib/qa-breaker-cause";
 
 export type OverviewSeverity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -1058,8 +1059,9 @@ function summarizeQaState(
   // single failed patrol run, so it outranks the "last patrol failed" branch
   // below.
   if (summary.circuit_breaker.tripped) {
+    const cause = breakerCauseLabel(summary.circuit_breaker.dominant_cause);
     return {
-      title: "QA circuit breaker tripped",
+      title: cause ? `QA circuit breaker open: ${cause}` : "QA circuit breaker tripped",
       detail: `${summary.circuit_breaker.consecutive_failures} consecutive failures -- QA staffer stopped dispatching.`,
       severity: "critical",
     };

@@ -840,6 +840,36 @@ BEGIN
         );
     END IF;
 
+    -- connectors.calendar_event_revisions keeps verbatim titles, locations and attendees and is
+    -- append-only history (core_369): connector_writer inserts and reads it, butler_chronicler_rw
+    -- reads it, and no other role holds any privilege.
+    IF to_regclass('connectors.calendar_event_revisions') IS NOT NULL THEN
+        EXECUTE 'REVOKE ALL ON TABLE connectors.calendar_event_revisions FROM PUBLIC';
+        FOR _role IN
+            SELECT r.rolname
+            FROM pg_class c
+            CROSS JOIN LATERAL aclexplode(c.relacl) AS a
+            JOIN pg_roles r ON r.oid = a.grantee
+            WHERE c.oid = 'connectors.calendar_event_revisions'::regclass
+              AND a.grantee <> c.relowner
+              AND r.rolname NOT IN (_connector_role, 'butler_chronicler_rw')
+        LOOP
+            EXECUTE format(
+                'REVOKE ALL ON TABLE connectors.calendar_event_revisions FROM %I', _role
+            );
+        END LOOP;
+        EXECUTE format(
+            'REVOKE UPDATE, DELETE, TRUNCATE ON TABLE connectors.calendar_event_revisions '
+            'FROM %I',
+            _connector_role
+        );
+        EXECUTE
+            'REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE '
+            'connectors.calendar_event_revisions FROM butler_chronicler_rw';
+        EXECUTE
+            'GRANT SELECT ON TABLE connectors.calendar_event_revisions TO butler_chronicler_rw';
+    END IF;
+
     -- Cost claims are append/lifecycle evidence. Generic public-table bootstrap
     -- grants must not make their current assertion, resolution, or audit rows
     -- deletable. Forced RLS remains the authority fence; these revokes keep the

@@ -89,6 +89,7 @@ def _build_app(
     fetchrow_result: dict[str, Any] | None = None,
     fetchrow_side_effect: list[dict[str, Any] | None] | None = None,
     fetch_side_effect: list[list[dict[str, Any]]] | None = None,
+    link_row: dict[str, Any] | None = None,
 ) -> tuple[Any, MagicMock]:
     mock_pool = AsyncMock()
     if fetchval_side_effect is not None:
@@ -97,20 +98,18 @@ def _build_app(
         mock_pool.fetchval = AsyncMock(
             return_value=total if fetchval_result is None else fetchval_result
         )
-    if fetchrow_side_effect is not None:
-        mock_pool.fetchrow = AsyncMock(
-            side_effect=[_r(row) if row is not None else None for row in fetchrow_side_effect]
-        )
-    elif fetchrow_result is not None:
+    queued = [_r(row) if row is not None else None for row in fetchrow_side_effect or []]
 
-        async def _fetchrow(sql: str, *_args: Any) -> _MockRecord | None:
-            if "FROM public.qa_dismissals" in sql:
-                return None
-            return _r(fetchrow_result)
+    async def _fetchrow(sql: str, *_args: Any) -> _MockRecord | None:
+        if "FROM public.qa_known_issue_links" in sql:
+            return _r(link_row) if link_row is not None else None
+        if fetchrow_side_effect is not None:
+            return queued.pop(0)
+        if "FROM public.qa_dismissals" in sql or fetchrow_result is None:
+            return None
+        return _r(fetchrow_result)
 
-        mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
-    else:
-        mock_pool.fetchrow = AsyncMock(return_value=None)
+    mock_pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     if fetch_side_effect is not None:
         mock_pool.fetch = AsyncMock(
             side_effect=[[_r(row) for row in page] for page in fetch_side_effect]
@@ -951,3 +950,30 @@ async def test_journal_404() -> None:
             "details": None,
         }
     }
+
+
+async def test_case_dossier_names_the_tracked_link_and_what_it_held_back() -> None:
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_950)
+    fingerprint = "a" * 64
+    row = _make_case_row(id=attempt_id, finding_fingerprint=fingerprint)
+    link = {
+        "id": uuid.uuid4(),
+        "fingerprint": fingerprint,
+        "tracker_kind": "bead",
+        "tracker_ref": "bu-2cgabc",
+        "linked_by": "owner",
+        "linked_at": _NOW - timedelta(days=2),
+        "fix_ref": None,
+        "state": "tracked",
+        "expires_at": _NOW + timedelta(days=12),
+    }
+    app, pool = _build_app(fetchrow_result=row, rows=[], link_row=link, fetchval_result=7)
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["known_issue_link"]["tracker_ref"] == "bu-2cgabc"
+    assert data["tracked_occurrences_since_link"] == 7
+    count_sql = pool.fetchval.await_args.args[0]
+    assert "dedup_reason = 'tracked'" in count_sql

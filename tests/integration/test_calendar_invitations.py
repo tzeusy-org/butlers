@@ -27,7 +27,24 @@ def app():
     return create_authenticated_domain_app()
 
 
-async def test_migrated_invitation_projection_query_and_get(migrated_core_postgres_pool, app):
+@pytest.fixture
+def trusted_organizers(monkeypatch):
+    """The organizer is a known contact: the verdict stores the migrated chain lacks are stubbed."""
+    from butlers.modules.calendar import organizer_trust
+
+    async def known(pool, email):
+        return "known_entity"
+
+    async def no_rules(pool):
+        return organizer_trust.PolicyView({})
+
+    monkeypatch.setattr(organizer_trust, "identity_class", known)
+    monkeypatch.setattr(organizer_trust, "cached_policy_view", no_rules)
+
+
+async def test_migrated_invitation_projection_query_and_get(
+    migrated_core_postgres_pool, app, trusted_organizers
+):
     start = datetime(2026, 7, 1, tzinfo=UTC)
     end = start + timedelta(days=1)
     async with migrated_core_postgres_pool() as pool:
@@ -207,3 +224,57 @@ async def test_migrated_invitation_projection_query_and_get(migrated_core_postgr
         )
         moved = await query_calendar_invitations(db, start=start, end=end)
         assert moved.rows == [] and moved.status_available is True
+
+
+async def test_an_unreadable_identity_store_quarantines_every_invitation(
+    migrated_core_postgres_pool, app
+):
+    """The migrated core chain has no relationship schema: the real lookup fails, so the stamp is
+    ``unknown``, the invitation is quarantined (time and verdict only) and the envelope degrades."""
+    start = datetime(2026, 7, 1, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    async with migrated_core_postgres_pool() as pool:
+        source = await pool.fetchval(
+            """INSERT INTO calendar_sources (source_key,source_kind,lane,provider,calendar_id)
+               VALUES ('provider:google:primary','provider_event','user','google','primary')
+               RETURNING id"""
+        )
+        module = CalendarModule()
+        module._db = SimpleNamespace(pool=pool, db_name="general")
+        module._butler_name = "general"
+        payload = {
+            "id": "event-0",
+            "summary": "Win a free cruise",
+            "start": {"dateTime": "2026-07-01T09:00:00Z"},
+            "end": {"dateTime": "2026-07-01T10:00:00Z"},
+            "organizer": {"email": "stranger@example.test"},
+            "attendees": [
+                {"email": "owner@example.test", "self": True, "responseStatus": "needsAction"}
+            ],
+        }
+        event = _google_event_to_calendar_event(payload, fallback_timezone="UTC")
+        assert event is not None
+        await module._project_provider_changes(
+            source_id=source,
+            provider_name="google",
+            calendar_id="primary",
+            updated_events=[event],
+            cancelled_ids=[],
+        )
+        db = DatabaseManager()
+        db._pools = {"general": pool}
+        db._butler_modules = {"general": frozenset({"calendar"})}
+        app.dependency_overrides[get_db] = lambda: db
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(
+                "/api/calendar/workspace/invitations",
+                params={"start": start.isoformat(), "end": end.isoformat()},
+            )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["entries"] == []
+    assert [q["verdict"] for q in data["quarantined"]] == ["unknown"]
+    assert "Win a free cruise" not in response.text and "stranger@example.test" not in response.text
+    assert data["issues_available"] is False

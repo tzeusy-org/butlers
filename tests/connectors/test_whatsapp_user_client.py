@@ -1429,6 +1429,47 @@ async def test_send_invalidated_session_alert_never_raises_on_failure() -> None:
     await connector._send_invalidated_session_alert()  # must not raise
 
 
+async def test_lost_alert_reply_never_replays_the_send_and_ingest_can_reconnect(
+    connector: WhatsAppUserClientConnector,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector._db_pool = MagicMock()
+    private_detail = "sentinel-private-alert-transport-payload"
+    old_session = MagicMock()
+    old_session.__aenter__.return_value = SimpleNamespace(
+        call_tool=AsyncMock(side_effect=RuntimeError(private_detail))
+    )
+    old_session.__aexit__.side_effect = RuntimeError(private_detail)
+    new_session = MagicMock()
+    new_session.__aenter__.return_value = SimpleNamespace(
+        call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={"status": "ok"}))
+    )
+    connect = MagicMock(side_effect=[old_session, new_session])
+    record = AsyncMock()
+    monkeypatch.setattr("butlers.connectors.mcp_client.MCPClient", connect)
+    monkeypatch.setattr("butlers.core.attention_ledger.record_attention_event", record)
+
+    with caplog.at_level(logging.DEBUG, logger="butlers.connectors.mcp_client"):
+        await connector._send_invalidated_session_alert()
+
+    old_send = old_session.__aenter__.return_value.call_tool
+    old_send.assert_awaited_once()
+    assert old_send.await_args.args[0] == "deliver"
+    connect.assert_called_once()
+    old_session.__aexit__.assert_awaited_once()
+    record.assert_awaited_once()
+    assert record.await_args.kwargs["outcome"] == "failed"
+    assert record.await_args.kwargs["reason"] == "delivery_error:ConnectionError"
+    assert "RuntimeError" in caplog.text
+    assert private_detail not in caplog.text
+
+    assert await connector._mcp_client.call_tool("ingest", {}) == {"status": "ok"}
+    assert connect.call_count == 2
+    new_session.__aenter__.return_value.call_tool.assert_awaited_once_with("ingest", {})
+    await connector._mcp_client.aclose()
+
+
 async def test_send_invalidated_session_alert_records_attention_ledger_on_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1708,8 +1749,8 @@ async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing
     instead of tearing down the bridge or polling on a fixed sleep."""
     connector = _connector_with_mocks()
 
-    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
-        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
+    async def _wait_until_connected(*, timeout_s: float) -> None:
+        assert timeout_s == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
         connector._running = False
 
@@ -1731,7 +1772,7 @@ async def test_sse_event_loop_waits_for_bridge_connection_while_awaiting_pairing
 
     await connector._sse_event_loop()  # must return without raising or hanging
 
-    wait_until_connected.assert_awaited_once_with(timeout=_SSE_PAIRING_WAIT_TIMEOUT_S)
+    wait_until_connected.assert_awaited_once_with(timeout_s=_SSE_PAIRING_WAIT_TIMEOUT_S)
     sleep.assert_not_awaited()
 
 
@@ -1844,8 +1885,8 @@ async def test_sse_event_loop_retries_pending_identity_resolution_on_each_pass(
         get_status=AsyncMock(return_value={"state": "connected", "phone": "12025551234"}),
     )
 
-    async def _wait_until_connected(*, timeout: float) -> None:  # noqa: ASYNC109 - fakes BridgeSubprocessManager.wait_until_connected
-        assert timeout == _SSE_PAIRING_WAIT_TIMEOUT_S
+    async def _wait_until_connected(*, timeout_s: float) -> None:
+        assert timeout_s == _SSE_PAIRING_WAIT_TIMEOUT_S
         bridge_manager.is_degraded = False
 
     bridge_manager.wait_until_connected = AsyncMock(side_effect=_wait_until_connected)

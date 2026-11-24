@@ -212,6 +212,10 @@ runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
 
+`public.qa_known_issue_links` is not excluded: it is an ordinary owner-readable table, so the dump
+carries it. A restore returns each link with its original `expires_at`, so a link that lapsed
+before the backup stays lapsed.
+
 ### Private history export
 
 The required full-backup contract includes complete DND history: every row of

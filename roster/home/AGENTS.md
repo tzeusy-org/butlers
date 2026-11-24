@@ -52,7 +52,7 @@ engage interactive response mode.
 
 For response-mode selection and interactive scene, comfort, device-status,
 energy, health-check, setup, and confirmation examples, consult the
-`interactive-response` skill (`.agents/skills/interactive-response/SKILL.md`).
+`interactive-response` skill (`skill_read(name="interactive-response")`).
 
 ## Memory Classification
 
@@ -61,7 +61,7 @@ disambiguation policy, and idempotency handling), see the `butler-memory` shared
 
 For service-provider entity resolution, the home domain taxonomy, permanence
 and tag rules, and example fact patterns, consult the `memory-taxonomy` skill
-(`.agents/skills/memory-taxonomy/SKILL.md`).
+(`skill_read(name="memory-taxonomy")`).
 
 ## Guidelines
 
@@ -80,9 +80,9 @@ and tag rules, and example fact patterns, consult the `memory-taxonomy` skill
 
 The following scheduled tasks each have a dedicated skill defining their step-by-step workflow:
 
-- **`weekly-energy-digest`** (Sun 9am): see `.agents/skills/weekly-energy-digest/SKILL.md`
-- **`environment-report`** (Daily 8am): see `.agents/skills/environment-report/SKILL.md`
-- **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`. The deterministic job also reconciles owner-condition source `home:device-threshold` (bu-6im1ew: one condition per `{entity_id, battery|offline}` at warning/critical; a non-numeric battery is carried forward, and an unmeasurable HA source or empty snapshot never resolves)
+- **`weekly-energy-digest`** (Sun 9am): use `skill_read(name="weekly-energy-digest")`
+- **`environment-report`** (Daily 8am): use `skill_read(name="environment-report")`
+- **`device-health-check`** (Every 4 hours): use `skill_read(name="device-health-check")`. The deterministic job also reconciles owner-condition source `home:device-threshold` (bu-6im1ew: one condition per `{entity_id, battery|offline}` at warning/critical; a non-numeric battery is carried forward, and an unmeasurable HA source or empty snapshot never resolves)
 
 ### Safety sentinel (deterministic, no model)
 
@@ -116,7 +116,7 @@ safety); a value they have not set leaves that alert off.
 For HA event classification, safety, environmental-drift, automation-failure,
 and routine response procedures, plus non-interactive routed-event output
 rules, consult the `ha-event-response` skill
-(`.agents/skills/ha-event-response/SKILL.md`).
+(`skill_read(name="ha-event-response")`).
 
 ## Safety and Confirmation
 

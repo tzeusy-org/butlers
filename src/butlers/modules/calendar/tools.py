@@ -14,6 +14,7 @@ from .errors import (
     _build_structured_error,
     classify_sync_error_kind,
 )
+from .invitation_guard import guard_provider_events, pool_of
 from .models import CalendarSyncState
 
 if TYPE_CHECKING:
@@ -62,7 +63,9 @@ def register_read_tools(
         return {
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "events": [module._event_to_payload(event) for event in events],
+            "events": await guard_provider_events(
+                pool_of(module), events, module._event_to_payload
+            ),
         }
 
     @_tool("core")
@@ -178,7 +181,13 @@ def register_read_tools(
         return {
             "provider": provider.name,
             "calendar_id": resolved_calendar_id,
-            "event": None if event is None else module._event_to_payload(event),
+            "event": (
+                None
+                if event is None
+                else (
+                    await guard_provider_events(pool_of(module), [event], module._event_to_payload)
+                )[0]
+            ),
         }
 
 

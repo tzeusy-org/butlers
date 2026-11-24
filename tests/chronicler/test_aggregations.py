@@ -190,7 +190,7 @@ def test_all_supported_episode_adapters_have_non_other_category() -> None:
     point_event_only_sources = {"health.steps", "health.heart_rate", "owner_outbound.messages"}
     # Calendar is the intent layer: shown as a planned block, never counted as
     # lived time, so it has no source category / lane (IEA reframe, §4).
-    intent_only_sources = {"google_calendar.completed"}
+    intent_only_sources = {"google_calendar.completed", "calendar.revisions"}
     d1_source_names = {pair[0] for pair in _D1_PAIRS}
     other_mapped = sorted(
         f"{source_name}/{episode_type}"

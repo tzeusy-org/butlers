@@ -122,7 +122,15 @@ class _FakeLedger:
         return None
 
     async def open(
-        self, *, goal_id, event_id, calendar_id, pre_state, intended, conflict_policy
+        self,
+        *,
+        goal_id,
+        event_id,
+        calendar_id,
+        pre_state,
+        intended,
+        conflict_policy,
+        quarantined=False,
     ) -> UndoOffer:
         offer = self._open(goal_id, event_id)
         if offer is not None:
@@ -133,7 +141,7 @@ class _FakeLedger:
         key, action_id = f"offer-{len(self.offers)}", uuid.uuid4()
         self.cards[action_id] = {
             "tool_args": undo_card_args(pre_state, conflict_policy=conflict_policy),
-            "summary": undo_card_summary(pre_state),
+            "summary": undo_card_summary(pre_state, quarantined=quarantined),
             "why": UNDO_CARD_WHY,
             "status": "pending",
             "expires_at": datetime.now(UTC) + UNDO_CARD_TTL,
@@ -194,8 +202,10 @@ async def _module(provider):
     return mod, mcp
 
 
-async def _move(provider, args=MOVE, *, lineage=True, ledger=None):
+async def _move(provider, args=MOVE, *, lineage=True, ledger=None, setup=None):
     mod, mcp = await _module(provider)
+    if setup is not None:
+        setup(mod)
     with (
         patch(
             "butlers.modules.calendar.event_tools.replan_undo_ledger",

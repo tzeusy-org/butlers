@@ -113,8 +113,8 @@ spec:
           expr: max by (change) (butlers_public_mcp_owner_step_pending{ {{- $srv -}}, change=~"narrowing|widening"}) == 1
           labels: {severity: warning, surface: butlers-public-mcp}
           annotations:
-            summary: The public MCP server refuses with projection_apply_pending.
-            description: A manifest change awaits the owner step (docs/operations/public-mcp-read-surface.md, section 3c).
+            summary: The applied projection differs from the manifest the public MCP server ships.
+            description: A manifest change awaits the owner step (section 3c), or the public chart lags the deployed tag, in which case the server refuses with projection_version_mismatch and the change label is inverted (docs/operations/public-mcp-read-surface.md, section 5).
         - alert: PublicMcpDlpDrop
           expr: |
             sum by (tool) (increase({{ $blocked }}[{{ $win }}])) > 0

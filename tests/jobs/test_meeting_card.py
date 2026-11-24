@@ -135,12 +135,15 @@ class _Pool:
     ):
         self.events, self.people, self.envelope = events, people, envelope
         self.pending_keys, self.live = pending_keys, live
+        self.household: list[dict[str, Any]] = []
         self.queries: list[str] = []
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         self.queries.append(sql)
         if "insight_candidates" in sql:
             return [{"dedup_key": k} for k in self.pending_keys]
+        if "role_subject_entity_id" in sql:  # the household overlap read
+            return self.household
         return self.events if "calendar_events" in sql else self.people
 
     async def fetchval(self, sql: str, *args: Any) -> Any:
@@ -156,7 +159,8 @@ def _event(*, attendees: list[dict[str, Any]], **meta: Any) -> dict[str, Any]:
         "title": "Lunch",
         "location": "Amoy St",
         "starts_at": START,
-        "metadata": {"attendees": attendees, **meta},
+        # An unanswered invitation needs a trusted organizer to hold time (REQ-module-calendar-041).
+        "metadata": {"attendees": attendees, "organizer_verdict": "known_entity", **meta},
     }
 
 
@@ -403,3 +407,78 @@ class TestSupersededCards:
         proposer = _Proposer()
         result = await _run(pool, proposer, Boom())
         assert result["proposed"] == 1 and result["withdrawn"] == 0
+
+
+class TestHouseholdContext:
+    """Other people's overlapping events are context lines; they never become a card (038)."""
+
+    @staticmethod
+    def _partner(**extra: Any) -> dict[str, Any]:
+        return {
+            "time_role": "household_member",
+            "metadata": {"attendees": [{"email": "guest@example.test"}]},
+            "starts_at": START,
+            "ends_at": START + timedelta(hours=1),
+            "all_day": False,
+            "source_id": uuid4(),
+            "subject_entity_id": uuid4(),
+            "subject_label": "Alex",
+            "event_type": "default",
+            **extra,
+        }
+
+    @staticmethod
+    def _mine() -> dict[str, Any]:
+        return {**_event(attendees=[ME, SAM_ATT]), "ends_at": START + timedelta(hours=1)}
+
+    async def test_an_overlapping_household_event_is_one_time_only_line(self) -> None:
+        pool = _Pool([self._mine()], [_person()], None)
+        pool.household = [self._partner()]
+        proposer = _Proposer()
+        result = await _run(pool, proposer)
+        assert (result["considered"], result["proposed"]) == (1, 1)
+        message = proposer.calls[0]["message"]
+        assert "Also on Alex's calendar:" in message
+        for leaked in ("Synthetic private appointment", "Synthetic Road", "guest@example.test"):
+            assert leaked not in message
+
+    async def test_an_already_running_household_event_is_found_by_overlap(self) -> None:
+        pool = _Pool([self._mine()], [_person()], None)
+        pool.household = [
+            self._partner(
+                starts_at=START - timedelta(hours=2), ends_at=START + timedelta(minutes=25)
+            )
+        ]
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        assert "Also on Alex's calendar:" in proposer.calls[0]["message"]
+
+    async def test_a_hostile_subject_name_is_made_inert(self) -> None:
+        hostile = "[Alex](https://evil.test/x)\x07\x1b[31m <b>bold</b> " + "n" * 80
+        pool = _Pool([self._mine()], [_person()], None)
+        pool.household = [self._partner(subject_label=hostile)]
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        line = next(
+            ln for ln in proposer.calls[0]["message"].splitlines() if ln.startswith("Also on")
+        )
+        assert "evil.test" not in line and "](" not in line and "<b>" not in line
+        assert "\x07" not in line and "\x1b" not in line
+        assert len(line) < 120
+
+    async def test_a_household_event_alone_is_never_carded(self) -> None:
+        pool = _Pool([], [], None)
+        pool.household = [self._partner()]
+        proposer = _Proposer()
+        result = await _run(pool, proposer)
+        assert result["considered"] == 0 and proposer.calls == []
+
+    async def test_unclassified_and_non_overlapping_events_add_no_line(self) -> None:
+        pool = _Pool([self._mine()], [_person()], None)
+        pool.household = [
+            self._partner(starts_at=START + timedelta(hours=3), ends_at=START + timedelta(hours=4)),
+            self._partner(time_role="unclassified"),
+        ]
+        proposer = _Proposer()
+        await _run(pool, proposer)
+        assert "Also on" not in proposer.calls[0]["message"]
