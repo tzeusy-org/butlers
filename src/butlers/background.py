@@ -249,6 +249,7 @@ async def scheduler_loop(
     get_eligibility_pool: Callable[[], Any] | None = None,
     default_timezone: str = "UTC",
     chronicler_continuation: Any | None = None,
+    tick_gate: asyncio.Semaphore | None = None,
 ) -> None:
     """Periodically call tick() to dispatch due scheduled tasks.
 
@@ -310,6 +311,8 @@ async def scheduler_loop(
         ``timezone`` column is the default ``'UTC'`` sentinel (e.g. TOML
         schedules).  Forwarded to ``tick_fn`` so hour-pinned crons fire in the
         owner's local time.  Defaults to ``"UTC"``.
+    tick_gate:
+        Single-slot semaphore shared with the daemon's manual tick tool.
     """
 
     async def _scheduler_notify_fn(envelope: dict) -> dict | None:
@@ -368,64 +371,67 @@ async def scheduler_loop(
 
     # Set when cancellation arrives mid-tick, so the tick it lets finish claims no new work.
     stopping = asyncio.Event()
+    if tick_gate is None:
+        tick_gate = asyncio.Semaphore(1)
 
     try:
         while True:
             await asyncio.sleep(interval)
             try:
-                eligibility_pool = (
-                    get_eligibility_pool() if get_eligibility_pool is not None else None
-                )
-                if chronicler_continuation is not None:
-                    chronicler_continuation.begin_tick()
-                tick_task = asyncio.create_task(
-                    tick_fn(
-                        pool,
-                        dispatch_fn,
-                        stagger_key=butler_name,
-                        butler_name=butler_name,
-                        notify_fn=_scheduler_notify_fn,
-                        prompt_hooks=prompt_hooks,
-                        completion_hooks=completion_hooks,
-                        eligibility_pool=eligibility_pool,
-                        default_timezone=default_timezone,
-                        stopping=stopping,
+                async with tick_gate:
+                    eligibility_pool = (
+                        get_eligibility_pool() if get_eligibility_pool is not None else None
                     )
-                )
-                try:
-                    dispatched = await asyncio.shield(tick_task)
-                    logger.debug(
-                        "Scheduler loop: tick() dispatched %d task(s) for butler %s",
-                        dispatched,
-                        butler_name,
-                    )
-                except asyncio.CancelledError:
-                    # Cancellation arrived while tick() was running; let it finish what it
-                    # has claimed, but claim nothing more.
-                    stopping.set()
-                    logger.debug(
-                        "Scheduler loop: cancelled during tick(), waiting for tick to finish"
+                    if chronicler_continuation is not None:
+                        chronicler_continuation.begin_tick()
+                    tick_task = asyncio.create_task(
+                        tick_fn(
+                            pool,
+                            dispatch_fn,
+                            stagger_key=butler_name,
+                            butler_name=butler_name,
+                            notify_fn=_scheduler_notify_fn,
+                            prompt_hooks=prompt_hooks,
+                            completion_hooks=completion_hooks,
+                            eligibility_pool=eligibility_pool,
+                            default_timezone=default_timezone,
+                            stopping=stopping,
+                        )
                     )
                     try:
-                        await tick_task
-                    except Exception:
-                        logger.exception(
-                            "Scheduler loop: in-progress tick() raised on cancellation "
-                            "for butler %s",
+                        dispatched = await asyncio.shield(tick_task)
+                        logger.debug(
+                            "Scheduler loop: tick() dispatched %d task(s) for butler %s",
+                            dispatched,
                             butler_name,
                         )
-                    raise
-                except Exception:
-                    logger.exception(
-                        "Scheduler loop: tick() raised an exception for butler %s; continuing",
-                        butler_name,
-                    )
-                if chronicler_continuation is not None:
-                    try:
-                        # Durable discovery also recovers a missed postcommit hook.
-                        await chronicler_continuation.resume_once()
+                    except asyncio.CancelledError:
+                        # Cancellation arrived while tick() was running; let it finish what it
+                        # has claimed, but claim nothing more.
+                        stopping.set()
+                        logger.debug(
+                            "Scheduler loop: cancelled during tick(), waiting for tick to finish"
+                        )
+                        try:
+                            await tick_task
+                        except Exception:
+                            logger.exception(
+                                "Scheduler loop: in-progress tick() raised on cancellation "
+                                "for butler %s",
+                                butler_name,
+                            )
+                        raise
                     except Exception:
-                        logger.exception("Chronicler continuation deferred after tick")
+                        logger.exception(
+                            "Scheduler loop: tick() raised an exception for butler %s; continuing",
+                            butler_name,
+                        )
+                    if chronicler_continuation is not None:
+                        try:
+                            # Durable discovery also recovers a missed postcommit hook.
+                            await chronicler_continuation.resume_once()
+                        except Exception:
+                            logger.exception("Chronicler continuation deferred after tick")
                 await _sweep_domain_event_reactions(pool, butler_name)
             except asyncio.CancelledError as exc:
                 raise_if_task_cancelled(exc)

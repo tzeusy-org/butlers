@@ -19,6 +19,7 @@ from butlers.core.corrections import (
 from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.skills import SkillDefinition, SkillReadFailure, read_skill_definition
 from butlers.core.telemetry import tool_span
+from butlers.core.tick_guard import scheduler_tick_gate
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 
@@ -214,18 +215,29 @@ def register_infra_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         """Evaluate due scheduled tasks and dispatch them now.
 
         Primarily driven by the internal scheduler loop. Retained as an MCP tool
-        for debugging and manual triggering.
+        for debugging and manual triggering. Returns a busy reply immediately
+        when a tick is already running or waiting on the same daemon.
         """
-        runtime_context = await daemon._build_scheduler_runtime_context()
-        count = await _tick(
-            pool,
-            daemon._dispatch_scheduled_task,
-            stagger_key=daemon.config.name,
-            butler_name=daemon.config.name,
-            prompt_hooks=runtime_context.prompt_hooks,
-            completion_hooks=runtime_context.completion_hooks,
-            default_timezone=runtime_context.default_timezone,
-        )
+        gate = scheduler_tick_gate(daemon)
+        # The semaphore also reports busy during a handoff to a waiting loop tick.
+        if gate.locked():
+            return {
+                "status": "busy",
+                "dispatched": 0,
+                "message": "A scheduler tick is already running.",
+            }
+
+        async with gate:
+            runtime_context = await daemon._build_scheduler_runtime_context()
+            count = await _tick(
+                pool,
+                daemon._dispatch_scheduled_task,
+                stagger_key=daemon.config.name,
+                butler_name=daemon.config.name,
+                prompt_hooks=runtime_context.prompt_hooks,
+                completion_hooks=runtime_context.completion_hooks,
+                default_timezone=runtime_context.default_timezone,
+            )
         return {"dispatched": count}
 
     async def correct(

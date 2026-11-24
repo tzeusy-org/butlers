@@ -114,6 +114,21 @@ The daemon calls `tick()` at a regular interval. Each tick:
 
 Dispatch failures are logged but do not prevent subsequent tasks from running. The error is stored in `last_result` for operator visibility.
 
+### Manual ticks and the scheduler loop
+
+The daemon allows one scheduler tick at a time. A loop tick waits for a manual
+tick that already holds the slot. A manual request returns promptly when the
+slot is held or reserved for a waiting loop tick. This keeps a long tick from
+exhausting the manual endpoint's request timeout.
+
+An idle daemon's MCP `tick` tool replies with `{"dispatched": n}`. A busy daemon
+replies with `status: "busy"`, `dispatched: 0` and a message. The
+`POST /api/butlers/{name}/tick` endpoint returns the busy message in
+`data.message` and sets `data.success` to false. Its audit row records the
+handled result with `tick_outcome` set to `busy` or `ran`. The existing
+per-occurrence claim continues to prevent repeated dispatch of the same due
+occurrence.
+
 ## Task Continuity (opt-in)
 
 A prompt-mode task can set `continuity = true` (per-task, default `false`) to have the scheduler inject what its previous run concluded into its next dispatched prompt. The task's own session calls the `carry_forward(task_name, content)` core tool to record that conclusion; the record lives in the shared `public.task_continuity` ledger, keyed by `(butler_name, task_name)` for the single "live" row and `(butler_name, task_name, session_id)` so calling it twice in one session updates the same row rather than duplicating it.

@@ -1580,6 +1580,17 @@ async def trigger_butler(
 # ---------------------------------------------------------------------------
 
 
+def _tick_reported_busy(message: str | None) -> bool:
+    """Read the busy status from the scheduler tool's JSON reply."""
+    if not message:
+        return False
+    try:
+        payload = json.loads(message)
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "busy"
+
+
 @router.post("/{name}/tick", response_model=ApiResponse[TickResponse])
 async def force_butler_tick(
     name: str,
@@ -1591,8 +1602,9 @@ async def force_butler_tick(
     """Force a scheduler tick on the specified butler.
 
     Connects to the butler's MCP server and calls the tick tool,
-    which triggers the scheduler to run immediately.  Returns 503 if the
-    butler is unreachable or the request times out.
+    which triggers the scheduler to run immediately. A busy tick returns
+    ``success: false`` with the tool's message. Returns 503 if the butler is
+    unreachable or the request times out.
     """
     if not any(cfg.name == name for cfg in configs):
         raise HTTPException(status_code=404, detail=f"Butler not found: {name}")
@@ -1614,7 +1626,9 @@ async def force_butler_tick(
             if text:
                 message = text
 
-        tick_resp = TickResponse(success=True, message=message)
+        busy = _tick_reported_busy(message)
+        tick_resp = TickResponse(success=not busy, message=message)
+        summary["tick_outcome"] = "busy" if busy else "ran"
         await log_audit_entry(db, name, "tick", summary)
         return ApiResponse[TickResponse](data=tick_resp)
 

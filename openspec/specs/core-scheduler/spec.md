@@ -147,6 +147,17 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **THEN** the error is captured in `last_result` as `{"error": "..."}` and the remaining due tasks continue dispatching
 - **AND** the failed task's `next_run_at` is still advanced to the next cron occurrence
 
+#### Scenario: Manual tick reports a busy scheduler
+- **WHEN** the MCP `tick` tool or `POST /api/butlers/{name}/tick` is invoked while a tick is running or waiting on the same daemon
+- **THEN** the manual tool promptly replies with `status: "busy"` and `dispatched: 0`
+- **AND** the request dispatches no task
+- **AND** the API returns `data.success: false` with the busy message
+
+#### Scenario: The loop waits behind a running manual tick
+- **WHEN** the daemon's loop reaches its next tick while a manual tick holds its scheduler slot
+- **THEN** the loop waits for the manual tick to finish before evaluating due tasks
+- **AND** an idle daemon's manual tool keeps the successful response `{"dispatched": n}`
+
 #### Scenario: A CancelledError with no cancel of the running task is a dispatch failure
 - **WHEN** a cron or deadline dispatch raises `asyncio.CancelledError` and `Task.cancelling()` is zero for the task running `tick()`
 - **THEN** it is handled as that dispatch's failure and the remaining due tasks continue dispatching
