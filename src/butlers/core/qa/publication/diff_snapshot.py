@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import itertools
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,6 +64,11 @@ def record_snapshot_failure(stage: str, exc: BaseException) -> None:
     """
     global _failures
     reason = exc.code if isinstance(exc, ExportRefused | ObjectStoreError) else type(exc).__name__
+    if stage == "seal" and isinstance(exc, ExportRefused):
+        # A refusal at seal time (content_leak, a bound violation) is the sealer working as
+        # designed and the publisher receipts it itself: not a snapshot failure to alarm on.
+        logger.info("QA diff snapshot skipped, export refused at seal time: %s", reason)
+        return
     logger.warning("Could not derive the QA diff snapshot (%s): %s", stage, reason)
     try:
         if _failures is None:
@@ -199,9 +205,12 @@ def _render(objects: _Objects, changes: list[_Change]) -> str:
         assert not isinstance(old_lines, str) and not isinstance(new_lines, str)
         old_label = "/dev/null" if change.old is None else f"a/{change.path}"
         new_label = "/dev/null" if change.new is None else f"b/{change.path}"
-        out.extend(
-            difflib.unified_diff(old_lines, new_lines, old_label, new_label, n=3, lineterm="")
-        )
+        room = MAX_DIFF_LINES - len(out)
+        diff = difflib.unified_diff(old_lines, new_lines, old_label, new_label, n=3, lineterm="")
+        out.extend(itertools.islice(diff, room))
+        if len(out) >= MAX_DIFF_LINES:
+            out.append("... (diff truncated)")
+            break
     if len(changes) > MAX_DIFF_FILES:
         out.append(f"... ({len(changes) - MAX_DIFF_FILES} more changed files not shown)")
     return "\n".join(out)

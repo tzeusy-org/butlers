@@ -216,6 +216,8 @@ async def publish_investigation(
                 objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
             )
         else:
+            if sealed_export.base_sha != base_sha:  # an export for a different base is not ours
+                raise ExportRefused("unbound_export")
             export, head_sha = sealed_export, sealed_export.head_sha
         binding = PublicationBinding(
             repository=publisher.repository,
@@ -288,6 +290,8 @@ async def retain_unpublished_proposal(
                 objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
             )
         else:
+            if sealed_export.base_sha != base_sha:
+                raise ExportRefused("unbound_export")
             export = sealed_export
     except ExportRefused as exc:
         status = (
