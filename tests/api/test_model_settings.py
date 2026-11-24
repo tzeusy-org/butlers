@@ -15,7 +15,7 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1320,97 +1320,104 @@ async def test_dispatch_attempts_by_logical_session_id(
 # ---------------------------------------------------------------------------
 
 
-async def test_dispatch_attempts_outcome_mode_returns_rows_ordered_desc(app):
-    """?outcome=quota_skip with no session_id/logical_session_id lists fleet-wide rows."""
-    from datetime import UTC, datetime
-
-    older_ts = datetime(2026, 7, 10, 8, 0, 0, tzinfo=UTC)
-    newer_ts = datetime(2026, 7, 12, 9, 0, 0, tzinfo=UTC)
-    rows_data = [
-        {
-            "ts": newer_ts,
-            "butler": "finance",
-            "outcome": "quota_skip",
-            "attempt_index": 0,
-            "failure_reason": "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
-            "error_code": None,
-            "error_message": None,
-            "tool_call_count": 0,
-            "session_id": None,
-            "logical_session_id": "req-ceiling-002",
-        },
-        {
-            "ts": older_ts,
-            "butler": "general",
-            "outcome": "quota_skip",
-            "attempt_index": 0,
-            "failure_reason": "Monthly spend ceiling reached: month-to-date $50.00 >= ceiling $50.00",
-            "error_code": None,
-            "error_message": None,
-            "tool_call_count": 0,
-            "session_id": None,
-            "logical_session_id": "req-ceiling-001",
-        },
+@pytest.fixture
+async def fleet_dispatch_attempts(api_db: ApiDatabase) -> tuple[datetime, str]:
+    since = datetime(2026, 7, 1, tzinfo=UTC)
+    earlier = since - timedelta(days=1)
+    later = since + timedelta(days=1)
+    first_session = uuid.uuid4()
+    second_session = uuid.uuid4()
+    prefix = "Monthly spend ceiling reached: fixture_%"
+    catalog_id = await api_db.pool.fetchval(
+        """
+        INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)
+        VALUES ('fleet-fixture', 'codex', 'synthetic-fleet-model', 'workhorse')
+        RETURNING id
+        """
+    )
+    wildcard_decoy = "Monthly spend ceiling reached: fixtureXY"
+    rows = [
+        (55, first_session, "boundary-high", since, "quota_skip", f"{prefix} high", "general"),
+        (90, second_session, "later", later, "quota_skip", f"{prefix} later", "finance"),
+        (51, None, "wildcard-decoy", later, "quota_skip", wildcard_decoy, "general"),
+        (5, first_session, "older", earlier, "quota_skip", f"{prefix} older", "general"),
+        (
+            64,
+            second_session,
+            "wrong-outcome",
+            later,
+            "success",
+            f"{prefix} other outcome",
+            "finance",
+        ),
+        (88, None, "ordinary-denial", since, "quota_skip", "Token quota exhausted: 24h", "finance"),
+        (7, None, "boundary-low", since, "quota_skip", f"{prefix} low", "general"),
     ]
-
-    _, mock_pool = _app_with_pool(app)
-    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
-    mock_pool.fetchval = AsyncMock(return_value=2)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/dispatch/attempts?outcome=quota_skip")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["meta"]["total"] == 2
-    assert len(body["data"]) == 2
-    assert body["data"][0]["butler"] == "finance"
-
-    fetch_call = mock_pool.fetch.call_args
-    sql = fetch_call.args[0]
-    assert "WHERE outcome = $1" in sql
-    assert "ORDER BY ts DESC, id DESC" in sql
-    assert fetch_call.args[1] == "quota_skip"
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_dispatch_attempts
+            (id, session_id, logical_session_id, ts, outcome, failure_reason, butler, catalog_entry_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+        [(*row, catalog_id) for row in rows],
+    )
+    return since, prefix
 
 
-async def test_dispatch_attempts_outcome_mode_reason_prefix_and_since_filter(app):
-    """reason_prefix isolates ceiling denials; since bounds by timestamp; order=asc flips sort."""
-    _, mock_pool = _app_with_pool(app)
-    mock_pool.fetch = AsyncMock(return_value=[])
-    mock_pool.fetchval = AsyncMock(return_value=0)
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.usefixtures("fleet_dispatch_attempts")
+async def test_dispatch_attempts_outcome_mode_returns_rows_ordered_desc(
+    api: httpx.AsyncClient,
+) -> None:
+    """Fleet mode selects one outcome across sessions and defaults to descending time and ID."""
+    response = await api.get("/api/dispatch/attempts", params={"outcome": "quota_skip"})
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/dispatch/attempts"
-            "?outcome=quota_skip"
-            "&reason_prefix=Monthly+spend+ceiling+reached"
-            "&since=2026-07-01T00:00:00Z"
-            "&order=asc"
-            "&limit=1"
-        )
+    assert response.status_code == 200
+    body = response.json()
+    assert [(row["logical_session_id"], row["butler"]) for row in body["data"]] == [
+        ("later", "finance"),
+        ("wildcard-decoy", "general"),
+        ("ordinary-denial", "finance"),
+        ("boundary-high", "general"),
+        ("boundary-low", "general"),
+        ("older", "general"),
+    ]
+    assert {row["outcome"] for row in body["data"]} == {"quota_skip"}
+    assert body["meta"] == {"total": 6, "offset": 0, "limit": 100, "has_more": False}
 
-    assert resp.status_code == 200
 
-    fetch_call = mock_pool.fetch.call_args
-    sql = fetch_call.args[0]
-    assert "left(failure_reason, length($2)) = $2" in sql
-    assert "ts >= $3" in sql
-    assert "ORDER BY ts ASC, id ASC" in sql
-    assert fetch_call.args[1] == "quota_skip"
-    assert fetch_call.args[2] == "Monthly spend ceiling reached"
-    # args[3] is the `since` datetime, args[4] is the limit
-    assert fetch_call.args[4] == 1
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dispatch_attempts_outcome_mode_reason_prefix_and_since_filter(
+    api: httpx.AsyncClient, fleet_dispatch_attempts: tuple[datetime, str]
+) -> None:
+    """Fleet filtering uses a literal prefix, inclusive time, and a count before the page limit."""
+    since, prefix = fleet_dispatch_attempts
+    params = {
+        "outcome": "quota_skip",
+        "reason_prefix": prefix,
+        "since": since.isoformat(),
+        "order": "asc",
+    }
+    response = await api.get("/api/dispatch/attempts", params=params)
 
-    fetchval_call = mock_pool.fetchval.call_args
-    count_sql = fetchval_call.args[0]
-    assert "left(failure_reason, length($2)) = $2" in count_sql
-    assert "ts >= $3" in count_sql
-    # The count query binds outcome/reason_prefix/since but NOT limit.
-    assert len(fetchval_call.args) == 4
+    assert response.status_code == 200
+    body = response.json()
+    assert [(row["logical_session_id"], row["failure_reason"]) for row in body["data"]] == [
+        ("boundary-low", f"{prefix} low"),
+        ("boundary-high", f"{prefix} high"),
+        ("later", f"{prefix} later"),
+    ]
+    assert body["meta"] == {"total": 3, "offset": 0, "limit": 100, "has_more": False}
+
+    limited = await api.get("/api/dispatch/attempts", params={**params, "limit": "1"})
+
+    assert limited.status_code == 200
+    assert limited.json() == {
+        "data": body["data"][:1],
+        "meta": {"total": 3, "offset": 0, "limit": 1, "has_more": True},
+    }
 
 
 async def test_dispatch_attempts_outcome_mode_empty_on_missing_table(app):
