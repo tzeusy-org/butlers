@@ -640,6 +640,7 @@ async def test_provider_id_preserves_aggregator_provenance_after_email_collision
 @pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
 async def test_sync_records_on_a_migrated_single_connection_pool(
     single_connection_pool: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The held advisory-lock connection also performs the ledger write."""
     from roster.finance.jobs.finance_jobs import run_simplefin_sync
@@ -659,16 +660,24 @@ async def test_sync_records_on_a_migrated_single_connection_pool(
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=response)
 
-    async with _http_client(handler) as client:
-        result = await asyncio.wait_for(
-            run_simplefin_sync(
+    acquire = asyncpg.Pool.acquire
+    sync_task = asyncio.current_task()
+
+    def guard_acquire(pool: asyncpg.Pool, *, timeout: float | None = None):
+        # The asynchronous ledger mirror may wait for the held connection.
+        if pool is single_connection_pool and asyncio.current_task() is sync_task:
+            assert pool.get_idle_size() > 0, "SimpleFIN tried to acquire a second connection"
+        return acquire(pool, timeout=timeout)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(asyncpg.Pool, "acquire", guard_acquire)
+        async with _http_client(handler) as client:
+            result = await run_simplefin_sync(
                 single_connection_pool,
                 credential_store=_CredentialStore(_ACCESS_URL),
                 http_client=client,
                 now=_NOW,
-            ),
-            timeout=1,
-        )
+            )
 
     assert result == {"status": "ok", "recorded": 1, "skipped_pending": 0}
     assert await single_connection_pool.fetchval("SELECT COUNT(*) FROM transactions") == 1
