@@ -276,3 +276,40 @@ async def test_rendering_stops_at_the_line_cap(packed_base, monkeypatch) -> None
 
     assert snapshot[-1]["text"].startswith("...")
     assert sum(line["text"].startswith("diff --git") for line in snapshot) < 6
+
+
+async def test_the_publisher_reuses_the_dispatchers_sealed_export(tmp_path: Path, monkeypatch):
+    """One seal per attempt: a supplied export is neither rebuilt nor re-resolved."""
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.core.qa.publication import proposal
+    from tests.core.qa.publication_fakes import synthetic_export
+
+    export = synthetic_export()
+    publisher = MagicMock()
+    publisher.repository = "owner/repo"
+    publisher.publish = AsyncMock(return_value="published")
+    monkeypatch.setattr(proposal, "resolve_branch_head", MagicMock(side_effect=AssertionError))
+    monkeypatch.setattr(proposal, "build_sealed_export", AsyncMock(side_effect=AssertionError))
+    monkeypatch.setattr(proposal, "compose_pr_text", MagicMock(return_value=("t", "b")))
+    monkeypatch.setattr(proposal, "load_pr_notes", MagicMock(return_value={}))
+
+    result = await proposal.publish_investigation(
+        publisher,
+        repo_root=tmp_path,
+        worktree_path=tmp_path,
+        attempt_id=uuid.uuid4(),
+        finding=MagicMock(),
+        branch_name="qa/finance/abc-1",
+        base_sha="b" * 40,
+        identity=QA_IDENTITY,
+        labels=[],
+        whitelist=None,
+        dashboard_base_url=None,
+        sealed_export=export,
+    )
+
+    assert result == "published"
+    assert publisher.publish.await_args.kwargs["export"] is export
+    assert publisher.publish.await_args.kwargs["binding"].head_sha == export.head_sha
