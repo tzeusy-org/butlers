@@ -17,8 +17,10 @@ name, a role, the RSVP status and a resolution state. Rows with an address are u
 exact normalized addresses in (at most 200), ``(email_norm, entity_id, is_owner)`` out, one row per
 active ``has-email`` claimant, no names; merged, deleted and unidentified entities are excluded.
 An address with two live claimants returns two rows and the resolver marks it ambiguous. It is
-SECURITY DEFINER with a pinned ``search_path`` and its ACL converges to the butler runtime roles
-(PUBLIC revoked). The core chain runs once per butler schema: every run takes one advisory lock and
+SECURITY DEFINER with a pinned ``search_path`` and its ACL converges to the runtime roles of the
+butlers that enable ``[modules.calendar]`` (PUBLIC revoked): a butler that does not host the module
+cannot probe the address-to-entity map. A butler that later enables the module needs a revision that
+re-converges the ACL. The core chain runs once per butler schema: every run takes one advisory lock and
 replaces the function, which is idempotent; the downgrade drops the function only when no other
 schema-local chain is still at core_390 or later, and always drops this schema's table.
 """
@@ -26,7 +28,7 @@ schema-local chain is still at core_390 or later, and always drops this schema's
 from __future__ import annotations
 
 from alembic import op
-from butlers.db_authority.roles import butler_roles
+from butlers.db_authority.roles import module_roles
 
 revision = "core_390"
 down_revision = "core_371"
@@ -37,7 +39,8 @@ _LOCK = (
     "SELECT pg_advisory_xact_lock("
     "hashtextextended('butlers:core_390:calendar-event-participants', 0))"
 )
-_ROLES = butler_roles()
+#: Only the butlers that host the calendar module project events, so only they may probe the map.
+_ROLES = module_roles("calendar")
 _CLAIMS = "public.attendee_identity_claims(text[])"
 MAX_ADDRESSES = 200
 

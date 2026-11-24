@@ -4,7 +4,8 @@
 
 Every provider calendar event SHALL have one participant record per attendee address in
 `calendar_event_participants`, written by the calendar projection when it writes the event. A row
-SHALL carry the normalized address, a display name, a role (`organizer`, `required`, `optional` or
+SHALL carry the normalized address, the organizer-supplied display name only for an `ambiguous` or
+`unresolved` address (untrusted, never shown to a reader), a role (`organizer`, `required`, `optional` or
 `resource`), the attendee's response status, a resolution state (`exact`, `ambiguous`,
 `unresolved`, `owner`, `resource` or `manual`), the resolved entity id when the state is `exact`,
 `owner` or `manual`, the resolver version and the resolution time. An empty attendee list SHALL
@@ -12,7 +13,8 @@ delete the provider-derived rows of that event and keep its `manual` rows. The s
 synced twice SHALL produce identical rows. A participant row SHALL be an "invited" claim: it
 SHALL NOT be written as an interaction, an encounter or an owner assertion. A quarantined
 invitation (REQ-module-calendar-041) SHALL have no provider-derived participant rows. Readers
-SHALL receive entity ids and display names only; a normalized address SHALL NOT appear in a prompt,
+SHALL receive entity ids and the entity's own canonical name, resolved at read time and never the
+organizer-supplied display name; a normalized address SHALL NOT appear in a prompt,
 a log line or an MCP response, and unresolved attendees SHALL be reported as a count.
 
 ID: REQ-module-calendar-042

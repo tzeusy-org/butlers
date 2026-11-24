@@ -248,3 +248,37 @@ def test_a_later_run_converges_a_stray_grantee_away(postgres_container) -> None:
         assert public == 0
     finally:
         engine.dispose()
+
+
+def test_only_the_butlers_hosting_the_calendar_module_may_execute(postgres_container) -> None:
+    from butlers.db_authority.roles import butler_roles, module_roles
+
+    hosts, everyone = set(module_roles("calendar")), set(butler_roles())
+    assert hosts and everyone - hosts  # the roster has hosts and non-hosts, or this proves nothing
+    db_url = create_migration_db(postgres_container, migration_db_name())
+    engine = create_engine(db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            for role in sorted(everyone):
+                exists = conn.execute(
+                    text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": role}
+                ).scalar()
+                if not exists:
+                    conn.execute(text(f'CREATE ROLE "{role}" NOLOGIN'))
+        command.upgrade(
+            _build_alembic_config(db_url, chains=["core"], target_schema="general"), "core_390"
+        )
+        with engine.connect() as conn:
+            granted = set(
+                conn.execute(
+                    text(
+                        "SELECT r.rolname FROM pg_proc p, aclexplode(p.proacl) a "
+                        "JOIN pg_roles r ON r.oid = a.grantee "
+                        "WHERE p.oid = to_regprocedure(:s) AND a.grantee <> p.proowner"
+                    ),
+                    {"s": _CLAIMS},
+                ).scalars()
+            )
+        assert granted == hosts
+    finally:
+        engine.dispose()

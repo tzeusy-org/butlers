@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -31,7 +32,10 @@ from butlers.core.identity.attendees import (
     resolve_attendee_emails,
 )
 from butlers.core.temporal.calendar_provenance import is_quarantined_invitation
-from butlers.core.temporal.invitation_quarantine import QUARANTINED_INVITATION_SQL
+from butlers.core.temporal.invitation_quarantine import (
+    QUARANTINED_INVITATION_SQL,
+    quarantined_invitation_sql,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +149,13 @@ def derive_rows(metadata: Mapping[str, Any], claims: Sequence[Claim]) -> list[Pa
         rows.append(
             ParticipantRow(
                 email_norm=email,
-                display_name=_display_name(raw),
+                # The organizer's displayName is untrusted: kept only for an address that names no
+                # entity, never as the name of one (readers use the entity's own name).
+                display_name=(
+                    _display_name(raw)
+                    if resolved.resolution in ("ambiguous", "unresolved")
+                    else None
+                ),
                 role=role,
                 response_status=_status(raw),
                 entity_id=resolved.entity_id,
@@ -326,12 +336,13 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
         }
     rows = await pool.fetch(
         """
-        SELECT p.email_norm, p.display_name, p.role, p.response_status, p.resolution,
-               p.resolver_version, p.entity_id, COALESCE(e.posture, 'active') AS posture
+        SELECT p.email_norm, p.role, p.response_status, p.resolution,
+               p.resolver_version, p.entity_id, e.canonical_name AS entity_name,
+               COALESCE(e.posture, 'active') AS posture
         FROM calendar_event_participants p
         LEFT JOIN public.entities e ON e.id = p.entity_id
         WHERE p.event_id = $1
-        ORDER BY p.role, p.display_name NULLS LAST, p.id
+        ORDER BY p.role, e.canonical_name NULLS LAST, p.id
         """,
         event_id,
     )
@@ -354,7 +365,8 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
             people.append(
                 {
                     "entity_id": str(r["entity_id"]),
-                    "display_name": r["display_name"],
+                    "display_name": r["entity_name"]
+                    or "Unknown",  # the entity's name, never the invite's
                     "role": r["role"],
                     "response_status": r["response_status"],
                     "resolution": r["resolution"],
@@ -368,13 +380,83 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
     }
 
 
-async def backfill_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BATCH) -> int:
-    """Derive rows for provider events that have none at the current resolver version.
+def _not_ready_predicate(alias: str, version_param: str) -> str:
+    """SQL: the event's stored provider rows do not cover exactly its current plain addresses.
 
-    Bounded and resumable with no stored cursor: an event with a plain-address attendee that is not
-    quarantined and has no provider row at the current version is selected, and once written it is
-    never selected again. Quarantined events lose any provider rows they hold (a verdict can turn
-    after a row was written). Returns the number of events written.
+    Compares the distinct normalized addresses of the event's attendees with the addresses of its
+    provider rows at the current resolver version, so an event with no rows, stale rows, a changed
+    attendee list or a half-written set is "not ready". The SQL twin of the ``available`` check in
+    :func:`read_participants` (a parity test runs both).
+    """
+    metadata = f"{alias}.metadata"
+    return f"""(
+        SELECT COALESCE(array_agg(DISTINCT lower(btrim(att ->> 'email'))), '{{}}')
+        FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof({metadata} -> 'attendees') = 'array'
+                 THEN {metadata} -> 'attendees' ELSE '[]'::jsonb END) AS att
+        WHERE jsonb_typeof(att) = 'object' AND btrim(att ->> 'email') ~ '^[^@\\s]+@[^@\\s]+$'
+    ) IS DISTINCT FROM (
+        SELECT COALESCE(array_agg(p.email_norm ORDER BY p.email_norm), '{{}}')
+        FROM calendar_event_participants p
+        WHERE p.event_id = {alias}.id AND p.resolution <> 'manual'
+          AND p.resolver_version = {version_param}
+    )"""
+
+
+def unavailable_events_sql(alias: str = "e") -> str:
+    """SQL (``$1`` event ids, ``$2`` resolver version): provider events whose rows are not ready.
+
+    Quarantined invitations are never listed (they have no participants by design). A reader shows
+    "attendees unavailable" for these rather than an empty list.
+    """
+    return f"""
+        SELECT {alias}.id
+        FROM calendar_events {alias}
+        WHERE {alias}.id = ANY($1::uuid[])
+          AND {alias}.metadata ->> 'source_type' = '{_PROVIDER_SOURCE}'
+          AND NOT {quarantined_invitation_sql(alias)}
+          AND {_not_ready_predicate(alias, "$2")}
+    """
+
+
+async def unavailable_event_ids(executor: Any, event_ids: Sequence[uuid.UUID]) -> set[uuid.UUID]:
+    """The events among ``event_ids`` whose participants are unavailable. A failure propagates."""
+    if not event_ids:
+        return set()
+    rows = await executor.fetch(unavailable_events_sql(), list(event_ids), RESOLVER_VERSION)
+    return {row["id"] for row in rows}
+
+
+#: Events the backfill attempted recently (written or failed), so an event that stays "not ready"
+#: (a failing read, or an address the SQL and Python normalizers disagree on) is retried at most
+#: hourly instead of holding the bounded window while the events behind it wait. Process-local and
+#: best effort: a restart retries them, which is the only cost of losing it.
+_RETRY_AFTER: Final = 3600.0
+_MAX_ATTEMPTS_TRACKED: Final = 1000
+_attempted_at: dict[uuid.UUID, float] = {}
+
+
+def _recent_attempts(now: float) -> list[uuid.UUID]:
+    for event_id in [k for k, at in _attempted_at.items() if now - at >= _RETRY_AFTER]:
+        del _attempted_at[event_id]
+    return list(_attempted_at)
+
+
+def _remember_attempt(event_id: uuid.UUID, now: float) -> None:
+    if len(_attempted_at) >= _MAX_ATTEMPTS_TRACKED:
+        del _attempted_at[min(_attempted_at, key=_attempted_at.__getitem__)]
+    _attempted_at[event_id] = now
+
+
+async def backfill_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BATCH) -> int:
+    """Derive rows for provider events whose stored rows do not match their attendees.
+
+    Bounded and resumable with no stored cursor: a non-quarantined provider event whose provider
+    rows do not cover exactly its current plain-address attendees at the current resolver version
+    (none, stale, a changed list, a partial set) is selected and, once written, not selected again.
+    An event attempted in the last hour is skipped, so one that stays not ready cannot hold the
+    window while the events behind it wait. Quarantined events lose any provider rows they hold
+    (a verdict can turn after a row was written). Returns the number of events written.
     """
     await pool.execute(
         f"""
@@ -383,29 +465,25 @@ async def backfill_participants(pool: asyncpg.Pool, *, limit: int = BACKFILL_BAT
         WHERE p.event_id = e.id AND p.resolution <> 'manual' AND {QUARANTINED_INVITATION_SQL}
         """
     )
+    now = time.monotonic()
     rows = await pool.fetch(
         f"""
         SELECT e.id
         FROM calendar_events e
         WHERE e.metadata ->> 'source_type' = '{_PROVIDER_SOURCE}'
           AND NOT {QUARANTINED_INVITATION_SQL}
-          AND jsonb_typeof(e.metadata -> 'attendees') = 'array'
-          AND EXISTS (
-              SELECT 1 FROM jsonb_array_elements(e.metadata -> 'attendees') AS att
-              WHERE jsonb_typeof(att) = 'object' AND att ->> 'email' ~ '^[^@\\s]+@[^@\\s]+$'
-          )
-          AND NOT EXISTS (
-              SELECT 1 FROM calendar_event_participants p
-              WHERE p.event_id = e.id AND p.resolution <> 'manual' AND p.resolver_version = $1
-          )
+          AND NOT (e.id = ANY($3::uuid[]))
+          AND {_not_ready_predicate("e", "$1")}
         ORDER BY e.id
         LIMIT $2
         """,
         RESOLVER_VERSION,
         limit,
+        _recent_attempts(now),
     )
     written = 0
     for row in rows:
+        _remember_attempt(row["id"], now)
         if await sync_event_participants(pool, row["id"]) == "written":
             written += 1
     return written

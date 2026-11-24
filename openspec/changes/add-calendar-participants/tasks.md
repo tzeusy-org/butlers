@@ -5,7 +5,7 @@
 - [x] 1.3 Pure resolver and participant derivation; no free text, no fuzzy matching.
 - [x] 1.4 Projection writes participants after the event upsert; a resolver failure keeps prior rows.
 - [x] 1.5 Quarantined invitations mint no participants; entity rebind repoints them.
-- [x] 1.6 Bounded, checkpointed backfill over existing provider events.
+- [x] 1.6 Bounded, backfill over existing provider events.
 - [x] 1.7 docs/modules/calendar.md.
 
 ## 2. Readers (slice S2)
