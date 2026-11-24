@@ -794,11 +794,11 @@ class ContactBackfillWriter:
                     INSERT INTO addresses
                         (local_entity_id, label, line_1, line_2,
                          city, province, postal_code, country, is_current)
-                    SELECT $1, $2, $3, $4, $5, $6, $7, $8, false
+                    SELECT $1, $2::varchar, $3, $4, $5, $6, $7, $8, false
                     WHERE NOT EXISTS (
                         SELECT 1 FROM addresses
                         WHERE local_entity_id = $1
-                          AND label            = $2
+                          AND label            = $2::varchar
                           AND line_1           = $3
                     )
                     """,
