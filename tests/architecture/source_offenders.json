@@ -227,27 +227,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/chronicler/test_aggregations.py",
-      "line": 399,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_calendar_revisions_adapter.py",
-      "line": 105,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "Initial S1a inventory preserves the landed source scan from #6054 pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_comms_adapter.py",
-      "line": 110,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/chronicler/test_history_repair.py",
       "line": 32,
       "rule": "ast-tests-use-source-guard",
@@ -273,13 +252,6 @@
       "line": 203,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 1d6e3994102445b0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_reconciliation.py",
-      "line": 444,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d5d1c8b2e0c27af0)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
@@ -351,13 +323,6 @@
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 1e8886ca6fea1d6c)",
       "reason": "Initial S1a inventory preserves the landed source scan from #6064 pending migration"
-    },
-    {
-      "path": "tests/contracts/test_chronicler_no_llm.py",
-      "line": 83,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 2b2c25c4e9b7832c)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
       "path": "tests/contracts/test_client_openapi_contract.py",

@@ -7,9 +7,9 @@ Synthetic data only.
 
 from __future__ import annotations
 
-import ast
 import shutil
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -26,6 +26,7 @@ from butlers.chronicler.adapters.calendar_revisions import (
 from butlers.chronicler.models import Layer, Precision, Privacy
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 _SGT = ZoneInfo("Asia/Singapore")
 # 2026-11-24 12:00 SGT, so the local day ends at 2026-11-24 16:00 UTC.
@@ -101,18 +102,10 @@ async def _project(
 def test_no_llm_imports_in_the_adapter() -> None:
     import butlers.chronicler.adapters.calendar_revisions as mod
 
-    with open(mod.__file__ or "") as fh:
-        tree = ast.parse(fh.read())
-    for node in ast.walk(tree):
-        names = (
-            [a.name for a in node.names]
-            if isinstance(node, ast.Import)
-            else [node.module or ""]
-            if isinstance(node, ast.ImportFrom)
-            else []
-        )
-        for name in names:
-            assert not name.startswith(("anthropic", "openai", "langchain", "litellm", "llm"))
+    assert mod.__file__ is not None
+    tree = parse_file(Path(mod.__file__))
+    for name in imported_module_names(tree):
+        assert not name.startswith(("anthropic", "openai", "langchain", "litellm", "llm"))
 
 
 async def test_a_moved_same_day_instance_emits_one_intent_plan_changed_with_prior_and_new() -> None:

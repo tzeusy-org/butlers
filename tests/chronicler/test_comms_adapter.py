@@ -18,8 +18,8 @@ Covers:
 
 from __future__ import annotations
 
-import ast
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -38,6 +38,7 @@ from butlers.chronicler.adapters.comms import (
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent, Precision, Privacy
 from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.records import Record, row
+from butlers.testing.source_guard import imported_module_names, parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -107,14 +108,11 @@ def _chronicler_pool() -> AsyncMock:
 def test_no_llm_imports_in_comms_adapter() -> None:
     import butlers.chronicler.adapters.comms as mod
 
-    source = ast.parse(open(mod.__file__).read())
+    assert mod.__file__ is not None
+    tree = parse_file(Path(mod.__file__))
     forbidden = {"anthropic", "openai", "claude_agent_sdk"}
-    for node in ast.walk(source):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert alias.name.split(".")[0] not in forbidden
-        if isinstance(node, ast.ImportFrom) and node.module:
-            assert node.module.split(".")[0] not in forbidden
+    for name in imported_module_names(tree):
+        assert name.split(".")[0] not in forbidden
 
 
 # ---------------------------------------------------------------------------

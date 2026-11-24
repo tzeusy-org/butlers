@@ -439,9 +439,10 @@ def test_reconciliation_is_pure_no_llm_module() -> None:
     from pathlib import Path
 
     import butlers.chronicler.reconciliation as recon_module
+    from butlers.testing.source_guard import parse_file
 
-    source = Path(recon_module.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    assert recon_module.__file__ is not None
+    tree = parse_file(Path(recon_module.__file__))
     forbidden_roots = {"anthropic", "openai", "claude_agent_sdk"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

@@ -35,6 +35,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import parse_file
+
 pytestmark = pytest.mark.contract
 
 # ---------------------------------------------------------------------------
@@ -79,8 +81,7 @@ def _violations_in_file(path: Path) -> list[str]:
     authoritative; a missing file is always a violation for the caller to
     surface, but we keep this function non-raising so tests can aggregate).
     """
-    source = path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(path))
+    tree = parse_file(path)
     rel = path.relative_to(_REPO_ROOT)
 
     violations: list[str] = []
