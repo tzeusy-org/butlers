@@ -514,13 +514,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/contracts/test_schema_reach.py",
-      "line": 130,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e7466166e62e6994)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/contracts/test_service_plane_gate_wiring.py",
       "line": 20,
       "rule": "ast-tests-use-source-guard",
@@ -765,13 +758,6 @@
       "line": 62,
       "rule": "no-private-walkers",
       "detail": "private walker _StripDocstrings (shape 79780ca2ee026a6b)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/contracts/test_schema_reach.py",
-      "line": 1700,
-      "rule": "no-private-walkers",
-      "detail": "private walker Visitor (shape 78958db032d820e8)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     }
   ]
