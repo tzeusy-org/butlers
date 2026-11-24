@@ -3,6 +3,7 @@
 import ast
 import inspect
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -19,6 +20,7 @@ from butlers.chronicler.history_repair import (
     run_rebuild,
 )
 from butlers.chronicler.rollups import _local_day_bounds_utc
+from butlers.testing.source_guard import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -29,10 +31,18 @@ def test_retention_admission_arms_no_second_client_timer():
     The real-database test forces that race on admission's first read only, so this
     holds every statement to the rule.
     """
-    tree = ast.parse(inspect.getsource(history_repair._scan_expired_retention))
+    function = inspect.unwrap(history_repair._scan_expired_retention)
+    tree = parse_file(Path(inspect.getfile(function)))
+    start_line = function.__code__.co_firstlineno
+    definition = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and (node.decorator_list or [node])[0].lineno == start_line
+    )
     timed = [
         ast.unparse(node.func)
-        for node in ast.walk(tree)
+        for node in ast.walk(definition)
         if isinstance(node, ast.Call) and any(kw.arg == "timeout" for kw in node.keywords)
     ]
     assert timed == []

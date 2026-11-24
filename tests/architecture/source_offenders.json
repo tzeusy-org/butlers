@@ -227,34 +227,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/chronicler/test_history_repair.py",
-      "line": 32,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape d00b2863a358f223)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_owner_episode_atomicity_guard.py",
-      "line": 27,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 219d1be53cf8c15f)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_owner_outbound_adapter.py",
-      "line": 79,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/chronicler/test_participant_entity_ids_api.py",
-      "line": 203,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 1d6e3994102445b0)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/cli/test_runtime_cli_sandbox_completeness.py",
       "line": 36,
       "rule": "ast-tests-use-source-guard",
