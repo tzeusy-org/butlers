@@ -31,9 +31,14 @@ def upgrade() -> None:
         );
         CREATE INDEX IF NOT EXISTS ix_goal_effect_edits_action ON goal_effect_edits(action_id);
         CREATE FUNCTION goal_effect_edit_immutable() RETURNS trigger
-        LANGUAGE plpgsql AS $$ BEGIN
-            IF TG_OP = 'TRUNCATE' AND NOT EXISTS (SELECT 1 FROM goal_effect_edits) THEN
-                RETURN NULL;
+        LANGUAGE plpgsql AS $$ DECLARE has_rows BOOLEAN; BEGIN
+            IF TG_OP = 'TRUNCATE' THEN
+                EXECUTE format(
+                    'SELECT EXISTS (SELECT 1 FROM %I.goal_effect_edits)', TG_TABLE_SCHEMA
+                ) INTO has_rows;
+                IF NOT has_rows THEN
+                    RETURN NULL;
+                END IF;
             END IF;
             RAISE EXCEPTION 'Goal effect amendments are immutable and durable';
         END $$;

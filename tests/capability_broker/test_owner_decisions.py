@@ -405,6 +405,11 @@ async def test_amendment_snapshots_and_receipt_are_immutable_in_the_migrated_dat
     import asyncpg
 
     async with world(broker_db_url) as w:
+        # The production cleanup connection has public-only search_path; the trigger
+        # must resolve its owning schema from TG_TABLE_SCHEMA.
+        async with w.domain.acquire() as cleanup, cleanup.transaction():
+            await cleanup.execute("SET LOCAL search_path TO public")
+            await cleanup.execute("TRUNCATE messenger.goal_effect_edits")
         goal, _, (effect, _) = await _parked(w)
         await _edit(w, goal, effect)
         [receipt] = await w.owner.fetch(
@@ -425,7 +430,9 @@ async def test_amendment_snapshots_and_receipt_are_immutable_in_the_migrated_dat
             with pytest.raises(asyncpg.RaiseError):
                 await pool.execute(sql, effect)
         with pytest.raises(asyncpg.RaiseError):
-            await w.domain.execute("TRUNCATE goal_effect_edits")
+            async with w.domain.acquire() as cleanup, cleanup.transaction():
+                await cleanup.execute("SET LOCAL search_path TO public")
+                await cleanup.execute("TRUNCATE messenger.goal_effect_edits")
         assert (
             await w.domain.fetchrow("SELECT * FROM goal_effect_edits WHERE action_id=$1", effect)
         )["approved_args"] == w.forwarder.calls[0][1]
