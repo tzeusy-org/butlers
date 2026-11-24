@@ -1657,6 +1657,7 @@ _ITEM_BODIES = {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}
         ("garbage", _ITEM_BODIES, True, "unparsable notes"),
         ("garbage", _ITEM_BODIES, False, "unparsable notes"),
         ("supported", _ITEM_BODIES, True, None),
+        ("legacy", _ITEM_BODIES, True, "legacy notes without evidence refs"),
         ("invented", _ITEM_BODIES, True, "no claim cites evidence the dispatcher recorded"),
         ("zero_claims", _ITEM_BODIES, True, "no claim cites evidence the dispatcher recorded"),
     ],
@@ -1676,7 +1677,7 @@ async def test_unsupported_diagnosis_reason_fails_closed_only_with_a_recorded_bu
             notes_path.write_text("not json")
         else:
             payload = _valid_notes_payload()
-            payload["schema_version"] = 2
+            payload["schema_version"] = 1 if notes == "legacy" else 2
             ref = "E9" if notes == "invented" else "E1"
             payload["evidence_lines"] = [
                 {"id": "e1", "ts": "t", "lvl": "ERROR", "butler": "b", "msg": "real", "ref": ref}

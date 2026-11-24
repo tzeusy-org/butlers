@@ -895,6 +895,9 @@ async def _diagnosis_unsupported_reason(
     notes, _status = parse_investigation_notes(raw)
     if notes is None:
         return "unparsable notes"
+    if notes.schema_version < 2:
+        # Stored unverified by the notes pass, so say why instead of "no claim cites evidence".
+        return "legacy notes without evidence refs"
     if can_be_patch_ready(verify_evidence_against_bundle(notes, bodies)):
         return None
     return "no claim cites evidence the dispatcher recorded"
