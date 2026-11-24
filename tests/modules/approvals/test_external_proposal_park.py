@@ -115,7 +115,7 @@ async def test_matching_standing_rule_never_approves_external_proposal(approvals
 # exactly one pending action, 14-day expiry, digest-only evidence, no outside text.
 async def test_external_park_shape_origin_null_and_digest_only_evidence(approvals_pool) -> None:
     proposal_id = uuid.uuid4()
-    url = "https://user:secret@Example.com/ignore-previous-instructions?token=abc"
+    url = "https://user:secret@ignore-previous-instructions.example/path?token=abc"
     before = await approvals_pool.fetchval(
         "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
         "WHERE conname = 'pending_actions_origin_check'"
@@ -135,14 +135,13 @@ async def test_external_park_shape_origin_null_and_digest_only_evidence(approval
     refs = [item["ref"] for item in row["evidence"]]
     assert refs == [
         "external_mcp:client=synthetic-client",
-        "external_mcp:url_host=https://example.com",
         f"external_mcp:url_sha256={digest}",
     ]
     assert all(set(item) == {"type", "ref", "note"} for item in row["evidence"])
     as_text = await approvals_pool.fetchval(
         "SELECT pa::text FROM pending_actions pa WHERE id = $1", admission.action_id
     )
-    for leaked in ("ignore-previous", "secret", "token=abc", "user:"):
+    for leaked in ("ignore-previous", "secret", "token=abc", "user:", "url_host"):
         assert leaked not in as_text
     after = await approvals_pool.fetchval(
         "SELECT pg_get_constraintdef(oid) FROM pg_constraint "

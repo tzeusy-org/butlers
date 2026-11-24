@@ -9,9 +9,9 @@ never feeds a promotion suggestion and never becomes a standing rule, so outside
 clients cannot steer approval policy for internal writes (REQ-module-approvals-010,
 REQ-public-mcp-proposals-008).
 
-Nothing here stores outside-authored text. Evidence carries the client label, the
-evidence URL's scheme and host, and the SHA-256 of the full URL; the URL itself
-and the note stay in ``relationship.external_fact_proposals``.
+Evidence stores the stable client label and the SHA-256 of the full evidence URL;
+the URL itself and the note stay in ``relationship.external_fact_proposals``.
+Model-facing list/show views digest the label too and omit legacy URL-host refs.
 """
 
 from __future__ import annotations
@@ -157,8 +157,8 @@ def external_proposal_evidence(
 
     The typed shape is the one the dashboard dossier model and the Relationship
     evidence ledger accept on approved replay; a free-form ``kind`` object would
-    fail both. Each value is server-derived: the label is bounded, the host is
-    parsed, and the URL survives only as its SHA-256.
+    fail both. The bounded label preserves owner-facing attribution; every part
+    of the URL, including its host, survives only as its SHA-256.
     """
     label = validate_client_label(client_label)
     evidence: list[dict[str, str]] = [
@@ -171,13 +171,7 @@ def external_proposal_evidence(
     if evidence_url is not None:
         if not isinstance(evidence_url, str):
             raise ValueError("evidence_url must be a string")
-        evidence.append(
-            {
-                "type": "text",
-                "ref": f"external_mcp:url_host={evidence_url_host(evidence_url)}",
-                "note": "Scheme and host of the evidence URL; the full URL stays private.",
-            }
-        )
+        evidence_url_host(evidence_url)  # Validate without retaining any URL text.
         digest = hashlib.sha256(evidence_url.encode("utf-8")).hexdigest()
         evidence.append(
             {
@@ -187,6 +181,33 @@ def external_proposal_evidence(
             }
         )
     return tuple(evidence)
+
+
+def external_proposal_model_evidence(evidence: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Project new or legacy evidence onto digest-only refs for model list/show.
+
+    A parsed hostname is still client-chosen text. Neither it nor a stored note
+    belongs in this view. Rebuild only the known refs with fixed notes, retaining
+    the existing URL digest's meaning and leaving owner-facing evidence intact.
+    """
+    projected = []
+    for item in evidence:
+        ref = item.get("ref", "")
+        if ref.startswith(EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX):
+            label = ref.removeprefix(EXTERNAL_PROPOSAL_CLIENT_REF_PREFIX)
+            digest = hashlib.sha256(label.encode("utf-8")).hexdigest()
+            projected.append(
+                {
+                    "type": "text",
+                    "ref": f"external_mcp:client_sha256={digest}",
+                    "note": "SHA-256 of the stored external AI client label.",
+                }
+            )
+        elif re.fullmatch(r"external_mcp:url_sha256=[0-9a-f]{64}", ref):
+            projected.append(
+                {"type": "text", "ref": ref, "note": "SHA-256 of the full evidence URL."}
+            )
+    return projected
 
 
 def external_proposal_texts(tool_args: dict[str, Any]) -> tuple[str, str]:
@@ -236,6 +257,7 @@ __all__ = [
     "external_approval_refusal",
     "external_proposal_evidence",
     "external_proposal_key",
+    "external_proposal_model_evidence",
     "external_proposal_texts",
     "is_external_proposal_action",
     "is_external_proposal_key",

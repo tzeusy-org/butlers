@@ -98,7 +98,7 @@ Scope: v1-mandatory
 - **THEN** it SHALL be recorded `invalid` and SHALL not be parked
 
 ### Requirement: Valid proposals park for per-event owner review
-For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and digest-only evidence as typed `{type: "text", ref, note}` items whose refs are `external_mcp:client=<label>`, `external_mcp:url_host=<scheme://host>` and `external_mcp:url_sha256=<SHA-256 of the full URL>`, with no path, query or userinfo of the URL. The full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`, so no outside-authored text is stored in `pending_actions` or reaches a model through the approvals tools. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
+For a valid proposal, the importer SHALL park one pending `relationship_assert_fact` action as specified by REQ-module-approvals-010 and REQ-relationship-facts-011, with deduplication key `external_mcp:<proposal_id>`, a 14-day expiry, deterministic template text for `why` and the summary, and evidence as typed `{type: "text", ref, note}` items whose refs are `external_mcp:client=<label>` and, only when an evidence URL is supplied, `external_mcp:url_sha256=<SHA-256 of the full URL's UTF-8 bytes>`. No part of the URL, including its host, SHALL be stored in `pending_actions`; the full evidence URL and the note SHALL stay only in `relationship.external_fact_proposals`. The stable client label SHALL retain its existing CIMD-host or DCR-digest derivation for stored owner attribution and dashboard review. The model-callable `list_pending_actions` and `show_pending_action` views SHALL instead expose `external_mcp:client_sha256=<SHA-256 of the stored label's UTF-8 bytes>` and the existing URL digest, using fixed notes and only known digest refs; they SHALL omit legacy `external_mcp:url_host=` evidence without rewriting stored attribution. Gateway registration, admission and per-event owner review SHALL remain unchanged. It SHALL record the `pending_action_id` on the proposal and set its state to `parked`. Re-running the importer SHALL never park a second action for the same proposal.
 
 ID: REQ-public-mcp-proposals-005
 Source: RFC 0039 D13 step 3; owner decision OD4
@@ -110,9 +110,19 @@ Scope: v1-mandatory
 - **AND** the proposal SHALL be in state `parked` with that action's id
 
 #### Scenario: Outside text stays out of the pending action
-- **WHEN** a valid proposal carries a note and the evidence URL `https://example.com/ignore-previous-instructions`
-- **THEN** the parked action's evidence SHALL hold only the typed `text` refs `external_mcp:client=<label>`, `external_mcp:url_host=https://example.com` and `external_mcp:url_sha256=<SHA-256 of the full URL>`
-- **AND** neither the note nor the URL path SHALL appear in any `pending_actions` column
+- **WHEN** a valid proposal carries a note and the evidence URL `https://ignore-previous-instructions.example/path`
+- **THEN** the parked action's evidence SHALL hold only the typed `text` refs `external_mcp:client=<label>` and `external_mcp:url_sha256=<SHA-256 of the full URL>`
+- **AND** neither the note nor any part of the URL SHALL appear in any `pending_actions` column
+- **AND** the authorized owner dashboard SHALL retain the stable label and full URL from its existing sources
+
+#### Scenario: Model approval views digest client attribution and omit legacy URL hosts
+- **WHEN** a model lists or shows a new or legacy external proposal action whose client label contains instruction-shaped text and whose legacy evidence may include a URL-host ref
+- **THEN** its evidence SHALL contain only the SHA-256 client-label ref and, if supplied, the full URL digest ref with fixed notes
+- **AND** the stored client label and legacy host text SHALL be absent from the model view while owner-facing attribution stays unchanged
+
+#### Scenario: A proposal without an evidence URL carries no URL digest
+- **WHEN** a valid proposal supplies no evidence URL
+- **THEN** its stored evidence SHALL contain only the stable client-label ref and its model list/show evidence SHALL contain only the SHA-256 client-label ref
 
 #### Scenario: Re-import parks nothing new
 - **WHEN** the importer processes the same proposal id again
