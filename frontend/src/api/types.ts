@@ -1491,6 +1491,19 @@ export interface CalendarWorkspaceReadResponse {
    */
   has_domain_context?: boolean;
   /**
+   * `false` when the overlay view could not be read: a failed read, which is not
+   * the same as "no specialist contributed". Absent on older servers (treated as
+   * available).
+   */
+  overlays_available?: boolean;
+  /**
+   * Proposals lane: `false` when any schema's proposals read failed, so an empty
+   * list must render "Proposals unavailable", never "Nothing awaiting your review".
+   */
+  proposals_available?: boolean;
+  /** Proposals lane: rows dropped as malformed by the server. */
+  proposals_dropped_rows?: number;
+  /**
    * Linked-people resolution honesty flag (bu-qs64f). `true` (or absent) when
    * the `calendar_event_entities` → `public.entities` resolution ran cleanly
    * (including genuinely "no links"); `false` only when at least one schema's
@@ -1668,6 +1681,8 @@ export interface CalendarDayBriefingResponse {
   /** IANA timezone the day window was anchored in. */
   timezone: string;
   has_domain_context: boolean;
+  /** `false` when the overlay view could not be read (not the same as no context). */
+  overlays_available?: boolean;
   /** `true` when at least one overlay entry exists for the date. */
   has_entries: boolean;
   groups: DayBriefingButlerGroup[];

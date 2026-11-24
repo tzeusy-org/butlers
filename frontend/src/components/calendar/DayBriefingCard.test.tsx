@@ -87,6 +87,20 @@ describe("DayBriefingCard", () => {
     expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
   });
 
+  it("renders a failed overlay read as unavailable, not as no domain context", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow · Mon, Feb 23"
+        groups={[]}
+        unavailable
+        hasDomainContext={false}
+        hasEntries={false}
+      />,
+    );
+    expect(screen.getByTestId("day-briefing-unavailable").textContent).toMatch(/unavailable/i);
+    expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
+  });
+
   it("shows an honest empty-state when no specialist contributed", () => {
     render(
       <DayBriefingCard

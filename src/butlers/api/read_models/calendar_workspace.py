@@ -1154,6 +1154,18 @@ async def query_calendar_workspace(
     return rows, failed
 
 
+@dataclass
+class CalendarProposalScan:
+    """Pending proposals plus whether the read actually covered every schema.
+
+    ``available`` is ``False`` when any targeted butler schema's read failed or the fan-out
+    raised, so an empty ``rows`` can be told apart from "the read failed" (bu-5ii4gj.4).
+    """
+
+    rows: list[CalendarProposalRow]
+    available: bool = True
+
+
 async def query_calendar_proposals(
     db: DatabaseManager,
     *,
@@ -1161,6 +1173,21 @@ async def query_calendar_proposals(
     end: datetime,
     butlers: list[str] | None = None,
 ) -> list[CalendarProposalRow]:
+    """Pending proposals in a range; see :func:`scan_calendar_proposals` for the degraded flag.
+
+    Kept for callers (the conflict scan's proposal join) that only need the rows and are
+    themselves fail-open.
+    """
+    return (await scan_calendar_proposals(db, start=start, end=end, butlers=butlers)).rows
+
+
+async def scan_calendar_proposals(
+    db: DatabaseManager,
+    *,
+    start: datetime,
+    end: datetime,
+    butlers: list[str] | None = None,
+) -> CalendarProposalScan:
     """Fan-out query for **pending** ``calendar_event_proposals`` in a time range.
 
     Backs the proposals lane (``GET /api/calendar/workspace?view=proposals``).
@@ -1189,9 +1216,10 @@ async def query_calendar_proposals(
 
     Returns
     -------
-    list[CalendarProposalRow]
-        Flat list of pending proposal rows from all queried butler schemas,
-        ordered by ``start_at ASC, id ASC``.  Empty on any failure (fail-open).
+    CalendarProposalScan
+        Flat pending proposal rows from all queried butler schemas, ordered by
+        ``start_at ASC, id ASC``, and ``available=False`` on any failure (the read never
+        raises, but a failure is no longer indistinguishable from "nothing pending").
     """
     conditions: list[str] = [
         "p.status = 'pending'",
@@ -1221,18 +1249,16 @@ async def query_calendar_proposals(
         query_targets = db.butlers_with_module("calendar")
 
     try:
-        results, _failed = await db.fan_out_with_status(
-            sql, tuple(args), butler_names=query_targets
-        )
+        results, failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
     except Exception:
-        logger.warning("query_calendar_proposals fan-out failed; returning empty", exc_info=True)
-        return []
+        logger.warning("scan_calendar_proposals fan-out failed", exc_info=True)
+        return CalendarProposalScan(rows=[], available=False)
 
     rows: list[CalendarProposalRow] = []
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
             rows.append(row_to_proposal(row, db_butler=butler_name))
-    return rows
+    return CalendarProposalScan(rows=rows, available=not failed)
 
 
 @dataclass
@@ -1825,6 +1851,15 @@ async def query_calendar_overlays(
     *,
     butlers: list[str] | None = None,
 ) -> list[CalendarOverlayRow]:
+    """Overlay rows only; see :func:`scan_calendar_overlays` for the degraded flag."""
+    return (await scan_calendar_overlays(db, butlers=butlers))[0]
+
+
+async def scan_calendar_overlays(
+    db: DatabaseManager,
+    *,
+    butlers: list[str] | None = None,
+) -> tuple[list[CalendarOverlayRow], bool]:
     """Read precomputed overlay contributions from ``calendar.v_overlay_contributions``.
 
     Backs the overlays lane (``GET /api/calendar/workspace?view=overlays``). The
@@ -1857,19 +1892,20 @@ async def query_calendar_overlays(
     """
     candidates = butlers or db.butlers_with_module("calendar") or db.butler_names
     if not candidates:
-        return []
+        # No reader exists, so nothing could be read: unavailable, not "no context".
+        return [], False
     # Read the shared view through a single deterministic pool — never fan out.
     target = sorted(candidates)[0]
 
     sql = "SELECT butler, key, value FROM calendar.v_overlay_contributions"
     try:
-        results, _failed = await db.fan_out_with_status(sql, (), butler_names=[target])
+        results, failed = await db.fan_out_with_status(sql, (), butler_names=[target])
     except Exception:
         logger.warning(
-            "query_calendar_overlays read failed; returning empty (fail-open)",
+            "scan_calendar_overlays read failed; returning empty (degraded)",
             exc_info=True,
         )
-        return []
+        return [], False
 
     rows: list[CalendarOverlayRow] = []
     for _butler, raw_rows in results.items():
@@ -1881,7 +1917,7 @@ async def query_calendar_overlays(
                     value=row["value"],
                 )
             )
-    return rows
+    return rows, not failed
 
 
 async def query_calendar_prep(

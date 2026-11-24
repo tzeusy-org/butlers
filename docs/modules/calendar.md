@@ -140,6 +140,12 @@ as `NULL`.
 
 Projection status is tracked as `fresh`, `stale`, or `failed`.
 
+Lane reads never wear calm they cannot back (REQ-module-calendar-047). The proposals lane
+(`view=proposals`) returns `proposals_available` and `proposals_dropped_rows`, and the overlays
+lane and day briefing return `overlays_available`. A failed read returns HTTP 200 with the flag
+`false`, and the dashboard shows "Proposals unavailable" or an overlays-unavailable state instead of
+"Nothing awaiting your review" or "No domain context"; a confirmed-empty read keeps the calm text.
+
 ## Source roles
 
 Calendar discovery registers every calendar the account can see, so a partner's shared calendar,

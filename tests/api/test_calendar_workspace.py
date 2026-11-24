@@ -216,6 +216,8 @@ def _build_app(
     proposals_raise: bool = False,
     overlay_rows: dict[str, list[dict]] | None = None,
     overlays_raise: bool = False,
+    proposals_failed: list[str] | None = None,
+    overlays_failed: list[str] | None = None,
     entity_link_rows: dict[str, list[dict]] | None = None,
     entity_people_failed: list[str] | None = None,
     workspace_failed: list[str] | None = None,
@@ -266,6 +268,10 @@ def _build_app(
             failed = list(workspace_failed or [])
         elif "FROM calendar_sources AS s" in query:
             failed = list(sources_failed or [])
+        elif "FROM calendar_event_proposals AS p" in query:
+            failed = list(proposals_failed or [])
+        elif "FROM calendar.v_overlay_contributions" in query:
+            failed = list(overlays_failed or [])
         else:
             failed = []
         return await _fan_out(query, args, butler_names), failed
@@ -850,6 +856,47 @@ async def test_workspace_proposals_fail_open_on_missing_table(app):
     assert body["entries"] == []
     assert body["source_freshness"] == []
     assert body["lanes"] == []
+    # A failed read is not "nothing to review" (bu-5ii4gj.4).
+    assert body["proposals_available"] is False
+
+
+async def _get_proposals(app):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        return await client.get(
+            "/api/calendar/workspace",
+            params={
+                "view": "proposals",
+                "start": "2026-02-22T00:00:00Z",
+                "end": "2026-02-23T00:00:00Z",
+            },
+        )
+
+
+async def test_workspace_proposals_healthy_read_is_available_with_no_drops(app):
+    app, _, _ = _build_app(app, proposal_rows={"general": [_proposal_row()]})
+    body = (await _get_proposals(app)).json()["data"]
+    assert body["proposals_available"] is True
+    assert body["proposals_dropped_rows"] == 0
+
+
+async def test_workspace_proposals_partial_schema_failure_is_unavailable(app):
+    app, _, _ = _build_app(
+        app, proposal_rows={"general": [_proposal_row()]}, proposals_failed=["relationship"]
+    )
+    body = (await _get_proposals(app)).json()["data"]
+    assert len(body["entries"]) == 1  # what did read is still shown
+    assert body["proposals_available"] is False
+
+
+async def test_workspace_proposals_counts_a_malformed_row_instead_of_hiding_it(app):
+    bad = _proposal_row()
+    bad["start_at"] = None
+    app, _, _ = _build_app(app, proposal_rows={"general": [_proposal_row(), bad]})
+    body = (await _get_proposals(app)).json()["data"]
+    assert len(body["entries"]) == 1
+    assert body["proposals_dropped_rows"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -934,6 +981,24 @@ async def test_workspace_overlays_fail_open_on_missing_view(app):
     body = resp.json()["data"]
     assert body["entries"] == []
     assert body["has_domain_context"] is False
+    # A failed read is distinct from "no specialist contributed" (bu-5ii4gj.4).
+    assert body["overlays_available"] is False
+
+
+async def test_workspace_overlays_a_failed_reader_schema_is_unavailable(app):
+    app, _, _ = _build_app(app, overlays_failed=["finance"], calendar_butlers=["finance"])
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+    body = resp.json()["data"]
+    assert body["has_domain_context"] is False
+    assert body["overlays_available"] is False
+
+
+async def test_workspace_overlays_no_contributions_is_available_not_degraded(app):
+    app, _, _ = _build_app(app, overlay_rows={}, calendar_butlers=["finance"])
+    resp = await _get_overlays(app, start="2026-02-21T00:00:00Z", end="2026-02-23T00:00:00Z")
+    body = resp.json()["data"]
+    assert body["has_domain_context"] is False
+    assert body["overlays_available"] is True
 
 
 async def test_workspace_overlays_butler_mismatch_skipped(app):
@@ -3026,3 +3091,17 @@ async def test_dashboard_guest_create_decides_only_the_exact_owning_call(app, mo
         assert kwargs["expected_tool_name"] == "calendar_create_event"
         assert kwargs["promotion_eligible"] is False
         assert call.await_args.args[1] == "general"
+
+
+async def test_day_briefing_a_failed_overlay_read_is_not_no_domain_context(app):
+    app, _, _ = _build_app(app, overlays_raise=True, calendar_butlers=["finance"])
+    body = (await _get_day_briefing(app)).json()["data"]
+    assert body["has_domain_context"] is False
+    assert body["overlays_available"] is False
+
+
+async def test_day_briefing_with_no_contributions_is_available(app):
+    app, _, _ = _build_app(app, overlay_rows={}, calendar_butlers=["finance"])
+    body = (await _get_day_briefing(app)).json()["data"]
+    assert body["has_domain_context"] is False
+    assert body["overlays_available"] is True

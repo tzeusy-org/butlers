@@ -76,6 +76,10 @@ export interface CalendarProposalsPanelProps {
   isError?: boolean;
   /** The query error, when present. */
   error?: Error | null;
+  /** The server could not read every proposals source: an empty list is not "nothing pending". */
+  unavailable?: boolean;
+  /** Rows the server dropped as malformed. */
+  droppedRows?: number;
   /** Accept mutation (from {@link useAcceptCalendarProposal}). */
   acceptMutation: ReturnType<typeof useAcceptCalendarProposal>;
   /** Dismiss mutation (from {@link useDismissCalendarProposal}). */
@@ -96,6 +100,8 @@ export function CalendarProposalsPanel({
   isLoading = false,
   isError = false,
   error = null,
+  unavailable = false,
+  droppedRows = 0,
   acceptMutation,
   dismissMutation,
   timezone,
@@ -261,7 +267,19 @@ export function CalendarProposalsPanel({
         </span>
       </div>
 
-      {visible.length === 0 ? (
+      {unavailable ? (
+        <p data-testid="proposals-unavailable" role="alert" className="text-sm text-fg">
+          Proposals unavailable. Some proposal sources could not be read, so this list may be
+          incomplete.
+        </p>
+      ) : null}
+      {droppedRows > 0 ? (
+        <p data-testid="proposals-dropped" role="status" className="text-sm text-fg">
+          {droppedRows} proposal{droppedRows === 1 ? "" : "s"} could not be shown.
+        </p>
+      ) : null}
+
+      {visible.length === 0 && !unavailable ? (
         <p
           data-testid="proposals-empty"
           className="font-mono text-[11px] text-[var(--mfg)]"

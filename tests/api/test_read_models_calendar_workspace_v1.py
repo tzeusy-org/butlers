@@ -41,6 +41,8 @@ from butlers.api.read_models.calendar_workspace import (
     row_to_proposal,
     row_to_source,
     row_to_workspace,
+    scan_calendar_overlays,
+    scan_calendar_proposals,
     shallow_asdict,
 )
 from butlers.testing.records import Record
@@ -875,3 +877,28 @@ def test_shallow_asdict_shares_metadata_reference_where_stdlib_deep_copies():
     assert shallow["source_metadata"] is dto.source_metadata
     assert deep["source_metadata"] is not dto.source_metadata
     assert deep["source_metadata"] == dto.source_metadata
+
+
+async def test_scan_calendar_proposals_flags_a_failed_schema_and_a_raised_fan_out():
+    db = _make_db({"assistant": [Record(_proposal_dict())]}, failed=["relationship"])
+    scan = await scan_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    assert len(scan.rows) == 1 and scan.available is False
+
+    db = _make_db({})
+    db.fan_out_with_status = AsyncMock(side_effect=RuntimeError("down"))
+    scan = await scan_calendar_proposals(db, start=_NOW, end=_NOW + timedelta(hours=1))
+    assert scan.rows == [] and scan.available is False
+
+    scan = await scan_calendar_proposals(_make_db({}), start=_NOW, end=_NOW + timedelta(hours=1))
+    assert scan.rows == [] and scan.available is True
+
+
+async def test_scan_calendar_overlays_distinguishes_failed_from_empty():
+    rows, available = await scan_calendar_overlays(_make_db({}))
+    assert rows == [] and available is True
+    rows, available = await scan_calendar_overlays(_make_db({}, failed=["assistant"]))
+    assert available is False
+    db = _make_db({})
+    db.butlers_with_module = MagicMock(return_value=None)
+    db.butler_names = []
+    assert await scan_calendar_overlays(db) == ([], False)
