@@ -217,13 +217,29 @@ class TestPostgresStoreContract(StoreContract):
 
     async def test_concurrent_registration_inserts_once(self):
         store = self.make_store()
-        outs = await asyncio.gather(
-            *(register(ConditionEvaluator(store), DECISION) for _ in range(6))
+        callers = 6
+        instance_ids = [f"contended-{number:02}" for number in range(32)]
+        barrier = asyncio.Barrier(callers)
+
+        async def attempt(instance_id):
+            await barrier.wait()
+            return await register(ConditionEvaluator(store), DECISION, instance_id=instance_id)
+
+        # Contend on fresh IDs with warm pool connections. A replay against an
+        # already committed row does not exercise simultaneous unique checks.
+        for instance_id in instance_ids:
+            outcomes = await asyncio.gather(*(attempt(instance_id) for _ in range(callers)))
+            instance = outcomes[0].instance
+            assert instance.id == instance_id
+            assert all(outcome.instance == instance for outcome in outcomes)
+
+        assert await self.instance_count(store) == len(instance_ids)
+        receipts = await self.owner.fetch(
+            "SELECT instance_id, kind, reason FROM public.condition_receipts ORDER BY instance_id"
         )
-        assert len({o.instance.id for o in outs}) == 1
-        assert await self.owner.fetchval("SELECT count(*) FROM public.condition_instances") == 1
-        reasons = await self.receipt_reasons(store)
-        assert reasons.count("pending") == 1
+        assert [tuple(row) for row in receipts] == [
+            (instance_id, "register", "pending") for instance_id in instance_ids
+        ]
 
     async def test_driver_failure_is_unavailable_and_reported(self):
         calls = []
