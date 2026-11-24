@@ -11,6 +11,7 @@ from butlers.core.temporal.calendar_provenance import is_quarantined_invitation
 from butlers.modules.calendar.organizer_decisions import (
     NoCalendarEndpoint,
     apply_decision,
+    reconcile_endpoint_rules,
     restamp_organizer,
 )
 from butlers.modules.calendar.organizer_verdict import VERDICT_VERSION
@@ -185,3 +186,142 @@ async def test_an_organizer_without_an_address_is_refused(db, bad) -> None:
     await _seed(pool)
     with pytest.raises(ValueError):
         await apply_decision(pool, bad, "vouch")
+
+
+_NEW_ENDPOINT = "google_calendar:user:new@example.com"
+
+
+async def _scope_rules(pool, scope):
+    rows = await pool.fetch(
+        "SELECT created_by, action FROM switchboard.ingestion_rules "
+        "WHERE deleted_at IS NULL AND scope = $1 ORDER BY created_by",
+        scope,
+    )
+    return [(r["created_by"], r["action"]) for r in rows]
+
+
+async def test_reconcile_copies_only_verb_rules_to_a_new_endpoint_and_is_idempotent(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, "friend@else.test", "vouch")
+    # A manual connector rule must never be copied.
+    await pool.execute(
+        "INSERT INTO switchboard.ingestion_rules (scope, rule_type, condition, action, priority, "
+        "enabled, name, created_by) VALUES ($1, 'sender_address', $2::jsonb, 'block', 50, TRUE, "
+        "'manual', 'owner')",
+        f"connector:google_calendar:{_ENDPOINTS[0]}",
+        {"address": "manual@else.test"},
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    new_scope = f"connector:google_calendar:{_NEW_ENDPOINT}"
+    assert await reconcile_endpoint_rules(pool) == 2
+    assert await _scope_rules(pool, new_scope) == [
+        ("calendar_block", "block"),
+        ("calendar_vouch", "pass_through"),
+    ]
+    assert await reconcile_endpoint_rules(pool) == 0  # idempotent
+
+
+async def test_reconcile_skips_removed_decisions_and_other_connectors(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, _STRANGER, "vouch")  # removes the block
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('gmail', 'gmail:user:me@example.com'), ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1  # only the vouch
+    assert await _scope_rules(pool, "connector:gmail:gmail:user:me@example.com") == []
+    assert await _scope_rules(pool, f"connector:google_calendar:{_NEW_ENDPOINT}") == [
+        ("calendar_vouch", "pass_through")
+    ]
+
+
+async def test_reconcile_never_brings_back_a_copy_the_owner_disabled_or_deleted(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    disabled, deleted = (f"connector:google_calendar:{e}" for e in _ENDPOINTS)
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET enabled = FALSE WHERE scope = $1", disabled
+    )
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET deleted_at = now() WHERE scope = $1", deleted
+    )
+    assert await reconcile_endpoint_rules(pool) == 0
+    assert await reconcile_endpoint_rules(pool) == 0
+    live = await pool.fetchval(
+        "SELECT count(*) FROM switchboard.ingestion_rules "
+        "WHERE scope = ANY($1::text[]) AND deleted_at IS NULL AND enabled",
+        [disabled, deleted],
+    )
+    assert live == 0
+
+
+async def test_reconcile_and_verbs_skip_deregistered_and_archived_endpoints(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry "
+        "(connector_type, endpoint_identity, archived_at) VALUES ('google_calendar', 'g:old', now())"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry "
+        "(connector_type, endpoint_identity, deleted_at) VALUES ('google_calendar', 'g:gone', now())"
+    )
+    result = await apply_decision(pool, _STRANGER, "block")
+    assert result.endpoints == len(_ENDPOINTS)
+    assert await reconcile_endpoint_rules(pool) == 0
+    for dead in ("g:old", "g:gone"):
+        assert await _scope_rules(pool, f"connector:google_calendar:{dead}") == []
+
+
+async def test_reconcile_keeps_the_source_created_at(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    await apply_decision(pool, _STRANGER, "block")
+    await pool.execute(
+        "UPDATE switchboard.ingestion_rules SET created_at = '2026-01-01T00:00:00Z' "
+        "WHERE created_by = 'calendar_block'"
+    )
+    await pool.execute(
+        "INSERT INTO switchboard.connector_registry (connector_type, endpoint_identity) "
+        "VALUES ('google_calendar', $1)",
+        _NEW_ENDPOINT,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1
+    stamps = await pool.fetch(
+        "SELECT DISTINCT created_at FROM switchboard.ingestion_rules "
+        "WHERE created_by = 'calendar_block' AND deleted_at IS NULL"
+    )
+    assert len(stamps) == 1
+
+
+async def test_reconcile_gives_an_unarchived_endpoint_the_current_decision(db):
+    pool = await _pool(db)
+    await _seed(pool)
+    b = _ENDPOINTS[1]
+    await apply_decision(pool, _STRANGER, "block")
+    await apply_decision(pool, _STRANGER, "vouch")
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET archived_at = now() "
+        "WHERE connector_type = 'google_calendar' AND endpoint_identity = $1",
+        b,
+    )
+    await apply_decision(pool, _STRANGER, "block")
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET archived_at = NULL "
+        "WHERE connector_type = 'google_calendar' AND endpoint_identity = $1",
+        b,
+    )
+    assert await reconcile_endpoint_rules(pool) == 1
+    assert await _scope_rules(pool, f"connector:google_calendar:{b}") == [
+        ("calendar_block", "block")
+    ]

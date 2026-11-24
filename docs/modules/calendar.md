@@ -198,7 +198,8 @@ location or any other free text, so third-party text can never raise an invitati
   always wins. Concurrent verbs on one organizer serialise on an advisory lock. A Vouch only lifts an
   otherwise first-contact organizer to `vouched` (trusted). A calendar endpoint registered later is
   covered for trust, because the verdict reads every calendar scope; only the connector's
-  ingest-time suppression of a Block is per endpoint.
+  ingest-time suppression of a Block is per endpoint. The Switchboard's 5-minute eligibility sweep copies the verbs' rules (by `created_by`,
+  never manual rules) onto endpoints registered later, idempotently.
 - **Not yet stamped.** The lure badges that need hidden-guest-list, conference-host and link facts
   (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
   for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.
