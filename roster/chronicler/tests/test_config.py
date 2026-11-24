@@ -143,11 +143,6 @@ def test_rfc_0014_exists() -> None:
     assert "retrospective" in text.lower()
 
 
-def test_v1_heart_and_soul_mentions_chronicler() -> None:
-    v1 = (PROJECT_ROOT / "about" / "heart-and-soul" / "v1.md").read_text()
-    assert "Chronicler" in v1
-
-
 def test_day_close_prompt_forbids_memory_writes(butler_toml: dict) -> None:
     """Delivery receipts must not become memories: only the deterministic
     write-back stores chronicler facts, so the narrating session may not."""

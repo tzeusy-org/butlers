@@ -252,6 +252,7 @@ changes infrastructure or historical data.
 | [`verify_qa_isolation.py`](verify_qa_isolation.py) | operator (`render` offline; `run` against a `-dev` namespace) | Applies the QA investigator probe Job, a canary-publisher pod and one-hardening-removed inverse controls as the launcher service account, and emits a content-blind pass/RED/PASS receipt. |
 | [`check_for_update_joins.py`](check_for_update_joins.py) | `make check-for-update-joins`, `pre_push.py` | Statically rejects `FOR UPDATE` on nullable outer-join sides. |
 | [`check_owner_emails.py`](check_owner_emails.py) | `ci.yml`, Make, `pre_push.py` | Fails when a tracked file contains a blocked deployment-owner email address. |
+| [`check_doc_phrase_pins.py`](check_doc_phrase_pins.py) | `make lint`, CI guards | Checks required and forbidden exact wording in the shared [Markdown pin table](doc_phrase_pins.toml). |
 | [`check_requirement_trace_lines.py`](check_requirement_trace_lines.py) | `ci.yml`, `make check-requirement-trace` | Requires ID, Source and Scope lines on ADDED/MODIFIED requirement blocks; today's debt is frozen in `requirement-trace-baseline.json`. |
 | `tests/contracts/test_requirement_citations.py` | CI unit/guards, `make check-requirement-citations`, `pre_push.py` | Resolves qualified test citations from canonical specs or complete retained ADDED/MODIFIED requirements. |
 | [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |

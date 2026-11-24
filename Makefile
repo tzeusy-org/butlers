@@ -13,6 +13,7 @@ lint:
 	uv run ruff check src/ tests/ roster/ scripts/
 	uv run --no-sync lint-imports
 	$(MAKE) --no-print-directory secrets-scan lint-workflows lint-tools-self-test
+	python3 scripts/check_doc_phrase_pins.py
 	$(MAKE) --no-print-directory typecheck
 
 # Explicit setup only: initial public-source checker environment is never installed by a check.
