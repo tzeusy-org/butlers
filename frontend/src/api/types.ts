@@ -1471,9 +1471,24 @@ export interface CalendarWorkspaceLaneDefinition {
   source_keys: string[];
 }
 
+/**
+ * A same-title group the workspace read held back from `entries` (a title repeated more than
+ * 20 times on one display-timezone day). Disclosed with its entries so the UI can show a counted
+ * chip and expand it. Counts cover the page the group was found on.
+ */
+export interface CalendarSuppressedGroup {
+  title: string;
+  /** Display-timezone day, `YYYY-MM-DD`. */
+  day: string;
+  count: number;
+  entries: UnifiedCalendarEntry[];
+}
+
 /** Response payload for GET /api/calendar/workspace. */
 export interface CalendarWorkspaceReadResponse {
   entries: UnifiedCalendarEntry[];
+  /** Same-title groups held back from `entries`; absent or empty when nothing was suppressed. */
+  suppressed_groups?: CalendarSuppressedGroup[];
   source_freshness: CalendarWorkspaceSourceFreshness[];
   lanes: CalendarWorkspaceLaneDefinition[];
   /**

@@ -7,7 +7,7 @@ import contextlib
 import json
 import logging
 import re
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
@@ -57,6 +57,7 @@ from butlers.api.models.calendar_workspace import (
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
+    CalendarSuppressedGroup,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
@@ -191,6 +192,8 @@ _RRULE_FREQ_UNIT = {
 # Keyset pagination bounds for the workspace read.
 _WORKSPACE_DEFAULT_LIMIT = 200
 _WORKSPACE_MAX_LIMIT = 1000
+#: A title repeated more than this many times on one day is collapsed into a suppressed group.
+_WORKSPACE_NOISY_GROUP_SIZE = 20
 
 # Allowed values for the server-side facets. ``status`` mirrors the computed
 # values produced by ``_entry_status`` / ``STATUS_SQL``; ``source_type`` mirrors
@@ -1386,31 +1389,38 @@ async def get_workspace(
         except ValueError:
             continue
 
-    # Hide noisy events: if the same title appears >20 times on a single
-    # day, suppress all instances of that title for that day.
-    day_title_counts: Counter[tuple[str, str]] = Counter()
-    for _row, entry in pairs:
-        day_key = entry.start_at.date().isoformat()
-        day_title_counts[(day_key, entry.title)] += 1
-
-    noisy: set[tuple[str, str]] = {k for k, v in day_title_counts.items() if v > 20}
-    if noisy:
-        pairs = [(r, e) for r, e in pairs if (e.start_at.date().isoformat(), e.title) not in noisy]
-
-    # Keyset pagination: we fetched ``limit + 1`` rows, so anything beyond the
-    # page means more rows remain. The cursor encodes the last returned row's
-    # raw ``(instance_starts_at, instance_id)`` keyset position.
+    # Keyset pagination: we fetched ``limit + 1`` rows, so anything beyond the page means more
+    # rows remain. ``has_more`` and the cursor come from the raw page, before suppression, so a
+    # page that loses rows to suppression still reports the rows behind it. The cursor encodes
+    # the last raw row's ``(instance_starts_at, instance_id)`` keyset position.
     has_more = len(pairs) > limit
-    page = pairs[:limit]
+    raw_page = pairs[:limit]
     next_cursor: str | None = None
-    if has_more and page:
-        last_row, _last_entry = page[-1]
+    if has_more and raw_page:
+        last_row, _last_entry = raw_page[-1]
         last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
         last_instance_id = last_row.get("instance_id")
         if last_starts_at is not None and isinstance(last_instance_id, UUID):
             next_cursor = encode_cursor(
                 (last_starts_at, last_instance_id), scope="calendar-workspace"
             )
+
+    # A title repeated more than the noise threshold on one display-timezone day is held out of
+    # ``entries`` and disclosed, with its entries, in ``suppressed_groups``.
+    day_title_groups: dict[tuple[str, str], list[UnifiedCalendarEntry]] = defaultdict(list)
+    for _row, entry in raw_page:
+        day_title_groups[(entry.start_at.date().isoformat(), entry.title)].append(entry)
+    noisy = {k for k, v in day_title_groups.items() if len(v) > _WORKSPACE_NOISY_GROUP_SIZE}
+    page = [(r, e) for r, e in raw_page if (e.start_at.date().isoformat(), e.title) not in noisy]
+    suppressed_groups = [
+        CalendarSuppressedGroup(
+            title=title,
+            day=day,
+            count=len(day_title_groups[(day, title)]),
+            entries=day_title_groups[(day, title)],
+        )
+        for (day, title) in sorted(noisy)
+    ]
 
     # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
     # batch-join over calendar_event_entities → public.entities, keyed by
@@ -1445,6 +1455,7 @@ async def get_workspace(
 
     data = CalendarWorkspaceReadResponse(
         entries=[entry for _row, entry in page],
+        suppressed_groups=suppressed_groups,
         source_freshness=source_freshness,
         lanes=_build_lane_definitions(source_freshness),
         next_cursor=next_cursor,

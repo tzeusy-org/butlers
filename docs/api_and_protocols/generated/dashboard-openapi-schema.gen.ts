@@ -22193,6 +22193,25 @@ export interface components {
             timezone: string;
         };
         /**
+         * CalendarSuppressedGroup
+         * @description A same-title group the workspace read held back from ``entries`` (bu-5ii4gj.4).
+         *
+         *     A title that repeats more than the noise threshold on one display-timezone day is collapsed
+         *     out of ``entries`` so a feed does not bury the grid. The group is disclosed here, with its
+         *     entries, so the client can show a counted chip and expand it rather than read a packed day
+         *     as complete. Counts cover the page the group was found on.
+         */
+        CalendarSuppressedGroup: {
+            /** Count */
+            count: number;
+            /** Day */
+            day: string;
+            /** Entries */
+            entries?: components["schemas"]["UnifiedCalendarEntry"][];
+            /** Title */
+            title: string;
+        };
+        /**
          * CalendarWorkspaceButlerMutationRequest
          * @description Request envelope for butler-view workspace mutations.
          */
@@ -22371,6 +22390,8 @@ export interface components {
              * @default true
              */
             sources_available?: boolean;
+            /** Suppressed Groups */
+            suppressed_groups?: components["schemas"]["CalendarSuppressedGroup"][];
         };
         /**
          * CalendarWorkspaceSearchResponse
