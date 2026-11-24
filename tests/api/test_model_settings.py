@@ -188,6 +188,72 @@ async def test_catalog_list_and_503(app):
     assert resp_503.status_code == 503
 
 
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_catalog_list_orders_entries_and_applies_per_model_usage_resets(
+    api: httpx.AsyncClient, api_db: ApiDatabase
+) -> None:
+    preferred, first, last, disabled, cheap = (uuid.uuid4() for _ in range(5))
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_catalog
+            (id, alias, runtime_type, model_id, complexity_tier, priority, enabled)
+        VALUES ($1, $2, 'codex', 'synthetic-catalog-list-model', $3, $4, $5)
+        """,
+        [
+            (cheap, "catalog-list-cheap", "cheap", 100, True),
+            (disabled, "catalog-list-middle", "workhorse", 50, False),
+            (last, "catalog-list-z", "workhorse", 50, True),
+            (preferred, "catalog-list-priority", "workhorse", 60, False),
+            (first, "catalog-list-a", "workhorse", 50, True),
+        ],
+    )
+    reset_at = await api_db.pool.fetchval(
+        """
+        INSERT INTO public.token_usage_ledger
+            (catalog_entry_id, butler_name, input_tokens, output_tokens)
+        VALUES ($1, 'general', 2, 3)
+        RETURNING recorded_at
+        """,
+        first,
+    )
+    assert isinstance(reset_at, datetime)
+    await api_db.pool.execute(
+        """
+        INSERT INTO public.token_limits
+            (catalog_entry_id, limit_24h, limit_30d, reset_24h_at)
+        VALUES ($1, 100, 200, $2)
+        """,
+        first,
+        reset_at,
+    )
+    recorded_after_reset = reset_at + timedelta(microseconds=1)
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.token_usage_ledger
+            (catalog_entry_id, butler_name, input_tokens, output_tokens, recorded_at)
+        VALUES ($1, 'general', $2, $3, $4)
+        """,
+        [(first, 5, 7, recorded_after_reset), (last, 8, 11, recorded_after_reset)],
+    )
+
+    response = await api.get("/api/settings/models")
+
+    assert response.status_code == 200
+    expected_ids = [str(entry_id) for entry_id in (preferred, first, last, disabled, cheap)]
+    rows = [row for row in response.json()["data"] if row["id"] in expected_ids]
+    assert [row["id"] for row in rows] == expected_ids
+    assert [
+        (row["usage_24h"], row["usage_30d"], row["limit_24h"], row["limit_30d"]) for row in rows
+    ] == [
+        (0, 0, None, None),
+        (12, 17, 100, 200),
+        (19, 19, None, None),
+        (0, 0, None, None),
+        (0, 0, None, None),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Catalog CRUD error paths (parametrized)
 # ---------------------------------------------------------------------------
