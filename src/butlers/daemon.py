@@ -73,6 +73,7 @@ from butlers.core.scheduler.dispatch import tick as _tick
 from butlers.core.spawner import Spawner
 from butlers.core.state import state_get as _state_get
 from butlers.core.state import state_set as _state_set
+from butlers.core.tick_guard import scheduler_tick_gate
 from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
@@ -1447,6 +1448,7 @@ class ButlerDaemon:
             get_eligibility_pool=lambda: daemon.db.pool if gate_on_own_pool else None,
             default_timezone=runtime_context.default_timezone,
             chronicler_continuation=vars(self).get("_chronicler_continuation"),
+            tick_gate=scheduler_tick_gate(self),
         )
 
     def _resolve_memory_module(self) -> Any | None:
