@@ -400,11 +400,24 @@ async def test_an_uncertain_edited_send_is_never_redriven(broker_db_url):
 
 
 async def test_amendment_snapshots_and_receipt_are_immutable_in_the_migrated_database(
-    broker_db_url,
+    postgres_container,
 ):
     import asyncpg
 
-    async with world(broker_db_url) as w:
+    from butlers.migrations import run_migrations
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
+    from tests.capability_broker.helpers import BROKER_DOMAIN
+
+    db_url = create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        ["core", "switchboard", "relationship"],
+        schemas={"core": "switchboard", "switchboard": "switchboard", "relationship": "relationship"},
+    )
+    for chain in ("core", "approvals"):
+        await run_migrations(db_url, chain=chain, schema=BROKER_DOMAIN)
+
+    async with world(db_url) as w:
         # The production cleanup connection has public-only search_path; the trigger
         # must resolve its owning schema from TG_TABLE_SCHEMA.
         async with w.domain.acquire() as cleanup, cleanup.transaction():
