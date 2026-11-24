@@ -740,7 +740,7 @@ def _fake_allocation_sql(monkeypatch, metadata, change=None):
     return calls, disposed
 
 
-def _real_allocation_command(monkeypatch, tmp_path):
+def _real_allocation_command(monkeypatch, tmp_path, *, allocation_seconds=3):
     data = tmp_path / "data"
     (data / "base").mkdir(parents=True)
     (data / "pg_tblspc").mkdir()
@@ -757,11 +757,11 @@ def _real_allocation_command(monkeypatch, tmp_path):
         },
     )
 
-    def capture(argv, seconds=3):
+    def capture(argv, **kwargs):
         assert argv[:5] == ["docker", "exec", "a" * 64, "sh", "-c"]
         calls.append(argv)
         script = argv[5].replace("data=/var/lib/postgresql/data", "data=" + str(data))
-        return real_capture(["sh", "-c", script, "storage", argv[-1]], seconds)
+        return real_capture(["sh", "-c", script, "storage", argv[-1]], allocation_seconds, **kwargs)
 
     monkeypatch.setattr(storage, "_capture", capture)
     return data, calls
@@ -975,6 +975,59 @@ def test_unregistered_oid_allocation_remains_unattributed(monkeypatch, tmp_path)
     assert result["C_count"] == 1 and result["unmapped_oids"] == 1
     assert result["unmapped_bytes"] > 0
     assert result["T_count"] == result["F_count"] == result["P_count"] == 0
+
+
+@pytest.mark.parametrize("stall", ["capacity", "traversal", "invalid_capacity"])
+def test_allocation_timeout_retains_only_complete_pgdata_capacity(monkeypatch, tmp_path, stall):
+    observer = _allocation_observer(monkeypatch)
+    data, commands = _real_allocation_command(monkeypatch, tmp_path, allocation_seconds=1)
+    (data / "base" / "10000").mkdir()
+    observer.database_event("intent", observer.container, "private", "C")
+    observer.database_event("ready", observer.container, "private", "C")
+    calls, disposed = _fake_allocation_sql(monkeypatch, [(10000, "private", 1663)])
+    monkeypatch.setattr(
+        storage,
+        "docker_totals",
+        lambda **kwargs: {"status": "unknown", "reason": "measurement_unavailable"},
+    )
+    observer.flush = lambda _: None
+
+    monkeypatch.setenv("TEST_STORAGE_STALL", stall)
+    shell = r"""
+df() {
+    if [ "$1" = -Pi ] && [ "$TEST_STORAGE_STALL" = capacity ]; then sleep 10; fi
+    total=100
+    free=30
+    if [ "$1" = -Pi ]; then total=20; free=10; fi
+    if [ "$TEST_STORAGE_STALL" = invalid_capacity ]; then free=101; fi
+    printf '%s\n' 'Filesystem Total Used Available Use% Mounted' "fixture $total 1 $free 1% /"
+}
+du() { sleep 10; }
+"""
+    monkeypatch.setattr(storage, "_ALLOCATION_SCRIPT", shell + storage._ALLOCATION_SCRIPT)
+    observer.sample("periodic")
+
+    row = observer.rows[-1]
+    assert storage._sample_state(row) == "partial"
+    assert row["owned_allocation"] == {"status": "unknown", "reason": "command_timeout"}
+    assert row["postgres"] == {"status": "unknown", "reason": "logical_sizes_not_sampled"}
+    assert len(commands) == 1 and disposed == [True]
+    assert calls == ["SHOW transaction_read_only", storage._METADATA_SQL]
+    assert row["probes"]["postgres"][-2]["stage"] == "allocation"
+    assert row["probes"]["postgres"][-2]["outcome"] == "command_timeout"
+    if stall == "traversal":
+        assert row["pgdata"] == {
+            "status": "ok",
+            "owned_running_servers": 1,
+            "owned_volumes": 1,
+            "image_sha256": "b" * 64,
+            "total_bytes": 102400,
+            "free_bytes": 30720,
+            "total_inodes": 20,
+            "free_inodes": 10,
+        }
+    else:
+        assert row["pgdata"] == {"status": "unknown", "reason": "allocation_unavailable"}
 
 
 @pytest.mark.parametrize("failed_stage", [None, "metadata_after", "wal_temp", "dispose"])
