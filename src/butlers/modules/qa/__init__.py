@@ -1148,14 +1148,14 @@ class QaModule(Module):
             if "investigation_notes" in structured_evidence:
                 investigation_notes = structured_evidence["investigation_notes"]
                 if not isinstance(investigation_notes, dict):
+                    # The notes are left alone, but the bundle bodies below must still age out.
                     malformed_rows += 1
                     logger.warning(
                         "QaModule.daily_evidence_cleanup: malformed investigation_notes "
-                        "shape; skipping finding_id=%s",
+                        "shape; leaving the notes untouched for finding_id=%s",
                         finding_id,
                     )
-                    continue
-                if "evidence_lines" in investigation_notes:
+                elif "evidence_lines" in investigation_notes:
                     cleaned_notes = dict(investigation_notes)
                     cleaned_notes.pop("evidence_lines", None)
                     cleaned_evidence["investigation_notes"] = cleaned_notes

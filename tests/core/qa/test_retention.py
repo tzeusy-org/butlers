@@ -269,3 +269,25 @@ async def test_daily_evidence_cleanup_prunes_notes_lines_and_bundle_bodies_toget
     updated = _updated(pool)[row["id"]]
     assert updated["investigation_notes"] == {"headline": "kept"}
     assert "bodies" not in updated["evidence_bundle"]
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_notes_row_still_gets_its_bundle_bodies_pruned(monkeypatch):
+    now = datetime(2026, 5, 15, 4, tzinfo=UTC)
+    manifest = {"digest": "d"}
+    row = _row(
+        created_at=now - timedelta(days=31),
+        structured_evidence={
+            "investigation_notes": ["not an object"],
+            "evidence_bundle": {"manifest": manifest, "bodies": {"sections": ["raw"]}},
+        },
+    )
+    pool = _retention_pool([row])
+    monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", _FakeRetentionCounter())
+
+    result = await _module_with_pool(pool).daily_evidence_cleanup(now=now)
+
+    assert result == {"status": "completed", "cleaned_rows": 1, "malformed_rows": 1}
+    updated = _updated(pool)[row["id"]]
+    assert updated["evidence_bundle"] == {"manifest": manifest}
+    assert updated["investigation_notes"] == ["not an object"]
