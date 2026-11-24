@@ -517,7 +517,7 @@ OP POST /api/butlers/{name}/kill cc8e3106fa97
 OP POST /api/butlers/{name}/mcp/call 540702396bbd
 OP POST /api/butlers/{name}/schedules abf0fd1156b4
 OP POST /api/butlers/{name}/schedules/{schedule_id}/trigger 426e92cac18f
-OP POST /api/butlers/{name}/tick 3260d226c6ac
+OP POST /api/butlers/{name}/tick 65cfac2fe050
 OP POST /api/butlers/{name}/trigger 73b0bc420792
 OP POST /api/calendar/sources 826a2a3474a4
 OP POST /api/calendar/sources/role 1592dbfae1d6
