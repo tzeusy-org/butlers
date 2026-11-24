@@ -412,7 +412,11 @@ async def test_amendment_snapshots_and_receipt_are_immutable_in_the_migrated_dat
         postgres_container,
         migration_db_name(),
         ["core", "switchboard", "relationship"],
-        schemas={"core": "switchboard", "switchboard": "switchboard", "relationship": "relationship"},
+        schemas={
+            "core": "switchboard",
+            "switchboard": "switchboard",
+            "relationship": "relationship",
+        },
     )
     for chain in ("core", "approvals"):
         await run_migrations(db_url, chain=chain, schema=BROKER_DOMAIN)
