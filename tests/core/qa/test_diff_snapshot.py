@@ -313,3 +313,88 @@ async def test_the_publisher_reuses_the_dispatchers_sealed_export(tmp_path: Path
     assert result == "published"
     assert publisher.publish.await_args.kwargs["export"] is export
     assert publisher.publish.await_args.kwargs["binding"].head_sha == export.head_sha
+
+
+async def test_one_huge_file_cannot_overshoot_the_line_cap(packed_base, monkeypatch) -> None:
+    pod, trusted, base = packed_base
+    commit_file(pod, "big/one.txt", "".join(f"row {i}\n" for i in range(500)), "one big file")
+    export = await _export(pod, base)
+    monkeypatch.setattr(diff_snapshot, "MAX_DIFF_LINES", 60)
+
+    snapshot = await derive_diff_snapshot(export, trusted / ".git" / "objects")
+
+    assert len(snapshot) <= 61 and snapshot[-1]["text"].startswith("...")
+
+
+async def test_a_seal_time_refusal_is_info_and_not_a_counted_failure(caplog) -> None:
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    from butlers.core.qa.publication.export import ExportRefused
+
+    counter = MagicMock()
+    with patch.object(diff_snapshot, "_failures", counter), caplog.at_level(logging.INFO):
+        diff_snapshot.record_snapshot_failure("seal", ExportRefused("content_leak"))
+        diff_snapshot.record_snapshot_failure("seal", RuntimeError("boom"))
+
+    counter.add.assert_called_once()  # only the genuine error is counted
+    levels = {r.levelname for r in caplog.records if "content_leak" in r.getMessage()}
+    assert levels == {"INFO"}
+
+
+async def test_a_supplied_export_for_another_base_is_refused(tmp_path: Path, monkeypatch) -> None:
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.core.qa.publication import proposal
+    from tests.core.qa.publication_fakes import synthetic_export
+
+    export = synthetic_export()  # base "b" * 40
+    publisher = MagicMock()
+    publisher.record_refusal = AsyncMock(side_effect=lambda _attempt, result: result)
+    publisher.repository = "owner/repo"
+
+    result = await proposal.publish_investigation(
+        publisher,
+        repo_root=tmp_path,
+        worktree_path=tmp_path,
+        attempt_id=uuid.uuid4(),
+        finding=MagicMock(),
+        branch_name="qa/finance/abc-1",
+        base_sha="a" * 40,
+        identity=QA_IDENTITY,
+        labels=[],
+        whitelist=None,
+        dashboard_base_url=None,
+        sealed_export=export,
+    )
+
+    assert result.category == "unbound_export"
+    publisher.publish.assert_not_called()
+
+
+async def test_retain_unpublished_proposal_reuses_the_sealed_export(tmp_path: Path, monkeypatch):
+    import uuid
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.core.qa.publication import proposal
+    from tests.core.qa.publication_fakes import synthetic_export
+
+    export = synthetic_export()
+    retain = AsyncMock()
+    monkeypatch.setattr(proposal.retention, "retain_export", retain)
+    monkeypatch.setattr(proposal, "resolve_branch_head", MagicMock(side_effect=AssertionError))
+    monkeypatch.setattr(proposal, "build_sealed_export", AsyncMock(side_effect=AssertionError))
+
+    result = await proposal.retain_unpublished_proposal(
+        MagicMock(),
+        repo_root=tmp_path,
+        attempt_id=uuid.uuid4(),
+        branch_name="qa/finance/abc-1",
+        base_sha="b" * 40,
+        identity=QA_IDENTITY,
+        sealed_export=export,
+    )
+
+    assert result is None
+    assert retain.await_args.args[2] is export

@@ -655,3 +655,7 @@ async def test_pre_egress_publication_failures_log_type_name_only(
     assert record.exc_info is None
     assert leaky not in caplog.text
     assert ("OSError" if stage == "bind" else "RuntimeError") in record.getMessage()
+
+
+def test_isolated_git_env_never_lazily_fetches_missing_objects():
+    assert isolated_git_env()["GIT_NO_LAZY_FETCH"] == "1"

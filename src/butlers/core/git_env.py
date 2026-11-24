@@ -87,4 +87,7 @@ def harden_git_env(env: dict[str, str]) -> dict[str, str]:
 
 def isolated_git_env() -> dict[str, str]:
     """Allowlisted, hardened environment for a tokenless dispatcher git subprocess."""
-    return harden_git_env(allowlisted_git_env())
+    env = harden_git_env(allowlisted_git_env())
+    # A partial clone must never lazily fetch a missing object from a remote mid-command.
+    env["GIT_NO_LAZY_FETCH"] = "1"
+    return env
