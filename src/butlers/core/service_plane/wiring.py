@@ -14,6 +14,7 @@ from butlers.core.service_plane.messenger_delivery import (
     cached_verifier,
     service_plane_auth_enabled,
 )
+from butlers.core.service_plane.registry import LOCATION_RETENTION_GRANTS_READY
 from butlers.core.service_plane.relays import Dispatch, RelayEndpoint
 from butlers.core.service_plane.workload_identity import RELAY_AUDIENCE
 
@@ -99,7 +100,7 @@ def relay_dispatch(pool: Any, endpoint: RelayEndpoint) -> Dispatch:
     async def dispatch(butler: str, tool: str, args: dict[str, Any]) -> Any:
         # Switchboard's routing package is loaded from the roster at runtime.
         routing = importlib.import_module("butlers.tools.switchboard.routing.route")
-        return await routing.route(
+        outcome = await routing.route(
             pool,
             butler,
             tool,
@@ -108,6 +109,21 @@ def relay_dispatch(pool: Any, endpoint: RelayEndpoint) -> Dispatch:
             allow_stale=endpoint.allow_stale,
             call_fn=relay_call_fn(routing),
         )
+        if endpoint.name != LOCATION_RETENTION_GRANTS_READY:
+            return outcome
+
+        # The grant reader accepts only the target payload, and only a confirmed route
+        # result may provide one. The worker still validates the whole grant response.
+        if not isinstance(outcome, dict) or outcome.keys() != {"result", "transport"}:
+            return None
+        transport = outcome["transport"]
+        if (
+            not isinstance(transport, dict)
+            or transport != routing.CONFIRMED.as_dict()
+            or transport["retryable"] is not False
+        ):
+            return None
+        return outcome["result"]
 
     return dispatch
 
