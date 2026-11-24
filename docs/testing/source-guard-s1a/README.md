@@ -93,12 +93,12 @@ not evidence of reduction. The existing helper module has a net +163 lines.
 
 The registry's real scope is `tests/**/*.py` and `roster/*/tests/**/*.py`, with
 the explicit `source_rules.EXCLUDE` tuple preserving the packet's foreign CI
-surfaces and #6048's duplicate-name checker test. The matched scope is 2,347
+surfaces and #6048's duplicate-name checker test. The original S1a checkpoint matched 2,347
 Python files; SHA256 of sorted relative paths joined with LF and a final LF is
 `92028fb6afe7b443dd38c96e5ddaaee313ec5172dacc1b227628c37f9df3cf9a`.
 This is the new ratchet scope; no existing consumer's scope was changed.
 
-| Rule | Existing admitted sites | Distinct files |
+| Rule | Sites at the original checkpoint | Distinct files |
 |---|---:|---:|
 | no-change-prose-reads | 22 | 12 |
 | ast-tests-use-source-guard | 85 | 85 |
@@ -106,9 +106,19 @@ This is the new ratchet scope; no existing consumer's scope was changed.
 
 The [frozen offender data](../../../tests/architecture/source_offenders.json)
 is the exact membership receipt: path, line, rule, AST-shape digest and required
-reason for every site. All 94 distinct paths exist at the assigned base. No gate
-regenerates this data. New sites, modified shapes, obsolete rows, duplicates
-and missing reasons fail. Removed rules cannot leave silent extra buckets.
+reason for every site. The 94 paths in the original census were present at its
+assigned base. The delivery inventory includes three additional AST scan sites
+already on protected main at `54e229a15` from #6054, #6064 and #6060. It also
+records the Spotify scan's changed fingerprint from #6060 and the existing
+schema walker at its new line after #6059, #6054 and #6078. The delivery
+inventory has 22 prose findings, 88 AST findings and four walker findings.
+The source tests at those sites were reviewed and remain unchanged by S1a.
+
+The change-path rule counts distinct occurrences even when they share a line
+and an AST shape. It counts a split path once when an enclosing AST expression
+and its child visit the same literal nodes. No gate regenerates the inventory.
+New sites, modified shapes, obsolete rows, duplicate approvals and missing
+reasons fail. Removed rules cannot leave extra inventory buckets.
 
 The four walker sites are `_StripDocstrings` in
 `tests/api/test_secrets_v2_spec_anchors.py:62`, `Visitor` in
@@ -127,6 +137,10 @@ Existing synthetic-tree tests were not edited to add pragmas. No claim is made
 that the admitted change-path sites should all be deleted in S2.
 
 ## Executed verification
+
+These receipts record the original S1a checkpoint `70e59b7d`. The review
+correction adds three regression cases. The PR records the delivery head's
+additional verification.
 
 - `Tests: +45 ~0 -0`. Exact-base `tests/ roster/` collection: 38,890 selected /
   38,927 total; S1a collection: 38,935 selected / 38,972 total. Both deselect 37.

@@ -241,6 +241,13 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
+      "path": "tests/chronicler/test_calendar_revisions_adapter.py",
+      "line": 105,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape e09a490d5a6f60f3)",
+      "reason": "Initial S1a inventory preserves the landed source scan from #6054 pending migration"
+    },
+    {
       "path": "tests/chronicler/test_comms_adapter.py",
       "line": 110,
       "rule": "ast-tests-use-source-guard",
@@ -405,8 +412,15 @@
       "path": "tests/connectors/test_spotify_single_submit_path.py",
       "line": 16,
       "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 3a7408182965c9e5)",
+      "detail": "AST use without a source_guard reference (shape 179c2555668c9b8e)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_calendar_quarantine_readers.py",
+      "line": 61,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape 1e8886ca6fea1d6c)",
+      "reason": "Initial S1a inventory preserves the landed source scan from #6064 pending migration"
     },
     {
       "path": "tests/contracts/test_chronicler_no_cross_schema.py",
@@ -435,6 +449,13 @@
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 4ab6eb469a399a07)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
+    },
+    {
+      "path": "tests/contracts/test_connector_ingest_submit_guard.py",
+      "line": 16,
+      "rule": "ast-tests-use-source-guard",
+      "detail": "AST use without a source_guard reference (shape a023829bbcbae15f)",
+      "reason": "Initial S1a inventory preserves the landed source scan from #6060 pending migration"
     },
     {
       "path": "tests/contracts/test_d6_writers_stamp_taint.py",
@@ -762,7 +783,7 @@
     },
     {
       "path": "tests/contracts/test_schema_reach.py",
-      "line": 1675,
+      "line": 1696,
       "rule": "no-private-walkers",
       "detail": "private walker Visitor (shape 78958db032d820e8)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
