@@ -2093,6 +2093,23 @@ async def store_fact(
                     "expected_supersedes_id or refuse_if_current cannot be used for a temporal fact"
                 )
             if not skip_supersession:
+                if _inverse_predicate is not None:
+                    # Lock the current mirrored rows in one stable order before either
+                    # supersession. A retraction that got there first must be observed
+                    # as retracted, rather than overwritten using a stale snapshot.
+                    await conn.fetch(
+                        "SELECT id FROM facts WHERE tenant_id = $1 AND scope = $2 "
+                        "AND valid_at IS NULL AND validity IN ('active', 'fading') AND "
+                        "((entity_id = $3 AND object_entity_id = $4 AND predicate = $5) "
+                        "OR (entity_id = $4 AND object_entity_id = $3 AND predicate = $6)) "
+                        "ORDER BY id FOR UPDATE",
+                        tenant_id,
+                        scope,
+                        entity_id,
+                        object_entity_id,
+                        predicate,
+                        _inverse_predicate,
+                    )
                 # Check for an existing *property* active fact using the appropriate key.
                 # Only consider rows with valid_at IS NULL (property facts).
                 # Supersession is always scoped to the same tenant_id.

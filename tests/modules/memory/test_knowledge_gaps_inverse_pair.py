@@ -319,6 +319,172 @@ async def test_a_mirrored_write_and_a_retraction_of_its_inverse_fact_both_commit
         await writer
 
 
+@pytest.mark.parametrize("first", ["retraction", "writer"])
+@pytest.mark.parametrize("correction", [False, True])
+async def test_mirrored_writer_and_real_retraction_preserve_committed_state(
+    pool_factory, session_hook, first, correction
+):
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    forward, reverse = await _edge_predicates(pool)
+    original = await _internal_edge(pool, left, right, forward, sender=owner)
+    inverse = await _inverse(pool, left, right, reverse)
+    assert inverse is not None
+    await storage._backfill_facts_to_catalog(pool, source_schema="public", limit=100)
+    assert (
+        await pool.fetchval(
+            "SELECT confidence > 0 FROM public.memory_catalog WHERE source_schema='public' "
+            "AND source_table='facts' AND source_id=$1",
+            inverse["id"],
+        )
+        is True
+    )
+    correction_args = {"correction_id": "synthetic-correction"} if correction else {}
+
+    # A failure after the real retraction must restore canonical, graph and catalog state.
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        assert await storage.forget_memory(
+            _BorrowedPool(pool, conn), "fact", inverse["id"], **correction_args
+        )
+        assert (
+            await conn.fetchval("SELECT validity FROM facts WHERE id=$1", inverse["id"])
+            == "retracted"
+        )
+        await tx.rollback()
+    assert await pool.fetchval("SELECT validity FROM facts WHERE id=$1", inverse["id"]) == "active"
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.entity_graph_edges WHERE source_table='facts' "
+            "AND source_id=$1",
+            inverse["id"],
+        )
+        == 1
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT confidence > 0 AND invalid_at IS NULL FROM public.memory_catalog "
+            "WHERE source_schema='public' AND source_table='facts' AND source_id=$1",
+            inverse["id"],
+        )
+        is True
+    )
+
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        held = _BorrowedPool(pool, conn)
+        if first == "retraction":
+            assert await storage.forget_memory(held, "fact", inverse["id"], **correction_args)
+            waiting = asyncio.create_task(_internal_edge(pool, left, right, forward, sender=owner))
+        else:
+            written = await _internal_edge(held, left, right, forward, sender=owner)
+            waiting = asyncio.create_task(
+                storage.forget_memory(pool, "fact", inverse["id"], **correction_args)
+            )
+
+        pid = await conn.fetchval("SELECT pg_backend_pid()")
+
+        async def blocked():
+            return waiting.done() or await pool.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                "WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                pid,
+            )
+
+        async with asyncio.timeout(10):
+            await poll_until(blocked, interval_s=0.01)
+        assert not waiting.done()
+        assert await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a ON a.pid=l.pid "
+            "WHERE $1 = ANY(pg_blocking_pids(a.pid)) AND NOT l.granted "
+            "AND l.locktype IN ('transactionid', 'tuple'))",
+            pid,
+        )
+        await tx.commit()
+        result = await waiting
+        if first == "retraction":
+            written = result
+        else:
+            assert result is True
+
+    assert written["supersedes_id"] == original["id"]
+    assert (
+        await pool.fetchval("SELECT validity FROM facts WHERE id=$1", inverse["id"]) == "retracted"
+    )
+    replacement = await _inverse(pool, left, right, reverse)
+    assert replacement is not None
+    assert replacement["supersedes_id"] == (inverse["id"] if first == "writer" else None)
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM memory_links WHERE relation='supersedes' "
+            "AND source_id=$1 AND target_id=$2",
+            written["id"],
+            original["id"],
+        )
+        == 1
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.entity_graph_edges WHERE source_table='facts' "
+            "AND source_id=$1",
+            inverse["id"],
+        )
+        == 0
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.entity_graph_edges WHERE source_table='facts' "
+            "AND source_id=$1",
+            replacement["id"],
+        )
+        == 1
+    )
+    assert await pool.fetchval(
+        "SELECT count(*) FROM memory_events WHERE memory_id=$1 "
+        "AND event_type='correction_driven_retraction'",
+        inverse["id"],
+    ) == int(correction)
+    catalog = await pool.fetchrow(
+        "SELECT confidence, invalid_at FROM public.memory_catalog WHERE source_schema='public' "
+        "AND source_table='facts' AND source_id=$1",
+        inverse["id"],
+    )
+    assert catalog["confidence"] == 0 and catalog["invalid_at"] is not None
+
+
+async def test_mixed_mirrored_writes_and_retractions_do_not_deadlock(pool_factory, session_hook):
+    pool, owner, _ = await pool_factory()
+    session_hook(pool)
+    left, right = await _entity(pool), await _entity(pool)
+    predicate, reverse = await _edge_predicates(pool, symmetric=True)
+    await _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+
+    async def write(subject, target):
+        for _ in range(120):
+            await _internal_edge(pool, subject, target, predicate, sender=owner, sensitivity="pii")
+
+    async def retract(subject, target):
+        count = 0
+        for _ in range(120):
+            current = await _inverse(pool, subject, target, reverse)
+            if current is not None:
+                assert await storage.forget_memory(pool, "fact", current["id"])
+                count += 1
+        return count
+
+    async with asyncio.timeout(60):
+        _, _, left_count, right_count = await asyncio.gather(
+            write(left, right), write(right, left), retract(left, right), retract(right, left)
+        )
+    assert left_count > 0 and right_count > 0
+    final = await _internal_edge(pool, left, right, predicate, sender=owner, sensitivity="pii")
+    assert await pool.fetchval("SELECT validity FROM facts WHERE id=$1", final["id"]) == "active"
+    assert await _inverse(pool, left, right, reverse) is not None
+
+
 async def _wait_for_advisory_wait(pool, pid):
     """Wait on PostgreSQL's actual lock waiter, never a scheduling sleep assumption."""
     async with asyncio.timeout(10):
