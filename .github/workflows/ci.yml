@@ -330,6 +330,10 @@ jobs:
         working-directory: frontend
         run: npm run lint:query-coercion
 
+      - name: Dashboard OpenAPI type freshness
+        working-directory: frontend
+        run: npm run check:api
+
       - name: Import graph (knip)
         working-directory: frontend
         run: npm run knip
