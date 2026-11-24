@@ -216,6 +216,40 @@ def _render(objects: _Objects, changes: list[_Change]) -> str:
     return "\n".join(out)
 
 
+def export_touched_paths(
+    export: SealedExport, *, limit: int = MAX_DIFF_FILES
+) -> tuple[list[str], bool]:
+    """Files whose content the sealed export itself carries, from its own objects only.
+
+    Walks the head tree through the export's objects (no repository, no agent worktree) and
+    reports every file whose blob is in the export: exactly the added or modified files. A
+    deletion or a mode-only change carries no blob and is not listed. Returns the sorted paths
+    (at most ``limit``) and whether more were left out. An unparsable export raises
+    ``ExportRefused``.
+    """
+    held = {obj.oid: obj for obj in export.objects}
+    head = held.get(export.head_sha)
+    if head is None or head.kind != "commit":
+        raise ExportRefused("object_missing")
+    paths: list[str] = []
+    stack: list[tuple[str, str, int]] = [(_parse_commit(head.data).tree, "", 0)]
+    while stack:
+        oid, prefix, depth = stack.pop()
+        tree = held.get(oid)
+        if tree is None:
+            continue  # an unchanged subtree: its objects are not part of the export
+        if depth > MAX_TREE_DEPTH:
+            raise ExportRefused("tree_too_deep")
+        for name, entry in _parse_tree(tree.data).items():
+            path = prefix + name.decode("utf-8", errors="replace")
+            if entry.mode == _TREE_MODE:
+                stack.append((entry.oid, path + "/", depth + 1))
+            elif entry.mode != _SUBMODULE_MODE and entry.oid in held:
+                paths.append(path)
+    paths.sort()
+    return paths[:limit], len(paths) > limit
+
+
 def _derive(export: SealedExport, base_objects_dir: Path) -> str:
     store = ObjectStore(base_objects_dir, work_budget=MAX_EXPORT_WORK_BYTES)
     with store:
