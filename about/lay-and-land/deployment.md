@@ -3,9 +3,11 @@
 How the Butlers system is deployed: processes, ports, and where the
 authoritative configuration lives.
 
-Helm on k3s is the production deployment path, targeting namespace `butlers`;
-`butlers-dev` is the dev namespace. This page maps the repository's chart,
-not a verification of a running production fleet. Workload definitions live in
+Helm on k3s deploys the live system in namespace `butlers-dev`, which holds real
+owner data. Butlers has never been deployed to production; production rollout is
+deferred for the foreseeable future (OD18). The chart retains a production design
+targeting namespace `butlers`. This page maps the repository's chart, not a
+verification of running workloads. Workload definitions live in
 `deploy/helm/butlers/templates/`, configuration in `deploy/helm/butlers/values*.yaml`,
 and operator procedures in [Kubernetes Deployment](../../docs/operations/kubernetes-deployment.md).
 Ports live in each `roster/{butler}/butler.toml`. These sources win when this
@@ -195,9 +197,7 @@ them everywhere else, and rejects every TCP login as the publisher; that, with t
 boundary between projection and primary, since the network cannot separate two databases on one
 instance and the shared pod range cannot separate pods. The projection shares the primary's
 volume, WAL, backups and restore drill (the drill drops it or keeps its subscription disabled).
-`max_slot_wal_keep_size = 10GB` caps a stalled slot [Observed: homelab PR #40]. [Observed] Dev
-and prod data share one 1.4T disk, 90 % full with 144G free, with PVC sizes not enforced, so a
-full disk stops both clusters.
+`max_slot_wal_keep_size = 10GB` caps a stalled slot [Observed: homelab PR #40].
 
 ---
 
@@ -215,7 +215,7 @@ is [`docs/identity_and_secrets/environment-variables.md`](../../docs/identity_an
 
 - Local development setup and quality gates:
   [Dev Environment](../../docs/getting_started/dev-environment.md).
-- Production deploys: `make -C deploy/helm/butlers ship-prod` builds and pushes
+- Deferred production deploy design: `make -C deploy/helm/butlers ship-prod` builds and pushes
   images, then deploys the Helm release to namespace `butlers`.
   `make -C deploy/helm/butlers deploy-prod TAG=<tag>` deploys an already-pushed tag.
   See [Kubernetes Deployment](../../docs/operations/kubernetes-deployment.md#deploy)
