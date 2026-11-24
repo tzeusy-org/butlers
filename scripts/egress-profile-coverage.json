@@ -6126,7 +6126,7 @@
       "sha256": "4485479a800ecc7375493d707e06c91039580a33b857852db4a253229a3d443b"
     },
     "roster/messenger/butler.toml": {
-      "sha256": "606ea353e8e77e72331263d2058ef2fc5c5be9e2ab77e8c8506282484cc996d9"
+      "sha256": "c1065ac9baa52e3dae5a2c29067f4f0d621e71442059c74c4f8b12610868ec15"
     },
     "roster/qa/butler.toml": {
       "sha256": "1846bef76733ba6f7f800a59fb9131a3a6b38a180727c95bc7f86c30abb61821"

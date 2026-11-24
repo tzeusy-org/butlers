@@ -125,6 +125,15 @@ class HttpForwarder:
             args_digest=reservation.args_digest,
         )
         content = result.structuredContent
+        if capability.name == "gmail_send_reply":
+            # Gmail's durable fence distinguishes provider acceptance from uncertainty.
+            # Receiving a successful MCP envelope is not evidence that Gmail accepted mail.
+            outcome = content.get("status") if isinstance(content, Mapping) else None
+            if outcome == "sent":
+                return DomainReceipt("committed", value=content)
+            if outcome in ("failed", "error"):
+                return DomainReceipt("failed", value=content)
+            return DomainReceipt("unknown", value=content)
         conditional = reservation.decision.conditional
         if (
             conditional is not None

@@ -97,6 +97,9 @@ risk_tier = "medium"
 [modules.approvals.gated_tools.email_reply_to_thread]
 risk_tier = "medium"
 
+[modules.approvals.gated_tools.gmail_send_reply]
+risk_tier = "medium"
+
 [modules.approvals.gated_tools.whatsapp_send_message]
 risk_tier = "medium"
 

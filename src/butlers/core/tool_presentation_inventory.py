@@ -3682,6 +3682,79 @@ TOOL_PRESENTATION_INVENTORY = (
         recipient_params=RecipientParameters(),
         categories=ALL_CATEGORIES,
     ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_list_drafts gmail_get_draft",
+        effect_class="read",
+        output_trust="untrusted",
+        output_sensitivity="sensitive",
+        resource_params=("account",),
+        selection_bound={"account": False},
+        safety_args=(),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=ALL_CATEGORIES,
+    ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_save_draft",
+        effect_class="record",
+        output_trust="untrusted",
+        output_sensitivity="ordinary",
+        resource_params=("account",),
+        selection_bound={"account": False},
+        safety_args=(
+            "account",
+            "draft_id",
+            "thread_id",
+            "in_reply_to_message_id",
+            "to",
+            "cc",
+            "subject",
+            "body",
+        ),
+        idempotency="none",
+        owner_authority=False,
+        read_stores=(),
+        write_stores=(),
+        recipient_params=RecipientParameters(),
+        categories=(),
+    ),
+    *_declare(
+        "gmail",
+        "mailbox",
+        "gmail_send_reply",
+        effect_class="communicate",
+        output_trust="untrusted",
+        output_sensitivity="ordinary",
+        resource_params=("account",),
+        selection_bound={"account": False},
+        safety_args=(
+            "account",
+            "thread_id",
+            "in_reply_to_message_id",
+            "in_reply_to_sender",
+            "in_reply_to_date",
+            "to",
+            "cc",
+            "subject",
+            "body",
+            "replaces_draft_id",
+        ),
+        idempotency="key_required",
+        owner_authority=False,
+        read_stores=("gmail_owner_sends",),
+        write_stores=("gmail_owner_sends",),
+        recipient_params=RecipientParameters(argument_names=("to", "cc")),
+        categories=(),
+        # The S1 renderer additionally shows the account, thread, context and cleanup target.
+        # All content/safety arguments must be pinned for an exposed standing rule.
+    ),
     # Owner-private native Docs and Sheets (dark until the RFC 0038 switch). Class `record`, not
     # `communicate`, ONLY because the module refuses any target carrying a non-owner permission
     # (native.evaluate_reach): drive_write_file and drive_create_folder can reach shared folders and
@@ -11033,6 +11106,13 @@ def category_spec(module: str, group: str) -> tuple[str, ...]:
 # Native source writer declarations. These cannot establish trusted output by absence.
 STORE_WRITERS = MappingProxyType(
     {
+        "gmail_owner_sends": StoreWriters(
+            native_writers=(
+                "butlers.modules.gmail.receipts.SendReceipts.reserve",
+                "butlers.modules.gmail.receipts.SendReceipts.settle",
+                "butlers.modules.gmail.receipts.SendReceipts.cleanup",
+            ),
+        ),
         "external:google_drive": StoreWriters(
             record_capabilities=(
                 "drive_append_sheet_rows",
@@ -11056,8 +11136,11 @@ STORE_WRITERS = MappingProxyType(
             unknown_writers=True,
         ),
         "external:gmail": StoreWriters(
-            record_capabilities=("gmail_modify_threads",),
-            native_writers=("butlers.modules.gmail.GmailModule._modify_threads",),
+            record_capabilities=("gmail_modify_threads", "gmail_save_draft"),
+            native_writers=(
+                "butlers.modules.gmail.GmailModule._modify_threads",
+                "butlers.modules.gmail.actions.GmailActions._save_draft",
+            ),
             external_writers=True,
             unknown_writers=True,
         ),

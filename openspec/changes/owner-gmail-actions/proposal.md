@@ -15,7 +15,9 @@ grants `gmail.modify`. This closes items B4 (on-demand search) and B7 (archive a
   RFC 0038 switch.
 - Move the connector's message-payload and body-decoding helpers to `butlers.gmail_payload` so the
   connector and the module share one decoder.
-- Nothing sends, drafts, trashes or deletes mail. Attachment content is never returned.
+- Add private draft list/get/save and approval-gated plaintext in-thread replies (bu-kqme7f.6),
+  with metadata-only send fences, exact inert previews and guarded replacement-draft cleanup.
+  Mail is never trashed; attachment content and new-message sends are unavailable.
 - Under an exposed or third-party invocation `gmail_modify_threads` follows the recorded owner
   rule, enforced by the capability broker (bu-kqme7f.10, RFC 0038 D13; see design D3): only the
   triggering thread changes directly, other targets and INBOX/UNREAD removals park, and a goal

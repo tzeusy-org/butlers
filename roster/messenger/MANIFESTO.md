@@ -16,6 +16,9 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 
 - **Outbound delivery ownership:** Execute all user-channel sends and replies. No other agent may call channel egress tools directly.
 - **Channel tool surface:** Own and expose `telegram_send_message`, `telegram_reply_to_message`, `email_send_message`, `email_reply_to_thread`, `whatsapp_send_message`, `whatsapp_reply_to_message`. This is enforced as a configuration/policy requirement: non-messenger agents must not enable, register, or ship these outbound channel egress tools.
+- **Owner Gmail:** After the RFC 0038 switch, own private draft preparation and approval-gated
+  plaintext replies in the owner's existing Gmail threads. Show the exact recipients and body,
+  fence every send by its effect id, and retain uncertain sends for reconciliation without replay.
 - **Delivery validation:** Validate `notify.v1` payloads before any side effect. Reject invalid or missing targeting fields with no delivery attempt.
 - **Outcome reporting:** Return deterministic adapter outcome and error payloads.
 - **Lineage preservation:** Retain `origin_butler` and `request_context` in all responses for audit trail.

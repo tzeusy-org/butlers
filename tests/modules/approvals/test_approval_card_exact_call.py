@@ -80,6 +80,24 @@ def test_oversized_body_gets_open_only() -> None:
     assert len(_message(envelope)) < CARD_FIT_BUDGET
 
 
+def test_gmail_reply_card_shows_exact_context_and_defangs_links():
+    from tests.modules.test_module_gmail import reply_args
+
+    args = reply_args(body="Exact reply https://outside.example.test/path")
+    envelope = _envelope("gmail_send_reply", args)
+    message = _message(envelope)
+    for field in ("account", "in_reply_to_sender", "in_reply_to_date", "subject", "thread_id"):
+        assert args[field] in message
+    for recipient in args["to"] + args["cc"]:
+        assert recipient in message
+    assert "hxxps://outside[.]example[.]test/path" in message
+    assert _verbs(envelope) == ["approve", "reject", "open_dashboard"]
+    assert envelope["delivery"]["render_links_inert"] is True
+    long = _envelope("gmail_send_reply", {**args, "body": "x" * (CARD_FIT_BUDGET + 1)})
+    assert _verbs(long) == ["open_dashboard"]
+    assert long["delivery"]["render_links_inert"] is True
+
+
 def test_administer_tool_gets_open_only() -> None:
     previews.register_preview(
         "grant_access",

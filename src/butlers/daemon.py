@@ -1997,6 +1997,18 @@ class ButlerDaemon:
         """
         approvals_raw = self.config.modules.get("approvals")
         approval_config = parse_approval_config(approvals_raw)
+        # Gmail's complete surface is absent while RFC 0038 is dark. Keep its
+        # configured send gate ready for activation without rejecting a normal
+        # dark startup; an absent/failed module or any other unknown gate still
+        # fails the ordinary validation below.
+        from butlers.core.goal_lineage import enforcement_enabled
+
+        if (
+            approval_config is not None
+            and not enforcement_enabled()
+            and any(mod.name == "gmail" for mod in self._active_modules)
+        ):
+            approval_config.gated_tools.pop("gmail_send_reply", None)
 
         # The approvals module also uses this map after a human manually
         # approves an action to derive its autonomy fingerprint.  Wire it
