@@ -11,9 +11,9 @@ import inspect
 from pathlib import Path
 
 from butlers.connectors import spotify
+from butlers.testing.source_guard import parse_file
 
-_SOURCE = Path(inspect.getsourcefile(spotify) or "").read_text()
-_TREE = ast.parse(_SOURCE)
+_TREE = parse_file(Path(inspect.getsourcefile(spotify) or ""))
 
 
 def _enclosing_functions(tree: ast.AST) -> dict[int, str]:

@@ -15,12 +15,13 @@ import pytest
 
 from butlers.connectors import google_health, owntracks
 from butlers.connectors.evidence_journal import EvidenceNotCommitted
+from butlers.testing.source_guard import parse_file
 
 _EVIDENCE_CALLS = {"commit_envelope", "persist_location_point", "require_committed"}
 
 
 def _ingest_sites(module) -> list[tuple[str, int, list[int]]]:
-    tree = ast.parse(Path(inspect.getsourcefile(module) or "").read_text())
+    tree = parse_file(Path(inspect.getsourcefile(module) or ""))
     found = []
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):

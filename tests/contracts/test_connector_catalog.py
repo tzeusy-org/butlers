@@ -22,6 +22,7 @@ from butlers.connector_catalog import (
     ingress_pairs,
     scrub_connector_labels,
 )
+from butlers.testing.source_guard import parse_file
 from butlers.tools.switchboard.connector.heartbeat import (
     VALID_CONNECTOR_TYPES,
     ConnectorIdentityV1,
@@ -91,7 +92,7 @@ def test_discovery_pairs_match_actual_connector_emission_defaults() -> None:
         path = ROOT / "src" / (row.module.replace(".", "/") + ".py")
         if row.connector_type == "live_listener":
             path = ROOT / "src/butlers/connectors/live_listener/config.py"
-        tree = ast.parse(path.read_text())
+        tree = parse_file(path)
         binding = next(
             n
             for n in tree.body
@@ -139,8 +140,7 @@ _EXISTING_LITERALS = {
 }
 
 
-def _identity_literals(source: str) -> list[tuple[str, str, str]]:
-    tree = ast.parse(source)
+def _identity_literals(tree: ast.Module) -> list[tuple[str, str, str]]:
     owners = {}
     for node in ast.walk(tree):
         targets = (
@@ -175,7 +175,7 @@ def test_no_new_large_hardcoded_connector_identity_populations() -> None:
             relative = path.relative_to(ROOT).as_posix()
             if "tests" in path.parts or "migrations" in path.parts:
                 continue
-            for owner, kind, digest in _identity_literals(path.read_text()):
+            for owner, kind, digest in _identity_literals(parse_file(path)):
                 assert _EXISTING_LITERALS.get((relative, owner, kind)) == digest, (
                     relative,
                     owner,
@@ -184,10 +184,11 @@ def test_no_new_large_hardcoded_connector_identity_populations() -> None:
                 )
     # Same labels moved/copied under another owner are still a new mechanism.
     source = "COPIED = ['gmail','steam','spotify','owntracks','google_drive','google_health']"
-    found = _identity_literals(source)
+    found = _identity_literals(ast.parse(source))
     assert len(found) == 1 and found[0][0] == "COPIED"
     assert ("src/butlers/api/oauth_scope_registry.py", *found[0][:2]) not in _EXISTING_LITERALS
-    assert _identity_literals("CATEGORIES = ['one','two','three','four','five','six']") == []
+    categories = "CATEGORIES = ['one','two','three','four','five','six']"
+    assert _identity_literals(ast.parse(categories)) == []
 
 
 def test_selector_namespaces_retain_all_shared_and_unsupported_alternatives() -> None:
@@ -286,7 +287,7 @@ def test_static_identity_env_is_absent_from_runtime_and_compose() -> None:
     for path in (ROOT / "src/butlers/connectors").rglob("*.py"):
         strings = {
             n.value
-            for n in ast.walk(ast.parse(path.read_text()))
+            for n in ast.walk(parse_file(path))
             if isinstance(n, ast.Constant) and isinstance(n.value, str)
         }
         assert not forbidden & strings, path

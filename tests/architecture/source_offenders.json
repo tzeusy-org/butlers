@@ -269,20 +269,6 @@
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
-      "path": "tests/connectors/test_ingest_sites_write_evidence_first.py",
-      "line": 23,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 2c0de768c9704f33)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/connectors/test_spotify_single_submit_path.py",
-      "line": 16,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 179c2555668c9b8e)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
       "path": "tests/contracts/test_calendar_quarantine_readers.py",
       "line": 61,
       "rule": "ast-tests-use-source-guard",
@@ -294,13 +280,6 @@
       "line": 223,
       "rule": "ast-tests-use-source-guard",
       "detail": "AST use without a source_guard reference (shape 30f6a61a2465593b)",
-      "reason": "S1d/S5 preserve existing AST coverage pending migration"
-    },
-    {
-      "path": "tests/contracts/test_connector_catalog.py",
-      "line": 94,
-      "rule": "ast-tests-use-source-guard",
-      "detail": "AST use without a source_guard reference (shape 4ab6eb469a399a07)",
       "reason": "S1d/S5 preserve existing AST coverage pending migration"
     },
     {
