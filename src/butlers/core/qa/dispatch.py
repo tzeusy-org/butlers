@@ -73,6 +73,7 @@ from butlers.core.healing.constants import (
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
     QA_BREAKER_THRESHOLD,
     QA_BREAKER_WHERE_SQL,
+    QA_DIAGNOSIS_UNSUPPORTED_PREFIX,
     UNFIXABLE_SENTINEL_FILENAME,
 )
 from butlers.core.healing.tracking import (
@@ -131,6 +132,7 @@ from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import (
     InvestigationNotes,
     ParseStatus,
+    can_be_patch_ready,
     carry_forward_verification,
     parse_investigation_notes,
     verify_evidence_against_bundle,
@@ -559,6 +561,15 @@ _PUBLICATION_UNRETAINED = "publication_unretained"
 _RETENTION_REFUSALS = frozenset(
     {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
 )
+
+
+def _diagnosis_unsupported_detail(reason: str) -> str:
+    return (
+        f"{QA_DIAGNOSIS_UNSUPPORTED_PREFIX} {reason}; nothing was retained or published "
+        "and the patch is not offered"
+    )
+
+
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
@@ -857,6 +868,39 @@ async def _stored_investigation_notes(
         "structured_evidence->'investigation_notes'",
         requires="investigation_notes",
     )
+
+
+async def _diagnosis_unsupported_reason(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    worktree_path: Path,
+    *,
+    require_notes: bool = True,
+) -> str | None:
+    """Why the investigation's diagnosis cannot back a patch, or ``None`` when it can.
+
+    Judged only once the dispatcher has a recorded evidence bundle to check against; without
+    one nothing can be shown unsupported and the gate stays open (an unreadable bundle is
+    logged at WARNING by the reader).  With a bundle, missing or unparsable notes are a reason
+    of their own, as is a case with no supported claim.  ``require_notes=False`` (the review
+    follow-up, whose agent is not asked for notes) judges only notes that are present.
+    """
+    bodies = await _recorded_bundle_bodies(pool, attempt_id)
+    if bodies is None:
+        return None
+    try:
+        raw = (worktree_path / _INVESTIGATION_NOTES_JSON).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "no notes" if require_notes else None
+    notes, _status = parse_investigation_notes(raw)
+    if notes is None:
+        return "unparsable notes"
+    if notes.schema_version < 2:
+        # Stored unverified by the notes pass, so say why instead of "no claim cites evidence".
+        return "legacy notes without evidence refs"
+    if can_be_patch_ready(verify_evidence_against_bundle(notes, bodies)):
+        return None
+    return "no claim cites evidence the dispatcher recorded"
 
 
 async def _persist_investigation_notes(
@@ -1698,6 +1742,42 @@ async def _run_investigation_session(
             if isolation is not None
             else await _capture_commit_diff_snapshot(worktree_path)
         )
+        # An investigation whose every claim is unsupported by the recorded evidence yields no
+        # patch worth offering (bu-ejow5p.7.1): nothing is sealed, retained or published.  It is
+        # an execution success for the breaker and holds the fingerprint like a proposal.
+        unsupported_reason = await _diagnosis_unsupported_reason(pool, attempt_id, worktree_path)
+        if unsupported_reason is not None:
+            if metrics is not None:
+                metrics.record_recovery_phase_duration(
+                    workflow="qa",
+                    phase="investigate",
+                    outcome="diagnosis_unsupported",
+                    duration_ms=(_time.monotonic() - _phase_start) * 1000,
+                )
+            if phase_session_id is not None:
+                try:
+                    await update_phase_session_status(pool, phase_session_id, "completed")
+                except Exception as _pss_exc:  # noqa: BLE001
+                    logger.debug("Failed to mark phase session completed: %s", _pss_exc)
+            await update_attempt_status(
+                pool,
+                attempt_id,
+                "failed",
+                error_detail=_diagnosis_unsupported_detail(unsupported_reason),
+                healing_session_id=investigation_session_id,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                delete_branch=True,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
         if config.publisher is not None:
             publication = await publish_investigation(
                 config.publisher,
@@ -2799,10 +2879,19 @@ async def _run_review_followup_session(
             return
 
         # Publication fails closed: no push from the agent-controlled worktree and the
-        # open PR is left untouched until the isolated publisher lands.
+        # open PR is left untouched until the isolated publisher lands.  A follow-up whose own
+        # notes cite no recorded evidence is reported as such rather than as a pending patch.
+        unsupported_reason = await _diagnosis_unsupported_reason(
+            pool, attempt_id, worktree_path, require_notes=False
+        )
+        follow_up_detail = (
+            _diagnosis_unsupported_detail(unsupported_reason)
+            if unsupported_reason is not None
+            else _PUBLICATION_UNAVAILABLE_DETAIL
+        )
         logger.warning(
             "QA review follow-up: %s (attempt=%s pr_number=%s)",
-            _PUBLICATION_UNAVAILABLE,
+            _PUBLICATION_UNAVAILABLE if unsupported_reason is None else "diagnosis_unsupported",
             attempt_id,
             pr_number,
         )
@@ -2817,7 +2906,7 @@ async def _run_review_followup_session(
             """,
             attempt_id,
             followup_session_id,
-            _PUBLICATION_UNAVAILABLE_DETAIL,
+            follow_up_detail,
         )
 
         # Clean up the local worktree; keep the branch for the PR

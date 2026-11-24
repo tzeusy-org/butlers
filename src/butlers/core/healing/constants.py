@@ -11,6 +11,11 @@ QA_BREAKER_THRESHOLD = 5
 QA_PUBLICATION_UNAVAILABLE_PREFIX = "publication_unavailable:"
 #: Effective status of a ``failed`` attempt that kept a sealed, retained proposal.
 QA_PROPOSAL_RETAINED_STATUS = "proposal_retained"
+#: Marker prefix and effective status of an attempt whose investigation ran but whose every
+#: claim cites no evidence the dispatcher recorded (bu-ejow5p.7.1). No patch is retained or
+#: offered; like a retained proposal it is an execution success, not a breaker failure.
+QA_DIAGNOSIS_UNSUPPORTED_PREFIX = "diagnosis_unsupported:"
+QA_DIAGNOSIS_UNSUPPORTED_STATUS = "diagnosis_unsupported"
 
 #: Shared definition of one launched QA execution for the circuit breaker (bu-ejow5p.2).
 #: Dispatch admission and the dashboard both select ``status`` through this, so they cannot
@@ -24,6 +29,9 @@ QA_BREAKER_EFFECTIVE_STATUS_SQL = f"""CASE
                  WHERE retained.attempt_id = healing_attempts.id
              )
         THEN '{QA_PROPOSAL_RETAINED_STATUS}'
+        WHEN status = 'failed'
+             AND starts_with(error_detail, '{QA_DIAGNOSIS_UNSUPPORTED_PREFIX}')
+        THEN '{QA_DIAGNOSIS_UNSUPPORTED_STATUS}'
         ELSE status
     END"""
 

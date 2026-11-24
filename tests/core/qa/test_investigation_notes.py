@@ -659,7 +659,10 @@ def test_carry_forward_keeps_earlier_flags_and_defaults_unknown_ids_to_unsupport
     )
     stored = {
         "verification": {"state": "verified", "bundle_digest": "d"},
-        "evidence_lines": [{"id": "e1", "unsupported": False}, {"id": "e2", "unsupported": True}],
+        "evidence_lines": [
+            {"id": "e1", "ref": "E1", "msg": "x", "unsupported": False},
+            {"id": "e2", "ref": "E2", "msg": "y", "unsupported": True},
+        ],
         "claims": {"c1": {"unsupported": False}, "c2": {"unsupported": True}},
     }
 
@@ -681,7 +684,10 @@ def test_the_skill_prompt_and_model_agree_on_the_notes_schema_version() -> None:
     from butlers.core.qa import prompts
     from butlers.core.qa.notes import InvestigationNotes
 
-    skill = Path("roster/qa/.agents/skills/investigation-notes/SKILL.md").read_text()
+    skill = (
+        Path(__file__).resolve().parents[3]
+        / "roster/qa/.agents/skills/investigation-notes/SKILL.md"
+    ).read_text()
     skill_version = int(re.search(r'"schema_version": (\d+)', skill).group(1))
     prompt_version = int(
         re.search(
@@ -693,3 +699,47 @@ def test_the_skill_prompt_and_model_agree_on_the_notes_schema_version() -> None:
 
     assert skill_version == prompt_version == max(model_versions)
     assert "ref" in skill and "verbatim" in skill
+
+
+def test_carry_forward_does_not_let_a_rewritten_line_inherit_support() -> None:
+    from butlers.core.qa.notes import carry_forward_verification
+
+    stored = {
+        "verification": {"state": "verified", "bundle_digest": "d"},
+        "evidence_lines": [
+            {"id": "e1", "ref": "E1", "msg": "the  real   quote", "unsupported": False},
+            {"id": "e2", "ref": "E2", "msg": "another real quote", "unsupported": False},
+            {"id": "e3", "ref": "E3", "msg": "third real quote here", "unsupported": False},
+        ],
+        "claims": {
+            "c1": {"unsupported": False},
+            "c2": {"unsupported": False},
+            "c3": {"unsupported": False},
+        },
+    }
+    notes = _notes_with_lines(
+        _line("e1", "the real quote", "E1"),  # whitespace only: still the same quote
+        _line("e2", "an invented quote now", "E2"),  # msg rewritten under the same id
+        _line("e3", "third real quote here", "E9"),  # ref rewritten under the same id
+        claims={
+            "c1": {"evidence_ids": ["e1"], "note": "n"},
+            "c2": {"evidence_ids": ["e2"], "note": "n"},
+            "c3": {"evidence_ids": ["e3", "e1"], "note": "n"},
+        },
+    )
+
+    kept = carry_forward_verification(notes, stored)
+
+    assert [line.unsupported for line in kept.evidence_lines] == [False, True, True]
+    assert {k: c.unsupported for k, c in kept.claims.items()} == {
+        "c1": False,
+        "c2": True,  # its only line was rewritten
+        "c3": False,  # still cites the untouched e1
+    }
+    # A claim that now cites different lines is recomputed, never inherited.
+    reshuffled = _notes_with_lines(
+        _line("e1", "the real quote", "E1"),
+        _line("e2", "an invented quote now", "E2"),
+        claims={"c1": {"evidence_ids": ["e2"], "note": "n"}},
+    )
+    assert carry_forward_verification(reshuffled, stored).claims["c1"].unsupported is True
