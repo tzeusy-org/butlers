@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import parse_file
+
 pytestmark = pytest.mark.unit
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -233,7 +235,7 @@ def _assert_marker_topology(tree: ast.Module, relative_path: str) -> None:
 def test_session_asyncio_marker_is_explicit_on_async_core_tests_only() -> None:
     """Module marks must not warn on static guards that execute synchronously."""
     for relative_path in _TARGETS:
-        tree = ast.parse((_REPO_ROOT / relative_path).read_text(encoding="utf-8"))
+        tree = parse_file(_REPO_ROOT / relative_path)
         _assert_marker_topology(tree, relative_path)
 
 

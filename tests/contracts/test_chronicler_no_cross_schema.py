@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from butlers.testing.source_guard import string_constants
+
 pytestmark = pytest.mark.contract
 
 # ---------------------------------------------------------------------------
@@ -125,13 +127,7 @@ _SQL_NON_RELATION_KEYWORDS = frozenset(
 
 def _extract_sql_string_literals(source: str) -> list[str]:
     """Return all string constants from *source* that start with a SQL verb keyword."""
-    tree = ast.parse(source)
-    literals: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if _SQL_START_RE.match(node.value):
-                literals.append(node.value)
-    return literals
+    return [value for value in string_constants(ast.parse(source)) if _SQL_START_RE.match(value)]
 
 
 def _categorize_relation(raw_token: str) -> tuple[str, str | None]:

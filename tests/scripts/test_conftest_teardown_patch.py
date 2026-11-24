@@ -26,6 +26,8 @@ import requests
 from docker.errors import APIError, NotFound
 from requests.exceptions import ReadTimeout
 
+from butlers.testing.source_guard import parse_file
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -80,7 +82,7 @@ def test_conftest_assigns_dockercontainer_stop_exactly_once() -> None:
     named the deleted function would not stop the next one from appearing under
     a different name. Counting the assignments does.
     """
-    tree = ast.parse(CONFTEST_PATH.read_text())
+    tree = parse_file(CONFTEST_PATH)
 
     assignments = [
         node
