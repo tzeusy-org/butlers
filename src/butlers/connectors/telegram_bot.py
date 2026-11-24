@@ -62,6 +62,7 @@ from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.evidence_journal import EvidenceNotCommitted, commit_envelope
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.live_listener.transcription import (
     TranscriptionClient,
     create_transcription_client,
@@ -2864,24 +2865,19 @@ class TelegramBotConnector:
             # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
             # write raises, so nothing is submitted; a failed submit below keeps the row.
             await commit_envelope(self._db_pool, envelope)
-            result = await self._mcp_client.call_tool("ingest", envelope)
-
-            # Check for tool-level error response
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = await submit_ingest(self._mcp_client, envelope)
 
             # Record successful ingest submission
             self._last_ingest_submit = time.time()
 
             # Determine status for metrics
-            is_duplicate = isinstance(result, dict) and result.get("duplicate", False)
+            is_duplicate = result.duplicate
             status = "duplicate" if is_duplicate else "success"
 
             logger.info(
                 "Submitted to Switchboard ingest",
                 extra={
-                    "request_id": result.get("request_id") if isinstance(result, dict) else None,
+                    "request_id": result.request_id,
                     "duplicate": is_duplicate,
                     "endpoint_identity": self._config.endpoint_identity,
                     "external_event_id": envelope["event"]["external_event_id"],

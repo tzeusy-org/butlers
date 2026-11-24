@@ -77,3 +77,123 @@ def test_the_reply_ref_has_one_definition_in_core():
 
     assert accepted_source.scoped_reply_ref is reply_scope.scoped_reply_ref
     assert not hasattr(goal_input, "scoped_reply_ref")
+
+
+@pytest.mark.parametrize("channel", ["telegram", "email", "whatsapp"])
+@pytest.mark.parametrize("enabled,owner", [(False, True), (True, True), (True, False)])
+async def test_d19_one_voice_materializes_only_verified_owner_calls(
+    monkeypatch, channel, enabled, owner
+):
+    """REQ-dashboard-goal-continuity-001: formatting never asserts provenance or authority."""
+    from butlers.core_tools import _routing
+
+    if enabled:
+        monkeypatch.setenv("BUTLERS_D19_ONE_VOICE", "true")
+    else:
+        monkeypatch.delenv("BUTLERS_D19_ONE_VOICE", raising=False)
+    resolve = AsyncMock(return_value=object() if owner else None)
+    monkeypatch.setattr(_routing, "resolve_owner_channel_via_definer", resolve)
+    send = AsyncMock(return_value={"ok": True})
+    adapter = SimpleNamespace(_send_message=send, _send_email=send, _send_message_with_policy=send)
+    command = await _routing._build_routed_delivery_command(
+        daemon=SimpleNamespace(db=SimpleNamespace(pool=object())),
+        modules_by_name={channel: adapter},
+        channel=channel,
+        intent="send",
+        message_text="Recorded reply",
+        origin="health",
+        recipient="recorded-target",
+        subject="Recorded subject",
+        notify_context=None,
+    )
+    assert command is not None
+    if channel == "email":
+        assert command.tool_args["subject"] == (
+            "Recorded subject" if enabled and owner else "[health] Recorded subject"
+        )
+        assert command.tool_args["body"] == "Recorded reply"
+    else:
+        assert command.tool_args["text"] == (
+            "Recorded reply" if enabled and owner else "[health] Recorded reply"
+        )
+    assert command.approval_target == "recorded-target"
+    await command.execute()
+    send.assert_awaited_once()
+    if enabled:
+        assert resolve.await_args.args[-1] == "recorded-target"
+    else:
+        resolve.assert_not_awaited()
+
+
+async def test_one_voice_reply_resolves_its_actual_sender_not_the_send_recipient(monkeypatch):
+    from butlers.core_tools import _routing
+
+    monkeypatch.setenv("BUTLERS_D19_ONE_VOICE", "true")
+    resolve = AsyncMock(return_value=object())
+    monkeypatch.setattr(_routing, "resolve_owner_channel_via_definer", resolve)
+    send = AsyncMock()
+    command = await _routing._build_routed_delivery_command(
+        daemon=SimpleNamespace(db=SimpleNamespace(pool=object())),
+        modules_by_name={"email": SimpleNamespace(_reply_to_thread=send)},
+        channel="email",
+        intent="reply",
+        message_text="Stored reply",
+        origin="health",
+        recipient="unrelated-caller-value",
+        subject="Thread subject",
+        notify_context=SimpleNamespace(
+            source_sender_identity="actual-sender", source_thread_identity="stored-thread"
+        ),
+    )
+    assert command is not None
+    assert command.tool_args["to"] == "actual-sender"
+    assert command.tool_args["subject"] == "Thread subject"
+    assert resolve.await_args.args[-1] == "actual-sender"
+
+
+async def test_owner_sender_in_a_group_does_not_establish_owner_delivery(monkeypatch):
+    from butlers.core_tools import _routing
+
+    monkeypatch.setenv("BUTLERS_D19_ONE_VOICE", "true")
+    resolve = AsyncMock(return_value=None)
+    monkeypatch.setattr(_routing, "resolve_owner_channel_via_definer", resolve)
+    command = await _routing._build_routed_delivery_command(
+        daemon=SimpleNamespace(db=SimpleNamespace(pool=object())),
+        modules_by_name={"telegram": SimpleNamespace(_reply_to_message=AsyncMock())},
+        channel="telegram",
+        intent="reply",
+        message_text="Stored reply",
+        origin="health",
+        recipient="owner",
+        subject=None,
+        notify_context=SimpleNamespace(
+            source_sender_identity="owner", source_thread_identity="-9001:77"
+        ),
+    )
+    assert command is not None
+    assert command.approval_target == "-9001"
+    assert command.tool_args["text"] == "[health] Stored reply"
+    assert resolve.await_args.args[-1] == "-9001"
+
+
+@pytest.mark.parametrize("value", ["", "false", "1", "TRUE"])
+def test_one_voice_opt_in_requires_the_exact_switch_value(monkeypatch, value):
+    from butlers.core.owner_voice import one_voice_enabled
+
+    monkeypatch.setenv("BUTLERS_D19_ONE_VOICE", value)
+    assert not one_voice_enabled()
+    monkeypatch.setenv("BUTLERS_D19_ONE_VOICE", "true")
+    assert one_voice_enabled()
+
+
+def test_one_voice_preserves_unknown_authors_and_quoted_source_text():
+    from butlers.core.owner_voice import notification_text
+
+    assert notification_text("[health] Stored reply", "health", owner_voice=True) == "Stored reply"
+    assert notification_text("[unknown] Stored reply", "health", owner_voice=True) == (
+        "[unknown] Stored reply"
+    )
+    assert notification_text("Quote: [health] Stored reply", "health", owner_voice=True) == (
+        "Quote: [health] Stored reply"
+    )
+    assert notification_text("Stored reply", "health") == "[health] Stored reply"

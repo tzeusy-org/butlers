@@ -20,6 +20,23 @@ class CalendarAuthError(RuntimeError):
     """Base error raised by Google Calendar auth/request helpers."""
 
 
+CONFLICT_CHECK_UNAVAILABLE_MESSAGE = (
+    "Couldn't read your calendars to check for overlaps. "
+    "Try again, or allow overlap to write anyway."
+)
+
+
+class ConflictCheckUnavailable(CalendarAuthError):
+    """The owner's busy time could not be read, so a write cannot be checked for overlap.
+
+    A subclass of ``CalendarAuthError`` so every write path that already refuses on a failed
+    check refuses on this too, rather than reporting "no conflict" from a check that never ran.
+    """
+
+    def __init__(self, message: str = CONFLICT_CHECK_UNAVAILABLE_MESSAGE) -> None:
+        super().__init__(message)
+
+
 class CalendarCredentialError(CalendarAuthError):
     """Raised when Google credential JSON is missing or invalid."""
 

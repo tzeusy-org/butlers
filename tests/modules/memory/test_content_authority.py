@@ -16,8 +16,11 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
+import httpx
 import pytest
 
+from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.core.tool_call_capture import (
     clear_runtime_session_routing_context,
     reset_current_runtime_session_id,
@@ -40,6 +43,7 @@ from butlers.modules.memory.content_authority import (
 from butlers.modules.memory.tools import context as _context
 from butlers.modules.memory.tools import reading as _reading
 from butlers.modules.memory.tools import writing as _writing
+from tests.api.auth_helpers import create_authenticated_domain_app
 
 # Re-used so the migrated-DB provisioning stays defined in exactly one place.
 from tests.modules.memory.test_memory_migration_integration import (  # noqa: F401
@@ -573,6 +577,162 @@ async def test_legacy_rule_without_authority_is_excluded(pool_factory) -> None:
         rule_id,
     )
     assert rule_id not in await _admitted_rule_ids(pool)
+
+
+async def _held_legacy_rule(pool: asyncpg.Pool, owner: uuid.UUID, content: str) -> uuid.UUID:
+    with _session(owner):
+        stored = await _writing.memory_store_rule(pool, _engine(), content)
+    rule_id = uuid.UUID(stored["id"])
+    await pool.execute(
+        "UPDATE rules SET content_authority = NULL, authority_entity_id = NULL WHERE id = $1",
+        rule_id,
+    )
+    await _confirm(pool, rule_id)
+    return rule_id
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_legacy_endorsement_race_and_reader_visibility(pool_factory) -> None:
+    pool, owner, _ = await pool_factory()
+    contents = [f"Legacy rule {uuid.uuid4()}" for _ in range(5)]
+    first, second, third, held, retired = [
+        await _held_legacy_rule(pool, owner, content) for content in contents
+    ]
+    manager = DatabaseManager()
+    manager._pools["memory"] = pool
+    manager._butler_schemas["memory"] = "public"
+    manager._butler_modules["memory"] = frozenset({"memory"})
+    manager.register_configured_modules("memory", frozenset({"memory"}))
+    app = create_authenticated_domain_app()
+    app.dependency_overrides[get_db] = lambda: manager
+
+    ids_a = [str(first), str(second)]
+    ids_b = [str(third), str(second)]
+    assert {first, second, third, held}.isdisjoint(await _admitted_rule_ids(pool))
+    endpoint = "/api/memory/rules/endorse-legacy"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+
+        async def preview(ids):
+            response = await client.post(endpoint + "/preview", json={"rule_ids": ids})
+            assert response.status_code == 200, response.text
+            return response.json()["data"]
+
+        async def confirm(ids, preview):
+            return await client.post(
+                endpoint,
+                json={"rule_ids": ids, "confirmation_digest": preview["confirmation_digest"]},
+            )
+
+        preview_a = await preview(ids_a)
+        preview_b = await preview(ids_b)
+        assert [row["rule_id"] for row in preview_a["rules"]] == ids_a
+        manager.register_configured_modules("unavailable", frozenset({"memory"}))
+        unavailable_preview = await client.post(endpoint + "/preview", json={"rule_ids": ids_a})
+        unavailable_confirm = await confirm(ids_a, preview_a)
+        held_response = await client.get("/api/memory/rules", params={"held": True})
+        assert unavailable_preview.status_code == unavailable_confirm.status_code == 503
+        assert held_response.json()["meta"]["pools_failed"] == ["unavailable"]
+        assert {row["id"] for row in held_response.json()["data"]} >= {str(first), str(second)}
+        manager.register_configured_modules("unavailable", frozenset({"calendar"}))
+        assert (await confirm(list(reversed(ids_a)), preview_a)).status_code == 409
+        stale_ids = [str(first), str(retired)]
+        stale_preview = await preview(stale_ids)
+        await pool.execute("UPDATE rules SET retired_at = now() WHERE id = $1", retired)
+        assert (await confirm(stale_ids, stale_preview)).status_code == 409
+        assert {first, second, third, held}.isdisjoint(await _admitted_rule_ids(pool))
+
+        response_a, response_b = await asyncio.gather(
+            confirm(ids_a, preview_a), confirm(ids_b, preview_b)
+        )
+        repeat_response = await confirm(ids_a, preview_a)
+        assert (response_a.status_code, response_b.status_code, repeat_response.status_code) == (
+            200,
+            200,
+            200,
+        )
+        result_a, result_b, repeat = (
+            response.json()["data"] for response in (response_a, response_b, repeat_response)
+        )
+    assert {receipt["endorsed_by"] for receipt in result_a + result_b} == {str(owner)}
+    admitted = await _admitted_rule_ids(pool)
+    assert {first, second, third}.issubset(admitted) and {held, retired}.isdisjoint(admitted)
+    context = await _context.memory_context(pool, _engine(), "legacy rule", "general")
+    assert all(content in context for content in contents[:3])
+    assert all(content not in context for content in contents[3:])
+    assert sum(receipt["changed"] for receipt in result_a + result_b) == 3
+    assert repeat == [receipt | {"changed": False} for receipt in result_a]
+    for rule_id in (first, second, third):
+        assert len(await _catalog_rows(pool, rule_id)) == 1
+        assert (
+            await pool.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type = 'rule_endorsed' AND memory_id=$1",
+                rule_id,
+            )
+            == 1
+        )
+    assert await _catalog_rows(pool, held) == []
+
+
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_legacy_endorsement_rolls_back_all_effects(pool_factory, monkeypatch) -> None:
+    pool, owner, _ = await pool_factory()
+    ids = [await _held_legacy_rule(pool, owner, f"Rollback rule {uuid.uuid4()}") for _ in range(2)]
+    selection = {"source_name": "memory", "endorsed_by": owner}
+    preview = await storage.preview_legacy_rule_endorsements(pool, ids, **selection)
+    args = {"confirmation_digest": preview["confirmation_digest"], **selection}
+    write = storage._write_rule_endorsement
+
+    async def fail_after_second_write(conn, table, row, owner_id, schema):
+        receipt = await write(conn, table, row, owner_id, schema)
+        if row["id"] == ids[1]:
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM memory_events WHERE event_type = 'rule_endorsed'"
+                    " AND memory_id=ANY($1::uuid[])",
+                    ids,
+                )
+                == 2
+            )
+            await conn.execute("SELECT 1/0")
+        return receipt
+
+    with monkeypatch.context() as patch_context:
+        patch_context.setattr(storage, "_write_rule_endorsement", fail_after_second_write)
+        with pytest.raises(asyncpg.DivisionByZeroError):
+            await storage.endorse_legacy_rules(pool, ids, **args)
+
+    async with pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM rules WHERE id=ANY($1::uuid[]) AND endorsed_at IS NOT NULL",
+                ids,
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM memory_events WHERE event_type='rule_endorsed'"
+                " AND memory_id=ANY($1::uuid[])",
+                ids,
+            )
+            == 0
+        )
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM public.memory_catalog WHERE source_id=ANY($1::uuid[])",
+                ids,
+            )
+            == 0
+        )
+    assert all(
+        receipt["changed"] for receipt in await storage.endorse_legacy_rules(pool, ids, **args)
+    )
 
 
 # REQ-module-memory-013 "Catalog readers attribute non-owner content".

@@ -361,10 +361,8 @@ never changed or cleared, so a reconciled row keeps the outcome it was reached f
 produces: `bound` and `egress_started` carry none, `succeeded` carries `success`, `failed` carries
 `failed`, `ambiguous` carries `ambiguous`, and a `reconciled` row carries none (reached from
 `egress_started`) or `ambiguous` (reached from `ambiguous`). A `succeeded` or `failed` row without
-its result is refused. Residual: an `ambiguous` row may carry a NULL result. The writer never produces
-one and holds are keyed on stage, not result, so it cannot release a hold; bu-mc01y5.15 closes it
-later. A BEFORE DELETE trigger (`qa_publication_operations_no_held_delete`) refuses deleting a row in
-the hold predicate's stages (`egress_started`, `ambiguous`), including from a privileged login; rows in
+its result is refused. A BEFORE DELETE trigger (`qa_publication_operations_no_held_delete`) refuses
+deleting a row in the hold predicate's stages (`egress_started`, `ambiguous`), including from a privileged login; rows in
 any other stage can still be deleted by a role that can reach them. Only the last schema to leave
 `core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
 body.
@@ -376,6 +374,13 @@ anchors the settle), and the stamp is set-once afterwards. A CHECK
 `egress_started` are backfilled with the migration's time, the latest moment their egress can have
 begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
 guard body.
+
+Migration `core_374` requires the result `ambiguous` on every insert or update with stage
+`ambiguous`. It backfills that result on historical rows through the existing QA write role
+under forced row security. The table lock covers both the backfill and CHECK replacement.
+The existing triggers enforce set-once results, bindings, stages, reconciliation and held-row
+protection throughout the migration. Only the last schema to leave `core_374` restores the
+historical `core_268` CHECK. Downgrade retains canonicalized results and every unresolved hold.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and

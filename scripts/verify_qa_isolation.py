@@ -43,12 +43,30 @@ _CANARY_PORT = 9
 _DEV_CONTEXT = re.compile(r"(^|[-_.@/])(dev|k3d)([-_.@/]|$)")
 
 
+def _first_line(text: str | None, limit: int = 400) -> str:
+    """The server's own words, capped: why a call failed, never manifest content.
+
+    kubectl prints ``error when retrieving current configuration of:`` and then the manifest
+    and the real reason on later lines, so keep the first lines up to the dumped object.
+    """
+    kept: list[str] = []
+    for line in (text or "").strip().splitlines():
+        if line.startswith(("Name:", "Namespace:", "Object:", "{", "&{")):
+            break
+        kept.append(line.strip())
+        if len(kept) == 3:
+            break
+    return " | ".join(kept)[:limit] or "no output"
+
+
 def _kubectl(args: list[str], *, stdin: str | None = None, check: bool = True) -> str:
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell
         ["kubectl", *args], input=stdin, capture_output=True, text=True, check=False
     )
     if check and result.returncode != 0:
-        raise RuntimeError(f"kubectl {args[0]} failed (exit {result.returncode})")
+        raise RuntimeError(
+            f"kubectl {args[0]} failed (exit {result.returncode}): {_first_line(result.stderr)}"
+        )
     return result.stdout
 
 
@@ -144,7 +162,9 @@ def _apply(args: argparse.Namespace, manifest: dict[str, Any], *, dry_run: bool 
         return ADMITTED
     if _is_policy_denial(result.stderr or ""):
         return REFUSED
-    raise VerifierError("kubectl apply failed and was not an admission policy denial")
+    raise VerifierError(
+        f"kubectl apply failed and was not an admission policy denial: {_first_line(result.stderr)}"
+    )
 
 
 def _gate_refused(namespace: str, job: str) -> bool:
@@ -340,7 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = modes[args.mode](args)
     except (VerifierError, RuntimeError, TimeoutError) as exc:
-        sys.stderr.write(f"verifier error (not a pass): {type(exc).__name__}\n")
+        sys.stderr.write(f"verifier error (not a pass): {type(exc).__name__}: {exc}\n")
         return 3
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0 if args.mode == "render" or result["passed"] else 1

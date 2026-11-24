@@ -79,7 +79,7 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -99,9 +99,9 @@ from butlers.core.infra_conditions import (
 )
 from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.modules.calendar import (
-    DEFAULT_SYNC_INTERVAL_MINUTES,
     PROJECTION_STALENESS_MULTIPLIER,
     SOURCE_KIND_PROVIDER,
+    projection_staleness_threshold,
 )
 
 logger = logging.getLogger(__name__)
@@ -200,7 +200,7 @@ async def compute_calendar_sync_report(db: DatabaseManager) -> CalendarSyncDeadm
     normal, not a dead poller.
     """
     checked_at = datetime.now(UTC)
-    threshold = timedelta(minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER)
+    threshold = projection_staleness_threshold()
 
     try:
         # bu-27dxl.6.3: the degraded-butler list IS now consumed (below, as

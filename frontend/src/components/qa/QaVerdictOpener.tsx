@@ -12,6 +12,7 @@
 import type { QaSummary } from "@/api/types";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 import { formatRelativeCompact } from "@/components/ui/time";
+import { breakerCauseLabel, breakerProbeIsDue, haltReasonLabel } from "@/lib/qa-breaker-cause";
 import type { useQaSummary } from "@/hooks/use-qa";
 
 // Mirrors qa.py's _CIRCUIT_BREAKER_THRESHOLD default (5), used only as a
@@ -27,9 +28,21 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
   const clauses: VerdictClause[] = [];
 
   if (summary.circuit_breaker.tripped) {
+    const cause = breakerCauseLabel(summary.circuit_breaker.dominant_cause);
+    const probeAt = summary.circuit_breaker.next_probe_at;
+    const probe =
+      probeAt && !Number.isNaN(new Date(probeAt).getTime())
+        ? `, ${
+            breakerProbeIsDue(probeAt)
+              ? "probe due"
+              : `next probe ${formatRelativeCompact(new Date(probeAt))}`
+          }`
+        : "";
     clauses.push({
       key: "breaker-tripped",
-      text: `circuit breaker tripped after ${summary.circuit_breaker.consecutive_failures} consecutive failures`,
+      text: cause
+        ? `circuit breaker open: ${cause}${probe}`
+        : `circuit breaker tripped after ${summary.circuit_breaker.consecutive_failures} consecutive failures`,
     });
   } else {
     // A pre-trip streak is worth naming BEFORE the breaker actually opens --
@@ -41,6 +54,17 @@ function buildClauses(summary: QaSummary): VerdictClause[] {
       clauses.push({
         key: "pre-trip-failure-streak",
         text: `${n} consecutive failure${n === 1 ? "" : "s"}, breaker opens at ${threshold}`,
+      });
+    }
+    const haltLabel =
+      summary.last_patrol?.status === "halted"
+        ? haltReasonLabel(summary.last_patrol.halt_reason)
+        : null;
+    if (summary.last_patrol?.status === "halted") {
+      clauses.push({
+        key: "last-patrol-halted",
+        text: `last patrol halted${haltLabel ? `: ${haltLabel}` : ""}`,
+        href: `/qa/patrols/${summary.last_patrol.id}`,
       });
     }
     if (summary.staffer_status === "unknown_patrol_status") {

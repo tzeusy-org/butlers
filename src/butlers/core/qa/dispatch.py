@@ -96,6 +96,7 @@ from butlers.core.healing.worktree import (
 from butlers.core.infra_conditions import get_active_condition
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, resolve_model_with_effective_tier
+from butlers.core.qa.breaker_state import EXTRA_ROWS_FOR_BACKOFF, derive_breaker_state
 from butlers.core.qa.diff import parse_unified_diff
 from butlers.core.qa.findings import (
     hold_findings_for_retry,
@@ -117,10 +118,20 @@ from butlers.core.qa.journal import (
     record_pr_merged_event,
     record_wait_event_once,
 )
+from butlers.core.qa.known_issue_links import sync_qa_pr_link
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
-from butlers.core.qa.publication.export import ExportRefused, GitIdentity
+from butlers.core.qa.publication.diff_snapshot import (
+    derive_diff_snapshot,
+    record_snapshot_failure,
+)
+from butlers.core.qa.publication.export import (
+    ExportRefused,
+    GitIdentity,
+    SealedExport,
+    build_sealed_export,
+)
 from butlers.core.qa.publication.proposal import (
     _NOTES_FILE as _PR_NOTES_FILE,
 )
@@ -413,12 +424,16 @@ class QaDispatchResult:
         Short machine-readable reason code (``"dispatched"`` on success).
     attempt_id:
         UUID of the created ``healing_attempts`` row, or ``None``.
+    gate:
+        The halting gate that stopped this finding when ``reason`` is ``"hold_failed"`` (the
+        write that queues it failed), so the patrol still records why remediation stopped.
     """
 
     accepted: bool
     fingerprint: str | None
     reason: str
     attempt_id: uuid.UUID | None = None
+    gate: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +628,43 @@ async def _job_branch_is_no_op(seal_root: Path, branch_name: str, base_sha: str 
     except ExportRefused:
         return False
     return base_sha is not None and head == base_sha
+
+
+async def _seal_isolated_export(
+    seal_root: Path,
+    branch_name: str,
+    base_sha: str | None,
+    identity: GitIdentity | None,
+) -> SealedExport | None:
+    """Seal an isolated attempt's branch once, for the diff snapshot and the publisher alike.
+
+    ``None`` means it could not be sealed (no bound base or identity, a refusal, or an error):
+    the diff snapshot is then empty and the publisher seals again, so it records the refusal
+    itself. Never raises, and never logs more than the refusal code or exception class.
+    """
+    if base_sha is None or identity is None:
+        return None
+    try:
+        objects_dir, head_sha = resolve_branch_head(seal_root, branch_name)
+        return await build_sealed_export(
+            objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
+        )
+    except Exception as exc:  # noqa: BLE001 — a hostile branch must not fail dispatch here
+        record_snapshot_failure("seal", exc)
+        return None
+
+
+async def _isolated_diff_snapshot(
+    repo_root: Path, export: SealedExport | None
+) -> list[dict[str, str]]:
+    """The dossier diff of an isolated attempt, from its sealed export, never from pod git.
+
+    Base blobs come from the dispatcher's own ``repo_root``. A snapshot is display, so no
+    export, or anything that cannot be derived, records ``[]`` and the publisher still decides.
+    """
+    if export is None:
+        return []
+    return await derive_diff_snapshot(export, repo_root / ".git" / "objects")
 
 
 async def _resolve_pr_by_head(
@@ -1486,9 +1538,22 @@ async def _run_investigation_session(
             )
             return
 
-        # No git runs in a pod-written clone: an isolated attempt records no diff snapshot yet.
+        # No git runs in a pod-written clone: an isolated attempt's snapshot is derived from its
+        # sealed export plus the trusted base objects.
+        seal_identity = (
+            GitIdentity(git_author_name.strip(), git_author_email.strip())
+            if git_author_name and git_author_email
+            else None
+        )
+        sealed_export = (
+            await _seal_isolated_export(seal_root, branch_name, base_sha, seal_identity)
+            if isolation is not None
+            else None
+        )
         diff_snapshot = (
-            [] if isolation is not None else await _capture_commit_diff_snapshot(worktree_path)
+            await _isolated_diff_snapshot(repo_root, sealed_export)
+            if isolation is not None
+            else await _capture_commit_diff_snapshot(worktree_path)
         )
         if config.publisher is not None:
             publication = await publish_investigation(
@@ -1499,14 +1564,11 @@ async def _run_investigation_session(
                 finding=finding,
                 branch_name=branch_name,
                 base_sha=base_sha,
-                identity=(
-                    GitIdentity(git_author_name.strip(), git_author_email.strip())
-                    if git_author_name and git_author_email
-                    else None
-                ),
+                identity=seal_identity,
                 labels=list(config.pr_labels),
                 whitelist=config.repo_whitelist,
                 dashboard_base_url=config.dashboard_base_url,
+                sealed_export=sealed_export,
             )
             await _record_publication_outcome(
                 pool,
@@ -1553,6 +1615,7 @@ async def _run_investigation_session(
             base_sha=base_sha,
             identity=identity,
             isolated=config.job_isolation is not None,
+            sealed_export=sealed_export,
         )
         if refusal is None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
@@ -1752,6 +1815,14 @@ async def _run_investigation_session(
 # ---------------------------------------------------------------------------
 # PR status tracking
 # ---------------------------------------------------------------------------
+
+
+async def _sync_pr_link(pool: asyncpg.Pool, fingerprint: str, pr_url: str, pr_state: str) -> None:
+    """Best-effort: a link-store failure must never fail the PR status check."""
+    try:
+        await sync_qa_pr_link(pool, fingerprint=fingerprint, pr_url=pr_url, pr_state=pr_state)
+    except Exception as exc:
+        logger.warning("QA PR link sync failed (fingerprint=%s): %s", fingerprint[:12], exc)
 
 
 async def check_open_pr_statuses(
@@ -1998,6 +2069,7 @@ async def check_open_pr_statuses(
 
             if state == "MERGED":
                 await update_attempt_status(pool, attempt_id, "pr_merged")
+                await _sync_pr_link(pool, fingerprint, pr_url, "merged")
                 try:
                     await record_pr_merged_event(
                         pool,
@@ -2022,6 +2094,7 @@ async def check_open_pr_statuses(
                     "failed",
                     error_detail="pr_closed_without_merge",
                 )
+                await _sync_pr_link(pool, fingerprint, pr_url, "closed")
                 counts["closed"] += 1
                 logger.info(
                     "QA PR closed without merge: attempt=%s pr_number=%s",
@@ -2029,6 +2102,8 @@ async def check_open_pr_statuses(
                     pr_number,
                 )
                 continue
+
+            await _sync_pr_link(pool, fingerprint, pr_url, "open")
 
             pending_check_names = _extract_pending_check_names(pr_data)
             if pending_check_names:
@@ -3303,17 +3378,103 @@ async def dispatch_qa_investigation(
 # ---------------------------------------------------------------------------
 
 
-async def _breaker_open_or_unreadable(pool: asyncpg.Pool, threshold: int) -> bool:
-    """Whether dispatch must halt: the breaker is open, or its state cannot be read.
+async def _breaker_halt_state(pool: asyncpg.Pool, threshold: int) -> str | None:
+    """``"open"``, ``"unreadable"`` or ``None``: whether dispatch must halt, and why.
 
     Fails safe. A database error on the read holds the rest of the patrol (a one-patrol delay)
     rather than raising out of the batch or launching with the safeguard unreadable.
     """
     try:
-        return await _is_circuit_breaker_tripped(pool, threshold)
+        return "open" if await _is_circuit_breaker_tripped(pool, threshold) else None
     except Exception as exc:
         logger.warning("QA dispatch: circuit breaker unreadable, treating it as tripped: %s", exc)
-        return True
+        return "unreadable"
+
+
+#: Session advisory lock that serializes the half-open probe across dispatchers and daemons.
+_PROBE_LOCK_SQL = "SELECT pg_try_advisory_lock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_PROBE_UNLOCK_SQL = "SELECT pg_advisory_unlock(hashtextextended('butlers:qa:breaker-probe', 0))"
+_BREAKER_ROWS_SQL = f"""
+    SELECT {QA_BREAKER_EFFECTIVE_STATUS_SQL} AS status, error_detail, closed_at
+    {QA_BREAKER_WHERE_SQL}
+    ORDER BY closed_at DESC
+    LIMIT $1
+"""
+
+
+async def _breaker_probe_blocker(pool: asyncpg.Pool, config: QaDispatchConfig) -> str | None:
+    """Why the open breaker cannot admit a probe now, or ``None`` when one is due.
+
+    ``"backoff"``: the wait since the newest failure has not elapsed. ``"in_flight"``: a QA
+    investigation (a row or a cluster Job, counted as the cap gate counts them) is running.
+    ``"unreadable"``: the schedule could not be read, so nothing probes through a broken read.
+    """
+    try:
+        rows = await pool.fetch(
+            _BREAKER_ROWS_SQL, config.circuit_breaker_threshold + EXTRA_ROWS_FOR_BACKOFF
+        )
+        state = derive_breaker_state(rows, config.circuit_breaker_threshold)
+        if not state.open or state.next_probe_at is None:
+            return "backoff"
+        if await pool.fetchval("SELECT clock_timestamp()") < state.next_probe_at:
+            return "backoff"
+        if await count_active_attempts(pool, qa_only=True) > 0:
+            return "in_flight"
+        if config.job_isolation is not None:
+            jobs = await active_job_count(config.job_isolation)
+            if jobs is None:
+                return "unreadable"
+            if jobs > 0:
+                return "in_flight"
+        return None
+    except Exception as exc:
+        logger.warning("QA dispatch: breaker probe schedule unreadable: %s", exc)
+        return "unreadable"
+
+
+async def _acquire_probe_lock(pool: asyncpg.Pool) -> asyncpg.pool.PoolConnectionProxy | None:
+    """Take the probe lock on a dedicated connection, or return ``None`` when another holds it."""
+    conn = await pool.acquire()
+    try:
+        if await conn.fetchval(_PROBE_LOCK_SQL):
+            return conn
+    except Exception:
+        await pool.release(conn)
+        raise
+    await pool.release(conn)
+    return None
+
+
+async def _release_probe_lock(pool: asyncpg.Pool, conn: asyncpg.pool.PoolConnectionProxy) -> None:
+    try:
+        await conn.fetchval(_PROBE_UNLOCK_SQL)
+    finally:
+        await pool.release(conn)
+
+
+async def _record_probe(
+    pool: asyncpg.Pool,
+    triaged: TriagedFinding,
+    config: QaDispatchConfig,
+    metrics: ButlerMetrics | None,
+) -> None:
+    """Record that one finding is admitted through the open breaker as its half-open probe."""
+    finding = triaged.finding
+    try:
+        await create_dispatch_event(
+            pool,
+            fingerprint=finding.fingerprint,
+            butler_name=finding.source_butler,
+            decision="breaker_probe",
+            reason=(
+                f"Half-open probe: {config.circuit_breaker_threshold} consecutive failures, "
+                "backoff elapsed"
+            ),
+        )
+    except Exception as evt_exc:
+        logger.debug("QA dispatch: failed to record breaker_probe event: %s", evt_exc)
+    if metrics is not None:
+        metrics.record_recovery_dispatch_decision(workflow="qa", decision="breaker_probe")
 
 
 async def _hold_for_retry(
@@ -3339,11 +3500,22 @@ async def _hold_for_retry(
         return False
 
 
+def _halt_cause(why: str, config: QaDispatchConfig) -> str:
+    """The event's account of why the breaker held the patrol (``why`` from the blocker)."""
+    if why == "unreadable":
+        return "Circuit breaker unreadable"
+    if why == "in_flight":
+        return "Circuit breaker open, probe in progress"
+    return f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive failures"
+
+
 async def _halt_batch(
     pool: asyncpg.Pool,
     remaining: list[TriagedFinding],
     config: QaDispatchConfig,
     metrics: ButlerMetrics | None,
+    *,
+    why: str = "backoff",
 ) -> list[QaDispatchResult]:
     """Hold the rest of a patrol behind an open breaker: no claims, one event.
 
@@ -3358,7 +3530,10 @@ async def _halt_batch(
     if not await _hold_for_retry(pool, remaining, "circuit_breaker", metrics):
         return [
             QaDispatchResult(
-                accepted=False, fingerprint=t.finding.fingerprint, reason="hold_failed"
+                accepted=False,
+                fingerprint=t.finding.fingerprint,
+                reason="hold_failed",
+                gate="circuit_breaker",
             )
             for t in remaining
         ]
@@ -3370,8 +3545,7 @@ async def _halt_batch(
             butler_name=lead.source_butler,
             decision="circuit_breaker",
             reason=(
-                f"Circuit breaker tripped: {config.circuit_breaker_threshold} consecutive "
-                f"failures; {len(remaining)} finding(s) held for a later patrol"
+                f"{_halt_cause(why, config)}; {len(remaining)} finding(s) held for a later patrol"
             ),
         )
     except Exception as evt_exc:
@@ -3438,13 +3612,24 @@ async def dispatch_novel_findings(
         # per-finding gates. Read it before every launch, so one that trips mid-patrol holds
         # the rest as one decision instead of dropping them. Once the cap has been reached
         # nothing more launches, so the remainder stays a cap hold.
-        if (
-            cap_skipped == 0
-            and config.circuit_breaker_threshold > 0
-            and await _breaker_open_or_unreadable(pool, config.circuit_breaker_threshold)
-        ):
-            results.extend(await _halt_batch(pool, novel_findings[index:], config, metrics))
-            break
+        probing = False
+        halt_state = (
+            await _breaker_halt_state(pool, config.circuit_breaker_threshold)
+            if cap_skipped == 0 and config.circuit_breaker_threshold > 0
+            else None
+        )
+        if halt_state is not None:
+            # Open. Once its backoff has elapsed this finding may go through as the one probe;
+            # otherwise the rest of the patrol is held. An unreadable breaker never probes.
+            blocker = "unreadable" if halt_state == "unreadable" else None
+            if blocker is None:
+                blocker = await _breaker_probe_blocker(pool, config)
+            if blocker is not None:
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+            probing = True
 
         # Once the cap is reached, stop calling dispatch for the remaining findings.
         # Continuing would insert a claim row per finding before rejecting it, and those
@@ -3472,19 +3657,41 @@ async def dispatch_novel_findings(
             held.append(triaged)
             continue
 
-        result = await dispatch_qa_investigation(
-            pool=pool,
-            triaged_finding=triaged,
-            patrol_id=patrol_id,
-            config=config,
-            repo_root=repo_root,
-            spawner=spawner,
-            gh_token=gh_token,
-            git_author_name=git_author_name,
-            git_author_email=git_author_email,
-            task_registry=task_registry,
-            metrics=metrics,
-        )
+        probe_conn: asyncpg.pool.PoolConnectionProxy | None = None
+        if probing:
+            # The lock is held across the claim, so two dispatchers cannot both probe: the second
+            # finds the first's in-flight attempt when it re-checks.
+            probe_conn = await _acquire_probe_lock(pool)
+            blocker = (
+                "in_flight" if probe_conn is None else await _breaker_probe_blocker(pool, config)
+            )
+            if blocker is not None:
+                if probe_conn is not None:
+                    await _release_probe_lock(pool, probe_conn)
+                results.extend(
+                    await _halt_batch(pool, novel_findings[index:], config, metrics, why=blocker)
+                )
+                break
+        try:
+            result = await dispatch_qa_investigation(
+                pool=pool,
+                triaged_finding=triaged,
+                patrol_id=patrol_id,
+                config=config,
+                repo_root=repo_root,
+                spawner=spawner,
+                gh_token=gh_token,
+                git_author_name=git_author_name,
+                git_author_email=git_author_email,
+                task_registry=task_registry,
+                metrics=metrics,
+            )
+        finally:
+            if probe_conn is not None:
+                await _release_probe_lock(pool, probe_conn)
+        if probing and result.accepted:
+            # Recorded only for a probe that launched: a finding a gate refused spent nothing.
+            await _record_probe(pool, triaged, config, metrics)
         results.append(result)
 
     if held:
@@ -3493,7 +3700,12 @@ async def dispatch_novel_findings(
         if not await _hold_for_retry(pool, held, "concurrency_cap", metrics):
             lost = {t.finding.fingerprint for t in held}
             results = [
-                QaDispatchResult(accepted=False, fingerprint=r.fingerprint, reason="hold_failed")
+                QaDispatchResult(
+                    accepted=False,
+                    fingerprint=r.fingerprint,
+                    reason="hold_failed",
+                    gate="concurrency_cap",
+                )
                 if (r.reason == "concurrency_cap" and r.fingerprint in lost)
                 else r
                 for r in results

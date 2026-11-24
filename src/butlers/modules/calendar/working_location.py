@@ -36,6 +36,7 @@ WHERE ce.status = 'confirmed'
   AND ce.working_location_type IS NOT NULL
   AND ce.starts_at <= $1
   AND ce.ends_at > $1
+-- quarantine-exempt: filtered in Python by is_owner_attending and asserts_owner_time
 """
 
 

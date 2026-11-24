@@ -15,7 +15,7 @@ vi.mock("@/hooks/useDarkMode", () => ({
   useDarkMode: vi.fn(),
 }));
 
-vi.mock("@/components/butler-detail/SiblingButlerNav", () => ({
+vi.mock("@/components/layout/SiblingButlerNav", () => ({
   SiblingButlerNav: ({ activeButlerName }: { activeButlerName: string }) => (
     <nav
       aria-label="Navigate to butler"

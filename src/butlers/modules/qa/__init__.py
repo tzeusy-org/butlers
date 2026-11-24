@@ -56,7 +56,12 @@ from butlers.core.qa.patrol_provenance import (
     enabled_sources_digest,
     enabled_sources_snapshot,
 )
-from butlers.core.qa.patrol_status import QaPatrolStatus, require_patrol_status
+from butlers.core.qa.patrol_status import (
+    HALT_REASONS,
+    QaPatrolStatus,
+    derive_halt_reason,
+    require_patrol_status,
+)
 from butlers.core.qa.publication.retention import prune_retained_exports
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
@@ -409,6 +414,32 @@ def _coerce_jsonb(value: Any) -> Any:
         except json.JSONDecodeError:
             return value
     return value
+
+
+def _record_findings_metric(triage_result: Any, dispatch_results: list[Any]) -> None:
+    """Count each triaged finding by its authoritative outcome (RFC 0005 low-cardinality labels).
+
+    Runs after dispatch so a finding a halting gate stopped carries that gate's reason instead of
+    reading as ``novel``; on a dispatch error it runs with no results, as before.
+    """
+    if _qa_findings_total is None:
+        return
+    try:
+        gate_by_id = {
+            t.finding_id: r.reason
+            for t, r in zip(triage_result.novel_findings, dispatch_results, strict=False)
+            if not r.accepted and (r.reason in HALT_REASONS or r.reason == "hold_failed")
+        }
+        for tf in triage_result.all_findings:
+            dedup_label = tf.dedup_reason
+            if dedup_label is None:
+                dedup_label = gate_by_id.get(tf.finding_id, "novel")
+            _qa_findings_total.labels(
+                source_type=tf.finding.source_type,
+                dedup_reason=dedup_label,
+            ).inc()
+    except Exception:
+        logger.debug("QaModule: failed to record qa_findings_total metric", exc_info=True)
 
 
 class QaModule(Module):
@@ -1240,6 +1271,9 @@ class QaModule(Module):
             tag_butler_span(_patrol_span, "qa")
             _patrol_span_token = otel_context.attach(trace.set_span_in_context(_patrol_span))
 
+        # Triage result whose findings metric is still unrecorded; any exit before the post-dispatch
+        # recording (a raise in a pre-dispatch step included) counts the findings with no results.
+        pending_findings_metric: Any = None
         try:
             # Phase 1: Discover
             for source in self._sources:
@@ -1334,22 +1368,9 @@ class QaModule(Module):
                     if _triage_span_token is not None:
                         otel_context.detach(_triage_span_token)
 
+            pending_findings_metric = triage_result
             findings_count = len(triage_result.all_findings)
             novel_count = len(triage_result.novel_findings)
-
-            # Increment qa_findings_total per triaged finding (RFC 0005 low-cardinality labels)
-            if _qa_findings_total is not None:
-                try:
-                    for tf in triage_result.all_findings:
-                        dedup_label = tf.dedup_reason if tf.dedup_reason is not None else "novel"
-                        _qa_findings_total.labels(
-                            source_type=tf.finding.source_type,
-                            dedup_reason=dedup_label,
-                        ).inc()
-                except Exception:
-                    logger.debug(
-                        "QaModule: failed to record qa_findings_total metric", exc_info=True
-                    )
 
             # Phase 3: Dispatch
             await self._refuse_write_token(patrol_id)
@@ -1421,6 +1442,9 @@ class QaModule(Module):
 
             dispatched_count = sum(1 for r in dispatch_results if r.accepted)
 
+            _record_findings_metric(triage_result, dispatch_results)
+            pending_findings_metric = None
+
             # Phase 4: PR status check
             await self._check_pr_statuses(
                 pool,
@@ -1447,6 +1471,11 @@ class QaModule(Module):
             # "suppressed" means findings were found but all were filtered out
             # by cooldown or severity threshold (novel_count > 0 but nothing
             # dispatched and no dispatch error).
+            halt_reason = (
+                derive_halt_reason(r.gate or r.reason for r in dispatch_results if not r.accepted)
+                if dispatched_count == 0
+                else None
+            )
             patrol_status: QaPatrolStatus
             if error_detail:
                 patrol_status = "error"
@@ -1454,6 +1483,11 @@ class QaModule(Module):
                 patrol_status = "clean"
             elif dispatched_count > 0:
                 patrol_status = "findings_dispatched"
+            elif halt_reason is not None:
+                # A halting gate (breaker, no model, cap) stopped the novel findings from being
+                # dispatched; a breaker or cap hold queues them. Remediation stopped, which is not
+                # the healthy "suppressed" outcome.
+                patrol_status = "halted"
             elif novel_count > 0:
                 # Novel findings exist but none were dispatched (suppressed by
                 # cooldown or severity threshold).
@@ -1472,6 +1506,7 @@ class QaModule(Module):
                 dispatched_count=dispatched_count,
                 sources_polled=sources_polled,
                 error_detail=error_detail,
+                halt_reason=halt_reason if patrol_status == "halted" else None,
             )
 
             # Update module state
@@ -1564,6 +1599,8 @@ class QaModule(Module):
 
             return {"status": "error", "reason": error_msg}
         finally:
+            if pending_findings_metric is not None:
+                _record_findings_metric(pending_findings_metric, [])
             if _HAS_OTEL and _patrol_span is not None:
                 _patrol_span.end()
                 if _patrol_span_token is not None:
@@ -1657,6 +1694,7 @@ class QaModule(Module):
         dispatched_count: int,
         sources_polled: list[str],
         error_detail: str | None,
+        halt_reason: str | None = None,
     ) -> None:
         """Update the patrol record with final outcome."""
         status = require_patrol_status(status)
@@ -1672,6 +1710,7 @@ class QaModule(Module):
                 dispatched_count = $5,
                 sources_polled = $6,
                 error_detail = $7,
+                halt_reason = $8,
                 discovery_complete = COALESCE(
                     $7::text IS NULL AND $2 <> 'error'
                     AND enabled_sources_snapshot <@ $6::text[]
@@ -1687,6 +1726,7 @@ class QaModule(Module):
             dispatched_count,
             sources_polled,
             error_detail,
+            halt_reason,
         )
 
     async def _record_patrol_skip(self, pool: Any) -> None:

@@ -47,6 +47,9 @@ _TREE_ENTRY_MODES = frozenset({b"100644", b"100755", b"120000", _TREE_MODE, _SUB
 #: Bounds that keep a single export small enough to validate and retain.
 MAX_COMMITS = 50
 MAX_BLOB_BYTES = 1 << 20
+#: Deepest tree nesting the walk follows. Git paths this deep do not occur in this repository;
+#: a hostile export nesting thousands of trees refuses instead of exhausting the stack.
+MAX_TREE_DEPTH = 100
 MAX_EXPORT_BYTES = 20 << 20
 #: Most bytes the whole export may inflate or materialise across every object read,
 #: delta chains included, so many hostile objects cost bounded CPU in total.
@@ -245,27 +248,36 @@ class _Walker:
         return data
 
     async def diff_trees(self, old_oid: str | None, new_oid: str, prefix: str) -> None:
-        """Validate and collect everything in ``new_oid`` that ``old_oid`` does not hold."""
-        if old_oid == new_oid:
-            return
-        new_entries = _parse_tree(await self._load(new_oid, "tree"))
-        old_entries = (
-            _parse_tree(await self._reader.read(old_oid, "tree")) if old_oid is not None else {}
-        )
-        for name, entry in new_entries.items():
-            old = old_entries.get(name)
-            if old is not None and old.oid == entry.oid and old.mode == entry.mode:
+        """Validate and collect everything in ``new_oid`` that ``old_oid`` does not hold.
+
+        Iterative with a depth cap, so a hostile deeply nested tree refuses ``tree_too_deep``
+        instead of raising ``RecursionError``.
+        """
+        stack: list[tuple[str | None, str, str, int]] = [(old_oid, new_oid, prefix, 0)]
+        while stack:
+            old_oid, new_oid, prefix, depth = stack.pop()
+            if old_oid == new_oid:
                 continue
-            path = prefix + _decode(name, "binary_path")
-            _require_clean(path, "content_leak")
-            if entry.mode == _SUBMODULE_MODE:
-                raise ExportRefused("submodule")
-            if entry.mode == _TREE_MODE:
-                old_tree = old.oid if old is not None and old.mode == _TREE_MODE else None
-                await self.diff_trees(old_tree, entry.oid, path + "/")
-                continue
-            old_blob = old.oid if old is not None and old.mode != _TREE_MODE else None
-            await self._diff_blob(old_blob, entry.oid)
+            if depth > MAX_TREE_DEPTH:
+                raise ExportRefused("tree_too_deep")
+            new_entries = _parse_tree(await self._load(new_oid, "tree"))
+            old_entries = (
+                _parse_tree(await self._reader.read(old_oid, "tree")) if old_oid is not None else {}
+            )
+            for name, entry in new_entries.items():
+                old = old_entries.get(name)
+                if old is not None and old.oid == entry.oid and old.mode == entry.mode:
+                    continue
+                path = prefix + _decode(name, "binary_path")
+                _require_clean(path, "content_leak")
+                if entry.mode == _SUBMODULE_MODE:
+                    raise ExportRefused("submodule")
+                if entry.mode == _TREE_MODE:
+                    old_tree = old.oid if old is not None and old.mode == _TREE_MODE else None
+                    stack.append((old_tree, entry.oid, path + "/", depth + 1))
+                    continue
+                old_blob = old.oid if old is not None and old.mode != _TREE_MODE else None
+                await self._diff_blob(old_blob, entry.oid)
 
     async def _diff_blob(self, old_oid: str | None, new_oid: str) -> None:
         if old_oid == new_oid:

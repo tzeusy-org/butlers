@@ -98,7 +98,10 @@ def test_other_people_roles_need_the_owner_to_be_invited(role: str) -> None:
     assert asserts_owner_time(role, {}) is False
     assert asserts_owner_time(role, _meta(_GUEST)) is False
     assert asserts_owner_time(role, _meta(_GUEST, _SELF)) is True
-    assert asserts_owner_time(role, _meta(_GUEST, {"self": True})) is True  # no answer yet
+    trusted = {"organizer_verdict": "known_entity"}
+    assert asserts_owner_time(role, {**_meta(_GUEST, {"self": True}), **trusted}) is True
+    # An unanswered invitation with no trusted verdict holds no time (REQ-module-calendar-041).
+    assert asserts_owner_time(role, _meta(_GUEST, {"self": True})) is False
     assert asserts_owner_time(role, _meta(_GUEST, _SELF_DECLINED)) is False
     # The raw provider spelling counts too.
     assert asserts_owner_time(role, _meta({"self": True, "responseStatus": "declined"})) is False

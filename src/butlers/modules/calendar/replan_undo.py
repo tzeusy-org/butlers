@@ -55,6 +55,7 @@ from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.calendar_approval import calendar_approval_args
 
+from .invitation_guard import QUARANTINED_TITLE
 from .models import CalendarEvent
 from .replan import undo_receipt
 
@@ -120,13 +121,14 @@ UNDO_CARD_WHY = (
 )
 
 
-def undo_card_summary(pre_state: Mapping[str, Any]) -> str:
+def undo_card_summary(pre_state: Mapping[str, Any], *, quarantined: bool = False) -> str:
     """What approving does: true before and after the write, and on every reuse.
 
     It names only the pre-image, never a target, since a reused card may guard a
     later move than the one it was parked for.
     """
-    title = pre_state.get("title") or "a Butlers block"
+    # A quarantined invitation's title is third-party text, so the card never repeats it.
+    title = QUARANTINED_TITLE if quarantined else pre_state.get("title") or "a Butlers block"
     return f"Undo a goal's replan move: approve to put '{title}' back at {pre_state['start_at']}."
 
 
@@ -195,6 +197,7 @@ class ReplanUndoLedger:
         pre_state: Mapping[str, Any],
         intended: Mapping[str, Any],
         conflict_policy: str,
+        quarantined: bool = False,
     ) -> UndoOffer:
         """Open or reuse the offer and park its card, before any write."""
         async with self._pool.acquire() as conn, conn.transaction():
@@ -226,7 +229,7 @@ class ReplanUndoLedger:
                 tool_args=REPLAN_UNDO_COMMAND.materialize(
                     undo_card_args(pre_state, conflict_policy=conflict_policy)
                 ),
-                agent_summary=undo_card_summary(pre_state),
+                agent_summary=undo_card_summary(pre_state, quarantined=quarantined),
                 requested_at=now,
                 expires_at=now + UNDO_CARD_TTL,
                 why=UNDO_CARD_WHY,

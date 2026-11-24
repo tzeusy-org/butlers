@@ -95,6 +95,7 @@ from .constants import ApprovalEnqueuer as ApprovalEnqueuer
 from .constants import ButlerEventSourceHint as ButlerEventSourceHint
 from .constants import CalendarConflictPolicy as CalendarConflictPolicy
 from .constants import logger as logger
+from .constants import projection_staleness_threshold as projection_staleness_threshold
 from .errors import CalendarAuthError as CalendarAuthError
 from .errors import CalendarCredentialError as CalendarCredentialError
 from .errors import CalendarRequestError as CalendarRequestError

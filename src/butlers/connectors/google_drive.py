@@ -74,6 +74,7 @@ from butlers.connectors.google_fleet import (
 )
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.ingest_retry import IngestRetryBudget
+from butlers.connectors.ingest_submit import submit_ingest
 from butlers.connectors.known_contact_snapshot import PriorityContactSnapshotSource
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -1529,18 +1530,13 @@ class GDriveAccountLoop:
             # Evidence before acknowledgement (bu-uhbhzq.4): commit the journal row first. A failed
             # write raises, so nothing is submitted; a failed submit below keeps the row.
             await commit_envelope(self._db_pool, envelope)
-            result = await self._mcp_client.call_tool("ingest", envelope)
-
-            # Check for tool-level error response
-            if isinstance(result, dict) and result.get("status") == "error":
-                error_msg = result.get("error", "Unknown ingest error")
-                raise RuntimeError(f"Ingest tool error: {error_msg}")
+            result = await submit_ingest(self._mcp_client, envelope)
 
             # Record successful ingest submission
             self._last_ingest_submit = time.time()
 
             # Determine status for metrics
-            is_duplicate = isinstance(result, dict) and result.get("duplicate", False)
+            is_duplicate = result.duplicate
             status = "duplicate" if is_duplicate else "success"
 
             if is_duplicate:
@@ -1551,7 +1547,7 @@ class GDriveAccountLoop:
             else:
                 logger.info(
                     "Drive: ingestion accepted: request_id=%s event_id=%s",
-                    result.get("request_id") if isinstance(result, dict) else None,
+                    result.request_id,
                     envelope["event"]["external_event_id"],
                 )
         except Exception as exc:

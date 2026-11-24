@@ -60,7 +60,7 @@ class FakeConnection:
                 else:
                     mock = AsyncMock(return_value=value)
             setattr(self, method, mock)
-        self.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
+        self.transaction = MagicMock(side_effect=lambda **_options: AsyncCtx(None))
 
 
 class FakePool:
