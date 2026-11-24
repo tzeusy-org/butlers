@@ -15,6 +15,7 @@ import asyncio
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +28,7 @@ from butlers.api.app import create_app as create_production_app
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
+from tests.api.http_fixtures import ApiDatabase
 
 
 @pytest.fixture(scope="module")
@@ -1145,29 +1147,72 @@ async def test_dispatch_attempts_rejects_mixed_fleet_and_session_modes_before_qu
     mock_pool.fetchval.assert_not_awaited()
 
 
-async def test_dispatch_attempts_supports_both_session_selectors(app):
-    """Session mode intentionally accepts session_id and logical_session_id together."""
+@pytest.fixture
+async def dispatch_attempts_history(api_db: ApiDatabase) -> tuple[uuid.UUID, str]:
     session_id = uuid.uuid4()
-    logical_session_id = "req-session-and-logical"
-    _, mock_pool = _app_with_pool(app)
+    other_session_id = uuid.uuid4()
+    logical_id = "synthetic-dispatch-cycle"
+    earliest = datetime(2026, 5, 25, 9, tzinfo=UTC)
+    tied = datetime(2026, 5, 25, 10, tzinfo=UTC)
+    later = datetime(2026, 5, 25, 11, tzinfo=UTC)
+    catalog_id = await api_db.pool.fetchval(
+        """
+        INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)
+        VALUES ('dispatch-fixture', 'codex', 'synthetic-dispatch-model', 'workhorse')
+        RETURNING id
+        """
+    )
+    # Each selector sees two rows tied by attempt index and timestamp, followed
+    # by a lower ID at a later time and a higher attempt index at an earlier time.
+    rows = [
+        (90, session_id, logical_id, 1, earliest, "success", None),
+        (77, session_id, "other-cycle", 0, tied, "runtime_failure", "session-id-tie"),
+        (14, session_id, "other-cycle", 0, later, "quota_skip", "session-later"),
+        (62, None, logical_id, 0, tied, "quota_skip", "Token quota exhausted: 24h"),
+        (32, session_id, logical_id, 0, tied, "runtime_failure", "cli_missing"),
+        (13, other_session_id, logical_id, 0, later, "runtime_failure", "logical-later"),
+        (5, other_session_id, f"{logical_id}-extra", 0, earliest, "runtime_failure", "decoy"),
+    ]
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_dispatch_attempts
+            (id, session_id, logical_session_id, attempt_index, ts, outcome, failure_reason,
+             catalog_entry_id, butler)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'general')
+        """,
+        [(*row, catalog_id) for row in rows],
+    )
+    return session_id, logical_id
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(
-            "/api/dispatch/attempts",
-            params={
-                "session_id": str(session_id),
-                "logical_session_id": logical_session_id,
-            },
-        )
 
-    assert resp.status_code == 200
-    fetch_call = mock_pool.fetch.call_args
-    assert "WHERE session_id = $1::uuid" in fetch_call.args[0]
-    assert "OR logical_session_id = $2" in fetch_call.args[0]
-    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in fetch_call.args[0]
-    assert fetch_call.args[1:3] == (session_id, logical_session_id)
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dispatch_attempts_supports_both_session_selectors(
+    api: httpx.AsyncClient, dispatch_attempts_history: tuple[uuid.UUID, str]
+) -> None:
+    """Either selector can match and the intersection appears once."""
+    session_id, logical_id = dispatch_attempts_history
+    params = {"session_id": str(session_id), "logical_session_id": logical_id}
+
+    response = await api.get("/api/dispatch/attempts", params=params)
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["failure_reason"] for row in body["data"]] == [
+        "cli_missing",
+        "Token quota exhausted: 24h",
+        "session-id-tie",
+        "logical-later",
+        "session-later",
+        None,
+    ]
+    assert body["meta"] == {"total": 6, "offset": 0, "limit": 100, "has_more": False}
+
+    limited = await api.get("/api/dispatch/attempts", params={**params, "limit": "2"})
+    assert limited.status_code == 200
+    assert limited.json() == {
+        "data": body["data"][:2],
+        "meta": {"total": 6, "offset": 0, "limit": 2, "has_more": True},
+    }
 
 
 @pytest.mark.parametrize(
@@ -1217,115 +1262,50 @@ async def test_dispatch_attempts_empty_on_missing_table(app):
     assert resp.json()["data"] == []
 
 
-async def test_dispatch_attempts_by_session_id(app):
-    """GET /api/dispatch/attempts?session_id=... returns attempt rows ordered by attempt_index."""
-    from datetime import UTC, datetime
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dispatch_attempts_by_session_id(
+    api: httpx.AsyncClient, dispatch_attempts_history: tuple[uuid.UUID, str]
+) -> None:
+    """The UUID selector orders matching attempts by index, timestamp, then ID."""
+    session_id, logical_id = dispatch_attempts_history
+    response = await api.get("/api/dispatch/attempts", params={"session_id": str(session_id)})
 
-    session_id = uuid.uuid4()
-    attempt_ts = datetime(2026, 5, 25, 9, 0, 0, tzinfo=UTC)
-
-    rows_data = [
-        {
-            "ts": attempt_ts,
-            "butler": "general",
-            "outcome": "runtime_failure",
-            "attempt_index": 0,
-            "failure_reason": "cli_missing",
-            "error_code": "RuntimeError",
-            "error_message": "binary not found",
-            "tool_call_count": 0,
-            "session_id": session_id,
-            "logical_session_id": "req-abc-001",
-        },
-        {
-            "ts": attempt_ts,
-            "butler": "general",
-            "outcome": "success",
-            "attempt_index": 1,
-            "failure_reason": None,
-            "error_code": None,
-            "error_message": None,
-            "tool_call_count": 3,
-            "session_id": session_id,
-            "logical_session_id": "req-abc-001",
-        },
+    assert response.status_code == 200
+    body = response.json()
+    assert [
+        (row["outcome"], row["attempt_index"], row["failure_reason"], row["logical_session_id"])
+        for row in body["data"]
+    ] == [
+        ("runtime_failure", 0, "cli_missing", logical_id),
+        ("runtime_failure", 0, "session-id-tie", "other-cycle"),
+        ("quota_skip", 0, "session-later", "other-cycle"),
+        ("success", 1, None, logical_id),
     ]
+    assert body["meta"] == {"total": 4, "offset": 0, "limit": 100, "has_more": False}
 
-    _, mock_pool = _app_with_pool(app)
-    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
-    mock_pool.fetchval = AsyncMock(return_value=2)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/dispatch/attempts?session_id={session_id}")
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_dispatch_attempts_by_logical_session_id(
+    api: httpx.AsyncClient, dispatch_attempts_history: tuple[uuid.UUID, str]
+) -> None:
+    """An exact opaque logical ID matches across sessions, including quota skips without a UUID."""
+    _, logical_id = dispatch_attempts_history
+    response = await api.get("/api/dispatch/attempts", params={"logical_session_id": logical_id})
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["meta"]["total"] == 2
+    assert response.status_code == 200
+    body = response.json()
     data = body["data"]
-    assert len(data) == 2
-    assert data[0]["outcome"] == "runtime_failure"
-    assert data[0]["attempt_index"] == 0
-    assert data[1]["outcome"] == "success"
-    assert data[1]["attempt_index"] == 1
-    assert data[0]["logical_session_id"] == "req-abc-001"
-    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in mock_pool.fetch.call_args.args[0]
-
-
-async def test_dispatch_attempts_by_logical_session_id(app):
-    """GET /api/dispatch/attempts?logical_session_id=... uses the logical_session_id=$1 branch.
-
-    The endpoint has a distinct branch for the logical-session filter (no
-    session_id::uuid cast): ``WHERE logical_session_id = $1``. Assert both the
-    behavioral output and the SQL shape of the recorded mock-pool fetch call so
-    a regression that routes through the session_id cast branch is caught.
-    """
-    from datetime import UTC, datetime
-
-    logical_id = "req-xyz-999"
-    attempt_ts = datetime(2026, 5, 25, 10, 0, 0, tzinfo=UTC)
-
-    rows_data = [
-        {
-            "ts": attempt_ts,
-            "butler": "general",
-            "outcome": "quota_skip",
-            "attempt_index": 0,
-            "failure_reason": "Token quota exhausted: 24h",
-            "error_code": None,
-            "error_message": None,
-            "tool_call_count": 0,
-            "session_id": None,
-            "logical_session_id": logical_id,
-        },
+    assert [(row["outcome"], row["failure_reason"]) for row in data] == [
+        ("runtime_failure", "cli_missing"),
+        ("quota_skip", "Token quota exhausted: 24h"),
+        ("runtime_failure", "logical-later"),
+        ("success", None),
     ]
-
-    _, mock_pool = _app_with_pool(app)
-    mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in rows_data])
-    mock_pool.fetchval = AsyncMock(return_value=1)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/dispatch/attempts?logical_session_id={logical_id}")
-
-    assert resp.status_code == 200
-    body = resp.json()
-    data = body["data"]
-    assert len(data) == 1
-    assert data[0]["outcome"] == "quota_skip"
-    assert data[0]["session_id"] is None
-    assert data[0]["logical_session_id"] == logical_id
-
-    # SQL-shape: the recorded fetch uses the logical-only WHERE clause (no
-    # session_id::uuid cast) and binds the logical id as the first positional arg.
-    fetch_call = mock_pool.fetch.call_args
-    sql = fetch_call.args[0]
-    assert "WHERE logical_session_id = $1" in sql
-    assert "session_id = $1::uuid" not in sql
-    assert "ORDER BY attempt_index ASC, ts ASC, id ASC" in sql
-    assert fetch_call.args[1] == logical_id
+    assert data[1]["session_id"] is None
+    assert {row["logical_session_id"] for row in data} == {logical_id}
+    assert body["meta"] == {"total": 4, "offset": 0, "limit": 100, "has_more": False}
 
 
 # ---------------------------------------------------------------------------
