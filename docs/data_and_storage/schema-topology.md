@@ -65,6 +65,10 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   `butler_<schema>_rw` to its own `owning_schema` rows; triggers enforce immutability,
   generation fences and append-only history for every role. See
   [Owner delivery](../api_and_protocols/owner-delivery.md).
+- **`public.owner_delivery_surface_evidence`** -- Finite content-free focus/inbound activity
+  (core_373, dark). Only the API login writes it; runtime SELECT supports the M7 selector.
+  RLS has no runtime write policy, including after bootstrap re-grants public DML. Selection
+  plans remain append-only `selected` receipts in the existing ledger, unique per generation.
 - **`public.condition_*`** -- Goal-condition store (core_323, labels core_324, dark): instances, per-source
   cursors, append-only receipts and unique fire intents for `butlers.conditions`. In `public`
   because RFC 0038 S3 makes condition instances shared coordination projections. Only

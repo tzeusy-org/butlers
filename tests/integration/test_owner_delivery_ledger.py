@@ -2667,3 +2667,54 @@ async def test_m7_missing_plan_and_aged_evidence_do_not_claim_healthy(ledger_poo
         assert stale["evidence"][0]["state"] == "stale"
         assert stale["cause"] == "surface_liveness_unknown"
         assert await selection.why(conn, cards["dashboard"].id, owner=uuid.uuid4()) is None
+
+
+async def test_m7_requires_owner_rollout_before_deferring_legacy_delivery(ledger_pool, monkeypatch):
+    monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+    await _park(ledger_pool, card=True)
+    runtime = await _deliver(
+        ledger_pool, HandoffResult("confirmed", provider_reference="synthetic")
+    )
+    assert len(runtime.envelopes) == 1
+    assert all(t.startswith("apr1:") for t in _card_tokens(runtime.envelopes[0]))
+    assert await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+
+
+async def test_m7_activity_route_verifies_callback_actor_and_never_acknowledges(
+    ledger_pool,
+    monkeypatch,
+):
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app(ledger_pool)), base_url="http://dashboard-api:41200"
+    ) as client:
+        path = "/api/owner-delivery/activity"
+        owner_headers = {"X-API-Key": _DASHBOARD_API_KEY}
+        assert (await client.post(path, json={}, headers=owner_headers)).status_code == 404
+        monkeypatch.setattr(flags, "OWNER_DELIVERY_SELECTION_LIVE", True)
+        assert (await client.post(path, json={})).status_code == 401
+        callback = {
+            APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: _CONNECTOR_TOKEN,
+            "X-Butlers-Decision-Actor": "forged",
+        }
+        assert (await client.post(path, json={}, headers=callback)).status_code == 403
+        assert (
+            await ledger_pool.fetchval(
+                "SELECT count(*) FROM public.owner_delivery_surface_evidence"
+            )
+            == 0
+        )
+        callback["X-Butlers-Decision-Actor"] = "owner@telegram"
+        assert (await client.post(path, json={}, headers=callback)).status_code == 200
+        assert (
+            await client.post(path, json={"focused": True}, headers=owner_headers)
+        ).status_code == 200
+        rows = await ledger_pool.fetch(
+            "SELECT surface, source FROM public.owner_delivery_surface_evidence ORDER BY surface"
+        )
+        assert [(r["surface"], r["source"]) for r in rows] == [
+            ("dashboard", "dashboard_focus"),
+            ("telegram", "owner_inbound"),
+        ]
+        assert (
+            await ledger_pool.fetchval("SELECT count(*) FROM public.owner_delivery_subjects") == 0
+        )

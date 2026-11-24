@@ -500,7 +500,9 @@ class ApprovalDeliveryRepository:
             if selection.live():
                 # A legacy count-only digest has no S6 subject to acknowledge or fence.
                 # Its actions remain available in the dashboard pending list.
-                raise od.OwnerDeliveryDeferred()
+                async with self._pool.acquire() as connection:
+                    if await od.rollout_enabled(connection):
+                        raise od.OwnerDeliveryDeferred()
             return await self._prepare_digest_delivery(claim)
         deferred = False
         deadline = None
@@ -696,7 +698,10 @@ class ApprovalDeliveryRepository:
                         "AND s.owning_schema = current_schema()",
                         claim.presentation_id,
                     )
-                    if subject is None or not await selection.telegram_due(
+                    if subject is None:
+                        if await od.rollout_enabled(connection):
+                            return False
+                    elif not await selection.telegram_due(
                         connection, od.Subject.from_row(subject), sensitivity="unknown"
                     ):
                         return False
