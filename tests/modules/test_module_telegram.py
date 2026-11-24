@@ -1345,6 +1345,159 @@ async def test_send_files_long_text_goes_first_and_files_reply_to_last_chunk():
     assert result["result"]["message_ids"] == [101, 102]
 
 
+async def test_send_files_keeps_lead_and_uploads_in_one_chat_slot():
+    import asyncio
+
+    module = _files_module()
+    lead_started = asyncio.Event()
+    release_lead = asyncio.Event()
+    same_chat_waiting = asyncio.Event()
+    calls: list[tuple[str, str, int | str | None]] = []
+
+    class ObservedChatLock(asyncio.Lock):
+        async def acquire(self):
+            if self.locked():
+                same_chat_waiting.set()
+            return await super().acquire()
+
+    module._chat_locks["123"] = (ObservedChatLock(), 0)
+
+    async def post(url, *, json=None, data=None, files=None):
+        method = url.rsplit("/", 1)[1]
+        payload = json if json is not None else data
+        calls.append((payload["chat_id"], method, payload.get("reply_to_message_id")))
+        message_id = 100 + len(calls)
+        if message_id == 101:
+            lead_started.set()
+            await release_lead.wait()
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": message_id}},
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
+    ):
+        tasks = []
+        try:
+            async with asyncio.timeout(2):
+                batch = asyncio.create_task(
+                    module._send_files(
+                        "123",
+                        "lead " * 300,
+                        [{"filename": "tiny.txt", "media_type": "text/plain", "content_text": "a"}],
+                        reply_to_message_id=7,
+                        origin_butler="finance",
+                    )
+                )
+                tasks.append(batch)
+                await lead_started.wait()
+                contender = asyncio.create_task(module._send_message("123", "same chat"))
+                tasks.append(contender)
+                await same_chat_waiting.wait()
+                other = await module._send_message("456", "other chat")
+                assert other["result"]["message_id"] == 102
+                assert calls == [("123", "sendMessage", 7), ("456", "sendMessage", None)]
+                release_lead.set()
+                batch_result, contender_result = await asyncio.gather(batch, contender)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert calls == [
+        ("123", "sendMessage", 7),
+        ("456", "sendMessage", None),
+        ("123", "sendDocument", "101"),
+        ("123", "sendMessage", None),
+    ]
+    assert batch_result["result"] == {"message_id": 103, "message_ids": [101, 103]}
+    assert contender_result["result"]["message_id"] == 104
+    assert [
+        (entry.args[2], entry.args[3]["provider_message_ids"]) for entry in audit.await_args_list
+    ] == [
+        ("telegram_send", [102]),
+        ("telegram_send", [101]),
+        ("telegram_send_files", [101, 103]),
+        ("telegram_send", [104]),
+    ]
+    assert not module._chat_locks
+
+
+@pytest.mark.parametrize("cancel_during", ["lead", "lead_audit", "upload"])
+async def test_send_files_cancel_releases_chat_slot_and_preserves_partial_receipt(cancel_during):
+    import asyncio
+
+    from butlers.telegram_api import TelegramPartialDeliveryError
+
+    module = _files_module()
+    blocked = asyncio.Event()
+    calls: list[str] = []
+
+    async def post(url, *, json=None, data=None, files=None):
+        method = url.rsplit("/", 1)[1]
+        calls.append(method)
+        message_id = 100 + len(calls)
+        if (cancel_during, message_id) in {("lead", 101), ("upload", 102)}:
+            blocked.set()
+            await asyncio.Future()
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", url),
+            json={"ok": True, "result": {"message_id": message_id}},
+        )
+
+    async def write_audit(_pool, _name, operation, _summary, **kwargs):
+        if cancel_during == "lead_audit" and operation == "telegram_send" and len(calls) == 1:
+            blocked.set()
+            await asyncio.Future()
+
+    attachment = {"filename": "tiny.txt", "media_type": "text/plain", "content_text": "a"}
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch(
+            "butlers.modules.telegram.write_audit_entry",
+            new=AsyncMock(side_effect=write_audit),
+        ) as audit,
+    ):
+        batch = asyncio.create_task(
+            module._send_files(
+                "123", "lead " * 300, [attachment, attachment], origin_butler="finance"
+            )
+        )
+        try:
+            async with asyncio.timeout(2):
+                await blocked.wait()
+                batch.cancel()
+                if cancel_during == "lead":
+                    with pytest.raises(asyncio.CancelledError):
+                        await batch
+                else:
+                    with pytest.raises(TelegramPartialDeliveryError) as error:
+                        await batch
+                    assert error.value.message_ids == (101,)
+                    assert error.value.retryable is False
+                    assert audit.await_args.kwargs["error"] == "telegram_partial_delivery"
+                expected = (
+                    ["sendMessage", "sendDocument"]
+                    if cancel_during == "upload"
+                    else ["sendMessage"]
+                )
+                assert calls == expected
+                assert not module._chat_locks
+                await module._send_message("123", "after cancellation")
+                assert calls == [*expected, "sendMessage"]
+        finally:
+            batch.cancel()
+            await asyncio.gather(batch, return_exceptions=True)
+
+    assert not module._chat_locks
+
+
 @pytest.mark.parametrize(
     ("attachment", "code"),
     [
