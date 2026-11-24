@@ -299,6 +299,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The holder can exit while commands are being sent. Keep SIGPIPE local to
+# the write so the main shell can still run its EXIT trap and record failure.
+write_snapshot_control() {
+  if (trap '' PIPE; printf "$@" >&9); then
+    return 0
+  fi
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: could not write shared backup snapshot control command; not publishing" >&2
+  exit 1
+}
+
 echo "[backup] start: ${TIMESTAMP}, host=${POSTGRES_HOST}:${POSTGRES_PORT}, db=${POSTGRES_DB}"
 
 # Build the exclusion arguments from the declared sets above.
@@ -353,20 +364,20 @@ exec 9>"${SNAPSHOT_CONTROL}"
 # absence is safe. It must precede BEGIN: when installed, acquire the locks
 # before establishing the repeatable-read snapshot, so policy DDL cannot slip
 # between an earlier catalogue snapshot and the locks. Errors stop the holder.
-printf 'SELECT NOT EXISTS (SELECT FROM pg_class c
+write_snapshot_control 'SELECT NOT EXISTS (SELECT FROM pg_class c
     JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='\''public'\''
       AND c.relname IN ('\''dashboard_job_health'\'','\''dashboard_job_transitions'\'')) AS butlers_job_health_absent
 \\gset
-' >&9
-printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n' >&9
-printf '\\if :butlers_job_health_absent\n\\else\nLOCK TABLE public.dashboard_job_health, public.dashboard_job_transitions IN ACCESS SHARE MODE;\n\\endif\n' >&9
-printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
+'
+write_snapshot_control 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n'
+write_snapshot_control '\\if :butlers_job_health_absent\n\\else\nLOCK TABLE public.dashboard_job_health, public.dashboard_job_transitions IN ACCESS SHARE MODE;\n\\endif\n'
+write_snapshot_control '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}"
 # A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
 # then require the one admitted policy to be the exact explicit PUBLIC SELECT
 # policy below; otherwise a restrictive FOR ALL policy could silently filter
 # the scoped export.
-printf '\\o %s\nSELECT count(*)
+write_snapshot_control '\\o %s\nSELECT count(*)
       FROM pg_class AS c
       JOIN pg_namespace AS n ON n.oid = c.relnamespace
      WHERE n.nspname || '\''.'\'' || c.relname IN (
@@ -393,12 +404,12 @@ printf '\\o %s\nSELECT count(*)
               AND p.polroles = ARRAY[0::oid]
               AND pg_get_expr(p.polqual, p.polrelid) = '\''true'\''
        );
-\\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
+\\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}"
 
 # Capture policy proof is evaluated in the exported snapshot, before any rows
 # can be filtered. Absent pre-capture schemas remain backwards compatible;
 # partial or altered policy installation refuses publication.
-printf '\\o %s\nSELECT CASE WHEN count(*) = 0 THEN 0
+write_snapshot_control '\\o %s\nSELECT CASE WHEN count(*) = 0 THEN 0
     WHEN count(*) = 3 AND bool_and(c.relrowsecurity AND c.relforcerowsecurity
         AND (SELECT count(*) = 1 FROM pg_policy AS p WHERE p.polrelid = c.oid)
         AND EXISTS (SELECT 1 FROM pg_policy AS p WHERE p.polrelid = c.oid
@@ -413,12 +424,12 @@ printf '\\o %s\nSELECT CASE WHEN count(*) = 0 THEN 0
     FROM pg_class AS c JOIN pg_namespace AS n ON n.oid=c.relnamespace
     WHERE n.nspname='\''public'\'' AND c.relname IN
         ('\''captures'\'', '\''capture_operations'\'', '\''capture_service_control'\'');
-\\o\n' "${SNAPSHOT_CAPTURE_COUNT_FILE}" >&9
+\\o\n' "${SNAPSHOT_CAPTURE_COUNT_FILE}"
 
 # Unlike the public cost-claim read model, prompts contain private recipient
 # information. Only the exact table owner (this backup identity) can export all
 # rows. An extra or restrictive read policy fails before publishing anything.
-printf '\\o %s\nSELECT count(*) FROM pg_class c
+write_snapshot_control '\\o %s\nSELECT count(*) FROM pg_class c
     WHERE c.oid = '\''public.pending_confirms'\''::regclass
       AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname=current_user)
       AND c.relrowsecurity AND c.relforcerowsecurity
@@ -431,11 +442,11 @@ printf '\\o %s\nSELECT count(*) FROM pg_class c
            AND p.polroles=ARRAY[0::oid]
            AND pg_get_expr(p.polqual,p.polrelid)=
                format('\''(CURRENT_USER = %%L::name)'\'',current_user));
-\\o\n' "${SNAPSHOT_CONFIRM_POLICY_FILE}" >&9
+\\o\n' "${SNAPSHOT_CONFIRM_POLICY_FILE}"
 
 # An unfenced evidence table is not another PUBLIC-read RLS exception. Prove
 # its source shape, common owner and enabled validated FK in this same snapshot.
-printf '\\o %s\nSELECT count(*) FROM pg_class e
+write_snapshot_control '\\o %s\nSELECT count(*) FROM pg_class e
  WHERE e.oid='\''public.fleet_case_evidence'\''::regclass
  AND NOT e.relrowsecurity AND NOT e.relforcerowsecurity
  AND e.relowner=(SELECT relowner FROM pg_class WHERE oid='\''public.fleet_cases'\''::regclass)
@@ -460,13 +471,13 @@ printf '\\o %s\nSELECT count(*) FROM pg_class e
    AND f.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=f.confrelid AND attname='\''id'\'')]
    AND 4=(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=f.oid)
    AND NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid AND t.tgenabled NOT IN ('\''O'\'','\''A'\'')));
-\\o\n' "${SNAPSHOT_FLEET_EVIDENCE_FILE}" >&9
+\\o\n' "${SNAPSHOT_FLEET_EVIDENCE_FILE}"
 
 # Only this exported-snapshot proof authorizes absence. If the preflight saw
 # no relations but either appeared before this snapshot, refuse rather than
 # exporting installed health without locks. A present installation must retain
 # the exact two-table owner/FORCE-RLS/sole-policy proof under those locks.
-printf '\\o %s\n\\if :butlers_job_health_absent
+write_snapshot_control '\\o %s\n\\if :butlers_job_health_absent
 SELECT CASE WHEN NOT EXISTS (SELECT FROM pg_class c
     JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='\''public'\''
@@ -486,7 +497,7 @@ SELECT CASE WHEN (SELECT count(*) FROM pg_class c
           AND pg_get_expr(p.polqual,p.polrelid)=format('\''(CURRENT_USER = %%L::name)'\'',current_user)
           AND pg_get_expr(p.polwithcheck,p.polrelid)=format('\''(CURRENT_USER = %%L::name)'\'',current_user)))=2 THEN 2 ELSE -1 END;
 \\endif
-\\o\n' "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}" >&9
+\\o\n' "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}"
 
 SNAPSHOT_WAIT=0
 while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] \
@@ -1141,7 +1152,7 @@ PERCEPTION_REPLAY_PROOF
   fi
 } | gzip > "${TMPFILE}"
 
-printf 'COMMIT;\n\\q\n' >&9
+write_snapshot_control 'COMMIT;\n\\q\n'
 exec 9>&-
 if ! wait "${SNAPSHOT_HOLDER_PID}"; then
   FAILURE_REASON="pg_dump_failed"
