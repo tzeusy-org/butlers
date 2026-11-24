@@ -1307,31 +1307,32 @@ async def test_listener_reconnects_and_replays_after_connection_failure() -> Non
 
     pool = MagicMock()
     pool.acquire = MagicMock(side_effect=[AsyncCtx(first), AsyncCtx(second)])
-    drained_twice = asyncio.Event()
     drained_connections = []
+
+    class ReplayObserved(asyncio.CancelledError):
+        pass
 
     async def _drain(conn, **_kwargs):
         drained_connections.append(conn)
-        if len(drained_connections) == 2:
-            drained_twice.set()
+        if conn is second:
+            raise ReplayObserved
         return []
 
-    with patch("butlers.entity_rebind._process_pending_entity_rebinds_on_conn", new=_drain):
-        listener = asyncio.create_task(
-            run_entity_rebind_listener(
+    # The first idle health poll can run immediately because no events are queued.
+    # The second drain ends this continuous listener without a racing observer task.
+    with (
+        patch("butlers.entity_rebind._process_pending_entity_rebinds_on_conn", new=_drain),
+        pytest.raises(ReplayObserved),
+    ):
+        async with asyncio.timeout(5):
+            await run_entity_rebind_listener(
                 pool,
                 target_schema="finance",
-                health_poll_interval_s=0.001,
+                health_poll_interval_s=0,
                 reconnect_delay_s=0,
             )
-        )
-        try:
-            await asyncio.wait_for(drained_twice.wait(), timeout=1)
-        finally:
-            listener.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await listener
 
+    assert pool.acquire.call_count == 2
     assert drained_connections == [first, second]
     first.add_listener.assert_awaited_once()
     second.add_listener.assert_awaited_once()
