@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from butlers.core.temporal.calendar_source_roles import owner_time_roles_sql
@@ -10,6 +10,7 @@ from butlers.core.temporal.household_context import (
     HOUSEHOLD_OVERLAP_SQL,
     events_from_overlap_rows,
 )
+from butlers.core.temporal.invitation_quarantine import quarantined_invitation_sql
 from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
@@ -19,6 +20,9 @@ from butlers.modules.approvals.execution_context import get_approval_execution_c
 from .constants import (
     _SUGGESTION_SEARCH_HORIZON,
     DEFAULT_CONFLICT_SUGGESTION_COUNT,
+    DEFAULT_SYNC_INTERVAL_MINUTES,
+    PROJECTION_STALENESS_MULTIPLIER,
+    SYNC_CURSOR_PROVIDER,
     VALID_CONFLICT_POLICIES,
     CalendarConflictPolicy,
     logger,
@@ -281,35 +285,47 @@ class ConflictsMixin:
         conflict_policy: CalendarConflictPolicy,
         ignore_start_at: datetime | None = None,
         ignore_end_at: datetime | None = None,
+        ignore_event_id: str | None = None,
     ) -> dict[str, Any]:
         if candidate.end_at <= candidate.start_at:
             raise ValueError("end_at must be after start_at")
 
-        conflicts: list[CalendarEvent] = []
-        seen: set[tuple[datetime, datetime]] = set()
-        for busy_calendar_id in await self._owner_busy_calendar_ids(calendar_id):
+        # The target calendar is read through the provider, as it always was. Every other
+        # owner calendar is read from the stored projection (quarantined invitations excluded,
+        # so an outsider's invite cannot veto a write), and only while that calendar's sync is
+        # fresh; otherwise the check is unavailable rather than silently narrower.
+        try:
             try:
-                found = await provider.find_conflicts(
-                    calendar_id=busy_calendar_id, candidate=candidate
+                conflicts = list(
+                    await provider.find_conflicts(calendar_id=calendar_id, candidate=candidate)
                 )
-            except CalendarAuthError:
-                raise
-            except ValueError:
+            except (CalendarAuthError, ValueError):
                 raise
             except Exception as exc:
-                raise ConflictCheckUnavailable("conflict check unavailable") from exc
-            for event in found:
-                key = (event.start_at, event.end_at)
-                if key not in seen:
-                    seen.add(key)
-                    conflicts.append(event)
-        if ignore_start_at is not None and ignore_end_at is not None:
-            conflicts = [
-                conflict
-                for conflict in conflicts
-                if not (conflict.start_at == ignore_start_at and conflict.end_at == ignore_end_at)
-            ]
-
+                raise ConflictCheckUnavailable() from exc
+            if ignore_start_at is not None and ignore_end_at is not None:
+                conflicts = [
+                    c
+                    for c in conflicts
+                    if not (c.start_at == ignore_start_at and c.end_at == ignore_end_at)
+                ]
+            conflicts.extend(
+                await self._stored_owner_busy(
+                    calendar_id, candidate, ignore_event_id=ignore_event_id
+                )
+            )
+        except ConflictCheckUnavailable:
+            if conflict_policy != "allow_overlap":
+                raise
+            # The owner chose to allow overlap: a check that cannot run does not block the write,
+            # and nothing is claimed about conflicts (no approval is queued from a blind check).
+            logger.warning("Overlap check unavailable; proceeding under allow_overlap")
+            return {
+                "status": "clear",
+                "conflicts": [],
+                "suggested_slots": [],
+                "conflict_check": "unavailable",
+            }
         conflict_payload = await guard_provider_events(
             pool_of(self), conflicts, self._conflict_to_payload
         )
@@ -391,33 +407,111 @@ class ConflictsMixin:
             return list(self._all_provider_calendar_ids)
         return [self._resolve_calendar_id(None)]
 
-    async def _owner_busy_calendar_ids(self, calendar_id: str) -> list[str]:
-        """The calendars a write is overlap-checked against: the target plus all owner time.
+    async def _other_owner_calendar_ids(self, calendar_id: str) -> list[str]:
+        """The owner calendars a write is also checked against, besides the target.
 
-        A Butlers block lands on the Butlers calendar, but the owner's meetings live on the
-        primary calendar, so the check spans every source whose stored role is ``owner`` or
-        ``butler``; another person's shared calendar never counts. An unreadable role ledger
-        raises ``ConflictCheckUnavailable`` instead of quietly checking one calendar.
+        Every source whose stored role is ``owner`` or ``butler`` (never another person's shared
+        calendar) plus the primary calendar even when it has no source row yet: a calendar that
+        should count but cannot be read makes the check unavailable instead of being skipped.
+        An unreadable role ledger raises ``ConflictCheckUnavailable``.
         """
         known: list[str] = list(getattr(self, "_all_provider_calendar_ids", ()))
         pool = getattr(getattr(self, "_db", None), "pool", None)
-        ordered = [calendar_id]
-        if not known or pool is None:
-            return ordered
+        primary = getattr(self, "_primary_calendar_id", None)
+        owner_ids: list[str] = []
+        if known and pool is not None:
+            try:
+                rows = await pool.fetch(
+                    "SELECT calendar_id FROM calendar_sources "
+                    "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
+                    f"AND time_role IN {owner_time_roles_sql()}",
+                    getattr(self, "_require_provider")().name,  # noqa: B009
+                    known,
+                )
+            except Exception as exc:
+                logger.warning("Failed to read calendar source roles for a write", exc_info=True)
+                raise ConflictCheckUnavailable() from exc
+            granted = {row["calendar_id"] for row in rows}
+            owner_ids = [cid for cid in known if cid in granted]
+        if primary and primary not in owner_ids:
+            owner_ids.append(primary)
+        return [cid for cid in dict.fromkeys(owner_ids) if cid != calendar_id]
+
+    async def _stored_owner_busy(
+        self,
+        calendar_id: str,
+        candidate: CalendarEventCreate,
+        *,
+        ignore_event_id: str | None,
+    ) -> list[CalendarEvent]:
+        """Busy windows on the other owner calendars, from the stored projection.
+
+        Quarantined invitations are excluded (REQ-module-calendar-041) and the event being
+        updated is excluded by its event id, not its time window. A calendar with no source row
+        or no successful sync within ``PROJECTION_STALENESS_MULTIPLIER`` poll intervals (the same
+        grace the sync deadman uses) makes the check unavailable.
+        """
+        others = await self._other_owner_calendar_ids(calendar_id)
+        if not others:
+            return []
+        pool = getattr(getattr(self, "_db", None), "pool", None)
+        if pool is None:
+            raise ConflictCheckUnavailable()
+        provider_name = getattr(self, "_require_provider")().name  # noqa: B009
+        threshold = timedelta(
+            minutes=DEFAULT_SYNC_INTERVAL_MINUTES * PROJECTION_STALENESS_MULTIPLIER
+        )
         try:
-            rows = await pool.fetch(
-                "SELECT calendar_id FROM calendar_sources "
-                "WHERE provider = $1 AND calendar_id = ANY($2::text[]) "
-                f"AND time_role IN {owner_time_roles_sql()}",
-                getattr(self, "_require_provider")().name,  # noqa: B009
-                known,
+            fresh = await pool.fetch(
+                "SELECT s.calendar_id, max(c.last_success_at) AS last_success_at "
+                "FROM calendar_sources s LEFT JOIN calendar_sync_cursors c "
+                "ON c.source_id = s.id AND c.cursor_name = $3 "
+                "WHERE s.provider = $1 AND s.calendar_id = ANY($2::text[]) "
+                "GROUP BY s.calendar_id",
+                provider_name,
+                others,
+                SYNC_CURSOR_PROVIDER,
             )
+            synced = {row["calendar_id"]: row["last_success_at"] for row in fresh}
+            now = datetime.now(UTC)
+            for other in others:
+                last = synced.get(other)
+                if last is None or now - last > threshold:
+                    logger.warning("Owner calendar %s has no fresh sync; check unavailable", other)
+                    raise ConflictCheckUnavailable()
+            rows = await pool.fetch(
+                "SELECT i.starts_at, i.ends_at "
+                "FROM calendar_event_instances i "
+                "JOIN calendar_events e ON e.id = i.event_id AND e.source_id = i.source_id "
+                "JOIN calendar_sources s ON s.id = i.source_id "
+                "WHERE s.provider = $1 AND s.calendar_id = ANY($2::text[]) "
+                "AND i.status <> 'cancelled' AND e.status <> 'cancelled' "
+                "AND i.starts_at < $4 AND i.ends_at > $3 "
+                "AND COALESCE(e.metadata ->> 'transparency', '') <> 'transparent' "
+                "AND ($5::text IS NULL OR e.origin_ref IS DISTINCT FROM $5) "
+                f"AND NOT {quarantined_invitation_sql('e')}",
+                provider_name,
+                others,
+                candidate.start_at,
+                candidate.end_at,
+                ignore_event_id,
+            )
+        except ConflictCheckUnavailable:
+            raise
         except Exception as exc:
-            logger.warning("Failed to read calendar source roles for a write", exc_info=True)
-            raise ConflictCheckUnavailable("conflict check unavailable") from exc
-        owner_ids = {row["calendar_id"] for row in rows}
-        ordered.extend(cid for cid in known if cid in owner_ids and cid != calendar_id)
-        return ordered
+            logger.warning("Failed to read stored owner busy time", exc_info=True)
+            raise ConflictCheckUnavailable() from exc
+        timezone = candidate.timezone or "UTC"
+        return [
+            CalendarEvent(
+                event_id=f"busy-stored-{index + 1}",
+                title="(busy)",
+                start_at=row["starts_at"],
+                end_at=row["ends_at"],
+                timezone=timezone,
+            )
+            for index, row in enumerate(rows)
+        ]
 
     async def _default_free_busy_calendar_ids(self) -> list[str]:
         """The calendars a default availability query spans: owner-time sources only.

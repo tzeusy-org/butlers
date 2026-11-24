@@ -704,6 +704,7 @@ def register_event_tools(
                     conflict_policy=resolved_conflict_policy,
                     ignore_start_at=existing_event.start_at,
                     ignore_end_at=existing_event.end_at,
+                    ignore_event_id=normalized_event_id,
                 )
             except CalendarAuthError as exc:
                 logger.error(
@@ -734,6 +735,10 @@ def register_event_tools(
                     error=error_payload.get("error"),
                 )
                 return error_payload
+            if replan and conflict_result.get("conflict_check") == "unavailable":
+                # allow_overlap lets a blind check pass for an owner's write, never for a move
+                # that is making its own decision to avoid every other event.
+                return await decline("conflict_check_unavailable")
             if replan and conflict_result["conflicts"]:
                 # A move onto anything else on the calendar is the owner's call.
                 return await decline("conflicts")

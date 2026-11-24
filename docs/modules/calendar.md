@@ -80,12 +80,16 @@ Every create/update operation runs through the conflict engine before writing:
 - **`fail`**: Rejects the operation with an error listing conflicting events.
 - **`allow_overlap`**: Proceeds with the write. When the approvals module is co-loaded, an overlap approval may be enqueued for high-impact operations.
 
-The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-046):
-the target calendar plus every source whose stored role is `owner` or `butler`, never another
-person's shared calendar. A Butlers block placed over a primary-calendar meeting therefore reports
-the conflict. If free/busy or the source role ledger cannot be read, the write is refused with
-"conflict check unavailable" (a replan move is declined as `conflict_check_unavailable`); it is
-never reported as clear.
+The check reads all owner time, not just the calendar the write lands on (REQ-module-calendar-046).
+The target calendar goes through the provider's free/busy. Every other owner calendar (sources
+with role `owner` or `butler`, plus the primary even before it has a source row) is read from the
+stored projection, with cancelled, free and quarantined-invitation rows excluded, so an outsider's
+invite cannot veto a write; an updated event is excluded by its event id. Another person's shared
+calendar is never consulted. If an owner calendar has no successful sync within 10 minutes (2x the
+5 minute poll, the sync deadman's grace), or any read fails, the write is refused with "Couldn't
+read your calendars to check for overlaps. Try again, or allow overlap to write anyway." (a replan
+move is declined as `conflict_check_unavailable`). Under the `allow_overlap` policy an unavailable
+check does not block the owner's write and claims no conflict.
 
 ### Day sheet push
 
