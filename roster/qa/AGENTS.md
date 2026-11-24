@@ -41,7 +41,7 @@ step sequence of each, consult the `patrol-operations` skill.
 - Agent sessions (initial investigation and review follow-up) are spawned with
   `build_agent_env()`, which never carries `GH_TOKEN` or any git credential
   variable. Automated publication fails closed: no `git push`, no `gh pr create`;
-  a committed investigation is sealed and retained as an unpublished proposal (attempt `failed` with `publication_unavailable`, an execution success for the breaker, fingerprint held by Gate 5.6 for 7 days; follow-up: `last_follow_up_error`; a case whose every claim is unsupported by the recorded evidence retains nothing and ends `failed` with `diagnosis_unsupported`, held and breaker-neutral the same way)
+  a committed investigation is sealed and retained as an unpublished proposal (attempt `failed` with `publication_unavailable`, an execution success for the breaker, fingerprint held by Gate 5.6 for 7 days; follow-up: `last_follow_up_error`; a case with a recorded bundle whose every claim is unsupported, or whose notes are missing or unparsable, retains and publishes nothing and ends `failed` with `diagnosis_unsupported`, held and breaker-neutral the same way)
   until the isolated publisher and process/filesystem isolation are proven. The
   dispatcher keeps the token only for read-only PR-status polling, which addresses
   the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the

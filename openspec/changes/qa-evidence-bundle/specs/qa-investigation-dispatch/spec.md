@@ -60,6 +60,6 @@ Scope: v1-mandatory
 
 #### Scenario: An unsupported diagnosis retains no patch
 
-- **WHEN** an investigation commits a change but every claim in its notes is unsupported
-- **THEN** nothing is sealed, retained or published, and the attempt ends `failed` with a `diagnosis_unsupported` reason
+- **WHEN** an investigation commits a change but every claim in its notes is unsupported (or, with a recorded bundle, its notes are missing or unparsable)
+- **THEN** nothing is retained or published, and the attempt ends `failed` with a `diagnosis_unsupported` reason
 - **AND** the breaker counts it as an execution success and the fingerprint is held like a retained proposal

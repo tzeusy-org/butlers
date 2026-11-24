@@ -1613,9 +1613,9 @@ async def test_an_all_unsupported_diagnosis_retains_nothing_and_is_not_a_breaker
             return_value=[],
         ),
         patch(
-            "butlers.core.qa.dispatch._diagnosis_is_unsupported",
+            "butlers.core.qa.dispatch._diagnosis_unsupported_reason",
             new_callable=AsyncMock,
-            return_value=True,
+            return_value="no claim cites evidence the dispatcher recorded",
         ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as update,
         patch(
@@ -1643,38 +1643,92 @@ async def test_an_all_unsupported_diagnosis_retains_nothing_and_is_not_a_breaker
     assert update.await_args.kwargs["error_detail"].startswith("diagnosis_unsupported:")
 
 
+_ITEM_BODIES = {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("with_file", "bodies", "ref", "expected"),
+    ("notes", "bodies", "require_notes", "expected"),
     [
-        (False, None, "E1", False),  # no notes file: not judged
-        (True, None, "E1", False),  # no recorded bundle: not judged
-        (True, {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}, "E1", False),
-        (True, {"sections": [{"items": [{"id": "E1", "text": "real"}]}]}, "E9", True),
+        ("absent", None, True, None),  # no recorded bundle: fail open
+        ("supported", None, True, None),  # no recorded bundle: nothing to check against
+        ("absent", _ITEM_BODIES, True, "no notes"),
+        ("absent", _ITEM_BODIES, False, None),  # a follow-up agent is not asked for notes
+        ("garbage", _ITEM_BODIES, True, "unparsable notes"),
+        ("garbage", _ITEM_BODIES, False, "unparsable notes"),
+        ("supported", _ITEM_BODIES, True, None),
+        ("invented", _ITEM_BODIES, True, "no claim cites evidence the dispatcher recorded"),
+        ("zero_claims", _ITEM_BODIES, True, "no claim cites evidence the dispatcher recorded"),
     ],
 )
-async def test_unsupported_diagnosis_gate_judges_only_a_positive_finding(
-    tmp_path: Path, with_file, bodies, ref, expected
+async def test_unsupported_diagnosis_reason_fails_closed_only_with_a_recorded_bundle(
+    tmp_path: Path, notes, bodies, require_notes, expected
 ):
     import json
 
-    from butlers.core.qa.dispatch import _diagnosis_is_unsupported
+    from butlers.core.qa.dispatch import _diagnosis_unsupported_reason
     from tests.core.qa.test_investigation_notes import _valid_notes_payload
 
-    if with_file:
-        payload = _valid_notes_payload()
-        payload["schema_version"] = 2
-        payload["evidence_lines"] = [
-            {"id": "e1", "ts": "t", "lvl": "ERROR", "butler": "b", "msg": "real", "ref": ref}
-        ]
-        payload["claims"] = {"c1": {"evidence_ids": ["e1"], "note": "n"}}
+    if notes != "absent":
         notes_path = tmp_path / ".qa" / "investigation_notes.json"
         notes_path.parent.mkdir()
-        notes_path.write_text(json.dumps(payload))
+        if notes == "garbage":
+            notes_path.write_text("not json")
+        else:
+            payload = _valid_notes_payload()
+            payload["schema_version"] = 2
+            ref = "E9" if notes == "invented" else "E1"
+            payload["evidence_lines"] = [
+                {"id": "e1", "ts": "t", "lvl": "ERROR", "butler": "b", "msg": "real", "ref": ref}
+            ]
+            payload["claims"] = (
+                {} if notes == "zero_claims" else {"c1": {"evidence_ids": ["e1"], "note": "n"}}
+            )
+            notes_path.write_text(json.dumps(payload))
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=bodies)
 
-    assert await _diagnosis_is_unsupported(pool, uuid.uuid4(), tmp_path) is expected
+    reason = await _diagnosis_unsupported_reason(
+        pool, uuid.uuid4(), tmp_path, require_notes=require_notes
+    )
+
+    assert reason == expected
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_follow_up_is_reported_as_such_not_as_a_pending_patch(
+    tmp_path: Path,
+) -> None:
+    pool = _qa_pool()
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(
+        return_value=MagicMock(success=True, session_id=uuid.uuid4(), error=None)
+    )
+
+    with (
+        patch("butlers.core.qa.dispatch._prepare_agent_workspace", return_value=tmp_path),
+        patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._diagnosis_unsupported_reason",
+            new_callable=AsyncMock,
+            return_value="no claim cites evidence the dispatcher recorded",
+        ) as gate,
+    ):
+        await _run_review_followup_session(
+            pool=pool,
+            repo_root=tmp_path,
+            attempt_id=uuid.uuid4(),
+            pr_number=42,
+            followup_branch="qa/general/followup",
+            worktree_path=tmp_path,
+            prompt="review feedback",
+            config=QaDispatchConfig(),
+            spawner=spawner,
+            sandbox_env={"PATH": "/usr/bin"},
+        )
+
+    assert gate.await_args.kwargs == {"require_notes": False}
+    assert pool.execute.await_args.args[3].startswith("diagnosis_unsupported:")
 
 
 @pytest.mark.asyncio

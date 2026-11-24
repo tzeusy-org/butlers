@@ -20,9 +20,9 @@ from butlers.api.routers.qa import (
 )
 from butlers.core.healing.tracking import get_paused_proposal
 from butlers.core.qa.dispatch import (
-    _DIAGNOSIS_UNSUPPORTED_DETAIL,
     _PUBLICATION_UNAVAILABLE_DETAIL,
     QaDispatchConfig,
+    _diagnosis_unsupported_detail,
     _is_circuit_breaker_tripped,
     dispatch_qa_investigation,
 )
@@ -161,13 +161,23 @@ async def test_unsupported_diagnoses_are_execution_successes_in_admission_and_da
 ) -> None:
     patrol = await _patrol(db_pool)
     for _ in range(7):
-        await _attempt(db_pool, patrol, error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL)
+        await _attempt(db_pool, patrol, error_detail=_diagnosis_unsupported_detail("no notes"))
     assert await _tripped_both_ways(db_pool) == (False, False)
 
 
 async def test_an_unsupported_diagnosis_holds_its_fingerprint_without_an_export(db_pool) -> None:
     patrol = await _patrol(db_pool)
-    attempt = await _attempt(db_pool, patrol, error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL)
+    attempt = await _attempt(
+        db_pool, patrol, error_detail=_diagnosis_unsupported_detail("no notes")
+    )
 
     assert await get_paused_proposal(db_pool, _FP, 7) == attempt
     assert await get_paused_proposal(db_pool, "b" * 64, 7) is None
+
+
+async def test_the_unsupported_marker_matches_exactly_not_as_a_like_pattern(db_pool) -> None:
+    patrol = await _patrol(db_pool)
+    # '_' is a LIKE wildcard: a near-miss marker must neither hold nor read as a success.
+    await _attempt(db_pool, patrol, error_detail="diagnosisXunsupported: lookalike")
+
+    assert await get_paused_proposal(db_pool, _FP, 7) is None

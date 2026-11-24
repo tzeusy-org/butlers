@@ -194,14 +194,14 @@ async def get_paused_proposal(
           AND a.closed_at >= now() - ($4 * INTERVAL '1 day')
           AND (
                 (a.error_detail LIKE $2 AND x.attempt_id IS NOT NULL AND x.pruned_at IS NULL)
-             OR a.error_detail LIKE $3
+             OR starts_with(a.error_detail, $3)
           )
         ORDER BY a.closed_at DESC
         LIMIT 1
         """,
         fingerprint,
         QA_PUBLICATION_UNAVAILABLE_PREFIX + "%",
-        QA_DIAGNOSIS_UNSUPPORTED_PREFIX + "%",
+        QA_DIAGNOSIS_UNSUPPORTED_PREFIX,
         hold_days,
     )
 

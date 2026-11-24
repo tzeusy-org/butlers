@@ -30,7 +30,7 @@ QA_BREAKER_EFFECTIVE_STATUS_SQL = f"""CASE
              )
         THEN '{QA_PROPOSAL_RETAINED_STATUS}'
         WHEN status = 'failed'
-             AND error_detail LIKE '{QA_DIAGNOSIS_UNSUPPORTED_PREFIX}%'
+             AND starts_with(error_detail, '{QA_DIAGNOSIS_UNSUPPORTED_PREFIX}')
         THEN '{QA_DIAGNOSIS_UNSUPPORTED_STATUS}'
         ELSE status
     END"""

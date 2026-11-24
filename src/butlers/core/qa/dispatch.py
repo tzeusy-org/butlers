@@ -561,10 +561,15 @@ _PUBLICATION_UNRETAINED = "publication_unretained"
 _RETENTION_REFUSALS = frozenset(
     {"export_unretained", "unknown_attempt", "export_changed", "export_pruned"}
 )
-_DIAGNOSIS_UNSUPPORTED_DETAIL = (
-    f"{QA_DIAGNOSIS_UNSUPPORTED_PREFIX} every claim cites evidence the dispatcher did not "
-    "record; no patch was sealed, retained or published"
-)
+
+
+def _diagnosis_unsupported_detail(reason: str) -> str:
+    return (
+        f"{QA_DIAGNOSIS_UNSUPPORTED_PREFIX} {reason}; nothing was retained or published "
+        "and the patch is not offered"
+    )
+
+
 _PUBLICATION_UNAVAILABLE_DETAIL = (
     "publication_unavailable: automated QA publication is disabled until the isolated "
     "publisher lands; nothing was pushed and no PR was created or changed"
@@ -865,25 +870,34 @@ async def _stored_investigation_notes(
     )
 
 
-async def _diagnosis_is_unsupported(
-    pool: asyncpg.Pool, attempt_id: uuid.UUID, worktree_path: Path
-) -> bool:
-    """True when the agent's notes cite only evidence the dispatcher never recorded.
+async def _diagnosis_unsupported_reason(
+    pool: asyncpg.Pool,
+    attempt_id: uuid.UUID,
+    worktree_path: Path,
+    *,
+    require_notes: bool = True,
+) -> str | None:
+    """Why the investigation's diagnosis cannot back a patch, or ``None`` when it can.
 
-    Notes that are missing, unreadable or unverifiable (no recorded bundle) are not judged:
-    only a positive finding that every claim is unsupported withholds the patch.
+    Judged only once the dispatcher has a recorded evidence bundle to check against; without
+    one nothing can be shown unsupported and the gate stays open (an unreadable bundle is
+    logged at WARNING by the reader).  With a bundle, missing or unparsable notes are a reason
+    of their own, as is a case with no supported claim.  ``require_notes=False`` (the review
+    follow-up, whose agent is not asked for notes) judges only notes that are present.
     """
+    bodies = await _recorded_bundle_bodies(pool, attempt_id)
+    if bodies is None:
+        return None
     try:
         raw = (worktree_path / _INVESTIGATION_NOTES_JSON).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return False
+        return "no notes" if require_notes else None
     notes, _status = parse_investigation_notes(raw)
     if notes is None:
-        return False
-    bodies = await _recorded_bundle_bodies(pool, attempt_id)
-    if bodies is None:
-        return False
-    return not can_be_patch_ready(verify_evidence_against_bundle(notes, bodies))
+        return "unparsable notes"
+    if can_be_patch_ready(verify_evidence_against_bundle(notes, bodies)):
+        return None
+    return "no claim cites evidence the dispatcher recorded"
 
 
 async def _persist_investigation_notes(
@@ -1728,7 +1742,8 @@ async def _run_investigation_session(
         # An investigation whose every claim is unsupported by the recorded evidence yields no
         # patch worth offering (bu-ejow5p.7.1): nothing is sealed, retained or published.  It is
         # an execution success for the breaker and holds the fingerprint like a proposal.
-        if await _diagnosis_is_unsupported(pool, attempt_id, worktree_path):
+        unsupported_reason = await _diagnosis_unsupported_reason(pool, attempt_id, worktree_path)
+        if unsupported_reason is not None:
             if metrics is not None:
                 metrics.record_recovery_phase_duration(
                     workflow="qa",
@@ -1745,7 +1760,7 @@ async def _run_investigation_session(
                 pool,
                 attempt_id,
                 "failed",
-                error_detail=_DIAGNOSIS_UNSUPPORTED_DETAIL,
+                error_detail=_diagnosis_unsupported_detail(unsupported_reason),
                 healing_session_id=investigation_session_id,
             )
             await _persist_notes_and_remove_worktree(
@@ -2861,10 +2876,19 @@ async def _run_review_followup_session(
             return
 
         # Publication fails closed: no push from the agent-controlled worktree and the
-        # open PR is left untouched until the isolated publisher lands.
+        # open PR is left untouched until the isolated publisher lands.  A follow-up whose own
+        # notes cite no recorded evidence is reported as such rather than as a pending patch.
+        unsupported_reason = await _diagnosis_unsupported_reason(
+            pool, attempt_id, worktree_path, require_notes=False
+        )
+        follow_up_detail = (
+            _diagnosis_unsupported_detail(unsupported_reason)
+            if unsupported_reason is not None
+            else _PUBLICATION_UNAVAILABLE_DETAIL
+        )
         logger.warning(
             "QA review follow-up: %s (attempt=%s pr_number=%s)",
-            _PUBLICATION_UNAVAILABLE,
+            _PUBLICATION_UNAVAILABLE if unsupported_reason is None else "diagnosis_unsupported",
             attempt_id,
             pr_number,
         )
@@ -2879,7 +2903,7 @@ async def _run_review_followup_session(
             """,
             attempt_id,
             followup_session_id,
-            _PUBLICATION_UNAVAILABLE_DETAIL,
+            follow_up_detail,
         )
 
         # Clean up the local worktree; keep the branch for the PR
