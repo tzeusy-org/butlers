@@ -122,7 +122,7 @@ reasons fail. Removed rules cannot leave extra inventory buckets.
 
 The four walker sites are `_StripDocstrings` in
 `tests/api/test_secrets_v2_spec_anchors.py:62`, `Visitor` in
-`tests/contracts/test_schema_reach.py:1675`, `_Scanner` in
+`tests/contracts/test_schema_reach.py:1696`, `_Scanner` in
 `tests/contracts/test_user_context_census.py:111`, and `Visitor` in
 `tests/daemon/test_non_messenger_approval_command_contracts.py:588`.
 They remain intact for later slices.
