@@ -377,37 +377,65 @@ async def test_catalog_delete_writes_audit_after_cascade_delete(app, audit_appen
     }
 
 
-async def test_catalog_delete_impact_returns_current_server_override_count(app):
-    entry_id = uuid.uuid4()
-    _, mock_pool = _app_with_pool(
-        app,
-        fetchrow_result={"id": entry_id, "override_count": 7},
+@pytest.fixture
+async def catalog_delete_impact_entries(api_db: ApiDatabase) -> tuple[uuid.UUID, uuid.UUID]:
+    target_id, unrelated_id, empty_id = (uuid.uuid4() for _ in range(3))
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.model_catalog (id, alias, runtime_type, model_id, complexity_tier)
+        VALUES ($1, $2, 'codex', 'synthetic-impact-model', 'workhorse')
+        """,
+        [
+            (target_id, "impact-target"),
+            (unrelated_id, "impact-unrelated"),
+            (empty_id, "impact-empty"),
+        ],
     )
+    await api_db.pool.executemany(
+        """
+        INSERT INTO public.butler_model_overrides
+            (butler_name, catalog_entry_id, enabled, complexity_tier)
+        VALUES ($1, $2, $3, 'workhorse')
+        """,
+        [
+            ("general", target_id, True),
+            ("finance", target_id, False),
+            ("general", unrelated_id, True),
+        ],
+    )
+    return target_id, empty_id
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/settings/models/{entry_id}/delete-impact")
 
-    assert resp.status_code == 200
-    assert resp.json()["data"] == {"id": str(entry_id), "override_count": 7}
-    sql = mock_pool.fetchrow.await_args.args[0]
-    assert "count(bmo.id)::integer AS override_count" in sql
-    assert "public.butler_model_overrides" in sql
-    assert "bmo.catalog_entry_id = mc.id" in sql
-    assert mock_pool.fetchrow.await_args.args[1:] == (entry_id,)
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_catalog_delete_impact_returns_current_server_override_count(
+    api: httpx.AsyncClient, catalog_delete_impact_entries: tuple[uuid.UUID, uuid.UUID]
+) -> None:
+    """Count every referencing override and keep a valid empty entry distinct from absence."""
+    target_id, empty_id = catalog_delete_impact_entries
+
+    response = await api.get(f"/api/settings/models/{target_id}/delete-impact")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"id": str(target_id), "override_count": 2}
+
+    empty_response = await api.get(f"/api/settings/models/{empty_id}/delete-impact")
+
+    assert empty_response.status_code == 200
+    assert empty_response.json()["data"] == {"id": str(empty_id), "override_count": 0}
 
 
-async def test_catalog_delete_impact_returns_404_for_missing_model(app):
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.usefixtures("catalog_delete_impact_entries")
+async def test_catalog_delete_impact_returns_404_for_missing_model(api: httpx.AsyncClient) -> None:
+    """Other stored catalog entries cannot supply a count for an unknown ID."""
     entry_id = uuid.uuid4()
-    _app_with_pool(app, fetchrow_result=None)
 
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get(f"/api/settings/models/{entry_id}/delete-impact")
+    response = await api.get(f"/api/settings/models/{entry_id}/delete-impact")
 
-    assert resp.status_code == 404
+    assert response.status_code == 404
+    assert response.json()["detail"] == f"Catalog entry not found: {entry_id}"
 
 
 async def test_catalog_delete_failure_does_not_claim_audit_success(app, audit_append_spy):
