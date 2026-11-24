@@ -21970,6 +21970,11 @@ export interface components {
         CalendarPrepResponse: {
             /** Attendees */
             attendees?: components["schemas"]["CalendarPrepAttendee"][];
+            /**
+             * Attendees Unavailable
+             * @default false
+             */
+            attendees_unavailable?: boolean;
             /** Event Id */
             event_id: string;
             /**
@@ -21979,6 +21984,11 @@ export interface components {
             has_prep_context?: boolean;
             /** Source Butlers */
             source_butlers?: string[];
+            /**
+             * Unresolved Attendees
+             * @default 0
+             */
+            unresolved_attendees?: number;
         };
         /**
          * CalendarProposalAcceptRequest
@@ -40781,6 +40791,11 @@ export interface components {
              * @default false
              */
             all_day?: boolean;
+            /**
+             * Attendees Unavailable
+             * @default false
+             */
+            attendees_unavailable?: boolean;
             /** Butler Name */
             butler_name?: string | null;
             /** Calendar Id */
@@ -40845,6 +40860,11 @@ export interface components {
             timezone: string;
             /** Title */
             title: string;
+            /**
+             * Unresolved Attendees
+             * @default 0
+             */
+            unresolved_attendees?: number;
             /** Until At */
             until_at?: string | null;
             /**
