@@ -28,6 +28,7 @@ STEPS: tuple[tuple[str, str], ...] = (
     ("Lint", "lint"),
     ("Em-dash copy gate (bu-370uj)", "lint:emdash"),
     ("Query-result coercion gate (bu-ep4ks.5)", "lint:query-coercion"),
+    ("Dashboard OpenAPI type freshness", "check:api"),
 )
 
 HOSTED_ONLY: tuple[str, ...] = ("knip", "build")
