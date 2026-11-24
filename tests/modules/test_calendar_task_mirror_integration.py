@@ -16,6 +16,7 @@ import pytest
 from butlers.core.scheduler.crud import schedule_create
 from butlers.modules.calendar import CalendarEvent, CalendarEventCreate, CalendarProvider
 from butlers.modules.calendar.errors import CalendarRequestError
+from butlers.modules.calendar.sync import read_mirror_health
 
 pytestmark = [
     pytest.mark.integration,
@@ -154,7 +155,7 @@ async def test_a_failed_create_is_recorded_then_retried_not_erased(db_pool):
     assert "quota exceeded" in row["mirror_error"]
     assert row["mirror_attempts"] == 1
     assert row["calendar_event_id"] is None
-    health = await mod._mirror_health()
+    health = await read_mirror_health(db_pool)
     assert health["failed"] == 1 and health["retiring"] == 0
 
     provider.fail_create = None
@@ -162,7 +163,7 @@ async def test_a_failed_create_is_recorded_then_retried_not_erased(db_pool):
     row = await _row(db_pool, task_id)
     assert row["mirror_state"] == "mirrored"
     assert row["mirror_error"] is None and row["mirror_attempts"] == 0
-    assert (await mod._mirror_health())["failed"] == 0
+    assert (await read_mirror_health(db_pool))["failed"] == 0
 
 
 async def test_an_unchanged_mirror_sends_no_update_and_a_change_sends_one(db_pool):
@@ -233,7 +234,7 @@ async def test_a_failed_delete_of_a_disabled_task_keeps_the_link_and_retries(db_
     assert row["calendar_event_id"] == provider_id, "the ghost must stay addressable"
     assert row["mirror_state"] == "retiring"
     assert provider_id in provider.events
-    assert (await mod._mirror_health())["retiring"] == 1
+    assert (await read_mirror_health(db_pool))["retiring"] == 1
 
     provider.fail_delete = None
     await mod._push_internal_events_to_provider()

@@ -34,6 +34,44 @@ from .errors import (
 )
 from .models import CalendarSyncState
 
+_MIRROR_UNAVAILABLE: dict[str, Any] = {"available": False, "failed": 0, "retiring": 0}
+
+
+async def read_mirror_health(pool: Any) -> dict[str, Any]:
+    """Per-row mirror state of this butler's scheduled-task events, as counts.
+
+    ``failed`` rows could not be created or updated on the provider and ``retiring`` rows are
+    off but their provider copy could not be deleted; both are retried every sync. No task
+    ids or titles are returned. ``available`` is ``False`` when the state cannot be read.
+    """
+    try:
+        if not await pool.fetchval("SELECT to_regclass('scheduled_tasks') IS NOT NULL"):
+            return dict(_MIRROR_UNAVAILABLE)
+        row = await pool.fetchrow(
+            "SELECT count(*) FILTER (WHERE mirror_state = 'failed') AS failed, "
+            "count(*) FILTER (WHERE mirror_state = 'retiring') AS retiring, "
+            "min(mirror_attempted_at) FILTER "
+            "(WHERE mirror_state IN ('failed', 'retiring')) AS oldest_attempt_at, "
+            "max(mirror_attempts) AS max_attempts, "
+            "(array_agg(mirror_error ORDER BY mirror_attempted_at DESC) "
+            "FILTER (WHERE mirror_state IN ('failed', 'retiring')))[1] AS last_error "
+            "FROM scheduled_tasks"
+        )
+    except Exception:
+        logger.warning("Failed to read calendar mirror state", exc_info=True)
+        return dict(_MIRROR_UNAVAILABLE)
+    if row is None:
+        return dict(_MIRROR_UNAVAILABLE)
+    oldest = row["oldest_attempt_at"]
+    return {
+        "available": True,
+        "failed": int(row["failed"] or 0),
+        "retiring": int(row["retiring"] or 0),
+        "oldest_attempt_at": oldest.isoformat() if oldest else None,
+        "max_attempts": int(row["max_attempts"] or 0),
+        "last_error": row["last_error"],
+    }
+
 
 class SyncMixin:
     """Existing Calendar sync behavior on the owning module instance."""
@@ -61,42 +99,6 @@ class SyncMixin:
             return
         key = self._sync_state_key(calendar_id)
         await _state_set(pool, key, state.model_dump())
-
-    async def _mirror_health(self) -> dict[str, Any]:
-        """Per-row mirror state of this butler's scheduled-task events, as counts.
-
-        ``failed`` rows could not be created or updated on the provider and ``retiring`` rows are
-        off but their provider copy could not be deleted; both are retried every sync. No task
-        ids or titles are returned. ``available`` is ``False`` when the state cannot be read.
-        """
-        pool = getattr(self._db, "pool", None) if self._db is not None else None
-        if pool is None:
-            return {"available": False, "failed": 0, "retiring": 0}
-        try:
-            if not await self._table_exists("scheduled_tasks"):
-                return {"available": False, "failed": 0, "retiring": 0}
-            row = await pool.fetchrow(
-                "SELECT count(*) FILTER (WHERE mirror_state = 'failed') AS failed, "
-                "count(*) FILTER (WHERE mirror_state = 'retiring') AS retiring, "
-                "min(mirror_attempted_at) FILTER "
-                "(WHERE mirror_state IN ('failed', 'retiring')) AS oldest_attempt_at, "
-                "max(mirror_attempts) AS max_attempts, "
-                "(array_agg(mirror_error ORDER BY mirror_attempted_at DESC) "
-                "FILTER (WHERE mirror_state IN ('failed', 'retiring')))[1] AS last_error "
-                "FROM scheduled_tasks"
-            )
-        except Exception:
-            logger.warning("Failed to read calendar mirror state", exc_info=True)
-            return {"available": False, "failed": 0, "retiring": 0}
-        oldest = self._coerce_datetime(row["oldest_attempt_at"]) if row is not None else None
-        return {
-            "available": True,
-            "failed": int(row["failed"] or 0) if row is not None else 0,
-            "retiring": int(row["retiring"] or 0) if row is not None else 0,
-            "oldest_attempt_at": oldest.isoformat() if oldest else None,
-            "max_attempts": int(row["max_attempts"] or 0) if row is not None else 0,
-            "last_error": row["last_error"] if row is not None else None,
-        }
 
     async def _projection_freshness_metadata(self) -> dict[str, Any]:
         if not await self._projection_tables_available():
@@ -154,7 +156,7 @@ class SyncMixin:
             300_000,
         )
 
-        mirror = await self._mirror_health()
+        mirror = await read_mirror_health(pool)
         source_payloads: list[dict[str, Any]] = []
         freshest_at: datetime | None = None
         for row in rows:
