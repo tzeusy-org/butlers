@@ -380,7 +380,8 @@ async def read_participants(pool: asyncpg.Pool, event_id: uuid.UUID) -> dict[str
     }
 
 
-ASCII_WHITESPACE_SQL = " \\t\\n\\r\\f\\v"  # the escapes of an E'' string
+#: The escapes of an E'' string. Vertical tab is octal ``\\013``: E'\\v' is the letter v there.
+ASCII_WHITESPACE_SQL = " \\t\\n\\r\\f\\013"
 
 
 def _sql_normalized_email(expr: str) -> str:

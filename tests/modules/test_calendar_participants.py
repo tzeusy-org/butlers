@@ -44,6 +44,7 @@ class TestNormalize:
             ("a\u00a0b@c.test", "a\u00a0b@c.test"),  # a Unicode space is not ASCII whitespace
             ("Stra\u00dfe@C.test", "stra\u00dfe@c.test"),  # ASCII lowercase only, no case folding
             ("\u00c9@c.test", "\u00c9@c.test"),
+            ("\vVic@X.TV\x0b", "vic@x.tv"),  # a vertical tab is trimmed, the letter v is not
             ("@nolocal.test", None),
             ("nodomain@", None),
             (None, None),
@@ -510,8 +511,11 @@ class TestProjectionSeam:
             "a\u00a0b@x.test",
             "Stra\u00dfe@X.test",
             "\u00c9@x.test",
+            "vic@x.tv",
+            "Ops@Agency.GOV",
+            "\v\x0bvic@x.test\v",
         ],
-        ids=["tab-padded", "inner-tab", "nbsp", "eszett", "e-acute"],
+        ids=["tab-padded", "inner-tab", "nbsp", "eszett", "e-acute", "v-tv", "v-gov", "vt-padded"],
     )
     async def test_the_sql_and_python_normalizers_agree_on_odd_addresses(self, db, address):
         pool, _, _, source = await self._seed(db)

@@ -77,6 +77,19 @@ _INDEXES = (
     """,
 )
 
+# One definition of "the same address" with butlers.core.identity.attendees.normalize_email:
+# trim ASCII whitespace, lowercase ASCII letters only (no locale-dependent lower()). A string in
+# E'' reads \\v as the letter v, so vertical tab is the octal escape.
+_ASCII_WS = " \\t\\n\\r\\f\\013"
+
+
+def _norm(expr: str) -> str:
+    return (
+        f"translate(btrim({expr}, E'{_ASCII_WS}'), "
+        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')"
+    )
+
+
 _CLAIMS_DDL = f"""
 CREATE OR REPLACE FUNCTION public.attendee_identity_claims(p_emails text[])
 RETURNS TABLE (email_norm text, entity_id uuid, is_owner boolean)
@@ -90,13 +103,13 @@ BEGIN
             USING ERRCODE = '54000';
     END IF;
     RETURN QUERY
-    SELECT DISTINCT lower(btrim(ef.object)), ef.subject,
+    SELECT DISTINCT {_norm("ef.object")}, ef.subject,
            ('owner' = ANY (COALESCE(e.roles, '{{}}'::text[])))
     FROM relationship.entity_facts ef
     JOIN public.entities e ON e.id = ef.subject
     WHERE ef.predicate = 'has-email' AND ef.object_kind = 'literal' AND ef.validity = 'active'
-      AND lower(btrim(ef.object)) = ANY (
-          ARRAY(SELECT lower(btrim(wanted)) FROM unnest(p_emails) AS wanted))
+      AND {_norm("ef.object")} = ANY (
+          ARRAY(SELECT {_norm("wanted")} FROM unnest(p_emails) AS wanted))
       AND e.metadata ->> 'merged_into' IS NULL AND e.metadata ->> 'deleted_at' IS NULL
       AND COALESCE(e.metadata ->> 'unidentified', 'false') <> 'true'
     ORDER BY 1, 2;

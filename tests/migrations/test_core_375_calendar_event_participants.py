@@ -112,6 +112,34 @@ async def test_the_claims_are_exact_live_and_nameless(url: str) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_the_claims_use_the_python_normalizer_not_locale_lowercasing(url: str) -> None:
+    from butlers.core.identity.attendees import normalize_email
+
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
+    try:
+        stored = {
+            "Vic@X.TV": "vic",  # a leading or trailing v is not whitespace
+            "ops@Agency.GOV": "gov",
+            "\u00c9lan@X.test": "e-acute",  # only ASCII letters fold
+            "Stra\u00dfe@X.test": "eszett",
+        }
+        owners = {}
+        for address, label in stored.items():
+            owners[label] = await _entity(pool, label)
+            await _email(pool, owners[label], address)
+        for address, label in stored.items():
+            wanted = normalize_email(address)
+            rows = await pool.fetch(f"SELECT * FROM {_CALL}($1::text[])", [f" \t{address}\v"])
+            assert [(r["email_norm"], str(r["entity_id"])) for r in rows] == [
+                (wanted, owners[label])
+            ], address
+        # A different case of the non-ASCII letter is a different address, as in Python.
+        assert await pool.fetch(f"SELECT * FROM {_CALL}($1::text[])", ["\u00e9lan@x.test"]) == []
+    finally:
+        await pool.close()
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_input_is_capped_at_two_hundred_addresses(url: str) -> None:
     pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
     try:
