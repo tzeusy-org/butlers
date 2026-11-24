@@ -164,31 +164,40 @@ def carry_forward_verification(
 
     A re-persist after retention pruning has nothing to check against; it must not turn flags
     the dispatcher already stored back into clean ones. Only a stored ``verified`` result is
-    carried, matched by line and claim id.
+    carried, and a line inherits its stored flag only when its id, ``ref`` and normalised
+    ``msg`` all still match the stored line: a rewritten quote is unverified, so unsupported.
+    A claim's flag is recomputed from the carried line flags, so it can never outlive the
+    lines it cites.
     """
     notes = reset_verification(notes)
     verification = stored.get("verification") if isinstance(stored, Mapping) else None
     if not isinstance(verification, Mapping) or verification.get("state") != "verified":
         return notes
     stored_lines = stored.get("evidence_lines") if stored else None
-    stored_claims = stored.get("claims") if stored else None
-    flagged_lines = {
-        str(line["id"]): bool(line.get("unsupported"))
+    earlier: dict[str, tuple[object, str, bool]] = {
+        str(line["id"]): (
+            line.get("ref"),
+            _normalized(str(line.get("msg", ""))),
+            bool(line.get("unsupported")),
+        )
         for line in (stored_lines if isinstance(stored_lines, list) else [])
         if isinstance(line, Mapping) and "id" in line
     }
-    flagged_claims = {
-        str(cid): bool(claim.get("unsupported"))
-        for cid, claim in (stored_claims.items() if isinstance(stored_claims, Mapping) else [])
-        if isinstance(claim, Mapping)
-    }
-    lines = [
-        # An id the earlier pass never saw cannot have been verified.
-        line.model_copy(update={"unsupported": flagged_lines.get(line.id, True)})
-        for line in notes.evidence_lines
-    ]
+    lines = []
+    supported: set[str] = set()
+    for line in notes.evidence_lines:
+        before = earlier.get(line.id)
+        unchanged = (
+            before is not None and before[0] == line.ref and before[1] == _normalized(line.msg)
+        )
+        unsupported = True if not unchanged or before is None else before[2]
+        if not unsupported:
+            supported.add(line.id)
+        lines.append(line.model_copy(update={"unsupported": unsupported}))
     claims = {
-        cid: claim.model_copy(update={"unsupported": flagged_claims.get(cid, True)})
+        cid: claim.model_copy(
+            update={"unsupported": not any(e in supported for e in claim.evidence_ids)}
+        )
         for cid, claim in notes.claims.items()
     }
     digest = verification.get("bundle_digest")
