@@ -327,7 +327,7 @@ OP GET /api/projections/{projection_id}/glance 31798c257069
 OP GET /api/qa/cases 2f788812c5da
 OP GET /api/qa/cases/{case_id} 9bdab5836e89
 OP GET /api/qa/cases/{case_id}/journal d03323a3ee23
-OP GET /api/qa/cases/{case_id}/proposal 108a10465f61
+OP GET /api/qa/cases/{case_id}/proposal 5f2ea0064aac
 OP GET /api/qa/circuit-breaker 76aafc5e6e3c
 OP GET /api/qa/dismissals 4f25d1200caa
 OP GET /api/qa/findings/by-attempt/{attempt_id} 652c6721c999

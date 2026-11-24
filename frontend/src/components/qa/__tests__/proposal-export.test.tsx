@@ -3,6 +3,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/api/client";
 import { ProposalExportPanel } from "@/components/qa";
 
 const hooks = vi.hoisted(() => ({ useQaCaseProposal: vi.fn() }));
@@ -56,11 +57,35 @@ describe("ProposalExportPanel", () => {
     expect(screen.getByTestId("qa-proposal-export-pre-isolation")).toBeTruthy();
   });
 
-  it("says so honestly when the patch is gone", () => {
-    hooks.useQaCaseProposal.mockReturnValue({ data: undefined, isLoading: false, isError: true });
+  it.each([
+    [410, "pruned", false],
+    [409, "Do not adopt it", true],
+    [503, "Try again", false],
+    [404, "No retained patch", false],
+  ])("maps a %s answer to an honest message", (status, text, alert) => {
+    hooks.useQaCaseProposal.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError("X", "x", status),
+    });
 
     render(<ProposalExportPanel caseId="case-1" />);
 
-    expect(screen.getByTestId("qa-proposal-export-unavailable")).toBeTruthy();
+    const node = screen.getByTestId("qa-proposal-export-unavailable");
+    expect(node.textContent).toContain(text);
+    expect(node.getAttribute("role")).toBe(alert ? "alert" : null);
+  });
+
+  it("labels the changed paths", () => {
+    hooks.useQaCaseProposal.mockReturnValue({
+      data: { data: proposal },
+      isLoading: false,
+      isError: false,
+    });
+
+    render(<ProposalExportPanel caseId="case-1" />);
+
+    expect(screen.getByText("Changed paths")).toBeTruthy();
   });
 });

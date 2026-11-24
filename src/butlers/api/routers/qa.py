@@ -74,6 +74,7 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
+from butlers.core.healing.anonymizer import validate_anonymized
 from butlers.core.healing.constants import (
     CIRCUIT_BREAKER_FAILURE_STATUSES,
     QA_BREAKER_EFFECTIVE_STATUS_SQL,
@@ -101,6 +102,7 @@ from butlers.core.qa.patrol_status import (
     is_valid_patrol_status,
     require_patrol_status,
 )
+from butlers.core.qa.publication.diff_snapshot import export_touched_paths
 from butlers.core.qa.publication.export import ExportRefused
 from butlers.core.qa.publication.retention import encode_objects, load_retained_export
 from butlers.core.qa.publication.state import PublicationRefused
@@ -2580,9 +2582,16 @@ async def get_case(
 
 _PROPOSAL_REFUSALS: dict[str, tuple[int, str]] = {
     "export_pruned": (410, "The retained proposal has been pruned and can no longer be exported."),
-    "export_tampered": (409, "The retained proposal failed its integrity check."),
-    "datastore_unavailable": (503, "The retained proposal could not be read."),
+    "export_tampered": (409, "The retained proposal failed its integrity check. Do not adopt it."),
+    "datastore_unavailable": (503, "The retained proposal could not be read. Try again."),
 }
+_PROPOSAL_UNREADABLE = (503, "The retained proposal could not be read. Try again.")
+_PROPOSAL_UNUSABLE = (409, "The retained proposal failed its integrity check. Do not adopt it.")
+_PROPOSAL_DATASTORE_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError)
+
+
+def _proposal_failure(status: tuple[int, str]) -> HTTPException:
+    return HTTPException(status_code=status[0], detail=status[1])
 
 
 @router.get("/cases/{case_id}/proposal", response_model=ApiResponse[QaProposalExport])
@@ -2592,45 +2601,59 @@ async def get_case_proposal(
     db: Db,
     bundle: Annotated[bool, Query(description="Include the sealed object bytes.")] = False,
 ) -> ApiResponse[QaProposalExport]:
-    """Serve the retained sealed patch for one case, integrity-checked, for owner adoption."""
+    """Serve the retained sealed patch for one case, integrity-checked, for owner adoption.
+
+    ``paths`` are derived from the sealed export's own objects (the files whose content it
+    carries), never from the agent worktree. ``diff`` is the display snapshot recorded in the
+    case notes: it is for reading, not for deciding what a push contains (the sealed bytes are).
+    """
     pool = _shared_pool(db)
-    attempt = await pool.fetchrow(
-        """
-        SELECT a.branch_name, x.sealed_before_isolation
-        FROM public.healing_attempts a
-        LEFT JOIN public.qa_publication_exports x ON x.attempt_id = a.id
-        WHERE a.id = $1
-        """,
-        case_id,
-    )
+    try:
+        attempt = await pool.fetchrow(
+            """
+            SELECT a.branch_name, x.sealed_before_isolation
+            FROM public.healing_attempts a
+            LEFT JOIN public.qa_publication_exports x ON x.attempt_id = a.id
+            WHERE a.id = $1
+            """,
+            case_id,
+        )
+    except _PROPOSAL_DATASTORE_ERRORS as exc:
+        raise _proposal_failure(_PROPOSAL_UNREADABLE) from exc
     if attempt is None:
         raise HTTPException(status_code=404, detail=f"QA case not found: {case_id}")
     try:
         export = await load_retained_export(pool, case_id)
     except (PublicationRefused, ExportRefused) as exc:
-        status, detail = _PROPOSAL_REFUSALS.get(
-            exc.code, (409, "The retained proposal is unusable.")
-        )
-        raise HTTPException(status_code=status, detail=detail) from exc
+        raise _proposal_failure(_PROPOSAL_REFUSALS.get(exc.code, _PROPOSAL_UNUSABLE)) from exc
     branch = attempt["branch_name"]
     if export is None or not branch:
         raise HTTPException(status_code=404, detail="No retained proposal for this case.")
-    row = await pool.fetchrow(
-        """
-        SELECT structured_evidence AS finding_structured_evidence
-        FROM public.qa_findings
-        WHERE healing_attempt_id = $1
-        ORDER BY created_at DESC, id DESC
-        LIMIT 1
-        """,
-        case_id,
-    )
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT structured_evidence AS finding_structured_evidence
+            FROM public.qa_findings
+            WHERE healing_attempt_id = $1 AND structured_evidence ? 'investigation_notes'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            case_id,
+        )
+    except _PROPOSAL_DATASTORE_ERRORS as exc:
+        raise _proposal_failure(_PROPOSAL_UNREADABLE) from exc
     diff = _proposal_diff_from_case_row(row or {})
-    paths = [
-        line.text.split(" b/", 1)[1]
-        for line in diff
-        if line.kind == "meta" and line.text.startswith("diff --git a/") and " b/" in line.text
-    ]
+    try:
+        paths, more_paths = export_touched_paths(export)
+    except ExportRefused as exc:
+        raise _proposal_failure(_PROPOSAL_UNUSABLE) from exc
+    # The display text is re-checked at serve time: a retained diff that no longer passes the
+    # anonymizer is never handed out.
+    for text in (branch, *paths, *(line.text for line in diff)):
+        if not validate_anonymized(text)[0]:
+            raise _proposal_failure(
+                (409, "The retained proposal failed its anonymization check. Do not adopt it.")
+            )
     framed = encode_objects(export.objects)
     return ApiResponse(
         data=QaProposalExport(
@@ -2642,7 +2665,7 @@ async def get_case_proposal(
             digest=export.digest,
             paths=paths,
             diff=diff,
-            diff_truncated=any(line.text.startswith("...") for line in diff),
+            diff_truncated=more_paths or any(line.text.startswith("...") for line in diff),
             bundle_b64=base64.b64encode(framed).decode("ascii") if bundle else None,
             bundle_bytes=len(framed),
             sealed_before_isolation=bool(attempt["sealed_before_isolation"]),

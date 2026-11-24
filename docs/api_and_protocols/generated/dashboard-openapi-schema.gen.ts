@@ -10801,6 +10801,10 @@ export interface paths {
         /**
          * Get Case Proposal
          * @description Serve the retained sealed patch for one case, integrity-checked, for owner adoption.
+         *
+         *     ``paths`` are derived from the sealed export's own objects (the files whose content it
+         *     carries), never from the agent worktree. ``diff`` is the display snapshot recorded in the
+         *     case notes: it is for reading, not for deciding what a push contains (the sealed bytes are).
          */
         get: operations["get_case_proposal_api_qa_cases__case_id__proposal_get"];
         put?: never;
