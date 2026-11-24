@@ -8,7 +8,8 @@ goal created_at is immutable too. An insert-only projection therefore needs only
 one synchronous INSERT trigger, including for old goals receiving new effects.
 It holds no authority or content and is disposable on downgrade: effects remain
 the source of truth. Backfill and trigger installation share the effects write
-lock, so concurrent inserts cannot fall between them.
+lock, so concurrent inserts cannot fall between them. Both directions take the
+goals lock first, matching writers that lock a goal before inserting effects.
 """
 
 from alembic import op
@@ -20,6 +21,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Block goal row lockers while allowing ordinary goal reads.
+    op.execute("LOCK TABLE switchboard.goals IN EXCLUSIVE MODE")
     op.execute("LOCK TABLE switchboard.effects IN SHARE ROW EXCLUSIVE MODE")
     op.execute("""
         CREATE TABLE IF NOT EXISTS switchboard.goal_region_reads (
@@ -71,6 +74,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Dropping the projection's foreign key takes this lock on its parent.
+    op.execute("LOCK TABLE switchboard.goals IN ACCESS EXCLUSIVE MODE")
     op.execute("LOCK TABLE switchboard.effects IN SHARE ROW EXCLUSIVE MODE")
     op.execute("DROP TRIGGER IF EXISTS project_goal_region_read ON switchboard.effects")
     op.execute("DROP FUNCTION IF EXISTS switchboard.project_goal_region_read()")

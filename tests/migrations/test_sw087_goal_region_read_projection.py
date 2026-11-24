@@ -191,6 +191,82 @@ def test_region_statement_work_stays_bounded_as_history_grows(ledger_url, sparse
     asyncio.run(check())
 
 
+@pytest.mark.parametrize("direction", ["upgrade", "downgrade"])
+def test_projection_migration_preserves_goal_first_writer(
+    ledger_url, postgres_container, direction
+):
+    asyncio.run(_seed(ledger_url, count=1))
+    config = _build_alembic_config(ledger_url, ["switchboard"], target_schema="switchboard")
+    if direction == "downgrade":
+        command.upgrade(config, "sw_087")  # pinned-revision: install before rollback
+    parsed = urlparse(ledger_url)
+    admin_url = migration_bootstrap_db_url(postgres_container, parsed.path[1:])
+    asyncpg_admin_url = admin_url.replace("+psycopg2", "")
+
+    def migrate():
+        if direction == "upgrade":
+            command.upgrade(config, "sw_087")  # pinned-revision: install alongside writer
+        else:
+            command.downgrade(config, "sw_086")  # pinned-revision: roll back alongside writer
+
+    async def overlap():
+        writer = await asyncpg.connect(asyncpg_admin_url)
+        monitor = await asyncpg.connect(asyncpg_admin_url)
+        migration = None
+        try:
+            await writer.execute("SET ROLE butler_switchboard_rw")
+            async with writer.transaction():
+                goal_id = await writer.fetchval("SELECT id FROM switchboard.goals FOR UPDATE")
+                assert goal_id is not None
+                migration = asyncio.create_task(asyncio.to_thread(migrate))
+                async with asyncio.timeout(10):
+                    while not await monitor.fetchval(  # noqa: ASYNC110 -- PostgreSQL lock barrier
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND $1 = ANY(pg_blocking_pids(pid)))",
+                        writer.get_server_pid(),
+                    ):
+                        await asyncio.sleep(0.01)
+                await writer.execute(
+                    """
+                    INSERT INTO switchboard.effects
+                        (id, goal_id, invocation_id, capability, args_digest, status)
+                    SELECT gen_random_uuid(), goal_id, id, 'overlap__read', repeat('0',64), 'committed'
+                    FROM switchboard.invocations WHERE goal_id = $1
+                    """,
+                    goal_id,
+                )
+        finally:
+            await writer.close()
+            await monitor.close()
+            if migration is not None:
+                await migration
+
+        conn = await asyncpg.connect(ledger_url)
+        try:
+            assert (
+                await conn.fetchval(
+                    "SELECT count(*) FROM switchboard.effects WHERE capability='overlap__read'"
+                )
+                == 1
+            )
+            if direction == "upgrade":
+                assert (
+                    await conn.fetchval(
+                        "SELECT count(*) FROM switchboard.goal_region_reads WHERE region='overlap'"
+                    )
+                    == 1
+                )
+            else:
+                assert (
+                    await conn.fetchval("SELECT to_regclass('switchboard.goal_region_reads')")
+                    is None
+                )
+        finally:
+            await conn.close()
+
+    asyncio.run(overlap())
+
+
 def test_projection_backfill_runtime_atomicity_and_rebuild(ledger_url, postgres_container):
     _migrate(ledger_url, "sw_087")  # pinned-revision: empty read projection
 
@@ -308,6 +384,11 @@ def test_projection_backfill_runtime_atomicity_and_rebuild(ledger_url, postgres_
                 await conn.fetchval("SELECT to_regclass('switchboard.goal_region_reads')") is None
             )
             assert await conn.fetchval("SELECT count(*) FROM switchboard.effects") == 103
+            db = MagicMock()
+            db.pool.return_value = conn
+            db.butler_names = []
+            result = await region_summaries(db=db, goals_per_region=25, due_within_hours=72)
+            assert result.data.sources_degraded == ["goal_ledger"]
         finally:
             await conn.close()
 

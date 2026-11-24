@@ -112,6 +112,18 @@ def _is_missing_table(exc: Exception) -> bool:
     return exc.__class__.__name__ == "UndefinedTableError"
 
 
+async def _region_ledger_is_unprovisioned(pool: Any) -> bool:
+    try:
+        absent = await pool.fetchval("""
+            SELECT pg_catalog.to_regclass('switchboard.goals') IS NULL
+               AND pg_catalog.to_regclass('switchboard.effects') IS NULL
+               AND pg_catalog.to_regclass('switchboard.goal_region_reads') IS NULL
+        """)
+    except Exception:
+        return False
+    return absent is True
+
+
 def _ledger_pool(db: DatabaseManager) -> Any:
     """The switchboard pool, or None when the ledger cannot be reached."""
     try:
@@ -259,7 +271,7 @@ async def region_summaries(
                     )
                 )
         except Exception as exc:
-            if not _is_missing_table(exc):
+            if not _is_missing_table(exc) or not await _region_ledger_is_unprovisioned(pool):
                 tracker.mark(LEDGER_SOURCE, msg="Goal ledger region read failed")
 
     horizon = datetime.now(UTC) + timedelta(hours=due_within_hours)
