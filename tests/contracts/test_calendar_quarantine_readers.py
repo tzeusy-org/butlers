@@ -15,6 +15,8 @@ import ast
 import re
 from pathlib import Path
 
+from butlers.testing.source_guard import outermost_matches
+
 REPO = Path(__file__).resolve().parents[2]
 _READ = re.compile(r"\b(?:FROM|JOIN)\s+(?:[\w{}\"]+\.)?calendar_event(?:s|_instances)\b", re.I)
 _AWARE = ("QUARANTINED_INVITATION_SQL", "quarantined_invitation_sql")
@@ -71,30 +73,23 @@ def statements(text: str) -> list[tuple[int, str]]:
             return chunk[0].encode()[node.col_offset :].decode()
         return "".join(chunk)
 
-    found: list[tuple[int, str]] = []
-
-    def visit(node: ast.AST) -> None:
+    def extract(node: ast.AST) -> tuple[tuple[int, str], ...] | None:
         if isinstance(node, ast.JoinedStr):
             # Outermost literal only: its own pieces are not separate statements.
-            if any(
-                isinstance(v, ast.Constant) and "calendar_event" in str(v.value)
-                for v in node.values
-            ):
-                segment = source_of(node)
-                if _READ.search(segment):
-                    found.append((node.lineno, segment))
-            return
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if "calendar_event" in node.value:
-                segment = source_of(node)
-                if _READ.search(segment):
-                    found.append((node.lineno, segment))
-            return
-        for child in ast.iter_child_nodes(node):
-            visit(child)
+            names_table = any(
+                isinstance(value, ast.Constant) and "calendar_event" in str(value.value)
+                for value in node.values
+            )
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names_table = "calendar_event" in node.value
+        else:
+            return None
+        if not names_table:
+            return ()
+        segment = source_of(node)
+        return ((node.lineno, segment),) if _READ.search(segment) else ()
 
-    visit(tree)
-    return found
+    return list(outermost_matches(tree, extract))
 
 
 def compliant(segment: str) -> bool:
