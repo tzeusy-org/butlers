@@ -89,6 +89,33 @@ def butler_roles(roster_dir: Path = ROSTER_DIR) -> tuple[str, ...]:
     return tuple(butler_role(schema) for schema in butler_schemas(roster_dir))
 
 
+def module_roles(module: str, roster_dir: Path = ROSTER_DIR) -> tuple[str, ...]:
+    """Return the runtime role of every roster butler that enables ``[modules.<module>]``.
+
+    For a grant only the butlers hosting a module need (a cross-schema read behind a module's
+    tools), so the grant is the roster's own answer instead of a hand list or every butler.
+    Fails closed: a missing or empty roster, an unreadable manifest, or a module that no butler
+    enables raises :class:`RosterRoleError` rather than returning an empty grant list.
+    """
+    butler_schemas(roster_dir)  # a missing or empty roster raises here, before any manifest scan
+    roles = _module_roles(module, roster_dir.resolve())
+    if not roles:
+        raise RosterRoleError(f"no roster butler enables [modules.{module}]")
+    return roles
+
+
+@cache
+def _module_roles(module: str, roster_dir: Path) -> tuple[str, ...]:
+    roles = []
+    for manifest in sorted(roster_dir.glob("*/butler.toml")):
+        schema = _manifest_schema(manifest)  # an unreadable manifest raises
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        modules = data.get("modules", {})
+        if isinstance(modules, dict) and isinstance(modules.get(module), dict):
+            roles.append(butler_role(schema))
+    return tuple(sorted(roles))
+
+
 def runtime_roles(roster_dir: Path = ROSTER_DIR) -> tuple[str, ...]:
     """Return every runtime login role: each butler role, then the connector writer."""
     return (*butler_roles(roster_dir), CONNECTOR_ROLE)

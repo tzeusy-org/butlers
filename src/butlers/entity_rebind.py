@@ -104,6 +104,29 @@ async def _repoint_calendar(conn: Any, source: UUID, target: UUID) -> int:
     return _rowcount(deleted) + _rowcount(updated)
 
 
+async def _repoint_participants(conn: Any, source: UUID, target: UUID) -> int:
+    """Repoint calendar participant rows; a manual row the survivor already holds is dropped."""
+    deleted = await conn.execute(
+        """
+        DELETE FROM calendar_event_participants src
+        WHERE src.entity_id = $1 AND src.email_norm IS NULL
+          AND EXISTS (
+              SELECT 1 FROM calendar_event_participants tgt
+              WHERE tgt.event_id = src.event_id AND tgt.email_norm IS NULL
+                AND tgt.entity_id = $2
+          )
+        """,
+        source,
+        target,
+    )
+    updated = await conn.execute(
+        "UPDATE calendar_event_participants SET entity_id = $2 WHERE entity_id = $1",
+        source,
+        target,
+    )
+    return _rowcount(deleted) + _rowcount(updated)
+
+
 async def _repoint_episodes(conn: Any, source: UUID, target: UUID) -> int:
     await conn.execute(
         """
@@ -317,7 +340,12 @@ async def _rebind_entity_references_on_conn(
                     error_class=None,
                 )
 
-            for operation in (_repoint_facts, _repoint_calendar, _repoint_episodes):
+            for operation in (
+                _repoint_facts,
+                _repoint_calendar,
+                _repoint_participants,
+                _repoint_episodes,
+            ):
                 step = operation.__name__
                 count, table_exists = await _run_optional_table_step(
                     conn,

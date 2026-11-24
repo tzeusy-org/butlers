@@ -224,6 +224,31 @@ location or any other free text, so third-party text can never raise an invitati
   (`hidden_guest_list_large`, `organizer_domain_mismatch_conference`, `external_link_present`) wait
   for the Google mapping to carry those fields; `from_gmail` and `mass_invite` are stamped now.
 
+## Calendar event participants
+
+The projection writes one `calendar_event_participants` row per attendee address of every provider
+event (REQ-module-calendar-043), so a synced meeting has people on it the way a butler-created one
+does. A row is an invited claim: it carries the address (normalized, never shown), the organizer's display name only for an
+unresolved or ambiguous address (untrusted, never shown), a role, the RSVP status and a resolution state. It is never an interaction or an encounter.
+
+- **Resolution.** A pure function over exact, normalized addresses (REQ-module-calendar-044): one
+  live `has-email` claimant is `exact`; two or more is `ambiguous` and names no one; none is
+  `unresolved`; the owner's own address is `owner`; a room or resource address is `resource`. No
+  model, no fuzzy or name matching, no entity created from a stranger.
+- **The cross-schema read.** `public.attendee_identity_claims(text[])` (SECURITY DEFINER, pinned
+  `search_path`, at most 200 addresses, exact match, no names, merged, deleted and unidentified
+  entities excluded) is executable only by the runtime roles of butlers that enable `[modules.calendar]`
+  (`db_authority.roles.module_roles`, read from the roster). Readers get the entity's own name.
+- **Failure.** A failed read never fails the event write: prior rows and `resolver_version` stay, a
+  counter (`butlers.calendar.participant_resolution_failed`) increments, and readers get
+  `available=false`, not an empty list.
+- **Quarantine.** A quarantined invitation (REQ-module-calendar-041) has no provider-derived rows.
+  The owner's accept lifts it on the next sync.
+- **Merge.** Entity rebind repoints participants with the calendar links (REQ-module-calendar-045).
+- **Backfill.** A bounded sweep derives rows for events whose stored rows do not match their
+  attendees (none, stale, changed list); an event attempted in the last hour is skipped so a failing
+  one cannot hold the window; it re-checks quarantine per event and never reads quarantined text.
+
 ## Connector sync
 
 The Google Calendar connector captures events separately from this module's own sync. Its sync

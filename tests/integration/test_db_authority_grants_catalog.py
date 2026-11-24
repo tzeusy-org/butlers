@@ -44,6 +44,7 @@ _PER_BUTLER_CORE_TABLES = frozenset(
         "calendar_action_log",
         "calendar_event_entities",
         "calendar_event_instances",
+        "calendar_event_participants",
         "calendar_event_proposals",
         "calendar_events",
         "calendar_sources",

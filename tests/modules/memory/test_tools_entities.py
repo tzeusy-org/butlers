@@ -787,7 +787,7 @@ class TestEntityRebindReceipts:
             patch.object(
                 _rebind,
                 "_run_optional_table_step",
-                new=AsyncMock(side_effect=[(0, False), (0, False), (0, False), (0, False)]),
+                new=AsyncMock(side_effect=[(0, False)] * 5),
             ),
             patch.object(_rebind, "_write_receipt", new=AsyncMock(return_value=receipt)) as write,
         ):

@@ -114,3 +114,30 @@ def test_duplicate_schema_fails_loudly(tmp_path: Path) -> None:
 def test_butler_role_refuses_non_identifiers() -> None:
     with pytest.raises(RosterRoleError):
         butler_role('x"; DROP ROLE y; --')
+
+
+def test_module_roles_are_the_butlers_enabling_the_module(tmp_path: Path) -> None:
+    _write_butler(tmp_path, "alpha", '[butler]\nname = "alpha"\n[modules.calendar]\nx = 1\n')
+    _write_butler(tmp_path, "beta", '[butler]\nname = "beta"\n[butler.db]\nschema = "gamma"\n')
+    _write_butler(tmp_path, "delta", '[butler]\nname = "delta"\n[modules.calendar]\n')
+    assert roles.module_roles("calendar", tmp_path) == ("butler_alpha_rw", "butler_delta_rw")
+
+
+def test_module_roles_fail_closed(tmp_path: Path) -> None:
+    with pytest.raises(RosterRoleError, match="not found"):
+        roles.module_roles("calendar", tmp_path / "missing")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(RosterRoleError, match="no butler manifests"):
+        roles.module_roles("calendar", empty)
+    _write_butler(tmp_path, "alpha", '[butler]\nname = "alpha"\n[modules.email]\n')
+    with pytest.raises(RosterRoleError, match="no roster butler enables"):
+        roles.module_roles("calendar", tmp_path)
+    _write_butler(tmp_path, "broken", "[butler\n")
+    with pytest.raises(RosterRoleError, match="unreadable"):
+        roles.module_roles("email", tmp_path)
+
+
+def test_module_roles_for_the_real_roster_are_a_strict_subset() -> None:
+    hosts = set(roles.module_roles("calendar"))
+    assert hosts and hosts < set(butler_roles())
