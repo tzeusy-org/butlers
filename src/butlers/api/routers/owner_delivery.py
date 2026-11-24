@@ -163,7 +163,12 @@ async def read_owner_why(
         )
         owner = await owner_delivery.owner_entity_id(conn)
         moment = await conn.fetchval("SELECT clock_timestamp()")
-        if row is None or owner != row["owner_entity"] or owner != row["token_owner"]:
+        if (
+            row is None
+            or owner is None
+            or owner != row["owner_entity"]
+            or owner != row["token_owner"]
+        ):
             reason = "wrong_owner"
         elif row["token_surface"] != "dashboard":
             reason = "wrong_surface"
