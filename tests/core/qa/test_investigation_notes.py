@@ -199,7 +199,7 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
     assert "investigation_notes" in sql
     assert persisted_attempt_id == attempt_id
     assert persisted_payload == _with_verification_defaults(payload)
-    assert pool.fetchval.await_count == 4  # bundle and stored-notes lookups included
+    assert pool.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -279,7 +279,7 @@ async def test_dispatcher_persists_partial_notes(
     _sql, _persisted_attempt_id, persisted_payload = pool.execute.await_args.args
     assert persisted_payload["claims"] == {}
     assert persisted_payload["headline"] == payload["headline"]
-    assert pool.fetchval.await_count == 4  # bundle and stored-notes lookups included
+    assert pool.fetchval.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -500,6 +500,57 @@ def test_notes_without_a_ref_still_parse_as_schema_v1() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_version", "recorded_bundle", "incoming_flag", "parse_status"),
+    [
+        (2, None, True, "ok"),
+        (2, None, {"ignored": True}, "partial"),
+        (2, None, {"ignored": True}, "ok"),
+        (1, _bundle_manifest(E1="recorded text"), True, "ok"),
+    ],
+    ids=["no-bundle", "partial-no-bundle", "invalid-verdict-ignored", "legacy-with-bundle"],
+)
+async def test_persisted_notes_without_v2_verification_are_unverified(
+    tmp_path: Path,
+    schema_version: int,
+    recorded_bundle: dict | None,
+    incoming_flag: object,
+    parse_status: str,
+) -> None:
+    payload = _valid_notes_payload()
+    payload["schema_version"] = schema_version
+    payload["verification"] = {"state": "verified", "bundle_digest": "agent-provided"}
+    evidence = _line("e1", "recorded text", "E1", unsupported=incoming_flag)
+    if schema_version == 1:
+        del evidence["ref"]
+    payload["evidence_lines"] = [evidence]
+    payload["claims"] = {"c1": {"evidence_ids": ["e1"], "note": "n", "unsupported": incoming_flag}}
+    if parse_status == "partial":
+        del payload["counter_evidence"]
+    _write_structured_notes(tmp_path, payload)
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(
+        side_effect=lambda sql, *_: recorded_bundle if "evidence_bundle" in sql else None
+    )
+
+    status = await _persist_investigation_notes(pool, uuid.uuid4(), tmp_path)
+
+    assert status == parse_status
+    persisted = pool.execute.await_args.args[2]
+    assert persisted["schema_version"] == schema_version
+    assert persisted["verification"] == {"state": "unverified", "bundle_digest": None}
+    assert persisted["evidence_lines"] == [
+        {**evidence, "ref": evidence.get("ref"), "unsupported": False}
+    ]
+    assert persisted["claims"]["c1"] == {
+        "evidence_ids": ["e1"],
+        "note": "n",
+        "unsupported": False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_persisted_notes_mark_the_invented_line_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -575,13 +626,15 @@ def test_a_one_character_quote_cannot_forge_support() -> None:
 
 
 def test_verification_state_is_set_by_the_dispatcher_and_never_the_agent() -> None:
-    from butlers.core.qa.notes import reset_verification, verify_evidence_against_bundle
+    from butlers.core.qa.notes import verify_evidence_against_bundle
 
     payload = _valid_notes_payload()
+    payload["schema_version"] = 2
     payload["verification"] = {"state": "verified", "bundle_digest": "forged"}
-    notes, _ = parse_investigation_notes(json.dumps(payload))
+    notes, status = parse_investigation_notes(json.dumps(payload))
 
-    assert reset_verification(notes).verification.state == "unverified"
+    assert status == "ok" and notes is not None
+    assert notes.verification.model_dump() == {"state": "unverified", "bundle_digest": None}
     checked = verify_evidence_against_bundle(notes, {**_bundle_manifest(), "digest": "real"})
     assert checked.verification.model_dump() == {"state": "verified", "bundle_digest": "real"}
 

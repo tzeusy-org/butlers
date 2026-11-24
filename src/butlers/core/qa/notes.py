@@ -33,7 +33,7 @@ class EvidenceLine(_NotesModel):
     msg: str
     #: Notes v2: the dispatcher-issued bundle item id this line quotes (``E1``...).
     ref: str | None = None
-    #: Set by the dispatcher; an agent-supplied value is overwritten when a bundle exists.
+    #: Set only by the dispatcher; incoming values are ignored.
     unsupported: bool = False
 
 
@@ -229,17 +229,30 @@ def parse_investigation_notes(raw: str) -> tuple[InvestigationNotes | None, Pars
     """Parse agent-authored investigation notes without raising on malformed input."""
 
     try:
-        return InvestigationNotes.model_validate_json(raw), "ok"
-    except Exception:
-        pass
-
-    try:
         decoded = json.loads(raw)
     except Exception:
         return None, "failed"
 
     if not isinstance(decoded, dict):
         return None, "failed"
+
+    # Strip dispatcher metadata before either validation path so it cannot affect note recovery.
+    decoded.pop("verification", None)
+    claims = decoded.get("claims")
+    if isinstance(claims, dict):
+        for claim in claims.values():
+            if isinstance(claim, dict):
+                claim.pop("unsupported", None)
+    evidence = decoded.get("evidence_lines")
+    if isinstance(evidence, list):
+        for line in evidence:
+            if isinstance(line, dict):
+                line.pop("unsupported", None)
+
+    try:
+        return InvestigationNotes.model_validate(decoded), "ok"
+    except Exception:
+        pass
 
     partial_kwargs = {}
     recovered_any = False

@@ -923,15 +923,16 @@ async def _persist_investigation_notes(
         )
         return status
 
-    bodies = await _recorded_bundle_bodies(pool, attempt_id)
-    if bodies is not None:
-        notes = verify_evidence_against_bundle(notes, bodies)
-    else:
-        # No bundle to check against (never recorded, or its bodies were pruned): keep what an
-        # earlier pass already established, and otherwise store the notes explicitly unverified.
-        notes = carry_forward_verification(
-            notes, await _stored_investigation_notes(pool, attempt_id)
-        )
+    # Legacy notes did not require refs and retain the parser's unverified state.
+    if notes.schema_version == 2:
+        bodies = await _recorded_bundle_bodies(pool, attempt_id)
+        if bodies is not None:
+            notes = verify_evidence_against_bundle(notes, bodies)
+        else:
+            # The bundle was never recorded or its bodies were pruned.
+            notes = carry_forward_verification(
+                notes, await _stored_investigation_notes(pool, attempt_id)
+            )
     payload = notes.model_dump(mode="json")
     if diff_snapshot is not None:
         payload["diff_snapshot"] = diff_snapshot
