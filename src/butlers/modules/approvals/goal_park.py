@@ -32,6 +32,7 @@ from typing import Any
 from butlers.modules.approvals.delivery_lifecycle import transition_pending_action
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.gate import RULE_PREPARED_TOOLS, admit_standing_rule
+from butlers.modules.approvals.goal_edits import mirror_goal_edit
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.park import park_pending_action
 from butlers.modules.approvals.rules import claim_rule_use_sql, parse_constraints
@@ -266,6 +267,9 @@ async def decide_goal_effect(
     *,
     approve: bool,
     decided_by: str,
+    amendment_id: uuid.UUID | None = None,
+    original_digest: str | None = None,
+    approved_digest: str | None = None,
 ) -> GoalDecision | None:
     """Mirror the owner's decision of a goal action, recorded first by the broker (D13).
 
@@ -279,7 +283,8 @@ async def decide_goal_effect(
     """
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow(
-            "SELECT status FROM pending_actions WHERE id = $1 AND goal_id = $2 FOR UPDATE",
+            "SELECT status, tool_args, expires_at FROM pending_actions "
+            "WHERE id = $1 AND goal_id = $2 FOR UPDATE",
             action_id,
             goal_id,
         )
@@ -300,6 +305,25 @@ async def decide_goal_effect(
             "SELECT status, tool_args, execution_result FROM pending_actions WHERE id = $1",
             action_id,
         )
+        # Only a canonical approved transition may mutate arguments. In particular,
+        # an expiry racing the transition leaves the original snapshot untouched.
+        if amendment_id is not None and after["status"] == ActionStatus.APPROVED.value:
+            if not approve or original_digest is None or approved_digest is None:
+                raise ValueError("amendment_binding")
+            await mirror_goal_edit(
+                connection,
+                goal_id,
+                action_id,
+                amendment_id,
+                original_digest,
+                approved_digest,
+                row["tool_args"],
+                pending=row["status"] == "pending",
+            )
+            after = await connection.fetchrow(
+                "SELECT status, tool_args, execution_result FROM pending_actions WHERE id = $1",
+                action_id,
+            )
     status = after["status"]
     if status == ActionStatus.APPROVED.value and after["execution_result"] is None:
         stored = after["tool_args"]

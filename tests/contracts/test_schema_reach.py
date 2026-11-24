@@ -309,6 +309,10 @@ _DYNAMIC_RELATION_RE = re.compile(
 # Dynamic entries are exact normalized relation slots, not whole-file waivers.
 SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     (
+        "src/butlers/capability_broker/ledger.py",
+        "switchboard.owner_decision_items",
+    ): "sanctioned: RFC0038 D13 reads the canonical Switchboard owner decision receipt to bind the broker's approved edited digest.",
+    (
         "src/butlers/capability_host/projection.py",
         "<dynamic:{state_view}>",
     ): "dynamic-local: RFC0039 D17 host precondition read of the replicated manifest digest from the mcp_read view butlers.knowledge_read.core.published() derives from the packaged manifest entry for mcp_surface.manifest_state; never a caller-supplied or discovered relation.",

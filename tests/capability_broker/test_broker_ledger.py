@@ -459,6 +459,8 @@ async def test_not_received_is_retried_once_then_failed(broker_db_url):
 
 
 async def test_approved_execution_runs_the_stored_or_edited_call(broker_db_url):
+    from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisions
+
     async with world(broker_db_url) as w:
         goal = await w.goal(_grant(NOTIFY))
         _, token = await w.invocation(goal, _grant(NOTIFY))
@@ -471,10 +473,22 @@ async def test_approved_execution_runs_the_stored_or_edited_call(broker_db_url):
         other = {**stored, "message": "Second draft"}
         parked = await w.broker.call(goal, token, NOTIFY.identity, other)
         edited = {**other, "message": "Owner's edit"}
-        done = await w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, edited)
+        # A raw edited call carries no owner amendment receipt and must refuse.
+        refused = await _refused(
+            w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, edited)
+        )
+        assert refused.reason is Reason.POLICY
+        assert (await w.effect(parked.effect_id))["status"] == "parked"
+        decisions = OwnerDecisions(w.broker, live=True)
+        done = await decisions.edit(
+            await decisions.shown(goal, parked.effect_id),
+            {"message": "Owner's edit"},
+            OwnerContext("owner:test", "test"),
+        )
+        assert done.status == "committed"
         assert w.forwarder.calls[-1][1] == edited
         assert (await w.effect(parked.effect_id))["status"] == "rejected"
-        executed = await w.effect(done.effect_id)
+        executed = await w.effect(w.forwarder.calls[-1][0].effect_id)
         assert executed["args_digest"] == arguments_digest(edited)
         assert executed["approval_ref"] == parked.approval_ref
 
@@ -1170,6 +1184,8 @@ async def test_a_read_that_exposed_the_invocation_is_stamped_on_its_later_park(b
 
 
 async def test_categories_survive_park_approval_and_an_owner_edit(broker_db_url):
+    from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisions
+
     async with world(broker_db_url) as w:
         grants = (_grant(RECALL), _grant(NOTIFY))
         goal = await w.goal(*grants)
@@ -1182,9 +1198,17 @@ async def test_categories_survive_park_approval_and_an_owner_edit(broker_db_url)
         assert (await w.effect(parked.effect_id))["label_sens"] == ["health"]
         w.forwarder.receipt = DomainReceipt("committed", "receipt-1", {"ok": True})
         edited = {**stored, "message": "Owner's edit"}
-        done = await w.broker.execute_approved(goal, parked.effect_id, parked.approval_ref, edited)
+        decisions = OwnerDecisions(w.broker, live=True)
+        done = await decisions.edit(
+            await decisions.shown(goal, parked.effect_id),
+            {"message": edited["message"]},
+            OwnerContext("owner:test", "test"),
+        )
         assert done.status == "committed"
-        original, executed = await w.effect(parked.effect_id), await w.effect(done.effect_id)
+        original, executed = (
+            await w.effect(parked.effect_id),
+            await w.effect(w.forwarder.calls[-1][0].effect_id),
+        )
         assert original["label_sens"] == ["health"]  # parking never narrows it
         assert set(executed["label_sens"]) >= {"health"}
         assert set(executed["label_data"]) >= set(original["label_data"])

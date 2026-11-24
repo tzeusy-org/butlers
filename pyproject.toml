@@ -17,6 +17,7 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi",
     "click",
     "pydantic",
+    "jsonschema",
     "alembic",
     "sqlalchemy",
     "psycopg2-binary",

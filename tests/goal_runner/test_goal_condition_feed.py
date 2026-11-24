@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from butlers.capability_broker.owner_decisions import OwnerContext, OwnerDecisions
 from butlers.conditions import ConditionEvaluator
 from tests.capability_broker.test_broker_ledger import NOTIFY
 from tests.goal_runner.test_goal_runner import SEARCH, _grant, harness
@@ -28,6 +29,8 @@ from tests.goal_runner.test_goal_wake_runner import waiting_on_conditions
 
 pytestmark = pytest.mark.integration  # the harness module carries the shared marks
 pytest_plugins = ("tests.capability_broker.test_broker_ledger",)
+
+OWNER = OwnerContext(decided_by="owner:test", via="test")
 
 
 async def set_status(h, effect: UUID, status: str) -> None:
@@ -148,9 +151,9 @@ async def test_a_real_owner_edit_is_read_as_an_edit(broker_db_url):
 
 async def owner_edits(h, goal: UUID, effect: UUID) -> None:
     """The owner approves the parked notify with a different message (D13 edit)."""
-    row = await h.w.effect(effect)
-    edited = {"entity_id": str(uuid4()), "message": "Owner's edit", "channel": "telegram"}
-    await h.w.broker.execute_approved(goal, effect, row["approval_ref"], edited)
+    decisions = OwnerDecisions(h.w.broker, live=True)
+    shown = await decisions.shown(goal, effect)
+    await decisions.edit(shown, {"message": "Owner's edit"}, OWNER)
     assert (await h.w.effect(effect))["status"] == "rejected"
 
 

@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
+from butlers.core import audit
 from butlers.core.capability_json import (
     InvalidArguments,
     arguments_digest,
@@ -50,6 +51,7 @@ from butlers.core.capability_json import (
     parse_json_object,
 )
 from butlers.core.decision_sets import DecisionSetItem, DecisionSetLedger
+from butlers.modules.approvals.goal_edits import GoalEditRefused
 
 from .contracts import BrokerRefused, Reason
 
@@ -102,6 +104,18 @@ class OwnerContext:
 
 
 @dataclass(frozen=True, slots=True)
+class ShownEffect:
+    """Exact single-effect display bindings; all are checked against server state."""
+
+    goal_id: UUID
+    effect_id: UUID
+    approval_ref: str
+    args_digest: str
+    lead_epoch: int | None
+    plan_version: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class ItemOutcome:
     """What one decided item came to.
 
@@ -136,6 +150,8 @@ class _Decided:
     args_digest: str
     outcome: str
     decided_by: str
+    amendment_id: UUID | None = None
+    approved_digest: str | None = None
 
 
 def plan_outcomes(
@@ -194,6 +210,7 @@ class OwnerDecisionLedger:
         items: Sequence[tuple[UUID, str, str, str]],
         set_id: UUID | None = None,
         set_version: int | None = None,
+        amendment: tuple[UUID, str] | None = None,
     ) -> UUID:
         """Insert one receipt; ``items`` are ``(effect_id, approval_ref, args_digest, outcome)``."""
         receipt = uuid4()
@@ -210,8 +227,9 @@ class OwnerDecisionLedger:
         )
         await self.connection.executemany(
             "INSERT INTO switchboard.owner_decision_items (decision_id, goal_id, effect_id, "
-            "approval_ref, args_digest, outcome) VALUES ($1, $2, $3, $4, $5, $6)",
-            [(receipt, goal_id, *item) for item in items],
+            "approval_ref, args_digest, outcome, amendment_id, approved_digest) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            [(receipt, goal_id, *item, *(amendment or (None, None))) for item in items],
         )
         return receipt
 
@@ -246,7 +264,8 @@ class OwnerDecisionLedger:
             )
         rows = await self.connection.fetch(
             "SELECT i.goal_id, i.effect_id, e.capability, i.approval_ref, i.args_digest, "
-            "d.decided_by FROM switchboard.owner_decision_items i "
+            "d.decided_by, i.amendment_id, i.approved_digest "
+            "FROM switchboard.owner_decision_items i "
             "JOIN switchboard.owner_decisions d ON d.id = i.decision_id "
             "JOIN switchboard.effects e ON (e.goal_id, e.id) = (i.goal_id, i.effect_id) "
             "WHERE i.outcome = $1 AND e.status = $1 AND e.approval_ref = i.approval_ref "
@@ -291,6 +310,126 @@ class OwnerDecisions:
     async def reject(self, goal_id: UUID, effect_id: UUID, owner: OwnerContext) -> ItemOutcome:
         """The owner rejected one parked effect: record it, end it, mirror it."""
         return await self._decide_one(goal_id, effect_id, owner, "reject")
+
+    async def edit(
+        self,
+        shown: ShownEffect,
+        edits: dict[str, Any],
+        owner: OwnerContext,
+    ) -> ItemOutcome:
+        """Stage inert domain snapshots, then commit the exact amendment and audit together.
+
+        Only the receipt is recovery work. A staged snapshot surviving a failed receipt
+        authorizes nothing. The original effect's digest and arguments remain auditable.
+        """
+        self.require_live()
+        try:
+            edits = parse_json_object(canonical_bytes(edits))
+        except (InvalidArguments, TypeError):
+            raise OwnerDecisionRefused("policy") from None
+        async with self.broker._transaction(audited=True) as ledger:
+            recorded = await self._record_edit(ledger, shown, edits, owner)
+        if isinstance(recorded, OwnerDecisionRefused):
+            raise recorded
+        return await self.drive(recorded)
+
+    async def shown(self, goal_id: UUID, effect_id: UUID) -> ShownEffect:
+        """Read one parked effect's current immutable-call and goal-version bindings."""
+        self.require_live()
+        async with self.broker._transaction() as ledger:
+            goal = await ledger._lock_goal(goal_id)
+            if goal is None or goal["status"] not in _LIVE_GOAL:
+                refused = "resource" if goal is None else "goal"
+                result = None
+            else:
+                effect = (
+                    await OwnerDecisionLedger(ledger.connection).effects(goal_id, [effect_id])
+                ).get(effect_id)
+                if effect is None or effect["status"] != "parked" or effect["approval_ref"] is None:
+                    refused = "resource" if effect is None else "stale"
+                    result = None
+                else:
+                    epoch, plan = await _current_bindings(ledger.connection, goal_id)
+                    result = ShownEffect(
+                        goal_id,
+                        effect_id,
+                        effect["approval_ref"],
+                        effect["args_digest"],
+                        epoch,
+                        plan,
+                    )
+        if result is None:
+            raise OwnerDecisionRefused(refused)
+        return result
+
+    async def _record_edit(self, ledger, shown, edits, owner):
+        goal = await ledger._lock_goal(shown.goal_id)
+        if goal is None:
+            return OwnerDecisionRefused("resource")
+        if goal["status"] not in _LIVE_GOAL:
+            return OwnerDecisionRefused("goal")
+        if await _current_bindings(ledger.connection, shown.goal_id) != (
+            shown.lead_epoch,
+            shown.plan_version,
+        ):
+            return OwnerDecisionRefused("stale")
+        receipts = OwnerDecisionLedger(ledger.connection)
+        effect = (await receipts.effects(shown.goal_id, [shown.effect_id])).get(shown.effect_id)
+        if effect is None:
+            return OwnerDecisionRefused("resource")
+        if (
+            effect["status"] != "parked"
+            or effect["approval_ref"] != shown.approval_ref
+            or effect["args_digest"] != shown.args_digest
+        ):
+            return OwnerDecisionRefused("stale")
+        principal = await ledger.approval_principal(goal, shown.effect_id)
+        catalog = await self.broker._live_catalog.load(ledger.connection)
+        capability = catalog.get(effect["capability"])
+        if catalog.digest != principal.catalog_digest:
+            return OwnerDecisionRefused("stale")
+        if capability is None:
+            return OwnerDecisionRefused("policy")
+        try:
+            amendment, arguments, names = await self.broker._live_domains.stage_edit(
+                capability.domain,
+                shown.goal_id,
+                shown.approval_ref,
+                shown.args_digest,
+                edits,
+                capability.name,
+            )
+        except GoalEditRefused as refused:
+            return OwnerDecisionRefused(str(refused))
+        await self.broker.check_approved_constraints(ledger, principal, capability, arguments)
+        approved_digest = arguments_digest(arguments)
+        await receipts.record(
+            shown.goal_id,
+            owner,
+            "approve",
+            [(shown.effect_id, shown.approval_ref, shown.args_digest, "approved")],
+            amendment=(amendment, approved_digest),
+        )
+        await self._transition(ledger, shown.goal_id, effect, "approved")
+        await audit.append(
+            ledger.connection,
+            owner.decided_by,
+            "approval.edit",
+            target=str(shown.effect_id),
+            result="success",
+            metadata={"edited_fields": list(names)},
+        )
+        return _Decided(
+            shown.goal_id,
+            shown.effect_id,
+            effect["capability"],
+            shown.approval_ref,
+            shown.args_digest,
+            "approved",
+            owner.decided_by,
+            amendment,
+            approved_digest,
+        )
 
     async def _decide_one(
         self, goal_id: UUID, effect_id: UUID, owner: OwnerContext, decision: str
@@ -350,13 +489,26 @@ class OwnerDecisions:
         """Steps 2 and 3 for one effect a committed receipt decided. Idempotent."""
         self.require_live()
         domains = self.broker._live_domains
-        mirrored = await domains.decide(
-            _domain(decided.capability),
-            decided.goal_id,
-            decided.approval_ref,
-            approve=decided.outcome == "approved",
-            decided_by=decided.decided_by,
+        amendment = (
+            {}
+            if decided.amendment_id is None
+            else dict(
+                amendment_id=decided.amendment_id,
+                original_digest=decided.args_digest,
+                approved_digest=decided.approved_digest,
+            )
         )
+        try:
+            mirrored = await domains.decide(
+                _domain(decided.capability),
+                decided.goal_id,
+                decided.approval_ref,
+                approve=decided.outcome == "approved",
+                decided_by=decided.decided_by,
+                **amendment,
+            )
+        except GoalEditRefused:
+            return await self._void(decided, Reason.POLICY)
         if decided.outcome != "approved":
             return ItemOutcome(decided.effect_id, decided.outcome, "rejected")
         status = getattr(mirrored, "status", None)
@@ -374,7 +526,9 @@ class OwnerDecisions:
             stored = parse_json_object(canonical_bytes(arguments))
         except (InvalidArguments, TypeError):
             stored = None
-        if stored is None or arguments_digest(stored) != decided.args_digest:
+        if stored is None or arguments_digest(stored) != (
+            decided.approved_digest or decided.args_digest
+        ):
             # The domain holds a different call than the one the owner decided: it never runs.
             logger.error(
                 "owner decision args mismatch goal=%s effect=%s",

@@ -70,6 +70,7 @@ from butlers.api.models.approval import (
     EntityRef,
     ExpireStaleActionsResponse,
     ExternalProposalReview,
+    GoalEffectBinding,
     OwnerDeliveryCard,
     RuleConstraintSuggestion,
     StandingReplyTemplateDraft,
@@ -83,8 +84,15 @@ from butlers.api.models.approval import (
     UnroutableRetryResult,
 )
 from butlers.api.owner_auth.service import AuthError
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.api.routers import audit as audit_router
+from butlers.capability_broker.contracts import BrokerRefused
+from butlers.capability_broker.owner_decisions import (
+    OwnerContext,
+    OwnerDecisionRefused,
+    ShownEffect,
+)
 from butlers.core import owner_delivery
 from butlers.core.audit_transaction import audit_transaction
 from butlers.core.dashboard_stepup import verified_dashboard_session
@@ -3650,6 +3658,19 @@ async def approve_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
+    if request.goal_effect is not None:
+        require_dashboard_owner_control(http_request)
+        _require_owner_dashboard_session()
+        return await _approve_goal_edit(
+            http_request,
+            parsed_id,
+            request,
+            actor_id,
+            db_mgr,
+            action_butler,
+            target_pool,
+        )
+
     return await approve_owning_action(
         parsed_id=parsed_id,
         actor_id=actor_id,
@@ -3661,6 +3682,112 @@ async def approve_approval(
         check_presented_digests=callback_authenticated,
         displayed_call=request.displayed_call,
         require_displayed_call=not callback_authenticated,
+    )
+
+
+def _goal_decision_refusal(reason: str) -> HTTPException:
+    return HTTPException(
+        status_code={"resource": 404, "unavailable": 503}.get(reason, 409),
+        detail={"error": "goal_effect_decision_refused", "reason": reason},
+    )
+
+
+async def _unique_goal_action(db_mgr, action_id, butler, pool):
+    """An ambiguous copy or unavailable approvals pool cannot choose an owner by order."""
+    matches = []
+    tracker = DegradedSources(logger)
+    for name, candidate in await _find_named_approvals_pools(db_mgr, tracker=tracker):
+        try:
+            if await candidate.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM pending_actions WHERE id=$1)", action_id
+            ):
+                matches.append((name, candidate))
+        except Exception:
+            raise _goal_decision_refusal("unavailable") from None
+    if tracker.failed:
+        raise _goal_decision_refusal("unavailable")
+    if matches != [(butler, pool)]:
+        raise _goal_decision_refusal("resource")
+
+
+@router.get("/{action_id}/goal-effect")
+async def read_goal_effect_binding(
+    action_id: UUID,
+    http_request: Request,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[GoalEffectBinding]:
+    """The current display binding for the dark single-effect edit path (never authority)."""
+    require_dashboard_owner_control(http_request)
+    _require_owner_dashboard_session()
+    decisions = getattr(http_request.app.state, "owner_decisions", None)
+    if decisions is None:
+        raise _goal_decision_refusal("unavailable")
+    found = await _find_action_pool(db_mgr, action_id)
+    if found is None:
+        raise _goal_decision_refusal("resource")
+    butler, pool = found
+    await _unique_goal_action(db_mgr, action_id, butler, pool)
+    row = await pool.fetchrow("SELECT goal_id FROM pending_actions WHERE id=$1", action_id)
+    if row is None or row["goal_id"] is None:
+        raise _goal_decision_refusal("resource")
+    try:
+        shown = await decisions.shown(row["goal_id"], action_id)
+    except OwnerDecisionRefused as refused:
+        raise _goal_decision_refusal(refused.reason) from None
+    except BrokerRefused:
+        raise _goal_decision_refusal("unavailable") from None
+    return ApiResponse(
+        data=GoalEffectBinding(
+            **{name: getattr(shown, name) for name in GoalEffectBinding.model_fields}
+        )
+    )
+
+
+async def _approve_goal_edit(http_request, action_id, request, actor_id, db_mgr, butler, pool):
+    """Dashboard-session-only amendment; legacy and card decisions never enter here."""
+    decisions = getattr(http_request.app.state, "owner_decisions", None)
+    if decisions is None:
+        raise _goal_decision_refusal("unavailable")
+    binding = request.goal_effect
+    if (
+        binding.effect_id != action_id
+        or not request.edits
+        or request.displayed_call is None
+        or request.displayed_call.args_digest != binding.args_digest
+    ):
+        raise _goal_decision_refusal("stale")
+    await _unique_goal_action(db_mgr, action_id, butler, pool)
+    row = await pool.fetchrow(
+        "SELECT goal_id, tool_name FROM pending_actions WHERE id=$1", action_id
+    )
+    if (
+        row is None
+        or row["goal_id"] != binding.goal_id
+        or row["tool_name"] != request.displayed_call.tool_name
+    ):
+        raise _goal_decision_refusal("resource")
+    try:
+        await decisions.edit(
+            ShownEffect(**binding.model_dump()),
+            request.edits,
+            OwnerContext(actor_id, "dashboard"),
+        )
+    except OwnerDecisionRefused as refused:
+        raise _goal_decision_refusal(refused.reason) from None
+    except BrokerRefused as refused:
+        raise _goal_decision_refusal(
+            "unavailable"
+            if refused.reason.value in ("broker_unavailable", "capability_unavailable")
+            else refused.reason.value
+        ) from None
+    row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id=$1", action_id)
+    action = PendingAction.from_row(row)
+    result = {**action.to_dict(), "butler": butler, "dispatched": action.status.value == "executed"}
+    return ApiResponse(
+        data=ApprovalAction(
+            **{name: result[name] for name in ApprovalAction.model_fields if name in result}
+        )
     )
 
 

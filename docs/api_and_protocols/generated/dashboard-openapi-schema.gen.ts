@@ -136,6 +136,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/approvals/{action_id}/goal-effect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Goal Effect Binding
+         * @description The current display binding for the dark single-effect edit path (never authority).
+         */
+        get: operations["read_goal_effect_binding_api_approvals__action_id__goal_effect_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/approvals/{action_id}/retry": {
         parameters: {
             query?: never;
@@ -18026,6 +18046,11 @@ export interface components {
             data: components["schemas"]["GoalDetail"];
             meta?: components["schemas"]["ApiMeta"];
         };
+        /** ApiResponse[GoalEffectBinding] */
+        ApiResponse_GoalEffectBinding_: {
+            data: components["schemas"]["GoalEffectBinding"];
+            meta?: components["schemas"]["ApiMeta"];
+        };
         /** ApiResponse[HeartbeatFacts] */
         ApiResponse_HeartbeatFacts_: {
             data: components["schemas"]["HeartbeatFacts"];
@@ -18980,6 +19005,7 @@ export interface components {
             edits?: {
                 [key: string]: unknown;
             } | null;
+            goal_effect?: components["schemas"]["GoalEffectBinding"] | null;
         };
         /**
          * ApprovalCallPreview
@@ -28999,6 +29025,30 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * GoalEffectBinding
+         * @description Exact parked-effect/version shown by the dark authenticated D13 read path.
+         */
+        GoalEffectBinding: {
+            /** Approval Ref */
+            approval_ref: string;
+            /** Args Digest */
+            args_digest: string;
+            /**
+             * Effect Id
+             * Format: uuid
+             */
+            effect_id: string;
+            /**
+             * Goal Id
+             * Format: uuid
+             */
+            goal_id: string;
+            /** Lead Epoch */
+            lead_epoch: number | null;
+            /** Plan Version */
+            plan_version: number | null;
         };
         /**
          * GoalInvocation
@@ -41831,6 +41881,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_ApprovalAction_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_goal_effect_binding_api_approvals__action_id__goal_effect_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                action_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_GoalEffectBinding_"];
                 };
             };
             /** @description Validation Error */

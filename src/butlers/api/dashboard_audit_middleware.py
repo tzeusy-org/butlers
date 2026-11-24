@@ -102,6 +102,23 @@ def _in_private_subtree(path: str) -> bool:
     return any(path == root or path.startswith(f"{root}/") for root in _PRIVATE_SUBTREES)
 
 
+def _approval_edit_route(method: str, path: str) -> bool:
+    """The server-selected edit doors audit argument names, never owner call content."""
+    parts = path.rstrip("/").split("/")
+    if method != "POST" or parts[:3] != ["", "api", "approvals"]:
+        return False
+    tail = parts[3:]
+    if tail[:1] == ["actions"]:
+        tail = tail[1:]
+    if len(tail) != 2 or tail[1] != "approve":
+        return False
+    try:
+        uuid.UUID(tail[0])
+    except ValueError:
+        return False
+    return True
+
+
 def _infer_butler(path: str) -> str:
     """Derive a butler name from the request path.
 
@@ -213,6 +230,12 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
                 parsed_body = {"__raw__": raw_body.decode(errors="replace")}
                 if body_truncated:
                     parsed_body["__body_truncated__"] = True
+
+        if _approval_edit_route(request.method, path):
+            # Applies to refusals and malformed requests too. Do not let an invalid
+            # envelope put raw owner arguments into the generic request audit.
+            edits = parsed_body.get("edits") if isinstance(parsed_body, dict) else None
+            parsed_body = {"edited_fields": sorted(edits) if isinstance(edits, dict) else []}
 
         # Trace ID: re-use one from scope if available, otherwise generate.
         trace_id: str | None = request.scope.get("trace_id") or str(uuid.uuid4())

@@ -319,6 +319,38 @@ class TestDashboardAuditMiddleware:
         assert summary["method"] == "DELETE"
         assert "/api/test-detail-check" in summary["path"]
 
+    @pytest.mark.parametrize("legacy", [False, True])
+    async def test_approval_edit_request_audits_names_even_on_refusal(self, legacy):
+        """The generic audit must not undo the owning D13 writer's content-blind audit."""
+        from uuid import uuid4
+
+        from butlers.api.deps import get_mcp_manager
+
+        app, mock_db, _ = self._make_app_with_mock_db()
+        app.dependency_overrides[_audit_get_db] = lambda: mock_db
+        app.dependency_overrides[get_mcp_manager] = lambda: object()
+        with (
+            patch("butlers.api.dashboard_audit_middleware.get_db_manager", return_value=mock_db),
+            patch(
+                "butlers.api.dashboard_audit_middleware.emit_dashboard_audit",
+                new_callable=AsyncMock,
+            ) as emit,
+        ):
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                await client.post(
+                    f"/api/approvals/{'actions/' if legacy else ''}{uuid4()}/approve",
+                    json={
+                        "edits": {
+                            "message": "private synthetic text",
+                            "recipient": "private synthetic party",
+                        }
+                    },
+                )
+        emit.assert_awaited_once()
+        assert emit.await_args.kwargs["body"] == {"edited_fields": ["message", "recipient"]}
+
     async def test_counter_action_is_route_template_not_raw_path(self):
         """Distinct ids share one series; unmatched paths share the unmatched bucket."""
         from opentelemetry import metrics

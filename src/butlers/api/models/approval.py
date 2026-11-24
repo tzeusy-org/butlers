@@ -447,11 +447,24 @@ class ExternalProposalReview(BaseModel):
     displayed_call: DisplayedApprovalCall | None = None
 
 
+class GoalEffectBinding(BaseModel):
+    """Exact parked-effect/version shown by the dark authenticated D13 read path."""
+
+    model_config = ConfigDict(extra="forbid")
+    goal_id: UUID
+    effect_id: UUID
+    approval_ref: str = Field(min_length=1)
+    args_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    lead_epoch: int | None = Field(ge=0, strict=True)
+    plan_version: int | None = Field(ge=1, strict=True)
+
+
 class ApprovalApproveRequest(BaseModel):
     """Request body for POST /api/approvals/{id}/approve."""
 
     edits: dict[str, Any] | None = Field(default=None, description="Optional edits to tool args")
     displayed_call: DisplayedApprovalCall | None = None
+    goal_effect: GoalEffectBinding | None = None
 
 
 class ApprovalDenyRequest(BaseModel):

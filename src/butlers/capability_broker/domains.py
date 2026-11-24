@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from butlers.modules.approvals.goal_edits import stage_goal_edit
 from butlers.modules.approvals.goal_park import (
     GoalLineage,
     cancel_goal_effects,
@@ -131,12 +132,25 @@ class Domains(Protocol):
         ...
 
     async def decide(
-        self, domain: str, goal_id: UUID, approval_ref: str, *, approve: bool, decided_by: str
+        self,
+        domain: str,
+        goal_id: UUID,
+        approval_ref: str,
+        *,
+        approve: bool,
+        decided_by: str,
+        amendment_id: UUID | None = None,
+        original_digest: str | None = None,
+        approved_digest: str | None = None,
     ) -> DomainDecision | None:
         """Mirror an owner decision the broker already recorded onto the domain action.
 
         Idempotent. None when the domain holds no such action of the goal.
         """
+        ...
+
+    async def stage_edit(self, domain, goal_id, approval_ref, original_digest, edits, tool_name):
+        """Store inert domain snapshots; only a committed broker receipt authorizes them."""
         ...
 
 
@@ -212,10 +226,39 @@ class ApprovalsParking:
         states = await goal_action_states(self._pool(domain), goal_id, _action_ids(approval_refs))
         return {str(action_id): status for action_id, status in states.items()}
 
-    async def decide(self, domain, goal_id, approval_ref, *, approve, decided_by):
+    async def stage_edit(self, domain, goal_id, approval_ref, original_digest, edits, tool_name):
+        [action_id] = _action_ids([approval_ref])
+        return await stage_goal_edit(
+            self._pool(domain),
+            goal_id,
+            action_id,
+            original_digest,
+            edits,
+            tool_name,
+        )
+
+    async def decide(
+        self,
+        domain,
+        goal_id,
+        approval_ref,
+        *,
+        approve,
+        decided_by,
+        amendment_id=None,
+        original_digest=None,
+        approved_digest=None,
+    ):
         for action_id in _action_ids([approval_ref]):
             decided = await decide_goal_effect(
-                self._pool(domain), goal_id, action_id, approve=approve, decided_by=decided_by
+                self._pool(domain),
+                goal_id,
+                action_id,
+                approve=approve,
+                decided_by=decided_by,
+                amendment_id=amendment_id,
+                original_digest=original_digest,
+                approved_digest=approved_digest,
             )
             if decided is not None:
                 return DomainDecision(decided.status, decided.tool_args)

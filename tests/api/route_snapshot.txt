@@ -68,6 +68,7 @@ OP GET /api/approvals/rules/{rule_id} e39a35df4106
 OP GET /api/approvals/suggestions ea3cd64bc04f
 OP GET /api/approvals/unroutable fac3df93a6f6
 OP GET /api/approvals/{action_id} f6a907041e31
+OP GET /api/approvals/{action_id}/goal-effect f0e9f84984df
 OP GET /api/attention/efficacy c067fefaea0a
 OP GET /api/attention/ledger 764b316021fa
 OP GET /api/attention/ledger/summary 91b80a1320ec
@@ -796,6 +797,7 @@ ROUTE APIRoute GET '/api/approvals/rules/{rule_id}' name=get_rule op=get_rule_ap
 ROUTE APIRoute GET '/api/approvals/suggestions' name=list_suggestions op=list_suggestions_api_approvals_suggestions_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/unroutable' name=list_unroutable_attention op=list_unroutable_attention_api_approvals_unroutable_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/approvals/{action_id}' name=get_approval_detail op=get_approval_detail_api_approvals__action_id__get tags=approvals schema=True
+ROUTE APIRoute GET '/api/approvals/{action_id}/goal-effect' name=read_goal_effect_binding op=read_goal_effect_binding_api_approvals__action_id__goal_effect_get tags=approvals schema=True
 ROUTE APIRoute GET '/api/attention/efficacy' name=get_insight_efficacy op=get_insight_efficacy_api_attention_efficacy_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger' name=list_attention_ledger op=list_attention_ledger_api_attention_ledger_get tags=attention schema=True
 ROUTE APIRoute GET '/api/attention/ledger/summary' name=get_attention_ledger_summary op=get_attention_ledger_summary_api_attention_ledger_summary_get tags=attention schema=True
@@ -1572,6 +1574,7 @@ SCHEMA ApiResponse_FrictionSummary_ 177d3e920d4e
 SCHEMA ApiResponse_GeneralSettingsResponse_ 6f64240f5d85
 SCHEMA ApiResponse_Glance_ bf01a7af7311
 SCHEMA ApiResponse_GoalDetail_ c491f0eea176
+SCHEMA ApiResponse_GoalEffectBinding_ 3e36dccf0c30
 SCHEMA ApiResponse_HeartbeatFacts_ ec165b10ebef
 SCHEMA ApiResponse_HourlyActivity_ bf207375eceb
 SCHEMA ApiResponse_HouseholdTimeResponse_ 7e2a2cfda841
@@ -1736,7 +1739,7 @@ SCHEMA ApprovalAbandonRequest a8a92416bec3
 SCHEMA ApprovalAction 1630f47899bf
 SCHEMA ApprovalActionApproveRequest 027c8f4e9ca6
 SCHEMA ApprovalActionRejectRequest e21d651d71f6
-SCHEMA ApprovalApproveRequest 36a0c4b35e98
+SCHEMA ApprovalApproveRequest 13ecdcc64d45
 SCHEMA ApprovalCallPreview e284758e34a6
 SCHEMA ApprovalDeferRequest 023af4d72529
 SCHEMA ApprovalDeliveryCohort e7e33a20369c
@@ -2133,6 +2136,7 @@ SCHEMA GoalApprovalLineage f164ea869d73
 SCHEMA GoalBudget 5cccf2e12844
 SCHEMA GoalDetail 7240d8141c5b
 SCHEMA GoalEffect 29e8d69e4dc1
+SCHEMA GoalEffectBinding 552a22af4054
 SCHEMA GoalInvocation c5bf1d5a767a
 SCHEMA GoalOutcome 7aae60b0fa1e
 SCHEMA GoalSummary 4234fc90c6f2
