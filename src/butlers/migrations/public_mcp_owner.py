@@ -1079,7 +1079,8 @@ IF EXISTS(SELECT 1 FROM pg_catalog.pg_subscription WHERE
         datname=current_database()) AND
     (subowner<>'mcp_subscription_owner'::regrole OR
         subpublications<>ARRAY['butlers_public_v1']
-     OR subslotname IS DISTINCT FROM 'butlers_public_sub' OR
+     OR (subslotname IS DISTINCT FROM 'butlers_public_sub'
+         AND (subslotname IS NOT NULL OR subenabled)) OR
         subpasswordrequired
      OR
         subconninfo<>'host=/controller/run dbname=butlers user=butlers_projection_publisher'
@@ -1809,6 +1810,15 @@ def _journal_read_sql(target: Manifest) -> str:
             PERFORM set_config('butlers.e_recovering', 'true', false);
         END IF;
     END IF;""")
+        # A disabled, slotless subscription can be the result of our own interrupted
+        # rebuild. Require its OID in the validated journal before adding live OIDs.
+        + _do("""IF EXISTS(SELECT 1 FROM pg_catalog.pg_subscription s
+        WHERE s.subname='butlers_public_sub'
+          AND s.subdbid=(SELECT oid FROM pg_catalog.pg_database
+              WHERE datname=current_database())
+          AND s.subslotname IS NULL
+          AND NOT (s.oid=ANY(current_setting('butlers.e_old_oids')::oid[]))) THEN
+        RAISE EXCEPTION 'existing subscription identity/options refused'; END IF;""")
         + _do(f"""PERFORM set_config('butlers.e_manifests', (
         SELECT jsonb_agg(canonical ORDER BY canonical)::text FROM (
             SELECT DISTINCT canonical FROM (

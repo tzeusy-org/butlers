@@ -90,7 +90,9 @@ attempt UUID, target digest, at most 16 validated canonical declarations and at 
 captured subscription OIDs. Its closed columns, constraints, ownership and ACLs are checked;
 malformed, foreign or conflicting live identities refuse. Capture and applied-row deletion
 share one transaction, so interruption cannot lose the exact old cleanup identities. Resume
-retains them even if the target changes. Final applied write and journal removal share one
+retains them even if the target changes. If the owner stops between detaching the slot and
+dropping the subscription, resume requires a disabled canonical subscription whose OID is
+already in the validated journal. Final applied write and journal removal share one
 transaction; a journal is never evidence of completion and has no reader/importer grant.
 
 Subscriber-local `mcp_read` views use a fixed `(source_id text, fields jsonb)` output, plus the
