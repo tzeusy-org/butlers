@@ -624,6 +624,7 @@ def test_core_372_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         command.upgrade(pgpeer, "core@core_372")
         command.downgrade(switchboard, "core_371")
         with engine.connect() as conn:
+            # pinned-revision: the sole peer still at this CHECK repair.
             assert conn.exec_driver_sql(
                 "SELECT version_num FROM pgpeer.alembic_version"
             ).scalar_one() == ("core_372")
