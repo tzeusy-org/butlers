@@ -1900,7 +1900,7 @@ SCHEMA ChroniclesVoiceSource bcf3d2867e3b
 SCHEMA CircuitBreakerAttempt 042ee59333b3
 SCHEMA CircuitBreakerResetRequest 332d48b02535
 SCHEMA CircuitBreakerResetResponse 0ee49796f67b
-SCHEMA Claim 965511cc2e61
+SCHEMA Claim b6051d4d188b
 SCHEMA ClearPreferredChannelResponse d918dcb32c8f
 SCHEMA CliCredentialDetail 6da1df758f2f
 SCHEMA CliReauthorizeResponse cfdba3e66192
@@ -2096,7 +2096,7 @@ SCHEMA EpisodeSourceStatus 26540e5d96c8
 SCHEMA ErrorDetail 238220605c5a
 SCHEMA ErrorResponse 92c9a4267aa8
 SCHEMA EvidenceChainLink 581cc96b39a7
-SCHEMA EvidenceLine 5a2cbab49576
+SCHEMA EvidenceLine c10ea5b1ec70
 SCHEMA ExpectedSignalResponse 6ece7b65f181
 SCHEMA ExpectedSignalsResponse f7320f03f18a
 SCHEMA ExpireStaleActionsResponse 97d79db7aff6
@@ -2195,7 +2195,7 @@ SCHEMA InsightEfficacyResponse 56b3e4fb1b29
 SCHEMA InsightFeedbackResponse 7fe3d006ae3b
 SCHEMA InstanceFacts 11804c344f34
 SCHEMA InventoryData 2041d66eaff0
-SCHEMA InvestigationNotes d77911abbae1
+SCHEMA InvestigationNotes db5f96922ee2
 SCHEMA Issue ba0c1bc2cbba
 SCHEMA KeysetMeta 756d21baa44d
 SCHEMA KeysetResponse_SessionSummary_ 23c565004ed5
@@ -2688,6 +2688,7 @@ SCHEMA UpsertAppCredentialsResponse bf6edcc16da2
 SCHEMA UserSecretDetail 57660bcf064e
 SCHEMA UserSecretSummary 1f7769ef1bac
 SCHEMA ValidationError ca285d0c0e64
+SCHEMA Verification 3677b9c64ef2
 SCHEMA VerifyAllResult 69b64e64e34d
 SCHEMA VerifyCodeRequest 39a98f8fc749
 SCHEMA VerifyCodeResponse dfa9f20315d0

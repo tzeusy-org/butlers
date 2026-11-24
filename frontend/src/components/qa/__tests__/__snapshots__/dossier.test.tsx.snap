@@ -124,6 +124,12 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
           Diagnosis
         </p>
         <p
+          class="text-[11px] text-muted-foreground"
+          data-testid="qa-dossier-not-verified"
+        >
+          Evidence citations not verified: no recorded evidence bundle to check against.
+        </p>
+        <p
           class="font-serif text-[17px] leading-8 text-foreground"
         >
           <span>
@@ -190,6 +196,11 @@ exports[`QA case dossier composition > test_dossier_renders_full_case 1`] = `
           class="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground"
         >
           Evidence · log fragments
+        </p>
+        <p
+          class="text-[11px] text-muted-foreground"
+        >
+          Only the quoted text is checked against the recorded evidence; time, level and butler are as reported by the agent.
         </p>
         <div
           aria-label="QA evidence log"

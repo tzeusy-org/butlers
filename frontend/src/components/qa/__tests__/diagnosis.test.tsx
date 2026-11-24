@@ -5,7 +5,11 @@ import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { QaInvestigationNotes } from "@/api/types";
-import { ClaimAnchoredBlurb, EvidenceLog, getClaimOrderFromSegments } from "@/components/qa";
+import {
+  ClaimAnchoredBlurb,
+  EvidenceLog,
+  getClaimOrderFromSegments,
+} from "@/components/qa";
 
 afterEach(() => cleanup());
 
@@ -101,7 +105,9 @@ describe("QA diagnosis components", () => {
     expect(screen.getByTestId("qa-claim-c2").className).toContain(
       "bg-severity-medium/15",
     );
-    expect(screen.getByTestId("qa-claim-c2-marker").className).toContain("text-[var(--amber-text)]");
+    expect(screen.getByTestId("qa-claim-c2-marker").className).toContain(
+      "text-[var(--amber-text)]",
+    );
     expect(screen.getByTestId("qa-claim-c1").className).not.toContain(
       "bg-severity-medium/15",
     );
@@ -119,6 +125,52 @@ describe("QA diagnosis components", () => {
     expect(screen.getByTestId("qa-claim-c2").className).toContain(
       "bg-severity-medium/15",
     );
+  });
+
+  it("test_unsupported_lines_and_claims_are_labelled", () => {
+    render(
+      <>
+        <ClaimAnchoredBlurb
+          segments={[{ claim: "c1", text: "the guard fired" }]}
+          claims={{
+            c1: { evidence_ids: ["e1"], note: "n", unsupported: true },
+          }}
+          hoveredClaim={null}
+          onClaimHover={() => {}}
+        />
+        <EvidenceLog
+          evidence={[
+            {
+              id: "e1",
+              ts: "t",
+              lvl: "INFO",
+              butler: "qa",
+              msg: "made up",
+              ref: "E9",
+              unsupported: true,
+            },
+            {
+              id: "e2",
+              ts: "t",
+              lvl: "INFO",
+              butler: "qa",
+              msg: "real",
+              ref: "E1",
+              unsupported: false,
+            },
+          ]}
+          claims={{}}
+          hoveredClaim={null}
+          onRowHover={() => {}}
+        />
+      </>,
+    );
+
+    expect(screen.getByTestId("qa-evidence-row-e1-unsupported")).toBeTruthy();
+    expect(screen.queryByTestId("qa-evidence-row-e2-unsupported")).toBeNull();
+    expect(
+      screen.getByTestId("qa-claim-c1").getAttribute("data-unsupported"),
+    ).toBe("true");
   });
 
   it("test_no_claims_no_hover_propagation", () => {
@@ -150,9 +202,15 @@ describe("QA diagnosis components", () => {
 
     expect(screen.getByTestId("qa-claim-c1-marker").textContent).toBe("[1]");
     expect(screen.getByTestId("qa-claim-c2-marker").textContent).toBe("[2]");
-    expect(screen.getByTestId("qa-evidence-row-e1-claims").textContent).toBe("[1]");
-    expect(screen.getByTestId("qa-evidence-row-e2-claims").textContent).toBe("[2]");
-    expect(screen.getByTestId("qa-evidence-row-e3-claims").textContent).toBe("[1,2]");
+    expect(screen.getByTestId("qa-evidence-row-e1-claims").textContent).toBe(
+      "[1]",
+    );
+    expect(screen.getByTestId("qa-evidence-row-e2-claims").textContent).toBe(
+      "[2]",
+    );
+    expect(screen.getByTestId("qa-evidence-row-e3-claims").textContent).toBe(
+      "[1,2]",
+    );
   });
 
   it("test_evidence_level_colors_stay_semantic_when_highlighted", () => {
@@ -161,7 +219,11 @@ describe("QA diagnosis components", () => {
     fireEvent.mouseEnter(screen.getByTestId("qa-claim-c1"));
 
     expect(screen.getByText("ERROR").className).toContain("text-destructive");
-    expect(screen.getByText("WARN").className).toContain("text-[var(--amber-text)]");
-    expect(screen.getByText("INFO").className).toContain("text-muted-foreground");
+    expect(screen.getByText("WARN").className).toContain(
+      "text-[var(--amber-text)]",
+    );
+    expect(screen.getByText("INFO").className).toContain(
+      "text-muted-foreground",
+    );
   });
 });

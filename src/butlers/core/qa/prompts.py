@@ -40,7 +40,7 @@ the internal QA case record.
 
 Fields:
 
-- ``schema_version``: Always the integer ``1``.
+- ``schema_version``: Always the integer ``2``.
 - ``headline``: One concise operator-facing title for the case.
 - ``hypothesis``: The final technical root-cause hypothesis you accepted.
 - ``blurb_segments``: Ordered diagnosis chunks; use strings for glue text and \
@@ -49,8 +49,13 @@ These diagnosis fields must describe only observed behavior and established \
 causes, never proposed code as though it were already active.
 - ``claims``: Object keyed by claim id; each value has ``evidence_ids`` and a \
 short ``note`` explaining what those evidence lines establish.
-- ``evidence_lines``: Array of raw internal evidence objects with ``id``, \
-``ts``, ``lvl``, ``butler``, and ``msg``.
+- ``evidence_lines``: Array of evidence objects with ``id``, ``ts``, ``lvl``, \
+``butler``, ``msg`` and ``ref``. ``ref`` is the id of the evidence bundle item \
+(``E1``...) the line quotes and ``msg`` must be a verbatim span of that item's \
+anonymized text (at least 16 characters, or the whole item), never a raw \
+log line. A line without a matching ``ref`` is stored as \
+unsupported, and a claim citing only unsupported lines is shown as an \
+unsupported claim.
 - ``counter_evidence``: Array of hypotheses you considered, each with \
 ``hypothesis``, ``verdict`` (``rejected``, ``accepted``, or ``pending``), and \
 ``reason``.
@@ -65,7 +70,7 @@ Small example:
 
 ```json
 {{
-  "schema_version": 1,
+  "schema_version": 2,
   "headline": "Spotify ingestion failing - scope renamed upstream",
   "hypothesis": "A hard-coded Spotify scope string drifted from the provider contract.",
   "blurb_segments": [
@@ -81,6 +86,7 @@ Small example:
       "ts": "2026-05-14T14:30:11Z",
       "lvl": "ERROR",
       "butler": "chronicler",
+      "ref": "E1",
       "msg": "spotify.ingest 401 scope_mismatch /me/player/recently-played"
     }}
   ],

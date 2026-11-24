@@ -226,6 +226,53 @@ describe("QA case dossier composition", () => {
     expect(container.querySelector("[data-testid='qa-case-dossier']")).toMatchSnapshot();
   });
 
+  it("test_dossier_flags_a_case_whose_claims_are_all_unsupported", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        investigation_notes: {
+          ...notes,
+          claims: Object.fromEntries(
+            Object.entries(notes.claims).map(([id, claim]) => [id, { ...claim, unsupported: true }]),
+          ),
+        },
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.getByTestId("qa-dossier-unsupported-claims")).toBeTruthy();
+  });
+
+  it("test_dossier_says_citations_are_not_verified_without_a_bundle", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        investigation_notes: { ...notes, verification: { state: "unverified" } },
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.getByTestId("qa-dossier-not-verified")).toBeTruthy();
+  });
+
+  it("test_dossier_omits_the_not_verified_notice_for_a_verified_case", () => {
+    qaHookMocks.useQaCase.mockReturnValue(
+      caseResponse({
+        ...fullCase,
+        investigation_notes: { ...notes, verification: { state: "verified", bundle_digest: "d" } },
+      }),
+    );
+    qaHookMocks.useQaCaseJournal.mockReturnValue(journalResponse([]));
+
+    renderDossier("case-1");
+
+    expect(screen.queryByTestId("qa-dossier-not-verified")).toBeNull();
+  });
+
   it("test_dossier_renders_in_flight_case", () => {
     qaHookMocks.useQaCase.mockReturnValue(
       caseResponse({

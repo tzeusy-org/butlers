@@ -105,6 +105,18 @@ def test_notes_parse_counter_registered_with_status_label(monkeypatch: pytest.Mo
     assert captured["labelnames"] == ["status"]
 
 
+def _with_verification_defaults(payload: dict) -> dict:
+    """The payload as dumped: new optional fields appear with their defaults."""
+    out = json.loads(json.dumps(payload))
+    for line in out["evidence_lines"]:
+        line.setdefault("ref", None)
+        line.setdefault("unsupported", False)
+    for claim in out["claims"].values():
+        claim.setdefault("unsupported", False)
+    out["verification"] = {"state": "unverified", "bundle_digest": None}
+    return out
+
+
 def test_full_parse():
     payload = _valid_notes_payload()
 
@@ -112,7 +124,7 @@ def test_full_parse():
 
     assert status == "ok"
     assert isinstance(notes, InvestigationNotes)
-    assert notes.model_dump(mode="json") == payload
+    assert notes.model_dump(mode="json") == _with_verification_defaults(payload)
 
 
 def test_partial_parse_missing_optional():
@@ -186,7 +198,7 @@ async def test_dispatcher_persists_ok_notes(tmp_path: Path, monkeypatch: pytest.
     assert "jsonb_set" in sql
     assert "investigation_notes" in sql
     assert persisted_attempt_id == attempt_id
-    assert persisted_payload == payload
+    assert persisted_payload == _with_verification_defaults(payload)
     assert pool.fetchval.await_count == 2
 
 
@@ -398,3 +410,286 @@ async def test_no_considered_or_concluded_on_failed_parse(
     assert status == "failed"
     pool.execute.assert_not_awaited()
     record.assert_not_awaited()
+
+
+# --- evidence verification against the dispatcher's bundle (bu-ejow5p.13) ----------------------
+
+
+def _bundle_manifest(**texts: str) -> dict:
+    """The dispatcher's recorded bundle bodies (sections -> items with text)."""
+    return {
+        "revision": 1,
+        "digest": "d",
+        "sections": [
+            {
+                "name": "sessions",
+                "status": "available",
+                "items": [
+                    {"id": ref, "kind": "session", "digest": "x", "text": t}
+                    for ref, t in texts.items()
+                ],
+            }
+        ],
+    }
+
+
+def _notes_with_lines(*lines: dict, claims: dict | None = None):
+    payload = _valid_notes_payload()
+    payload["schema_version"] = 2
+    payload["evidence_lines"] = list(lines)
+    payload["claims"] = claims or {}
+    notes, status = parse_investigation_notes(json.dumps(payload))
+    assert status == "ok"
+    return notes
+
+
+def _line(line_id: str, msg: str, ref: str | None, **extra) -> dict:
+    return {
+        "id": line_id,
+        "ts": "t",
+        "lvl": "ERROR",
+        "butler": "b",
+        "msg": msg,
+        "ref": ref,
+        **extra,
+    }
+
+
+def test_a_line_quoting_a_bundle_item_is_supported_and_an_invented_one_is_not() -> None:
+    from butlers.core.qa.notes import can_be_patch_ready, verify_evidence_against_bundle
+
+    notes = _notes_with_lines(
+        _line("e1", "real text", "E1"),
+        _line("e2", "invented text", "E9"),
+        _line("e3", "edited text", "E1"),
+        _line("e4", "no ref", None, unsupported=False),
+        claims={
+            "c1": {"evidence_ids": ["e1"], "note": "n"},
+            "c2": {"evidence_ids": ["e2", "e3"], "note": "n"},
+            "c3": {"evidence_ids": [], "note": "n"},
+        },
+    )
+
+    checked = verify_evidence_against_bundle(notes, _bundle_manifest(E1="real text"))
+
+    assert [line.unsupported for line in checked.evidence_lines] == [False, True, True, True]
+    assert can_be_patch_ready(checked)
+    assert {k: c.unsupported for k, c in checked.claims.items()} == {
+        "c1": False,
+        "c2": True,
+        "c3": True,
+    }
+
+
+def test_an_agent_cannot_mark_its_own_line_supported() -> None:
+    from butlers.core.qa.notes import verify_evidence_against_bundle
+
+    notes = _notes_with_lines(_line("e1", "made up", "E1", unsupported=False))
+
+    checked = verify_evidence_against_bundle(notes, _bundle_manifest(E1="the real one"))
+
+    assert checked.evidence_lines[0].unsupported is True
+
+
+def test_notes_without_a_ref_still_parse_as_schema_v1() -> None:
+    payload = _valid_notes_payload()
+    notes, status = parse_investigation_notes(json.dumps(payload))
+
+    assert status == "ok" and notes.evidence_lines[0].ref is None
+    assert notes.evidence_lines[0].unsupported is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("schema_version", "recorded_bundle", "incoming_flag", "parse_status"),
+    [
+        (2, None, True, "ok"),
+        (2, None, {"ignored": True}, "partial"),
+        (2, None, {"ignored": True}, "ok"),
+        (1, _bundle_manifest(E1="recorded text"), True, "ok"),
+    ],
+    ids=["no-bundle", "partial-no-bundle", "invalid-verdict-ignored", "legacy-with-bundle"],
+)
+async def test_persisted_notes_without_v2_verification_are_unverified(
+    tmp_path: Path,
+    schema_version: int,
+    recorded_bundle: dict | None,
+    incoming_flag: object,
+    parse_status: str,
+) -> None:
+    payload = _valid_notes_payload()
+    payload["schema_version"] = schema_version
+    payload["verification"] = {"state": "verified", "bundle_digest": "agent-provided"}
+    evidence = _line("e1", "recorded text", "E1", unsupported=incoming_flag)
+    if schema_version == 1:
+        del evidence["ref"]
+    payload["evidence_lines"] = [evidence]
+    payload["claims"] = {"c1": {"evidence_ids": ["e1"], "note": "n", "unsupported": incoming_flag}}
+    if parse_status == "partial":
+        del payload["counter_evidence"]
+    _write_structured_notes(tmp_path, payload)
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(
+        side_effect=lambda sql, *_: recorded_bundle if "evidence_bundle" in sql else None
+    )
+
+    status = await _persist_investigation_notes(pool, uuid.uuid4(), tmp_path)
+
+    assert status == parse_status
+    persisted = pool.execute.await_args.args[2]
+    assert persisted["schema_version"] == schema_version
+    assert persisted["verification"] == {"state": "unverified", "bundle_digest": None}
+    assert persisted["evidence_lines"] == [
+        {**evidence, "ref": evidence.get("ref"), "unsupported": False}
+    ]
+    assert persisted["claims"]["c1"] == {
+        "evidence_ids": ["e1"],
+        "note": "n",
+        "unsupported": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_persisted_notes_mark_the_invented_line_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _valid_notes_payload()
+    payload["schema_version"] = 2
+    payload["evidence_lines"] = [
+        _line("e1", "real text", "E1"),
+        _line("e2", "invented", "E7"),
+    ]
+    payload["claims"] = {"c1": {"evidence_ids": ["e2"], "note": "n"}}
+    _write_structured_notes(tmp_path, payload)
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchval = AsyncMock(
+        side_effect=lambda sql, *a: (
+            _bundle_manifest(E1="real text") if "evidence_bundle" in sql else uuid.uuid4()
+        )
+    )
+    monkeypatch.setattr("butlers.core.qa.dispatch._qa_investigation_notes_parse_total", None)
+
+    await _persist_investigation_notes(pool, uuid.uuid4(), tmp_path)
+
+    persisted = pool.execute.await_args.args[2]
+    assert [line["unsupported"] for line in persisted["evidence_lines"]] == [False, True]
+    assert persisted["claims"]["c1"]["unsupported"] is True
+
+
+def test_a_quote_is_contained_in_the_item_text_after_whitespace_normalisation() -> None:
+    from butlers.core.qa.notes import verify_evidence_against_bundle
+
+    notes = _notes_with_lines(
+        _line("e1", "401   scope_mismatch\n/me", "E1"),
+        _line("e2", "scope_mismatch /other", "E1"),
+        _line("e3", "   ", "E1"),
+    )
+
+    checked = verify_evidence_against_bundle(
+        notes, _bundle_manifest(E1="spotify 401 scope_mismatch /me/player failed")
+    )
+
+    assert [line.unsupported for line in checked.evidence_lines] == [False, True, True]
+
+
+def test_a_case_with_only_unsupported_claims_cannot_be_patch_ready() -> None:
+    from butlers.core.qa.notes import can_be_patch_ready, verify_evidence_against_bundle
+
+    notes = _notes_with_lines(
+        _line("e1", "invented", "E1"),
+        claims={"c1": {"evidence_ids": ["e1"], "note": "n"}},
+    )
+
+    checked = verify_evidence_against_bundle(notes, _bundle_manifest(E1="real"))
+
+    assert checked.claims["c1"].unsupported is True
+    assert can_be_patch_ready(checked) is False
+
+
+def test_a_one_character_quote_cannot_forge_support() -> None:
+    from butlers.core.qa.notes import verify_evidence_against_bundle
+
+    notes = _notes_with_lines(
+        _line("e1", "e", "E1"),
+        _line("e2", "scope_mismatch", "E1"),  # 14 chars, a span but too short to prove anything
+        _line("e3", "spotify 401 scope_mismatch", "E1"),
+        _line("e4", "short", "E2"),  # whole item, so it counts
+    )
+
+    checked = verify_evidence_against_bundle(
+        notes, _bundle_manifest(E1="spotify 401 scope_mismatch /me/player", E2="short")
+    )
+
+    assert [line.unsupported for line in checked.evidence_lines] == [True, True, False, False]
+
+
+def test_verification_state_is_set_by_the_dispatcher_and_never_the_agent() -> None:
+    from butlers.core.qa.notes import verify_evidence_against_bundle
+
+    payload = _valid_notes_payload()
+    payload["schema_version"] = 2
+    payload["verification"] = {"state": "verified", "bundle_digest": "forged"}
+    notes, status = parse_investigation_notes(json.dumps(payload))
+
+    assert status == "ok" and notes is not None
+    assert notes.verification.model_dump() == {"state": "unverified", "bundle_digest": None}
+    checked = verify_evidence_against_bundle(notes, {**_bundle_manifest(), "digest": "real"})
+    assert checked.verification.model_dump() == {"state": "verified", "bundle_digest": "real"}
+
+
+def test_a_case_with_no_claims_is_not_patch_ready() -> None:
+    from butlers.core.qa.notes import can_be_patch_ready
+
+    assert can_be_patch_ready(_notes_with_lines(_line("e1", "real text", "E1"))) is False
+
+
+def test_carry_forward_keeps_earlier_flags_and_defaults_unknown_ids_to_unsupported() -> None:
+    from butlers.core.qa.notes import carry_forward_verification
+
+    notes = _notes_with_lines(
+        _line("e1", "x", "E1"),
+        _line("e2", "y", "E2"),
+        _line("e3", "z", "E3"),
+        claims={
+            "c1": {"evidence_ids": ["e1"], "note": "n"},
+            "c2": {"evidence_ids": ["e2"], "note": "n"},
+        },
+    )
+    stored = {
+        "verification": {"state": "verified", "bundle_digest": "d"},
+        "evidence_lines": [{"id": "e1", "unsupported": False}, {"id": "e2", "unsupported": True}],
+        "claims": {"c1": {"unsupported": False}, "c2": {"unsupported": True}},
+    }
+
+    kept = carry_forward_verification(notes, stored)
+
+    assert [line.unsupported for line in kept.evidence_lines] == [False, True, True]
+    assert {k: c.unsupported for k, c in kept.claims.items()} == {"c1": False, "c2": True}
+    assert kept.verification.state == "verified"
+    for earlier in (None, {}, {"verification": {"state": "unverified"}}):
+        fresh = carry_forward_verification(notes, earlier)
+        assert fresh.verification.state == "unverified"
+        assert not any(line.unsupported for line in fresh.evidence_lines)
+
+
+def test_the_skill_prompt_and_model_agree_on_the_notes_schema_version() -> None:
+    import re
+    from typing import get_args
+
+    from butlers.core.qa import prompts
+    from butlers.core.qa.notes import InvestigationNotes
+
+    skill = Path("roster/qa/.agents/skills/investigation-notes/SKILL.md").read_text()
+    skill_version = int(re.search(r'"schema_version": (\d+)', skill).group(1))
+    prompt_version = int(
+        re.search(
+            r"``schema_version``: Always the integer ``(\d+)``",
+            prompts._INVESTIGATION_NOTES_JSON_GUIDANCE,
+        ).group(1)
+    )
+    model_versions = get_args(InvestigationNotes.model_fields["schema_version"].annotation)
+
+    assert skill_version == prompt_version == max(model_versions)
+    assert "ref" in skill and "verbatim" in skill
