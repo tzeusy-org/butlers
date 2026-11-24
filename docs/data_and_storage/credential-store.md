@@ -41,9 +41,12 @@ This is the implementation of `REQ-core-credentials-001` and
 
 ## The `butler_secrets` Table
 
-Created in `alembic/versions/core/core_001_foundation.py`; `core_106_secrets_be2.py` adds the
-probe test-state columns (`last_verified`, `last_test_ok`, `last_test_code`, `last_test_message`,
-all `NULL` until a probe runs). Design decisions:
+The per-butler table is created by `core_001_foundation.py`; `core_117` creates the shared
+`public.butler_secrets` table when needed. `core_106` and `core_117` add the probe test-state
+columns (`last_verified`, `last_test_ok`, `last_test_code`, `last_test_message`, all `NULL` until a
+probe runs). Owner-run `core_381` ensures the shared category index exists before a restricted
+runtime role opens the shared pool; its downgrade retains the index for other schema consumers.
+Design decisions:
 
 - **`is_sensitive`** controls whether values are masked in dashboard UI and logs.
 - **`category`** groups secrets for dashboard display (e.g., `"telegram"`, `"google"`, `"cli-auth"`).
