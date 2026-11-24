@@ -12,7 +12,6 @@ Covers (tasks.md §4.3, §4.4, §4.6):
 
 from __future__ import annotations
 
-import ast
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -24,6 +23,7 @@ import pytest
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.testing.records import Record
+from butlers.testing.source_guard import parse_file, string_constants
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -192,33 +192,11 @@ async def test_list_episodes_participant_entity_id_filter_passes_uuid_to_sql() -
 # ---------------------------------------------------------------------------
 
 
-def _extract_handler_sql(source: str, handler_name: str) -> str:
-    """Extract the SQL WHERE-clause fragment from the named handler function body."""
-    import re
-
-    _SQL_FRAGMENT = re.compile(
-        r"^\s*(SELECT|INSERT|UPDATE|DELETE|WHERE|AND)\b",
-        re.IGNORECASE,
-    )
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == handler_name:
-            handler_src = ast.unparse(node)
-            return handler_src
-    return ""
-
-
 def test_list_episodes_sql_uses_any_for_participant_entity_id() -> None:
     """The list_episodes handler uses $N::uuid = ANY(participant_entity_ids) for the filter."""
-    source = _ROUTER_PATH.read_text()
-    tree = ast.parse(source)
-    # Walk all string constants and find the ANY(participant_entity_ids) clause.
+    tree = parse_file(_ROUTER_PATH)
     any_clauses = [
-        node.value
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and "ANY(participant_entity_ids)" in node.value
+        clause for clause in string_constants(tree) if "ANY(participant_entity_ids)" in clause
     ]
     assert any_clauses, (
         "router.py must contain a SQL clause with ANY(participant_entity_ids) "

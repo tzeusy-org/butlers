@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from butlers.chronicler.adapters._owner_entity import owner_episode_transaction
+from butlers.testing.source_guard import parse_file
 
 pytestmark = pytest.mark.unit
 
@@ -36,8 +37,7 @@ def _calls_in(nodes: list[ast.stmt]) -> list[ast.Call]:
     return [c for n in nodes for c in ast.walk(n) if isinstance(c, ast.Call)]
 
 
-def _violations(source: str, label: str) -> list[str]:
-    tree = ast.parse(source)
+def _violations(tree: ast.Module, label: str) -> list[str]:
     guarded: set[int] = set()
     found: list[str] = []
     for node in ast.walk(tree):
@@ -66,21 +66,21 @@ def test_every_adapter_owner_link_shares_a_transaction_with_its_episode_upsert()
         source = path.read_text(encoding="utf-8")
         if _OWNER_CALL in source:
             scanned += 1
-        violations += _violations(source, path.name)
+        violations += _violations(parse_file(path), path.name)
     assert scanned >= 15, "the scan must actually see the owner-only adapters"
     assert violations == []
 
 
 def test_the_scan_flags_an_unwrapped_or_episodeless_owner_link():
     unwrapped = "async def f(conn):\n    await upsert_owner_episode_entity(conn, 1, owner_id=2)\n"
-    assert _violations(unwrapped, "x") == ["x:2"]
+    assert _violations(ast.parse(unwrapped), "x") == ["x:2"]
 
     episodeless = (
         "async def f(conn):\n"
         "    async with owner_episode_transaction(conn):\n"
         "        await upsert_owner_episode_entity(conn, 1, owner_id=2)\n"
     )
-    assert _violations(episodeless, "x") == ["x:3"]
+    assert _violations(ast.parse(episodeless), "x") == ["x:3"]
 
     ok = (
         "async def f(conn):\n"
@@ -88,7 +88,7 @@ def test_the_scan_flags_an_unwrapped_or_episodeless_owner_link():
         "        ep = await upsert_episode(conn, e)\n"
         "        await upsert_owner_episode_entity(conn, ep.id, owner_id=2)\n"
     )
-    assert _violations(ok, "x") == []
+    assert _violations(ast.parse(ok), "x") == []
 
 
 async def test_helper_runs_the_block_inside_the_connection_transaction():
