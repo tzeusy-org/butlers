@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import asyncpg
 import httpx
 import pytest
 
@@ -236,31 +237,80 @@ async def test_regions_join_goals_and_obligations_and_name_failed_sources(app):
     )
     broken = AsyncMock()
     broken.fetch = AsyncMock(side_effect=ConnectionError("down"))
+    obligations_only = AsyncMock()
+    obligations_only.fetch.return_value = [
+        {"name": "check-in", "source": "db", "cron": "0 9 * * *", "next_run_at": _NOW}
+    ]
     db = MagicMock(spec=DatabaseManager)
-    db.butler_names = ["calendar", "travel"]
+    db.butler_names = ["travel", "health", "calendar"]
     db.pool.side_effect = lambda name: (
-        {"switchboard": ledger, "calendar": ledger}.get(name, broken)
+        {"switchboard": ledger, "calendar": ledger, "health": obligations_only}.get(name, broken)
         if name != "travel"
         else broken
     )
 
-    resp = await _get(app, db, "/api/goals/regions")
+    resp = await _get(app, db, "/api/goals/regions?goals_per_region=2&due_within_hours=1")
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    [region] = body["data"]["regions"]
+    region, health = body["data"]["regions"]
     assert region["region"] == "calendar"
     assert region["recent_goals"][0]["id"] == str(goal_id)
     assert region["obligations_due"][0]["name"] == "daily-sync"
+    assert health["region"] == "health" and health["recent_goals"] == []
+    assert health["obligations_due"][0]["name"] == "check-in"
+    assert ledger.fetch.await_args_list[0].args[1:] == (2,)
+    horizon = obligations_only.fetch.await_args.args[1]
+    assert abs((horizon - datetime.now(UTC)).total_seconds() - 3600) < 10
     assert body["data"]["sources_degraded"] == ["obligations:travel"]
     assert body["meta"]["sources_degraded"] == ["obligations:travel"]
 
 
-async def test_regions_flag_the_ledger_when_it_is_unreachable(app):
-    resp = await _get(app, _db(None), "/api/goals/regions")
+@pytest.mark.parametrize(
+    ("failure", "unprovisioned", "expected"),
+    [
+        pytest.param(None, None, ["goal_ledger"], id="missing-pool"),
+        pytest.param(ConnectionError("down"), None, ["goal_ledger"], id="read-failed"),
+        pytest.param(asyncpg.UndefinedTableError(), False, ["goal_ledger"], id="partial-ledger"),
+        pytest.param(
+            asyncpg.UndefinedTableError(),
+            ConnectionError("schema check unavailable"),
+            ["goal_ledger"],
+            id="schema-check-failed",
+        ),
+        pytest.param(asyncpg.UndefinedTableError(), True, [], id="unprovisioned"),
+    ],
+)
+async def test_regions_flag_the_ledger_when_it_is_unreachable(
+    app, failure, unprovisioned, expected
+):
+    pool = None if failure is None else AsyncMock()
+    obligations = AsyncMock()
+    obligations.fetch.return_value = [
+        {"name": "check-in", "source": "db", "cron": "0 9 * * *", "next_run_at": _NOW}
+    ]
+    pools = {"health": obligations}
+    if pool is not None:
+        pool.fetch.side_effect = failure
+        if isinstance(unprovisioned, Exception):
+            pool.fetchval.side_effect = unprovisioned
+        else:
+            pool.fetchval.return_value = unprovisioned
+        pools["switchboard"] = pool
+    db = _db(butlers=("health",))
+    db.pool.side_effect = pools.__getitem__
+
+    resp = await _get(app, db, "/api/goals/regions")
+
     assert resp.status_code == 200
-    assert resp.json()["data"]["sources_degraded"] == ["goal_ledger"]
-    assert resp.json()["data"]["regions"] == []
+    body = resp.json()
+    assert body["data"]["sources_degraded"] == expected
+    assert (body["meta"].get("sources_degraded") or []) == expected
+    (region,) = body["data"]["regions"]
+    assert region["region"] == "health" and region["recent_goals"] == []
+    assert region["obligations_due"][0]["name"] == "check-in"
+    if pool is not None:
+        assert pool.fetchval.await_count == int(isinstance(failure, asyncpg.UndefinedTableError))
 
 
 async def test_list_filters_by_outcome_and_a_created_at_range(app):

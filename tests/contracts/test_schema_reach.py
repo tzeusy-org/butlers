@@ -732,6 +732,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
     (
         "src/butlers/api/routers/goals.py",
+        "switchboard.goal_region_reads",
+    ): "sanctioned: RFC 0038 D19 and bu-85bqeq.5; content-free Switchboard-owned effect participation projection for bounded owner-authenticated region reads",
+    (
+        "src/butlers/api/routers/goals.py",
         "switchboard.goal_outcomes",
     ): "sanctioned: RFC 0038 D19 and bu-0rbswe; the owner-authenticated goal-ledger read API projects the ledger content-free through the switchboard pool; read-only, the runner and broker stay the only writers",
     (
