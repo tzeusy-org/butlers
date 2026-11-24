@@ -55,7 +55,7 @@ When resolution is given a dispatch intent, the system SHALL exclude every candi
 that cannot satisfy the intent's required capabilities, context floor, deadline, or
 per-call budget BEFORE selecting the winning tier, before narrowing to the highest
 effective priority, and before the tie-break.
-For rows explicitly converted to the managed Models vision-proof lifecycle, image-fit SHALL additionally require a matching applied proof identity. Stale managed proof MUST fail closed. Historical unbound declarations retain their existing applicability semantics. The vision proof is a model function that addresses its exact authorized row directly; resolution SHALL contain no vision-fit exception for it, SHALL NOT expose any bypass to ordinary dispatch callers and SHALL NOT mutate capability bits.
+For rows explicitly converted to the managed Models vision-proof lifecycle, image-fit SHALL additionally require a matching applied proof identity. Stale managed proof MUST fail closed. Historical unbound declarations retain their existing applicability semantics. The vision proof is a model function that addresses its exact authorized row directly. The call SHALL retain the enabled-row, runtime availability, authorization, quota and timeout checks. Resolution SHALL contain no vision-fit exception for it, expose no bypass to ordinary dispatch callers and leave capability bits unmodified.
 
 ID: REQ-model-catalog-004
 Source: owner-adopted Models vision contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; canonical model-catalog baseline

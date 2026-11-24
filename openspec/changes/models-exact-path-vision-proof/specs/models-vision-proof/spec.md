@@ -28,7 +28,7 @@ Scope: v1-mandatory
 
 ### Requirement: Diagnostic selection preserves ordinary authority
 
-The vision proof SHALL address only the exact authorized catalog row and SHALL NOT pass through model resolution, Spawner dispatch or any vision-fit exception. Ordinary routing, fit, quota and auth gates are unchanged and no ordinary caller, text-probe token, fallback, retry, resume or temporary catalog bit may reach or imitate the proof call.
+The vision proof SHALL address only the exact authorized catalog row and SHALL NOT pass through model resolution, Spawner dispatch or any vision-fit exception. The proof call SHALL retain the enabled-row, runtime availability, authorization, quota and timeout checks and the existing caller and synthetic attachment authority. Ordinary routing, fit, quota and authority gates remain unchanged. Ordinary callers, text-probe tokens, fallback, retry, resume and temporary catalog bits SHALL NOT reach or imitate the proof call.
 
 ID: REQ-models-vision-proof-003
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27; proposed RFC0036 amendment 1 (bu-o7lumy)
@@ -42,7 +42,7 @@ Scope: v1-mandatory
 
 ### Requirement: Same-tuple production-path controls
 
-A proof SHALL make exactly three model-function calls (RFC 0038 D18) against the same exact runtime/model/account tuple: a positive control carrying the synthetic image inline, a text-only control carrying no image part, and a removed-image control whose image is removed after creation and before the request is assembled. Controls differ only in the image part. Each call SHALL be one tool-less, single-turn, structured-output request with the procedure version's fixed maximum output and no retry, failover or resume, and its typed output SHALL be compared by deterministic code before any verdict.
+A promotable proof SHALL include one completed call for each of three ordered controls on the same exact runtime/model/account tuple. The positive control carries the synthetic image inline. The text-only control carries no image part. The removed-image control removes the image after creation and before request assembly. Controls differ only in the image part. Each call SHALL use one tool-less, single-turn, structured-output request with the procedure version's fixed maximum output. Deterministic code SHALL require the exact private comparator from the positive and exactly `NO_IMAGE` from each negative. Cancellation, expiry, exhaustion of the authorized envelope or another terminal stop MUST prevent later launches under the existing slot and budget rules. The operation SHALL NOT retry, fail over or resume a call.
 
 ID: REQ-models-vision-proof-004
 Source: adopted-contract.md SHA256 d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; model-catalog exact-path evidence; owner A 2026-09-27; proposed RFC0036 amendment 1 (bu-o7lumy)
@@ -50,7 +50,7 @@ Scope: v1-mandatory
 
 #### Scenario: Same-tuple production-path controls boundary
 
-- **WHEN** a control's typed output is missing, unparseable, refused or truncated, a negative control recovers its hidden comparator, or a different tuple is substituted
+- **WHEN** a control's typed output is missing, unparseable, refused or truncated, the positive fails to return the exact private comparator, either negative returns anything other than exactly `NO_IMAGE`, a control cannot complete, or a different tuple is substituted
 - **THEN** the operation cannot produce promotable evidence
 
 ### Requirement: Private sentinel and content-blind records
@@ -133,7 +133,7 @@ Scope: v1-mandatory
 
 ### Requirement: Vision proof executor is an RFC 0038 D18 model function
 
-The proof executor SHALL be deterministic code making tool-less, single-turn, structured-output model calls as defined by RFC 0038 D18 (model functions), run through the runtime adapter's tool-less model-function mode for the exact `runtime_type`, `model_id`, runtime/CLI version and account path of the row. The call SHALL carry no MCP server and no built-in tool, one user turn, a structured output schema, the inline image part (positive control only) and the procedure version's fixed maximum output. It SHALL NOT start a goal invocation or an MCP-configured session, and SHALL treat the model's typed output as third-party content that only the deterministic comparator reads. Spend reservation SHALL be made durably before each call and SHALL cover the fixed maximum output. An adapter or tuple that cannot enforce any required property (tool-less configuration, single turn, fixed maximum output, spend bound, inline image) SHALL end the operation Not run with a named reason before any provider request. The proof uses the authorized adapter mode.
+The proof executor SHALL be deterministic code making tool-less, single-turn, structured-output model calls as defined by RFC 0038 D18 (model functions), run through the runtime adapter's tool-less model-function mode for the exact `runtime_type`, `model_id`, runtime/CLI version and account path of the row. The call SHALL carry no MCP server and no built-in tool, one user turn, a structured output schema, the inline image part (positive control only) and the procedure version's fixed maximum output. It SHALL NOT start a goal invocation or an MCP-configured session, and SHALL treat the model's typed output as third-party content that only the deterministic comparator reads. Spend reservation SHALL be made durably before each call and SHALL cover the fixed maximum output. An adapter or tuple that cannot enforce any required property (tool-less configuration, single turn, structured output schema, fixed maximum output, spend bound, inline image) SHALL end the operation Not run with a named reason before any provider request. The proof uses the authorized adapter mode.
 
 ID: REQ-models-vision-proof-011
 Source: proposed RFC0036 amendment 1; RFC0038 D18 (about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, Model functions bullet, and the RFC 0036 row of its RFC disposition table); bu-o7lumy
@@ -141,7 +141,7 @@ Scope: v1-mandatory
 
 #### Scenario: Proof call has no tools and a bounded output
 - **WHEN** a control call is assembled
-- **THEN** it SHALL carry no MCP server and no tool definition, one user turn, the inline image part only for the positive control, and the fixed maximum output
+- **THEN** it SHALL carry no MCP server and no tool definition, one user turn, the enforced structured output schema, the inline image part only for the positive control, and the fixed maximum output
 - **AND** an adapter that cannot produce that configuration SHALL end the operation Not run with a named reason before any provider request
 
 #### Scenario: Model output never becomes authority
@@ -151,7 +151,7 @@ Scope: v1-mandatory
 
 ### Requirement: MCP attachment wire shape is pinned by existing tests
 
-The server-side wire shape of MCP image delivery (the image content block returned by `attachment_view` without a `structuredContent` override, and its refusal cases) SHALL stay pinned by the existing tests `test_attachment_view_returns_image_content_block_for_image` and `test_registered_attachment_view_emits_image_block_without_structured_content` in `tests/core/test_attachment_view.py` and the attachment tool tests in `tests/tools/test_attachments.py`. These tests pin only what the butler server emits. Runtime-side forwarding of an MCP image block into inference remains explicitly unproven per row and per runtime version. The vision proof SHALL establish only that the exact model reads an inline image on the exact tuple. No new live-proof requirement SHALL be added for MCP delivery, and an ordinary session's image routing SHALL still require an applicable proof under REQ-models-vision-proof-008.
+The server-side wire shape of MCP image delivery (the image content block returned by `attachment_view` without a `structuredContent` override, and its refusal cases) SHALL stay pinned by the existing tests `test_attachment_view_returns_image_content_block_for_image` and `test_registered_attachment_view_emits_image_block_without_structured_content` in `tests/core/test_attachment_view.py` and the attachment tool tests in `tests/tools/test_attachments.py`. These tests pin only what the butler server emits. Runtime-side forwarding of an MCP image block into inference remains explicitly unproven per row and per runtime version. The vision proof SHALL establish only that the exact model reads an inline image on the exact tuple. No new live-proof requirement SHALL be added for MCP delivery, and ordinary image routing for managed rows SHALL still require an applicable proof under REQ-models-vision-proof-008. Unchanged historical unbound declarations retain their existing behavior.
 
 ID: REQ-models-vision-proof-012
 Source: proposed RFC0036 amendment 1; tests/core/test_attachment_view.py; tests/tools/test_attachments.py; bu-o7lumy
