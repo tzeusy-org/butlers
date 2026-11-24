@@ -170,14 +170,16 @@ def carry_forward_verification(
     verification = stored.get("verification") if isinstance(stored, Mapping) else None
     if not isinstance(verification, Mapping) or verification.get("state") != "verified":
         return notes
+    stored_lines = stored.get("evidence_lines") if stored else None
+    stored_claims = stored.get("claims") if stored else None
     flagged_lines = {
         str(line["id"]): bool(line.get("unsupported"))
-        for line in stored.get("evidence_lines") or []
+        for line in (stored_lines if isinstance(stored_lines, list) else [])
         if isinstance(line, Mapping) and "id" in line
     }
     flagged_claims = {
         str(cid): bool(claim.get("unsupported"))
-        for cid, claim in (stored.get("claims") or {}).items()
+        for cid, claim in (stored_claims.items() if isinstance(stored_claims, Mapping) else [])
         if isinstance(claim, Mapping)
     }
     lines = [
