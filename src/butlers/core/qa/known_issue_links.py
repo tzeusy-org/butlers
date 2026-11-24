@@ -49,7 +49,12 @@ _REPO_PATH = {
 
 def is_valid_tracker_ref(tracker_kind: str, tracker_ref: str) -> bool:
     """Whether ``tracker_ref`` is a well-formed ref of ``tracker_kind`` (length-bounded)."""
-    if len(tracker_ref) > 300:
+    if (
+        len(tracker_ref) > 300
+        or not tracker_ref.isprintable()
+        or any(c.isspace() for c in tracker_ref)
+    ):
+        # urlsplit silently drops embedded tabs and newlines, so reject them before parsing.
         return False
     if tracker_kind == "bead":
         return bool(_BEAD_REF.fullmatch(tracker_ref))

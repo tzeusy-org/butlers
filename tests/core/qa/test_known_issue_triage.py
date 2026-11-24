@@ -142,6 +142,10 @@ PR = "https://github.com/o/r/pull/12"
         ("github_pr", "https://github.com/o/r/pull/12/files", False),
         ("github_issue", "https://github.com/o/r/issues/3", True),
         ("github_issue", PR, False),
+        ("github_pr", "https://github.com/o/r/pu\tll/12", False),
+        ("github_pr", "https://github.com/o/r/pull/12\n", False),
+        ("github_pr", " https://github.com/o/r/pull/12", False),
+        ("bead", "bu-2c\tgabc", False),
         ("email", "x", False),
     ],
 )
