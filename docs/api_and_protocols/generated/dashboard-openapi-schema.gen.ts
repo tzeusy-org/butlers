@@ -21741,6 +21741,11 @@ export interface components {
              * @default false
              */
             has_entries?: boolean;
+            /**
+             * Overlays Available
+             * @default true
+             */
+            overlays_available?: boolean;
             /** Timezone */
             timezone: string;
         };
@@ -22340,10 +22345,25 @@ export interface components {
             /** Next Cursor */
             next_cursor?: string | null;
             /**
+             * Overlays Available
+             * @default true
+             */
+            overlays_available?: boolean;
+            /**
              * People Source Available
              * @default true
              */
             people_source_available?: boolean;
+            /**
+             * Proposals Available
+             * @default true
+             */
+            proposals_available?: boolean;
+            /**
+             * Proposals Dropped Rows
+             * @default 0
+             */
+            proposals_dropped_rows?: number;
             /** Source Freshness */
             source_freshness?: components["schemas"]["CalendarWorkspaceSourceFreshness"][];
             /**
