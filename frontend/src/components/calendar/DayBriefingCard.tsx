@@ -163,8 +163,12 @@ export function DayBriefingCard({
         <p role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
           Couldn&apos;t load this day briefing. {error?.message ?? "Unknown error"}
         </p>
-      ) : unavailable ? (
-        <p data-testid="day-briefing-unavailable" role="alert" className="font-mono text-[11px] text-[var(--red-text)]">
+      ) : unavailable && !(hasDomainContext && hasEntries) ? (
+        <p
+          data-testid="day-briefing-unavailable"
+          role="status"
+          className="font-mono text-[11px] text-[var(--red-text)]"
+        >
           Domain context unavailable. The overlay source could not be read.
         </p>
       ) : !hasDomainContext ? (
@@ -181,6 +185,15 @@ export function DayBriefingCard({
         </p>
       ) : (
         <div className="flex flex-col gap-2.5">
+          {unavailable ? (
+            <p
+              data-testid="day-briefing-partial"
+              role="status"
+              className="font-mono text-[11px] text-[var(--red-text)]"
+            >
+              Some domain context couldn&apos;t be loaded; this list may be incomplete.
+            </p>
+          ) : null}
           {groups.map((group) => (
             <div key={group.source_butler} data-day-briefing-group={group.source_butler}>
               <div className="mb-1 flex items-center gap-1.5">

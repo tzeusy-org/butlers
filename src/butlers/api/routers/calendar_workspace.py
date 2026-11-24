@@ -810,7 +810,7 @@ async def _fetch_proposal_entries(
         return [], False, 0
 
     entries: list[UnifiedCalendarEntry] = []
-    dropped = 0
+    dropped = scan.unreadable_rows
     for proposal in scan.rows:
         try:
             entries.append(_normalize_proposal_entry(proposal, display_tz=display_tz))

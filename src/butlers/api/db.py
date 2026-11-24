@@ -405,6 +405,7 @@ class DatabaseManager:
         query: str,
         args: tuple[Any, ...] = (),
         butler_names: list[str] | None = None,
+        deadline_seconds: float | None = None,
     ) -> tuple[dict[str, list[asyncpg.Record]], list[str]]:
         """Execute a query concurrently across multiple butler databases.
 
@@ -423,6 +424,9 @@ class DatabaseManager:
             targeted butler to its rows (empty list on failure). Every entry
             in ``failed_butler_names`` also has an empty-list entry in
             ``results``; the error is logged either way.
+
+        ``deadline_seconds`` is a per-butler deadline: a schema that has not answered by then is
+        marked failed like any other error, so one hung schema cannot hang the fan-out.
         """
         targets = butler_names if butler_names is not None else self.butler_names
         failed: list[str] = []
@@ -430,7 +434,11 @@ class DatabaseManager:
         async def _query_one(name: str) -> tuple[str, list[asyncpg.Record]]:
             try:
                 p = self._pools[name]
-                rows = await p.fetch(query, *args)
+                if deadline_seconds is None:
+                    rows = await p.fetch(query, *args)
+                else:
+                    async with asyncio.timeout(deadline_seconds):
+                        rows = await p.fetch(query, *args)
                 return (name, rows)
             except Exception:
                 logger.warning("fan_out query failed for butler %s", name, exc_info=True)

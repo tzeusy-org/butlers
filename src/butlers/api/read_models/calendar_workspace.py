@@ -1154,6 +1154,12 @@ async def query_calendar_workspace(
     return rows, failed
 
 
+# Per-schema deadline for the lane reads. An indexed read answers in milliseconds, and the
+# dashboard request itself gives up well after this, so a schema that is silent for 5 seconds is
+# treated as unavailable instead of holding the whole workspace response.
+SCHEMA_READ_DEADLINE_SECONDS = 5.0
+
+
 @dataclass
 class CalendarProposalScan:
     """Pending proposals plus whether the read actually covered every schema.
@@ -1164,6 +1170,8 @@ class CalendarProposalScan:
 
     rows: list[CalendarProposalRow]
     available: bool = True
+    #: Rows that were read but could not be converted; counted so they are never silent.
+    unreadable_rows: int = 0
 
 
 async def query_calendar_proposals(
@@ -1249,16 +1257,27 @@ async def scan_calendar_proposals(
         query_targets = db.butlers_with_module("calendar")
 
     try:
-        results, failed = await db.fan_out_with_status(sql, tuple(args), butler_names=query_targets)
+        results, failed = await db.fan_out_with_status(
+            sql,
+            tuple(args),
+            butler_names=query_targets,
+            deadline_seconds=SCHEMA_READ_DEADLINE_SECONDS,
+        )
     except Exception:
         logger.warning("scan_calendar_proposals fan-out failed", exc_info=True)
         return CalendarProposalScan(rows=[], available=False)
 
     rows: list[CalendarProposalRow] = []
+    unreadable = 0
     for butler_name, raw_rows in results.items():
         for row in raw_rows:
-            rows.append(row_to_proposal(row, db_butler=butler_name))
-    return CalendarProposalScan(rows=rows, available=not failed)
+            try:
+                rows.append(row_to_proposal(row, db_butler=butler_name))
+            except Exception:
+                # One bad row must not wipe the rows already read; it is counted instead.
+                unreadable += 1
+                logger.warning("proposal row in %s could not be read", butler_name, exc_info=True)
+    return CalendarProposalScan(rows=rows, available=not failed, unreadable_rows=unreadable)
 
 
 @dataclass
@@ -1899,7 +1918,9 @@ async def scan_calendar_overlays(
 
     sql = "SELECT butler, key, value FROM calendar.v_overlay_contributions"
     try:
-        results, failed = await db.fan_out_with_status(sql, (), butler_names=[target])
+        results, failed = await db.fan_out_with_status(
+            sql, (), butler_names=[target], deadline_seconds=SCHEMA_READ_DEADLINE_SECONDS
+        )
     except Exception:
         logger.warning(
             "scan_calendar_overlays read failed; returning empty (degraded)",

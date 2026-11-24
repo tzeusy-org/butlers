@@ -9,7 +9,12 @@ lane and the day briefing it SHALL carry `overlays_available`. `proposals_availa
 or (for overlays) no calendar-enabled reader exists, and SHALL be `true` for a confirmed-empty
 read. The dashboard SHALL render an unavailable state for a `false` flag, distinct from the empty
 state ("Nothing awaiting your review", "No domain context for this day"), and SHALL still list
-whatever entries could be read. The read SHALL still return HTTP 200, never a 500.
+whatever entries could be read, saying "Some proposals couldn't be loaded; this list may be
+incomplete." when some are shown and "Proposals unavailable" only when none loaded, in a
+`role="status"` banner. A row that cannot be converted SHALL be counted in
+`proposals_dropped_rows` without discarding the rows already read, and each schema read SHALL have a
+5 second deadline so a hung schema is marked unavailable instead of hanging the response. The read
+SHALL still return HTTP 200, never a 500.
 
 ID: REQ-module-calendar-047
 Source: bu-5ii4gj.4 (run 26 move 4), slice C

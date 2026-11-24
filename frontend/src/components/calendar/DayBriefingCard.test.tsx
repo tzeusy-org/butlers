@@ -101,6 +101,23 @@ describe("DayBriefingCard", () => {
     expect(screen.queryByTestId("day-briefing-clear")).toBeNull();
   });
 
+  it("keeps visible context and says the list may be incomplete when the read was partial", () => {
+    render(
+      <DayBriefingCard
+        heading="Tomorrow · Mon, Feb 23"
+        groups={[financeGroup()]}
+        unavailable
+        hasDomainContext
+        hasEntries
+      />,
+    );
+    const note = screen.getByTestId("day-briefing-partial");
+    expect(note.textContent).toContain("may be incomplete");
+    expect(note.getAttribute("role")).toBe("status");
+    expect(screen.getByText("Electric Co")).toBeTruthy();
+    expect(screen.queryByTestId("day-briefing-unavailable")).toBeNull();
+  });
+
   it("shows an honest empty-state when no specialist contributed", () => {
     render(
       <DayBriefingCard

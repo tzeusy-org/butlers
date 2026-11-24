@@ -268,9 +268,10 @@ export function CalendarProposalsPanel({
       </div>
 
       {unavailable ? (
-        <p data-testid="proposals-unavailable" role="alert" className="text-sm text-fg">
-          Proposals unavailable. Some proposal sources could not be read, so this list may be
-          incomplete.
+        <p data-testid="proposals-unavailable" role="status" className="text-sm text-fg">
+          {visible.length > 0
+            ? "Some proposals couldn't be loaded; this list may be incomplete."
+            : "Proposals unavailable. The proposal sources could not be read."}
         </p>
       ) : null}
       {droppedRows > 0 ? (

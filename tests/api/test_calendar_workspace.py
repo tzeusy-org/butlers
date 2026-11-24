@@ -255,7 +255,7 @@ def _build_app(
             return _scan(source_rows, butler_names)
         return {}
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         # Each fan-out surface reports only its own simulated failures so the
         # honesty flags stay independent: ``entity_people_failed`` flips
         # ``people_source_available`` (bu-qs64f); ``workspace_failed`` flips
@@ -627,7 +627,7 @@ def _build_paginating_app(app, *, rows: list[dict]):
             return {"general": data[:limit]}
         return {}
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         return await _fan_out(query, args, butler_names), []
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
@@ -762,7 +762,7 @@ async def test_workspace_editable_facet_filters_server_side(app):
             return {"general": data[: args[-1]]}
         return {}
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         return await _fan_out(query, args, butler_names), []
 
     mock_db.fan_out_with_status = AsyncMock(side_effect=_fan_out_with_status)
@@ -1916,7 +1916,7 @@ def _build_audit_app(
             return rows_to_scan
         return {}
 
-    async def _fan_out_with_status(query: str, args=(), butler_names=None):
+    async def _fan_out_with_status(query: str, args=(), butler_names=None, deadline_seconds=None):
         failed = list(_audit_failed) if "FROM calendar_action_log" in query else []
         return await _fan_out(query, args, butler_names), failed
 

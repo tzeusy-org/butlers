@@ -111,6 +111,7 @@ describe("CalendarProposalsPanel", () => {
     expect(screen.getByTestId("proposals-unavailable").textContent).toMatch(
       /Proposals unavailable/,
     );
+    expect(screen.getByTestId("proposals-unavailable").getAttribute("role")).toBe("status");
     expect(screen.queryByTestId("proposals-empty")).toBeNull();
     expect(screen.queryByText(/Nothing awaiting your review/)).toBeNull();
   });
@@ -124,7 +125,11 @@ describe("CalendarProposalsPanel", () => {
   it("still lists what it could read and discloses dropped rows", () => {
     renderPanel({ unavailable: true, droppedRows: 2 });
     expect(screen.getByText("Dentist appointment")).toBeTruthy();
-    expect(screen.getByTestId("proposals-unavailable")).toBeTruthy();
+    const banner = screen.getByTestId("proposals-unavailable");
+    expect(banner.textContent).toBe(
+      "Some proposals couldn't be loaded; this list may be incomplete.",
+    );
+    expect(banner.getAttribute("role")).toBe("status");
     expect(screen.getByTestId("proposals-dropped").textContent).toContain("2 proposals");
   });
 
