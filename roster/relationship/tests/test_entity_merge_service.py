@@ -249,15 +249,9 @@ async def _insert_entity(pool, name: str) -> UUID:
 @pytest.fixture
 async def owner_merge_pools(fresh_db):
     """Fresh main chains with bootstrap-established runtime identities (``SET ROLE``)."""
-    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+    from tests.chronicler._private_memory_setup import prepared_chronicler_url
 
-    db_url = await asyncio.to_thread(
-        fresh_db,
-        *_MERGE_CHAINS,
-        schemas=_MERGE_SCHEMAS,
-        revisions={"chronicler": "chronicler_029"},
-    )
-    await asyncio.to_thread(prepare_chronicler_current_head_sync, db_url)
+    db_url = await prepared_chronicler_url(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
 
     async def relationship_role(conn):
         await conn.execute("SET ROLE butler_relationship_rw")
@@ -627,15 +621,9 @@ async def rebind_pools(db, fresh_db):
     Episodes belong to Chronicler (``chronicler_014``), so their references are
     rebound by Chronicler's own receipt, never by Relationship's.
     """
-    from tests.chronicler._private_memory_setup import prepare_chronicler_current_head_sync
+    from tests.chronicler._private_memory_setup import prepared_chronicler_url
 
-    db_url = await asyncio.to_thread(
-        fresh_db,
-        *_MERGE_CHAINS,
-        schemas=_MERGE_SCHEMAS,
-        revisions={"chronicler": "chronicler_029"},
-    )
-    await asyncio.to_thread(prepare_chronicler_current_head_sync, db_url)
+    db_url = await prepared_chronicler_url(fresh_db, *_MERGE_CHAINS, schemas=_MERGE_SCHEMAS)
     return (
         await db.open(db_url, schema="relationship"),
         await db.open(db_url, schema="chronicler"),

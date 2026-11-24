@@ -1,7 +1,7 @@
 """Schema-faithful fixture forwarding for the fixed Chronicler 030 boundary."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,14 +29,15 @@ async def test_default_prepared_pool_uses_same_domain_for_clone_upgrade_and_read
             {
                 "schemas": {"chronicler": "chronicler"},
                 "revisions": {"chronicler": "chronicler_029"},
+                "followup_migrations": (
+                    ("core", "chronicler_mem"),
+                    ("memory", "chronicler_mem"),
+                    ("chronicler", "chronicler"),
+                ),
             },
         )
     ]
-    assert migrations.await_args_list == [
-        call("test-url", chain="core", schema="chronicler_mem"),
-        call("test-url", chain="memory", schema="chronicler_mem"),
-        call("test-url", chain="chronicler", schema="chronicler"),
-    ]
+    migrations.assert_not_awaited()
     db.open.assert_awaited_once_with("test-url", schema="chronicler", max_size=5)
 
 
@@ -67,10 +68,16 @@ async def test_prepared_pool_preserves_explicit_chain_mapping_and_pool_options(m
     assert cloned == [
         (
             ("core", "chronicler"),
-            {"schemas": original, "revisions": {"chronicler": "chronicler_029"}},
+            {
+                "schemas": original,
+                "revisions": {"chronicler": "chronicler_029"},
+                "followup_migrations": (
+                    ("core", "chronicler_mem"),
+                    ("memory", "chronicler_mem"),
+                    ("chronicler", "chronicler"),
+                ),
+            },
         )
     ]
-    assert migrations.await_args_list[-1] == call(
-        "test-url", chain="chronicler", schema="chronicler"
-    )
+    migrations.assert_not_awaited()
     db.open.assert_awaited_once_with("test-url", schema="chronicler", min_size=2, max_size=5)

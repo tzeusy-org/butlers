@@ -35,6 +35,12 @@ def test_template_key_names_one_migrated_state_on_one_server() -> None:
     assert _key(revisions={"core": "core_170"}) != _key()
     assert _key(schemas={"memory": "memory"}) != _key()
     assert _key(_Server("postgresql://admin:pw@localhost:5433/test")) != _key()
+    followups = (("core", "private"), ("memory", "private"))
+    assert _key(followup_migrations=followups) != _key()
+    assert _key(followup_migrations=followups) != _key(followup_migrations=followups[::-1])
+    assert _key(followup_migrations=followups) != _key(
+        followup_migrations=(("core", "other"), ("memory", "other"))
+    )
 
 
 @pytest.mark.unit
@@ -294,6 +300,53 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_chronicler_preparation_is_reused_by_independent_real_clones(
+    db, fresh_db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from butlers import migrations
+    from tests.chronicler import _private_memory_setup as setup
+
+    monkeypatch.delenv(migration._TEMPLATES_ENV, raising=False)
+    prepared_steps: list[tuple[str, str | None]] = []
+    real_migrate = migrations.run_migrations
+
+    async def track_preparation(url, *, chain, schema, **kwargs):
+        prepared_steps.append((chain, schema))
+        return await real_migrate(url, chain=chain, schema=schema, **kwargs)
+
+    monkeypatch.setattr(migrations, "run_migrations", track_preparation)
+    monkeypatch.setattr(setup, "run_migrations", track_preparation)
+    first = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
+    await first.execute("CREATE TABLE chronicler.prepared_clone_probe (id integer)")
+    second = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
+
+    assert await first.fetchval("SELECT current_database()") != await second.fetchval(
+        "SELECT current_database()"
+    )
+    assert await second.fetchval("SELECT to_regclass('chronicler.prepared_clone_probe') IS NULL")
+    for pool in (first, second):
+        assert await pool.fetchval(
+            "SELECT to_regclass('chronicler.covered_local_days') IS NOT NULL"
+        )
+        assert await pool.fetchval("SELECT to_regclass('chronicler_mem.facts') IS NOT NULL")
+
+    expected = [
+        ("core", "chronicler_mem"),
+        ("memory", "chronicler_mem"),
+        ("chronicler", "chronicler"),
+    ]
+    assert prepared_steps == expected
+
+    monkeypatch.setenv(migration._TEMPLATES_ENV, "0")
+    fresh = await setup.open_prepared_chronicler_pool(db, fresh_db, "chronicler")
+    assert await fresh.fetchval("SELECT to_regclass('chronicler.covered_local_days') IS NOT NULL")
+    assert await fresh.fetchval("SELECT to_regclass('chronicler_mem.facts') IS NOT NULL")
+    assert await fresh.fetchval("SELECT to_regclass('chronicler.prepared_clone_probe') IS NULL")
+    assert prepared_steps == expected * 2
+
+
+@pytest.mark.integration
 def test_per_database_role_settings_are_replayed_onto_a_clone(postgres_container) -> None:
     """core_001's ``ALTER ROLE ... IN DATABASE ... SET search_path`` survives cloning."""
     source = migration.migration_db_name()
@@ -368,10 +421,17 @@ def test_template_storage_observes_complete_lifecycle(monkeypatch, stage, disk_f
         def dispose(self):
             calls.append("dispose")
 
+    followups = (("core", "private"), ("memory", "private"))
+
+    def migrate(url, *, followup_migrations, **kwargs):
+        assert followup_migrations == followups
+        assert migration._TEMPLATES == {}
+        operation("migration")
+
     monkeypatch.setattr(migration, "create_migration_db", create)
-    monkeypatch.setattr(migration, "_migrate", lambda *a, **k: operation("migration"))
+    monkeypatch.setattr(migration, "_migrate", migrate)
     monkeypatch.setattr(migration, "create_engine", lambda *a, **k: Engine())
-    request = dict(chains=["core"], schemas={}, revisions={})
+    request = dict(chains=["core"], schemas={}, revisions={}, followup_migrations=followups)
     if stage == "success":
         first = migration._migrated_template(container, **request)
         cold_snapshot = observer.database_snapshot()

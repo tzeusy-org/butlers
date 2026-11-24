@@ -32,8 +32,8 @@ Template clones
 ---------------
 Migrating from scratch dominated many integration files' setup. Each process
 (xdist worker) therefore migrates once per distinct ``(server, chains, schemas,
-revisions)`` request into a template database, and every call returns a fresh
-``CREATE DATABASE ... TEMPLATE`` clone of it. A clone is still a separate
+revisions, followup_migrations)`` request into a template database. Every call
+returns a fresh ``CREATE DATABASE ... TEMPLATE`` clone of it. A clone is still a separate
 database with the real migrated schema; it reuses the template's NOCREATEDB
 login, which owns every object in it. ``CREATE DATABASE`` does not copy
 database-level privileges or per-database role settings (``core_001`` sets each
@@ -74,6 +74,8 @@ _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 _TEMPLATES_ENV = "BUTLERS_TEST_DB_TEMPLATES"
 _TEST_SQL_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]*$")
 _LOGGER = logging.getLogger(__name__)
+
+FollowupMigrations = tuple[tuple[str, str | None], ...]
 
 
 @dataclass(frozen=True)
@@ -412,6 +414,8 @@ def create_migrated_test_db(
     chains: list[str],
     schemas: dict[str, str] | None = None,
     revisions: dict[str, str] | None = None,
+    *,
+    followup_migrations: FollowupMigrations = (),
 ) -> str:
     """Create a fresh DB and run real Alembic migrations against it.
 
@@ -452,6 +456,9 @@ def create_migrated_test_db(
         Example::
 
             revisions={"core": "core_170"}
+    followup_migrations:
+        Ordered (chain, schema) head upgrades after the initial migrations.
+        They are part of the template identity and complete before it can be cloned.
 
     Returns
     -------
@@ -476,11 +483,21 @@ def create_migrated_test_db(
     if os.environ.get(_TEMPLATES_ENV, "1") == "0":
         _storage_database("migration_intent", postgres_container, db_name, "F")
         db_url = create_migration_db(postgres_container, db_name)
-        _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        _migrate(
+            db_url,
+            chains=chains,
+            schemas=schemas,
+            revisions=revisions,
+            followup_migrations=followup_migrations,
+        )
         _storage_database("migrated_ready", postgres_container, db_name, "F")
         return db_url
     template = _migrated_template(
-        postgres_container, chains=chains, schemas=schemas, revisions=revisions
+        postgres_container,
+        chains=chains,
+        schemas=schemas,
+        revisions=revisions,
+        followup_migrations=followup_migrations,
     )
     return _clone_template(postgres_container, template, db_name)
 
@@ -519,7 +536,12 @@ def clone_migrated_tables(
 
 
 def _migrate(
-    db_url: str, *, chains: list[str], schemas: dict[str, str], revisions: dict[str, str]
+    db_url: str,
+    *,
+    chains: list[str],
+    schemas: dict[str, str],
+    revisions: dict[str, str],
+    followup_migrations: FollowupMigrations = (),
 ) -> None:
     """Run each chain's real migrations, in order, against *db_url*."""
     # Local import avoids a circular import at module load time.
@@ -533,6 +555,9 @@ def _migrate(
         else:
             _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
 
+    for chain, schema in followup_migrations:
+        asyncio.run(run_migrations(db_url, chain=chain, schema=schema))
+
 
 def template_key(
     postgres_container: object,
@@ -540,6 +565,7 @@ def template_key(
     chains: list[str],
     schemas: dict[str, str],
     revisions: dict[str, str],
+    followup_migrations: FollowupMigrations = (),
 ) -> str:
     """Identify one migrated state on one server; chain order is significant."""
     server = postgres_container.get_connection_url()  # type: ignore[attr-defined]
@@ -548,6 +574,7 @@ def template_key(
         "chains": list(chains),
         "schemas": sorted(schemas.items()),
         "revisions": sorted(revisions.items()),
+        "followup_migrations": followup_migrations,
     }
     return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:16]
 
@@ -558,9 +585,16 @@ def _migrated_template(
     chains: list[str],
     schemas: dict[str, str],
     revisions: dict[str, str],
+    followup_migrations: FollowupMigrations = (),
 ) -> _Template:
     """Build (once per process and key) the migrated template to clone from."""
-    key = template_key(postgres_container, chains=chains, schemas=schemas, revisions=revisions)
+    key = template_key(
+        postgres_container,
+        chains=chains,
+        schemas=schemas,
+        revisions=revisions,
+        followup_migrations=followup_migrations,
+    )
     with _TEMPLATE_LOCKS_GUARD:
         lock = _TEMPLATE_LOCKS.setdefault(key, threading.Lock())
     with lock:
@@ -571,7 +605,13 @@ def _migrated_template(
         _storage_database("intent", postgres_container, name, "T")
         try:
             db_url = create_migration_db(postgres_container, name)
-            _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+            _migrate(
+                db_url,
+                chains=chains,
+                schemas=schemas,
+                revisions=revisions,
+                followup_migrations=followup_migrations,
+            )
             admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
             engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
             try:

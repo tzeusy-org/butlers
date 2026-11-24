@@ -5,8 +5,8 @@ Every DB-backed test gets its database here, never from a per-file ``pool`` or
 
 - :func:`migrated_url` returns a fresh database migrated by the real Alembic
   chains. Each process (xdist worker) migrates once per distinct
-  ``(chains, schemas, revisions)`` request into a template and every call
-  clones it (:mod:`butlers.testing.migration`), so a clone costs a
+  ``(chains, schemas, revisions, followup_migrations)`` request into a template.
+  Each call clones it (:mod:`butlers.testing.migration`), so a clone costs a
   ``CREATE DATABASE ... TEMPLATE`` instead of a migration run.
 - :func:`migrated_pool` opens an asyncpg pool on such a clone with the same
   JSONB codec and search-path behaviour as production
@@ -40,7 +40,7 @@ from collections.abc import Awaitable, Callable
 
 import asyncpg
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import FollowupMigrations, create_migrated_test_db, migration_db_name
 
 Init = Callable[[asyncpg.Connection], Awaitable[None]]
 
@@ -50,10 +50,16 @@ def migrated_url(
     *chains: str,
     schemas: dict[str, str] | None = None,
     revisions: dict[str, str] | None = None,
+    followup_migrations: FollowupMigrations = (),
 ) -> str:
     """A fresh clone of the migrated template for *chains* (default ``core``)."""
     return create_migrated_test_db(
-        postgres_container, migration_db_name(), list(chains or ("core",)), schemas, revisions
+        postgres_container,
+        migration_db_name(),
+        list(chains or ("core",)),
+        schemas,
+        revisions,
+        followup_migrations=followup_migrations,
     )
 
 
