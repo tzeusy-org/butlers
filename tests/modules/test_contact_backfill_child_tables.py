@@ -425,11 +425,6 @@ async def test_dates_and_labels_land_entity_anchored_rows_on_the_migrated_schema
 @_db_backed[0]
 @_db_backed[1]
 @_db_backed[2]
-@pytest.mark.xfail(
-    strict=True,
-    reason="bu-axw3cd: addresses.label is VARCHAR, so $2 is deduced as both text and "
-    "varchar and every upsert_addresses INSERT raises AmbiguousParameterError",
-)
 async def test_addresses_land_on_the_migrated_schema(db) -> None:
     contact = CanonicalContact(
         external_id="people/1",
