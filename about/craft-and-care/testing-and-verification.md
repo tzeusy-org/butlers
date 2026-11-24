@@ -197,6 +197,22 @@ assertion (`assert_not_called`, `call_count`) often encodes a real contract such
 as idempotency, delivery cadence or a no-send boundary, so treat it as protected
 until shown otherwise. Deletion stays a review decision, not a count target.
 
+## Gate species
+
+Use one gate species per invariant: a behavior test, a source-scan rule in
+`tests/architecture/source_rules.py`, a data row, or a type/lint rule such as
+import-linter. A structural rule that needs parsing (string literals, an
+enclosing function, or a call shape) uses `butlers.testing.source_guard`.
+Do not add a test file with a private walker for each new invariant.
+
+Raw-text checks for retired names belong in the bu-ly3lv5.13 retired-surfaces
+rows; surviving doc/RFC phrase contracts belong in the bu-ly3lv5.12 doc-phrase
+rows. Those checkers remain prerequisites for their planned migrations; this
+guidance does not create substitutes or declare them delivered. Data validators
+remain behavior tests. Choose the species that enforces the actual invariant
+without duplicating it in another gate. Existing checks stay until their
+reviewed migration preserves the required behavior and deletion accounting.
+
 ## Evidence Expectations
 
 When reporting completion, include the checks that actually ran. For example:

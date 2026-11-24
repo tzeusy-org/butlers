@@ -29,8 +29,12 @@ without anyone articulating that.
 from __future__ import annotations
 
 import ast
+import copy
 import re
-from functools import cache
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+from functools import cache, lru_cache
+from pathlib import Path
 
 
 def scopes(tree: ast.Module) -> list[ast.AST]:
@@ -116,3 +120,161 @@ def pragma_declaration(
         if match is not None:
             return True, match.group("reason").strip()
     return any(pragma in line for line in span), None
+
+
+def python_files(
+    globs: Iterable[str], exclude: Iterable[str] = (), *, root: Path = Path(".")
+) -> tuple[Path, ...]:
+    """Resolve a deterministic Python scope; an empty effective scope is an error."""
+    omitted = {path for pattern in exclude for path in root.glob(pattern)}
+    paths = {
+        path
+        for pattern in globs
+        for path in root.glob(pattern)
+        if path.is_file() and path.suffix == ".py" and path not in omitted
+    }
+    if not paths:
+        raise ValueError("empty Python source scope")
+    return tuple(sorted(paths))
+
+
+@lru_cache(maxsize=128)
+def _parse_source(path: str, source: str) -> ast.Module:
+    return ast.parse(source, filename=path)
+
+
+def parse_file(path: Path) -> ast.Module:
+    """Cache by path and content. Treat the result as read-only.
+
+    Transformations such as :func:`strip_docstrings` take their own copy.
+    Including content in the key keeps scratch-file mutations visible.
+    """
+    return _parse_source(str(path), path.read_text(encoding="utf-8"))
+
+
+def strip_docstrings(tree: ast.Module) -> ast.Module:
+    """Copy a tree without module, class or function docstrings. Never mutate input."""
+    result = copy.deepcopy(tree)
+    for node in ast.walk(result):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            if (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            ):
+                node.body.pop(0)
+    return result
+
+
+def calls_with_owner(tree: ast.Module) -> Iterator[tuple[str, ast.Call]]:
+    """Yield calls with lexical class/function owners, including async/nested bodies.
+
+    Decorators, bases, defaults and annotations belong to the enclosing owner.
+    A module-level call has owner ``<module>``.
+    """
+
+    def walk(node: ast.AST, owner: str) -> Iterator[tuple[str, ast.Call]]:
+        if isinstance(node, ast.Call):
+            yield owner, node
+        declaration = isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        child_owner = f"{owner}.{node.name}" if declaration and owner else ""
+        if declaration and not owner:
+            child_owner = node.name
+        for field, value in ast.iter_fields(node):
+            children = value if isinstance(value, list) else [value]
+            for child in children:
+                if isinstance(child, ast.AST):
+                    yield from walk(
+                        child, child_owner if declaration and field == "body" else owner
+                    )
+
+    for owner, call in walk(tree, ""):
+        yield owner or "<module>", call
+
+
+def sql_literals(tree: ast.Module) -> Iterator[str]:
+    """Yield maximal SQL-verb literals, folding ``+`` and f-string static parts.
+
+    Dynamic expressions become ``{...}``; they are never evaluated. Comments
+    and docstrings are excluded. This is extraction, not SQL validation.
+    """
+
+    def fold(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            return "".join(fold(value) or "{...}" for value in node.values)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left, right = fold(node.left), fold(node.right)
+            if left is not None or right is not None:
+                return (left or "{...}") + (right or "{...}")
+        return None
+
+    def walk(node: ast.AST) -> Iterator[str]:
+        value = fold(node)
+        if value is not None:
+            if re.match(r"\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b", value, re.I):
+                yield value
+            return
+        for child in ast.iter_child_nodes(node):
+            yield from walk(child)
+
+    yield from walk(strip_docstrings(tree))
+
+
+def import_edges(tree: ast.Module) -> Iterator[tuple[int, str, bool]]:
+    """Yield import sites and TYPE_CHECKING context, preserving relative prefixes.
+
+    Recognizes ``typing`` and ``TYPE_CHECKING`` import aliases. Only the true
+    arm is type-only; else imports remain runtime edges.
+    """
+    typing_names = {"typing"}
+    checking_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            typing_names.update(a.asname or a.name for a in node.names if a.name == "typing")
+        elif isinstance(node, ast.ImportFrom) and node.module == "typing":
+            checking_names.update(
+                a.asname or a.name for a in node.names if a.name == "TYPE_CHECKING"
+            )
+
+    def is_check(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Name)
+            and node.id in checking_names
+            or isinstance(node, ast.Attribute)
+            and node.attr == "TYPE_CHECKING"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in typing_names
+        )
+
+    def walk(node: ast.AST, type_only: bool = False) -> Iterator[tuple[int, str, bool]]:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield node.lineno, alias.name, type_only
+        elif isinstance(node, ast.ImportFrom):
+            yield node.lineno, "." * node.level + (node.module or ""), type_only
+        if isinstance(node, ast.If):
+            for child in node.body:
+                yield from walk(child, type_only or is_check(node.test))
+            for child in node.orelse:
+                yield from walk(child, type_only)
+        else:
+            for child in ast.iter_child_nodes(node):
+                yield from walk(child, type_only)
+
+    yield from walk(tree)
+
+
+@dataclass(frozen=True, order=True)
+class Violation:
+    path: Path
+    line: int
+    rule: str
+    detail: str
+
+
+def format_violations(violations: Iterable[Violation]) -> str:
+    """Render stable, editor-clickable diagnostics."""
+    return "\n".join(f"{v.path}:{v.line}: [{v.rule}] {v.detail}" for v in sorted(violations))
