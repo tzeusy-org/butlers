@@ -5,6 +5,7 @@ import { useQaCase, useQaCaseJournal } from "@/hooks/use-qa";
 
 import { CaseDossierHeader } from "./CaseDossierHeader";
 import { ClaimAnchoredBlurb } from "./ClaimAnchoredBlurb";
+import { ProposalExportPanel } from "./ProposalExportPanel";
 import { getClaimOrderFromSegments } from "./claimOrder";
 import { CounterEvidence } from "./CounterEvidence";
 import { EvidenceLog } from "./EvidenceLog";
@@ -241,6 +242,9 @@ export function CaseDossier({
             stage={dossier.state_track_stage}
             proposalState={dossier.proposal_state}
           />
+          {dossier.proposal_state === "unpublished" ? (
+            <ProposalExportPanel caseId={dossier.case.id} />
+          ) : null}
         </section>
       </div>
 

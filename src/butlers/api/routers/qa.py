@@ -40,6 +40,7 @@ All reads/writes query ``public.qa_patrols``, ``public.qa_findings``,
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -100,6 +101,9 @@ from butlers.core.qa.patrol_status import (
     is_valid_patrol_status,
     require_patrol_status,
 )
+from butlers.core.qa.publication.export import ExportRefused
+from butlers.core.qa.publication.retention import encode_objects, load_retained_export
+from butlers.core.qa.publication.state import PublicationRefused
 from butlers.core.qa.remediation_liveness import (
     STREAK_SQL as _LOOP_STREAK_SQL,
 )
@@ -572,6 +576,31 @@ class QaJournalEvent(BaseModel):
 #: refusal receipt) and ledger proof that no PR exists; ``ambiguous`` means a
 #: retained proposal whose publication outcome awaits exact read-only reconciliation.
 ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
+
+
+class QaProposalExport(BaseModel):
+    """A retained, validated QA patch the owner can publish under their own identity.
+
+    ``bundle_b64`` (with ``?bundle=true``) is the sealed export's exact object bytes in the
+    retention framing (``<oid> <kind> <size>\\n<data>`` per object); the client
+    re-derives every object id and the ``digest`` before using it. Nothing here is a credential.
+    """
+
+    case_id: uuid.UUID
+    branch_name: str
+    base_sha: str
+    head_sha: str
+    commits: list[str]
+    digest: str
+    paths: list[str]
+    diff: list[DiffLine]
+    diff_truncated: bool
+    #: Present only when requested with ``?bundle=true``; the dossier needs just the metadata.
+    bundle_b64: str | None = None
+    bundle_bytes: int
+    #: True for an export sealed before investigator isolation: it needs a per-PR owner approval
+    #: before any publisher pushes it (the publisher precondition of bu-ejow5p).
+    sealed_before_isolation: bool
 
 
 class QaCaseDossier(BaseModel):
@@ -2547,6 +2576,78 @@ async def get_case(
         error_detail=row.get("error_detail"),
     )
     return ApiResponse(data=dossier)
+
+
+_PROPOSAL_REFUSALS: dict[str, tuple[int, str]] = {
+    "export_pruned": (410, "The retained proposal has been pruned and can no longer be exported."),
+    "export_tampered": (409, "The retained proposal failed its integrity check."),
+    "datastore_unavailable": (503, "The retained proposal could not be read."),
+}
+
+
+@router.get("/cases/{case_id}/proposal", response_model=ApiResponse[QaProposalExport])
+async def get_case_proposal(
+    case_id: uuid.UUID,
+    *,
+    db: Db,
+    bundle: Annotated[bool, Query(description="Include the sealed object bytes.")] = False,
+) -> ApiResponse[QaProposalExport]:
+    """Serve the retained sealed patch for one case, integrity-checked, for owner adoption."""
+    pool = _shared_pool(db)
+    attempt = await pool.fetchrow(
+        """
+        SELECT a.branch_name, x.sealed_before_isolation
+        FROM public.healing_attempts a
+        LEFT JOIN public.qa_publication_exports x ON x.attempt_id = a.id
+        WHERE a.id = $1
+        """,
+        case_id,
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail=f"QA case not found: {case_id}")
+    try:
+        export = await load_retained_export(pool, case_id)
+    except (PublicationRefused, ExportRefused) as exc:
+        status, detail = _PROPOSAL_REFUSALS.get(
+            exc.code, (409, "The retained proposal is unusable.")
+        )
+        raise HTTPException(status_code=status, detail=detail) from exc
+    branch = attempt["branch_name"]
+    if export is None or not branch:
+        raise HTTPException(status_code=404, detail="No retained proposal for this case.")
+    row = await pool.fetchrow(
+        """
+        SELECT structured_evidence AS finding_structured_evidence
+        FROM public.qa_findings
+        WHERE healing_attempt_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        case_id,
+    )
+    diff = _proposal_diff_from_case_row(row or {})
+    paths = [
+        line.text.split(" b/", 1)[1]
+        for line in diff
+        if line.kind == "meta" and line.text.startswith("diff --git a/") and " b/" in line.text
+    ]
+    framed = encode_objects(export.objects)
+    return ApiResponse(
+        data=QaProposalExport(
+            case_id=case_id,
+            branch_name=branch,
+            base_sha=export.base_sha,
+            head_sha=export.head_sha,
+            commits=list(export.commits),
+            digest=export.digest,
+            paths=paths,
+            diff=diff,
+            diff_truncated=any(line.text.startswith("...") for line in diff),
+            bundle_b64=base64.b64encode(framed).decode("ascii") if bundle else None,
+            bundle_bytes=len(framed),
+            sealed_before_isolation=bool(attempt["sealed_before_isolation"]),
+        )
+    )
 
 
 @router.get("/cases/{case_id}/journal", response_model=PaginatedResponse[QaJournalEvent])
