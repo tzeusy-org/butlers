@@ -342,3 +342,16 @@ async def test_attempt_cleanup_can_remove_a_worktree_holding_the_bundle(tmp_path
     )
 
     assert done.returncode == 0 and not worktree.exists()
+
+
+async def test_an_unavailable_section_hands_its_byte_share_to_later_sections(monkeypatch) -> None:
+    monkeypatch.setattr(eb, "MAX_BUNDLE_BYTES", 5 * 700)
+    outcomes = [{"status": "failed", "error_detail": "y" * 300, "closed_at": NOW} for _ in range(5)]
+
+    unreadable = await _build(_pool(outcomes=outcomes, fail={"tools"}))
+    empty = await _build(_pool(outcomes=outcomes))
+
+    def kept(bundle):
+        return len(next(s for s in bundle.sections if s.name == "recent_outcomes").items)
+
+    assert kept(unreadable) == kept(empty) > 1

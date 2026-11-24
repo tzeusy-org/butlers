@@ -386,6 +386,7 @@ async def build_evidence_bundle(
             # The class name only: a driver or parser error can echo the content it read.
             logger.warning("Evidence bundle section %s unavailable: %s", name, type(exc).__name__)
             sections.append(EvidenceSection(name, "unavailable"))
+            carry += share  # its unused share stays available to the later sections
             continue
         # Each section gets an equal share plus whatever earlier sections left unused (fixed
         # order, so the result is deterministic). Size is the serialized JSON the file holds.
