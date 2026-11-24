@@ -125,7 +125,7 @@ been spawned to investigate the root cause and propose a fix.
 **Discovery source:** {source_type}
 **Occurrences:** {occurrence_count} (first seen: {first_seen}, last seen: {last_seen})
 
-{evidence_section}{context_section}{dashboard_section}\
+{evidence_section}{evidence_bundle_section}{context_section}{dashboard_section}\
 ## Your Task
 
 1. Read the relevant source code (your CWD is a QA helper directory inside an \
@@ -167,18 +167,30 @@ issue-tracker/session-close procedures that are unrelated to this investigation.
 ``uv run ruff check src/ tests/``.
 - Stay within the scope of this specific error.
 - This investigation was triggered automatically by the QA patrol system, \
-not by a live user session — the error context above is all the information \
-available.
+not by a live user session. You have no database, log or tracing access; the \
+error context above and the evidence bundle (when one is named) are everything \
+the dispatcher observed. Do not assume other runtime data exists.
 """
 
 _EVIDENCE_SECTION_TEMPLATE = """\
 ## Structured Evidence
 
 The QA patrol recorded the following diagnostic identifiers from the discovery \
-source.  These do not contain raw log content or user data.  Use them to \
-correlate with session logs and metrics:
+source.  These do not contain raw log content or user data.  They are \
+identifiers only: you cannot look them up, so rely on the evidence bundle \
+(when one is named) for anything observed:
 
 {evidence_lines}
+
+"""
+
+_EVIDENCE_BUNDLE_SECTION_TEMPLATE = """\
+## Evidence Bundle
+
+The dispatcher observed the following about this error and wrote it, anonymized, to \
+``{bundle_path}`` (read-only JSON).  Each item has an id (``E1``, ``E2``, ...) and a \
+digest.  A section marked ``unavailable`` could not be read; do not guess its content.  \
+Cite only what the bundle contains.
 
 """
 
@@ -243,6 +255,7 @@ def build_investigation_prompt(
     finding: QaFinding,
     attempt_id: uuid.UUID,
     dashboard_base_url: str | None = None,
+    evidence_bundle_path: str | None = None,
 ) -> str:
     """Build the investigation prompt for a QA agent session.
 
@@ -260,6 +273,9 @@ def build_investigation_prompt(
         When provided, the prompt includes a link to the investigation detail page.
         When ``None``, the link is omitted (the dashboard may be on a private
         tailnet and the link would leak the hostname to a public PR).
+
+    evidence_bundle_path:
+        Where the agent finds the dispatcher's evidence bundle, when one was written.
 
     Returns
     -------
@@ -286,6 +302,12 @@ def build_investigation_prompt(
                 evidence_lines=evidence_lines,
             )
 
+    evidence_bundle_section = (
+        _EVIDENCE_BUNDLE_SECTION_TEMPLATE.format(bundle_path=_escape(evidence_bundle_path))
+        if evidence_bundle_path
+        else ""
+    )
+
     # Build optional context section (diagnostic reasoning from butler_reports source)
     context_section = ""
     if finding.context and finding.context.strip():
@@ -309,6 +331,7 @@ def build_investigation_prompt(
         first_seen=finding.first_seen.isoformat(),
         last_seen=finding.last_seen.isoformat(),
         evidence_section=evidence_section,
+        evidence_bundle_section=evidence_bundle_section,
         context_section=context_section,
         dashboard_section=dashboard_section,
         investigation_notes_json_guidance=_INVESTIGATION_NOTES_JSON_GUIDANCE,

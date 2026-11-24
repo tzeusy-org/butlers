@@ -38,6 +38,7 @@ from butlers.core.runtimes.base import JobRunner, QaJobLaunch
 logger = logging.getLogger(__name__)
 
 CLONE_DIR = "repo"
+EVIDENCE_DIR = "evidence"
 SCRATCH_DIR = "scratch"
 _ARTIFACT_CAP = 1 << 20
 
@@ -114,6 +115,15 @@ class JobIsolation:
 
     def clone_dir(self, attempt_id: uuid.UUID) -> Path:
         return self.attempt_dir(attempt_id) / CLONE_DIR
+
+    def evidence_dir(self, attempt_id: uuid.UUID) -> Path:
+        """Where the dispatcher writes the read-only evidence bundle, beside the clone."""
+        return self.attempt_dir(attempt_id) / EVIDENCE_DIR
+
+    @staticmethod
+    def pod_evidence_path() -> str:
+        """The bundle's path as the pod sees it."""
+        return f"{ij.WORKSPACE_MOUNT}/{EVIDENCE_DIR}/bundle.json"
 
     def scratch_dir(self, attempt_id: uuid.UUID) -> Path:
         """Daemon-owned scratch: lives beside, not inside, the pod-writable attempt directory."""

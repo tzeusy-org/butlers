@@ -721,6 +721,86 @@ async def test_run_investigation_reports_model_resolution_refusal_as_no_model(
 
 
 @pytest.mark.asyncio
+async def test_run_investigation_refuses_launch_when_evidence_is_withheld(tmp_path: Path) -> None:
+    """An unanonymizable bundle never reaches the agent and is not a launched execution."""
+    from butlers.core.qa.evidence_bundle import EvidenceWithheld
+
+    attempt_id = uuid.uuid4()
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock()
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch.build_evidence_bundle",
+            new_callable=AsyncMock,
+            side_effect=EvidenceWithheld("x"),
+        ),
+        patch(
+            "butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock
+        ) as update_status,
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ) as remove,
+    ):
+        await _run_investigation_session(
+            pool=_qa_pool(),
+            repo_root=tmp_path,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abcdef123456",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    spawner.trigger.assert_not_awaited()
+    assert update_status.await_args.args[:3] == (ANY, attempt_id, "failed")
+    assert update_status.await_args.kwargs["error_detail"].startswith("evidence_withheld:")
+    remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_investigation_prompt_names_the_recorded_bundle(tmp_path: Path) -> None:
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+
+    with (
+        patch(
+            "butlers.core.qa.dispatch._prepare_evidence_bundle",
+            new_callable=AsyncMock,
+            return_value="evidence/bundle.json",
+        ),
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
+            new_callable=AsyncMock,
+        ),
+    ):
+        await _run_investigation_session(
+            pool=_qa_pool(),
+            repo_root=tmp_path,
+            attempt_id=uuid.uuid4(),
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abcdef123456",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token="ghtoken",
+        )
+
+    assert "evidence/bundle.json" in spawner.trigger.await_args.kwargs["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_persist_notes_and_remove_worktree_skips_diff_fallback_when_notes_persist(
     tmp_path: Path,
 ):
