@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,7 +12,6 @@ from butlers.core_tools._base import ToolContext
 from butlers.core_tools._messenger import register_messenger_tools
 from butlers.core_tools._routing import _build_routed_delivery_command, register_routing_tools
 
-ROOT = Path(__file__).resolve().parents[2]
 _RETIRED_MCP_TOOLS = (
     "messenger_delivery_status",
     "messenger_delivery_search",
@@ -93,9 +91,3 @@ async def test_registered_route_execute_delegates_to_direct_channel_adapter_with
     assert command.tool_args == {"chat_id": "owner-chat", "text": "[health] Reminder"}
     await command.execute()
     telegram._send_message.assert_awaited_once_with("owner-chat", "[health] Reminder")
-
-
-def test_retired_messenger_api_module_and_tracking_files_are_absent() -> None:
-    assert not (ROOT / "roster/messenger/api/router.py").exists()
-    assert not (ROOT / "roster/messenger/modules/__init__.py").exists()
-    assert not (ROOT / "roster/messenger/tools/delivery/tracking.py").exists()

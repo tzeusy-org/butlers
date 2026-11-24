@@ -1,0 +1,40 @@
+# Add a [[surface]] row with its owner bead and live replacement/survivor.
+# scope uses Git pathspecs; regexes scan whole files, including multiline SQL.
+[[surface]]
+id = "contacts-tables"
+kind = "pattern"
+state = "retired"
+pattern = '\b(?:FROM|JOIN|INTO|UPDATE|DELETE\s+FROM|REFERENCES)\s+(?:public\.)?(?:contacts|contact_info)\b'
+scope = ["src/butlers", "roster"]
+exclude_parts = ["migrations", "tests", "__pycache__"]
+suffixes = [".py", ".sql"]
+allow = [{path = "src/butlers/jobs/briefing.py", line_contains = "no JOIN contacts"}]
+bead = "bu-oluyt.8"
+survivor = "relationship.entity_facts + public.entities; tests/contracts/test_contacts_schema_retired.py::test_identity_resolver_reads_entity_facts"
+
+[[surface]]
+id = "messenger-api"
+kind = "path"
+state = "retired"
+pattern = "roster/messenger/api/router.py"
+scope = ["roster/messenger"]
+bead = "bu-g6v9v.1"
+survivor = "tests/core/test_messenger_tracking_retirement.py::test_actual_fastmcp_surface_keeps_live_egress_boundary_and_omits_retired_tools"
+
+[[surface]]
+id = "messenger-modules"
+kind = "path"
+state = "retired"
+pattern = "roster/messenger/modules/__init__.py"
+scope = ["roster/messenger"]
+bead = "bu-g6v9v.1"
+survivor = "tests/core/test_messenger_tracking_retirement.py::test_actual_fastmcp_surface_keeps_live_egress_boundary_and_omits_retired_tools"
+
+[[surface]]
+id = "messenger-tracking"
+kind = "path"
+state = "retired"
+pattern = "roster/messenger/tools/delivery/tracking.py"
+scope = ["roster/messenger"]
+bead = "bu-g6v9v.1"
+survivor = "tests/core/test_messenger_tracking_retirement.py::test_registered_route_execute_delegates_to_direct_channel_adapter_without_tracking_tables"

@@ -247,6 +247,7 @@ changes infrastructure or historical data.
 | [`scram_verifier.py`](scram_verifier.py) | `docs/runtime/capability-health.md` (writer login rollout step) | Reads a password on stdin and prints its SCRAM-SHA-256 verifier so the plaintext never reaches psql history or server logs. |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
+| [`check_retired_surfaces.py`](check_retired_surfaces.py) | `ci.yml` guards, `make lint`, `make check-guards` | Checks retired paths/patterns and deprecated ceilings/expiry declared in [`retired_surfaces.toml`](retired_surfaces.toml). |
 | [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
 | [`check_egress_profile_coverage.py`](check_egress_profile_coverage.py) | `ci.yml`, `make check-egress-profile-coverage`, `make check-guards` | Checks reviewed endpoint declarations, dynamic resolver identities and vendor input bindings against workload profiles; denied functionality gaps remain explicit. |
 | [`verify_qa_isolation.py`](verify_qa_isolation.py) | operator (`render` offline; `run` against a `-dev` namespace) | Applies the QA investigator probe Job, a canary-publisher pod and one-hardening-removed inverse controls as the launcher service account, and emits a content-blind pass/RED/PASS receipt. |
@@ -371,6 +372,48 @@ criteria and dry-run controls before applying it to a database.
 | [`retention_drain.py`](retention_drain.py) | operators, per [controlled retention](../docs/operations/controlled-retention-drain.md) | One authorized fixed-cutoff Switchboard READ ONLY inventory; no live-delete CLI. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | operators, per the active `repair-whatsapp-identity-reconciliation` change (tasks 6.3 and 6.4) | Content-blind WhatsApp entity reconciliation pass. Delete when that change archives. |
 | [`scrub_filtered_event_previews.py`](scrub_filtered_event_previews.py) | operators, per [connectors overview](../docs/connectors/overview.md) | Scrubs preview text from filtered-event buffers; imported by two connector tests. |
+
+## Retired and deprecated surfaces
+
+Add a `[[surface]]` row to [`retired_surfaces.toml`](retired_surfaces.toml) when a
+path or source pattern must stay gone. Every row needs `id`, `kind` (`path` or
+`pattern`), `state` (`retired` or `deprecated`), `pattern`, `scope`, `bead` (the
+owning retirement issue), and `survivor` (the live replacement or executing check).
+Run `python3 scripts/check_retired_surfaces.py`; `make lint` and the CI guards job
+run the same check. Each entry reports scanned, matched and allowed counts;
+violations exit 1 with `file:line`, entry id, bead and survivor.
+
+`scope` is a nonempty list of repository-relative Git pathspecs. Pattern entries
+read the whole UTF-8 text of tracked files, so regex whitespace can span lines.
+Optional `suffixes` restrict extensions and `exclude_parts` excludes directory
+components. Read/decode errors and zero selected files fail rather than skip.
+Path entries match a repository-relative filesystem glob, including untracked
+files and directories; their tracked scope still must be nonempty.
+
+`allow = [{path = "exact/path.py", line_contains = "specific exception"}]`
+exempts a pattern hit only when both its path and starting line match. The
+Contacts entry preserves the old case-sensitive uppercase SQL pattern, `.py`/`.sql`
+scope under `src/butlers` and `roster`, migration/test/cache exclusions, and the
+single briefing comment containing `no JOIN contacts`. Lowercase prose, live
+`contacts_source_links`/`contacts_sync_state` names and `contact_id` columns remain
+outside that pattern. The secrets-only resolution restriction stays in its
+own retained Contacts tests; Messenger's live FastMCP/adapter tests also remain.
+
+Retired entries require zero unallowed hits. Deprecated entries also require an
+explicit nonnegative integer `ceiling` and `expires = YYYY-MM-DD` (a TOML date).
+They fail above the ceiling or after the expiry date, using the host's current
+date; the date itself remains valid. `--tighten` first checks every entry, then
+lowers deprecated ceilings to observed counts without raising any ceiling or
+changing expiry, comments or other fields. Use standalone `[[surface]]` headers
+and decimal `ceiling` assignments for this mode. A failure leaves the registry
+untouched. Independent reductions remain valid when their combined source fits
+the smaller ceiling; resolve a ceiling conflict by retaining that smaller value.
+
+The scanner migration in bu-ly3lv5.13 follows current REQ-testing-053: the October
+manifest mechanism was retired by bu-lm2b4v, and test removal is reviewed using
+the PR's measured `Tests:` delta and executing survivors. The registry guards
+production surfaces and does not authorize or reject test deletion. Rollback
+removes its lint/CI invocation and fan-in entry; registry data is otherwise inert.
 
 ## ci_branch_hygiene.py and fetch_pr_metadata.py
 

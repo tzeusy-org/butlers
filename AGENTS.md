@@ -151,6 +151,8 @@ traps for that subsystem. Read it before changing the subsystem.
 
 ### Cross-cutting test rules
 
+- Add retired paths/patterns to `scripts/retired_surfaces.toml` with bead and survivor; `make lint` checks them (`scripts/README.md` documents deprecation ceilings and expiry).
+
 The rest of the test traps are in [test traps](docs/testing/test-traps.md). These three apply to every
 check you write or read:
 

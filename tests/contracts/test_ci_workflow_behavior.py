@@ -341,6 +341,7 @@ def test_local_check_guards_runs_the_hosted_static_guard_commands() -> None:
         "Lint": "make lint",
         "Format check": "uv run ruff format --check src/ tests/ roster/ conftest.py -q",
         "SQL safety check (FOR UPDATE + outer join)": "make check-for-update-joins",
+        "Check retired surfaces": "python3 scripts/check_retired_surfaces.py",
     }
     for name, command in static_commands.items():
         assert _workflow_step(job=guards, name=name)["run"] == command
@@ -358,6 +359,7 @@ def test_local_check_guards_runs_the_hosted_static_guard_commands() -> None:
         "uv run ruff check src/ tests/",
         static_commands["Format check"],
         "scripts/check_for_update_joins.py",
+        static_commands["Check retired surfaces"],
     ):
         assert command in dry_run
 

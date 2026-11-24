@@ -248,6 +248,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/check_duplicate_toplevel_names.py
 
+      - name: Check retired surfaces
+        id: retired_surfaces
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check_retired_surfaces.py
+
       # Reviewed source classification, not a runtime policy conversion certificate.
       - name: Check reviewed host-policy selector inventory
         id: host_policy_selectors
@@ -284,6 +289,7 @@ jobs:
             openspec_strict=${{ steps.openspec_strict.outcome }}
             requirement_citations=${{ steps.requirement_citations.outcome }}
             duplicate_names=${{ steps.duplicate_names.outcome }}
+            retired_surfaces=${{ steps.retired_surfaces.outcome }}
             host_policy_selectors=${{ steps.host_policy_selectors.outcome }}
             egress_profile_coverage=${{ steps.egress_profile_coverage.outcome }}
             promtool_alert_rules=${{ steps.promtool_alert_rules.outcome }}
